@@ -1150,7 +1150,7 @@ test("dashboard action styling stays compact, accessible and usable in both them
       await expect(page.locator("html")).toHaveClass(dark ? /dark/ : /^(?!.*dark)/)
       await expect(page.getByRole("region", { name: "Host resources and storage" })).toBeVisible()
       await expect(page.getByRole("button", { name: "Instructions", exact: true })).toBeVisible()
-      for (const name of ["Personal Vault MCP", "Huggingface", "Settings", "New environment"]) {
+      for (const name of ["Personal Vault MCP", "Huggingface", "Network", "Settings", "New environment"]) {
         await expect(toolbar.getByRole("button", { name, exact: true })).toBeVisible()
       }
       await expect(toolbar.locator("svg")).toHaveCount(0)
@@ -1158,7 +1158,7 @@ test("dashboard action styling stays compact, accessible and usable in both them
         const box = element.getBoundingClientRect()
         return { x: box.x, y: box.y, right: box.right, height: box.height, width: box.width, radius: getComputedStyle(element).borderRadius, primary: element.classList.contains("dashboard-action-primary"), backgroundImage: getComputedStyle(element).backgroundImage }
       }))
-      expect(boxes).toHaveLength(4)
+      expect(boxes).toHaveLength(5)
       for (const box of boxes) {
         expect(box.x).toBeGreaterThanOrEqual(0)
         expect(box.right).toBeLessThanOrEqual(width)

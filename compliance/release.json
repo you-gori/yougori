@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "e2c1024f5c9d3b749ec03b7aad6fafa81de596c5",
+  "sourceCommit": "e912b9f868c4123a5b01621ea500a15b3979af14",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
@@ -2024,7 +2024,7 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "ec612f6f88a9a1ba6b5569dc218838beabc91283671b66f55fe27bbd8d718aeb",
+      "sha256": "a8ac4aee61ab4087aaf4fb50074e422cba3e31bc662e43932b0ad599e286531e",
       "normalization": "lf",
       "bytes": 221169
     },
@@ -6698,8 +6698,8 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "54fdf02fca158d2fe00b1c6f605fa8a0d7ca876ca77136e3b59f0bb93c4f29af",
-      "bytes": 13242985
+      "sha256": "a66ce67d45bdb185ed826258a8a2a16841fbfe790e03e7a4675c287c22d525b0",
+      "bytes": 13242992
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
@@ -6959,10 +6959,10 @@
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "54fdf02fca158d2fe00b1c6f605fa8a0d7ca876ca77136e3b59f0bb93c4f29af",
-      "bytes": 13242985,
+      "sha256": "a66ce67d45bdb185ed826258a8a2a16841fbfe790e03e7a4675c287c22d525b0",
+      "bytes": 13242992,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "ec612f6f88a9a1ba6b5569dc218838beabc91283671b66f55fe27bbd8d718aeb",
+      "manifestSha256": "a8ac4aee61ab4087aaf4fb50074e422cba3e31bc662e43932b0ad599e286531e",
       "fileCount": 1173
     },
     {
@@ -11287,7 +11287,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "d75f98c3eae74de2309b869594390641c33e632c2886f93e7606962ac7e54778",
+  "reviewFingerprint": "5b2e47363a769a0a2b00ea5ff360460099c1b8f58b9562551bc7c4d8b0125e69",
   "review": {
     "status": "pending",
     "pendingReason": "The September 29 repository audit repaired and refreshed source/notice evidence. Exact final desktop and engine artifacts, public matching-source delivery, guest-agent binary reproducibility and historical installer coverage still require release-specific verification.",
