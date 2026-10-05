@@ -1,6 +1,6 @@
 [package]
 name = "yougori-engine"
-version = "1.0.6"
+version = "1.0.7"
 description = "The Yougori engine without the desktop app, for command-line and server use"
 authors = ["Yougori"]
 license = "AGPL-3.0-only"

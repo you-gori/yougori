@@ -1,6 +1,6 @@
 [package]
 name = "yougori"
-version = "1.0.6"
+version = "1.0.7"
 description = "A local environment platform"
 authors = ["Yougori"]
 license = "AGPL-3.0-only"
