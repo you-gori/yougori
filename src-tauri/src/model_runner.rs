@@ -5,6 +5,7 @@ use tauri::Manager;
 use crate::AppHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod neocloud;
+pub(crate) mod huggingface;
 pub(crate) mod preflight;
 pub use preflight::model_preflight;
 pub(crate) use neocloud::{run_neocloud_model, start_model, stop_model};
@@ -53,11 +54,11 @@ pub struct ModelResources {
 impl ModelResources {
     fn allocation(&self, total_cpu: usize, total_memory: f64, available_storage: f64) -> Result<(f64, f64, f64), String> {
         // The GPU does the work, so a model needs little CPU or memory of its own.
-        let cpu = self.cpu.unwrap_or((total_cpu as f64).min(2.0));
-        let memory = self.memory_gb.unwrap_or(4.0_f64.min((total_memory - 2.0).max(2.0)));
+        let cpu = self.cpu.unwrap_or(2.0);
+        let memory = self.memory_gb.unwrap_or(4.0);
         let storage = self.storage_gb.unwrap_or(available_storage.min(20.0));
-        if !cpu.is_finite() || cpu < 1.0 || cpu > total_cpu as f64 || !memory.is_finite() || memory < 2.0 || memory > total_memory {
-            return Err("Model CPU and memory must fit this computer (at least 1 CPU and 2 GB RAM)".into());
+        if !cpu.is_finite() || cpu < 2.0 || cpu > total_cpu as f64 || !memory.is_finite() || memory < 4.0 || memory > total_memory {
+            return Err("Models require at least 2 CPU cores and 4 GB RAM, within this computer's capacity".into());
         }
         if !storage.is_finite() || storage > available_storage {
             return Err("Model storage exceeds available capacity".into());
@@ -99,13 +100,20 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
     let range = |n: f64| json!({"min":n,"preferred":n,"max":n});
     let command = server_command();
     let gguf = compatibility["runner"] == "yougori-llama-cpp";
+    let mut protected = json!({"YOUGORI_MODEL_TOKEN": token_reference});
+    if let Some(token) = huggingface::token() {
+        crate::projects::secrets::store(huggingface::TOKEN_REFERENCE, &token)?;
+        protected["HF_TOKEN"] = json!(huggingface::TOKEN_REFERENCE);
+    }
     let mut environment = json!({"YOUGORI_MODEL":model,"YOUGORI_MODEL_REVISION":compatibility["revision"],"HF_HOME":"/root/.cache/huggingface","HF_HUB_DISABLE_TELEMETRY":"1"});
+    environment["YOUGORI_MODEL_PRECISION"] = json!("auto");
+    if model == "Cloudflare/clef" { environment["YOUGORI_CLEF_SOURCE"] = json!(clef_source()); }
     if gguf {
         environment["YOUGORI_MODEL_FORMAT"] = json!("gguf");
         environment["YOUGORI_MODEL_QUANT"] = compatibility["quant"].clone();
         environment["YOUGORI_MODEL_FILES"] = json!(compatibility["files"].to_string());
     }
-    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":{"YOUGORI_MODEL_TOKEN":token_reference},"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
+    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
     let mut result = crate::projects::run_workload(request, true, app).await?;
     result["model"] = model.into();
     result["status"] = json!("loading");
@@ -130,6 +138,14 @@ fn server_command() -> String {
             "import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('{script}')),'yougori-model','exec'))"
         ))
     )
+}
+fn clef_source() -> String {
+    let mut adapter = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut adapter, include_bytes!("model_runner/adapters/clef/joint_schema_model.py")).expect("compressing the bundled Clef adapter");
+    STANDARD.encode(adapter.finish().expect("finishing the bundled Clef adapter"))
+}
+pub(crate) fn server_source() -> String {
+    format!("__YOUGORI_CLEF_SOURCE__ = '{}'\n{}", clef_source(), include_str!("model_server.py"))
 }
 /// Brings a stopped model environment's server up to this version before it starts, so reused
 /// environments get the same fixes as new ones. Only commands this runner wrote are replaced.
@@ -160,8 +176,36 @@ pub(crate) async fn refresh_server(
     if env.status != EnvironmentStatus::Stopped || !is_server_command(current) {
         return Ok(());
     }
+    // Older model environments could reserve only 1 CPU/2 GiB. Upgrade their
+    // floor before admission and scheduling, while preserving larger settings.
+    if env.resource_policy.cpu.min < 2.0 || env.resource_policy.memory_gb.min < 4.0 {
+        store.mutate(|state| {
+            let env = state.environments.iter_mut().find(|env| env.id == environment_id).ok_or("Model environment not found")?;
+            for (range, minimum) in [(&mut env.resource_policy.cpu, 2.0), (&mut env.resource_policy.memory_gb, 4.0)] {
+                range.min = range.min.max(minimum);
+                range.preferred = range.preferred.max(minimum);
+                range.max = range.max.max(minimum);
+            }
+            Ok(())
+        })?;
+    }
     let mut options=runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
     let old=options.clone();
+    // Keep already working, unquantized environments at their original precision.
+    // New models choose automatically; the dedicated decision runners may need it.
+    if !options.environment.contains_key("YOUGORI_MODEL_PRECISION") {
+        let decision=options.environment.get("YOUGORI_MODEL").is_some_and(|model| matches!(model.as_str(), "Cloudflare/clef" | "superagent-ai/security-one-27b"));
+        options.environment.insert("YOUGORI_MODEL_PRECISION".into(), if decision {"auto"} else {"original"}.into());
+    }
+    if options.environment.get("YOUGORI_MODEL").is_some_and(|model| model == "Cloudflare/clef") {
+        options.environment.insert("YOUGORI_CLEF_SOURCE".into(), clef_source());
+    }
+    if let Some(token) = huggingface::token() {
+        crate::projects::secrets::store(huggingface::TOKEN_REFERENCE, &token)?;
+        options.secret_environment.insert("HF_TOKEN".into(), huggingface::TOKEN_REFERENCE.into());
+    } else if options.secret_environment.get("HF_TOKEN").is_some_and(|reference| reference == huggingface::TOKEN_REFERENCE) {
+        options.secret_environment.remove("HF_TOKEN");
+    }
     if !options.secret_environment.contains_key("YOUGORI_MODEL_TOKEN") {
         if let Some(token)=options.environment.get("YOUGORI_MODEL_TOKEN").cloned().filter(|value|value.len()==64&&value.bytes().all(|b|b.is_ascii_hexdigit())) {
             let reference=format!("model-api-{}",uuid::Uuid::new_v4().simple());
@@ -750,6 +794,10 @@ mod tests {
         let custom = ModelResources { cpu:Some(3.0), memory_gb:Some(6.0), storage_gb:Some(25.0) };
         assert_eq!(custom.allocation(8,16.0,100.0).unwrap(),(3.0,6.0,25.0));
         assert_eq!(ModelResources::default().allocation(8,16.0,100.0).unwrap(),(2.0,4.0,20.0));
+        assert!(ModelResources::default().allocation(1,16.0,100.0).is_err());
+        assert!(ModelResources::default().allocation(8,3.0,100.0).is_err());
+        assert!(ModelResources { cpu:Some(1.0), ..Default::default() }.allocation(8,16.0,100.0).is_err());
+        assert!(ModelResources { memory_gb:Some(2.0), ..Default::default() }.allocation(8,16.0,100.0).is_err());
         assert!(custom.allocation(2,16.0,100.0).is_err());
         assert!(custom.allocation(8,4.0,100.0).is_err());
         assert!(custom.allocation(8,16.0,20.0).is_err());

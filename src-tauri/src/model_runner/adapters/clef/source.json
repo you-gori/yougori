@@ -1,0 +1,10 @@
+{
+  "source": "https://huggingface.co/Cloudflare/clef",
+  "revision": "2f3de3dd85f379784083b0814d997ab627200f0c",
+  "upstreamSha256": "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3",
+  "license": "Apache-2.0",
+  "modifications": [
+    "Local-only processor loading; remote repository code disabled.",
+    "Oversized decision states are rejected rather than silently truncated."
+  ]
+}

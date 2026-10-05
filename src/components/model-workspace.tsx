@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { ModelChat } from "@/components/model-chat"
+import { HuggingfaceAccess } from "@/components/huggingface-access"
 import { ModelApiPanel } from "@/components/model-api-panel"
 import { ModelUsagePanel } from "@/components/model-usage-panel"
 import { ModelNetworkPanel, NetworkAccount } from "@/components/network-panel"
@@ -101,7 +102,8 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
         {!environmentId && !selected ? <div className="model-form">
           <label className="model-label" htmlFor="hf-model">Model</label>
           <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
-          <p className="model-hint">Public text-generation models with safetensors or GGUF. Needs enough VRAM.</p>
+          <p className="model-hint">Text-generation and supported decision models with safetensors or GGUF. Larger models select a lower precision when needed to fit the GPU.</p>
+          <HuggingfaceAccess />
           <label className="model-label" htmlFor="hf-quant">GGUF quantization (optional)</label>
           <Input id="hf-quant" value={quant} disabled={busy} placeholder="Q4_K_M by default" onChange={e => { setQuant(e.target.value); setPreflight(null) }} />
           <div className="model-tabs" role="group" aria-label="Network sharing">
@@ -115,7 +117,7 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
               <Switch id="hf-api" checked={api} disabled={busy} onCheckedChange={setApi} />
             </div>
           </div>
-          {preflight ? <div aria-label="Model compatibility" className="model-hint"><p>{preflight.supported ? "Compatible with text chat" : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
+          {preflight ? <div aria-label="Model compatibility" className="model-hint"><p>{preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
           <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, quant.trim() || undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
         </div> : null}
 

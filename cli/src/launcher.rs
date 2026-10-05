@@ -149,6 +149,9 @@ fn limits(host: &Value, model: bool, min_storage: u32) -> Result<([u32; 3], [(u3
     if max_storage < min_storage {
         return Err(format!("This drive needs at least {min_storage} GB free for this environment, plus 2 GB reserved for the computer."));
     }
+    if model && (max_cpu < 2 || max_ram < 4) {
+        return Err("Models require at least 2 CPU cores and 4 GB RAM".into());
+    }
     // A model runs on the GPU, so it needs no more CPU or memory than a project.
     let defaults = [
         max_cpu.min(2),
@@ -156,8 +159,8 @@ fn limits(host: &Value, model: bool, min_storage: u32) -> Result<([u32; 3], [(u3
         max_storage.min(20).max(min_storage),
     ];
     let limits = [
-        (1, max_cpu),
-        (if model { 2 } else { 1 }, max_ram),
+        (if model { 2 } else { 1 }, max_cpu),
+        (if model { 4 } else { 1 }, max_ram),
         (min_storage, max_storage),
     ];
     Ok((defaults, limits))
@@ -198,8 +201,8 @@ fn allocation_text(a: [u32; 3]) -> String {
 }
 /// Resources for a new model: the recommended ones, or sliders to customize them.
 /// `customize` goes straight to the sliders.
-fn model_resources(host: &Value, customize: bool) -> Result<[u32; 3], String> {
-    let (recommended, _) = limits(host, true, 12)?;
+fn model_resources(host: &Value, customize: bool, min_storage: u32) -> Result<[u32; 3], String> {
+    let (recommended, _) = limits(host, true, min_storage)?;
     let custom = customize || ui::select(
         "How much should this model reserve?",
         &[],
@@ -210,17 +213,24 @@ fn model_resources(host: &Value, customize: bool) -> Result<[u32; 3], String> {
         0,
     )? == 1;
     if custom {
-        sliders(host, true, 12, Some(recommended))
+        sliders(host, true, min_storage, Some(recommended))
     } else {
         Ok(recommended)
     }
+}
+async fn model_storage(model: &str, quant: Option<&str>) -> Result<u32, String> {
+    let preflight = call("model_preflight", json!({"model": model, "quant": quant})).await?;
+    if preflight["supported"] != true {
+        return Err(preflight["reason"].as_str().unwrap_or("This model needs a dedicated runner").into());
+    }
+    Ok(preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).ceil().max(12.0) as u32)
 }
 /// Changes for an existing model's resources, or `None` to start it as before.
 /// Its disk can grow but never shrink. `change` goes straight to the sliders.
 fn changed_model_resources(host: &Value, env: &Value, change: bool) -> Result<Option<Map<String, Value>>, String> {
     let current = [
-        env["resourcePolicy"]["cpu"]["max"].as_f64().unwrap_or(1.0).round() as u32,
-        env["resourcePolicy"]["memoryGb"]["max"].as_f64().unwrap_or(2.0).round() as u32,
+        env["resourcePolicy"]["cpu"]["max"].as_f64().unwrap_or(2.0).max(2.0).ceil() as u32,
+        env["resourcePolicy"]["memoryGb"]["max"].as_f64().unwrap_or(4.0).max(4.0).ceil() as u32,
         env["storageLimitGb"].as_f64().unwrap_or(12.0).ceil() as u32,
     ];
     let change = change || ui::select(
@@ -506,7 +516,7 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
     }
     let allocation = match existing {
         Some(_) => None,
-        None => Some(model_resources(&state["host"], false)?),
+        None => Some(model_resources(&state["host"], false, model_storage(&target, None).await?)?),
     };
     // A running model keeps its resources; a stopped one can change them before it starts.
     let changes = match &existing {
@@ -931,12 +941,12 @@ mod tests {
         let host = json!({"totalCpu":16,"totalMemoryGb":31.8,"totalStorageGb":500.0,"usedStorageGb":100.0});
         assert_eq!(
             limits(&host, true, 12).unwrap(),
-            ([2, 4, 20], [(1, 16), (2, 31), (12, 398)])
+            ([2, 4, 20], [(2, 16), (4, 31), (12, 398)])
         );
         let grown = limits(&host, true, 40).unwrap();
         assert_eq!((grown.0[2], grown.1[2].0), (40, 40));
         let small = json!({"totalCpu":1,"totalMemoryGb":2.0,"totalStorageGb":20.0,"usedStorageGb":5.0});
-        assert_eq!(limits(&small, true, 12).unwrap().0, [1, 2, 13]);
+        assert!(limits(&small, true, 12).is_err());
         assert!(limits(&small, true, 14).is_err());
     }
     #[test]

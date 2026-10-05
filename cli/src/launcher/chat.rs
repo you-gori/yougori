@@ -88,6 +88,7 @@ fn options(args: &[String]) -> Result<Options, String> {
         }
         i += 1;
     }
+    public::validate_model_resources(&resources)?;
     public::validate_model_neocloud(neocloud, environment.as_deref(), change || !resources.is_empty())?;
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
     Ok(Options {
@@ -232,7 +233,8 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
     } else {
         if options.resources.is_empty() {
             let host = call("get_platform_state", json!({})).await?["host"].take();
-            let [cpu, memory, storage] = super::model_resources(&host, options.change)?;
+            let minimum = super::model_storage(target, options.quant.as_deref()).await?;
+            let [cpu, memory, storage] = super::model_resources(&host, options.change, minimum)?;
             options.resources = Map::from_iter([
                 ("cpu".into(), json!(cpu)),
                 ("memoryGb".into(), json!(memory)),
@@ -287,6 +289,13 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
     let exit = match wait_ready(id, name).await? {
         Err(exit) => exit,
         Ok(status) => {
+            if status["task"] == "structured-decision" {
+                drop(footer);
+                ui::outro(&format!("{name} is ready for typed decisions"));
+                ui::info(&format!("yougori model decide {environment} --file request.json"));
+                ui::info("Request JSON contains state and questions (choice, score or noul). The App has a Decisions panel; the API also serves POST /v1/systemone.");
+                return Ok(());
+            }
             match network::settled(id, Duration::from_secs(45)).await {
                 Ok(Some(share)) => ui::step(&clean(&network::summary(&share))),
                 Err(error) => ui::warn(&clean(&error)),
@@ -407,6 +416,7 @@ fn phase(phase: &str, name: &str) -> (String, String) {
             "Model dependencies ready".into(),
         ),
         "downloading" => (format!("Downloading {name}"), format!("{name} files ready")),
+        "verifying" => ("Verifying model weights".into(), "Model checksums verified".into()),
         "loading" => ("Loading onto the GPU".into(), "Loaded onto the GPU".into()),
         _ => (
             "Starting the model server".into(),

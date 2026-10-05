@@ -27,6 +27,10 @@ export function ResourcePolicyEditor({ environment, saveTarget, startupDraft = n
   // a draft while the user is typing; current allocation is not an edit field.
   useEffect(() => { if (!dirty) setPolicy(fixedResourcePolicy(environment.resourcePolicy)) }, [environment, dirty])
   const limits = resourceControlLimits(environment.kind, state?.host.totalCpu, state?.host.totalMemoryGb)
+  if (environment.description?.startsWith("Hugging Face · ")) {
+    limits.cpu.min = 2
+    limits.memory.min = 4
+  }
   const errors = fixedResourceErrors(policy.cpu.preferred, policy.memoryGb.preferred, limits)
   const update = (next: ResourcePolicy) => { setPolicy(fixedResourcePolicy(next)); setDirty(true); setSaved(false); setSaveError("") }
   const memoryRestart = environment.kind === "microVm" && environment.status === "running" && policy.memoryGb.preferred !== environment.resourcePolicy.memoryGb.current

@@ -29,6 +29,7 @@ pub fn methods() -> Vec<Method> {
         };
     }
     let env = json!({"environmentId":"env-ID"});
+    method!(model_huggingface_status, "Read whether a protected Hugging Face read token is configured. Never returns the token.", "", json!({}), false, None);
     method!(start_environment_download, "Create a complete portable copy of a stopped local environment and publish a temporary download link. Expires when its owning app/CLI exits; counts persist across links. domain reuses a saved Cloudflare domain.", "request:object", json!({"request":{"environmentId":"env-ID","ownerId":"00000000-0000-4000-8000-000000000001","domain":null}}), true, Some("Anyone with the link can download all files and credentials stored inside this environment."));
     method!(list_environment_downloads, "Read active environment-copy links and lifetime completed-download counts.", "", json!({}), false, None);
     method!(keep_environment_downloads_alive, "Renew only this client's temporary download-link leases; cannot revive an expired link.", "ownerId:string", json!({"ownerId":"00000000-0000-4000-8000-000000000001"}), true, None);

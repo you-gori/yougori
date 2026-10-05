@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { GuestLogs } from "@/components/guest-logs"
+import { ModelDecisions } from "@/components/model-decisions"
+import { modelProgress } from "@/lib/model-progress"
 import { Markdown } from "@/components/chat-markdown"
 import { modelsApi, type ChatMessage, type ChatOptions, type ModelStatus } from "@/api/projects-api"
 import { usePlatform } from "@/context/platform-context"
@@ -225,12 +227,13 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
   const onAction = useCallback((action: "regenerate" | "edit" | "continue", message: StoredMessage) => action === "edit" ? actions.current.edit(message) : action === "regenerate" ? actions.current.regenerate(message.id) : actions.current.continue(), [])
   const deleteConversation = (id: string) => setStore(s => ({ ...s, activeId: s.activeId === id ? null : s.activeId, conversations: s.conversations.filter(c => c.id !== id) }))
 
-  const phase = environmentStatus === "provisioning" ? "Downloading and preparing container image" : environmentStatus && environmentStatus !== "running" ? environmentStatus : status?.status ?? "Starting"
+  const phase = environmentStatus === "provisioning" ? "Downloading and preparing container image" : environmentStatus && environmentStatus !== "running" ? environmentStatus : status ? modelProgress(status) : "Starting"
   const contextWindow = active?.usage?.context_window ?? status?.context
   const contextUsed = active?.usage ? active.usage.prompt_tokens + active.usage.completion_tokens : 0
   const modelName = status?.model?.split("/").pop() ?? "Model"
   const last = messages[messages.length - 1]
   const history = [...store.conversations].sort((a, b) => b.updatedAt - a.updatedAt)
+  if (status?.task === "structured-decision") return <ModelDecisions environmentId={environmentId} status={status} />
 
   return <section className="model-chat" aria-label="Model chat">
     <nav className="model-chat-history" aria-label="Conversations">
@@ -243,7 +246,7 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
 
     <div className="model-chat-main">
       <div className="model-chat-bar">
-        <span role="status"><strong>{status?.model}</strong>{status?.model ? " · " : ""}{phase}{status?.gpu ? ` · ${status.gpu}` : ""}</span>
+        <span role="status"><strong>{status?.model}</strong>{status?.model ? " · " : ""}{phase}{status?.gpu ? ` · ${status.gpu}` : ""}{status?.precision ? ` · ${status.precision}` : ""}</span>
         <div className="model-chat-bar-actions">
           {contextWindow && contextUsed ? <span className="model-context" title={`${contextUsed.toLocaleString()} of ${contextWindow.toLocaleString()} tokens`}>
             <span className="model-context-meter"><span style={{ width: `${Math.min(100, (contextUsed / contextWindow) * 100)}%` }} /></span>

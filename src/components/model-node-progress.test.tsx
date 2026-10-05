@@ -29,6 +29,16 @@ it("shows live model download logs", async () => {
   expect(screen.getByLabelText("Model setup logs")).toHaveTextContent("Downloading weights: 50%")
 })
 
+it("shows actual downloaded bytes and speed, then checksum progress", async () => {
+  status.mockResolvedValue({ status: "downloading", download: { receivedBytes: 12e9, totalBytes: 24e9, bytesPerSecond: 25e6 } })
+  logs.mockResolvedValue("Download active")
+  const view = render(<ModelNodeProgress environment={{ ...environment, status: "running" }} />)
+  expect(await screen.findByText("Downloading model weights · 50.0% · 12.00/24.00 GB · 25.0 MB/s")).toBeInTheDocument()
+  status.mockResolvedValue({ status: "verifying", verification: { checkedBytes: 6e9, totalBytes: 24e9 } })
+  view.rerender(<ModelNodeProgress environment={{ ...environment, id: "model-2", status: "running" }} />)
+  expect(await screen.findByText("Verifying model weights · 25.0%")).toBeInTheDocument()
+})
+
 it("removes setup logs when the model is ready", async () => {
   status.mockResolvedValue({ status: "ready" })
   logs.mockResolvedValue("Model ready")

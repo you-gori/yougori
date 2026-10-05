@@ -759,6 +759,7 @@ pub fn run() {
             projects::secrets::set_deployment_secret,
             projects::secrets::delete_deployment_secret,
             model_runner::preflight::model_preflight,
+            model_runner::huggingface::model_huggingface_status,
             projects::readiness::get_environment_health_check,
             projects::readiness::set_environment_health_check,
             workspace::publication_preflight,

@@ -66,6 +66,7 @@ class ModelTests(unittest.TestCase):
     def test_reuse_reconnect_authenticated_api_stop_and_resume(self):
         self.assertFalse(self.runner.request('run', self.body)['reused'])
         self.assertEqual(self.ready()['model'], self.body['model'])
+
         self.assertEqual(self.runner.request('status', self.body)['status'], 'ready')
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen('http://127.0.0.1:8000/v1/models')
@@ -82,6 +83,16 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(self.runner.request('status', {})['running'])
         self.assertFalse(self.runner.request('run', self.body)['reused'])
         self.assertEqual(self.ready()['status'], 'ready')
+
+
+    def test_huggingface_token_is_protected_and_injected_without_returning_it(self):
+        self.body['hfToken'] = 'hf_private_read_token'
+        self.body['source'] = SERVER.replace("'status':'ready'", "'status':'ready', 'hfConfigured':os.environ.get('HF_TOKEN') == 'hf_private_read_token'")
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        self.assertTrue(self.ready()['hfConfigured'])
+        config = self.runner.root_dir() / 'config.json'
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+        self.assertNotIn('hf_private_read_token', json.dumps(self.runner.request('status', self.body)))
 
     def test_conflicting_model_and_key_cannot_replace_or_stop_active_model(self):
         self.runner.request('run', self.body)

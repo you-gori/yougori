@@ -66,6 +66,20 @@ it("converts legacy ranges to fixed allocations and validates typed values", asy
   })))
 })
 
+it("keeps model resource controls at two CPUs and four GB", async () => {
+  render(<ResourcePolicyEditor environment={{ ...environment, kind: "container", description: "Hugging Face · google/gemma-4-12B" }} />)
+  fireEvent.change(screen.getByRole("spinbutton", { name: "CPU value" }), { target: { value: "1" } })
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Memory value" }), { target: { value: "2" } })
+  expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.change(screen.getByRole("spinbutton", { name: "CPU value" }), { target: { value: "2" } })
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Memory value" }), { target: { value: "4" } })
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }))
+  await waitFor(() => expect(save).toHaveBeenCalledWith(environment.id, expect.objectContaining({
+    cpu: expect.objectContaining({ min: 2, preferred: 2, max: 2 }),
+    memoryGb: expect.objectContaining({ min: 4, preferred: 4, max: 4 }),
+  })))
+})
+
 it("Save changes also stores the container startup command from the same configuration", async () => {
   const container = { ...environment, kind: "container", status: "stopped", containerCommand: "sleep 1" } as Environment
   const saved = vi.fn()

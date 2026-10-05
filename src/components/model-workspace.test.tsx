@@ -8,7 +8,7 @@ const { status, chat, run, preflight, stream, history, saveHistory, platform } =
 const market = vi.hoisted(() => ({ status: vi.fn(), signIn: vi.fn(), share: vi.fn(), listen: vi.fn(async () => () => {}) }))
 vi.mock("@/api/market-api", () => ({ marketApi: market }))
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => platform }))
-vi.mock("@/api/projects-api", () => ({ modelsApi: { status, chat, run, preflight, stream, history, saveHistory } }))
+vi.mock("@/api/projects-api", () => ({ modelsApi: { status, chat, run, preflight, stream, history, saveHistory, huggingface: async () => ({ configured: false }) } }))
 // An in-memory engine store for chat history.
 let savedHistory: unknown = null
 beforeEach(() => { savedHistory = null; history.mockImplementation(async () => savedHistory); saveHistory.mockImplementation(async (_id: string, value: unknown) => { savedHistory = value }) })

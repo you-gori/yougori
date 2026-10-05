@@ -31,9 +31,14 @@ pub(crate) async fn run_neocloud_model(model: String, environment_id: String, po
     options.environment.remove("YOUGORI_MODEL_TOKEN");
     options.secret_environment.insert("YOUGORI_MODEL_TOKEN".into(),reference);
     options.environment.insert("YOUGORI_MODEL_REVISION".into(),compatibility["revision"].as_str().unwrap_or("").into());
+    let hf_token = super::huggingface::token();
+    if let Some(value) = &hf_token {
+        crate::projects::secrets::store(super::huggingface::TOKEN_REFERENCE, value)?;
+        options.secret_environment.insert("HF_TOKEN".into(), super::huggingface::TOKEN_REFERENCE.into());
+    }
     runtime.save_workload_options(id, &options)?;
     let result = runtime.cloud.session(&environment_id).await?.request("model/run",
-        json!({"model":model,"token":token,"revision":compatibility["revision"],"source":include_str!("../model_server.py")})).await?;
+        json!({"model":model,"token":token,"hfToken":hf_token,"revision":compatibility["revision"],"source":super::server_source()})).await?;
     options.environment.insert("YOUGORI_MODEL".into(), model.clone());
     runtime.save_workload_options(id, &options)?;
     store.mutate(|state| {

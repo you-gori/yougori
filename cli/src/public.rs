@@ -63,6 +63,8 @@ Public commands:
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--quant Q4_K_M]
                                    Share paid (10 priced models) or free through Yougori
   yougori model unshare ENV        Stop sharing; leave the model running
+  yougori model auth login | status | logout  Protected Hugging Face token shared with the App
+  yougori model decide ENV --file REQUEST.json|-  Typed decision probabilities
   yougori model stop ENV           Stop the model; a Neocloud pod stays billable
   yougori model preflight hf.co/OWNER/MODEL   Compatibility and requirements before weights
                                    Reuses this model's environment when one exists
@@ -234,12 +236,15 @@ pub fn choose_neocloud_target<'a>(targets: &'a [Value], name: &str) -> Result<&'
 /// Starts an existing model environment instead of creating another GPU container, applying any
 /// requested resources and, with `port`, its localhost API.
 pub async fn reuse_model(env: &Value, resources: &serde_json::Map<String, Value>, port: Option<u16>) -> Result<Value, String> {
+    validate_model_resources(resources)?;
     let id = env["id"].as_str().ok_or("Model environment missing")?;
-    if resources.contains_key("cpu") || resources.contains_key("memoryGb") {
-        let current = |name: &str| env["resourcePolicy"][name]["max"].as_f64().unwrap_or(1.0);
+    let current = |name: &str| env["resourcePolicy"][name]["max"].as_f64().unwrap_or(0.0);
+    if resources.contains_key("cpu") || resources.contains_key("memoryGb")
+        || env["resourcePolicy"]["cpu"]["min"].as_f64().unwrap_or(0.0) < 2.0
+        || env["resourcePolicy"]["memoryGb"]["min"].as_f64().unwrap_or(0.0) < 4.0 {
         let range = |v: f64| json!({"min":v,"preferred":v,"max":v,"current":v});
-        let cpu = resources.get("cpu").and_then(Value::as_f64).unwrap_or_else(|| current("cpu"));
-        let memory = resources.get("memoryGb").and_then(Value::as_f64).unwrap_or_else(|| current("memoryGb"));
+        let cpu = resources.get("cpu").and_then(Value::as_f64).unwrap_or_else(|| current("cpu").max(2.0));
+        let memory = resources.get("memoryGb").and_then(Value::as_f64).unwrap_or_else(|| current("memoryGb").max(4.0));
         call("update_resource_policy", json!({"environmentId":id,"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal"}})).await?;
     }
     if let Some(storage) = resources.get("storageGb").and_then(Value::as_f64) {
@@ -842,8 +847,34 @@ async fn follow_logs(id: &str) -> Result<(), String> {
 async fn terminal(id: &str) -> Result<(), String> {
     crate::terminal::attach(id, None).await
 }
+pub fn validate_model_resources(resources: &serde_json::Map<String, Value>) -> Result<(), String> {
+    for (key, minimum) in [("cpu", 2.0), ("memoryGb", 4.0)] {
+        if let Some(value) = resources.get(key) {
+            if value.as_f64().is_none_or(|value| !value.is_finite() || value < minimum) {
+                return Err("Models require at least 2 CPU cores and 4 GB RAM".into());
+            }
+        }
+    }
+    Ok(())
+}
 async fn model(args: &[String]) -> Result<Value, String> {
     let action = args.get(1).map(String::as_str).unwrap_or("");
+    if action == "auth" { return crate::model_auth::run(&args[2..]).await; }
+    if action == "decide" {
+        let (target,path)=match &args[2..] {
+            [target,flag,path] if flag=="--file"=>(target,path),
+            _=>return Err("Usage: yougori model decide ENV --file REQUEST.json|- (JSON containing state and questions)".into()),
+        };
+        let reader:Box<dyn Read>=if path=="-"{Box::new(std::io::stdin())}else{Box::new(std::fs::File::open(path).map_err(|_|"Cannot open the decision request file")?)};
+        let mut bytes=Vec::new();reader.take(65537).read_to_end(&mut bytes).map_err(|_|"Cannot read the decision request")?;
+        if bytes.len()>65536{return Err("Decision requests must be at most 64 KiB".into())}
+        let body:Value=serde_json::from_slice(bytes.strip_prefix(&[0xef,0xbb,0xbf]).unwrap_or(&bytes)).map_err(|_|"Decision request must be JSON containing state and questions")?;
+        if !body.is_object()||body.get("state").is_none()||!body["questions"].is_object(){return Err("Decision request must contain state and a questions object".into())}
+        client::start(None).await?;
+        let id=resolve(target).await?;
+        let response=call("model_chat",json!({"environmentId":id,"messages":[{"role":"user","content":body.to_string()}],"maxTokens":1,"temperature":0.0})).await?;
+        return serde_json::from_str(response["choices"][0]["message"]["content"].as_str().ok_or("Invalid decision model response")?).map_err(|_|"Invalid decision model JSON response".into());
+    }
     if action == "preflight" {
         let target = args.get(2).ok_or("Supply a model")?;
         let quant = match &args[3..] {
@@ -911,6 +942,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     if port == 0 {
         return Err("Model API port must be between 1 and 65535".into());
     }
+    validate_model_resources(&resources)?;
     validate_model_neocloud(neocloud, environment.as_deref(), !resources.is_empty())?;
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
     if reset && !confirmed {

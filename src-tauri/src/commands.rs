@@ -1939,6 +1939,10 @@ pub async fn update_resource_policy(
     let guarded = store.environment(&environment_id)?;
     let _container_serial = environment_container_policy_guard(&runtime, &guarded).await?;
     validate_policy(&resource_policy)?;
+    if guarded.description.starts_with("Hugging Face · ")
+        && (resource_policy.cpu.min < 2.0 || resource_policy.memory_gb.min < 4.0) {
+        return Err("Models require a minimum of 2 CPU cores and 4 GB RAM".into());
+    }
     let environment = store.environment(&environment_id)?;
     // `current` is runtime-owned telemetry/allocation state, not a client-settable
     if environment.kind == EnvironmentKind::Cloud { return Err("Cloud resources are managed outside Yougori".into()); }

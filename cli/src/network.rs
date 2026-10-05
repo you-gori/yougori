@@ -73,7 +73,7 @@ pub async fn settled(environment_id: &str, wait: Duration) -> Result<Option<Valu
         let status = call("market_status", json!({})).await?;
         let share = status["shares"].as_array().into_iter().flatten().find(|share| share["environmentId"] == environment_id).cloned();
         let Some(share) = share else { return Ok(None) };
-        let waiting = share["live"] != true && (matches!(share["status"].as_str(), Some("starting" | "installing" | "downloading" | "loading"))
+        let waiting = share["live"] != true && (matches!(share["status"].as_str(), Some("starting" | "installing" | "downloading" | "verifying" | "loading"))
             || share["status"] == "ready" && share["message"].as_str().is_some_and(|m| m.starts_with("Checking")));
         if !waiting || Instant::now() >= deadline {
             return Ok(Some(share));

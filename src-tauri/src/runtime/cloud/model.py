@@ -124,7 +124,10 @@ def request(action, body):
         source = body['source']
         if not isinstance(source, str) or len(source) > 262144:
             raise ValueError('Invalid model server')
-        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'revision':revision}))]:
+        hf_token = body.get('hfToken')
+        if hf_token is not None and (not isinstance(hf_token, str) or not 1 <= len(hf_token) <= 1024 or any(char in hf_token for char in '\r\n\0')):
+            raise ValueError('Invalid protected Hugging Face token; value withheld')
+        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'revision':revision, 'hfToken':hf_token}))]:
             path = root / name
             with open(path, 'w', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
                 file.write(data)
@@ -141,6 +144,8 @@ os.environ.update(YOUGORI_MODEL=config['model'], YOUGORI_MODEL_TOKEN=config['tok
     HF_HOME=str(root / 'cache'), HF_HUB_DISABLE_TELEMETRY='1')
 if config.get('revision'):
     os.environ['YOUGORI_MODEL_REVISION']=config['revision']
+if config.get('hfToken'):
+    os.environ['HF_TOKEN']=config['hfToken']
 (root / 'cache').mkdir(exist_ok=True)
 os.execv(str(python), [str(python), '-u', str(root / 'server.py')])
 '''

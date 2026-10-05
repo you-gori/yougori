@@ -29,3 +29,7 @@
 /compliance/*.json whitespace=cr-at-eol
 # Keep upstream license texts intact, including their original whitespace.
 /src-tauri/resources/*LICENSES.txt -whitespace
+
+# Retain the vendored Clef source and license line endings.
+/src-tauri/src/model_runner/adapters/clef/joint_schema_model.py whitespace=cr-at-eol
+/src-tauri/src/model_runner/adapters/clef/LICENSE -whitespace

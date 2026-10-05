@@ -38,7 +38,10 @@
       "resources/THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt",
       "resources/APPLICATION_LICENSES.txt": "APPLICATION_LICENSES.txt",
       "resources/RUNTIME_LICENSES.txt": "RUNTIME_LICENSES.txt",
-      "resources/WORKSPACE_LICENSES.txt": "WORKSPACE_LICENSES.txt"
+      "resources/WORKSPACE_LICENSES.txt": "WORKSPACE_LICENSES.txt",
+      "src/model_runner/adapters/clef/LICENSE": "licenses/clef/LICENSE",
+      "src/model_runner/adapters/clef/source.json": "licenses/clef/source.json",
+      "src/model_runner/adapters/clef/joint_schema_model.py": "licenses/clef/joint_schema_model.py"
     }
   }
 }

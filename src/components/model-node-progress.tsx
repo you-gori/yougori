@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { modelsApi } from "@/api/projects-api"
 import { workspaceApi } from "@/api/workspace-api"
 import type { Environment } from "@/types/platform"
+import { modelProgress } from "@/lib/model-progress"
 
 export function ModelNodeProgress({ environment }: { environment: Environment }) {
   const [output, setOutput] = useState("")
@@ -19,9 +20,7 @@ export function ModelNodeProgress({ environment }: { environment: Environment })
           const health = await modelsApi.status(id)
           if (active) {
             setReady(health.status === "ready")
-            setPhase(health.status === "ready" ? "Model ready" : health.status === "error" ? health.error ?? "Model setup failed" : {
-              installing: "Installing model dependencies", downloading: "Downloading model weights", loading: "Loading model into GPU memory",
-            }[health.status])
+            setPhase(modelProgress(health))
           }
         } catch { if (active) setPhase("Starting model server") }
       } else if (active) {

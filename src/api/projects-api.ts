@@ -35,7 +35,7 @@ export interface ChangeReport {
 }
 export const changesApi = { inspect: (environmentId: string, baseline = false, offset = 0) => run<ChangeReport>("environment_changes", { environmentId, baseline, offset }, desktop) }
 /** context and stream are reported by models started with streaming support. */
-export interface ModelStatus { status: "installing" | "downloading" | "loading" | "ready" | "error"; model: string; error: string | null; gpu?: string; context?: number; stream?: boolean }
+export interface ModelStatus { status: "installing" | "downloading" | "verifying" | "loading" | "ready" | "error"; model: string; error: string | null; gpu?: string; context?: number; stream?: boolean; task?: string; api?: string; precision?: string; download?: { receivedBytes: number; totalBytes: number; bytesPerSecond: number; transport: string }; verification?: { checkedBytes: number; totalBytes: number } }
 export interface ModelRun { id: string; model: string; apiUrl?: string; apiKey?: string }
 export interface ModelPreflight { format?: string; quant?: string; files?: { rfilename: string; size: number; sha256?: string }[]; model: string; task: string; modelType: string; supported: boolean; reason: string; runner: string; revision: string; resources: { storageGbRecommended: number | null; gpuMemoryGbEstimated: number | null; estimateOnly: boolean }; downloads: { location: string; checksumVerification: string; hostWeightImportRequired: boolean } }
 /** Key plus any localhost and public (Cloudflare) addresses currently serving the model API. */
@@ -50,6 +50,9 @@ export interface ChatOptions { maxTokens: number; temperature: number }
 export interface ChatUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; truncated_messages?: number; context_window?: number }
 export interface ChatReply { finishReason: "stop" | "length" | "cancelled"; usage?: ChatUsage }
 export const modelsApi = {
+  huggingface: () => run<{ configured: boolean; reference: string; tokensUrl: string }>("model_huggingface_status", {}, desktop),
+  saveHuggingfaceToken: (value: string) => run("set_deployment_secret", { name: "huggingface-model-downloads", value }, desktop),
+  forgetHuggingfaceToken: () => run("delete_deployment_secret", { name: "huggingface-model-downloads" }, desktop),
   preflight: (model: string, quant?: string) => run<ModelPreflight>("model_preflight", { model, quant }, desktop),
   api: (environmentId: string, port: number) => run<ModelRun>("model_api", { environmentId, port }, desktop),
   run: (model: string, port: number | null, quant?: string) => run<ModelRun>("run_model", { model, port, quant }, desktop),

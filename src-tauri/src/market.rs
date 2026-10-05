@@ -504,6 +504,7 @@ fn waiting(status: &str) -> &'static str {
         "error" => "The model could not load. Check its logs.",
         "installing" => "Installing model dependencies",
         "downloading" => "Downloading the model",
+        "verifying" => "Verifying model checksums",
         "loading" => "Loading onto the GPU",
         _ => "Starting the model server",
     }

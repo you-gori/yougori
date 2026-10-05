@@ -339,3 +339,27 @@ fn skill_install_is_idempotent_and_never_overwrites_personal_edits() {
     assert!(!conflict.status.success());
     assert_eq!(std::fs::read_to_string(path.join("SKILL.md")).unwrap(), edited);
 }
+
+#[test]
+fn shared_models_enforce_two_cpu_and_four_gib_before_starting() {
+    for (flag, value) in [("--cpu", "1"), ("--memory", "2")] {
+        let output = cli(&["model", "run", "hf.co/google/gemma-4-12B", "--now", flag, value, "--dry-run"]);
+        assert!(!output.status.success());
+        assert!(response(&output)["error"].as_str().unwrap().contains("2 CPU cores and 4 GB RAM"));
+    }
+    let output = cli(&["model", "run", "hf.co/google/gemma-4-12B", "--nowfree", "--cpu", "2", "--memory", "4", "--dry-run"]);
+    assert!(output.status.success());
+    assert_eq!(response(&output)["result"]["resources"], serde_json::json!({"cpu": 2.0, "memoryGb": 4.0}));
+}
+
+#[test]
+fn huggingface_login_never_accepts_a_secret_as_a_command_argument() {
+    let output=cli(&["model","auth","login","--token","hf_private_read_secret"]);
+    assert!(!output.status.success());
+    let text=String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Never pass a token as an argument"));
+    assert!(!text.contains("hf_private_read_secret"));
+    let output=cli(&["model","decide","model-1"]);
+    assert!(!output.status.success());
+    assert!(response(&output)["error"].as_str().unwrap().contains("--file"));
+}

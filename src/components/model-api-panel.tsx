@@ -87,11 +87,22 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
   return <Button size="xs" variant="ghost" onClick={() => void terminalClipboard.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500) }).catch(() => undefined)}>{copied ? "Copied" : label}</Button>
 }
 
+function decisionExample(kind: Example, base: string, model: string, key?: string) {
+  const request = { state: "Our checkout is returning errors.", questions: { route: { type: "choice", instructions: "Which team should handle this?", criteria: { technical: "Outage or bug", billing: "Payment issue" } } } }
+  const body = { model, messages: [{ role: "user", content: JSON.stringify(request) }], max_tokens: 1 }
+  if (kind === "python") return `import json, os\nfrom openai import OpenAI\nclient = OpenAI(base_url=${JSON.stringify(base)}, api_key=${key ? JSON.stringify(key) : 'os.environ["YOUGORI_MODEL_API_KEY"]'})\nrequest = json.loads(${JSON.stringify(JSON.stringify(request))})\nreply = client.chat.completions.create(model=${JSON.stringify(model)}, messages=[{"role": "user", "content": json.dumps(request)}], max_tokens=1)\nprint(json.loads(reply.choices[0].message.content)["answers"])`
+  if (kind === "javascript") return `import OpenAI from "openai"\nconst client = new OpenAI({ baseURL: ${JSON.stringify(base)}, apiKey: ${key ? JSON.stringify(key) : "process.env.YOUGORI_MODEL_API_KEY"} })\nconst reply = await client.chat.completions.create(${JSON.stringify(body, null, 2)})\nconsole.log(JSON.parse(reply.choices[0].message.content).answers)`
+  if (kind === "powershell") return `$body = '${JSON.stringify(body)}'\n$reply = Invoke-RestMethod -Method Post -Uri "${base}/chat/completions" -Headers @{ Authorization = "Bearer ${key ?? "$env:YOUGORI_MODEL_API_KEY"}" } -ContentType "application/json" -Body $body\n($reply.choices[0].message.content | ConvertFrom-Json).answers`
+  if (kind === "skill") return `# Yougori decision model\nModel: ${model}\nBase URL: ${base}\nSend the following JSON to POST /chat/completions with Authorization: Bearer ${key ?? "<YOUGORI_MODEL_API_KEY>"}.\nThe message content is JSON containing state and typed questions. Parse the assistant's JSON content to read answers and probabilities.\n\n${JSON.stringify(body, null, 2)}`
+  return `curl ${base}/chat/completions \\\n  -H "Authorization: Bearer ${key ?? "$YOUGORI_MODEL_API_KEY"}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body)}'`
+}
+
 export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   const { state } = usePlatform()
   const running = state?.environments.find(e => e.id === environmentId)?.status === "running"
   const [access, setAccess] = useState<ModelApiAccess | null>(null)
   const [streaming, setStreaming] = useState(false)
+  const [decision, setDecision] = useState(false)
   const [port, setPort] = useState("8000")
   const [busy, setBusy] = useState<"local" | "public" | null>(null)
   const [error, setError] = useState("")
@@ -109,7 +120,7 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   useEffect(() => {
     alive.current = true
     void modelsApi.access(environmentId).then(value => { if (alive.current) setAccess(value) }).catch(e => { if (alive.current) setError(String(e)) })
-    void modelsApi.status(environmentId).then(value => { if (alive.current) setStreaming(Boolean(value.stream)) }).catch(() => undefined)
+    void modelsApi.status(environmentId).then(value => { if (alive.current) { setStreaming(Boolean(value.stream)); setDecision(value.task === "structured-decision") } }).catch(() => undefined)
     return () => { alive.current = false }
   }, [environmentId])
   useEffect(() => {
@@ -146,7 +157,7 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   const model = access?.model ?? ""
   const base = target === "public" && access?.publicUrl ? access.publicUrl : access?.apiUrl ?? access?.publicUrl ?? null
   const isPublic = Boolean(access?.publicUrl && base === access.publicUrl)
-  const snippet = base ? example(kind, base, model, streaming, isPublic, withKey ? access?.apiKey : undefined) : ""
+  const snippet = base ? (decision ? decisionExample(kind, base, model, withKey ? access?.apiKey : undefined) : example(kind, base, model, streaming, isPublic, withKey ? access?.apiKey : undefined)) : ""
 
   return <section className="model-api" aria-label="Model API access">
     <div className="model-api-cards">
@@ -191,6 +202,7 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
 
     <div className="model-api-docs">
       <h3>How to use</h3>
+      {decision ? <p className="model-hint">This model returns typed decisions. Send JSON containing state and questions as the user message; parse the assistant’s JSON content for answers and probabilities. Direct model addresses also serve POST /v1/systemone.</p> : null}
       <ol className="model-api-steps">
         <li>Turn on Local or Public access above.</li>
         <li>{withKey ? "The API key is filled into the examples below, ready to run." : <>Put the API key in the <code>YOUGORI_MODEL_API_KEY</code> environment variable of the app that calls the model, or turn on Include API key below.</>}</li>

@@ -37,7 +37,7 @@ def model_startup(count=1, files=("model.safetensors",), config=None, versions=N
     models.from_pretrained.return_value = network
     transformers = SimpleNamespace(AutoConfig=Mock(), AutoModelForCausalLM=models, AutoTokenizer=Mock())
     transformers.AutoConfig.from_pretrained.return_value = config
-    hub = SimpleNamespace(HfApi=Mock(), snapshot_download=Mock())
+    hub = SimpleNamespace(HfApi=Mock(), hf_hub_download=Mock(), snapshot_download=Mock())
     hub.HfApi.return_value.model_info.return_value = SimpleNamespace(
         sha="a" * 40, siblings=[SimpleNamespace(rfilename=name, lfs={"sha256":hashlib.sha256(b"test weights").hexdigest()}) for name in files])
     torch = SimpleNamespace(float16="float16", cuda=SimpleNamespace(
@@ -50,6 +50,9 @@ def model_startup(count=1, files=("model.safetensors",), config=None, versions=N
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(b"test weights")
         hub.snapshot_download.return_value=snapshot
+        stack.enter_context(patch.object(server, "CACHE", snapshot))
+        stack.enter_context(patch.object(server, "download_snapshot", side_effect=lambda revision, selected:
+            hub.snapshot_download(server.MODEL, revision=revision, allow_patterns=list(selected))))
         stack.enter_context(patch.dict("sys.modules", torch=torch, transformers=transformers, huggingface_hub=hub))
         stack.enter_context(patch.object(server.importlib.metadata, "version", side_effect=installed.__getitem__))
         stack.enter_context(patch.object(server.threading, "Thread"))
@@ -359,11 +362,11 @@ class ModelServerTests(unittest.TestCase):
 
     def test_custom_decision_head_is_not_silently_ignored_by_the_chat_runner(self):
         with model_startup(files=("config.json", "model.safetensors", "joint_head_config.json", "joint_head.safetensors")) as fixture, \
-             patch.object(server, "MODEL", "Cloudflare/clef"):
+             patch.object(server, "MODEL", "example/custom-decision"):
             server.load_model()
             self.assertEqual(server.STATE["status"], "error")
             self.assertIn("decision", server.STATE["error"])
-            self.assertIn("Cloudflare/clef", server.STATE["error"])
+            self.assertIn("example/custom-decision", server.STATE["error"])
             fixture.transformers.AutoConfig.from_pretrained.assert_not_called()
             fixture.transformers.AutoTokenizer.from_pretrained.assert_not_called()
             fixture.models.from_pretrained.assert_not_called()
