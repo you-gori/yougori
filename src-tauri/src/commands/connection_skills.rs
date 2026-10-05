@@ -12,7 +12,7 @@ pub async fn get_connection_skills(
     runtime: State<'_, RuntimeManager>,
     manager: State<'_, WorkspaceManager>,
 ) -> Result<String, String> {
-    let env = store.snapshot()?.environments.into_iter().find(|e| e.id == environment_id).ok_or("Environment not found")?;
+    let env = store.environment(&environment_id)?;
     if env.runtime.starts_with("shared://tunnel/") {
         let owner = crate::remote_access::request_saved(&env, "skills", serde_json::json!({})).await?.as_str().map(str::to_owned).ok_or("Invalid remote Skills response")?;
         let mut state = store.snapshot()?;

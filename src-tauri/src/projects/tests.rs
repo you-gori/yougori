@@ -96,6 +96,7 @@ async fn exercise_model(app: &AppHandle) -> Result<(), String> {
     let model = crate::model_runner::run_model(
         "hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0".into(),
         Some(port),
+        None,
         app.clone(),
     )
     .await?;

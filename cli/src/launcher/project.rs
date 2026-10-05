@@ -18,7 +18,7 @@ const BOOT: &str =
 const NODE_AUTOSTART: &str = "exec bash /yougori/launch/dev.sh";
 const HINT: &str = "yougori launch starts this project again · yougori launch --change edits settings · yougori opens the menu";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Setup {
     version: u32,
     directory: String,
@@ -418,16 +418,7 @@ async fn configure(
         network: kind.into(),
         domain,
         needs_update: old.is_some(),
-        env_files: old.is_some_and(|s| s.env_files),
-        env_reviewed: old.is_some_and(|s| s.env_reviewed),
-        custom_command: old.and_then(|s| s.custom_command.clone()),
-        command_reviewed: old.is_some_and(|s| s.command_reviewed),
-        two_way: old.is_some_and(|s| s.two_way),
-        sync_reviewed: old.is_some_and(|s| s.sync_reviewed),
-        sync_priority: old.and_then(|s| s.sync_priority),
-        continuous_sync: old.is_some_and(|s| s.continuous_sync),
-        sync_timing_reviewed: old.is_some_and(|s| s.sync_timing_reviewed),
-        accepted_command: old.and_then(|s| s.accepted_command.clone()),
+        ..old.cloned().unwrap_or_default()
     })
 }
 

@@ -81,7 +81,7 @@ pub fn core_instructions(cli: &Path) -> String { generated(cli)["SKILL.md"].clon
 
 fn reference_topic(heading: &str) -> &'static str {
     let heading = heading.to_ascii_lowercase();
-    if heading.contains("model") || heading.contains("gpu") { "models" }
+    if heading.contains("model") || heading.contains("gpu") || heading.contains("yougori network") { "models" }
     else if heading.contains("files") || heading.contains("changes") || heading.contains("transfer") { "files" }
     else if heading.contains("project") || heading.contains("compose") || heading.contains("deployment") || heading.contains("readiness") { "deployment" }
     else if heading.contains("connect") || heading.contains("cloud") { "connections" }
@@ -407,7 +407,7 @@ mod tests {
         for (topic, features) in [
             ("terminal",vec!["--guest-timeout","execution-output","--last-error"]),
             ("deployment",vec!["deployment status","ports preflight","deployment secret set"]),
-            ("gpu",vec!["model preflight"]),
+            ("gpu",vec!["model preflight", "--nowfree", "market_status"]),
             ("settings",vec!["settings patch","app startup-report"]),
             ("jobs",vec!["jobs cancel","jobs result"]),
             ("files",vec!["env cancel-transfer"]),

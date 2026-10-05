@@ -137,7 +137,8 @@ fn request_timeout(request: &Request) -> Duration {
         | "model_status"
         | "model_api_status"
         | "get_storage_allocation"
-        | "vault_summary" => guest_timeout,
+        | "vault_summary"
+        | "market_status" => guest_timeout,
         "jobs_get" => {
             Duration::from_millis(20_000 + request.params["wait"].as_u64().unwrap_or(0).min(30_000))
         }

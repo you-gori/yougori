@@ -8,7 +8,7 @@ use std::{
     io::{self, IsTerminal},
     time::{Duration, Instant},
 };
-use yougori_cli::{client, public};
+use yougori_cli::{client, network, public};
 
 const CODE: ui::Rgb = ui::Rgb(0xa5, 0xb4, 0xfc);
 
@@ -31,6 +31,8 @@ struct Options {
     neocloud: bool,
     environment: Option<String>,
     api_port: Option<u16>,
+    share_mode: Option<&'static str>,
+    quant: Option<String>,
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
@@ -41,9 +43,19 @@ fn options(args: &[String]) -> Result<Options, String> {
     let mut neocloud = false;
     let mut environment = None;
     let mut api_port = None;
+    let mut share_mode = None;
+    let mut quant = None;
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
+            flag @ ("--now" | "--nowfree") if run => {
+                if share_mode.is_some() { return Err("Use only one of --now or --nowfree".into()); }
+                share_mode = network::mode(flag);
+            }
+            "--quant" if run => {
+                i += 1;
+                quant = Some(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--quant needs a quantization such as Q4_K_M")?.clone());
+            }
             flag @ ("--cpu" | "--memory" | "--storage") if run => {
                 let number = args
                     .get(i + 1)
@@ -72,11 +84,12 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             // `npm run yougori -- model run ...` habits: a bare separator changes nothing.
             "--" => {}
-            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
+            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
         }
         i += 1;
     }
     public::validate_model_neocloud(neocloud, environment.as_deref(), change || !resources.is_empty())?;
+    if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
     Ok(Options {
         resources,
         fresh,
@@ -84,6 +97,8 @@ fn options(args: &[String]) -> Result<Options, String> {
         neocloud,
         environment,
         api_port,
+        share_mode,
+        quant,
     })
 }
 
@@ -129,6 +144,14 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             engine.done("Engine ready");
         }
     }
+    if options.share_mode.is_some() && !network::signed_in().await? {
+        ui::step("Sign in to share this model on the Yougori Network");
+        network::login(|code, address| {
+            ui::step(&format!("Approve code {} in your browser", clean(code)));
+            ui::line(&clean(address));
+        }).await?;
+        ui::step("Signed in; the desktop app shares this account");
+    }
     let (id, name) = if chat_only {
         let id = public::resolve(target).await?;
         let state = call("get_platform_state", json!({})).await?;
@@ -164,16 +187,20 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             return Ok(0);
         };
         let starting = ui::task(&format!("Starting {} on {}", short(target), clean(env["name"].as_str().unwrap_or("RunPod"))));
-        let result = call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":options.api_port})).await?;
+        let mut result = call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":options.api_port})).await?;
         starting.done("Model started in Neocloud");
         if options.api_port.is_some() {
+            if let Some(mode) = options.share_mode {
+                let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
+                result["network"] = network::share(&id, mode).await?;
+            }
             ui::outro("API configured; model weights may still be loading");
             // Keys are explicitly requested with --api, as with the scripted local runner.
             println!("{}", serde_json::to_string_pretty(&result).map_err(|e|e.to_string())?);
             return Ok(0);
         }
         (result["id"].as_str().ok_or("Model environment missing")?.to_owned(), short(target))
-    } else if let Some(env) = public::find_model(target).await? {
+    } else if let Some(env) = public::find_model(target).await?.filter(|_| options.quant.is_none()) {
         // One environment per model: start the one that already has it.
         let name = clean(env["name"].as_str().unwrap_or(""));
         let running = env["status"] == "running";
@@ -216,7 +243,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         creating.detail("a GPU container with PyTorch; the first run downloads it");
         let result = call(
             "run_model",
-            json!({"model":target,"resources":options.resources}),
+            json!({"model":target,"resources":options.resources,"quant":options.quant}),
         )
         .await?;
         let id = result["id"]
@@ -226,6 +253,12 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         creating.done(&format!("Created {}", clean(result["name"].as_str().unwrap_or(&id))));
         (id, short(target))
     };
+    if let Some(mode) = options.share_mode {
+        match network::share(&id, mode).await {
+            Ok(share) => ui::step(&clean(&network::summary(&share))),
+            Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
+        }
+    }
     session(&id, &name, options.fresh).await?;
     Ok(0)
 }
@@ -254,6 +287,11 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
     let exit = match wait_ready(id, name).await? {
         Err(exit) => exit,
         Ok(status) => {
+            match network::settled(id, Duration::from_secs(45)).await {
+                Ok(Some(share)) => ui::step(&clean(&network::summary(&share))),
+                Err(error) => ui::warn(&clean(&error)),
+                _ => {}
+            }
             ui::dash(|d| {
                 d.status(ui::Tone::Good, "ready");
                 d.keys(vec![
@@ -705,18 +743,8 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
     let mut store = call("model_chat_history", json!({"environmentId":id}))
         .await
         .unwrap_or(Value::Null);
-    if !store["conversations"].is_array() {
-        store = json!({"conversations":[],"activeId":null,"settings":{"system":"","temperature":0.7,"maxTokens":1024}});
-    }
-    let limit = (if status["stream"] == true { 4096 } else { 2048 })
-        .min(status["context"].as_u64().map_or(4096, |c| c / 2));
-    let settings = store["settings"].clone();
-    let max_tokens = settings["maxTokens"]
-        .as_u64()
-        .unwrap_or(1024)
-        .clamp(1, limit.max(1));
-    let temperature = settings["temperature"].as_f64().unwrap_or(0.7);
-    let system = settings["system"].as_str().unwrap_or("").to_owned();
+    store = public::chat_history_or_default(store);
+    let (max_tokens, temperature, system) = public::chat_settings(&store, status);
     let active = store["conversations"]
         .as_array()
         .and_then(|list| list.iter().position(|c| c["id"] == store["activeId"]));
@@ -1109,6 +1137,13 @@ mod tests {
         assert!(options(&args("model run hf.co/a/b --environment gpu-pod")).is_err());
         assert!(options(&args("model run hf.co/a/b --neocloud --port 0")).is_err());
         assert!(options(&args("model chat env --neocloud")).is_err());
+        let shared = options(&args("model run hf.co/a/b --nowfree --quant Q8_0")).unwrap();
+        assert_eq!(shared.share_mode, Some("free"));
+        assert_eq!(shared.quant.as_deref(), Some("Q8_0"));
+        assert!(options(&args("model run hf.co/a/b --now --nowfree")).is_err());
+        assert!(options(&args("model run hf.co/a/b --quant")).is_err());
+        assert!(options(&args("model run hf.co/a/b --neocloud --quant Q8_0")).is_err());
+        assert!(options(&args("model chat env --now")).is_err());
         assert_eq!(short("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"), "TinyLlama-1.1B-Chat-v1.0");
         assert_eq!(short("model-env"), "model-env");
     }

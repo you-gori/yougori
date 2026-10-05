@@ -472,12 +472,7 @@ pub(crate) async fn export_backup(
     let lock = crate::commands::environment_network_lock(&environment_id).await;
     let _guard = lock.lock().await;
     crate::commands::factory_reset::ensure_complete(&store.snapshot()?, &environment_id)?;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     supported(&environment)?;
     if environment.status != EnvironmentStatus::Stopped {
         return Err("Stop the environment before creating a consistent local backup".into());

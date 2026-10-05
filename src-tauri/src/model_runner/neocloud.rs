@@ -4,6 +4,8 @@ pub(crate) async fn run_neocloud_model(model: String, environment_id: String, po
     let model = normalize_model(&model)?;
     let compatibility=super::preflight::preflight(&model).await?;
     if compatibility["supported"]!=true{return Err(compatibility["reason"].as_str().unwrap_or("Unsupported model runner").into())}
+    // The pinned llama.cpp build needs a newer C library than RunPod's PyTorch images provide.
+    if compatibility["runner"]=="yougori-llama-cpp"{return Err("GGUF models run on this computer's GPU for now. Choose a safetensors repository for a Neocloud pod.".into())}
     if port == Some(0) { return Err("Invalid API port".into()); }
     let store = app.state::<PlatformStore>();
     let runtime = app.state::<RuntimeManager>();

@@ -278,6 +278,40 @@ fn forget_applied_resource_limits(id: &str) {
         .remove(id);
 }
 
+async fn update_non_container_resource_limits(
+    runtime: &RuntimeManager,
+    environment: &Environment,
+    cpu: f64,
+    memory_gb: f64,
+) -> Result<(), String> {
+    match provider(environment) {
+        RuntimeProviderKind::Qemu => {
+            runtime.update_vm_resources(runtime_id(environment), cpu, memory_gb).await
+        }
+        RuntimeProviderKind::NativeSandbox => {
+            runtime.update_native_sandbox_resources(runtime_id(environment), cpu, memory_gb).await
+        }
+        // Cloud resources are external; containers use their provider pool allocation.
+        RuntimeProviderKind::CloudSsh | RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => Ok(()),
+    }
+}
+
+async fn apply_scheduled_resource_limits(
+    runtime: &RuntimeManager,
+    environment: &Environment,
+) -> Result<(), String> {
+    let id = runtime_id(environment);
+    let cpu = environment.resource_policy.cpu.current;
+    let memory_gb = environment.resource_policy.memory_gb.current;
+    if provider(environment).is_container() {
+        runtime.update_container_resources(id, cpu, memory_gb).await?;
+    } else {
+        update_non_container_resource_limits(runtime, environment, cpu, memory_gb).await?;
+    }
+    record_applied_resource_limits(id, cpu, memory_gb);
+    Ok(())
+}
+
 fn storage_refresh_due() -> bool {
     let refresh = LAST_STORAGE_REFRESH.get_or_init(|| Mutex::new(None));
     let mut refresh = refresh
@@ -1034,12 +1068,7 @@ pub async fn open_environment_window(
     store: State<'_, PlatformStore>,
 ) -> Result<bool, String> {
     let (label, location) = environment_window_parts(&environment_id)?;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     if environment.kind == EnvironmentKind::ComputerBranch
         || provider(&environment) == RuntimeProviderKind::NativeSandbox
     {
@@ -1417,7 +1446,7 @@ pub async fn set_environment_status(
     ) {
         return Err("Provisioning and error states are controlled by the runtime".into());
     }
-    let guarded = store.snapshot()?.environments.into_iter().find(|environment| environment.id == environment_id).ok_or("Environment not found")?;
+    let guarded = store.environment(&environment_id)?;
     let _container_serial = environment_container_policy_guard(&runtime, &guarded).await?;
     let current_state = store.snapshot()?;
     if status == EnvironmentStatus::Running && current_state.pending_factory_resets.iter().any(|p| p.environment.id == environment_id) {
@@ -1907,15 +1936,10 @@ pub async fn update_resource_policy(
     runtime: State<'_, RuntimeManager>,
 ) -> Result<PlatformState, String> {
     resource_policy.dynamic = true;
-    let guarded = store.snapshot()?.environments.into_iter().find(|environment| environment.id == environment_id).ok_or("Environment not found")?;
+    let guarded = store.environment(&environment_id)?;
     let _container_serial = environment_container_policy_guard(&runtime, &guarded).await?;
     validate_policy(&resource_policy)?;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     // `current` is runtime-owned telemetry/allocation state, not a client-settable
     if environment.kind == EnvironmentKind::Cloud { return Err("Cloud resources are managed outside Yougori".into()); }
     // policy field. Preserve it until the scheduler computes the next allocation.
@@ -1970,48 +1994,14 @@ pub async fn update_resource_policy(
             // `prepare_container_start` already applied the newly scheduled provider-local
             // allocation to every running container without transiently exceeding the guest.
             RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => Ok(()),
-            RuntimeProviderKind::Qemu => {
-                runtime
-                    .update_vm_resources(
-                        runtime_id(&environment),
-                        resource_policy.cpu.preferred,
-                        resource_policy.memory_gb.preferred,
-                    )
-                    .await
-            }
-            RuntimeProviderKind::NativeSandbox => {
-                runtime
-                    .update_native_sandbox_resources(
-                        runtime_id(&environment),
-                        resource_policy.cpu.preferred,
-                        resource_policy.memory_gb.preferred,
-                    )
-                    .await
-            }
+            _ => update_non_container_resource_limits(
+                &runtime, &environment, resource_policy.cpu.preferred, resource_policy.memory_gb.preferred,
+            ).await,
         };
         if let Err(error) = update {
-            let rollback = match provider(&environment) {
-                RuntimeProviderKind::CloudSsh => Ok(()),
-                RuntimeProviderKind::Qemu => {
-                    runtime
-                        .update_vm_resources(
-                            runtime_id(&environment),
-                            environment.resource_policy.cpu.preferred,
-                            environment.resource_policy.memory_gb.preferred,
-                        )
-                        .await
-                }
-                RuntimeProviderKind::NativeSandbox => {
-                    runtime
-                        .update_native_sandbox_resources(
-                            runtime_id(&environment),
-                            environment.resource_policy.cpu.preferred,
-                            environment.resource_policy.memory_gb.preferred,
-                        )
-                        .await
-                }
-                RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => Ok(()),
-            };
+            let rollback = update_non_container_resource_limits(
+                &runtime, &environment, environment.resource_policy.cpu.preferred, environment.resource_policy.memory_gb.preferred,
+            ).await;
             return Err(match rollback {
                 Ok(()) => error,
                 Err(rollback) => format!(
@@ -2052,28 +2042,9 @@ pub async fn update_resource_policy(
                 errors.push(error);
             }
             if live_resources_changed {
-                let rollback = match provider(&environment) {
-                    RuntimeProviderKind::CloudSsh => Ok(()),
-                    RuntimeProviderKind::Qemu => {
-                        runtime
-                            .update_vm_resources(
-                                runtime_id(&environment),
-                                environment.resource_policy.cpu.preferred,
-                                environment.resource_policy.memory_gb.preferred,
-                            )
-                            .await
-                    }
-                    RuntimeProviderKind::NativeSandbox => {
-                        runtime
-                            .update_native_sandbox_resources(
-                                runtime_id(&environment),
-                                environment.resource_policy.cpu.preferred,
-                                environment.resource_policy.memory_gb.preferred,
-                            )
-                            .await
-                    }
-                    RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => Ok(()),
-                };
+                let rollback = update_non_container_resource_limits(
+                    &runtime, &environment, environment.resource_policy.cpu.preferred, environment.resource_policy.memory_gb.preferred,
+                ).await;
                 if let Err(error) = rollback {
                     errors.push(format!(
                         "restoring the previous resource limits failed: {error}"
@@ -2094,14 +2065,9 @@ pub async fn update_container_network(
 ) -> Result<PlatformState, String> {
     let network_lock = environment_network_lock(&environment_id).await;
     let _network_serial = network_lock.lock().await;
-    let guarded = store.snapshot()?.environments.into_iter().find(|environment| environment.id == environment_id).ok_or("Environment not found")?;
+    let guarded = store.environment(&environment_id)?;
     let _container_serial = environment_container_policy_guard(&runtime, &guarded).await?;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     let container = provider(&environment).is_container() && environment.kind == EnvironmentKind::Container;
     let vm = provider(&environment) == RuntimeProviderKind::Qemu && matches!(environment.kind, EnvironmentKind::FullVm | EnvironmentKind::MicroVm);
     if !container && !vm {
@@ -2165,14 +2131,9 @@ pub async fn update_environment_gpu(
 ) -> Result<PlatformState, String> {
     let lock = environment_network_lock(&environment_id).await;
     let _environment_guard = lock.lock().await;
-    let guarded = store.snapshot()?.environments.into_iter().find(|environment| environment.id == environment_id).ok_or("Environment not found")?;
+    let guarded = store.environment(&environment_id)?;
     let _pool_guard = environment_container_policy_guard(&runtime, &guarded).await?;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     if environment.status != EnvironmentStatus::Stopped {
         return Err("Stop the environment before changing shared GPU access".into());
     }
@@ -2250,8 +2211,7 @@ pub async fn list_environment_folders(
         || path.split('/').any(|part| part == "..") {
         return Err("Choose an absolute folder path inside the environment".into());
     }
-    let environment = store.snapshot()?.environments.into_iter()
-        .find(|env| env.id == environment_id).ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     if environment.status != EnvironmentStatus::Running {
         return Err("Start or connect this environment to browse its folders".into());
     }
@@ -2694,6 +2654,24 @@ pub async fn delete_connection(
     persisted
 }
 
+fn snapshot_environment_state(
+    environment: &Environment,
+    provider: Option<RuntimeProviderKind>,
+) -> SnapshotEnvironmentState {
+    SnapshotEnvironmentState {
+        runtime: environment.runtime.clone(),
+        provider,
+        runtime_path: environment.runtime_path.clone(),
+        container_command: environment.container_command.clone(),
+        network_access: environment.network_access,
+        gpu_access: environment.gpu_access,
+        description: environment.description.clone(),
+        branch_type: environment.branch_type.clone(),
+        resource_policy: environment.resource_policy.clone(),
+        sandbox_policy: environment.sandbox_policy.clone(),
+    }
+}
+
 #[tauri::command]
 pub async fn create_snapshot(
     environment_id: String,
@@ -2772,18 +2750,7 @@ pub async fn create_snapshot(
         artifact_path,
         artifact_size_bytes: Some(size_bytes),
         checksum_sha256: checksum,
-        environment_state: Some(SnapshotEnvironmentState {
-            runtime: environment.runtime.clone(),
-            provider: Some(provider(&environment)),
-            runtime_path: environment.runtime_path.clone(),
-            container_command: environment.container_command.clone(),
-            network_access: environment.network_access,
-            gpu_access: environment.gpu_access,
-            description: environment.description.clone(),
-            branch_type: environment.branch_type.clone(),
-            resource_policy: environment.resource_policy.clone(),
-            sandbox_policy: environment.sandbox_policy.clone(),
-        }),
+        environment_state: Some(snapshot_environment_state(&environment, Some(provider(&environment)))),
         connections: Some(connections),
     };
     if let Err(error) = store.mutate(|state| {
@@ -3240,18 +3207,7 @@ pub async fn run_backup(
         artifact_path,
         artifact_size_bytes: Some(size_bytes),
         checksum_sha256: checksum,
-        environment_state: Some(SnapshotEnvironmentState {
-            runtime: environment.runtime.clone(),
-            provider: Some(provider(&environment)),
-            runtime_path: environment.runtime_path.clone(),
-            container_command: environment.container_command.clone(),
-            network_access: environment.network_access,
-            gpu_access: environment.gpu_access,
-            description: environment.description.clone(),
-            branch_type: environment.branch_type.clone(),
-            resource_policy: environment.resource_policy.clone(),
-            sandbox_policy: environment.sandbox_policy.clone(),
-        }),
+        environment_state: Some(snapshot_environment_state(&environment, Some(provider(&environment)))),
         connections: Some(connections.clone()),
     };
     let started_at = now();
@@ -3613,18 +3569,7 @@ pub(crate) async fn install_restored_backup(
     snapshot.artifact_path = Some(artifact_path.to_string_lossy().into_owned());
     snapshot.artifact_size_bytes = Some(artifact_size);
     snapshot.checksum_sha256 = checksum;
-    snapshot.environment_state = Some(SnapshotEnvironmentState {
-        runtime: environment.runtime.clone(),
-        provider: environment.provider.clone(),
-        runtime_path: environment.runtime_path.clone(),
-        container_command: environment.container_command.clone(),
-        network_access: environment.network_access,
-        gpu_access: environment.gpu_access,
-        description: environment.description.clone(),
-        branch_type: environment.branch_type.clone(),
-        resource_policy: environment.resource_policy.clone(),
-        sandbox_policy: environment.sandbox_policy.clone(),
-    });
+    snapshot.environment_state = Some(snapshot_environment_state(&environment, environment.provider.clone()));
 
     let environment_id = environment.id.clone();
     let snapshot_id = snapshot.id.clone();
@@ -3923,20 +3868,7 @@ pub async fn refresh_host_metrics(
             )
         {
             let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) else { continue; };
-            let result = runtime
-                .update_container_resources(
-                    runtime_id(environment),
-                    environment.resource_policy.cpu.current,
-                    environment.resource_policy.memory_gb.current,
-                )
-                .await;
-            if result.is_ok() {
-                record_applied_resource_limits(
-                    runtime_id(environment),
-                    environment.resource_policy.cpu.current,
-                    environment.resource_policy.memory_gb.current,
-                );
-            }
+            let result = apply_scheduled_resource_limits(&runtime, environment).await;
             refresh.last_error = Some(result.err());
         }
         refresh.stats = Some((
@@ -4027,20 +3959,7 @@ pub async fn refresh_host_metrics(
                 environment.resource_policy.memory_gb.current,
             ) {
             let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) else { continue; };
-            let result = runtime
-                .update_native_sandbox_resources(
-                    runtime_id(environment),
-                    environment.resource_policy.cpu.current,
-                    environment.resource_policy.memory_gb.current,
-                )
-                .await;
-            if result.is_ok() {
-                record_applied_resource_limits(
-                    runtime_id(environment),
-                    environment.resource_policy.cpu.current,
-                    environment.resource_policy.memory_gb.current,
-                );
-            }
+            let result = apply_scheduled_resource_limits(&runtime, environment).await;
             result
         } else {
             Ok(())
@@ -4123,20 +4042,7 @@ pub async fn refresh_host_metrics(
             continue;
         }
         let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) else { continue; };
-        let result = runtime
-            .update_vm_resources(
-                runtime_id(environment),
-                environment.resource_policy.cpu.current,
-                environment.resource_policy.memory_gb.current,
-            )
-            .await;
-        if result.is_ok() {
-            record_applied_resource_limits(
-                runtime_id(environment),
-                environment.resource_policy.cpu.current,
-                environment.resource_policy.memory_gb.current,
-            );
-        }
+        let result = apply_scheduled_resource_limits(&runtime, environment).await;
         let id = environment.id.clone();
         store.mutate_ephemeral(|state| {
             if let Some(item) = state
@@ -4186,12 +4092,7 @@ pub async fn get_guest_session(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<GuestSession, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     if environment.status != EnvironmentStatus::Running {
         return Err("Start the environment before opening it".into());
     }
@@ -4250,12 +4151,7 @@ pub async fn read_environment_console(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<String, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     if environment.kind != EnvironmentKind::MicroVm
         || provider(&environment) != RuntimeProviderKind::Qemu
     {
@@ -4301,12 +4197,7 @@ pub async fn execute_environment_command(
     if command.is_empty() || command.len() > 32 * 1024 {
         return Err("Command must be between 1 and 32768 characters".into());
     }
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == request.environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&request.environment_id)?;
     if environment.status != EnvironmentStatus::Running {
         return Err("The environment is not running".into());
     }

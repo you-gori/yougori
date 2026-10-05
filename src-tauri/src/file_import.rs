@@ -506,12 +506,7 @@ pub fn list_imported_drives(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<Vec<crate::runtime::ImportedDrive>, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|env| env.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     runtime.imported_drives(&environment)
 }
 
@@ -541,12 +536,7 @@ pub(crate) async fn set_drive_attached(
     let _guard = lock
         .try_lock()
         .map_err(|_| "This environment is busy. Wait for its current action to finish.")?;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|env| env.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     runtime
         .set_import_drive_attached(&environment, transfer_id, attached)
         .await

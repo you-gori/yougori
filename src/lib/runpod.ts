@@ -1,7 +1,5 @@
 import type { RunpodGpu } from "@/api/runpod-api"
 
-export const selectClass = "h-9 w-full rounded-md border bg-background px-2 text-sm"
-
 export const validName = (name: string) => /^[A-Za-z0-9_-]{2,40}$/.test(name)
 /** A name RunPod and Yougori both accept, made from readable parts. */
 export function suggestName(parts: string[], taken: string[]): string {

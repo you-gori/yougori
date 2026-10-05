@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::models::PlatformState;
+use crate::models::{Environment, PlatformState};
 
 pub struct PlatformStore {
     path: PathBuf,
@@ -81,6 +81,17 @@ impl PlatformStore {
             .lock()
             .map(|state| state.clone())
             .map_err(|_| "Platform state is unavailable".to_string())
+    }
+
+    pub fn environment(&self, id: &str) -> Result<Environment, String> {
+        self.state
+            .lock()
+            .map_err(|_| "Platform state is unavailable".to_string())?
+            .environments
+            .iter()
+            .find(|environment| environment.id == id)
+            .cloned()
+            .ok_or_else(|| "Environment not found".into())
     }
 
     pub fn replace(&self, mut state: PlatformState) -> Result<PlatformState, String> {

@@ -170,6 +170,104 @@ fn comma(value: String) -> Value {
     )
 }
 
+/// Commands that only map a verb and an optional positional target to an engine method.
+/// Keep request construction and validation in `parse` for commands that need them.
+fn route(group: &str, action: &str) -> Result<(&'static str, Option<&'static str>), String> {
+    Ok(match (group, action) {
+        ("app", "status") => ("app_status", None),
+        ("app", "show") => ("app_show", None),
+        ("app", "quit") => ("app_quit", None),
+        ("env" | "environment", "open") => ("open_environment_window", Some("environmentId")),
+        ("env" | "environment", "restart") => ("restart_environment", Some("environmentId")),
+        ("env" | "environment", "delete") => ("delete_environment", Some("environmentId")),
+        ("env" | "environment", "reset") => ("factory_reset_environment", Some("environmentId")),
+        ("env" | "environment", "internet") => ("update_container_network", Some("environmentId")),
+        ("env" | "environment", "gpu") => ("update_environment_gpu", Some("environmentId")),
+        ("env" | "environment", "console") => ("read_environment_console", Some("environmentId")),
+        ("connection", "delete") => ("delete_connection", Some("connectionId")),
+        ("remote", "create") => ("create_remote_share", None),
+        ("remote", "connect") => ("connect_remote_share", None),
+        ("remote", "list") => ("list_remote_shares", None),
+        ("remote", "start") => ("start_remote_tunnel", None),
+        ("remote", "stop") => ("stop_remote_tunnel", None),
+        ("remote", "remove") => ("remove_remote_share", Some("shareId")),
+        ("download", "list") => ("list_environment_downloads", None),
+        ("download", "off") => ("stop_environment_download", Some("environmentId")),
+        ("share", "remove") => ("detach_host_folder", Some("shareId")),
+        ("ports", "list") => ("list_environment_services", Some("environmentId")),
+        ("ports", "publish") => ("publish_environment_service", Some("environmentId")),
+        ("ports", "unpublish") => ("unpublish_environment_service", Some("publicationId")),
+        ("lan", "share") => ("create_environment_share", Some("environmentId")),
+        ("lan", "list") => ("list_environment_shares", None),
+        ("lan", "revoke") => ("revoke_environment_share", Some("shareId")),
+        ("lan", "import") => ("import_environment_share", None),
+        ("project", "list") => ("discover_projects", None),
+        ("project", "inspect") => ("inspect_project", Some("path")),
+        ("agent", "setup") => ("set_up_agent_access", None),
+        ("env" | "environment", "install-skills") => ("install_environment_skills", Some("environmentId")),
+        ("cloud", "test") => ("test_cloud_connection", None),
+        ("cloud", "add") => ("add_cloud_environment", None),
+        ("cloud", "configure") => ("configure_cloud_environment", Some("environmentId")),
+        ("cloud", "show") => ("get_cloud_connection", Some("environmentId")),
+        ("cloud", "auth") => ("cloud_authenticate", None),
+        ("cloud", "options") => ("cloud_options", Some("kind")),
+        ("cloud", "deploy") => ("deploy_cloud_environment", None),
+        ("cloud", "power") => ("cloud_deployment_action", Some("environmentId")),
+        ("cloud", "delete") => ("delete_cloud_deployment", Some("environmentId")),
+        ("neocloud", "providers") => ("neocloud_providers", None),
+        ("neocloud", "discover") => ("neocloud_discover", None),
+        ("neocloud", "catalog") => ("neocloud_catalog", None),
+        ("neocloud", "install") => ("neocloud_install", None),
+        ("neocloud", "account") => ("neocloud_account", None),
+        ("neocloud", "login") => ("neocloud_authenticate", None),
+        ("neocloud", "forget-account") => ("neocloud_forget_account", None),
+        ("neocloud", "prices" | "compare") => ("neocloud_prices", None),
+        ("neocloud", "plan") => ("neocloud_plan", None),
+        ("neocloud", "create") => ("create_neocloud_environment", None),
+        ("neocloud", "recover") => ("neocloud_recover_id", Some("environmentId")),
+        ("drives", "list") => ("list_imported_drives", Some("environmentId")),
+        ("storage", "reclaim") => ("reclaim_storage", None),
+        ("env" | "environment", "startup") => ("update_container_startup_command", Some("environmentId")),
+        ("domain", "list") => ("list_saved_domains", None),
+        ("domain", "remember") => ("remember_saved_domain", Some("environmentId")),
+        ("domain", "remove") => ("remove_saved_domain", Some("domain")),
+        ("snapshot", "create") => ("create_snapshot", Some("environmentId")),
+        ("snapshot", "restore") => ("restore_snapshot", Some("snapshotId")),
+        ("snapshot", "delete") => ("delete_snapshot", Some("snapshotId")),
+        ("backup", "add-destination") => ("add_backup_destination", None),
+        ("backup", "delete-destination") => ("delete_backup_destination", Some("destinationId")),
+        ("backup", "run") => ("run_backup", Some("environmentId")),
+        ("backup", "restore") => ("restore_backup", Some("backupId")),
+        ("backup", "export") => ("export_local_backup", Some("environmentId")),
+        ("backup", "import") => ("import_local_backup", Some("path")),
+        ("settings", "set") => ("update_settings", None),
+        ("settings", "patch") => ("patch_settings", None),
+        ("app", "startup-report") => ("get_startup_report", None),
+        ("env" | "environment", "execution-output") => ("guest_execution_output", Some("environmentId")),
+        ("env" | "environment", "cancel-execution") => ("cancel_guest_execution", Some("environmentId")),
+        ("env" | "environment", "release-execution") => ("release_guest_execution", Some("environmentId")),
+        ("ports", "preflight") => ("publication_preflight", Some("environmentId")),
+        ("share", "credentials") => ("host_share_credentials", Some("shareId")),
+        ("gpu", "status") => ("get_cuda_runtime_status", None),
+        ("gpu", "setup") => ("install_cuda_runtime", None),
+        ("gpu", "test") => ("verify_environment_cuda", Some("environmentId")),
+        ("terminal", "install") => ("install_terminal_tool", Some("environmentId")),
+        ("microvm", "apps") => ("micro_vm_apps", Some("environmentId")),
+        ("microvm", "open") => ("open_micro_vm_app_window", Some("environmentId")),
+        ("window", "list") => ("list_environment_windows", None),
+        ("window", "focus") => ("focus_environment_window", Some("label")),
+        ("window", "close") => ("close_environment_window", Some("label")),
+        ("window", "title") => ("title_environment_window", Some("label")),
+        ("window", "capture") => ("set_guest_keyboard_capture", Some("label")),
+        ("jobs", "list") => ("jobs_list", None),
+        ("jobs", "get" | "wait") => ("jobs_get", Some("jobId")),
+        ("jobs", "cancel") => ("jobs_cancel", Some("jobId")),
+        ("jobs", "result") => ("jobs_result", Some("jobId")),
+        ("env" | "environment", "cancel-transfer") => ("cancel_file_transfer", Some("environmentId")),
+        _ => return Err(format!("Unknown command '{group} {action}'. Run yougori help.")),
+    })
+}
+
 pub fn parse(
     args: &[String],
     read_json: impl Fn(&str) -> Result<Value, String>,
@@ -237,14 +335,20 @@ pub fn parse(
     let mut markdown = false;
     let mut positional = None;
     let method = match (group, action) {
-        ("call", name) if !name.is_empty() => name,
-        ("app", "status") => "app_status",
-        ("app", "show") => "app_show",
-        ("app", "quit") => "app_quit",
-        ("env" | "environment", "list") => {
-            select = Some(("environments".into(), None));
+        ("env" | "environment" | "connection" | "neocloud" | "snapshot" | "backup", "list")
+        | ("backup", "destinations") => {
+            let collection = match (group, action) {
+                ("env" | "environment", _) => "environments",
+                ("connection", _) => "connections",
+                ("neocloud", _) => "neocloudDeployments",
+                ("snapshot", _) => "snapshots",
+                ("backup", "destinations") => "destinations",
+                _ => "backupRuns",
+            };
+            select = Some((collection.into(), None));
             "get_platform_state"
         }
+        ("call", name) if !name.is_empty() => name,
         ("env" | "environment", "show") => {
             select = Some((
                 "environments".into(),
@@ -321,22 +425,6 @@ pub fn parse(
             )?;
             "set_environment_status"
         }
-        ("env" | "environment", "open") => {
-            positional = Some("environmentId");
-            "open_environment_window"
-        }
-        ("env" | "environment", "restart") => {
-            positional = Some("environmentId");
-            "restart_environment"
-        }
-        ("env" | "environment", "delete") => {
-            positional = Some("environmentId");
-            "delete_environment"
-        }
-        ("env" | "environment", "reset") => {
-            positional = Some("environmentId");
-            "factory_reset_environment"
-        }
         ("env" | "environment", "recover") => {
             positional = Some("environmentId");
             params.insert("confirmed".into(), json!(confirmed));
@@ -371,14 +459,6 @@ pub fn parse(
                 "get_storage_allocation"
             }
         }
-        ("env" | "environment", "internet") => {
-            positional = Some("environmentId");
-            "update_container_network"
-        }
-        ("env" | "environment", "gpu") => {
-            positional = Some("environmentId");
-            "update_environment_gpu"
-        }
         ("env" | "environment", "exec") => {
             if params.is_empty() {
                 params.insert("request".into(),json!({"environmentId":words.get(2).ok_or("An environment ID is required")?,"command":required(&mut flags,"command")?}));
@@ -390,18 +470,10 @@ pub fn parse(
             }
             "execute_environment_command"
         }
-        ("env" | "environment", "console") => {
-            positional = Some("environmentId");
-            "read_environment_console"
-        }
         ("env" | "environment", "skills") => {
             positional = Some("environmentId");
             markdown = true;
             "get_connection_skills"
-        }
-        ("connection", "list") => {
-            select = Some(("connections".into(), None));
-            "get_platform_state"
         }
         ("connection", "create") => {
             if params.is_empty() {
@@ -438,21 +510,11 @@ pub fn parse(
             set_explicit(&mut params, "active", json!(action == "enable"))?;
             "set_connection_active"
         }
-        ("connection", "delete") => {
-            positional = Some("connectionId");
-            "delete_connection"
-        }
-        ("remote", "create") => "create_remote_share",
-        ("remote", "connect") => "connect_remote_share",
-        ("remote", "list") => "list_remote_shares",
-        ("remote", "start") => "start_remote_tunnel",
-        ("remote", "stop") => "stop_remote_tunnel",
         ("remote", "update" | "revoke" | "disconnect") => {
             positional = Some("shareId");
             set_explicit(&mut params,"revoke",json!(action=="revoke"))?;
             "update_remote_share"
         }
-        ("remote", "remove") => { positional = Some("shareId"); "remove_remote_share" }
         ("remote", "download") => { positional=Some("environmentId");params.entry("path").or_insert(json!(""));"download_remote_folder" }
         ("remote", "files" | "inspect") => {
             positional = Some("environmentId");
@@ -465,103 +527,28 @@ pub fn parse(
             select = Some(("shares".into(), None));
             "list_environment_services"
         }
-        ("download", "list") => "list_environment_downloads",
-        ("download", "off") => { positional = Some("environmentId"); "stop_environment_download" }
         ("share", "add") => {
             positional = Some("environmentId");
             params.entry("readOnly").or_insert(json!(true));
             "attach_host_folder"
-        }
-        ("share", "remove") => {
-            positional = Some("shareId");
-            "detach_host_folder"
-        }
-        ("ports", "list") => {
-            positional = Some("environmentId");
-            "list_environment_services"
         }
         ("ports", "add" | "remove") => {
             positional = Some("environmentId");
             set_explicit(&mut params, "present", json!(action == "add"))?;
             "set_manual_service_port"
         }
-        ("ports", "publish") => {
-            positional = Some("environmentId");
-            "publish_environment_service"
-        }
-        ("ports", "unpublish") => {
-            positional = Some("publicationId");
-            "unpublish_environment_service"
-        }
         // Pinned-TLS sharing of one environment on the local network or VPN.
-        ("lan", "share") => {
-            positional = Some("environmentId");
-            "create_environment_share"
-        }
-        ("lan", "list") => "list_environment_shares",
-        ("lan", "revoke") => {
-            positional = Some("shareId");
-            "revoke_environment_share"
-        }
-        ("lan", "import") => "import_environment_share",
-        ("project", "list") => "discover_projects",
-        ("project", "inspect") => {
-            positional = Some("path");
-            "inspect_project"
-        }
-        ("agent", "setup") => "set_up_agent_access",
-        ("env" | "environment", "install-skills") => {
-            positional = Some("environmentId");
-            "install_environment_skills"
-        }
         // Existing SSH servers and provider VMs. Requests with credentials come from --file.
         ("cloud", "scan") => {
             positional = Some("host");
             params.entry("port").or_insert(json!(22));
             "scan_cloud_host"
         }
-        ("cloud", "test") => "test_cloud_connection",
-        ("cloud", "add") => "add_cloud_environment",
-        ("cloud", "configure") => {
-            positional = Some("environmentId");
-            "configure_cloud_environment"
-        }
         ("cloud", "connect" | "disconnect") => {
             positional = Some("environmentId");
             set_explicit(&mut params, "status", json!(if action == "connect" { "running" } else { "stopped" }))?;
             "set_environment_status"
         }
-        ("cloud", "show") => {
-            positional = Some("environmentId");
-            "get_cloud_connection"
-        }
-        ("cloud", "auth") => "cloud_authenticate",
-        ("cloud", "options") => {
-            positional = Some("kind");
-            "cloud_options"
-        }
-        ("cloud", "deploy") => "deploy_cloud_environment",
-        ("cloud", "power") => {
-            positional = Some("environmentId");
-            "cloud_deployment_action"
-        }
-        ("cloud", "delete") => {
-            positional = Some("environmentId");
-            "delete_cloud_deployment"
-        }
-        ("neocloud", "providers") => "neocloud_providers",
-        ("neocloud", "list") => {
-            select = Some(("neocloudDeployments".into(), None));
-            "get_platform_state"
-        }
-        ("neocloud", "discover") => "neocloud_discover",
-        ("neocloud", "catalog") => "neocloud_catalog",
-        ("neocloud", "install") => "neocloud_install",
-        ("neocloud", "account") => "neocloud_account",
-        ("neocloud", "login") => "neocloud_authenticate",
-        ("neocloud", "forget-account") => "neocloud_forget_account",
-        ("neocloud", "prices" | "compare") => "neocloud_prices",
-        ("neocloud", "plan") => "neocloud_plan",
         ("neocloud", "quote") => {
             if !flags.get("provider").is_some_and(|value| !value.trim().is_empty())
                 || !flags.get("offer").is_some_and(|value| !value.trim().is_empty()) {
@@ -569,19 +556,10 @@ pub fn parse(
             }
             "neocloud_prices"
         }
-        ("neocloud", "create") => "create_neocloud_environment",
         ("neocloud", "inspect" | "start" | "stop" | "delete") => {
             positional = Some("environmentId");
             set_explicit(&mut params, "action", json!(action))?;
             "neocloud_action"
-        }
-        ("neocloud", "recover") => {
-            positional = Some("environmentId");
-            "neocloud_recover_id"
-        }
-        ("drives", "list") => {
-            positional = Some("environmentId");
-            "list_imported_drives"
         }
         ("drives", "attach" | "detach") => {
             positional = Some("environmentId");
@@ -596,14 +574,8 @@ pub fn parse(
                 "get_storage_location"
             }
         }
-        ("storage", "reclaim") => "reclaim_storage",
-        ("env" | "environment", "startup") => {
-            positional = Some("environmentId");
-            "update_container_startup_command"
-        }
-        ("domain", "list") => "list_saved_domains",
-        ("domain", "add") => {
-            positional = Some("hostname");
+        ("domain", "add" | "edit") => {
+            positional = Some(if action == "add" { "hostname" } else { "domain" });
             for (alias, key) in [("tunnel-port", "host-port"), ("app-port", "port")] {
                 if let Some(value) = flags.remove(alias) {
                     if flags.insert(key.into(), value).is_some() {
@@ -611,136 +583,22 @@ pub fn parse(
                     }
                 }
             }
-            "add_saved_domain"
+            if action == "add" { "add_saved_domain" } else { "update_saved_domain" }
         }
-        ("domain", "remember") => {
-            positional = Some("environmentId");
-            "remember_saved_domain"
-        }
-        ("domain", "edit") => {
-            positional = Some("domain");
-            for (alias, key) in [("tunnel-port", "host-port"), ("app-port", "port")] {
-                if let Some(value) = flags.remove(alias) {
-                    if flags.insert(key.into(), value).is_some() {
-                        return Err(format!("Use --{alias} or --{key}, not both"));
-                    }
-                }
-            }
-            "update_saved_domain"
-        }
-        ("domain", "remove") => {
-            positional = Some("domain");
-            "remove_saved_domain"
-        }
-        ("snapshot", "list") => {
-            select = Some(("snapshots".into(), None));
-            "get_platform_state"
-        }
-        ("snapshot", "create") => {
-            positional = Some("environmentId");
-            "create_snapshot"
-        }
-        ("snapshot", "restore") => {
-            positional = Some("snapshotId");
-            "restore_snapshot"
-        }
-        ("snapshot", "delete") => {
-            positional = Some("snapshotId");
-            "delete_snapshot"
-        }
-        ("backup", "list") => {
-            select = Some(("backupRuns".into(), None));
-            "get_platform_state"
-        }
-        ("backup", "destinations") => {
-            select = Some(("destinations".into(), None));
-            "get_platform_state"
-        }
-        ("backup", "add-destination") => "add_backup_destination",
-        ("backup", "delete-destination") => {
-            positional = Some("destinationId");
-            "delete_backup_destination"
-        }
-        ("backup", "run") => {
-            positional = Some("environmentId");
-            "run_backup"
-        }
-        ("backup", "restore") => {
-            positional = Some("backupId");
-            "restore_backup"
-        }
-        ("backup", "export") => {
-            positional = Some("environmentId");
-            "export_local_backup"
-        }
-        ("backup", "import") => {
-            positional = Some("path");
-            "import_local_backup"
-        }
+
         ("settings", "get") => {
             "get_settings_snapshot"
         }
-        ("settings", "set") => "update_settings",
-        ("settings", "patch") => "patch_settings",
-        ("app", "startup-report") => "get_startup_report",
         ("env" | "environment", "recover-report") => { positional = Some("environmentId"); set_explicit(&mut params,"confirmed",json!(confirmed))?; "recover_environment_runtime_report" },
-        ("env" | "environment", "execution-output") => { positional = Some("environmentId"); "guest_execution_output" },
-        ("env" | "environment", "cancel-execution") => { positional = Some("environmentId"); "cancel_guest_execution" },
-        ("env" | "environment", "release-execution") => { positional = Some("environmentId"); "release_guest_execution" },
-        ("ports", "preflight") => { positional = Some("environmentId"); "publication_preflight" },
-        ("share", "credentials") => { positional = Some("shareId"); "host_share_credentials" },
-        ("gpu", "status") => "get_cuda_runtime_status",
-        ("gpu", "setup") => "install_cuda_runtime",
-        ("gpu", "test") => {
-            positional = Some("environmentId");
-            "verify_environment_cuda"
-        }
         ("terminal", "create" | "read" | "write" | "resize" | "close") => {
             positional = Some("environmentId");
             set_explicit(&mut params, "action", json!(action))?;
             "terminal_action"
         }
-        ("terminal", "install") => {
-            positional = Some("environmentId");
-            "install_terminal_tool"
-        }
-        ("microvm", "apps") => {
-            positional = Some("environmentId");
-            "micro_vm_apps"
-        }
-        ("microvm", "open") => {
-            positional = Some("environmentId");
-            "open_micro_vm_app_window"
-        }
-        ("window", "list") => "list_environment_windows",
-        ("window", "focus") => {
-            positional = Some("label");
-            "focus_environment_window"
-        }
-        ("window", "close") => {
-            positional = Some("label");
-            "close_environment_window"
-        }
-        ("window", "title") => {
-            positional = Some("label");
-            "title_environment_window"
-        }
-        ("window", "capture") => {
-            positional = Some("label");
-            "set_guest_keyboard_capture"
-        }
-        ("jobs", "list") => "jobs_list",
-        ("jobs", "get" | "wait") => {
-            positional = Some("jobId");
-            "jobs_get"
-        }
-        ("jobs", "cancel") => { positional = Some("jobId"); "jobs_cancel" },
-        ("jobs", "result") => { positional = Some("jobId"); "jobs_result" },
-        ("env" | "environment", "cancel-transfer") => { positional = Some("environmentId"); "cancel_file_transfer" },
         _ => {
-            return Err(format!(
-                "Unknown command '{group} {action}'. Run yougori help."
-            ))
+            let (method, target) = route(group, action)?;
+            positional = target;
+            method
         }
     };
     if let Some(key) = positional {

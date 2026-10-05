@@ -773,6 +773,7 @@ impl Control {
                 | "publication_preflight"
                 | "get_environment_health_check"
                 | "get_environment_log_window"
+                | "market_status"
         ) {
             return dispatch::dispatch(&app, method.name, &request.params).await;
         }

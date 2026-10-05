@@ -108,7 +108,7 @@ pub(crate) async fn dispatch(app:AppHandle,id:String,owner:String,permission:Str
 
 #[tauri::command]
 pub async fn create_environment_share(environment_id:String,address:String,permission:String,app:AppHandle,store:State<'_,PlatformStore>,sharing:State<'_,Sharing>)->Result<Value,String>{
-    let environment=store.snapshot()?.environments.into_iter().find(|e|e.id==environment_id).ok_or("Environment not found")?;
+    let environment=store.environment(&environment_id)?;
     if is_shared(&environment)||environment.kind==EnvironmentKind::ComputerBranch{return Err("Choose an environment owned by this computer".into());}
     if !matches!(permission.as_str(),"view"|"control"){return Err("Choose View Only or Full guest control".into());}
     let address:IpAddr=address.parse().map_err(|_|"Enter this computer's private LAN or VPN IP address")?;

@@ -18,12 +18,3 @@ export function Status({ status, compact = false }: { status: EnvironmentStatus;
     </span>
   )
 }
-
-export function Availability({ ready, label }: { ready: boolean; label?: string }) {
-  return (
-    <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-      <span aria-hidden="true" className={cn("size-1.5 rounded-full bg-muted-foreground/40", ready && "bg-primary")} />
-      {label ?? (ready ? "Ready" : "Unavailable")}
-    </span>
-  )
-}

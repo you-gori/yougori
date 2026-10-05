@@ -22,7 +22,7 @@ pub async fn install_environment_skills(
     runtime: State<'_, RuntimeManager>,
     manager: State<'_, WorkspaceManager>,
 ) -> Result<InstalledSkills, String> {
-    let env = store.snapshot()?.environments.into_iter().find(|e| e.id == environment_id).ok_or("Environment not found")?;
+    let env = store.environment(&environment_id)?;
     if env.runtime.starts_with("shared://tunnel/") {
         return serde_json::from_value(crate::remote_access::request_saved(&env, "skills", serde_json::json!({"install":true})).await?).map_err(|_| "Invalid remote Skills installation response".into());
     }

@@ -380,12 +380,7 @@ fn runtime_id(env: &Environment) -> &str {
     env.runtime_id.as_deref().unwrap_or(&env.id)
 }
 fn environment(store: &PlatformStore, id: &str) -> Result<Environment, String> {
-    let env = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or("Environment not found")?;
+    let env = store.environment(&id)?;
     if env.status != EnvironmentStatus::Running {
         return Err("Start the environment first".into());
     }
@@ -630,7 +625,7 @@ fn log_window(text:&str,cursor:Option<&str>,limit:usize,tail:usize)->Result<Valu
 pub async fn get_environment_log_window(environment_id:String,cursor:Option<String>,limit:Option<usize>,tail:Option<usize>,store:State<'_,PlatformStore>,runtime:State<'_,RuntimeManager>)->Result<Value,String>{
     let limit=limit.unwrap_or(16*1024);let tail=tail.unwrap_or(16*1024);
     if !(1..=64*1024).contains(&limit)||tail>256*1024{return Err("Log limit must be 1–65536 bytes and tail at most 262144 bytes".into())}
-    let env=store.snapshot()?.environments.into_iter().find(|e|e.id==environment_id).ok_or("Environment not found")?;
+    let env=store.environment(&environment_id)?;
     let values=bound_secret_values(&env,&runtime)?;
     let text=tokio::time::timeout(Duration::from_secs(20),crate::commands::workloads::get_environment_logs(environment_id,store,runtime)).await.map_err(|_|"Log read timed out; the environment remains unchanged")??;
     let text=mask_secret_output(&text,&values,true);
@@ -1274,12 +1269,7 @@ pub async fn open_service_window(
     app: crate::AppHandle,
     store: State<'_, PlatformStore>,
 ) -> Result<bool, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|item| item.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     let address = local_service_url(&url)?;
     crate::require_windows(&format!("A service window (open {address} in a browser instead)"))?;
     let host = address.host_str().unwrap_or_default().to_owned();

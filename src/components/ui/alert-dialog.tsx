@@ -5,9 +5,6 @@ import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog
 import type React from "react";
 import { cn } from "@/lib/utils";
 
-export const AlertDialogCreateHandle: typeof AlertDialogPrimitive.createHandle =
-  AlertDialogPrimitive.createHandle;
-
 export const AlertDialog: typeof AlertDialogPrimitive.Root =
   AlertDialogPrimitive.Root;
 

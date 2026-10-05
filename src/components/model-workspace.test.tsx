@@ -5,6 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { ModelChat, ModelWorkspace } from "./model-workspace"
 
 const { status, chat, run, preflight, stream, history, saveHistory, platform } = vi.hoisted(() => ({ status: vi.fn(), chat: vi.fn(), run: vi.fn(), preflight:vi.fn(), stream: vi.fn(), history: vi.fn(), saveHistory: vi.fn(), platform: { state: { environments: [] as { id: string; status: string; lastError?: string }[] }, environmentActions: {}, setEnvironmentStatus: vi.fn(), refreshPlatform: vi.fn() } }))
+const market = vi.hoisted(() => ({ status: vi.fn(), signIn: vi.fn(), share: vi.fn(), listen: vi.fn(async () => () => {}) }))
+vi.mock("@/api/market-api", () => ({ marketApi: market }))
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => platform }))
 vi.mock("@/api/projects-api", () => ({ modelsApi: { status, chat, run, preflight, stream, history, saveHistory } }))
 // An in-memory engine store for chat history.
@@ -24,6 +26,31 @@ it("rejects an unsupported decision model before creating a chat environment", a
   expect(await screen.findByLabelText("Model compatibility")).toHaveTextContent("Requires a dedicated runner")
   expect(screen.getByRole("button", {name:"Run model"})).toBeDisabled()
   expect(run).not.toHaveBeenCalled()
+})
+
+it("requires browser sign-in before creating a shared model", async () => {
+  market.status.mockResolvedValue({ signedIn: false, shares: [], login: null })
+  market.signIn.mockResolvedValue({})
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Free (--nowfree)" }))
+  fireEvent.click(screen.getByRole("button", { name: "Run model" }))
+  await waitFor(() => expect(market.signIn).toHaveBeenCalledOnce())
+  expect(run).not.toHaveBeenCalled()
+  expect(await screen.findByRole("alert")).toHaveTextContent("Approve the sign-in code")
+})
+
+it("passes GGUF quantization and shares the created model for free", async () => {
+  market.status.mockResolvedValue({ signedIn: true, account: { email: "user@example.com", wallet: null, creditMicros: 0, earningsMicros: 0, availableMicros: 0 }, shares: [] })
+  run.mockResolvedValue({ id: "new-model", model: "example/model" })
+  market.share.mockResolvedValue({})
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
+  fireEvent.change(await screen.findByLabelText("GGUF quantization (optional)"), { target: { value: "Q8_0" } })
+  fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
+  fireEvent.click(screen.getByRole("button", { name: "Run model" }))
+  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0"))
+  await waitFor(() => expect(market.share).toHaveBeenCalledWith("new-model", "free"))
 })
 
 it("allows another message after a model restarts during generation and ignores the old reply", async () => {

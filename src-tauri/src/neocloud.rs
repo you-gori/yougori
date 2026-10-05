@@ -1639,6 +1639,36 @@ async fn serverless_action(
     }
 }
 
+fn finish_provider_deletion(
+    store: &PlatformStore,
+    environment_id: &str,
+    mut deployment: Deployment,
+    verification: Result<bool, String>,
+) -> Result<PlatformState, String> {
+    deployment.last_error = verification.as_ref().err().cloned();
+    if let Ok(gone) = &verification {
+        if *gone {
+            deployment.state = "Deleted".into();
+        } else {
+            deployment.state = "Needs inspection".into();
+            deployment.last_error = Some("The provider still lists this resource. Deletion may be in progress; refresh its state or retry deletion after checking the provider account.".into());
+        }
+    }
+    let result = store.mutate(|state| {
+        if let Some(env) = state.environments.iter_mut().find(|e| e.id == environment_id) {
+            env.status = if deployment.last_error.is_some() {
+                EnvironmentStatus::Error
+            } else {
+                EnvironmentStatus::Stopped
+            };
+            env.last_error = deployment.last_error.clone();
+        }
+        state.neocloud_deployments.insert(environment_id.to_owned(), deployment);
+        Ok(())
+    })?;
+    verification.map(|_| result)
+}
+
 #[tauri::command]
 pub async fn neocloud_action(
     environment_id: String,
@@ -1672,34 +1702,7 @@ pub async fn neocloud_action(
             return Err("Refresh deletion status before sending another provider action".into());
         }
         let verification = provider_resource_absent(&deployment).await;
-        deployment.last_error = verification.as_ref().err().cloned();
-        if let Ok(gone) = &verification {
-            if *gone {
-                deployment.state = "Deleted".into();
-            } else {
-                deployment.state = "Needs inspection".into();
-                deployment.last_error = Some("The provider still lists this resource. Deletion may be in progress; refresh its state or retry deletion after checking the provider account.".into());
-            }
-        }
-        let result = store.mutate(|state| {
-            if let Some(env) = state
-                .environments
-                .iter_mut()
-                .find(|e| e.id == environment_id)
-            {
-                env.status = if deployment.last_error.is_some() {
-                    EnvironmentStatus::Error
-                } else {
-                    EnvironmentStatus::Stopped
-                };
-                env.last_error = deployment.last_error.clone();
-            }
-            state
-                .neocloud_deployments
-                .insert(environment_id.clone(), deployment);
-            Ok(())
-        })?;
-        return verification.map(|_| result);
+        return finish_provider_deletion(&store, &environment_id, deployment, verification);
     }
     let args = action_args(&deployment, &action)?;
     if action == "delete" {
@@ -1717,34 +1720,7 @@ pub async fn neocloud_action(
             Ok(_) => provider_resource_absent(&deployment).await,
             Err(error) => Err(format!("Delete command could not be verified: {error}. Check the provider account before retrying.")),
         };
-        deployment.last_error = verification.as_ref().err().cloned();
-        if let Ok(gone) = &verification {
-            if *gone {
-                deployment.state = "Deleted".into();
-            } else {
-                deployment.state = "Needs inspection".into();
-                deployment.last_error = Some("The provider still lists this resource. Deletion may be in progress; refresh its state or retry deletion after checking the provider account.".into());
-            }
-        }
-        let result = store.mutate(|state| {
-            if let Some(env) = state
-                .environments
-                .iter_mut()
-                .find(|e| e.id == environment_id)
-            {
-                env.status = if deployment.last_error.is_some() {
-                    EnvironmentStatus::Error
-                } else {
-                    EnvironmentStatus::Stopped
-                };
-                env.last_error = deployment.last_error.clone();
-            }
-            state
-                .neocloud_deployments
-                .insert(environment_id.clone(), deployment);
-            Ok(())
-        })?;
-        return verification.map(|_| result);
+        return finish_provider_deletion(&store, &environment_id, deployment, verification);
     }
     if matches!(action.as_str(), "stop" | "delete") {
         runtime.cloud.disconnect(&environment_id).await;

@@ -7699,6 +7699,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "iana-time-zone",
  "keyring",
  "libc",
  "object_store",

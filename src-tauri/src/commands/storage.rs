@@ -76,7 +76,7 @@ pub async fn reclaim_storage(store: State<'_, PlatformStore>, runtime: State<'_,
 pub async fn get_storage_allocation(environment_id: Option<String>, new_vm: Option<bool>, storage_drive: Option<String>, store: State<'_, PlatformStore>, runtime: State<'_, RuntimeManager>) -> Result<StorageAllocation, String> {
     let _ = new_vm;
     let Some(id) = environment_id else { return runtime.new_storage_on_drive(storage_drive.as_deref()); };
-    let environment = store.snapshot()?.environments.into_iter().find(|e| e.id == id).ok_or("Environment not found")?;
+    let environment = store.environment(&id)?;
     match provider(&environment) {
         RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => runtime.container_storage_allocation(runtime_id(&environment)).await,
         RuntimeProviderKind::Qemu => runtime.vm_storage_allocation(runtime_id(&environment), &vm_disk(&environment)?).await,

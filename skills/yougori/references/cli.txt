@@ -191,6 +191,24 @@ Model run reuses the environment that already has this model (starting it if sto
 
 When piped, `model run` returns one versioned result and does not consume stdin or enter chat. Explicit `model chat ENV [--new]` reads literal nonempty UTF-8 prompt lines from stdin, then returns one versioned structured transcript. Input is limited to 64 KiB, 32 prompts and 16 KiB per prompt; `/new` and `/exit` are literal prompts in this mode, while `--new` starts a conversation. Returned content is capped at 256 KiB total and 64 KiB per reply with explicit truncation. `requested`, `attempted`, `completed`, `saved`, `outcome` and bounded structured errors distinguish successful turns from a failed reply or unsaved conversation. Processing stops after the first reply/save error and never automatically retries completed turns. Terminal chat keeps its interactive controls.
 
+## Yougori Network
+
+`yougori login` opens browser approval; signing in or out also updates the app on this computer. `yougori account` shows your wallet, credit, earnings and shared models. Connect a wallet on the website account page to deposit or withdraw.
+
+```text
+yougori login
+yougori account
+yougori model preflight hf.co/ressl/gemma-4-31B-it-uncensored-GGUF --quant Q4_K_M
+yougori model run hf.co/google/gemma-4-31B --now
+yougori model run hf.co/HuggingFaceTB/SmolLM2-135M --nowfree
+yougori model unshare ENV
+yougori logout
+```
+
+`--now` shares through the Yougori endpoint at the Network price for ten models; unpriced models become free with a notice. `--nowfree` shares free; consumers create a free API key without signing in or connecting a wallet. Both sharing modes require a provider account. They are mutually exclusive. GGUF defaults to Q4_K_M; `--quant` explicitly selects another available quantization and creates a model environment for that choice. GGUF is local only. `--dry-run` validates options without signing in or starting anything. The desktop provides the same controls in Huggingface's Network tab and in the dashboard Network panel.
+
+Engine methods: `market_status` (account and provider statistics), `market_sign_in` (browser code), `market_sign_out`, `market_share_model` (`environmentId`, `mode: paid|free`), and `market_unshare_model` (`environmentId`). Use the website's Network page to select a model/provider and create a consumer API key. Provider public links and keys are kept private. Speed uses each 15-minute traffic window, falling back to the all-time average when idle; uptime and availability appear alongside input/output token totals.
+
 ## Personal Vault MCP
 
 ```text

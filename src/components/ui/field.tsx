@@ -34,19 +34,6 @@ export function FieldLabel({
   );
 }
 
-export function FieldItem({
-  className,
-  ...props
-}: FieldPrimitive.Item.Props): React.ReactElement {
-  return (
-    <FieldPrimitive.Item
-      className={cn("flex", className)}
-      data-slot="field-item"
-      {...props}
-    />
-  );
-}
-
 export function FieldDescription({
   className,
   ...props
@@ -72,10 +59,5 @@ export function FieldError({
     />
   );
 }
-
-export const FieldControl: typeof FieldPrimitive.Control =
-  FieldPrimitive.Control;
-export const FieldValidity: typeof FieldPrimitive.Validity =
-  FieldPrimitive.Validity;
 
 export { FieldPrimitive };

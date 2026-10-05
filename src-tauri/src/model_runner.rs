@@ -34,9 +34,13 @@ pub fn normalize_model(model: &str) -> Result<String, String> {
     Ok(model.into())
 }
 #[tauri::command]
-pub async fn run_model(model: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
-    run_model_with_resources(model, port, None, app).await
+pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, app: AppHandle) -> Result<Value, String> {
+    run_model_with_resources(model, port, None, quant, app).await
 }
+/// Safetensors models run on the PyTorch CUDA image. GGUF models need a newer C library for the
+/// pinned llama.cpp CUDA build, which the model server downloads and verifies itself.
+const TRANSFORMERS_IMAGE: &str = "docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime";
+const LLAMA_CPP_IMAGE: &str = "docker.io/library/python:3.12-slim-trixie";
 
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -65,9 +69,9 @@ impl ModelResources {
     }
 }
 
-pub async fn run_model_with_resources(model: String, port: Option<u16>, resources: Option<ModelResources>, app: AppHandle) -> Result<Value, String> {
+pub async fn run_model_with_resources(model: String, port: Option<u16>, resources: Option<ModelResources>, quant: Option<String>, app: AppHandle) -> Result<Value, String> {
     let model = normalize_model(&model)?;
-    let compatibility=preflight::preflight(&model).await?;
+    let compatibility=preflight::preflight_quant(&model, quant.as_deref()).await?;
     if compatibility["supported"]!=true{return Err(format!("{}: {}. No environment was created.",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")))}
     if port == Some(0) {
         return Err("Invalid API port".into());
@@ -94,7 +98,14 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
     let volume = format!("model-{}-models", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let range = |n: f64| json!({"min":n,"preferred":n,"max":n});
     let command = server_command();
-    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":"docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime","containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":{"YOUGORI_MODEL":model,"YOUGORI_MODEL_REVISION":compatibility["revision"],"HF_HOME":"/root/.cache/huggingface","HF_HUB_DISABLE_TELEMETRY":"1"},"secretEnvironment":{"YOUGORI_MODEL_TOKEN":token_reference},"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
+    let gguf = compatibility["runner"] == "yougori-llama-cpp";
+    let mut environment = json!({"YOUGORI_MODEL":model,"YOUGORI_MODEL_REVISION":compatibility["revision"],"HF_HOME":"/root/.cache/huggingface","HF_HUB_DISABLE_TELEMETRY":"1"});
+    if gguf {
+        environment["YOUGORI_MODEL_FORMAT"] = json!("gguf");
+        environment["YOUGORI_MODEL_QUANT"] = compatibility["quant"].clone();
+        environment["YOUGORI_MODEL_FILES"] = json!(compatibility["files"].to_string());
+    }
+    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":{"YOUGORI_MODEL_TOKEN":token_reference},"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
     let mut result = crate::projects::run_workload(request, true, app).await?;
     result["model"] = model.into();
     result["status"] = json!("loading");
@@ -325,7 +336,7 @@ pub async fn model_api(environment_id: String, port: u16, app: AppHandle) -> Res
     )
 }
 /// Current API access for a model: its key plus any localhost and public (Cloudflare) addresses.
-async fn api_status(app: &AppHandle, environment_id: &str) -> Result<Value, String> {
+pub(crate) async fn api_status(app: &AppHandle, environment_id: &str) -> Result<Value, String> {
     let runtime = app.state::<RuntimeManager>();
     let env = app
         .state::<PlatformStore>()

@@ -86,10 +86,6 @@ export function ComboboxItem({ className, children, ...props }: ComboboxPrimitiv
   )
 }
 
-export function ComboboxSeparator({ className, ...props }: ComboboxPrimitive.Separator.Props): React.ReactElement {
-  return <ComboboxPrimitive.Separator className={cn("mx-2 my-1 h-px bg-border last:hidden", className)} data-slot="combobox-separator" {...props} />
-}
-
 export function ComboboxGroup(props: ComboboxPrimitive.Group.Props): React.ReactElement {
   return <ComboboxPrimitive.Group data-slot="combobox-group" {...props} />
 }

@@ -3,7 +3,7 @@ use serde_json::{json,Value};
 
 #[tauri::command]
 pub async fn get_environment_logs(environment_id:String,store:State<'_,PlatformStore>,runtime:State<'_,RuntimeManager>)->Result<String,String>{
-    let env=store.snapshot()?.environments.into_iter().find(|e|e.id==environment_id).ok_or("Environment not found")?;
+    let env=store.environment(&environment_id)?;
     let values=crate::workspace::bound_secret_values(&env,&runtime)?;
     let result=async{
     if crate::peer_sharing::is_shared(&env){return serde_json::from_value(crate::peer_sharing::remote(&env,"console",json!({})).await?).map_err(|e|e.to_string())}

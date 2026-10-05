@@ -387,12 +387,7 @@ pub async fn verify_environment_cuda(
     store: tauri::State<'_, crate::store::PlatformStore>,
     runtime: tauri::State<'_, RuntimeManager>,
 ) -> Result<Value, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     if environment.provider != Some(RuntimeProviderKind::YougoriCuda) {
         return Err("Native CUDA requires the NVIDIA CUDA container engine. The current QEMU VM/MicroVM engine does not expose CUDA.".into());
     }

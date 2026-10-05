@@ -8,10 +8,7 @@ import { XIcon } from "lucide-react";
 import type React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-
-export const DialogCreateHandle: typeof DialogPrimitive.createHandle =
-  DialogPrimitive.createHandle;
+import { ModalSection } from "@/components/ui/modal-section";
 
 export const Dialog: typeof DialogPrimitive.Root = DialogPrimitive.Root;
 
@@ -112,24 +109,14 @@ export function DialogPopup({
   );
 }
 
-export function DialogHeader({
-  className,
-  render,
-  ...props
-}: useRender.ComponentProps<"div">): React.ReactElement {
-  const defaultProps = {
-    className: cn(
-      "flex flex-col gap-2 p-6 in-[[data-slot=dialog-popup]:has([data-slot=dialog-panel])]:pb-3 max-sm:pb-4",
-      className,
-    ),
-    "data-slot": "dialog-header",
-  };
-
-  return useRender({
-    defaultTagName: "div",
-    props: mergeProps<"div">(defaultProps, props),
-    render,
-  });
+export function DialogHeader(props: useRender.ComponentProps<"div">): React.ReactElement {
+  return (
+    <ModalSection
+      {...props}
+      sectionSlot="dialog-header"
+      baseClassName="flex flex-col gap-2 p-6 in-[[data-slot=dialog-popup]:has([data-slot=dialog-panel])]:pb-3 max-sm:pb-4"
+    />
+  );
 }
 
 export function DialogFooter({
@@ -187,30 +174,14 @@ export function DialogDescription({
   );
 }
 
-export function DialogPanel({
-  className,
-  scrollFade = true,
-  render,
-  ...props
-}: useRender.ComponentProps<"div"> & {
-  scrollFade?: boolean;
-}): React.ReactElement {
-  const defaultProps = {
-    className: cn(
-      "p-6 in-[[data-slot=dialog-popup]:has([data-slot=dialog-header])]:pt-1 in-[[data-slot=dialog-popup]:has([data-slot=dialog-footer]:not(.border-t))]:pb-1",
-      className,
-    ),
-    "data-slot": "dialog-panel",
-  };
-
+export function DialogPanel({ scrollFade = true, ...props }: useRender.ComponentProps<"div"> & { scrollFade?: boolean }): React.ReactElement {
   return (
-    <ScrollArea overscrollContain scrollFade={scrollFade}>
-      {useRender({
-        defaultTagName: "div",
-        props: mergeProps<"div">(defaultProps, props),
-        render,
-      })}
-    </ScrollArea>
+    <ModalSection
+      {...props}
+      scrollFade={scrollFade}
+      sectionSlot="dialog-panel"
+      baseClassName="p-6 in-[[data-slot=dialog-popup]:has([data-slot=dialog-header])]:pt-1 in-[[data-slot=dialog-popup]:has([data-slot=dialog-footer]:not(.border-t))]:pb-1"
+    />
   );
 }
 

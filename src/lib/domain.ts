@@ -1,6 +1,4 @@
 import type {
-  BackupProvider,
-  BranchType,
   EnvironmentKind,
   EnvironmentStatus,
   PermissionKind,
@@ -38,27 +36,6 @@ export const statusLabel: Record<EnvironmentStatus, string> = {
   error: "Needs attention",
 }
 
-export const branchTypeLabel: Record<BranchType, string> = {
-  exactCopy: "Exact copy",
-  appsSettings: "Apps + settings",
-  appsOnly: "Apps only",
-  cleanOs: "Clean OS",
-}
-
-export const branchTypeDescription: Record<BranchType, string> = {
-  exactCopy: "OS, apps, settings, and personal data.",
-  appsSettings: "Your applications and configuration, without personal files.",
-  appsOnly: "Installed applications with a fresh user profile.",
-  cleanOs: "A completely fresh operating system.",
-}
-
-export const priorityLabel: Record<Priority, string> = {
-  low: "Low",
-  normal: "Normal",
-  high: "High",
-  critical: "Critical",
-}
-
 export const permissionLabel: Record<PermissionKind, string> = {
   network: "Network access",
   ports: "Ports",
@@ -66,17 +43,6 @@ export const permissionLabel: Record<PermissionKind, string> = {
   volumes: "Shared volumes",
   data: "Data",
   secrets: "Secrets",
-}
-
-export const backupProviderLabel: Record<BackupProvider, string> = {
-  awsS3: "AWS S3",
-  azureBlob: "Azure Blob",
-  googleCloud: "Google Cloud",
-  s3Compatible: "S3-compatible",
-}
-
-export function isRunning(status: EnvironmentStatus) {
-  return status === "running"
 }
 
 export function formatBytesFromGb(value: number) {

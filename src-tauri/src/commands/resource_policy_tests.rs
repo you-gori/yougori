@@ -68,7 +68,15 @@ async fn saved_container_resources_reach_cgroups_on_start_and_live_save() -> Res
         }
         let after = runtime.execute_container_command(&id, "cat /proc/1/stat").await?;
         if before.stdout.split_whitespace().nth(21) != after.stdout.split_whitespace().nth(21) { return Err("Resource save restarted the container process".into()); }
-        eprintln!("Saved-on-stop policy, stale-cache repair and live edits match real cgroups; process and files preserved.");
+        env.resource_policy.cpu.current = 1.5;
+        env.resource_policy.memory_gb.current = 2.5;
+        apply_scheduled_resource_limits(&runtime, &env).await?;
+        let scheduled = runtime.execute_container_command(&id, "cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max /root/resource-marker").await?;
+        if scheduled.exit_code != 0 || !scheduled.stdout.contains("150000 100000\n2684354560\nkeep-me") {
+            return Err(format!("Scheduled limits did not reach cgroups: {}", scheduled.stdout));
+        }
+        if resource_update_needed(&id, 1.5, 2.5) { return Err("Applied scheduled limits were not recorded".into()); }
+        eprintln!("Saved-on-stop policy, stale-cache repair, live edits and scheduled limits match real cgroups; process and files preserved.");
         Ok(())
     }.await;
     runtime.shutdown_all().await;

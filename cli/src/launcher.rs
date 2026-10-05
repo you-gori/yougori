@@ -272,6 +272,21 @@ fn tunnel_token(input: &str) -> Result<String, String> {
         .map(str::to_owned)
         .ok_or_else(|| "Paste a Cloudflare tunnel token or the complete install command".into())
 }
+fn new_domain() -> Result<(String, String, u16), String> {
+    let hostname = text("Public domain", "", false)?;
+    let host_port = port(
+        "Tunnel origin port (Cloudflare routes to http://127.0.0.1:THIS_PORT)",
+        45000,
+    )?;
+    ui::info("Cloudflare dashboard: https://dash.cloudflare.com/");
+    ui::info("Go to Networking > Tunnels, select your tunnel, then Add a replica to copy its install command.");
+    let token = tunnel_token(&text(
+        "Cloudflare tunnel token (or the full install command)",
+        "",
+        true,
+    )?)?;
+    Ok((hostname, token, host_port))
+}
 async fn network(model: bool, current: Option<&str>, service_port: Option<u16>) -> Result<Network, String> {
     let saved = domains::available(current, service_port).await?;
     let mut options = vec![
@@ -295,18 +310,7 @@ async fn network(model: bool, current: Option<&str>, service_port: Option<u16>) 
         1 => Network::Lan,
         2 => Network::Quick,
         3 => {
-            let hostname = text("Public domain", "", false)?;
-            let host_port = port(
-                "Tunnel origin port (Cloudflare routes to http://127.0.0.1:THIS_PORT)",
-                45000,
-            )?;
-            ui::info("Cloudflare dashboard: https://dash.cloudflare.com/");
-            ui::info("Go to Networking > Tunnels, select your tunnel, then Add a replica to copy its install command.");
-            let token = tunnel_token(&text(
-                "Cloudflare tunnel token (or the full install command)",
-                "",
-                true,
-            )?)?;
+            let (hostname, token, host_port) = new_domain()?;
             Network::NewDomain {
                 hostname,
                 token,

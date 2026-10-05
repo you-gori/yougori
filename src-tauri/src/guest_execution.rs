@@ -92,12 +92,7 @@ pub(crate) struct GuestJobRequest {
 }
 
 fn selected(store: &PlatformStore, id: &str, require_running: bool) -> Result<Environment, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&id)?;
     if require_running && environment.status != EnvironmentStatus::Running {
         return Err("The environment is not running".into());
     }

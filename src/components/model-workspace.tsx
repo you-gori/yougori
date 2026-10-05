@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react"
 import { ModelChat } from "@/components/model-chat"
 import { ModelApiPanel } from "@/components/model-api-panel"
 import { ModelUsagePanel } from "@/components/model-usage-panel"
+import { ModelNetworkPanel, NetworkAccount } from "@/components/network-panel"
+import { useNetwork } from "@/components/use-network"
+import { marketApi, type SharingMode } from "@/api/market-api"
 import { modelsApi, type ModelPreflight } from "@/api/projects-api"
 import { usePlatform } from "@/context/platform-context"
 import { Button } from "@/components/ui/button"
@@ -23,7 +26,10 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const [api, setApi] = useState(false)
   const [port, setPort] = useState("8000")
   const [selected, setSelected] = useState(environmentId ?? "")
-  const [view, setView] = useState<"chat" | "api" | "usage">("chat")
+  const [view, setView] = useState<"chat" | "api" | "usage" | "network">("chat")
+  const [sharing, setSharing] = useState<"off" | SharingMode>("off")
+  const [quant, setQuant] = useState("")
+  const network = useNetwork(open && sharing !== "off" && !selected)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [preflight,setPreflight]=useState<ModelPreflight|null>(null)
@@ -49,9 +55,30 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const models = state?.environments.filter(e => e.description.startsWith("Hugging Face · ")) ?? []
   const launch = async () => {
     if (lock.current) return
+    lock.current = true; setBusy(true)
+    if (sharing !== "off") {
+      setError("")
+      try {
+        const status = await network.refresh()
+        if (!status.signedIn) {
+          await network.perform(marketApi.signIn)
+          setError("Approve the sign-in code in your browser, then press Run model.")
+          lock.current = false; setBusy(false)
+          return
+        }
+      } catch (reason) { setError(String(reason)); lock.current = false; setBusy(false); return }
+    }
     previousIds.current = new Set(state?.environments.map(e => e.id))
     lock.current = true; setBusy(true); setLaunching(true); setElapsed(0); setError(""); setOpen(false)
-    try { const result = await modelsApi.run(model, api ? Number(port) : null); setSelected(result.id); setView("chat"); await refreshPlatform() }
+    try {
+      const result = await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined)
+      setSelected(result.id); setView("chat")
+      if (sharing !== "off") {
+        try { await marketApi.share(result.id, sharing); setView("network") }
+        catch (reason) { toastManager.add({ title: "Model is running; sharing needs attention", description: String(reason), type: "error" }); setError(String(reason)); setView("network") }
+      }
+      await refreshPlatform()
+    }
     catch (e) { setError(String(e)); toastManager.add({ title: "Model setup needs attention", description: String(e), type: "error" }); await refreshPlatform().catch(() => undefined) }
     finally { setBusy(false); setLaunching(false); lock.current = false }
   }
@@ -74,7 +101,13 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
         {!environmentId && !selected ? <div className="model-form">
           <label className="model-label" htmlFor="hf-model">Model</label>
           <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
-          <p className="model-hint">Public text-generation models with safetensors. Needs enough VRAM.</p>
+          <p className="model-hint">Public text-generation models with safetensors or GGUF. Needs enough VRAM.</p>
+          <label className="model-label" htmlFor="hf-quant">GGUF quantization (optional)</label>
+          <Input id="hf-quant" value={quant} disabled={busy} placeholder="Q4_K_M by default" onChange={e => { setQuant(e.target.value); setPreflight(null) }} />
+          <div className="model-tabs" role="group" aria-label="Network sharing">
+            {([['off', 'Off'], ['paid', 'Paid (--now)'], ['free', 'Free (--nowfree)']] as const).map(([mode, label]) => <button key={mode} type="button" disabled={busy} aria-pressed={sharing === mode} onClick={() => setSharing(mode)}>{label}</button>)}
+          </div>
+          {sharing !== "off" ? <><p className="model-hint">Share through the Yougori endpoint. Paid pricing covers ten models; other models are shared free. Free access needs no wallet.</p><NetworkAccount network={network} />{network.error ? <p role="alert" className="model-error">{network.error}</p> : null}</> : null}
           <div className="model-api-row">
             <div><label htmlFor="hf-api">Local API</label><p>OpenAI-compatible, this PC only.</p></div>
             <div className="model-api-controls">
@@ -83,7 +116,7 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
             </div>
           </div>
           {preflight ? <div aria-label="Model compatibility" className="model-hint"><p>{preflight.supported ? "Compatible with text chat" : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
-          <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || !model.trim() || preflight?.supported===false || (api && !validPort)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
+          <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, quant.trim() || undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
         </div> : null}
 
         {selected ? <div className="model-view-row">
@@ -91,11 +124,12 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
             <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")}>Chat</button>
             <button type="button" aria-pressed={view === "api"} onClick={() => setView("api")}>API access</button>
             <button type="button" aria-pressed={view === "usage"} onClick={() => setView("usage")}>Usage</button>
+            <button type="button" aria-pressed={view === "network"} onClick={() => setView("network")}>Network</button>
           </div>
           {close}
         </div> : null}
 
-        {visibleId && open ? view === "api" && selected ? <ModelApiPanel key={visibleId} environmentId={visibleId} /> : view === "usage" && selected ? <ModelUsagePanel key={visibleId} environmentId={visibleId} /> : <ModelChat key={visibleId} environmentId={visibleId} /> : null}
+        {visibleId && open ? view === "network" && selected ? <ModelNetworkPanel key={visibleId} environmentId={visibleId} /> : view === "api" && selected ? <ModelApiPanel key={visibleId} environmentId={visibleId} /> : view === "usage" && selected ? <ModelUsagePanel key={visibleId} environmentId={visibleId} /> : <ModelChat key={visibleId} environmentId={visibleId} /> : null}
         {error ? <p role="alert" className="model-error">{error}</p> : null}
         {busy ? <p role="status" className="model-hint">{launching ? `${pendingModel ? "Starting the model" : "Preparing GPU runtime"}… ${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : null}</p> : null}
       </DialogPanel>

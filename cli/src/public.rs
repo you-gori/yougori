@@ -59,6 +59,10 @@ Public commands:
   yougori vm run IMAGE_OR_ISO      Alias for machine run
   yougori microvm run IMAGE        Alias for run --isolation microvm
   yougori model run hf.co/OWNER/MODEL [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
+  yougori login | logout | account  Network account shared with the desktop app
+  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--quant Q4_K_M]
+                                   Share paid (10 priced models) or free through Yougori
+  yougori model unshare ENV        Stop sharing; leave the model running
   yougori model stop ENV           Stop the model; a Neocloud pod stays billable
   yougori model preflight hf.co/OWNER/MODEL   Compatibility and requirements before weights
                                    Reuses this model's environment when one exists
@@ -841,12 +845,17 @@ async fn terminal(id: &str) -> Result<(), String> {
 async fn model(args: &[String]) -> Result<Value, String> {
     let action = args.get(1).map(String::as_str).unwrap_or("");
     if action == "preflight" {
-        if args.len() != 3 { return Err("Usage: yougori model preflight hf.co/OWNER/MODEL".into()); }
+        let target = args.get(2).ok_or("Supply a model")?;
+        let quant = match &args[3..] {
+            [] => None,
+            [flag, value] if flag == "--quant" && !value.starts_with('-') => Some(value),
+            _ => return Err("Usage: yougori model preflight hf.co/OWNER/MODEL [--quant Q4_K_M]".into()),
+        };
         client::start(None).await?;
-        return call("model_preflight", json!({"model":args[2]})).await;
+        return call("model_preflight", json!({"model":target,"quant":quant})).await;
     }
-    if !["run", "chat", "stop", "status", "api", "usage", "access", "history"].contains(&action) {
-        return Err("Usage: yougori model run hf.co/OWNER/MODEL [--change] [--api] [--port PORT] | chat ENV [--new] | history ENV | status ENV | api ENV [--port PORT] | access ENV | usage ENV [--days N] [--reset]".into());
+    if !["run", "chat", "stop", "unshare", "status", "api", "usage", "access", "history"].contains(&action) {
+        return Err("Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--change] [--api] [--port PORT] | chat ENV [--new] | unshare ENV | history ENV | status ENV | api ENV [--port PORT] | access ENV | usage ENV [--days N] [--reset]".into());
     }
     let target = args.get(2).ok_or("Supply a model or environment")?;
     let mut api = false;
@@ -860,8 +869,15 @@ async fn model(args: &[String]) -> Result<Value, String> {
     let mut resources = serde_json::Map::new();
     let mut neocloud = false;
     let mut environment = None;
+    let mut share_mode = None;
+    let mut quant = None;
     while i < args.len() {
         match args[i].as_str() {
+            flag @ ("--now" | "--nowfree") if action == "run" => {
+                if share_mode.is_some() { return Err("Use only one of --now or --nowfree".into()); }
+                share_mode = crate::network::mode(flag);
+            }
+            "--quant" if action == "run" => quant = Some(value(args, &mut i, "--quant")?),
             "--neocloud" if action == "run" => neocloud = true,
             "--environment" if action == "run" => environment = Some(value(args, &mut i, "--environment")?),
             "--cpu" | "--memory" | "--storage" if action == "run" => {
@@ -896,11 +912,12 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return Err("Model API port must be between 1 and 65535".into());
     }
     validate_model_neocloud(neocloud, environment.as_deref(), !resources.is_empty())?;
+    if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
     if reset && !confirmed {
         return Err("Resetting model usage permanently clears its history. Repeat with --yes.".into());
     }
     if dry {
-        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment}));
+        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"quant":quant}));
     }
     if neocloud && environment.is_none() { return Err("Choosing a Neocloud pod needs an interactive terminal. For scripts add --environment POD_NAME --api.".into()); }
     let chat_mode = model_chat_mode(action, api, std::io::stdin().is_terminal(), std::io::stdout().is_terminal());
@@ -910,19 +927,20 @@ async fn model(args: &[String]) -> Result<Value, String> {
         Some(scripted_prompts(&mut std::io::stdin().lock())?)
     } else { None };
     client::start(None).await?;
-    let result = if action == "run" && neocloud {
+    if share_mode.is_some() && !crate::network::signed_in().await? { return Err(crate::network::SIGN_IN_FIRST.into()); }
+    let mut result = if action == "run" && neocloud {
         let state = call("get_platform_state", json!({})).await?;
         let candidates = neocloud_model_targets(&state);
         let mut env = choose_neocloud_target(&candidates, environment.as_deref().unwrap())?.clone();
         name_neocloud_model(&mut env, &state, target).await?;
         call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port)})).await?
     } else if action == "run" {
-        match find_model(target).await? {
+        match find_model(target).await?.filter(|_| quant.is_none()) {
             Some(env) => reuse_model(&env, &resources, api.then_some(port)).await?,
             None => {
                 call(
                     "run_model",
-                    json!({"model":target,"port":if api{Some(port)}else{None::<u16>},"resources":resources}),
+                    json!({"model":target,"port":if api{Some(port)}else{None::<u16>},"resources":resources,"quant":quant}),
                 )
                 .await?
             }
@@ -930,7 +948,10 @@ async fn model(args: &[String]) -> Result<Value, String> {
     } else {
         json!({"id":resolve(target).await?})
     };
-    let id = result["id"].as_str().ok_or("Model environment missing")?;
+    let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
+    let id = id.as_str();
+    if let Some(mode) = share_mode { result["network"] = crate::network::share(id, mode).await?; }
+    if action == "unshare" { return call("market_unshare_model", json!({"environmentId":id})).await; }
     if action == "stop" { return call("stop_model", json!({"environmentId":id})).await; }
     if action == "chat" { call("start_model", json!({"environmentId":id})).await?; }
     if action == "api" {
@@ -1019,15 +1040,9 @@ fn transcript_error(stage: &str, turn: usize, mut response: crate::wire::Respons
 async fn scripted_chat<F, Fut>(id: &str, fresh: bool, prompts: Vec<String>, mut invoke: F) -> Result<Value, String>
 where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Result<Value, String>> {
     let mut store = invoke("model_chat_history", json!({"environmentId":id})).await?;
-    if !store["conversations"].is_array() {
-        store = json!({"conversations":[],"activeId":null,"settings":{"system":"","temperature":0.7,"maxTokens":1024}});
-    }
+    store = chat_history_or_default(store);
     let status = invoke("model_status", json!({"environmentId":id})).await?;
-    let limit = (if status["stream"] == true { 4096 } else { 2048 }).min(status["context"].as_u64().map_or(4096, |c| c / 2));
-    let settings = store["settings"].clone();
-    let max_tokens = settings["maxTokens"].as_u64().unwrap_or(1024).clamp(1, limit.max(1));
-    let temperature = settings["temperature"].as_f64().unwrap_or(0.7);
-    let system = settings["system"].as_str().unwrap_or("").to_owned();
+    let (max_tokens, temperature, system) = chat_settings(&store, &status);
     if fresh || !store["conversations"].as_array().unwrap().iter().any(|c| c["id"] == store["activeId"]) {
         start_conversation(&mut store);
     }
@@ -1262,6 +1277,24 @@ pub fn fit_messages(system: &str, messages: &[Value]) -> Vec<Value> {
     fitted.extend(turns[start..].iter().map(|(role, content)| json!({"role":role,"content":content})));
     fitted
 }
+/// Start missing histories with the same defaults in scripted and interactive chats.
+pub fn chat_history_or_default(history: Value) -> Value {
+    if history["conversations"].is_array() { history }
+    else { json!({"conversations":[],"activeId":null,"settings":{"system":"","temperature":0.7,"maxTokens":1024}}) }
+}
+
+/// Saved settings with the reply length bounded by the server's current context and protocol.
+pub fn chat_settings(history: &Value, status: &Value) -> (u64, f64, String) {
+    let limit = (if status["stream"] == true { 4096 } else { 2048 })
+        .min(status["context"].as_u64().map_or(4096, |c| c / 2));
+    let settings = &history["settings"];
+    (
+        settings["maxTokens"].as_u64().unwrap_or(1024).clamp(1, limit.max(1)),
+        settings["temperature"].as_f64().unwrap_or(0.7),
+        settings["system"].as_str().unwrap_or("").to_owned(),
+    )
+}
+
 pub fn start_conversation(store: &mut Value) {
     let conversation = json!({"id":new_id(),"title":"New chat","messages":[],"updatedAt":now_millis()});
     store["activeId"] = conversation["id"].clone();
@@ -1272,15 +1305,9 @@ pub fn start_conversation(store: &mut Value) {
 /// Interactive chat that continues the conversation shared with the desktop app and saves after each reply.
 async fn chat_session(id: &str, fresh: bool) -> Result<(), String> {
     let mut store = call("model_chat_history", json!({"environmentId":id})).await.unwrap_or(Value::Null);
-    if !store["conversations"].is_array() {
-        store = json!({"conversations":[],"activeId":null,"settings":{"system":"","temperature":0.7,"maxTokens":1024}});
-    }
+    store = chat_history_or_default(store);
     let status = call("model_status", json!({"environmentId":id})).await.unwrap_or(Value::Null);
-    let limit = (if status["stream"] == true { 4096 } else { 2048 }).min(status["context"].as_u64().map_or(4096, |c| c / 2));
-    let settings = store["settings"].clone();
-    let max_tokens = settings["maxTokens"].as_u64().unwrap_or(1024).clamp(1, limit.max(1));
-    let temperature = settings["temperature"].as_f64().unwrap_or(0.7);
-    let system = settings["system"].as_str().unwrap_or("").to_owned();
+    let (max_tokens, temperature, system) = chat_settings(&store, &status);
     let active = store["conversations"].as_array().and_then(|list| list.iter().position(|c| c["id"] == store["activeId"]));
     match active {
         Some(index) if !fresh => {

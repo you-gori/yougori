@@ -129,12 +129,7 @@ pub(super) async fn reset(
     runtime: &RuntimeManager,
     backup: &BackupManager,
 ) -> Result<PlatformState, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&id)?;
     if !matches!(
         environment.status,
         EnvironmentStatus::Stopped | EnvironmentStatus::Error
@@ -297,12 +292,7 @@ pub async fn factory_reset_environment(
 ) -> Result<PlatformState, String> {
     let lock = environment_network_lock(&environment_id).await;
     let _guard = lock.lock().await;
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == environment_id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&environment_id)?;
     let _resources = environment_container_policy_guard(&runtime, &environment).await?;
     if confirmation != environment.name {
         return Err("Type the environment name exactly to confirm factory reset".into());

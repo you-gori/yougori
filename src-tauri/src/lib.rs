@@ -31,6 +31,7 @@ mod projects;
 mod changes;
 mod releases;
 mod model_runner;
+mod market;
 mod file_export;
 mod ignore_rules;
 mod vault;
@@ -553,6 +554,7 @@ pub fn run() {
             app.manage(workspace::WorkspaceManager::new(&storage_directory));
             app.manage(environment_download::Downloads::new(&storage_directory));
             app.manage(host_terminal::HostTerminalManager::default());
+            app.manage(market::Market::default());
             // Native system installers cannot provision every user's home.
             // Set up the shared skill for the user who actually runs this app
             // or engine. Development checkouts do not change installed skills.
@@ -578,6 +580,7 @@ pub fn run() {
             remote_access::start_cleanup(app.handle());
             environment_download::start_cleanup(app.handle());
             neocloud::runpod::resume(app.handle());
+            market::start(app.handle());
             let workspace_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let shutdown=automation::shutdown_signal(&workspace_app);
@@ -616,6 +619,11 @@ pub fn run() {
             model_runner::model_chat_cancel,
             model_runner::model_api_status,
             model_runner::model_usage,
+            market::market_status,
+            market::market_sign_in,
+            market::market_sign_out,
+            market::market_share_model,
+            market::market_unshare_model,
             file_export::copy_files_from_environment,
             file_export::copy_files_between_environments,
             file_export::list_volumes,

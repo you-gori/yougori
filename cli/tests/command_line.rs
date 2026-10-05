@@ -14,6 +14,26 @@ fn response(output: &Output) -> Value {
 }
 
 #[test]
+fn network_model_flags_are_validated_offline_before_side_effects() {
+    for (flag, mode) in [("--now", "paid"), ("--nowfree", "free")] {
+        let output = cli(&["model", "run", "hf.co/example/model", flag, "--quant", "Q8_0", "--dry-run"]);
+        assert!(output.status.success());
+        let value = response(&output);
+        assert_eq!(value["result"]["shareMode"], mode);
+        assert_eq!(value["result"]["quant"], "Q8_0");
+    }
+    for args in [
+        vec!["model", "run", "hf.co/example/model", "--now", "--nowfree", "--dry-run"],
+        vec!["model", "run", "hf.co/example/model", "--quant", "--dry-run"],
+        vec!["model", "preflight"],
+    ] {
+        let output = cli(&args);
+        assert!(!output.status.success());
+        assert_eq!(response(&output)["ok"], false);
+    }
+}
+
+#[test]
 fn oversized_scripted_chat_input_fails_before_starting_a_model() {
     use std::io::Write;
     use std::process::Stdio;

@@ -19,6 +19,7 @@ pub mod discovery;
 pub mod execution;
 pub mod logs;
 pub mod vault;
+pub mod network;
 
 pub const SKILL: &str = include_str!("../../skills/yougori/SKILL.txt");
 pub const GUIDE: &str = include_str!("../../skills/yougori/references/cli.txt");

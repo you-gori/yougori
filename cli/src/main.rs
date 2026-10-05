@@ -70,6 +70,19 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         );
         return Ok(0);
     }
+    if matches!(args[0].as_str(), "login" | "logout" | "account") {
+        if args.len() != 1 { return Err(yougori_cli::network::USAGE.into()); }
+        let value = match args[0].as_str() {
+            "login" => yougori_cli::network::login(|code, address| eprintln!("Approve this sign-in in your browser:
+  {address}
+Code: {code}
+Waiting for approval… (Ctrl+C cancels)")).await?,
+            "logout" => launcher::command_progress(&args, yougori_cli::network::logout()).await?,
+            _ => launcher::command_progress(&args, yougori_cli::network::account()).await?,
+        };
+        if output::stdout_terminal() { println!("{}", yougori_cli::network::render(&args[0], &value)) } else { println!("{}", wire_json(value)) }
+        return Ok(0);
+    }
     if args[0] == "terminal" && !args.get(1).is_some_and(|s| matches!(s.as_str(), "create" | "read" | "write" | "resize" | "close" | "install")) {
         yougori_cli::terminal::run(&args).await?;
         return Ok(0);

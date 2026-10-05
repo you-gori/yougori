@@ -8,6 +8,7 @@ import { ReleaseUpdateNotice } from "@/components/release-update"
 import { EnvironmentDownloadStatus } from "@/components/environment-download-status"
 import { PersonalVault } from "@/components/personal-vault"
 import { ModelWorkspace } from "@/components/model-workspace"
+import { NetworkPanel } from "@/components/network-panel"
 import yougoriLogo from "../../Yoo-app.png"
 import { WindowControls } from "@/components/shared/window-controls"
 import "@/components/workspace-design.css"
@@ -42,6 +43,7 @@ export function AppShell({ onCreate, children, vaultError }: {
             <div className="dashboard-action-group">
               <PersonalVault startupError={vaultError} />
               <ModelWorkspace />
+              <NetworkPanel />
               <PreferencesDialog />
             </div>
             <Button data-tour="new-environment" aria-label="New environment" title="New environment" className="dashboard-action dashboard-action-primary" onClick={onCreate} size="sm" type="button">

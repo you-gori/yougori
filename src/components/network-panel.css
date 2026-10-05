@@ -1,0 +1,10 @@
+.network-popup { width: min(720px, calc(100vw - 32px)); }
+.network-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.network-panel, .network-account { display: grid; gap: 14px; }
+.network-panel p, .network-account p { overflow-wrap: anywhere; font-size: 13px; color: var(--muted-foreground); }
+.network-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.network-share { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
+.network-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; font-size: 13px; }
+.network-stats dt { color: var(--muted-foreground); }
+.network-stats dd { margin: 4px 0 0; }
+@media (max-width: 500px) { .network-stats { grid-template-columns: 1fr; } }

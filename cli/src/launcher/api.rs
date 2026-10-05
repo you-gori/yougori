@@ -1,6 +1,6 @@
 //! A model's API setup from the chat, as in the app's API panel: local and public access, the
 //! key, and ready-to-run examples. The key is shown only on a private screen or copied.
-use super::{call, clean, private_view, text, tunnel_token, ui, valid_port};
+use super::{call, clean, private_view, ui, valid_port};
 use serde_json::{json, Value};
 
 /// The model server's port inside its container.
@@ -172,18 +172,7 @@ async fn public_on(id: &str) -> Result<(), String> {
     } else if pick <= saved.len() {
         params["domain"] = saved[pick - 1].domain["hostname"].clone();
     } else {
-        let hostname = text("Public domain", "", false)?;
-        let host_port = super::port(
-            "Tunnel origin port (Cloudflare routes to http://127.0.0.1:THIS_PORT)",
-            45000,
-        )?;
-        ui::info("Cloudflare dashboard: https://dash.cloudflare.com/");
-        ui::info("Go to Networking > Tunnels, select your tunnel, then Add a replica to copy its install command.");
-        let token = tunnel_token(&text(
-            "Cloudflare tunnel token (or the full install command)",
-            "",
-            true,
-        )?)?;
+        let (hostname, token, host_port) = super::new_domain()?;
         call(
             "add_saved_domain",
             json!({"hostname":hostname,"token":token,"hostPort":host_port,"port":API_PORT}),

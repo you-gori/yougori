@@ -144,7 +144,7 @@ impl Downloads {
         if self.live.lock().await.contains_key(&request.environment_id) {
             return Err("This environment already has a download link. Turn it off before creating another one.".into());
         }
-        let environment = store.snapshot()?.environments.into_iter().find(|e| e.id == request.environment_id).ok_or("Environment not found")?;
+        let environment = store.environment(&request.environment_id)?;
         if environment.status != EnvironmentStatus::Stopped { return Err("Stop the environment before making its complete, consistent download copy.".into()); }
         let pid = request.process_id.unwrap_or(std::process::id());
         let identity = process_identity(pid).ok_or("The app or CLI creating this link is no longer running")?;

@@ -97,6 +97,32 @@ function enforceLocalRetention(state: PlatformState) {
   state.backupRuns = state.backupRuns.slice(0, 500)
 }
 
+function captureSnapshot(state: PlatformState, environment: PlatformState["environments"][number], name: string, deltaGb: number, createdAt?: string) {
+  state.snapshots.unshift({
+    id: id("snap"),
+    environmentId: environment.id,
+    name,
+    createdAt: createdAt ?? now(),
+    sizeGb: Math.max(0.2, environment.storageDeltaGb + 7.4),
+    deltaGb,
+    encrypted: true,
+    status: "ready",
+    environmentState: {
+      runtime: environment.runtime,
+      provider: environment.provider,
+      runtimePath: environment.runtimePath,
+      containerCommand: environment.containerCommand,
+      networkAccess: environment.networkAccess,
+      gpuAccess: environment.gpuAccess,
+      sandboxPolicy: environment.sandboxPolicy,
+      description: environment.description,
+      branchType: environment.branchType,
+      resourcePolicy: structuredClone(environment.resourcePolicy),
+    },
+    connections: structuredClone(state.connections.filter((item) => item.sourceId === environment.id || item.targetId === environment.id)),
+  })
+}
+
 function validateResourcePolicy(policy: ResourcePolicy | CreateEnvironmentRequest["resourcePolicy"]) {
   for (const [label, range] of [["CPU", policy.cpu], ["Memory", policy.memoryGb]] as const) {
     if (!Number.isFinite(range.min) || !Number.isFinite(range.preferred) || !Number.isFinite(range.max) || range.min <= 0) {
@@ -565,29 +591,7 @@ export const platformApi = {
       }
       const environment = state.environments.find((item) => item.id === environmentId)
       if (!environment) throw new Error("Environment not found")
-      state.snapshots.unshift({
-        id: id("snap"),
-        environmentId,
-        name: snapshotName,
-        createdAt: now(),
-        sizeGb: Math.max(0.2, environment.storageDeltaGb + 7.4),
-        deltaGb: Math.max(0.1, environment.storageDeltaGb * 0.18),
-        encrypted: true,
-        status: "ready",
-        environmentState: {
-          runtime: environment.runtime,
-          provider: environment.provider,
-          runtimePath: environment.runtimePath,
-          containerCommand: environment.containerCommand,
-          networkAccess: environment.networkAccess,
-          gpuAccess: environment.gpuAccess,
-          sandboxPolicy: environment.sandboxPolicy,
-          description: environment.description,
-          branchType: environment.branchType,
-          resourcePolicy: structuredClone(environment.resourcePolicy),
-        },
-        connections: structuredClone(state.connections.filter((item) => item.sourceId === environmentId || item.targetId === environmentId)),
-      })
+      captureSnapshot(state, environment, snapshotName, Math.max(0.1, environment.storageDeltaGb * 0.18))
       enforceLocalRetention(state)
       return writeBrowserState(state)
     })
@@ -680,29 +684,7 @@ export const platformApi = {
       if (!destination.connected) throw new Error("Backup destination is offline")
       const transfer = Math.max(0.1, environment.storageDeltaGb * 0.12)
       const createdAt = now()
-      state.snapshots.unshift({
-        id: id("snap"),
-        environmentId,
-        name: `Backup · ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date())}`,
-        createdAt,
-        sizeGb: Math.max(0.2, environment.storageDeltaGb + 7.4),
-        deltaGb: transfer,
-        encrypted: true,
-        status: "ready",
-        environmentState: {
-          runtime: environment.runtime,
-          provider: environment.provider,
-          runtimePath: environment.runtimePath,
-          containerCommand: environment.containerCommand,
-          networkAccess: environment.networkAccess,
-          gpuAccess: environment.gpuAccess,
-          sandboxPolicy: environment.sandboxPolicy,
-          description: environment.description,
-          branchType: environment.branchType,
-          resourcePolicy: structuredClone(environment.resourcePolicy),
-        },
-        connections: structuredClone(state.connections.filter((item) => item.sourceId === environmentId || item.targetId === environmentId)),
-      })
+      captureSnapshot(state, environment, `Backup · ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date())}`, transfer, createdAt)
       state.backupRuns.unshift({
         id: id("backup"),
         environmentId,

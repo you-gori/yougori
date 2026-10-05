@@ -375,7 +375,7 @@ pub async fn copy_files_from_environment(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<Value, String> {
-    let env = store.snapshot()?.environments.into_iter().find(|e| e.id == environment_id).ok_or("Environment not found")?;
+    let env = store.environment(&environment_id)?;
     let shared = env.runtime.starts_with("shared://tunnel/");
     if !shared && env.status != EnvironmentStatus::Running {
         return Err("Start or connect this environment first".into());

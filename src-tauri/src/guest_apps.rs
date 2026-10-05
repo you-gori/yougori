@@ -14,12 +14,7 @@ pub(crate) fn supports_apps(environment: &Environment) -> bool {
 }
 
 fn app_environment(store: &PlatformStore, id: &str) -> Result<Environment, String> {
-    let environment = store
-        .snapshot()?
-        .environments
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or("Environment not found")?;
+    let environment = store.environment(&id)?;
     // GPU containers run in the separate CUDA runtime, which has no app display.
     let supported = supports_apps(&environment);
     if !supported {
@@ -49,7 +44,7 @@ pub async fn micro_vm_apps(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<Value, String> {
-    let candidate = store.snapshot()?.environments.into_iter().find(|e| e.id == environment_id).ok_or("Environment not found")?;
+    let candidate = store.environment(&environment_id)?;
     if candidate.runtime.starts_with("shared://tunnel/") {
         if !matches!(action.as_str(), "status" | "install" | "launch" | "stop") { return Err("Use the authenticated remote display viewer".into()); }
         return crate::remote_access::request_saved(&candidate, "apps", json!({"action":action,"sessionId":session_id,"name":name,"command":command,"package":package})).await;
@@ -107,7 +102,7 @@ pub async fn open_micro_vm_app_window(
     app: AppHandle,
     store: State<'_, PlatformStore>,
 ) -> Result<bool, String> {
-    let candidate = store.snapshot()?.environments.into_iter().find(|e| e.id == environment_id).ok_or("Environment not found")?;
+    let candidate = store.environment(&environment_id)?;
     let environment = if candidate.runtime.starts_with("shared://tunnel/") { candidate } else { app_environment(&store, &environment_id)? };
 
     if !valid_session(&session_id)
