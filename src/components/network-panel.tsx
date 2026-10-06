@@ -7,6 +7,7 @@ import { Dialog, DialogClose, DialogTrigger, DialogPopup, DialogTitle, DialogDes
 import "@/components/network-panel.css"
 
 type Network = ReturnType<typeof useNetwork>
+const privacyNotice = "Network prompts and replies are visible to the provider and Yougori gateway during inference. They are not saved in gateway transcripts. Providers must not record or reuse them; current GPUs do not enforce host privacy."
 const money = (value: number) => `$${(value / 1e6).toFixed(2)}`
 const uptime = (seconds: number) => `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
 
@@ -61,6 +62,8 @@ export function ModelNetworkPanel({ environmentId }: { environmentId: string }) 
   return <section className="network-panel" aria-label="Model Network sharing">
     <NetworkAccount network={network} />
     <p>Paid sharing uses the Network price for its ten priced models; other models are shared free. Free models can be used without an account or wallet.</p>
+    <p>{privacyNotice}</p>
+    <Button size="sm" variant="ghost" onClick={() => void network.perform(() => workspaceApi.openUrl(`${network.status?.website ?? "https://yougori.com"}/privacy`))}>Security and privacy</Button>
     {share ? <NetworkShareDetails share={share} network={network} /> : <p>This model is not shared.</p>}
     <div className="network-actions">
       <Button size="sm" disabled={!network.status?.signedIn || network.busy} onClick={() => void network.perform(() => marketApi.share(environmentId, "paid"))}>Share paid</Button>
@@ -80,6 +83,7 @@ export function NetworkPanel() {
       <DialogDescription>Share models through the Yougori endpoint and manage your account.</DialogDescription>
       <DialogPanel className="network-panel">
         <NetworkAccount network={network} />
+        <p>{privacyNotice}</p>
         <Button size="sm" variant="outline" onClick={() => void network.perform(() => workspaceApi.openUrl(`${network.status?.website ?? "https://yougori.com"}/network`))}>Browse models and create API</Button>
         {network.status?.shares.length ? network.status.shares.map(share => <NetworkShareDetails key={share.environmentId} share={share} network={network} />) : <p>No shared models. Choose Paid or Free when running a Hugging Face model.</p>}
         {network.error ? <p role="alert">{network.error}</p> : null}

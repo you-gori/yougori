@@ -84,7 +84,9 @@ class ModelServerTests(unittest.TestCase):
                                    {"Authorization":"Bearer " + server.TOKEN})
                     response = client.getresponse()
                     self.assertEqual(response.status, 400 if failure in (ValueError, TypeError) else 500)
-                    self.assertNotIn(server.TOKEN.encode(), response.read())
+                    body = response.read()
+                    self.assertNotIn(server.TOKEN.encode(), body)
+                    self.assertNotIn(b"sensitive detail", body)
                     self.assertFalse(server.GENERATION.locked())
                 finally:
                     client.close()

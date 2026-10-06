@@ -25,6 +25,12 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# GPU workloads handle plaintext during inference. Do not persist their memory
+# in crash dumps. This does not prevent access by a host administrator.
+if os.name == "posix":
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
 MODEL = os.environ["YOUGORI_MODEL"]
 MODEL_REVISION = os.environ.get("YOUGORI_MODEL_REVISION")
 TOKEN = os.environ["YOUGORI_MODEL_TOKEN"]
@@ -632,21 +638,21 @@ def load_gguf():
         [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
          "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none"],
         env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
-    devices, tail = [], []
+    devices = []
 
     def logs():
         for line in process.stderr:
             line = line.rstrip()
-            tail[:] = (tail + [line])[-20:]
             found = re.search(r"Device \d+: (.+?), compute capability", line)
             if found:
                 devices.append(found.group(1))
-            print(line, file=sys.stderr, flush=True)
+            # Native diagnostics may include prompt text. Drain stderr without
+            # retaining or forwarding it to workload logs or health responses.
     threading.Thread(target=logs, daemon=True).start()
     deadline = time.monotonic() + 3600
     while True:
         if process.poll() is not None:
-            raise RuntimeError("llama.cpp stopped while loading the model: " + " | ".join(tail[-4:])[:1500])
+            raise RuntimeError("llama.cpp stopped while loading the model. Check the model format and GPU memory.")
         try:
             connection, response = llama("/health", timeout=5)
             response.read()
@@ -666,7 +672,7 @@ def load_gguf():
 
     def watch():
         process.wait()
-        STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model. " + " | ".join(tail[-3:])[:1500])
+        STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model.")
     threading.Thread(target=watch, daemon=True).start()
     gpu = (str(len(devices)) + " × " + devices[0]) if len(devices) > 1 else devices[0]
     STATE.update(status="ready", gpu=gpu, gpuCount=len(devices), context=LLAMA["context"], stream=True, weightsVerified=True,
@@ -1202,6 +1208,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
@@ -1255,9 +1262,10 @@ class Handler(BaseHTTPRequestHandler):
             reply = generate_decision(json.loads(raw), meter) if self.path == "/v1/systemone" else generate(json.loads(raw), self, meter)
             if reply is not None:
                 self.reply(*reply)
-        except (ValueError, TypeError) as error:
+        except (ValueError, TypeError):
             meter["outcome"] = "invalid"
-            self.reply(400, {"error": {"message": str(error).replace(TOKEN, "[redacted]")}})
+            # Tokenizers and model libraries can echo the input in exceptions.
+            self.reply(400, {"error": {"message": "Invalid model request. Check message roles, content, context length and generation settings."}})
         except Exception:
             meter["outcome"] = "error"
             self.reply(500, {"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})

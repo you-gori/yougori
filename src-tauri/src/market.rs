@@ -96,6 +96,7 @@ impl From<ApiError> for String {
 
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(40))
         .redirect(reqwest::redirect::Policy::none())
@@ -113,13 +114,20 @@ async fn api(method: reqwest::Method, path: &str, bearer: Option<&str>, body: Op
     if let Some(body) = body {
         request = request.json(body);
     }
-    let response = request.send().await.map_err(|error| ApiError {
+    let mut response = request.send().await.map_err(|error| ApiError {
         status: 0,
         code: "network".into(),
         message: format!("Cannot reach the Yougori Network at {site}: {}", error.without_url()),
     })?;
     let status = response.status().as_u16();
-    let bytes = response.bytes().await.map_err(|_| ApiError { status, code: "network".into(), message: "The Yougori Network answer was interrupted".into() })?;
+    const LIMIT: usize = 1024 * 1024;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| ApiError { status, code: "network".into(), message: "The Yougori Network answer was interrupted".into() })? {
+        if bytes.len() + chunk.len() > LIMIT {
+            return Err(ApiError { status, code: "response_limit".into(), message: "The Yougori Network answer exceeded its size limit".into() });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
         return Ok(value);

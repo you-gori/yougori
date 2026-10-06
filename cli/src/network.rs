@@ -63,6 +63,7 @@ pub async fn signed_in() -> Result<bool, String> {
 pub const SIGN_IN_FIRST: &str = "Sign in to the Yougori Network first: yougori login. Sign in or create a free account with your wallet in the browser, then approve the CLI or App.";
 
 pub async fn share(environment_id: &str, mode: &str) -> Result<Value, String> {
+    eprintln!("Network privacy: providers and the Yougori gateway can read prompts and replies during inference. Do not record or reuse caller content. Hardware-enforced host privacy is unavailable. https://yougori.com/privacy");
     call("market_share_model", json!({"environmentId": environment_id, "mode": mode})).await
 }
 
