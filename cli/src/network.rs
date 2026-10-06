@@ -60,7 +60,7 @@ pub async fn signed_in() -> Result<bool, String> {
     Ok(call("market_status", json!({})).await?["signedIn"] == true)
 }
 
-pub const SIGN_IN_FIRST: &str = "Sign in to the Yougori Network first: yougori login. An account is free; a wallet is only needed to get paid.";
+pub const SIGN_IN_FIRST: &str = "Sign in to the Yougori Network first: yougori login. Sign in or create a free account with your wallet in the browser, then approve the CLI or App.";
 
 pub async fn share(environment_id: &str, mode: &str) -> Result<Value, String> {
     call("market_share_model", json!({"environmentId": environment_id, "mode": mode})).await

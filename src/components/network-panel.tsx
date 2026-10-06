@@ -20,7 +20,7 @@ export function NetworkAccount({ network }: { network: Network }) {
       <p>Credit {money(status.account.creditMicros)} · Earnings {money(status.account.earningsMicros)} · Available {money(status.account.availableMicros)}</p>
       <div className="network-actions"><Button size="sm" variant="outline" disabled={busy} onClick={() => void perform(() => workspaceApi.openUrl(`${website}/account`))}>Manage account and wallet</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => void perform(marketApi.signOut)}>Sign out</Button></div>
     </> : <>
-      <p>Sign in once for the app and CLI. Create a free account in your browser. A wallet is needed to deposit or withdraw.</p>
+      <p>Sign in or create a free account with your wallet in the browser. One approval signs in both the app and CLI. No transaction is sent when signing in.</p>
       {status?.login ? <div role="status">
         <p>Approve code <strong>{status.login.userCode}</strong></p>
         <p>{status.login.verificationUrl}</p>
