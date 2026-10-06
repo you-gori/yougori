@@ -14,6 +14,15 @@ const HEARTBEAT: Duration = Duration::from_secs(60);
 const TICK: Duration = Duration::from_secs(15);
 const EVENT: &str = "yougori-market";
 
+/// Direct native call; credentials/prompts do not enter automation jobs or history.
+#[tauri::command]
+pub async fn confidential_network_chat(api_key:String,node_id:String,model:String,prompt:String,policy_path:Option<String>)->Result<Value,String>{
+    if prompt.len()>32768{return Err("Confidential prompt exceeds 32 KiB".into())}
+    let api_key=age::secrecy::SecretString::from(api_key);
+    use age::secrecy::ExposeSecret;
+    yougori_cli::confidential::chat(&format!("{}/v1",website()),api_key.expose_secret(),node_id,json!({"model":model,"messages":[{"role":"user","content":prompt}],"max_tokens":1024}),policy_path.as_deref()).await
+}
+
 /// yougori.com, or `YOUGORI_NETWORK_URL` for a local website during development.
 pub(crate) fn website() -> String {
     std::env::var("YOUGORI_NETWORK_URL")

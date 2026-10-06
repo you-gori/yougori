@@ -2,6 +2,7 @@ import { marketApi, type NetworkShare } from "@/api/market-api"
 import { workspaceApi } from "@/api/workspace-api"
 import { useNetwork } from "@/components/use-network"
 import { useState } from "react"
+import { ConfidentialNetworkChat } from "@/components/confidential-network-chat"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogClose, DialogTrigger, DialogPopup, DialogTitle, DialogDescription, DialogPanel } from "@/components/ui/dialog"
 import "@/components/network-panel.css"
@@ -84,6 +85,7 @@ export function NetworkPanel() {
       <DialogPanel className="network-panel">
         <NetworkAccount network={network} />
         <p>{privacyNotice}</p>
+        <ConfidentialNetworkChat />
         <Button size="sm" variant="outline" onClick={() => void network.perform(() => workspaceApi.openUrl(`${network.status?.website ?? "https://yougori.com"}/network`))}>Browse models and create API</Button>
         {network.status?.shares.length ? network.status.shares.map(share => <NetworkShareDetails key={share.environmentId} share={share} network={network} />) : <p>No shared models. Choose Paid or Free when running a Hugging Face model.</p>}
         {network.error ? <p role="alert">{network.error}</p> : null}

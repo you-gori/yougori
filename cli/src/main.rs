@@ -41,6 +41,11 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
     let args = if args.is_empty() {
         vec!["cli".into()]
     } else { args };
+    if args[0]=="confidential" {
+        if args.iter().any(|a| matches!(a.as_str(),"--help"|"-h")) { println!("{}",yougori_cli::confidential::command::HELP); return Ok(0); }
+        println!("{}",wire_json(yougori_cli::confidential::command::run(&args[1..]).await?));
+        return Ok(0);
+    }
     if args.first().is_some_and(|arg| arg == "cli")
         && args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
         println!("Yougori interactive CLI\n\nUsage: yougori [cli]\n\nChoose actions with arrow keys and Enter. Browse files and folders when a path is needed.\nBack returns to the home menu; Escape cancels the current flow.\nExit leaves your workloads running. Requires an interactive terminal.\n\nYougori quietly adds a project shortcut in the current folder when supported. Run that shortcut when you want to start the project.\nRun yougori help to see all commands.");

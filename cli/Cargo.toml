@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "yougori-cli"
 path = "src/legacy.rs"
 
+[[bin]]
+name = "yougori-confidential-runner"
+path = "src/confidential/runner_main.rs"
+
 [dependencies]
 yougori-vault = { path = "../vault" }
 serde = { version = "1", features = ["derive"] }
@@ -22,13 +26,17 @@ serde_json = "1"
 serde_yaml_ng = "0.10"
 shell-words = "1"
 base64 = "0.22"
+age = "=0.12.1"
+ring = "0.17"
+zeroize = "1"
+axum = "0.8"
 crossterm = "0.29"
 sha2 = "0.10"
 tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 semver = "1"
 notify = "8"
-tokio = { version = "1", features = ["io-util", "net", "rt", "time", "signal", "macros", "sync"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time", "signal", "macros", "sync", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Console"] }

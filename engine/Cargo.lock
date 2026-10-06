@@ -7741,11 +7741,14 @@ dependencies = [
 name = "yougori-cli"
 version = "1.0.7"
 dependencies = [
+ "age",
+ "axum",
  "base64 0.22.1",
  "crossterm",
  "libc",
  "notify",
  "reqwest",
+ "ring",
  "semver",
  "serde",
  "serde_json",
@@ -7756,6 +7759,7 @@ dependencies = [
  "tokio",
  "windows-sys 0.61.2",
  "yougori-vault",
+ "zeroize",
 ]
 
 [[package]]

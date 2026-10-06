@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "expiresAt": 0,
+  "issuer": "https://portal.trustauthority.intel.com",
+  "keys": [],
+  "images": [],
+  "revokedKids": []
+}

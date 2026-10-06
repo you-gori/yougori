@@ -620,6 +620,7 @@ pub fn run() {
             model_runner::model_api_status,
             model_runner::model_usage,
             market::market_status,
+            market::confidential_network_chat,
             market::market_sign_in,
             market::market_sign_out,
             market::market_share_model,

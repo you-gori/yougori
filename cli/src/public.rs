@@ -59,6 +59,8 @@ Public commands:
   yougori vm run IMAGE_OR_ISO      Alias for machine run
   yougori microvm run IMAGE        Alias for run --isolation microvm
   yougori model run hf.co/OWNER/MODEL [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
+  yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
+                                  Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--quant Q4_K_M]
                                    Share paid (10 priced models) or free through Yougori

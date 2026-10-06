@@ -8,3 +8,7 @@
 .network-stats dt { color: var(--muted-foreground); }
 .network-stats dd { margin: 4px 0 0; }
 @media (max-width: 500px) { .network-stats { grid-template-columns: 1fr; } }
+
+.confidential-chat { display: grid; gap: 12px; margin-top: 12px; }
+.confidential-chat label { display: grid; gap: 6px; }
+.confidential-chat pre { white-space: pre-wrap; overflow-wrap: anywhere; }
