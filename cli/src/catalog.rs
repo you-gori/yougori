@@ -396,7 +396,7 @@ pub fn methods() -> Vec<Method> {
     method!(
         get_cuda_runtime_status,
         "Read actual NVIDIA/WSL compatibility and installation checks.",
-        "",
+        "storageDrive?:string",
         json!({}),
         false,
         None
@@ -404,7 +404,7 @@ pub fn methods() -> Vec<Method> {
     method!(
         install_cuda_runtime,
         "Install/update Yougori's dedicated CUDA runtime, not the user's other WSL distributions.",
-        "",
+        "storageDrive?:string",
         json!({}),
         true,
         Some("Installs/updates the dedicated WSL CUDA runtime.")
@@ -648,6 +648,16 @@ impl Method {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cuda_checks_and_updates_target_the_requested_storage_drive() {
+        for name in ["get_cuda_runtime_status","install_cuda_runtime"] {
+            let method=find(name).unwrap();
+            method.validate(&json!({"storageDrive":"D:\\"})).unwrap();
+            method.validate(&json!({})).unwrap();
+            assert!(method.validate(&json!({"storageDrive":123})).is_err());
+        }
+        assert!(find("install_cuda_runtime").unwrap().confirmation.is_some());
+    }
     #[test]
     fn every_example_matches_its_contract_and_names_are_unique() {
         let mut names = std::collections::HashSet::new();

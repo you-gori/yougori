@@ -255,7 +255,8 @@ impl RuntimeManager {
         let status = self.cuda_status().await;
         if !status.supported || !status.installed || status.update_available {
             return Err(format!(
-                "Open New environment → GPU to check this computer and set up or update NVIDIA CUDA first. {}",
+                "{}Open New environment → GPU to check this computer and set up or update NVIDIA CUDA first. {}",
+                if status.update_available { "[YOUGORI_CUDA_UPDATE_REQUIRED] " } else { "" },
                 status.detail
             ));
         }

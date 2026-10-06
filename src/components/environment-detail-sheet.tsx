@@ -42,6 +42,7 @@ import { Status } from "@/components/shared/status"
 import { LocalBackupDialog } from "@/components/dialogs/local-backup-dialog"
 import { FactoryResetDialog } from "@/components/dialogs/factory-reset-dialog"
 import { CudaVerification } from "@/components/cuda-verification"
+import { CudaUpdateAction } from "@/components/cuda-update-action"
 import "./environment-detail-sheet.css"
 import { PauseIcon, XIcon } from "lucide-react"
 import { CloudEnvironmentDetails } from "@/components/cloud-environment-details"
@@ -212,6 +213,7 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
         </DialogPanel>
         <DialogFooter className="inspector-footer">
           {actionError ? <p tabIndex={0} className="inspector-action-error max-h-32 min-w-0 max-w-full overflow-y-auto overscroll-contain whitespace-pre-wrap [overflow-wrap:anywhere]" role="alert">{actionError}</p> : null}
+          <CudaUpdateAction environment={environment} error={actionError || environment.lastError} disabled={busy} onUpdated={() => { setActionError("") }} />
           {!deleting && (action || localAction) ? <p className="inspector-description" role="status">{action ? environmentActionLabel[action] : localAction}</p> : null}
           <div className="inspector-footer-row">
           <Menu>

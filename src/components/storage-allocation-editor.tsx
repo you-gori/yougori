@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useState, type Ref } from "react"
 import { platformApi } from "@/api/platform-api"
 import { Button } from "@/components/ui/button"
+import { CudaUpdateAction, needsCudaUpdate } from "@/components/cuda-update-action"
 import { ConfigurationHelp } from "@/components/configuration-help"
 import { StorageCapacitySlider } from "@/components/storage-capacity-slider"
 import type { SectionSave } from "@/lib/resource-controls"
@@ -53,6 +54,8 @@ export function StorageAllocationEditor({ environment, saveRef, disabled = false
       {belowUsage && touched ? <p role="alert" className="text-xs text-destructive-foreground">{usageMessage}</p> : null}
       {mustStop ? <p role="status" className="text-xs text-muted-foreground">{stopMessage}</p> : null}
     </> : null}
-    {error ? <div role="alert" className="text-xs text-destructive-foreground">{error}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => setRetry(value => value + 1)}>Refresh storage</Button></div> : null}
+    {error ? needsCudaUpdate(environment, error)
+      ? <CudaUpdateAction environment={environment} error={error} disabled={disabled} onUpdated={() => setRetry(value => value + 1)} />
+      : <div role="alert" className="text-xs text-destructive-foreground">{error}<Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => setRetry(value => value + 1)}>Refresh storage</Button></div> : null}
   </div>
 }
