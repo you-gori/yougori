@@ -12,6 +12,13 @@ use yougori_cli::{client, network, public};
 
 const CODE: ui::Rgb = ui::Rgb(0xa5, 0xb4, 0xfc);
 
+fn show_network_share(share: &Value) {
+    let text=clean(&network::summary(share));
+    if share["live"]==true {ui::step(&text)}
+    else if share["status"]=="ready" {ui::warn(&text)}
+    else {ui::info(&text)}
+}
+
 /// `model run MODEL` and `model chat ENV` on a terminal; scripts keep the JSON commands.
 pub fn requested(args: &[String]) -> bool {
     args.len() >= 3
@@ -257,7 +264,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
     };
     if let Some(mode) = options.share_mode {
         match network::share(&id, mode).await {
-            Ok(share) => ui::step(&clean(&network::summary(&share))),
+            Ok(share) => show_network_share(&share),
             Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
         }
     }
@@ -289,6 +296,12 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
     let exit = match wait_ready(id, name).await? {
         Err(exit) => exit,
         Ok(status) => {
+            if let Some(warning)=status["chatWarning"].as_str() {
+                ui::warn(&clean(warning));
+                if let Some(model)=status["chatModelSuggestion"].as_str() {
+                    ui::info(&format!("For assistant chat: yougori model run hf.co/{}",clean(model)));
+                }
+            }
             if status["task"] == "structured-decision" {
                 drop(footer);
                 ui::outro(&format!("{name} is ready for typed decisions"));
@@ -297,7 +310,7 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
                 return Ok(());
             }
             match network::settled(id, Duration::from_secs(45)).await {
-                Ok(Some(share)) => ui::step(&clean(&network::summary(&share))),
+                Ok(Some(share)) => show_network_share(&share),
                 Err(error) => ui::warn(&clean(&error)),
                 _ => {}
             }

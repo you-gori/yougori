@@ -480,6 +480,13 @@ def load_transformers():
     gpu_name = torch.cuda.get_device_name(0)
     STATE.update(status="ready", gpu=f"{gpu_count} × {gpu_name}" if gpu_count > 1 else gpu_name,
                  gpuCount=gpu_count, context=context_window(), stream=True, weightsVerified=True, revision=revision, runner="transformers")
+    if not TOKENIZER.chat_template and MODEL not in ("Cloudflare/clef", "superagent-ai/security-one-27b"):
+        STATE.update(chatTemplate=False, chatWarning="This is a base checkpoint without a chat template. It can continue text but is not trained to act as an assistant. Use an instruction-tuned (-it/Instruct) checkpoint for chat.")
+        if MODEL in ("google/gemma-4-12B", "google/gemma-4-31B"):
+            STATE["chatModelSuggestion"] = MODEL + "-it"
+        print(STATE["chatWarning"], flush=True)
+    else:
+        STATE["chatTemplate"] = True
     if MODEL == "superagent-ai/security-one-27b":
         STATE.update(task="structured-decision", stream=False, api="systemone", runner="security-one")
 
@@ -749,7 +756,8 @@ def render(messages):
 def prepare(messages, count, truncate):
     """Tokenize the conversation, dropping the oldest turns when truncate is set. Returns (inputs, tokens, dropped)."""
     def measure(messages):
-        inputs = TOKENIZER(render(messages), return_tensors="pt")
+        # Repository templates already include BOS/EOS; adding them twice harms replies.
+        inputs = TOKENIZER(render(messages), return_tensors="pt", add_special_tokens=not bool(TOKENIZER.chat_template))
         return inputs, inputs["input_ids"].shape[-1]
     inputs, tokens, dropped = fit(messages, count, truncate, context_window(), measure)
     return inputs.to("cuda"), tokens, dropped
@@ -801,6 +809,50 @@ class Cancelled:
         return TORCH.full((input_ids.shape[0],), self.event.is_set(), dtype=TORCH.bool, device=input_ids.device)
 
 
+BASE_TURN = re.compile(r"\n[ \t]*(?:user|assistant|system)[ \t]*:", re.IGNORECASE)
+
+
+class BaseTurnStop:
+    """Base text-completion models must not invent the caller's next chat turns."""
+    def __init__(self, prompt_tokens):
+        self.prompt_tokens = prompt_tokens
+
+    def __call__(self, input_ids, scores, **kwargs):
+        text = TOKENIZER.decode(input_ids[0, self.prompt_tokens:], skip_special_tokens=True)
+        return TORCH.full((input_ids.shape[0],), bool(BASE_TURN.search(text)), dtype=TORCH.bool, device=input_ids.device)
+
+
+def base_chat():
+    return getattr(TOKENIZER, "chat_template", True) in (None, "")
+
+
+def criteria(stop, prompt_tokens):
+    from transformers import StoppingCriteriaList
+    return StoppingCriteriaList([Cancelled(stop), *([BaseTurnStop(prompt_tokens)] if base_chat() else [])])
+
+
+class BaseReplyFilter:
+    """Keep possible role delimiters buffered even when split across stream chunks."""
+    def __init__(self):
+        self.pending, self.done = "", False
+
+    def push(self, text, final=False):
+        if self.done:
+            return ""
+        self.pending += text
+        boundary = BASE_TURN.search(self.pending)
+        if boundary:
+            reply = self.pending[:boundary.start()]
+            self.pending, self.done = "", True
+            return reply
+        # Retain from the last newline so whitespace/split role names cannot leak.
+        split = len(self.pending) if final else max(0, self.pending.rfind("\n"))
+        if not final and "\n" not in self.pending:
+            split = max(0, len(self.pending) - 32)
+        reply, self.pending = self.pending[:split], self.pending[split:]
+        return reply
+
+
 def completion_id():
     return "chatcmpl-" + secrets.token_hex(12)
 
@@ -816,7 +868,7 @@ def non_streaming_output(inputs, kwargs, meter, operation=None):
     def work():
         try:
             with TORCH.inference_mode():
-                result["output"] = operation() if operation else NETWORK.generate(**inputs, **kwargs, stopping_criteria=StoppingCriteriaList([Cancelled(stop)]))
+                result["output"] = operation() if operation else NETWORK.generate(**inputs, **kwargs, stopping_criteria=criteria(stop, meter.get("prompt_tokens", 0)))
         except BaseException as error:
             result["error"] = error
         finally:
@@ -1079,6 +1131,8 @@ def generate(body, handler, meter):
         kwargs = {"max_new_tokens": count, "max_time": STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS, "do_sample": temperature > 0, "pad_token_id": pad}
         if temperature > 0:
             kwargs["temperature"] = temperature
+        if base_chat():
+            kwargs["repetition_penalty"] = 1.1
         extra = {"truncated_messages": dropped, "context_window": context_window()} if truncate else {}
         if stream:
             stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter)
@@ -1086,8 +1140,11 @@ def generate(body, handler, meter):
         output = non_streaming_output(inputs, kwargs, meter)
         generated = output[0, input_tokens:]
         meter.update(outcome="ok", completion_tokens=len(generated))
+        content = TOKENIZER.decode(generated, skip_special_tokens=True)
+        if base_chat():
+            content = BASE_TURN.split(content, maxsplit=1)[0].rstrip()
         return 200, {"id": completion_id(), "object": "chat.completion", "created": int(time.time()), "model": MODEL,
-                     "choices": [{"index": 0, "message": {"role": "assistant", "content": TOKENIZER.decode(generated, skip_special_tokens=True)}, "finish_reason": "stop" if len(generated) < count else "length"}],
+                     "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop" if len(generated) < count else "length"}],
                      "usage": {"prompt_tokens": input_tokens, "completion_tokens": len(generated), "total_tokens": input_tokens + len(generated), **extra}}
     except GenerationTimeout as error:
         meter["outcome"] = "error"
@@ -1113,7 +1170,7 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
     def work():
         try:
             with TORCH.inference_mode():
-                result["output"] = NETWORK.generate(**inputs, **kwargs, streamer=streamer, stopping_criteria=StoppingCriteriaList([Cancelled(stop)]))
+                result["output"] = NETWORK.generate(**inputs, **kwargs, streamer=streamer, stopping_criteria=criteria(stop, input_tokens))
         except BaseException as error:
             result["error"] = error
             streamer.end()
@@ -1131,6 +1188,7 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
     handler.end_headers()
 
     disconnected = False
+    base_filter = BaseReplyFilter() if base_chat() else None
     def send(value):
         nonlocal disconnected
         if disconnected:
@@ -1164,7 +1222,11 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
         except StopIteration:
             break
         if text:
-            send(chunk({"content": text}))
+            text = base_filter.push(text) if base_filter else text
+            if text:
+                send(chunk({"content": text}))
+            if base_filter and base_filter.done:
+                stop.set()
     thread.join(STREAM_CANCEL_GRACE_SECONDS)
     with ownership:
         if not finished.is_set():
@@ -1177,7 +1239,7 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
         send(b"[DONE]")
         return
     error = result.get("error")
-    meter["outcome"] = "error" if error is not None else "cancelled" if stop.is_set() else "ok"
+    meter["outcome"] = "error" if error is not None else "cancelled" if stop.is_set() and not (base_filter and base_filter.done) else "ok"
     if error is None:
         meter["completion_tokens"] = result["output"].shape[-1] - input_tokens
     if error is not None:
@@ -1187,6 +1249,10 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
         else:
             send({"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})
     else:
+        if base_filter:
+            text = base_filter.push("", final=True)
+            if text:
+                send(chunk({"content": text}))
         generated = result["output"].shape[-1] - input_tokens
         finish = "stop" if generated < count else "length"
         send(chunk({}, finish, usage={"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **extra}))

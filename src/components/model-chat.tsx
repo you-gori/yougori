@@ -290,6 +290,7 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
         </div>}
       </div>
 
+      {status?.chatWarning ? <p role="status" className="model-chat-notice">{status.chatWarning}{status.chatModelSuggestion ? <> Suggested: <code>hf.co/{status.chatModelSuggestion}</code></> : null}</p> : null}
       {environment?.lastError ? <p role="alert" className="model-error">{environment.lastError}</p> : null}
       {environmentStatus === "stopped" || environmentStatus === "error" ? <Button disabled={Boolean(environmentActions[environmentId])} onClick={() => void setEnvironmentStatus(environmentId, "running").catch(() => undefined)}>Start model</Button> : null}
       {error ? <p role="alert" className="model-error">{error}</p> : null}

@@ -413,7 +413,8 @@ pub(crate) async fn api_status(app: &AppHandle, environment_id: &str) -> Result<
         "model": model,
         "apiKey": token,
         "apiUrl": local.map(|p| format!("http://127.0.0.1:{}/v1", p["hostPort"])),
-        "publicUrl": public.and_then(|p| p["urls"][0].as_str()).map(|url| format!("{}/v1", url.trim_end_matches('/'))),
+        "publicUrl": public.filter(|p|p["status"]=="ready").and_then(|p| p["urls"][0].as_str()).map(|url| format!("{}/v1", url.trim_end_matches('/'))),
+        "publicStatus": public.map(|p|p["status"].clone()),
         "publicId": public.map(|p| p["id"].clone()),
         "publicAccount": public.is_some_and(|p| p["cloudflareAccount"] == true),
     }))

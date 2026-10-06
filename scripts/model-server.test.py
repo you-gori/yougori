@@ -65,6 +65,30 @@ def model_startup(count=1, files=("model.safetensors",), config=None, versions=N
 
 
 class ModelServerTests(unittest.TestCase):
+    def test_repository_chat_template_is_tokenized_without_duplicate_special_tokens(self):
+        tokenizer=Mock(chat_template="repository template")
+        tokenizer.apply_chat_template.return_value="<bos>user: hello<turn>assistant:"
+        class Inputs(dict):
+            def to(self, device): return self
+        tokenizer.return_value=Inputs(input_ids=SimpleNamespace(shape=(1,5)))
+        with patch.object(server,"TOKENIZER",tokenizer), patch.object(server,"context_window",return_value=2048):
+            server.prepare([{"role":"user","content":"hello"}],64,False)
+        tokenizer.assert_called_once_with("<bos>user: hello<turn>assistant:",return_tensors="pt",add_special_tokens=False)
+
+    def test_base_reply_delimiters_never_leak_across_stream_chunk_boundaries(self):
+        for role in ("user", "Assistant", "system"):
+            content="Hello, how can I help?\n"+role+": fabricated turn"
+            for split in range(len(content)):
+                reply=server.BaseReplyFilter()
+                output=reply.push(content[:split])+reply.push(content[split:])+reply.push("",final=True)
+                self.assertEqual(output,"Hello, how can I help?")
+                self.assertTrue(reply.done)
+        reply=server.BaseReplyFilter()
+        self.assertEqual(reply.push("First line\nSecond line")+reply.push("",final=True),"First line\nSecond line")
+        # Chat checkpoints bypass this base-model filter and preserve their response text.
+        with patch.object(server,"TOKENIZER",SimpleNamespace(chat_template="official")):
+            self.assertFalse(server.base_chat())
+
     def test_model_http_failures_never_disclose_the_api_key(self):
         torch = SimpleNamespace(inference_mode=lambda: ExitStack(), cuda=SimpleNamespace(OutOfMemoryError=MemoryError))
         for failure in (ValueError, TypeError, TimeoutError):
@@ -433,7 +457,8 @@ class ModelServerTests(unittest.TestCase):
                 self.shape = (1, n)
         class Tokenizer:
             chat_template = None
-            def __call__(self, text, return_tensors):
+            def __call__(self, text, return_tensors, add_special_tokens):
+                assert add_special_tokens is True
                 return Inputs(input_ids=Shape(len(text.split())))
         class Config:
             max_position_embeddings = 20

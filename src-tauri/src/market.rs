@@ -89,6 +89,9 @@ struct Live {
     node: Option<Value>,
     warnings: Vec<String>,
     listing: Option<String>,
+    link_since: Option<Instant>,
+    link_failures: u8,
+    reconnected: Option<Instant>,
 }
 
 struct ApiError {
@@ -527,6 +530,16 @@ fn waiting(status: &str) -> &'static str {
     }
 }
 
+/// Recover only our quick tunnel. Saved domains and other publications are preserved.
+fn owned_quick_link(share: &Share, access: &Value) -> bool {
+    share.published.as_deref().is_some_and(|id|access["publicId"]==id) && access["publicAccount"]!=true
+}
+
+fn reconnect_due(live: &Live) -> bool {
+    live.link_failures >= 2 && live.link_since.is_some_and(|at|at.elapsed()>=Duration::from_secs(60))
+        && live.reconnected.is_none_or(|at|at.elapsed()>=Duration::from_secs(120))
+}
+
 /// Brings one share up to date: public link when the model is ready, registration, heartbeat.
 async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     let market = app.state::<Market>();
@@ -554,6 +567,10 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     if status == "ready" {
         let mut current = crate::model_runner::api_status(app, environment_id).await?;
         if current["publicUrl"].is_null() {
+            if owned_quick_link(&share, &current) {
+                let id=share.published.take().unwrap();
+                crate::automation::dispatch::dispatch(app,"unpublish_environment_service",&json!({"publicationId":id})).await?;
+            }
             let publication = crate::automation::dispatch::dispatch(app, "publish_environment_service", &json!({"environmentId": environment_id, "port": 8000, "kind": "cloudflare"})).await?;
             share.published = publication["id"].as_str().map(str::to_owned);
             current = crate::model_runner::api_status(app, environment_id).await?;
@@ -562,6 +579,10 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     }
     let public_url = access.as_ref().and_then(|a| a["publicUrl"].as_str()).map(str::to_owned);
     let api_key = access.as_ref().and_then(|a| a["apiKey"].as_str()).map(str::to_owned);
+    if share.live.link_since.is_none() || share.live.sent_url!=public_url {
+        share.live.link_since=Some(Instant::now());
+        share.live.link_failures=0;
+    }
     let health = health.unwrap_or(Value::Null);
     let mut details = json!({
         "status": status, "runner": runner, "quant": quant, "appVersion": env!("CARGO_PKG_VERSION"),
@@ -614,7 +635,7 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
         share.live.beat = None;
     }
     let reported = Some((status.clone(), public_url.clone()));
-    if share.live.beat.is_none_or(|at| at.elapsed() >= HEARTBEAT) || share.live.reported != reported {
+    if share.live.beat.is_none_or(|at| at.elapsed() >= if status=="ready" && !share.live.online { TICK } else { HEARTBEAT }) || share.live.reported != reported {
         let mut body = details;
         if share.live.sent_url != public_url {
             body["publicUrl"] = json!(public_url);
@@ -630,10 +651,11 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
                 share.live.sent_url = public_url;
                 share.live.reported = reported;
                 share.live.beat = Some(Instant::now());
+                share.live.link_failures=if share.live.online {0} else if status=="ready" && value["lastError"].is_string() {share.live.link_failures.saturating_add(1)} else {0};
                 share.live.message = if share.live.online {
                     "Live on the Yougori Network".into()
                 } else if status == "ready" {
-                    value["lastError"].as_str().map(|e| format!("Checking the public link: {e}")).unwrap_or_else(|| "Checking the public link".into())
+                    if value["lastError"].is_string() {"Local model ready; public link is offline".into()} else {"Checking the public link".into()}
                 } else {
                     waiting(&status).into()
                 };
@@ -654,6 +676,20 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
                 share.live.message = error.message;
             }
         }
+    }
+    if status=="ready" && reconnect_due(&share.live) && access.as_ref().is_some_and(|a|owned_quick_link(&share,a)) {
+        let id=share.published.clone().unwrap();
+        crate::automation::dispatch::dispatch(app,"unpublish_environment_service",&json!({"publicationId":id})).await?;
+        share.published=None;
+        share.live.reconnected=Some(Instant::now());
+        share.live.link_failures=0;
+        share.live.message="Local model ready; reconnecting the public link".into();
+        // Clear the stale website address before opening the replacement on the next tick.
+        let id=share.node_id.clone().unwrap_or_default();
+        let _=api(reqwest::Method::POST,&format!("/api/market/nodes/{id}/heartbeat"),token.as_deref(),Some(&json!({"status":"ready","publicUrl":null}))).await;
+        share.live.sent_url=None;
+        share.live.reported=None;
+        share.live.beat=None;
     }
     share.live.status = status;
     store_share(app, share).await
@@ -719,6 +755,19 @@ pub(crate) fn start(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tunnel_recovery_is_owned_bounded_and_waits_for_dns_propagation() {
+        let share=Share { environment_id:"env".into(),model:"owner/model".into(),mode:"free".into(),node_id:None,published:Some("owned".into()),live:Live::default() };
+        assert!(owned_quick_link(&share,&json!({"publicId":"owned","publicAccount":false})));
+        assert!(!owned_quick_link(&share,&json!({"publicId":"other","publicAccount":false})));
+        assert!(!owned_quick_link(&share,&json!({"publicId":"owned","publicAccount":true})));
+        let mut live=Live {link_failures:2,link_since:Some(Instant::now()),..Live::default()};
+        assert!(!reconnect_due(&live));
+        live.link_since=Some(Instant::now()-Duration::from_secs(61));assert!(reconnect_due(&live));
+        live.reconnected=Some(Instant::now());assert!(!reconnect_due(&live));
+        live.reconnected=Some(Instant::now()-Duration::from_secs(121));assert!(reconnect_due(&live));
+        live.link_failures=1;assert!(!reconnect_due(&live));
+    }
     fn pending_login(generation: u64) -> Login {
         Login {
             generation, user_code: "CODE-1234".into(), verification_url: "https://yougori.com/device".into(),
