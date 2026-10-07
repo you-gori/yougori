@@ -110,8 +110,8 @@ function EnvironmentCard({ data }: { data: EnvironmentNodeData }) {
     </Button>
   </div> : null
   const access = !cloud && !isNativeApplication ? <div className="nodrag environment-list-access-controls">
-    {allCapabilities.map(({ capability }) => <label key={capability} title={capabilityIssue(environment, capability) ?? (capability === "pc" ? "Turn on to choose shared folders; turn off to disconnect them." : "Allow internet access")}>
-      <Switch data-tour={capability === "pc" ? "row-pc" : "row-internet"} aria-label={`${capability === "internet" ? "Internet access" : "My PC access"} for ${environment.name}`} checked={capabilityEnabled(environment, capability)} disabled={busy || data.pending || Boolean(capabilityIssue(environment, capability))} onCheckedChange={enabled => data.onCapabilityChange(environment.id, capability, enabled)} />
+    {allCapabilities.map(({ capability }) => <label key={capability} data-tour={capability === "pc" ? "row-pc" : "row-internet"} title={capabilityIssue(environment, capability) ?? (capability === "pc" ? "Turn on to choose shared folders; turn off to disconnect them." : "Allow internet access")}>
+      <Switch aria-label={`${capability === "internet" ? "Internet access" : "My PC access"} for ${environment.name}`} checked={capabilityEnabled(environment, capability)} disabled={busy || data.pending || Boolean(capabilityIssue(environment, capability))} onCheckedChange={enabled => data.onCapabilityChange(environment.id, capability, enabled)} />
       <span aria-hidden="true">{capability === "internet" ? "Internet" : "My PC"}{capability === "pc" && environment.workspace?.shares.length ? ` · ${environment.workspace.shares.length}` : ""}</span>
     </label>)}
   </div> : null

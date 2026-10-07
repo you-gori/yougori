@@ -64,6 +64,8 @@ class Provider(BaseHTTPRequestHandler):
         self.end_headers()
         for content in ["Hel", "lo", "!"]:
             self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {"content": content}, "finish_reason": None}]}) + "\n\n").encode())
+        if self.server.complete:
+            self.wfile.write(("data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}) + "\n\n").encode())
         self.wfile.write(("data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 3}}) + "\n\ndata: [DONE]\n\n").encode())
         self.wfile.flush()
         self.close_connection = True
@@ -74,6 +76,7 @@ class ModelRelayTests(unittest.TestCase):
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
         cls.server.seen = []
+        cls.server.complete = True
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         model.LLAMA.update(port=cls.server.server_address[1], context=4096)
@@ -107,6 +110,16 @@ class ModelRelayTests(unittest.TestCase):
         self.assertEqual(events[-1]["usage"]["context_window"], 4096)
         self.assertTrue(text.rstrip().endswith("data: [DONE]"))
         self.assertEqual(meter["outcome"], "ok")
+
+    def test_usage_without_a_completed_stream_is_rejected(self):
+        self.server.complete = False
+        try:
+            output, meter = Output(), {}
+            model.generate({"messages": [{"role": "user", "content": "Hello"}], "stream": True}, output, meter)
+            self.assertEqual(meter["outcome"], "error")
+            self.assertIn("ended before a complete response", output.wfile.getvalue().decode())
+        finally:
+            self.server.complete = True
 
     def test_context_failure_releases_gpu_lock_and_busy_requests_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "context window"):

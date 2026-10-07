@@ -59,7 +59,7 @@ export const modelsApi = {
   preflight: (model: string, quant?: string) => run<ModelPreflight>("model_preflight", { model, quant }, desktop),
   api: (environmentId: string, port: number) => run<ModelRun>("model_api", { environmentId, port }, desktop),
   run: (model: string, port: number | null, quant?: string) => run<ModelRun>("run_model", { model, port, quant }, desktop),
-  runNeocloud: (model: string, environmentId: string, port: number | null) => run<ModelRun>("run_model_on_neocloud", { model, environmentId, port }, desktop),
+  runNeocloud: (model: string, environmentId: string, port: number | null) => run<ModelRun>("run_neocloud_model", { model, environmentId, port }, desktop),
   status: (environmentId: string) => run<ModelStatus>("model_status", { environmentId }, desktop),
   /** Conversations and chat settings shared with the CLI; null when none are saved. */
   history: (environmentId: string) => run<unknown>("model_chat_history", { environmentId }, () => JSON.parse(localStorage.getItem(`yougori.model-chat.v1:${environmentId}`) ?? "null")),

@@ -125,7 +125,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "export_local_backup" | "import_local_backup" | "add_backup_destination" | "delete_backup_destination" | "run_backup" | "restore_backup" | "update_settings" | "reset_platform_state" | "refresh_host_metrics" | "get_cuda_runtime_status" | "install_cuda_runtime" | "verify_environment_cuda" | "get_shared_gpu_settings" | "set_shared_gpu_selection" | "execute_environment_command" | "execute_connected_command" => dispatch_group_10(app,method,p,progress),
         "list_environment_folders" | "request_connected_files" | "read_environment_console" | "get_guest_session" | "terminal_action" | "prepare_terminal_installer" | "install_terminal_tool" | "micro_vm_apps" | "open_environment_window" | "open_micro_vm_app_window" | "close_environment_window" | "list_environment_windows" | "focus_environment_window" | "title_environment_window" | "set_guest_keyboard_capture" | "open_workspace_url" | "open_service_window" => dispatch_group_11(app,method,p,progress),
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
-        "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
+        "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
         _ => Box::pin(async move { Err(format!("No backend handler for {method}")) }),
     }
 }
@@ -853,6 +853,7 @@ dispatch_group! { dispatch_group_12(app, method, p, progress, store, runtime, ba
 
 dispatch_group! { dispatch_group_13(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
+        "confidential_network_chat" => crate::market::confidential_network_chat(arg(p, "apiKey")?, arg(p, "nodeId")?, arg(p, "model")?, arg(p, "prompt")?, arg(p, "policyPath")?).await,
         "market_status" => crate::market::market_status(app.clone()).await,
         "market_sign_in" => crate::market::market_sign_in(app.clone()).await,
         "market_sign_out" => crate::market::market_sign_out(app.clone()).await,

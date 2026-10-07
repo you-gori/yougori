@@ -613,7 +613,7 @@ pub fn run() {
             vault_setup::vault_create,
             vault_setup::vault_connection,
             model_runner::run_model,
-            model_runner::run_model_on_neocloud,
+            model_runner::run_neocloud_model,
             model_runner::model_api,
             model_runner::model_chat,
             model_runner::model_chat_stream,

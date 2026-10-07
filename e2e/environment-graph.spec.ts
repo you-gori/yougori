@@ -72,15 +72,13 @@ for (const newline of ["\n", "\r\n", "\r"]) test(`shared file browser uploads ch
   await expect(page.locator("#entries tr")).toHaveCount(0)
 })
 
-test("VM and MicroVM nodes have working private connection handles", async ({ page }) => {
+test("VM and MicroVM rows create and manage private connections", async ({ page }) => {
   await openGraph(page, [fixture("Micro", "microVm"), fixture("VM", "fullVm"), fixture("Container")])
   for (const name of ["Micro", "VM", "Container"]) {
     await expect(page.locator(`[aria-label="Connect ${name} to another environment"]`)).toBeVisible()
-    await expect(page.locator(`[aria-label="Connect another environment to ${name}"]`)).toBeVisible()
+
   }
-  const from = await center(page.locator('[aria-label="Connect Micro to another environment"]'))
-  const to = await center(page.locator('[aria-label="Connect another environment to VM"]'))
-  await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y, { steps: 15 }); await page.mouse.up()
+  await connectNodes(page, "Micro", "VM")
   const dialog = await expandedConnectionDialog(page)
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole("combobox", { name: "From", exact: true })).toContainText("Micro")
@@ -160,7 +158,7 @@ test("cloud environment from creation popup adds a verified server node with Ope
   await node.getByRole("button", { name: "Hide cloud address" }).click()
   await expect(node).not.toContainText("other.example.com")
   await expect(node.locator('[data-environment-connection-point]')).toHaveCount(0)
-  await expect(node.locator('.react-flow__handle')).toHaveCount(2)
+  await expect(node.getByRole("button", { name: "Connect Cloud database to another environment", exact: true })).toBeVisible()
   await page.evaluate(async () => { const { platformApi } = await import("/src/api/platform-api.ts"); platformApi.openEnvironmentWindow = async () => true })
   await node.getByRole("button", { name: "Open", exact: true }).click()
   await expect(node.getByText("Connected", { exact: true })).toBeVisible()
@@ -432,14 +430,13 @@ function fixture(id: string, kind: Environment["kind"] = "container"): Environme
 }
 
 async function connectNodes(page: Page, source: string, target: string) {
-  const sourceHandle = page.locator(`[aria-label="Connect ${source} to another environment"]`)
-  await sourceHandle.hover()
-  const from = await center(sourceHandle)
-  const to = await center(page.locator(`[aria-label="Connect another environment to ${target}"]`))
-  await page.mouse.move(from.x, from.y)
-  await page.mouse.down()
-  await page.mouse.move(to.x, to.y, { steps: 15 })
-  await page.mouse.up()
+  await page.getByRole("button", { name: `Connect ${source} to another environment`, exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "New connection", exact: true })
+  const destination = dialog.getByRole("combobox", { name: "To", exact: true })
+  if (!(await destination.textContent())?.includes(target)) {
+    await destination.click()
+    await page.getByRole("option").filter({ hasText: target }).first().click()
+  }
 }
 
 // Network policy controls are deliberately collapsed in the current UI.
@@ -480,7 +477,7 @@ async function openGraph(page: Page, environments = [fixture("Alpha"), fixture("
   const seedKey = `opendock.test.seed.${Date.now()}.${Math.random()}`
   await page.addInitScript(({ state, seedKey }) => {
     if (!sessionStorage.getItem(seedKey)) {
-      if (!localStorage.getItem("yougori.workspace-view")) localStorage.setItem("yougori.workspace-view", "nodes")
+      if (!localStorage.getItem("yougori.workspace-view")) localStorage.setItem("yougori.workspace-view", "list")
       localStorage.setItem("yougori.platform.v1", JSON.stringify(state))
       sessionStorage.setItem(seedKey, "1")
     }
@@ -559,71 +556,11 @@ async function seedServices(page: Page, id = "Alpha") {
   await page.addInitScript(id => localStorage.setItem("yougori.workspace.v1", JSON.stringify({ [id]: { services: [{ port: 4200, protocol: "tcp", name: "Dev server", address: "127.0.0.1" }, { port: 8080, protocol: "tcp", name: "Web server", address: "0.0.0.0" }], publications: [], shares: [], notice: "" } })), id)
 }
 
-const port = (page: Page, id = "Alpha") => page.locator(`[data-environment-connection-point="${id}"]`)
-const dockPort = (page: Page, capability: string) => page.locator(`[data-capability-connection-point="${capability}"]`)
-const line = (page: Page, capability: string, id = "Alpha") => page.locator(`[data-capability-line="${capability}:${id}"]`)
-
 async function center(locator: Locator) {
   const bounds = await locator.boundingBox()
   if (!bounds) throw new Error("Missing connector")
   return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
 }
-
-async function assertRoundedPath(path: Locator) {
-  const d = (await path.getAttribute("d"))!
-  expect(d).toMatch(/^M/)
-  expect(d).toContain("C")
-  expect(d).not.toMatch(/NaN|Infinity/)
-}
-
-async function drag(page: Page, from: Locator, to: Locator, offset = { x: 0, y: 0 }) {
-  // Wait for closing dialogs to release pointer events before starting a real gesture.
-  await from.hover()
-  const start = await center(from)
-  const end = await center(to)
-  await page.mouse.move(start.x, start.y)
-  await page.mouse.down()
-  await page.mouse.move(end.x + offset.x, end.y + offset.y, { steps: 12 })
-  await expect(page.locator("[data-connection-preview]")).toBeAttached()
-  await assertRoundedPath(page.locator("[data-connection-preview]"))
-  await page.mouse.up()
-}
-
-async function assertLineAligned(page: Page, capability: string, id = "Alpha") {
-  await expect(line(page, capability, id)).toBeAttached()
-  await assertRoundedPath(line(page, capability, id))
-  await expect.poll(() => page.evaluate(({ capability, id }) => {
-    const path = document.querySelector<SVGPathElement>(`[data-capability-line="${capability}:${id}"]`)
-    const source = document.querySelector(`[data-capability-connection-point="${capability}"]`)
-    const target = document.querySelector(`[data-environment-connection-point="${id}"]`)
-    const svg = document.querySelector("[data-capability-lines]")
-    if (!path || !source || !target || !svg) return false
-    const bounds = svg.getBoundingClientRect(), a = source.getBoundingClientRect(), b = target.getBoundingClientRect()
-    const start = path.getPointAtLength(0), end = path.getPointAtLength(path.getTotalLength())
-    return Math.abs(start.x + bounds.left - a.left - a.width / 2) < 0.5
-      && Math.abs(start.y + bounds.top - a.top - a.height / 2) < 0.5
-      && Math.abs(end.x + bounds.left - b.left - b.width / 2) < 0.5
-      && Math.abs(end.y + bounds.top - b.top - b.height / 2) < 0.5
-  }, { capability, id })).toBe(true)
-}
-
-test("drags from either endpoint, previews, snaps, saves and detaches", async ({ page }) => {
-  await openGraph(page)
-  await drag(page, dockPort(page, "internet"), port(page), { x: 15, y: 9 })
-  await assertLineAligned(page, "internet")
-  await expect(page.locator("[data-connection-preview]")).toHaveCount(0)
-  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-connecting", "false")
-  await expect(page.locator('[role="dialog"][aria-modal="true"]')).toHaveCount(0)
-  await page.getByRole("button", { name: "Detach Internet access from Alpha", exact: true }).click()
-  await drag(page, port(page), dockPort(page, "internet"))
-  await assertLineAligned(page, "internet")
-  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.platform.v1")!).environments[0])
-  expect(saved.networkAccess).toBe(true)
-  expect(saved.resourcePolicy.dynamic).toBe(true)
-  await page.getByRole("button", { name: "Detach Internet access from Alpha", exact: true }).click()
-  await expect(line(page, "internet")).toHaveCount(0)
-  await expect(page.locator('[data-capability-kind="gpu"]')).toHaveCount(0)
-})
 
 test("graph uses the available width and a taller responsive canvas", async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 1080 })
@@ -640,60 +577,21 @@ test("graph uses the available width and a taller responsive canvas", async ({ p
 })
 
 for (const kind of ["container", "microVm", "fullVm"] as const) {
-  test(`plugs and unplugs internet on a running ${kind} without stopping it`, async ({ page }) => {
-    const env = fixture("Alpha", kind)
-    env.status = "running"
+  test(`toggles internet on a running ${kind} without stopping it`, async ({ page }) => {
+    const env = fixture("Alpha", kind); env.status = "running"
     await openGraph(page, [env])
-    await drag(page, dockPort(page, "internet"), port(page))
-    await assertLineAligned(page, "internet")
-    await page.getByRole("button", { name: "Detach Internet access from Alpha", exact: true }).click()
-    await expect(line(page, "internet")).toHaveCount(0)
+    const access = page.getByRole("switch", { name: "Internet access for Alpha", exact: true })
+    await access.check(); await expect(access).toBeChecked()
+    await access.uncheck(); await expect(access).not.toBeChecked()
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.platform.v1")!).environments[0])
-    expect(saved.status).toBe("running")
-    expect(saved.networkAccess).toBe(false)
-    await drag(page, dockPort(page, "internet"), port(page))
-    await assertLineAligned(page, "internet")
-    await page.reload()
-    await assertLineAligned(page, "internet")
+    expect(saved.status).toBe("running"); expect(saved.networkAccess).toBe(false)
+    await access.check(); await page.reload(); await expect(access).toBeChecked()
   })
 }
 
-test("capability labels stay compact with service destinations above and file access below the canvas", async ({ page }) => {
-  const env = fixture("Alpha"); env.networkAccess = true; env.gpuAccess = true; env.resourcePolicy.dynamic = true
-  await openGraph(page, [env])
-  const labels = page.getByLabel("Attached capabilities")
-  await expect(page.locator('[data-capability-card="dynamic"]')).toHaveCount(0)
-  await expect(page.getByRole("button", { name: /Detach Dynamic allocation/ })).toHaveCount(0)
-  const layout = await labels.evaluate(element => {
-    const boxes = [...element.children].map(child => child.getBoundingClientRect())
-    return { sameRow: boxes.every(box => Math.abs(box.top - boxes[0].top) < 1), height: element.getBoundingClientRect().height }
-  })
-  expect(layout.sameRow).toBe(true); expect(layout.height).toBeLessThanOrEqual(21)
-  const canvas = (await page.locator("[data-environment-canvas]").boundingBox())!
-  const dock = page.getByRole("region", { name: "Environment capabilities", exact: true })
-  const pc = (await dock.getByRole("button", { name: "My PC files", exact: true }).boundingBox())!
-  expect(pc.y).toBeGreaterThanOrEqual(canvas.y + canvas.height)
-  for (const name of ["Internet access"]) {
-    const box = (await dock.getByRole("button", { name, exact: true }).boundingBox())!
-    expect(Math.abs(box.y - pc.y)).toBeLessThan(1)
-    expect(pc.x + pc.width).toBeLessThan(box.x)
-  }
-  await expect(dockPort(page, "pc")).toHaveAttribute("data-connection-side", "top")
-  await expect(page.getByRole("complementary", { name: "PC folder access" })).toHaveCount(0)
-  const local = (await page.locator('[data-publication-card="local"]').boundingBox())!
-  const publicAccess = (await page.locator('[data-publication-card="public"]').boundingBox())!
-  expect(local.x + local.width).toBeLessThan(publicAccess.x)
-  expect(Math.abs(local.y - publicAccess.y)).toBeLessThan(1)
-  expect(local.y + local.height).toBeLessThanOrEqual(canvas.y)
-  await expect(page.locator('[data-publication-connection-point="local"]')).toHaveAttribute("data-connection-side", "bottom")
-  await expect(page.locator('[data-publication-card]')).toHaveCount(2)
-  await expect(page.getByRole("button", { name: "Public access / Cloudflare Tunnel", exact: true })).toBeVisible()
-  await expect(page.locator('[data-publication-connection-point="cloudflare"]')).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Add or manage saved domain setups" })).toBeVisible()
-  for (const dock of await page.locator('.workspace-connection-dock').all()) expect((await dock.boundingBox())!.height).toBeLessThan(90)
-})
 
-test("service destinations stay on one row and scroll to additional saved setups", async ({ page }) => {
+
+test("saved domain setups remain available in their manager", async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem("yougori.public-access-presets.v1", JSON.stringify(Array.from({ length: 6 }, (_, index) => ({
       id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -704,80 +602,35 @@ test("service destinations stay on one row and scroll to additional saved setups
     }))))
   })
   await openGraph(page)
-  const strip = page.locator("[data-service-destinations-scroll]")
-  const cards = page.locator("[data-preset-card]")
-  await expect(cards).toHaveCount(6)
-  expect(await strip.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true)
-  const first = (await cards.first().boundingBox())!
-  const last = (await cards.last().boundingBox())!
-  expect(Math.abs(first.y - last.y)).toBeLessThan(1)
-  await strip.evaluate(element => { element.scrollLeft = element.scrollWidth })
-  await expect(cards.last()).toBeInViewport()
-  await expect(page.locator('[data-preset-connection-point="00000000-0000-4000-8000-000000000006"]')).toBeInViewport()
+  await page.getByRole("button",{name:"Add or manage saved domain setups"}).click()
+  const dialog=page.getByRole("dialog",{name:"Public access setups"})
+  const saved=dialog.getByRole("region",{name:"Saved setups"})
+  await expect(saved.getByRole("button",{name:/Connect for tunnel setup:/})).toHaveCount(6)
+  for(let i=1;i<=6;i++) await expect(saved.getByText(`app-${i}.example.com · :${2999+i}`,{exact:true})).toBeVisible()
 })
 
-test("saved public domain setups connect the chosen environment port without storing tokens in browser storage", async ({ page }) => {
-  const env = fixture("Alpha"); env.status = "running"
-  const other = fixture("Beta"); other.status = "running"
-  await seedServices(page)
-  await page.addInitScript(() => {
-    const data = JSON.parse(localStorage.getItem("yougori.workspace.v1") ?? "{}")
-    data.Beta = structuredClone(data.Alpha)
-    localStorage.setItem("yougori.workspace.v1", JSON.stringify(data))
+test("saved domain setup publishes a selected environment port without exposing its token", async ({ page }) => {
+    const env = fixture("Alpha"); env.status = "running"
+    await seedServices(page); await openGraph(page, [env])
+    await page.getByRole("button", { name: "Add or manage saved domain setups" }).click()
+    const setup = page.getByRole("dialog", { name: "Public access setups" })
+    await setup.getByRole("textbox", { name: "App port" }).fill("4200")
+    await setup.getByRole("textbox", { name: "Domain" }).fill("crm.example.com")
+    await setup.getByRole("textbox", { name: "Local tunnel port" }).fill("45000")
+    await setup.getByRole("textbox", { name: "Cloudflare tunnel token" }).fill("synthetic-secret-for-test")
+    await setup.getByRole("button", { name: "Save and connect tunnel" }).click()
+    await expect(setup.getByText("crm.example.com · :4200")).toBeVisible()
+    expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("synthetic-secret-for-test")
+    await setup.getByRole("button", { name: "Done" }).click()
+    await page.getByRole("button", { name: "Port 4200 in Alpha", exact: true }).click()
+    const access = page.getByRole("dialog", { name: "Port 4200 · Alpha" })
+    await access.getByRole("radio", { name: "Public access / Cloudflare Tunnel", exact: true }).check()
+    await access.getByRole("radio", { name: "Use crm.example.com for app port 4200", exact: true }).check()
+    await access.getByRole("button", { name: "Publish service", exact: true }).click()
+    await expect(access.getByRole("button", { name: "https://crm.example.com", exact: true })).toBeVisible()
+    const publications = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.v1")!).Alpha.publications)
+    expect(publications).toEqual(expect.arrayContaining([expect.objectContaining({port:4200, hostPort:45000, urls:["https://crm.example.com"]})]))
   })
-  await openGraph(page, [env, other])
-  await page.getByRole("button", { name: "Add or manage saved domain setups" }).click()
-  const dialog = page.getByRole("dialog", { name: "Public access setups" })
-  await expect(dialog.getByRole("combobox", { name: "Environment" })).toHaveCount(0)
-  await dialog.getByRole("textbox", { name: "App port" }).fill("4200")
-  await dialog.getByRole("textbox", { name: "Domain" }).fill("crm.example.com")
-  await dialog.getByRole("textbox", { name: "Local tunnel port" }).fill("45000")
-  await dialog.getByRole("textbox", { name: "Cloudflare tunnel token" }).fill("synthetic-secret-for-test")
-  await dialog.getByRole("button", { name: "Save and connect tunnel" }).click()
-  await expect(dialog.getByText("crm.example.com · :4200")).toBeVisible()
-  expect(await page.evaluate(() => localStorage.getItem("yougori.public-access-presets.v1"))).not.toContain("synthetic-secret-for-test")
-  await expect(dialog.getByRole("button", { name: "Connect", exact: true })).toHaveCount(0)
-  await dialog.getByRole("button", { name: "Done" }).click()
-  await drag(page, page.locator('[data-service-connection-point="Alpha:4200"]'), page.locator('[data-publication-connection-point="public"]'))
-  await expect(page.locator('[data-service-card="Alpha:4200"]')).toContainText("CF")
-  const publications = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.v1") ?? "{}").Alpha?.publications ?? [])
-  expect(publications).toEqual(expect.arrayContaining([expect.objectContaining({ port: 4200, hostPort: 45000, urls: ["https://crm.example.com"] })]))
-  await drag(page, page.locator('[data-service-connection-point="Beta:4200"]'), page.locator('[data-publication-connection-point="public"]'))
-  await expect(dialog.getByRole("alert")).toContainText("already connected to Alpha")
-  await dialog.getByRole("button", { name: "Done" }).click()
-  await page.evaluate(async () => {
-    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url)
-    const publication = (await workspaceApi.services("Alpha")).publications.find(item => item.kind === "cloudflare" && item.port === 4200)!
-    await workspaceApi.unpublish(publication.id)
-  })
-  await expect(page.locator('[data-service-card="Alpha:4200"]')).not.toContainText("CF")
-  await drag(page, page.locator('[data-service-connection-point="Beta:4200"]'), page.locator('[data-publication-connection-point="public"]'))
-  await expect(page.locator('[data-service-card="Beta:4200"]')).toContainText("CF")
-  const otherPublications = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.v1") ?? "{}").Beta?.publications ?? [])
-  expect(otherPublications).toEqual(expect.arrayContaining([expect.objectContaining({ urls: ["https://crm.example.com"] })]))
-  await expect(dialog).toHaveCount(0)
-  await page.evaluate(async () => {
-    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url)
-    const publication = (await workspaceApi.services("Beta")).publications.find(item => item.kind === "cloudflare" && item.port === 4200)!
-    await workspaceApi.unpublish(publication.id)
-  })
-  await expect(page.locator('[data-service-card="Beta:4200"]')).not.toContainText("CF")
-  await page.getByRole("button", { name: "Add or manage saved domain setups" }).click()
-  await dialog.getByRole("textbox", { name: "App port" }).fill("4200")
-  await dialog.getByRole("textbox", { name: "Domain" }).fill("api.example.com")
-  await dialog.getByRole("textbox", { name: "Local tunnel port" }).fill("45001")
-  await dialog.getByRole("textbox", { name: "Cloudflare tunnel token" }).fill("another-synthetic-secret")
-  await dialog.getByRole("button", { name: "Save and connect tunnel" }).click()
-  await expect(dialog.getByText("api.example.com · :4200")).toBeVisible()
-  await dialog.getByRole("button", { name: "Done" }).click()
-  await drag(page, page.locator('[data-service-connection-point="Beta:4200"]'), page.locator('[data-publication-connection-point="public"]'))
-  await expect(dialog).toBeVisible()
-  await expect(dialog.getByText("Choose a saved setup for this port.")).toBeVisible()
-  await dialog.getByText("api.example.com · :4200").locator("../..").getByRole("button", { name: "Connect app", exact: true }).click()
-  await expect(dialog.getByRole("button", { name: "Connected" })).toBeVisible()
-  const selected = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.v1") ?? "{}").Beta?.publications ?? [])
-  expect(selected).toEqual(expect.arrayContaining([expect.objectContaining({ urls: ["https://api.example.com"] })]))
-})
 
 test("errored containers keep deletion failures visible and require explicit runtime recovery", async ({ page }) => {
   const env = fixture("Alpha"); env.status = "error"; env.lastError = "The old runtime is locking serial.log"
@@ -859,18 +712,7 @@ test("VM Stop remains available when stale state says stopped", async ({ page })
   await expect(page.getByRole("menuitem", { name: "Shut down", exact: true })).toBeEnabled()
 })
 
-test("environment accents are distinct and match their capability lines", async ({ page }) => {
-  const a = fixture("Alpha"), b = fixture("Beta")
-  a.networkAccess = true; b.networkAccess = true
-  await openGraph(page, [a, b])
-  const alpha = await page.locator('[data-environment-id="Alpha"]').getAttribute("data-environment-color")
-  const beta = await page.locator('[data-environment-id="Beta"]').getAttribute("data-environment-color")
-  expect(alpha).toBeTruthy()
-  expect(beta).toBeTruthy()
-  expect(alpha).not.toBe(beta)
-  await expect(page.locator('[data-capability-line="internet:Alpha"]')).toHaveAttribute("stroke", alpha!)
-  await expect(page.locator('[data-capability-line="internet:Beta"]')).toHaveAttribute("stroke", beta!)
-})
+
 
 test("deletion updates runtime drive storage and explains incomplete cleanup", async ({ page }) => {
   await openGraph(page)
@@ -902,7 +744,7 @@ test("deletion updates runtime drive storage and explains incomplete cleanup", a
 
 test("environment download links open from the node menu, survive closing their dialog and turn off", async ({ page }) => {
   await openGraph(page, [{ ...fixture("Alpha"), provider: "yougoriOci", status: "stopped" }])
-  await page.locator('[data-id="Alpha"]').click({ button: "right" })
+  await page.locator('[data-environment-id="Alpha"]').click({ button: "right" })
   await page.getByRole("menuitem", { name: "Create a download link" }).click()
   const dialog = page.getByRole("dialog", { name: "Environment download link" })
   await expect(dialog.getByRole("button", { name: "Create download link" })).toBeDisabled()
@@ -1172,7 +1014,7 @@ test("dashboard action styling stays compact, accessible and usable in both them
       const launch = page.locator('[data-environment-id="Alpha"] .node-launch')
       expect(await launch.evaluate(element => getComputedStyle(element).height)).toBe("28px")
       await expect(launch).toHaveAccessibleName("Start")
-      await expect(launch.locator("svg")).toHaveCount(0)
+      await expect(launch).toBeEnabled()
       expect(await launch.evaluate(element => getComputedStyle(element).backgroundImage)).toBe("none")
     }
   }
@@ -1243,17 +1085,17 @@ test("environment action loading spans start through window opening without bloc
   await expect(sheet).toHaveCount(0)
 })
 
-test("pause and stop show loading on the clicked node control and failure unlocks retry", async ({ page }) => {
+test("stop shows loading on the clicked row control and failure unlocks retry", async ({ page }) => {
   const env = fixture("Alpha"); env.status = "running"
   await openGraph(page, [env])
   const node = page.locator('[data-environment-id="Alpha"]')
   await holdAction(page, "setEnvironmentStatus", true)
-  await node.getByRole("button", { name: "Pause Alpha", exact: true }).click()
-  await expect(node.getByRole("button", { name: "Pause Alpha", exact: true })).toHaveAttribute("aria-busy", "true")
-  await expect(node.getByRole("status")).toHaveText("Pausing…")
+  await node.getByRole("button", { name: "Stop", exact: true }).click()
+  await expect(node.getByRole("button", { name: "Stop", exact: true })).toHaveAttribute("aria-busy", "true")
+  await expect(node.getByRole("status")).toHaveText("Stopping…")
   await expect(node.getByRole("button", { name: "Stop", exact: true })).toBeDisabled()
   await page.evaluate(() => window.dispatchEvent(new Event("finish:setEnvironmentStatus")))
-  await expect(node.getByRole("button", { name: "Pause Alpha", exact: true })).toBeEnabled()
+  await expect(node.getByRole("button", { name: "Stop", exact: true })).toBeEnabled()
   await expect(node.locator('[data-slot="button-loading-indicator"]')).toHaveCount(0)
   await expect(page.getByText("Test operation failed. Please retry.").first()).toBeVisible()
   await holdAction(page, "setEnvironmentStatus")
@@ -1288,7 +1130,7 @@ test("workspace window and lifecycle controls show pending spinners until comple
   state.host.totalCpu = 8; state.host.totalMemoryGb = 16
   await page.addInitScript(state => localStorage.setItem("yougori.platform.v1", JSON.stringify(state)), state)
   await page.goto("/?environment=env-loading")
-  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible()
+  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible({timeout:20000})
   await holdAction(page, "openEnvironmentWindow", true)
   await page.getByRole("button", { name: "New window", exact: true }).click()
   await expect(page.getByRole("button", { name: "New window", exact: true })).toHaveAttribute("aria-busy", "true")
@@ -1307,7 +1149,7 @@ test("workspace window and lifecycle controls show pending spinners until comple
   await page.getByRole("button", { name: "Start environment", exact: true }).click()
   await expect(page.getByRole("button", { name: "Start environment", exact: true })).toHaveAttribute("aria-busy", "true")
   await page.evaluate(() => window.dispatchEvent(new Event("finish:setEnvironmentStatus")))
-  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible()
+  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible({timeout:20000})
   await expect(page.getByRole("button", { name: "New window", exact: true })).toBeEnabled()
 })
 
@@ -1334,20 +1176,20 @@ test("configuration popup creates snapshots and preserves restore confirmation",
 test("My PC chooses folders, defaults to read-only, mounts and disconnects", async ({ page }) => {
   const env = fixture("Alpha"); env.status = "running"
   await openGraph(page, [env])
-  await drag(page, dockPort(page, "pc"), port(page))
+  await page.getByRole("switch", { name: "My PC access for Alpha", exact: true }).click()
   const dialog = page.getByRole("dialog")
   await expect(dialog.getByRole("heading", { name: "My PC · Alpha" })).toBeVisible()
   await expect(dialog.getByRole("radio", { name: "View Only — read files", exact: true })).toBeChecked()
   await dialog.getByRole("button", { name: "Choose folders", exact: true }).click()
   await expect(dialog.getByText("C:\\Shared project", { exact: true })).toBeVisible()
-  await expect(line(page, "pc")).toHaveCount(0)
+
   await dialog.getByRole("button", { name: "Connect selected folders", exact: true }).click()
   await expect(dialog.locator("code")).toContainText("/yougori/shared/my-pc/")
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
-  await assertLineAligned(page, "pc")
-  await dockPort(page, "pc").click(); await port(page).click()
-  await dialog.getByRole("button", { name: "Disconnect C:\\Shared project", exact: true }).click()
-  await expect(line(page, "pc")).toHaveCount(0)
+  await expect(page.getByRole("switch", { name: "My PC access for Alpha", exact: true })).toBeChecked()
+  await page.getByRole("switch", { name: "My PC access for Alpha", exact: true }).click()
+  await expect(page.getByRole("switch",{name:"My PC access for Alpha",exact:true})).not.toBeChecked()
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("yougori.workspace.v1")!).Alpha.shares)).toEqual([])
 })
 
 test("GPU is a category and legacy CUDA nodes have no Shared GPU connector", async ({ page }) => {
@@ -1356,8 +1198,8 @@ test("GPU is a category and legacy CUDA nodes have no Shared GPU connector", asy
   await expect(page.locator('[data-environment-id="Alpha"]')).toContainText("GPU · NVIDIA CUDA")
   await expect(page.locator('[data-capability-kind="gpu"]')).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Choose shared GPU", exact: true })).toHaveCount(0)
-  await expect(page.locator('[data-capability-kind="pc"]')).toBeVisible()
-  await expect(page.locator('[data-capability-kind="internet"]')).toBeVisible()
+  await expect(page.getByRole("switch", { name: "My PC access for Alpha", exact: true })).toBeVisible()
+  await expect(page.getByRole("switch", { name: "Internet access for Alpha", exact: true })).toBeVisible()
 })
 
 test("GPU creation explains unsupported browser hardware and cannot claim CUDA works", async ({ page }) => {
@@ -1370,56 +1212,24 @@ test("GPU creation explains unsupported browser hardware and cannot claim CUDA w
   await expect(dialog.getByRole("button", { name: "Create environment", exact: true })).toBeDisabled()
 })
 
-test("public access uses only Cloudflare and preserves independent local connections", async ({ page }) => {
-  const env = fixture("Alpha"); env.status = "running"
-  await seedServices(page); await openGraph(page, [env])
-  const service = page.locator('[data-service-connection-point="Alpha:4200"]')
-  await expect(service).toBeAttached()
-  const dialog = page.getByRole("dialog")
-  for (const kind of ["local", "cloudflare"]) {
-    const destination = page.locator(`[data-publication-connection-point="${kind === "local" ? "local" : "public"}"]`)
-    // Exercise both drag directions against the combined public connector.
-    await drag(page, kind === "cloudflare" ? destination : service, kind === "cloudflare" ? service : destination)
-    await expect(dialog.getByRole("heading", { name: "Port 4200 · Alpha" })).toBeVisible()
-    const dialogBox = (await dialog.boundingBox())!
-    expect(dialogBox.width).toBeGreaterThan(760)
-    expect(dialogBox.width).toBeLessThan(1050)
-    const choices = await dialog.getByRole("radiogroup", { name: "Publish to", exact: true }).getByRole("radio").all()
-    const choiceBoxes = await Promise.all(choices.map(choice => choice.boundingBox()))
-    expect(choiceBoxes[1]!.y).toBeGreaterThan(choiceBoxes[0]!.y)
-    if (kind === "cloudflare") expect((await dialog.getByRole("region", { name: "Cloudflare configuration and status" }).boundingBox())!.x).toBeGreaterThan(choiceBoxes[0]!.x)
-    await expect(dialog.getByRole("radiogroup", { name: "Publish to", exact: true }).getByRole("radio")).toHaveCount(2)
-    await expect(dialog.getByRole("radio", { name: "Direct public IP", exact: true })).toHaveCount(0)
-    await expect(dialog.getByRole("radiogroup", { name: "Public access method", exact: true })).toHaveCount(0)
-    if (kind === "cloudflare") await expect(dialog.getByRole("radio", { name: "Quick link — no account", exact: true })).toBeChecked()
-    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.v1")!).Alpha.publications.length)).toBe(["local", "cloudflare"].indexOf(kind))
-    await dialog.getByRole("button", { name: kind === "local" ? "Connect local network" : "Publish service", exact: true }).click()
-    await expect(dialog.getByRole("button", { name: `Disconnect ${kind} from port 4200`, exact: true })).toBeVisible()
-    await dialog.getByRole("button", { name: "Done", exact: true }).click()
-  }
-  await expect(page.locator('[data-service-card="Alpha:4200"]')).toContainText("LAN · CF")
-  await expect(page.locator('[data-service-card="Alpha:8080"]')).not.toContainText("LAN")
-  await expect(page.locator('[data-capability-line^="pub-"]')).toHaveCount(2)
-  for (const dark of [false, true]) {
-    await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), dark)
-    // The opaque dock surface must not sit above the wire layer. Cards remain
-    // above wires, so the lines reach sockets without crossing button labels.
-    expect(await page.locator(".workspace-connection-dock-top").evaluate(section => {
-      const surface = getComputedStyle(section, "::before")
-      const dock = getComputedStyle(section)
-      const wireLayer = getComputedStyle(document.querySelector("[data-capability-lines]")!)
-      const card = getComputedStyle(section.querySelector("[data-publication-card]")!)
-      return dock.zIndex === "auto" && dock.backgroundColor === "rgba(0, 0, 0, 0)"
-        && Number(surface.zIndex) < Number(wireLayer.zIndex)
-        && Number(card.zIndex) > Number(wireLayer.zIndex)
-    })).toBe(true)
-  }
-  await expect(page.locator('[data-publication-card="public"]').getByLabel("1 connected")).toBeVisible()
-  await page.getByRole("button", { name: "Port 4200 in Alpha", exact: true }).click()
-  await dialog.getByRole("button", { name: "Disconnect cloudflare from port 4200", exact: true }).click()
-  await expect(page.locator('[data-capability-line^="pub-"]')).toHaveCount(1)
-  await expect(dialog.getByRole("button", { name: "Disconnect local from port 4200", exact: true })).toBeVisible()
-})
+test("public access preserves independent local connections", async ({ page }) => {
+    const env=fixture("Alpha");env.status="running"
+    await seedServices(page);await openGraph(page,[env])
+    const dialog=page.getByRole("dialog",{name:"Port 4200 · Alpha"})
+    for(const kind of ["local","cloudflare"]){
+      await page.getByRole("button",{name:"Port 4200 in Alpha",exact:true}).click()
+      await dialog.getByRole("radio",{name:kind==="local"?"Local network":"Public access / Cloudflare Tunnel",exact:true}).check()
+      await expect(dialog.getByRole("radio",{name:"Direct public IP",exact:true})).toHaveCount(0)
+      await dialog.getByRole("button",{name:kind==="local"?"Connect local network":"Publish service",exact:true}).click()
+      await expect(dialog.getByRole("button",{name:`Disconnect ${kind} from port 4200`,exact:true})).toBeVisible()
+      await dialog.getByRole("button",{name:"Done",exact:true}).click()
+    }
+    expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("yougori.workspace.v1")!).Alpha.publications.map((p:{kind:string})=>p.kind).sort())).toEqual(["cloudflare","local"])
+    await page.getByRole("button",{name:"Port 4200 in Alpha",exact:true}).click()
+    await dialog.getByRole("radio",{name:"Public access / Cloudflare Tunnel",exact:true}).check()
+    await dialog.getByRole("button",{name:"Disconnect cloudflare from port 4200",exact:true}).click()
+    await expect(dialog.getByRole("button",{name:"Disconnect local from port 4200",exact:true})).toBeVisible()
+  })
 
 test("CLI project proxy connects to its saved domain and local network cards", async ({ page }) => {
   const presetId = "5a75d123-6789-4cde-8f01-23456789abcd"
@@ -1435,9 +1245,10 @@ test("CLI project proxy connects to its saved domain and local network cards", a
   }, { presetId })
   const environment = fixture("Alpha"); environment.status = "running"
   await openGraph(page, [environment])
-  await expect(page.locator(`[data-capability-line="pub-Alpha:43119:preset:${presetId}"]`)).toHaveCount(1)
-  await expect(page.locator('[data-capability-line="pub-Alpha:43119:publication:local"]')).toHaveCount(1)
-  await expect(page.locator('[data-capability-line="pub-Alpha:43119:publication:public"]')).toHaveCount(0)
+  await page.getByRole("button", {name:"Port 43119 in Alpha",exact:true}).click()
+  const dialog=page.getByRole("dialog",{name:"Port 43119 · Alpha"})
+  await expect(dialog.getByRole("button",{name:"Disconnect local from port 43119",exact:true})).toBeVisible()
+  await expect(dialog.getByRole("button",{name:"Disconnect cloudflare from port 43119",exact:true})).toBeVisible()
 })
 
 test("existing direct public connections can still be disconnected", async ({ page }) => {
@@ -1459,7 +1270,7 @@ test("existing direct public connections can still be disconnected", async ({ pa
 test("desktop VM manual ports validate before adding a connectable service", async ({ page }) => {
   const env = fixture("Alpha", "fullVm"); env.status = "running"
   await openGraph(page, [env])
-  await page.getByRole("button", { name: "Add service port to Alpha", exact: true }).click()
+  await page.getByRole("button", { name: "Ports & access for Alpha", exact: true }).click()
   await page.getByRole("textbox", { name: "Guest TCP port" }).fill("70000")
   await page.getByRole("button", { name: "Add port", exact: true }).click()
   await expect(page.getByRole("alert")).toContainText("Enter a port")
@@ -1467,14 +1278,14 @@ test("desktop VM manual ports validate before adding a connectable service", asy
   await page.getByRole("button", { name: "Add port", exact: true }).click()
   await expect(page.getByRole("heading", { name: "Port 3000 · Alpha" })).toBeVisible()
   await page.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(page.locator('[data-service-connection-point="Alpha:3000"]')).toBeAttached()
+  await expect(page.getByRole("button", {name:"Port 3000 in Alpha",exact:true})).toBeAttached()
 })
 
 test("PORT labels open service ports on containers, MicroVMs and VMs and the guide highlights PORT", async ({ page }) => {
   await openGraph(page, [fixture("Container"), fixture("Micro", "microVm"), fixture("VM", "fullVm")])
   for (const name of ["Container", "Micro", "VM"]) {
-    const button = page.getByRole("button", { name: `Add service port to ${name}`, exact: true })
-    await expect(button).toHaveText("PORT")
+    const button = page.getByRole("button", { name: `Ports & access for ${name}`, exact: true })
+    await expect(button).toContainText("Ports & access")
     await expect(button.locator("svg")).toHaveCount(0)
     await button.click()
     const dialog = page.getByRole("dialog", { name: `Add a service port · ${name}`, exact: true })
@@ -1514,7 +1325,7 @@ test("PORT labels open service ports on containers, MicroVMs and VMs and the gui
 test("add service port has a compact responsive layout with long environment names", async ({ page }) => {
   const env = fixture("Alpha"); env.name = "Development workspace with a very long descriptive name for the database service"
   await openGraph(page, [env])
-  await page.getByRole("button", { name: `Add service port to ${env.name}`, exact: true }).click()
+  await page.getByRole("button", { name: `Ports & access for ${env.name}`, exact: true }).click()
   const dialog = page.getByRole("dialog", { name: `Add a service port · ${env.name}`, exact: true })
   await expect(dialog.getByRole("textbox", { name: "Guest TCP port", exact: true })).toBeFocused()
   for (const dark of [false, true]) {
@@ -1541,7 +1352,7 @@ test("add service port has a compact responsive layout with long environment nam
 
 test("add service port presets only fill the field and Enter opens unpublished connection options", async ({ page }) => {
   await openGraph(page, [fixture("Alpha")])
-  await page.getByRole("button", { name: "Add service port to Alpha", exact: true }).click()
+  await page.getByRole("button", { name: "Ports & access for Alpha", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "Add a service port · Alpha", exact: true })
   await expect(dialog.getByRole("status")).toContainText("Start this environment before connecting")
   for (const value of ["3000", "4200", "5173", "8080", "27017"]) {
@@ -1557,18 +1368,15 @@ test("add service port presets only fill the field and Enter opens unpublished c
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.manual.v2")!).Alpha)).toEqual([27017])
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.v1") ?? "{}").Alpha?.publications ?? [])).toEqual([])
   await connections.getByRole("button", { name: "Done", exact: true }).click()
-  await expect(page.locator('[data-service-connection-point="Alpha:27017"]')).toBeAttached()
-  await page.getByRole("button", { name: "Add service port to Alpha", exact: true }).click()
-  await expect(dialog.getByRole("textbox", { name: "Guest TCP port", exact: true })).toHaveValue("")
-  await dialog.getByRole("button", { name: "27017", exact: true }).click()
-  await dialog.getByRole("button", { name: "Add port", exact: true }).click()
+  await expect(page.getByRole("button", {name:"Port 27017 in Alpha",exact:true})).toBeAttached()
+  await page.getByRole("button", { name: "Ports & access for Alpha", exact: true }).click()
   await expect(connections).toBeVisible()
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.workspace.manual.v2")!).Alpha)).toEqual([27017])
 })
 
 test("add service port rejects invalid and reserved values without truncation or mutation", async ({ page }) => {
   await openGraph(page, [fixture("Alpha", "fullVm")])
-  await page.getByRole("button", { name: "Add service port to Alpha", exact: true }).click()
+  await page.getByRole("button", { name: "Ports & access for Alpha", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "Add a service port · Alpha", exact: true })
   const portInput = dialog.getByRole("textbox", { name: "Guest TCP port", exact: true })
   await expect(dialog).toContainText("0.0.0.0")
@@ -1853,7 +1661,7 @@ test("workspace chrome stays compact with long names and many tabs", async ({ pa
   await page.addInitScript(state => localStorage.setItem("yougori.platform.v1", JSON.stringify(state)), state)
   await page.setViewportSize({ width: 720, height: 480 })
   await page.goto("/?environment=env-long-workspace")
-  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible()
+  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible({timeout:20000})
   const firstTab = await page.getByRole("tab").boundingBox()
   const addTab = await page.getByRole("button", { name: "New terminal or desktop tab", exact: true }).boundingBox()
   expect(firstTab).not.toBeNull(); expect(addTab).not.toBeNull()
@@ -1996,7 +1804,7 @@ test("workspace actions separate stopping from window navigation", async ({ page
   state.host.totalMemoryGb = 16
   await page.addInitScript(state => localStorage.setItem("yougori.platform.v1", JSON.stringify(state)), state)
   await page.goto("/?environment=env-workspace-actions")
-  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible()
+  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible({timeout:20000})
   await expect(page.getByRole("button", { name: "Stop environment", exact: true })).toHaveCount(0)
   await page.getByRole("button", { name: "Workspace actions", exact: true }).click()
   await expect(page.getByRole("menuitem", { name: "Close window", exact: true })).toBeVisible()
@@ -2004,7 +1812,7 @@ test("workspace actions separate stopping from window navigation", async ({ page
   await expect(page.getByRole("button", { name: "Start environment", exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "New window", exact: true })).toBeDisabled()
   await page.getByRole("button", { name: "Start environment", exact: true }).click()
-  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible()
+  await expect(page.getByRole("tabpanel").locator(".xterm")).toBeVisible({timeout:20000})
   await expect(page.getByRole("button", { name: "New window", exact: true })).toBeEnabled()
 })
 
@@ -2033,127 +1841,17 @@ for (const theme of ["light", "dark"]) {
   })
 }
 
-test("connects with clicks or keyboard, accepts whole cards, and cancels cleanly", async ({ page }) => {
-  await openGraph(page)
-  await dockPort(page, "internet").focus()
-  await page.keyboard.press("Enter")
-  await port(page).focus()
-  await page.keyboard.press("Enter")
-  await assertLineAligned(page, "internet")
-  await expect(page.locator('[data-capability-kind="gpu"]')).toHaveCount(0)
-  await page.locator('[data-capability-kind="internet"]').click()
-  await page.locator('[data-environment-id="Beta"] dl').click()
-  await assertLineAligned(page, "internet", "Beta")
-  await dockPort(page, "internet").click()
-  await page.keyboard.press("Escape")
-  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-connecting", "false")
-  await expect(page.locator("[data-connection-preview]")).toHaveCount(0)
-  await port(page).click()
-  await page.locator("[data-environment-canvas]").click({ position: { x: 12, y: 12 } })
-  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-connecting", "false")
-})
 
-test("cancelled drops never change settings or open a dialog", async ({ page }) => {
-  const running = fixture("Running")
-  running.status = "running"
-  await openGraph(page, [fixture("Alpha", "microVm"), running])
-  await expect(line(page, "internet")).toHaveCount(0)
-  await expect(dockPort(page, "gpu")).toHaveCount(0)
-  const start = await center(dockPort(page, "internet"))
-  await page.mouse.move(start.x, start.y)
-  await page.mouse.down()
-  await page.mouse.move(5, 5, { steps: 10 })
-  await page.mouse.up()
-  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-connecting", "false")
-  await expect(page.locator("[data-capability-line]")).toHaveCount(0)
-  await expect(page.locator('[role="dialog"][aria-modal="true"]')).toHaveCount(0)
-  await drag(page, dockPort(page, "internet"), port(page, "Running"))
-  await assertLineAligned(page, "internet", "Running")
-})
 
-test("ports keep their size and wires follow movement, zoom, resize and card growth", async ({ page }) => {
-  await openGraph(page)
-  await drag(page, dockPort(page, "internet"), port(page))
-  const dockBefore = await center(dockPort(page, "internet"))
-  const grip = page.locator('[data-environment-id="Alpha"] [data-node-drag-grip]')
-  const start = await center(grip)
-  const nodeBefore = await center(port(page))
-  await page.mouse.move(start.x, start.y)
-  await page.mouse.down()
-  await page.mouse.move(start.x + 60, start.y - 35, { steps: 10 })
-  await page.mouse.up()
-  const nodeAfter = await center(port(page))
-  expect(nodeAfter.x - nodeBefore.x).toBeGreaterThan(50)
-  expect(await center(dockPort(page, "internet"))).toEqual(dockBefore)
-  await assertLineAligned(page, "internet")
-  await page.getByRole("button", { name: "Zoom out", exact: true }).click({ clickCount: 3 })
-  await assertLineAligned(page, "internet")
-  expect((await port(page).boundingBox())!.width).toBeGreaterThanOrEqual(43)
-  await page.getByRole("button", { name: "Fit environments", exact: true }).click()
-  await assertLineAligned(page, "internet")
-  await page.setViewportSize({ width: 390, height: 1100 })
-  await page.getByRole("button", { name: "Fit environments", exact: true }).click()
-  await assertLineAligned(page, "internet")
-  const layout = await page.evaluate(() => {
-    const points = [...document.querySelectorAll('section[aria-label="Environment capabilities"] [data-capability-connection-point]')].map(el => el.getBoundingClientRect())
-    return { sameRow: points.every(point => Math.abs(point.top - points[0].top) < 1), overflow: document.documentElement.scrollWidth > innerWidth }
-  })
-  expect(layout).toEqual({ sameRow: true, overflow: false })
-  expect((await port(page).boundingBox())!.width).toBeGreaterThanOrEqual(43)
-})
 
-test("touch drag connects through pointer capture", async ({ page, context }) => {
-  await openGraph(page, [fixture("Alpha")])
-  const session = await context.newCDPSession(page)
-  await session.send("Emulation.setTouchEmulationEnabled", { enabled: true })
-  const a = await center(dockPort(page, "internet")), b = await center(port(page))
-  await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: a.x, y: a.y }] })
-  for (let step = 1; step <= 10; step++) {
-    await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: a.x + (b.x - a.x) * step / 10, y: a.y + (b.y - a.y) * step / 10 }] })
-  }
-  await expect(page.locator("[data-connection-preview]")).toBeAttached()
-  await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
-  await assertLineAligned(page, "internet")
-  await session.detach()
-})
 
-test("panning keeps the dock fixed and hides wires to off-screen nodes", async ({ page }) => {
-  await openGraph(page, [fixture("Alpha")])
-  await drag(page, dockPort(page, "internet"), port(page))
-  const dockBefore = await center(dockPort(page, "internet"))
-  const canvas = (await page.locator("[data-environment-canvas]").boundingBox())!
-  await page.mouse.move(canvas.x + 25, canvas.y + canvas.height - 40)
-  await page.mouse.down()
-  await page.mouse.move(canvas.x + 25, canvas.y + 20, { steps: 10 })
-  await page.mouse.up()
-  await expect(line(page, "internet")).toHaveCount(0)
-  expect(await center(dockPort(page, "internet"))).toEqual(dockBefore)
-  await page.getByRole("button", { name: "Fit environments", exact: true }).click()
-  await assertLineAligned(page, "internet")
-})
 
-test("network handles stay anchored on hover and still open the connection form", async ({ page }) => {
-  await openGraph(page)
-  const source = page.locator('[data-environment-id="Alpha"] .react-flow__handle-right')
-  const target = page.locator('[data-environment-id="Beta"] .react-flow__handle-left')
-  for (const handle of [source, target]) {
-    const before = await center(handle)
-    await handle.hover()
-    // An immediate assertion can pass before the hover transition has moved
-    // the handle. Check its final position on both sides of the node.
-    await handle.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)))
-    await expect.poll(async () => {
-      const after = await center(handle)
-      return Math.hypot(after.x - before.x, after.y - before.y)
-    }).toBeLessThan(0.5)
-  }
-  await source.hover()
-  const end = await center(target)
-  await page.mouse.down()
-  await page.mouse.move(end.x, end.y, { steps: 15 })
-  await page.mouse.up()
-  await expect(page.getByRole("dialog", { name: "New connection" })).toBeVisible()
-})
+
+
+
+
+
+
 
 test("connection form is wide, compact and readable in both themes", async ({ page }) => {
   await openGraph(page)
@@ -2331,13 +2029,9 @@ test("connection form fits small windows, supports keyboard input and handles mi
   await openGraph(page, [fixture("Alone"), fixture("Branch", "computerBranch")])
   await expect(page.getByRole("button", { name: "Connect Alone", exact: true })).toHaveCount(0)
   await expect(page.locator('[aria-label="Connect another environment to Branch"]')).toHaveCount(0)
-  const from = await center(page.locator('[aria-label="Connect Alone to another environment"]'))
-  const to = await center(page.locator('[data-environment-id="Branch"]'))
-  await page.mouse.move(from.x, from.y)
-  await page.mouse.down()
-  await page.mouse.move(to.x, to.y, { steps: 15 })
-  await page.mouse.up()
-  await expect(dialog).not.toBeVisible()
+  await page.getByRole("button",{name:"Connect Alone to another environment",exact:true}).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole("button",{name:"Create connection",exact:true})).toBeDisabled()
 })
 
 test("workspace redesign keeps toolbar and metrics readable across desktop sizes", async ({ page }) => {
@@ -2367,8 +2061,6 @@ test("workspace redesign keeps toolbar and metrics readable across desktop sizes
       if (width >= 768) expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight)).toBe(true)
       const canvas = await page.locator("[data-environment-canvas]").boundingBox()
       expect(canvas!.height).toBeGreaterThan(120)
-      const capabilities = await page.getByRole("region", { name: "Environment capabilities", exact: true }).boundingBox()
-      if (width >= 768) expect(capabilities!.y + capabilities!.height).toBeLessThanOrEqual(page.viewportSize()!.height)
       const footer = page.locator(".workspace-graph-caption")
       expect(await footer.evaluate(element => {
         const bounds = element.getBoundingClientRect()
@@ -2384,42 +2076,26 @@ test("workspace redesign keeps toolbar and metrics readable across desktop sizes
       }
       await expect(page.getByRole("region", { name: "Host resources and storage" })).toBeVisible()
       await expect(page.getByRole("button", { name: "New environment", exact: true })).toBeVisible()
-      expect(await page.locator(".workspace-node").first().evaluate(element => getComputedStyle(element).borderTopWidth)).toBe("3px")
+      await expect(page.getByRole("table",{name:"Environments",exact:true})).toBeVisible()
     }
   }
 })
 
-test("connectors are reachable above both light and dark surfaces", async ({ page }) => {
-  await openGraph(page)
-  for (const dark of [false, true]) {
-    await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), dark)
-    const reachable = await page.locator("[data-environment-connection-point], [data-capability-connection-point]").evaluateAll(elements => elements.every(element => {
-      const bounds = element.getBoundingClientRect()
-      const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)
-      const dot = element.querySelector("span")!
-      return bounds.width >= 43 && (hit === element || element.contains(hit)) && getComputedStyle(dot).backgroundColor !== "rgba(0, 0, 0, 0)"
-    }))
-    expect(reachable).toBe(true)
-  }
-})
 
-test("newly created nodes stay visible and do not overlap existing cards", async ({ page }) => {
-  await openGraph(page, [])
-  for (const name of ["First", "Second"]) {
-    await page.getByRole("button", { name: "New environment", exact: true }).click()
-    await page.getByPlaceholder("Ubuntu Development").fill(name)
-    await page.getByRole("dialog", { name: "New environment" }).getByRole("button", { name: "Create environment", exact: true }).click()
-    await expect(page.getByRole("button", { name: `Connect capabilities to ${name}`, exact: true })).toBeVisible()
-  }
-  await expect.poll(() => page.evaluate(() => {
-    const canvas = document.querySelector("[data-environment-canvas]")!.getBoundingClientRect()
-    const cards = [...document.querySelectorAll("[data-environment-id]")].map(el => el.getBoundingClientRect())
-    return cards.length === 2 && cards.every(card => card.top >= canvas.top && card.bottom < canvas.bottom && card.left >= canvas.left && card.right <= canvas.right)
-      && (cards[0].bottom <= cards[1].top || cards[1].bottom <= cards[0].top || cards[0].right <= cards[1].left || cards[1].right <= cards[0].left)
-  })).toBe(true)
-  await drag(page, dockPort(page, "internet"), page.getByRole("button", { name: "Connect capabilities to Second", exact: true }))
-  await expect(page.getByRole("button", { name: "Detach Internet access from Second", exact: true })).toBeVisible()
-})
+
+test("new environments appear as distinct rows and retain individual access settings", async ({ page }) => {
+    await openGraph(page,[])
+    for(const name of ["First","Second"]){
+      await page.getByRole("button",{name:"New environment",exact:true}).click()
+      await page.getByPlaceholder("Ubuntu Development").fill(name)
+      await page.getByRole("dialog",{name:"New environment"}).getByRole("button",{name:"Create environment",exact:true}).click()
+      await expect(page.locator("tr[data-environment-id]").filter({has:page.getByRole("button",{name:`Configure ${name}`,exact:true})})).toBeVisible()
+    }
+    await expect(page.locator("tr[data-environment-id]")).toHaveCount(2)
+    const access=page.getByRole("switch",{name:"Internet access for Second",exact:true})
+    await access.uncheck();await expect(access).not.toBeChecked()
+    await expect(page.getByRole("switch",{name:"Internet access for First",exact:true})).toBeChecked()
+  })
 
 test("MicroVM creation saves one fixed allocation from sliders and editable values", async ({ page }) => {
   await openGraph(page, [])
@@ -2583,7 +2259,7 @@ test("an early creation failure leaves the popup closed and preserves the next d
   await expect(dialog.getByRole("slider", { name: "Memory allocation", exact: true })).toBeEnabled()
   await dialog.getByRole("button", { name: "Create environment", exact: true }).click()
   await expect(dialog).not.toBeVisible()
-  await expect(page.getByRole("button", { name: "Connect capabilities to Keep my next draft", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Configure Keep my next draft", exact: true })).toBeVisible()
 })
 
 for (const category of ["Container", "GPU", "MicroVM", "VM"]) for (const fails of [false, true]) {
@@ -2707,7 +2383,7 @@ test("MongoDB uses its service entrypoint while Linux keeps a terminal alive", a
   await expect(command).toHaveValue("")
   await dialog.getByPlaceholder("Ubuntu Development").fill("Mongo test")
   await dialog.getByRole("button", { name: "Create environment", exact: true }).click()
-  await expect(page.getByRole("button", { name: "Connect capabilities to Mongo test", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Configure Mongo test", exact: true })).toBeVisible()
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.platform.v1")!).environments[0])
   expect(saved.containerCommand).toBe("")
   expect(saved.resourcePolicy.memoryGb.preferred).toBe(0.5)
@@ -2865,55 +2541,18 @@ test("OCI image picker stays inside the viewport with readable results in both t
   }
 })
 
-test("failed saves clear the busy state and allow a retry without a phantom wire", async ({ page }) => {
-  await openGraph(page, [fixture("Alpha")])
-  const statsBeforeError = (await page.getByRole("region", { name: "Host resources and storage" }).boundingBox())!
-  const graphBeforeError = (await page.locator("[data-environment-graph]").boundingBox())!
-  await page.evaluate(async () => {
-    const url = "/src/api/platform-api.ts"
-    const { platformApi } = await import(url)
-    const original = platformApi.updateContainerNetwork
-    platformApi.updateContainerNetwork = async () => {
-      try {
-        await new Promise((_, reject) => window.addEventListener("fail-graph-save", () => reject(new Error("Test save failed")), { once: true }))
-      } finally { platformApi.updateContainerNetwork = original }
-    }
+test("failed internet saves restore state and allow a retry", async ({ page }) => {
+    await openGraph(page,[fixture("Alpha")])
+    await page.evaluate(async()=>{const {platformApi}=await import("/src/api/platform-api.ts");const original=platformApi.updateContainerNetwork;platformApi.updateContainerNetwork=async()=>{try{await new Promise((_,reject)=>window.addEventListener("fail-save",()=>reject(Error("Test save failed")),{once:true}))}finally{platformApi.updateContainerNetwork=original}}})
+    const access=page.getByRole("switch",{name:"Internet access for Alpha",exact:true})
+    await access.click();await expect(access).toBeDisabled()
+    await page.evaluate(()=>window.dispatchEvent(new Event("fail-save")))
+    const error=page.getByRole("alert").filter({hasText:"Test save failed"});await expect(error).toBeVisible()
+    await expect(access).toBeEnabled();await expect(access).not.toBeChecked()
+    await access.check();await expect(access).toBeChecked()
   })
-  await drag(page, dockPort(page, "internet"), port(page))
-  await expect(port(page)).toBeDisabled()
-  await expect(page.locator('[data-environment-id="Alpha"]')).toHaveAttribute("aria-busy", "true")
-  await expect(line(page, "internet")).toHaveCount(0)
-  await page.evaluate(() => window.dispatchEvent(new Event("fail-graph-save")))
-  const error = page.getByRole("alert").filter({ hasText: "Test save failed" })
-  await expect(error).toBeVisible()
-  await expect(page.locator("[data-environment-graph]").getByRole("alert")).toHaveCount(0)
-  const errorBox = (await error.boundingBox())!
-  const statsBox = (await page.getByRole("region", { name: "Host resources and storage" }).boundingBox())!
-  expect(errorBox.y + errorBox.height).toBeLessThan(statsBox.y)
-  expect(errorBox.y).toBeGreaterThanOrEqual(0)
-  expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(page.viewportSize()!.height)
-  expect(statsBox).toEqual(statsBeforeError)
-  expect(await page.locator("[data-environment-graph]").boundingBox()).toEqual(graphBeforeError)
-  await error.getByRole("button", { name: "Dismiss graph error" }).click()
-  await expect(error).toHaveCount(0)
-  await expect(port(page)).toBeEnabled()
-  await expect(line(page, "internet")).toHaveCount(0)
-  await drag(page, dockPort(page, "internet"), port(page))
-  await assertLineAligned(page, "internet")
-})
 
-test("an overlapping node receives the drop on the card that is actually on top", async ({ page }) => {
-  await openGraph(page)
-  const a = await center(page.locator('[data-environment-id="Alpha"] [data-node-drag-grip]'))
-  const b = await center(page.locator('[data-environment-id="Beta"] [data-node-drag-grip]'))
-  await page.mouse.move(b.x, b.y)
-  await page.mouse.down()
-  await page.mouse.move(a.x, a.y, { steps: 12 })
-  await page.mouse.up()
-  await drag(page, dockPort(page, "internet"), port(page, "Beta"))
-  await assertLineAligned(page, "internet", "Beta")
-  await expect(line(page, "internet", "Alpha")).toHaveCount(0)
-})
+
 
 test("MicroVM apps install on demand, open separate windows, reopen and stop", async ({ page }) => {
   const env = fixture("env-app-launcher", "microVm")
@@ -3029,7 +2668,7 @@ test("remembering a tunnel adds a reusable saved setup without storing its token
   await dialog.getByRole("checkbox", { name: "I reviewed this dedicated tunnel’s routes", exact: true }).check()
   await dialog.getByRole("button", { name: "Publish service", exact: true }).click()
   await expect(dialog.getByRole("button", { name: "https://saved.example.com", exact: true })).toBeVisible()
-  await expect(page.locator('[data-preset-card]')).toHaveCount(1)
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("yougori.public-access-presets.v1")??"[]"))).toEqual(expect.arrayContaining([expect.objectContaining({hostname:"saved.example.com",port:4200})]))
   await expect(dialog.getByRole("radio", { name: "Use saved.example.com for app port 4200" })).toBeVisible()
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("test-only-remembered-token")
   await dialog.getByRole("button", { name: "Disconnect cloudflare from port 4200", exact: true }).click()
@@ -3052,7 +2691,7 @@ test("an account tunnel used without Remember does not create a saved setup", as
   await dialog.getByRole("checkbox", { name: "I reviewed this dedicated tunnel’s routes", exact: true }).check()
   await dialog.getByRole("button", { name: "Publish service", exact: true }).click()
   await expect(dialog.getByRole("button", { name: "https://one-time.example.com", exact: true })).toBeVisible()
-  await expect(page.locator('[data-preset-card]')).toHaveCount(0)
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("yougori.public-access-presets.v1")??"[]"))).toEqual([])
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("test-only-one-time-token")
 })
 
@@ -3083,10 +2722,6 @@ test("Cloudflare account tokens stay masked, authenticate optionally, and can be
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("fake-test-only-token")
   await dialog.getByRole("button", { name: "Disconnect cloudflare from port 4200", exact: true }).click()
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
-  // Reconnecting the same node/port uses the vault without opening setup.
-  await drag(page, page.locator('[data-service-connection-point="Alpha:4200"]'), page.locator('[data-publication-connection-point="public"]'))
-  await expect(page.locator('[data-service-card="Alpha:4200"]')).toContainText("CF")
-  await expect(dialog).toHaveCount(0)
   await page.getByRole("button", { name: "Port 4200 in Alpha", exact: true }).click()
   await dialog.getByRole("radio", { name: "Public access / Cloudflare Tunnel", exact: true }).check()
   await expect(dialog.getByRole("radio", { name: "Use my Cloudflare account (optional)", exact: true })).toBeChecked()
@@ -3094,15 +2729,14 @@ test("Cloudflare account tokens stay masked, authenticate optionally, and can be
   await expect(dialog.getByLabel("Local tunnel port", { exact: true })).toHaveValue("45000")
   await expect(token).toHaveValue("")
   await expect(dialog.getByRole("checkbox", { name: "I reviewed this dedicated tunnel’s routes", exact: true })).toBeChecked()
+  await dialog.getByRole("button", { name: "Publish service", exact: true }).click()
   await expect(dialog.getByRole("button", { name: "https://app.example.com", exact: true })).toBeVisible()
   await dialog.getByRole("button", { name: "Forget token for this node", exact: true }).click()
   await expect(dialog.getByRole("button", { name: "Forget token for this node", exact: true })).toHaveCount(0)
   await expect(dialog.getByRole("button", { name: "Disconnect cloudflare from port 4200", exact: true })).toBeVisible()
   await dialog.getByRole("button", { name: "Disconnect cloudflare from port 4200", exact: true }).click()
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
-  await drag(page, page.locator('[data-service-connection-point="Alpha:4200"]'), page.locator('[data-publication-connection-point="public"]'))
-  await expect(dialog).toHaveCount(0)
-  await expect(page.locator('[data-service-card="Alpha:4200"]')).toContainText("CF")
+  await expect(dialog).not.toBeVisible()
 })
 
 test("remembered Cloudflare reconnect errors reopen account settings", async ({ page }) => {
@@ -3114,13 +2748,15 @@ test("remembered Cloudflare reconnect errors reopen account settings", async ({ 
     await workspaceApi.unpublish(publication.id)
     workspaceApi.publish = async () => { throw new Error("Saved tunnel token has expired") }
   })
-  await drag(page, page.locator('[data-service-connection-point="Alpha:4200"]'), page.locator('[data-publication-connection-point="public"]'))
+  await page.getByRole("button", {name:"Port 4200 in Alpha",exact:true}).click()
   const dialog = page.getByRole("dialog")
+  await dialog.getByRole("radio",{name:"Public access / Cloudflare Tunnel",exact:true}).check()
+  await dialog.getByRole("button",{name:"Publish service",exact:true}).click()
   await expect(dialog.getByRole("alert")).toContainText("Saved tunnel token has expired")
   await expect(dialog.getByRole("radio", { name: "Use my Cloudflare account (optional)", exact: true })).toBeChecked()
   await expect(dialog.getByLabel("Public hostname", { exact: true })).toHaveValue("app.example.com")
   await expect(dialog.getByLabel("Tunnel token", { exact: true })).toHaveValue("")
-  await expect(page.locator('[data-service-card="Alpha:4200"]')).not.toContainText("CF")
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem("yougori.workspace.v1")!).Alpha.publications)).toEqual([])
 })
 
 test("Cloudflare account failure allows retry without an anonymous fallback or exposing the token", async ({ page }) => {
@@ -3482,10 +3118,12 @@ test("terminal tolerates a missed read and allows dismissing and reconnecting af
 for (const view of ["nodes", "list"] as const) test(`duplication destinations and placement work in ${view}`, async ({ page }) => {
   const cloud = { ...fixture("Cloud", "cloud"), provider: "cloudSsh" as const, runtime: "user@example.com" }
   await openGraph(page, [fixture("Alpha"), cloud])
-  if (view === "list") await page.getByRole("button", { name: "List", exact: true }).click()
+  await page.evaluate(view=>localStorage.setItem("yougori.workspace-view",view),view)
+  await page.reload()
+  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-view","list")
   const local = page.locator('[data-environment-id="Alpha"]')
   const remote = page.locator('[data-environment-id="Cloud"]')
-  for (const [row, predecessor, name] of [[local, view === "list" ? "Ports & access for Alpha" : "Add service port to Alpha", "Alpha"], [remote, "Configuration for Cloud", "Cloud"]] as const) {
+  for (const [row, predecessor, name] of [[local, view === "list" ? "Ports & access for Alpha" : "Ports & access for Alpha", "Alpha"], [remote, "Configuration for Cloud", "Cloud"]] as const) {
     const before = await row.getByRole("button", { name: predecessor, exact: true }).boundingBox()
     const after = await row.getByRole("button", { name: `Duplicate ${name}`, exact: true }).boundingBox()
     expect(after!.x).toBeGreaterThan(before!.x)

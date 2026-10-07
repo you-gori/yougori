@@ -9,7 +9,7 @@ pub(crate) mod huggingface;
 pub(crate) mod preflight;
 mod vllm;
 pub use preflight::model_preflight;
-pub(crate) use neocloud::{run_neocloud_model, start_model, stop_model};
+pub(crate) use neocloud::{start_model, stop_model};
 pub fn normalize_model(model: &str) -> Result<String, String> {
     let model = model
         .trim()
@@ -41,8 +41,8 @@ pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, 
 }
 /// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod.
 #[tauri::command]
-pub async fn run_model_on_neocloud(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
-    run_neocloud_model(model, environment_id, port, app).await
+pub async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
+    neocloud::run_neocloud_model(model, environment_id, port, app).await
 }
 /// Safetensors models run on the PyTorch CUDA image. GGUF models need a newer C library for the
 /// pinned llama.cpp CUDA build, which the model server downloads and verifies itself.
