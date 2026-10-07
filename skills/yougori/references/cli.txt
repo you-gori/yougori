@@ -434,3 +434,15 @@ Provision the protected binding with `deployment secret set company-api-token --
 Finish with `deployment status -f yougori.yaml`: saved state, container runtime, application process, local HTTP, tunnel, public HTTPS and authenticated application probe are separate stages. A runtime-only ready result explicitly leaves application health unverified. A domain or URL in metadata does not establish public success. Health supports GET/HEAD/POST; JSON bodies require POST. Model compatibility preflight identifies task/runner/dependencies/resources and a pinned revision, but does not claim downloaded weights or guest load verified. Download large model weights directly into persistent guest storage and validate their revision/checksums there.
 
 Decision models (Security-One and Clef): model run / model chat open the same CLI session and controls as text models. Paste one JSON object containing state and questions; /example prints a request. Each request is independent, with history shared with the App Decisions panel. model decide ENV --file request.json|- remains available for scripts. Network APIs accept JSON in the latest user message through /v1/chat/completions, or model/state/questions directly through /v1/systemone. Decisions are delivered as complete JSON; SSE carries the complete result, not incremental probabilities. Speed measures processed input tokens, and output usage is zero because the model does not generate a text reply.
+# Tool containers in the current terminal
+
+`yougori codex`, `yougori claude`, `yougori gemini`, `yougori ollama`,
+`yougori opencode`, `yougori kilo`, and `yougori openclaw` create a local Ubuntu
+container, install the tool if missing, and attach it directly to the invoking
+terminal. Later calls reuse that tool's container and sign-in. `--new` creates
+another one; `--environment ENV` explicitly uses a chosen local container.
+Creation options need a new container. No host folders or credentials are copied
+by default. Tool arguments follow `--`; `--dry-run` works without a terminal or
+engine and changes nothing. `TOOL --help` lists exact options. Ollama starts
+`serve`; OpenClaw starts interactive `onboard`. Ctrl+] closes only this terminal
+session, leaving its container and files; the attached program may stop.

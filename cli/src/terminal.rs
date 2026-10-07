@@ -1,10 +1,11 @@
 //! An independent interactive shell, using the same environment PTY as the app.
 use crate::public::call;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    terminal,
-};
+use crossterm::{event::{KeyCode, KeyEvent, KeyModifiers}, terminal};
+#[cfg(not(windows))]
+use crossterm::event::{self, Event, KeyEventKind};
+#[cfg(windows)]
+mod windows_input;
 use serde_json::json;
 use std::{
     io::{self, IsTerminal, Write},
@@ -231,7 +232,63 @@ fn detach_key(key: KeyEvent) -> bool {
     false
 }
 
+#[derive(Default)]
+struct InputBatch { bytes: Vec<u8>, resize: Option<(u16, u16)>, detached: bool }
+
+#[cfg(not(windows))]
+#[derive(Default)]
+struct InputReader;
+#[cfg(windows)]
+use windows_input::InputReader;
+
+#[cfg(not(windows))]
+impl InputReader {
+    fn read_batch(&mut self) -> Result<InputBatch, String> {
+        let mut batch = InputBatch::default();
+        while event::poll(Duration::from_millis(1)).map_err(|e| e.to_string())? {
+            match event::read().map_err(|e| e.to_string())? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    if detach_key(key) { batch.detached = true; break; }
+                    batch.bytes.extend(key_bytes(key));
+                }
+                Event::Paste(text) => batch.bytes.extend(text.into_bytes()),
+                Event::Resize(cols, rows) => batch.resize = Some((cols, rows)),
+                _ => {},
+            }
+            if batch.bytes.len() >= 64 * 1024 { break; }
+        }
+        Ok(batch)
+    }
+}
+
 pub async fn attach(id: &str, command: Option<&str>) -> Result<(), String> {
+    attach_session(id, command, None).await
+}
+
+pub async fn attach_tool(id: &str, tool: &str, arguments: &[String]) -> Result<(), String> {
+    if !crate::container_tools::TOOLS.contains(&tool) { return Err("Unknown tool".into()); }
+    attach_session(id, None, Some((tool, arguments))).await
+}
+
+const TOOL_ENV: &str = "[ ! -r \"$HOME/.local/share/yougori/tool-env.sh\" ] || . \"$HOME/.local/share/yougori/tool-env.sh\"";
+
+fn tool_command(tool: &str, arguments: &[String], installer: Option<&str>, status: &str) -> Result<String, String> {
+    let install = if let Some(installer) = installer {
+        let parts = shell_words::split(installer).map_err(|_| "Invalid installer launcher")?;
+        let path = parts.get(2).ok_or("Invalid installer launcher")?;
+        let suffix = path.strip_prefix("/tmp/yougori-install.").and_then(|value| value.strip_suffix("/install.sh")).ok_or("Invalid installer launcher")?;
+        if parts.len() != 3 || parts[0] != "exec" || parts[1] != "sh" || suffix.is_empty() || suffix.len() > 32 || !suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err("Invalid installer launcher".into());
+        }
+        format!("sh {}; ", shell_words::quote(path))
+    } else { String::new() };
+    let launch = shell_words::join(std::iter::once(tool.to_owned()).chain(arguments.iter().cloned()));
+    let cleanup = format!("od_status=$?; rm -f {}; printf '%s\\n' \"$od_status\" > {}; exit \"$od_status\"", shell_words::quote(&format!("{status}.sh")), shell_words::quote(status));
+    let script = format!("umask 077; trap {} EXIT; set -e; {install}{TOOL_ENV}; mkdir -p /workspace; cd /workspace; {launch}", shell_words::quote(&cleanup));
+    Ok(format!("exec sh -c {}", shell_words::quote(&script)))
+}
+
+async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[String])>) -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
             "A shell requires an interactive terminal; the environment is still running".into(),
@@ -253,34 +310,48 @@ pub async fn attach(id: &str, command: Option<&str>) -> Result<(), String> {
         json!({"environmentId":id,"sessionId":session,"action":"create","cols":cols,"rows":rows}),
     )
     .await?;
+    let status = format!("/tmp/yougori-tool-{session}.status");
     let result = async {
-        if let Some(command) = command {
+        let launch = if let Some((tool, arguments)) = tool {
+            let probe = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("{TOOL_ENV}; if command -v {tool} >/dev/null 2>&1; then printf ready; else printf missing; fi")}})).await?;
+            if probe["exitCode"] != 0 { return Err("Could not check the tool inside this container".into()); }
+            let installer = if probe["stdout"].as_str().unwrap_or("").trim() == "ready" { None }
+                else { Some(call("prepare_terminal_installer", json!({"environmentId":id,"sessionId":session,"tool":tool})).await?.as_str().ok_or("Invalid installer response")?.to_owned()) };
+            let command = tool_command(tool, arguments, installer.as_deref(), &status)?;
+            let script = shell_words::split(&command).map_err(|_| "Invalid tool launcher")?.pop().ok_or("Missing tool launcher")?;
+            let path = format!("{status}.sh");
+            let staged = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("umask 077; printf %s {} > {}",shell_words::quote(&script),shell_words::quote(&path))}})).await?;
+            if staged["exitCode"] != 0 { return Err("Could not stage the tool launcher inside this container".into()); }
+            Some(format!("exec sh {}", shell_words::quote(&path)))
+        } else { command.map(str::to_owned) };
+        if let Some(command) = launch {
             call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{command}\r"))})).await?;
         }
         let mut offset = 0;
+        let mut input_reader = InputReader::default();
         loop {
             let result = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"read","offset":offset})).await?;
             let bytes = B64.decode(result["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
             io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
             io::stdout().flush().map_err(|e| e.to_string())?;
             offset = result["offset"].as_u64().unwrap_or(offset);
-            if result["done"] == true { break; }
-            while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
-                let bytes = match event::read().map_err(|e| e.to_string())? {
-                    Event::Key(key) if key.kind != KeyEventKind::Release => {
-                        if detach_key(key) { return Ok(()); }
-                        key_bytes(key)
-                    }
-                    Event::Paste(text) => text.into_bytes(),
-                    Event::Resize(cols, rows) => {
-                        call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"resize","cols":cols,"rows":rows})).await?;
-                        vec![]
-                    }
-                    _ => vec![],
-                };
-                for chunk in bytes.chunks(12 * 1024) {
-                    call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(chunk)})).await?;
+            if result["done"] == true {
+                if tool.is_some() {
+                    let exit = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("test -f {0} && cat {0} && rm -f {0}",shell_words::quote(&status))}})).await?;
+                    let code = exit["stdout"].as_str().unwrap_or("").trim().parse::<u8>().map_err(|_| "The tool session ended without an exit result. The container and files remain.")?;
+                    if code != 0 { return Err(format!("The tool session exited with status {code}. Read its terminal output above; the container and files remain.")); }
                 }
+                break;
+            }
+            // Send queued input together. Splitting ESC/control reports across
+            // RPC round trips makes full-screen tools treat their tails as text.
+            let input = input_reader.read_batch()?;
+            if input.detached { return Ok(()); }
+            if let Some((cols, rows)) = input.resize {
+                call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"resize","cols":cols,"rows":rows})).await?;
+            }
+            for chunk in input.bytes.chunks(12 * 1024) {
+                call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(chunk)})).await?;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
@@ -294,7 +365,7 @@ pub async fn attach(id: &str, command: Option<&str>) -> Result<(), String> {
     .await;
     // A detached full-screen guest program may not send its normal cleanup.
     // Restore the host screen and cursor before returning to a CLI menu.
-    let _ = io::stdout().write_all(b"\x1b[?1049l\x1b[0m\x1b[?25h\r\n");
+    let _ = io::stdout().write_all(b"\x1b[?1049l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[<u\x1b[>4;0m\x1b[0 q\x1b[0m\x1b[?25h\r\n");
     let _ = io::stdout().flush();
     drop(raw);
     result
@@ -303,6 +374,19 @@ pub async fn attach(id: &str, command: Option<&str>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tool_launcher_preserves_literal_arguments_and_runs_install_before_launch() {
+        let args = vec!["--prompt".into(), "spaces; $(touch /tmp/no) and 'quotes'".into()];
+        let command = tool_command("codex", &args, Some("exec sh '/tmp/yougori-install.abc123/install.sh'"), "/tmp/status").unwrap();
+        let outer = shell_words::split(&command).unwrap();
+        assert_eq!(&outer[..3], &["exec", "sh", "-c"]);
+        let script = &outer[3];
+        assert!(script.find("sh /tmp/yougori-install.abc123/install.sh").unwrap() < script.find("cd /workspace").unwrap());
+        let tail = script.split("cd /workspace; ").last().unwrap();
+        assert_eq!(shell_words::split(tail).unwrap(), [vec!["codex".to_owned()], args].concat());
+        for bad in ["exec sh '/tmp/other/install.sh'", "sh '/tmp/yougori-install.abc/install.sh'", "exec sh '/tmp/yougori-install.a/../install.sh'", "exec sh '/tmp/yougori-install.abc/install.sh' ; whoami"] { assert!(tool_command("codex", &[], Some(bad), "/tmp/status").is_err()); }
+        assert!(!tool_command("claude", &[], None, "/tmp/status").unwrap().contains("/install.sh"));
+    }
     #[test]
     fn cloud_shell_enters_the_project_container_with_quoted_arguments() {
         let name = "project's container; echo nope";

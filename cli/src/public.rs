@@ -101,6 +101,8 @@ Public commands:
   yougori neocloud delete ENV --confirmation EXACT_NAME --yes
   yougori info | version
   yougori help | --help | --version
+  yougori codex | claude | gemini | ollama | opencode | kilo | openclaw
+                                  Install/start a tool container in this terminal; TOOL --help for options
 
 Run options: --cpu CORES, --memory 4GB, --storage 30GB, --storage-drive PATH,
   --volume NAME:/guest/path[:ro], --mount PC_FOLDER:/guest/path[:ro],

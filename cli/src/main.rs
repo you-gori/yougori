@@ -49,6 +49,14 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         let Some(model)=launcher::prompt_model(&args)? else {return Ok(0);};
         args[2]=model;
     }
+    if yougori_cli::container_tools::TOOLS.contains(&args[0].as_str()) {
+        if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+            println!("{}", yougori_cli::container_tools::HELP);
+        } else if let Some(result) = yougori_cli::container_tools::run(&args).await? {
+            println!("{}", wire_json(result));
+        }
+        return Ok(0);
+    }
     if args[0]=="confidential" {
         if args.iter().any(|a| matches!(a.as_str(),"--help"|"-h")) { println!("{}",yougori_cli::confidential::command::HELP); return Ok(0); }
         println!("{}",wire_json(yougori_cli::confidential::command::run(&args[1..]).await?));

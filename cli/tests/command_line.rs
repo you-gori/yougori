@@ -13,6 +13,25 @@ fn response(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 #[test]
+fn tool_shortcuts_validate_offline_and_do_not_create_from_pipes() {
+    for tool in ["codex", "claude", "gemini", "ollama", "opencode", "kilo", "openclaw"] {
+        let help = cli(&[tool, "--help"]);
+        assert!(help.status.success());
+        assert!(String::from_utf8_lossy(&help.stdout).contains("this terminal"));
+        let dry = cli(&[tool, "--dry-run"]);
+        assert!(dry.status.success(), "{}", String::from_utf8_lossy(&dry.stdout));
+        let value = response(&dry);
+        assert_eq!(value["result"]["tool"], tool);
+        assert_eq!(value["result"]["terminal"], "current");
+        let rejected = cli(&[tool]);
+        assert!(!rejected.status.success());
+        assert!(response(&rejected)["error"].as_str().unwrap().contains("interactive terminal"));
+    }
+    let literal = cli(&["codex", "--dry-run", "--", "--help", "a;$(whoami)"]);
+    assert!(literal.status.success());
+    assert_eq!(response(&literal)["result"]["arguments"], serde_json::json!(["--help", "a;$(whoami)"]));
+}
+#[test]
 fn optional_model_entry_is_interactive_only_and_preserves_flags() {
     for args in [vec!["model","run"],vec!["model","run","--nowfree"],vec!["run","mode","--freenow"],vec!["model","run","--neocoud"],vec!["model","run","hf.co/","-free"]] {
         let output=cli(&args);assert!(!output.status.success());
