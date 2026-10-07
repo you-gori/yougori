@@ -115,7 +115,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "execute_guest_job" | "guest_execution_output" | "release_guest_execution" | "cancel_guest_execution" | "cancel_file_transfer" | "patch_settings" | "get_settings_snapshot" | "get_startup_report" | "recover_environment_runtime_report" | "model_preflight" | "model_support_task" | "model_huggingface_status" | "set_deployment_secret" | "delete_deployment_secret" | "deployment_status" | "get_environment_health_check" | "set_environment_health_check" | "publication_preflight" => dispatch_group_0(app,method,p,progress),
         "host_share_credentials" | "get_environment_log_window" | "start_environment_download" | "list_environment_downloads" | "keep_environment_downloads_alive" | "stop_environment_download" | "runpod_status" | "runpod_connect" | "runpod_catalog" | "runpod_disconnect" | "runpod_template" | "runpod_search_templates" | "runpod_hub" | "runpod_hub_repo" | "runpod_links" | "runpod_logs" => dispatch_group_1(app,method,p,progress),
         "runpod_create_endpoint" | "runpod_endpoint_run" | "runpod_action" | "runpod_resources" | "runpod_attach" | "runpod_volume" | "runpod_registry" | "runpod_gpu_offers" | "runpod_create_pod" | "neocloud_providers" | "neocloud_install" | "neocloud_account" | "neocloud_authenticate" | "neocloud_forget_account" | "neocloud_catalog" | "neocloud_discover" => dispatch_group_2(app,method,p,progress),
-        "neocloud_prices" | "neocloud_plan" | "create_neocloud_environment" | "neocloud_action" | "neocloud_recover_id" | "run_model" | "run_neocloud_model" | "start_model" | "stop_model" | "test_cloud_connection" | "duplicate_local_environment" | "duplicate_environment" | "inspect_duplication_source" | "cleanup_environment_duplication" | "model_api" | "model_status" => dispatch_group_3(app,method,p,progress),
+        "neocloud_prices" | "neocloud_plan" | "create_neocloud_environment" | "neocloud_action" | "neocloud_recover_id" | "run_model" | "run_neocloud_model" | "start_model" | "stop_model" | "test_cloud_connection" | "duplicate_local_environment" | "duplicate_environment" | "inspect_duplication_source" | "cleanup_environment_duplication" | "model_api" | "model_status" | "model_optimizer" => dispatch_group_3(app,method,p,progress),
         "model_chat" | "model_chat_begin" | "model_chat_read" | "environment_changes" | "inspect_project" | "discover_projects" | "import_compose" | "project_action" | "run_workload" | "cloud_authenticate" | "deploy_cloud_environment" | "cloud_deployment_action" | "finish_app_close" | "open_isolated_cli" | "grant_isolated_cli_environment" | "delete_cloud_deployment" => dispatch_group_4(app,method,p,progress),
         "configure_cloud_environment" | "get_environment_logs" | "manage_oci_images" | "create_remote_share" | "start_remote_tunnel" | "stop_remote_tunnel" | "list_remote_shares" | "update_remote_share" | "remove_remote_share" | "connect_remote_share" | "reconnect_remote_share" | "download_remote_folder" | "remote_share_request" | "create_environment_share" | "list_environment_shares" | "revoke_environment_share" => dispatch_group_5(app,method,p,progress),
         "import_environment_share" | "get_storage_location" | "set_storage_location" | "scan_cloud_host" | "add_cloud_environment" | "get_cloud_connection" | "get_host_terminal_info" | "set_up_agent_access" | "host_terminal_action" | "get_platform_state" | "install_environment_skills" | "get_connection_skills" | "create_environment" | "set_environment_status" | "restart_environment" | "recover_environment_runtime" => dispatch_group_6(app,method,p,progress),
@@ -125,7 +125,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "export_local_backup" | "import_local_backup" | "add_backup_destination" | "delete_backup_destination" | "run_backup" | "restore_backup" | "update_settings" | "reset_platform_state" | "refresh_host_metrics" | "get_cuda_runtime_status" | "install_cuda_runtime" | "verify_environment_cuda" | "get_shared_gpu_settings" | "set_shared_gpu_selection" | "execute_environment_command" | "execute_connected_command" => dispatch_group_10(app,method,p,progress),
         "list_environment_folders" | "request_connected_files" | "read_environment_console" | "get_guest_session" | "terminal_action" | "prepare_terminal_installer" | "install_terminal_tool" | "micro_vm_apps" | "open_environment_window" | "open_micro_vm_app_window" | "close_environment_window" | "list_environment_windows" | "focus_environment_window" | "title_environment_window" | "set_guest_keyboard_capture" | "open_workspace_url" | "open_service_window" => dispatch_group_11(app,method,p,progress),
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
-        "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
+        "model_registry_connect" | "model_registry_request" | "model_registry_upload" | "model_registry_download" | "model_registry_pause" | "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
         _ => Box::pin(async move { Err(format!("No backend handler for {method}")) }),
     }
 }
@@ -176,7 +176,7 @@ dispatch_group! { dispatch_group_0(app, method, p, progress, store, runtime, bac
         "get_settings_snapshot" => crate::lifecycle::get_settings_snapshot(store).await,
         "get_startup_report" => encoded(crate::lifecycle::get_startup_report(store)?),
         "recover_environment_runtime_report" => encoded(crate::lifecycle::recover_environment_runtime_report(arg(p, "environmentId")?,arg(p, "confirmed")?,store,runtime).await?),
-        "model_preflight" => crate::model_runner::model_preflight(arg(p, "model")?,arg(p, "quant")?).await,
+        "model_preflight" => crate::model_runner::model_preflight(arg(p, "model")?,arg(p, "quant")?,arg(p, "folder")?).await,
         "model_support_task" => crate::model_runner::preflight::model_support_task(arg(p,"model")?,arg(p,"agent")?,arg(p,"quant")?).await,
         "model_huggingface_status" => encoded(crate::model_runner::huggingface::model_huggingface_status()),
         "set_deployment_secret" => crate::projects::secrets::set_secret(&arg::<String>(p,"name")?,&arg::<String>(p,"value")?),
@@ -240,7 +240,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         "create_neocloud_environment" => encoded(crate::neocloud::create_neocloud_environment(arg(p, "request")?, arg(p, "costAcknowledged")?, store).await?),
         "neocloud_action" => encoded(crate::neocloud::neocloud_action(arg(p, "environmentId")?, arg(p, "action")?, arg(p, "confirmation")?, store, runtime).await?),
         "neocloud_recover_id" => encoded(crate::neocloud::neocloud_recover_id(arg(p, "environmentId")?, arg(p, "resourceId")?, store).await?),
-        "run_model" => crate::model_runner::run_model_with_resources(arg(p, "model")?,arg(p, "port")?,arg(p, "resources")?,arg(p, "quant")?,app.clone()).await,
+        "run_model" => { let mut resources=arg::<Option<crate::model_runner::ModelResources>>(p,"resources")?.unwrap_or_default(); if let Some(folder)=arg::<Option<String>>(p,"folder")? {resources.model_folder=Some(folder);} crate::model_runner::run_model_with_resources(arg(p,"model")?,arg(p,"port")?,Some(resources),arg(p,"quant")?,app.clone()).await },
         "run_neocloud_model" => crate::model_runner::run_neocloud_model(arg(p, "model")?,arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
         "start_model" => crate::model_runner::start_model(arg(p, "environmentId")?,app.clone()).await,
         "stop_model" => crate::model_runner::stop_model(arg(p, "environmentId")?,app.clone()).await,
@@ -250,6 +250,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         "inspect_duplication_source" => crate::duplication::inspect_duplication_source(arg(p, "environmentId")?,arg(p, "source")?,store,runtime).await,
         "cleanup_environment_duplication" => encoded(crate::duplication::cleanup_environment_duplication(arg(p, "operationId")?,store,runtime).await?),
         "model_api" => crate::model_runner::model_api(arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
+        "model_optimizer" => crate::model_runner::optimizer::model_optimizer(arg(p,"environmentId")?,arg(p,"enabled")?,arg(p,"pinned")?,arg(p,"idleTimeoutSeconds")?,app.clone()).await,
         "model_status" => crate::model_runner::model_status(arg(p, "environmentId")?,app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }
@@ -853,11 +854,16 @@ dispatch_group! { dispatch_group_12(app, method, p, progress, store, runtime, ba
 
 dispatch_group! { dispatch_group_13(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
+        "model_registry_request" => crate::model_registry::model_registry_request(arg(p, "path")?, arg(p, "body")?).await,
+        "model_registry_connect" => crate::model_registry::model_registry_connect(arg(p, "model")?, arg(p, "endpoint")?, arg(p, "apiKey")?).await,
+        "model_registry_upload" => crate::model_registry::model_registry_upload(arg(p, "modelId")?, arg(p, "folder")?, arg(p, "label")?, arg(p, "quant")?, arg(p, "resume")?, app.clone()).await,
+        "model_registry_download" => crate::model_registry::model_registry_download(arg(p, "model")?, arg(p, "output")?, app.clone()).await,
+        "model_registry_pause" => { crate::model_registry::model_registry_pause(); Ok(json!({"paused":true})) },
         "confidential_network_chat" => crate::market::confidential_network_chat(arg(p, "apiKey")?, arg(p, "nodeId")?, arg(p, "model")?, arg(p, "prompt")?, arg(p, "policyPath")?).await,
         "market_status" => crate::market::market_status(app.clone()).await,
         "market_sign_in" => crate::market::market_sign_in(app.clone()).await,
         "market_sign_out" => crate::market::market_sign_out(app.clone()).await,
-        "market_share_model" => crate::market::market_share_model(arg(p, "environmentId")?, arg(p, "mode")?, arg(p, "listen")?, app.clone()).await,
+        "market_share_model" => crate::market::market_share_model(arg(p, "environmentId")?, arg(p, "mode")?, arg(p, "listen")?, arg(p, "publish")?, app.clone()).await,
         "market_unshare_model" => crate::market::market_unshare_model(arg(p, "environmentId")?, app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }

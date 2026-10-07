@@ -72,9 +72,13 @@ pub async fn share(environment_id: &str, mode: &str) -> Result<Value, String> {
 }
 
 pub async fn share_with_listen(environment_id: &str, mode: &str, listen: bool) -> Result<Value, String> {
+    share_with_publication(environment_id, mode, listen, false).await
+}
+
+pub async fn share_with_publication(environment_id: &str, mode: &str, listen: bool, closed: bool) -> Result<Value,String> {
     validate_listen(Some(mode), listen)?;
     if !listen { eprintln!("Network privacy: providers and the Yougori gateway can read prompts and replies during inference. Hardware-enforced host privacy is unavailable. https://yougori.com/privacy"); }
-    let result = call("market_share_model", json!({"environmentId": environment_id, "mode": mode, "listen": listen})).await?;
+    let result = call("market_share_model", json!({"environmentId": environment_id, "mode": mode, "listen": listen, "publish": closed})).await?;
     if listen {
         if let Some(path) = result["listenPath"].as_str() {
             eprintln!("Listening · prompts and replies saved in the model container: {path}");
@@ -99,7 +103,7 @@ pub async fn settled(environment_id: &str, wait: Duration) -> Result<Option<Valu
         let status = call("market_status", json!({})).await?;
         let share = status["shares"].as_array().into_iter().flatten().find(|share| share["environmentId"] == environment_id).cloned();
         let Some(share) = share else { return Ok(None) };
-        let waiting = share["live"] != true && (matches!(share["status"].as_str(), Some("starting" | "installing" | "downloading" | "verifying" | "loading"))
+        let waiting = share["live"] != true && share["filesOnline"]!=true && (matches!(share["status"].as_str(), Some("starting" | "installing" | "downloading" | "verifying" | "loading"))
             || share["status"] == "ready" && share["message"].as_str().is_some_and(|m| m.starts_with("Checking") || m.contains("reconnecting")));
         if !waiting || Instant::now() >= deadline {
             return Ok(Some(share));

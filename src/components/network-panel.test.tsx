@@ -46,10 +46,10 @@ it("shares free or paid, reports provider stats and stops sharing without stoppi
   const view = render(<ModelNetworkPanel environmentId="env-one" />)
   await waitFor(() => expect(screen.getByRole("button", { name: "Share free" })).toBeEnabled())
   fireEvent.click(screen.getByRole("button", { name: "Share free" }))
-  await waitFor(() => expect(mocks.share).toHaveBeenCalledWith("env-one", "free"))
+  await waitFor(() => expect(mocks.share).toHaveBeenCalledWith("env-one", "free", false))
   await waitFor(() => expect(screen.getByRole("button", { name: "Share paid" })).toBeEnabled())
   fireEvent.click(screen.getByRole("button", { name: "Share paid" }))
-  await waitFor(() => expect(mocks.share).toHaveBeenCalledWith("env-one", "paid"))
+  await waitFor(() => expect(mocks.share).toHaveBeenCalledWith("env-one", "paid", false))
   current.shares = [{ environmentId: "env-one", model: "google/gemma-4-31B", mode: "paid", nodeId: "node-one", status: "ready", live: true, listing: null, message: "Live on the Yougori Network", warnings: [], node: { id: "node-one", mode: "paid", gpu: "NVIDIA RTX 4090", tps: 12.5, tpsSource: "average", uptimeTodaySeconds: 3600, uptimeWeekSeconds: 7200, availability: 98.5, tokensIn: 100, tokensOut: 200, price: { input: 0.1, output: 0.34 }, earnedMicros: 500000 } }]
   await act(async () => event({ ...current }))
   expect(screen.getByText("NVIDIA RTX 4090")).toBeVisible()

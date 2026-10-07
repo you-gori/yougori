@@ -63,8 +63,16 @@ Public commands:
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
-  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
-                                   Share paid (10 priced models) or free through Yougori
+  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]
+  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--publish (closed weights)] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
+                                   Share paid or free through Yougori
+  yougori model library [--mine]    Browse published open and private models
+  yougori model publish --file publication.json  Create a model publication
+  yougori model connect yg/PUBLISHER/MODEL --file endpoint.json|-  Connect a publisher-hosted API
+  yougori model upload yg/PUBLISHER/MODEL --folder PATH --version v1 [--quant Q4_K_M] [--resume ID]
+  yougori model download yg/PUBLISHER/MODEL --output PATH  Verify and download authorized weights
+  yougori model permissions yg/PUBLISHER/MODEL --wallet 0x... --role caller|downloader|host|remove
+  yougori model run yg/PUBLISHER/MODEL --now|--nowfree  Run a published model on your GPU
   yougori model unshare ENV        Stop sharing; leave the model running
   yougori model auth login | status | logout  Protected Hugging Face token shared with the App
   yougori model decide ENV --file REQUEST.json|-  Typed decision probabilities
@@ -898,7 +906,23 @@ pub async fn model_support(args: &[String]) -> Result<Value,String> {
 }
 
 async fn model(args: &[String]) -> Result<Value, String> {
+    if let Some(result)=crate::model_registry::handle(args).await? { return Ok(result); }
     let action = args.get(1).map(String::as_str).unwrap_or("");
+    if action == "optimize" {
+        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]")?;
+        let mut params=json!({"environmentId": resolve(target).await?});
+        let mut i=3;
+        while i<args.len() {
+            match args[i].as_str() {
+                "--on"=>params["enabled"]=json!(true), "--off"=>params["enabled"]=json!(false),
+                "--pin"=>params["pinned"]=json!(true), "--unpin"=>params["pinned"]=json!(false),
+                "--idle"=>{params["idleTimeoutSeconds"]=json!(value(args,&mut i,"--idle")?.parse::<u64>().map_err(|_|"Idle seconds must be an integer")?);},
+                _=>return Err("Use --on, --off, --pin, --unpin or --idle SECONDS".into()),
+            }
+            i+=1;
+        }
+        return call("model_optimizer",params).await;
+    }
     if action=="support" {return model_support(args).await;}
     if action == "auth" { return crate::model_auth::run(&args[2..]).await; }
     if action == "decide" {
@@ -943,6 +967,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     let mut environment = None;
     let mut share_mode = None;
     let mut listen = false;
+    let mut publish = false;
     let mut quant = None;
     let mut storage_drive = None;
     while i < args.len() {
@@ -952,6 +977,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 share_mode = crate::network::mode(flag);
             }
             "--listen" if action == "run" && !listen => listen = true,
+            "--publish" if action == "run" && !publish => publish = true,
+            "--folder" if action == "run" && !resources.contains_key("modelFolder") => {resources.insert("modelFolder".into(),json!(value(args,&mut i,"--folder")?));}
             "--quant" if action == "run" => quant = Some(value(args, &mut i, "--quant")?),
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
@@ -985,6 +1012,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
         i += 1;
     }
     crate::network::validate_listen(share_mode, listen)?;
+    if publish && share_mode.is_none() {return Err("--publish requires --now or --nowfree".into())}
+    if neocloud && resources.contains_key("modelFolder") {return Err("--folder needs a local GPU".into())}
     if port == 0 {
         return Err("Model API port must be between 1 and 65535".into());
     }
@@ -997,7 +1026,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return Err("Resetting model usage permanently clears its history. Repeat with --yes.".into());
     }
     if dry {
-        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"quant":quant,"storageDrive":storage_drive}));
+        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"closedWeights":publish,"quant":quant,"storageDrive":storage_drive}));
     }
     if neocloud && environment.is_none() { return Err("Choosing a Neocloud pod needs an interactive terminal. For scripts add --environment POD_NAME --api.".into()); }
     let chat_mode = model_chat_mode(action, api, std::io::stdin().is_terminal(), std::io::stdout().is_terminal());
@@ -1015,7 +1044,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         name_neocloud_model(&mut env, &state, target).await?;
         call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port)})).await?
     } else if action == "run" {
-        match find_model(target).await?.filter(|_| quant.is_none()) {
+        match find_model(target).await?.filter(|_| quant.is_none() && !resources.contains_key("modelFolder")) {
             Some(env) => {
                 if storage_drive.is_some() {
                     let state=call("get_platform_state",json!({})).await?;
@@ -1025,7 +1054,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
             },
             None => {
                 if let Some(drive)=storage_drive {
-                    let preflight=call("model_preflight",json!({"model":target,"quant":quant})).await?;
+                    let preflight=call("model_preflight",json!({"model":target,"quant":quant,"folder":resources.get("modelFolder")})).await?;
                     let supports_selection=preflight["storageDriveSelection"]==true;
                     let host=if supports_selection {Value::Null} else {call("get_platform_state",json!({})).await?["host"].take()};
                     if let Some(drive)=model_storage_drive(supports_selection,&host,Some(&drive))? {
@@ -1046,7 +1075,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     };
     let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
     let id = id.as_str();
-    if let Some(mode) = share_mode { result["network"] = crate::network::share_with_listen(id, mode, listen).await?; }
+    if let Some(mode) = share_mode { result["network"] = crate::network::share_with_publication(id, mode, listen, publish).await?; }
     if action == "unshare" { return call("market_unshare_model", json!({"environmentId":id})).await; }
     if action == "stop" { return call("stop_model", json!({"environmentId":id})).await; }
     if action == "chat" { call("start_model", json!({"environmentId":id})).await?; }
@@ -1071,6 +1100,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         let usage = call(if reset { "reset_model_usage" } else { "model_usage" }, json!({"environmentId":id})).await?;
         return Ok(usage_summary(id, &usage, days, now_hour()));
     }
+    if result["sourceOnly"]==true {return Ok(result)}
     match chat_mode {
         ModelChatMode::Interactive => chat_session(id, fresh).await?,
         ModelChatMode::Scripted => return scripted_chat(id, fresh, prompts.unwrap(), |method, params| call(method, params)).await,

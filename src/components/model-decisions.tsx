@@ -70,7 +70,7 @@ export function ModelDecisions({ environmentId, status }: { environmentId: strin
     <textarea id="decision-state" value={state} rows={4} disabled={busy} maxLength={24576} onChange={event => { edited.current = true; setState(event.target.value) }} />
     <label className="model-label" htmlFor="decision-questions">Questions (JSON)</label>
     <textarea id="decision-questions" value={questions} rows={8} disabled={busy} maxLength={8192} onChange={event => { edited.current = true; setQuestions(event.target.value) }} />
-    <Button disabled={busy || status.status !== "ready" || !state.trim() || !questions.trim()} loading={busy} onClick={() => void decide()}>Run decision</Button>
+    <Button disabled={busy || !(status.status === "ready" || status.optimizer?.enabled && ["idle", "queued", "freeing_memory", "loading"].includes(status.status)) || !state.trim() || !questions.trim()} loading={busy} onClick={() => void decide()}>Run decision</Button>
     {error || status.error ? <p role="alert" className="model-error">{error || status.error}</p> : null}
     {result ? <pre aria-label="Decision result" className="model-decision-result">{JSON.stringify(result, null, 2)}</pre> : null}
     {history.conversations.length ? <details><summary>Saved requests · shared with the CLI</summary>{history.conversations.map(c => <details key={c.id}><summary>{c.title} · {c.messages.filter(m => m.role === "user").length} requests</summary>{c.messages.map(m => <pre key={m.id}>{m.content}</pre>)}</details>)}</details> : null}

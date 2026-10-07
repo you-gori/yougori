@@ -4,6 +4,11 @@ fn alias(flag: &str) -> &str {match flag {"--freenow"|"--free"|"-free"|"-nowfree
 fn model_flag(flag: &str) -> bool {matches!(alias(flag),"--now"|"--nowfree"|"--neocloud")}
 pub fn model_id(value: &str) -> Result<String,String> {
     let value=crate::public::model_name(value);
+    if value.starts_with("yg/") {
+        let parts:Vec<_>=value.split('/').collect();
+        if parts.len()==3 && parts[1..].iter().all(|p|!p.is_empty()&&p.len()<=64&&p.bytes().all(|b|b.is_ascii_lowercase()||b.is_ascii_digit()||b"_-".contains(&b))) { return Ok(value); }
+        return Err("Use yg/PUBLISHER/MODEL for a published model".into());
+    }
     let parts:Vec<_>=value.split('/').collect();
     if parts.len()!=2||parts.iter().any(|s|s.is_empty()||s.len()>96||s.starts_with(['.','-'])||s.ends_with(['.','-'])||s.contains("..")||!s.bytes().all(|b|b.is_ascii_alphanumeric()||b"_.-".contains(&b))) {
         return Err("Enter OWNER/MODEL after hf.co/, for example HuggingFaceTB/SmolLM2-135M".into());
@@ -26,7 +31,7 @@ pub fn normalize(args: Vec<String>) -> Result<Invocation,String> {
         if raw=="--" {i+=1;continue;}
         if raw.starts_with('-') {
             flags.push(flag.to_owned());
-            if matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant") {
+            if matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant" | "--folder") {
                 i+=1;
                 let value=tail.get(i).filter(|v|!v.starts_with("--")).ok_or_else(||format!("{flag} requires a value"))?;
                 flags.push(value.clone());

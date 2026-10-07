@@ -64,7 +64,7 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
   const composer = useRef<HTMLTextAreaElement>(null)
   const stick = useRef(true)
   const historyList = useRef<HTMLUListElement>(null)
-  const ready = status?.status === "ready" && canCheckHealth && settled
+  const ready = Boolean(status && (status.status === "ready" || status.optimizer?.enabled && ["idle", "queued", "freeing_memory", "loading"].includes(status.status))) && !status?.sourceOnly && canCheckHealth && settled
   const active = store.conversations.find(c => c.id === store.activeId) ?? null
   const messages = active?.messages ?? NO_MESSAGES
   const settings = store.settings
@@ -233,6 +233,7 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
   const modelName = status?.model?.split("/").pop() ?? "Model"
   const last = messages[messages.length - 1]
   const history = [...store.conversations].sort((a, b) => b.updatedAt - a.updatedAt)
+  if (status?.sourceOnly) return <section className="model-card" aria-label="Source-only model"><h3>Source files ready</h3><p>This folder has no model weights. You can publish and download its source files through Neo Grid. Chat and inference API become available when a runnable checkpoint is supplied.</p></section>
   if (status?.task === "structured-decision") return <ModelDecisions environmentId={environmentId} status={status} />
 
   return <section className="model-chat" aria-label="Model chat">

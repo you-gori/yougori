@@ -9,5 +9,5 @@ export function modelProgress(status: ModelStatus): string {
     const progress = status.verification
     return `Verifying model weights${progress?.totalBytes ? ` · ${Math.min(100, 100 * progress.checkedBytes / progress.totalBytes).toFixed(1)}%` : ""}`
   }
-  return { installing: "Installing model dependencies", downloading: "Downloading model weights", loading: "Loading model into GPU memory", ready: "Model ready", error: status.error ?? "Model setup failed" }[status.status]
+  return { idle: "On demand · model files cached", queued: "Waiting for GPU", freeing_memory: "Preparing GPU memory", unloading: "Releasing GPU memory", installing: "Installing model dependencies", downloading: "Downloading model weights", loading: "Loading model into GPU memory", ready: "Model ready", error: status.error ?? "Model setup failed" }[status.status]
 }

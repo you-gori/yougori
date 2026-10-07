@@ -97,6 +97,7 @@ async fn exercise_model(app: &AppHandle) -> Result<(), String> {
         "hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0".into(),
         Some(port),
         None,
+        None,
         app.clone(),
     )
     .await?;

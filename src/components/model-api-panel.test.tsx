@@ -13,6 +13,15 @@ beforeEach(() => { vi.stubGlobal("PointerEvent", MouseEvent); workspace.savedClo
 
 const off = { id: "model-one", model: "owner/model", apiKey: "k".repeat(64), apiUrl: null, publicUrl: null, publicId: null, publicAccount: false }
 
+it("source-only publishers offer downloads without inference keys or examples", async () => {
+  access.mockResolvedValue(off)
+  status.mockResolvedValue({ status: "ready", sourceOnly: true, inferenceAvailable: false })
+  render(<ModelApiPanel environmentId="model-one" />)
+  expect(await screen.findByRole("region", { name: "Source-only API" })).toBeVisible()
+  expect(screen.queryByLabelText("Model API key")).not.toBeInTheDocument()
+  expect(screen.queryByText(/base_url=/)).not.toBeInTheDocument()
+})
+
 it("connects a quick link and shows ready-to-use examples without the key", async () => {
   access.mockResolvedValueOnce(off).mockResolvedValueOnce({ ...off, publicUrl: "https://abc.trycloudflare.com/v1", publicId: "pub-1" }).mockResolvedValueOnce(off)
   status.mockResolvedValue({ status: "ready", model: "owner/model", error: null, stream: true })

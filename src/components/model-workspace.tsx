@@ -5,6 +5,8 @@ import { HuggingfaceAccess } from "@/components/huggingface-access"
 import { ModelApiPanel } from "@/components/model-api-panel"
 import { ModelUsagePanel } from "@/components/model-usage-panel"
 import { ModelNetworkPanel, NetworkAccount } from "@/components/network-panel"
+import { registryApi } from "@/api/model-registry-api"
+import { ModelLibrary } from "@/components/model-library"
 import { useNetwork } from "@/components/use-network"
 import { marketApi, type SharingMode } from "@/api/market-api"
 import { modelsApi, type ModelPreflight } from "@/api/projects-api"
@@ -33,6 +35,8 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const [view, setView] = useState<"chat" | "api" | "usage" | "network">("chat")
   const [sharing, setSharing] = useState<"off" | SharingMode>("off")
   const [quant, setQuant] = useState("")
+  const [folder, setFolder] = useState("")
+  const [closedWeights, setClosedWeights] = useState(false)
   const [target, setTarget] = useState<"local" | "neocloud">("local")
   const [pod, setPod] = useState("")
   const [creatingPod, setCreatingPod] = useState(false)
@@ -73,9 +77,10 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
     if (lock.current) return
     lock.current = true; setBusy(true)
     try {
-      const result = await modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined)
+      const result = await modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined, target === "local" ? folder || undefined : undefined)
       setPreflight(result)
       if (!result.supported) { setError(result.reason); lock.current = false; setBusy(false); return }
+      if (result.sourceOnly && (sharing === "paid" || closedWeights)) { setError("This folder has source files only. Choose Free sharing with open downloads; weights are required for inference."); lock.current = false; setBusy(false); return }
     } catch (reason) { setError(String(reason)); lock.current = false; setBusy(false); return }
     if (sharing !== "off") {
       setError("")
@@ -92,10 +97,10 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
     previousIds.current = new Set(state?.environments.map(e => e.id))
     lock.current = true; setBusy(true); setLaunching(true); setElapsed(0); setError(""); setOpen(false)
     try {
-      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined)
-      setSelected(result.id); setView("chat")
+      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined, folder || undefined)
+      setSelected(result.id); setView(result.sourceOnly ? "network" : "chat")
       if (sharing !== "off") {
-        try { await marketApi.share(result.id, sharing); setView("network") }
+        try { await marketApi.share(result.id, sharing, closedWeights); setView("network") }
         catch (reason) { toastManager.add({ title: "Model is running; sharing needs attention", description: String(reason), type: "error" }); setError(String(reason)); setView("network") }
       }
       await refreshPlatform()
@@ -127,7 +132,10 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
 
           <section className="model-card">
             <label className="model-label" htmlFor="hf-model">Model</label>
-            <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
+            <ModelLibrary onRun={(value, precision) => { setModel(value); setFolder(""); setQuant(precision ?? ""); setPreflight(null); setTarget("local") }} />
+            {target === "local" ? <div><label className="model-label" htmlFor="model-folder">Local weights (optional)</label><Input id="model-folder" value={folder} disabled={busy} onChange={e => {setFolder(e.target.value);setPreflight(null)}} placeholder="Leave empty to download from Hugging Face" /><Button variant="outline" disabled={busy} onClick={() => void registryApi.folder().then(value => {if(value){setFolder(value);setPreflight(null)}}).catch(e => setError(String(e)))}>Choose model folder</Button></div> : null}
+          {sharing !== "off" ? <label><input type="checkbox" checked={closedWeights} disabled={busy} onChange={e => setClosedWeights(e.target.checked)} />Closed weights — publish chat and API only</label> : null}
+          <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
             <HuggingfaceAccess />
           </section>
 
@@ -171,12 +179,12 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
             <div className="model-tabs" role="group" aria-label="Neo Grid sharing">
               {([['off', 'Off'], ['paid', 'Paid (--now)'], ['free', 'Free (--nowfree)']] as const).map(([mode, label]) => <button key={mode} type="button" disabled={busy} aria-pressed={sharing === mode} onClick={() => setSharing(mode)}>{label}</button>)}
             </div>
-            {sharing !== "off" ? <><p className="model-hint">Share through the Yougori endpoint. Paid pricing covers ten models; other models are shared free. Free access needs no wallet.</p><NetworkAccount network={network} />{network.error ? <p role="alert" className="model-error">{network.error}</p> : null}</> : null}
+            {sharing !== "off" ? <><p className="model-hint">Share through the Yougori endpoint. Published models use publisher pricing; Hugging Face models get an automatic price when metadata supports it. Free access needs no deposit.</p><NetworkAccount network={network} />{network.error ? <p role="alert" className="model-error">{network.error}</p> : null}</> : null}
           </section>
 
-          {preflight ? <div aria-label="Model compatibility" className="model-card model-preflight" data-supported={preflight.supported || undefined}><p className="model-preflight-title">{preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
+          {preflight ? <div aria-label="Model compatibility" className="model-card model-preflight" data-supported={preflight.supported || undefined}><p className="model-preflight-title">{preflight.sourceOnly ? "Source files only" : preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
           {preflight?.supported === false && preflight.supportAvailable ? <ModelArchitectureSupport key={`${model}:${quant}`} model={model} quant={quant.trim() || undefined} active={open} /> : null}
-          <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort) || (target === "neocloud" && !pod)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
+          <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined, target === "local" ? folder || undefined : undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort) || (target === "neocloud" && !pod)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
         </div> : null}
 
         {selected ? <div className="model-view-row">

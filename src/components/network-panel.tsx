@@ -1,7 +1,7 @@
 import { marketApi, type NetworkShare } from "@/api/market-api"
 import { workspaceApi } from "@/api/workspace-api"
 import { useNetwork } from "@/components/use-network"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { ConfidentialNetworkChat } from "@/components/confidential-network-chat"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -52,16 +52,17 @@ export function NetworkShareDetails({ share, network }: { share: NetworkShare; n
   return <article className="network-card" aria-label={`Sharing ${share.model}`}>
     <div className="network-card-head">
       <div className="network-identity"><strong>{share.model}</strong>
-        <span className="network-chips"><span className="network-chip" data-live={share.live || undefined}>{share.live ? "Live" : share.status}</span><span className="network-chip">{share.mode === "free" ? "Free for everyone" : "Paid"}</span></span>
+        <span className="network-chips"><span className="network-chip" data-live={share.live || share.filesOnline || undefined}>{share.filesOnline ? "Downloads live" : share.live ? "Live" : share.status}</span><span className="network-chip">{share.sourceOnly ? "Source files only" : share.mode === "free" ? "Free for everyone" : "Paid"}</span></span>
       </div>
       <div className="network-actions">
+        {share.modelPage ? <Button size="sm" variant="outline" onClick={() => void network.perform(() => workspaceApi.openUrl(share.modelPage!))}>Model page</Button> : null}
         {share.listing ? <Button size="sm" variant="outline" onClick={() => void network.perform(() => workspaceApi.openUrl(share.listing!))}>View provider</Button> : null}
         <Button size="sm" variant="outline" disabled={network.busy} onClick={() => void network.perform(() => marketApi.unshare(share.environmentId))}>Stop sharing</Button>
       </div>
     </div>
     {share.message ? <p className="network-message" role="status">{share.message}</p> : null}
     {share.warnings.map(warning => <p className="network-warning" key={warning}>{warning}</p>)}
-    {node ? <dl className="network-stats">
+    {node && !share.sourceOnly ? <dl className="network-stats">
       <div><dt>GPU</dt><dd>{node.gpu ?? "Waiting for GPU details"}</dd></div>
       <div><dt>Price / 1M tokens</dt><dd>{node.price ? `$${node.price.input} input / $${node.price.output} output` : "Free"}</dd></div>
       <div><dt>Speed</dt><dd>{node.tps == null ? "Connection test pending" : `${node.tps.toFixed(1)} ${node.speedMetric === "input_tokens" ? "input " : ""}tokens/s · ${node.tpsSource === "window" ? "last 15 min" : node.tpsSource === "benchmark" ? "connection benchmark" : "all-time average"}`}</dd></div>
@@ -76,17 +77,20 @@ export function NetworkShareDetails({ share, network }: { share: NetworkShare; n
 
 export function ModelNetworkPanel({ environmentId }: { environmentId: string }) {
   const network = useNetwork()
+  const [closedWeights, setClosedWeights] = useState(false)
   const share = network.status?.shares.find(item => item.environmentId === environmentId)
+  useEffect(() => setClosedWeights(share?.closedWeights === true), [share?.closedWeights])
   return <section className="network-panel" aria-label="Model Neo Grid sharing">
     {network.error ? <p className="network-error" role="alert">{network.error}</p> : null}
     <NetworkAccount network={network} />
     {share ? <NetworkShareDetails share={share} network={network} /> : null}
+    <label><input type="checkbox" checked={closedWeights} disabled={network.busy} onChange={e => setClosedWeights(e.target.checked)} />Closed weights — chat and API only</label>
     <section className="network-card" aria-label="Sharing mode">
       <div className="network-card-head">
-        <div className="network-identity"><strong>{share ? "Sharing mode" : "This model is not shared."}</strong><span>Paid sharing uses the Neo Grid price for its ten priced models; other models are shared free. Free models can be used without an account or wallet.</span></div>
+        <div className="network-identity"><strong>{share ? "Sharing mode" : "This model is not shared."}</strong><span>Paid models use automatic network pricing. Open pages offer downloads; closed pages offer chat and API. Free models can be used without an account or wallet.</span></div>
         <div className="network-actions">
-          <Button size="sm" disabled={!network.status?.signedIn || network.busy} onClick={() => void network.perform(() => marketApi.share(environmentId, "paid"))}>Share paid</Button>
-          <Button size="sm" variant="outline" disabled={!network.status?.signedIn || network.busy} onClick={() => void network.perform(() => marketApi.share(environmentId, "free"))}>Share free</Button>
+          <Button size="sm" disabled={!network.status?.signedIn || network.busy} onClick={() => void network.perform(() => marketApi.share(environmentId, "paid", closedWeights))}>Share paid</Button>
+          <Button size="sm" variant="outline" disabled={!network.status?.signedIn || network.busy} onClick={() => void network.perform(() => marketApi.share(environmentId, "free", closedWeights))}>Share free</Button>
         </div>
       </div>
     </section>

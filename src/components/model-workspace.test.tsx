@@ -19,6 +19,14 @@ vi.mock("@/components/guest-logs", () => ({
 }))
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); localStorage.clear(); platform.state.environments = [] })
 
+it("source-only publishers show file availability instead of a chat composer", async () => {
+  status.mockResolvedValue({ status: "ready", model: "local/QuadOrbit", sourceOnly: true, inferenceAvailable: false })
+  render(<ModelChat environmentId="source-only" />)
+  expect(await screen.findByRole("region", { name: "Source-only model" })).toBeVisible()
+  expect(screen.queryByRole("textbox", { name: /Message/ })).not.toBeInTheDocument()
+  expect(chat).not.toHaveBeenCalled()
+})
+
 it("rejects an unsupported decision model before creating a chat environment", async () => {
   preflight.mockResolvedValue({supported:false,task:"structured-decision",reason:"Use the model's dedicated SDK/decision API",resources:{storageGbRecommended:null},downloads:{}})
   render(<ModelWorkspace />)
@@ -58,8 +66,8 @@ it("passes GGUF quantization and shares the created model for free", async () =>
   fireEvent.change(await screen.findByLabelText("GGUF quantization (optional)"), { target: { value: "Q8_0" } })
   fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
   fireEvent.click(screen.getByRole("button", { name: "Run model" }))
-  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0"))
-  await waitFor(() => expect(market.share).toHaveBeenCalledWith("new-model", "free"))
+  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0", undefined))
+  await waitFor(() => expect(market.share).toHaveBeenCalledWith("new-model", "free", false))
 })
 
 it("allows another message after a model restarts during generation and ignores the old reply", async () => {
@@ -231,4 +239,18 @@ it("serializes autosaves so a slower old request cannot replace the latest setti
   await act(async () => { finishFirst() })
   await waitFor(() => expect(saveHistory).toHaveBeenCalledTimes(2))
   expect(saveHistory).toHaveBeenLastCalledWith("model-one", expect.objectContaining({ settings: expect.objectContaining({ system: "Latest prompt" }) }))
+})
+
+it("mounts local model files and publishes closed weights from the same created environment", async () => {
+  market.status.mockResolvedValue({ signedIn: true, account: { email: "user@example.com", wallet: null, creditMicros: 0, earningsMicros: 0, availableMicros: 0 }, shares: [] })
+  run.mockResolvedValue({ id: "local-model", model: "owner/private" }); market.share.mockResolvedValue({})
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
+  fireEvent.change(await screen.findByLabelText("Local weights (optional)"), { target: { value: "D:/Models/private" } })
+  fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
+  fireEvent.click(screen.getByRole("checkbox", { name: /Closed weights/ }))
+  fireEvent.click(screen.getByRole("button", { name: "Run model" }))
+  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, "D:/Models/private"))
+  expect(preflight).toHaveBeenCalledWith(expect.any(String), undefined, "D:/Models/private")
+  await waitFor(() => expect(market.share).toHaveBeenCalledWith("local-model", "free", true))
 })

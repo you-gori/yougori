@@ -1,3 +1,4 @@
+import { ModelGpuOptimizer } from "@/components/model-gpu-optimizer"
 import { useEffect, useRef, useState } from "react"
 import { modelsApi, type ModelApiAccess } from "@/api/projects-api"
 import { workspaceApi } from "@/api/workspace-api"
@@ -102,6 +103,7 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   const running = state?.environments.find(e => e.id === environmentId)?.status === "running"
   const [access, setAccess] = useState<ModelApiAccess | null>(null)
   const [streaming, setStreaming] = useState(false)
+  const [sourceOnly, setSourceOnly] = useState(false)
   const [decision, setDecision] = useState(false)
   const [port, setPort] = useState("8000")
   const [busy, setBusy] = useState<"local" | "public" | null>(null)
@@ -120,7 +122,7 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   useEffect(() => {
     alive.current = true
     void modelsApi.access(environmentId).then(value => { if (alive.current) setAccess(value) }).catch(e => { if (alive.current) setError(String(e)) })
-    void modelsApi.status(environmentId).then(value => { if (alive.current) { setStreaming(Boolean(value.stream)); setDecision(value.task === "structured-decision") } }).catch(() => undefined)
+    void modelsApi.status(environmentId).then(value => { if (alive.current) { setStreaming(Boolean(value.stream)); setDecision(value.task === "structured-decision"); setSourceOnly(Boolean(value.sourceOnly)) } }).catch(() => undefined)
     return () => { alive.current = false }
   }, [environmentId])
   useEffect(() => {
@@ -159,7 +161,9 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   const isPublic = Boolean(access?.publicUrl && base === access.publicUrl)
   const snippet = base ? (decision ? decisionExample(kind, base, model, withKey ? access?.apiKey : undefined) : example(kind, base, model, streaming, isPublic, withKey ? access?.apiKey : undefined)) : ""
 
+  if (sourceOnly) return <section className="model-card" aria-label="Source-only API"><h3>File downloads only</h3><p>No model weights were supplied. Chat and inference API are unavailable. Use Neo Grid to publish the source files.</p></section>
   return <section className="model-api" aria-label="Model API access">
+    <ModelGpuOptimizer environmentId={environmentId} />
     <div className="model-api-cards">
       <div className="model-api-card">
         <div className="model-api-card-head"><h3>Local</h3><span data-on={Boolean(access?.apiUrl) || undefined}>{access?.apiUrl ? "On" : "Off"}</span></div>

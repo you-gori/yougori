@@ -32,6 +32,7 @@ mod changes;
 mod releases;
 mod model_runner;
 mod market;
+mod model_registry;
 mod file_export;
 mod ignore_rules;
 mod vault;
@@ -581,6 +582,7 @@ pub fn run() {
             environment_download::start_cleanup(app.handle());
             neocloud::runpod::resume(app.handle());
             market::start(app.handle());
+            model_runner::optimizer::start(app.handle());
             let workspace_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let shutdown=automation::shutdown_signal(&workspace_app);
@@ -619,8 +621,14 @@ pub fn run() {
             model_runner::model_chat_stream,
             model_runner::model_chat_cancel,
             model_runner::model_api_status,
+            model_runner::optimizer::model_optimizer,
             model_runner::model_usage,
             market::market_status,
+            model_registry::model_registry_request,
+            model_registry::model_registry_connect,
+            model_registry::model_registry_pause,
+            model_registry::model_registry_upload,
+            model_registry::model_registry_download,
             market::confidential_network_chat,
             market::market_sign_in,
             market::market_sign_out,

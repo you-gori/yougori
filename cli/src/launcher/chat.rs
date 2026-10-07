@@ -14,7 +14,7 @@ const CODE: ui::Rgb = ui::Rgb(0xa5, 0xb4, 0xfc);
 
 fn show_network_share(share: &Value) {
     let text=clean(&network::summary(share));
-    if share["live"]==true {ui::step(&text)}
+    if share["live"]==true || share["filesOnline"]==true {ui::step(&text)}
     else if share["status"]=="ready" {ui::warn(&text)}
     else {ui::info(&text)}
 }
@@ -40,6 +40,7 @@ struct Options {
     api_port: Option<u16>,
     share_mode: Option<&'static str>,
     listen: bool,
+    publish: bool,
     quant: Option<String>,
     storage_drive: Option<String>,
 }
@@ -54,6 +55,7 @@ fn options(args: &[String]) -> Result<Options, String> {
     let mut api_port = None;
     let mut share_mode = None;
     let mut listen = false;
+    let mut publish = false;
     let mut quant = None;
     let mut storage_drive = None;
     let mut i = 3;
@@ -64,6 +66,10 @@ fn options(args: &[String]) -> Result<Options, String> {
                 share_mode = network::mode(flag);
             }
             "--listen" if run && !listen => listen = true,
+            "--publish" if run && !publish => publish = true,
+            "--folder" if run && !resources.contains_key("modelFolder") => {
+                i += 1; resources.insert("modelFolder".into(),json!(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--folder needs a model folder")?));
+            }
             "--quant" if run => {
                 i += 1;
                 quant = Some(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--quant needs a quantization such as Q4_K_M")?.clone());
@@ -105,6 +111,8 @@ fn options(args: &[String]) -> Result<Options, String> {
         i += 1;
     }
     network::validate_listen(share_mode, listen)?;
+    if publish && share_mode.is_none() {return Err("--publish requires --now or --nowfree".into())}
+    if neocloud && resources.contains_key("modelFolder") {return Err("--folder selects local weights; use a local GPU".into())}
     public::validate_model_resources(&resources)?;
     public::validate_model_neocloud(neocloud, environment.as_deref(), change || !resources.is_empty())?;
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
@@ -118,6 +126,7 @@ fn options(args: &[String]) -> Result<Options, String> {
         api_port,
         share_mode,
         listen,
+        publish,
         quant,
         storage_drive,
     })
@@ -171,8 +180,12 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             engine.done("Engine ready");
         }
     }
-    let launch_preflight = if !chat_only && (options.neocloud || options.quant.is_some() || public::find_model(target).await?.is_none()) {Some(call("model_preflight",json!({"model":target,"quant":options.quant})).await?)}else{None};
+    let launch_preflight = if !chat_only && (options.neocloud || options.quant.is_some() || options.resources.contains_key("modelFolder") || public::find_model(target).await?.is_none()) {Some(call("model_preflight",json!({"model":target,"quant":options.quant,"folder":options.resources.get("modelFolder")})).await?)}else{None};
     if let Some(preflight)=&launch_preflight {
+        if preflight["sourceOnly"]==true {
+            ui::info(preflight["reason"].as_str().unwrap_or("Source files only; no inference weights"));
+            if options.share_mode==Some("paid") || options.publish || options.listen {return Err("Source-only folders support --nowfree downloads. Supply model weights before paid sharing, closed-model API publishing or --listen.".into())}
+        }
         if preflight["supported"]!=true {
             let Some(task)=super::offer_architecture_support(target,options.quant.as_deref(),preflight).await? else {return Ok(0);};
             ui::outro(&format!("Opening coding agent · task saved at {}",task["path"].as_str().unwrap_or("")));
@@ -228,7 +241,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         if options.api_port.is_some() {
             if let Some(mode) = options.share_mode {
                 let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
-                result["network"] = network::share_with_listen(&id, mode, options.listen).await?;
+                result["network"] = network::share_with_publication(&id, mode, options.listen, options.publish).await?;
             }
             ui::outro("API configured; model weights may still be loading");
             // Keys are explicitly requested with --api, as with the scripted local runner.
@@ -236,7 +249,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             return Ok(0);
         }
         (result["id"].as_str().ok_or("Model environment missing")?.to_owned(), short(target))
-    } else if let Some(env) = public::find_model(target).await?.filter(|_| options.quant.is_none()) {
+    } else if let Some(env) = public::find_model(target).await?.filter(|_| options.quant.is_none() && !options.resources.contains_key("modelFolder")) {
         if options.storage_drive.is_some() {
             let state=call("get_platform_state",json!({})).await?;
             yougori_cli::storage::validate_reuse(&env,&state["host"],options.storage_drive.as_deref())?;
@@ -286,7 +299,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         }
         if let Some(drive)=selected.drive {options.resources.insert("storageDrive".into(),json!(drive));}
         let creating = ui::task("Creating the model environment");
-        creating.detail("a GPU container with PyTorch; the first run downloads it");
+        creating.detail(if preflight["sourceOnly"]==true {"a CPU file publisher; no GPU or ML dependencies"} else {"a GPU container with PyTorch; the first run downloads it"});
         let result = call(
             "run_model",
             json!({"model":target,"resources":options.resources,"quant":options.quant}),
@@ -300,7 +313,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         (id, short(target))
     };
     if let Some(mode) = options.share_mode {
-        match network::share_with_listen(&id, mode, options.listen).await {
+        match network::share_with_publication(&id, mode, options.listen, options.publish).await {
             Ok(share) => show_network_share(&share),
             Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
         }
@@ -356,6 +369,15 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
         }
         Err(exit) => break exit,
         Ok(status) => {
+            if status["sourceOnly"]==true {
+                if let Some(share)=network::settled(id,Duration::from_secs(45)).await? {
+                    show_network_share(&share);
+                    if let Some(page)=share["modelPage"].as_str() {ui::info(&clean(page));}
+                }
+                ui::outro("Source files are ready for publishing. No weights were supplied; chat and inference API are unavailable.");
+                ui::info(&format!("{environment} keeps running · yougori model stop {environment} stops it"));
+                return Ok(());
+            }
             if let Some(warning)=status["chatWarning"].as_str() {
                 ui::warn(&clean(warning));
                 if let Some(model)=status["chatModelSuggestion"].as_str() {
@@ -491,6 +513,9 @@ fn phase(phase: &str, name: &str) -> (String, String) {
         ),
         "downloading" => (format!("Downloading {name}"), format!("{name} files ready")),
         "verifying" => ("Verifying model weights".into(), "Model checksums verified".into()),
+        "idle" => ("On demand · files cached".into(), "Model available on demand".into()),
+        "queued" => ("Waiting for GPU".into(), "GPU request queued".into()),
+        "freeing_memory" => ("Preparing GPU memory".into(), "GPU memory prepared".into()),
         "loading" => ("Loading onto the GPU".into(), "Loaded onto the GPU".into()),
         _ => (
             "Starting the model server".into(),
@@ -524,7 +549,11 @@ async fn wait_ready(id: &str, name: &str) -> Result<Result<Value, Exit>, String>
                             status["error"].as_str().unwrap_or("The model could not load"),
                         ));
                     }
-                    if next == "ready" {
+                    if next == "ready" || (status["optimizer"]["enabled"]==true && status["weightsVerified"]==true && matches!(next.as_str(),"idle"|"queued"|"freeing_memory")) {
+                        if status["sourceOnly"]==true {
+                            task.done(&format!("{name} source files ready"));
+                            return Ok(Ok(status));
+                        }
                         let gpu = status["gpu"]
                             .as_str()
                             .map(clean)
@@ -1166,6 +1195,14 @@ async fn stream(block: &ui::Block, request: &str, writer: &mut Writer, leave: &m
 mod tests {
     use super::*;
 
+    #[test]
+    fn publication_and_local_folder_options_do_not_change_container_options() {
+        let args=|flags:&[&str]| ["model","run","owner/model"].into_iter().chain(flags.iter().copied()).map(str::to_owned).collect::<Vec<_>>();
+        let parsed=options(&args(&["--nowfree","--publish","--folder","D:/Models/private"])).unwrap();
+        assert!(parsed.publish);assert_eq!(parsed.resources["modelFolder"],"D:/Models/private");
+        for flags in [vec!["--publish"],vec!["--nowfree","--publish","--publish"],vec!["--nowfree","--folder"],vec!["--nowfree","--folder","D:/M","--neocloud"]] {assert!(options(&args(&flags)).is_err());}
+        assert!(!options(&args(&["--nowfree"])).unwrap().publish);
+    }
     #[test]
     fn stop_choices_control_the_pod_for_neocloud_and_the_environment_for_local_models() {
         let state = json!({"environments":[

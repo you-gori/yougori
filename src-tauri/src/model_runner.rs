@@ -5,12 +5,15 @@ use tauri::Manager;
 use crate::AppHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod neocloud;
+pub(crate) mod optimizer;
+mod local;
 pub(crate) mod huggingface;
 pub(crate) mod preflight;
 mod vllm;
 pub use preflight::model_preflight;
 pub(crate) use neocloud::{start_model, stop_model};
 pub fn normalize_model(model: &str) -> Result<String, String> {
+    if crate::model_registry::is_registry(model.trim()) { return Ok(model.trim().into()); }
     let model = model
         .trim()
         .strip_prefix("https://huggingface.co/")
@@ -36,8 +39,8 @@ pub fn normalize_model(model: &str) -> Result<String, String> {
     Ok(model.into())
 }
 #[tauri::command]
-pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, app: AppHandle) -> Result<Value, String> {
-    run_model_with_resources(model, port, None, quant, app).await
+pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, app: AppHandle) -> Result<Value, String> {
+    run_model_with_resources(model, port, Some(ModelResources { model_folder:folder, ..Default::default() }), quant, app).await
 }
 /// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod.
 #[tauri::command]
@@ -56,6 +59,7 @@ pub struct ModelResources {
     pub memory_gb: Option<f64>,
     pub storage_gb: Option<f64>,
     pub storage_drive: Option<String>,
+    pub model_folder: Option<String>,
 }
 
 impl ModelResources {
@@ -78,8 +82,13 @@ impl ModelResources {
 }
 
 pub async fn run_model_with_resources(model: String, port: Option<u16>, resources: Option<ModelResources>, quant: Option<String>, app: AppHandle) -> Result<Value, String> {
+    run_model_at_revision(model,port,resources,quant,None,None,app).await
+}
+async fn run_model_at_revision(model: String, port: Option<u16>, resources: Option<ModelResources>, quant: Option<String>, pinned: Option<String>, precision: Option<String>, app: AppHandle) -> Result<Value, String> {
     let model = normalize_model(&model)?;
-    let compatibility=preflight::preflight_quant(&model, quant.as_deref()).await?;
+    if resources.as_ref().is_some_and(|r|r.model_folder.is_some()) {return local::run(model,port,resources.unwrap(),quant,app).await;}
+    if crate::model_registry::is_registry(&model) { return run_registry_model(model,port,resources,quant,app).await; }
+    let compatibility=preflight::preflight_pinned(&model, quant.as_deref(),pinned.as_deref()).await?;
     if compatibility["supported"]!=true {
         let help=if compatibility["supportAvailable"]==true {format!(" Implement support with `yougori model support hf.co/{model} --agent codex --launch` or choose a coding agent in the App.")}else{String::new()};
         return Err(format!("{}: {}. No environment was created.{help}",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")));
@@ -118,7 +127,8 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
         protected["HF_TOKEN"] = json!(huggingface::TOKEN_REFERENCE);
     }
     let mut environment = json!({"YOUGORI_MODEL":model,"YOUGORI_MODEL_REVISION":compatibility["revision"],"HF_HOME":"/root/.cache/huggingface","HF_HUB_DISABLE_TELEMETRY":"1"});
-    environment["YOUGORI_MODEL_PRECISION"] = json!("auto");
+    environment["YOUGORI_PUBLISHER_SOURCE"] = json!(publisher_source());
+    environment["YOUGORI_MODEL_PRECISION"] = json!(precision.as_deref().unwrap_or(if pinned.is_some(){"original"}else{"auto"}));
     if model == "Cloudflare/clef" { environment["YOUGORI_CLEF_SOURCE"] = json!(clef_source()); }
     if gguf {
         environment["YOUGORI_MODEL_FORMAT"] = json!("gguf");
@@ -126,6 +136,7 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
         environment["YOUGORI_MODEL_FILES"] = json!(compatibility["files"].to_string());
     }
     if vllm { environment["YOUGORI_MODEL_FORMAT"] = json!("vllm"); }
+    optimizer::environment(&mut environment, &mut protected)?;
     let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else if vllm {vllm::IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
     let mut result = crate::projects::run_workload(request, true, app).await?;
     result["model"] = model.into();
@@ -137,28 +148,86 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
     }
     Ok(result)
 }
+async fn run_registry_model(model:String,port:Option<u16>,resources:Option<ModelResources>,quant:Option<String>,app:AppHandle)->Result<Value,String>{
+    let resolved=crate::model_registry::resolve_quant(&model,quant.as_deref()).await?;
+    let version=&resolved["version"];
+    let version_id=version["id"].as_str().ok_or("Missing registry version")?;
+    if version["source"]=="endpoint" && (version["delivery"]!="publisher" || resolved["model"]["canDownload"]!=true) { return Err(format!("This model runs on the publisher's endpoint. Use model={model} with your Yougori API key.")); }
+    if quant.as_deref().is_some_and(|q|!version["quant"].as_str().is_some_and(|saved|q.eq_ignore_ascii_case(saved))) {return Err("The requested precision does not match this published version; use its exact quantized variant".into())}
+    if version["source"]=="huggingface" {
+        let repo=version["upstreamModel"].as_str().ok_or("Missing Hugging Face checkpoint")?;
+        let gguf=version["files"].as_array().is_some_and(|files|files.iter().any(|f|f.as_str().is_some_and(|name|name.ends_with(".gguf"))));
+        let precision=match version["quant"].as_str(){Some("NF4")=>Some("4bit".into()),Some("INT8")=>Some("8bit".into()),_=>None};
+        let mut result=Box::pin(run_model_at_revision(repo.into(),port,resources,if gguf{version["quant"].as_str().map(str::to_owned)}else{None},version["revision"].as_str().map(str::to_owned),precision,app.clone())).await?;
+        let id=result["id"].as_str().ok_or("Missing environment ID")?;
+        let runtime=app.state::<RuntimeManager>();let state=app.state::<PlatformStore>().snapshot()?;
+        let env=state.environments.iter().find(|e|e.id==id).ok_or("Model environment not found")?;
+        let runtime_id=env.runtime_id.as_deref().unwrap_or(id);
+        let mut options=runtime.workload_options(runtime_id)?;
+        options.environment.insert("YOUGORI_REGISTRY_MODEL".into(),model.clone());
+        options.environment.insert("YOUGORI_REGISTRY_VERSION".into(),version_id.into());runtime.save_workload_options(runtime_id,&options)?;
+        app.state::<PlatformStore>().mutate(|s|{if let Some(e)=s.environments.iter_mut().find(|e|e.id==id){e.description=format!("Hugging Face · {model}");}Ok(())})?;
+        result["model"]=json!(model);return Ok(result)
+    }
+    let check=crate::model_registry::preflight(&model,quant.as_deref()).await?;
+    if check["supported"]!=true {return Err(check["reason"].as_str().unwrap_or("Unsupported uploaded architecture").into())}
+    if port==Some(0){return Err("Invalid API port".into())}
+    let resources=resources.unwrap_or_default();
+    let state=app.state::<PlatformStore>().snapshot()?;
+    let available=app.state::<RuntimeManager>().new_storage_on_drive(resources.storage_drive.as_deref())?.maximum_gb;
+    let required=version["weightsBytes"].as_f64().unwrap_or(0.0)/1073741824.0*1.15+resources.storage_gb.unwrap_or(20.0);
+    if available<required{return Err(format!("This drive needs approximately {required:.0} GB free for verified model artifacts and its GPU runtime"))}
+    let (cpu,memory,storage)=resources.allocation(state.host.total_cpu,state.host.total_memory_gb,available)?;
+    let cached=crate::model_registry::cached(&model,resources.storage_drive.as_deref(),version_id,&app).await?;
+    let folder=cached["folder"].as_str().ok_or("Missing model artifact folder")?;
+    let token=format!("{}{}",uuid::Uuid::new_v4().simple(),uuid::Uuid::new_v4().simple());
+    let reference=format!("model-api-{}",uuid::Uuid::new_v4().simple());crate::projects::secrets::store(&reference,&token)?;
+    let gguf=version["format"]=="gguf";
+    let upstream=version["upstreamModel"].as_str().unwrap_or(&model);
+    let mut environment=json!({"YOUGORI_MODEL":upstream,"YOUGORI_REGISTRY_MODEL":model,"YOUGORI_REGISTRY_VERSION":version_id,"YOUGORI_MODEL_REVISION":version["revision"],"YOUGORI_MODEL_PATH":"/yougori-model","YOUGORI_REGISTRY_SOURCE":registry_source(),"YOUGORI_MODEL_PRECISION":"original","HF_HOME":"/root/.cache/huggingface","HF_HUB_DISABLE_TELEMETRY":"1"});
+    environment["YOUGORI_PUBLISHER_SOURCE"]=json!(publisher_source());
+    if version["prequantized"]!=true {if let Some(precision)=match version["quant"].as_str(){Some("NF4")=>Some("4bit"),Some("INT8")=>Some("8bit"),_=>None}{environment["YOUGORI_MODEL_PRECISION"]=json!(precision);}}
+    if gguf {environment["YOUGORI_MODEL_FORMAT"]=json!("gguf");environment["YOUGORI_MODEL_QUANT"]=version["quant"].clone();let files=cached["files"].as_array().into_iter().flatten().filter(|file|file["name"].as_str().is_some_and(|name|name.ends_with(".gguf"))).cloned().collect::<Vec<_>>();environment["YOUGORI_MODEL_FILES"]=json!(serde_json::to_string(&files).map_err(|e|e.to_string())?);}
+    let mut protected=json!({"YOUGORI_MODEL_TOKEN":reference});
+    optimizer::environment(&mut environment,&mut protected)?;
+    let range=|n:f64|json!({"min":n,"preferred":n,"max":n});
+    let name=yougori_cli::public::model_environment_name(&model,state.environments.iter().map(|e|e.name.as_str()));
+    let mut result=crate::projects::run_workload(json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf{LLAMA_CPP_IMAGE}else{TRANSFORMERS_IMAGE},"containerCommand":server_command(),"gpuAccess":true,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"binds":[{"source":folder,"target":"/yougori-model","readOnly":true}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()}),true,app).await?;
+    result["model"]=json!(model);result["status"]=json!("loading");result["preflight"]=check;
+    if let Some(port)=port{result["apiUrl"]=json!(format!("http://127.0.0.1:{port}/v1"));result["apiKey"]=json!(token);}
+    Ok(result)
+}
 /// The container command that runs this version's model server.
-fn server_command() -> String {
-    // Keep the complete server below the guest's 32 KiB command limit. Python's
-    // standard library can decode it without any installed model dependencies.
+fn server_payload() -> String {
     let mut compressed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
     std::io::Write::write_all(&mut compressed, include_bytes!("model_server.py"))
         .expect("writing the embedded model server to memory");
-    let script = STANDARD.encode(compressed.finish().expect("compressing the embedded model server"));
-    format!(
-        "exec python -u -c {}",
-        shell_quote(&format!(
-            "import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('{script}')),'yougori-model','exec'))"
-        ))
-    )
+    STANDARD.encode(compressed.finish().expect("compressing the embedded model server"))
 }
+fn server_command() -> String {
+    // Keep startup below the guest command limit regardless of runner growth.
+    // The public compressed source travels in the workload environment instead.
+    format!("exec python -u -c {}", shell_quote(
+        "import os,base64,zlib;exec(compile(zlib.decompress(base64.b64decode(os.environ['YOUGORI_MODEL_SERVER_SOURCE'])),'yougori-model','exec'))"))
+}
+
 fn clef_source() -> String {
     let mut adapter = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
     std::io::Write::write_all(&mut adapter, include_bytes!("model_runner/adapters/clef/joint_schema_model.py")).expect("compressing the bundled Clef adapter");
     STANDARD.encode(adapter.finish().expect("finishing the bundled Clef adapter"))
 }
+fn publisher_source() -> String {
+    let mut source=flate2::write::ZlibEncoder::new(Vec::new(),flate2::Compression::best());
+    std::io::Write::write_all(&mut source,include_str!("model_runner/publisher_artifacts.py").replace("\r\n","\n").as_bytes()).expect("compressing publisher routes");
+    STANDARD.encode(source.finish().expect("finishing publisher routes"))
+}
+fn registry_source() -> String {
+    let mut adapter=flate2::write::ZlibEncoder::new(Vec::new(),flate2::Compression::best());
+    std::io::Write::write_all(&mut adapter,include_str!("model_runner/registry_snapshot.py").replace("\r\n","\n").as_bytes()).expect("compressing the bundled registry verifier");
+    STANDARD.encode(adapter.finish().expect("finishing the bundled registry verifier"))
+}
 pub(crate) fn server_source() -> String {
-    format!("__YOUGORI_CLEF_SOURCE__ = '{}'\n{}", clef_source(), include_str!("model_server.py"))
+    format!("__YOUGORI_GPU_SOURCE__ = '{}'\n__YOUGORI_CLEF_SOURCE__ = '{}'\n__YOUGORI_PUBLISHER_SOURCE__ = '{}'\n{}", optimizer::source(), clef_source(), publisher_source(), include_str!("model_server.py"))
 }
 /// Brings a stopped model environment's server up to this version before it starts, so reused
 /// environments get the same fixes as new ones. Only commands this runner wrote are replaced.
@@ -204,6 +273,9 @@ pub(crate) async fn refresh_server(
     }
     let mut options=runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
     let old=options.clone();
+    optimizer::refresh_options(&mut options)?;
+    options.environment.insert("YOUGORI_PUBLISHER_SOURCE".into(),publisher_source());
+    if options.environment.contains_key("YOUGORI_MODEL_PATH") { options.environment.insert("YOUGORI_REGISTRY_SOURCE".into(),registry_source()); }
     // Keep already working, unquantized environments at their original precision.
     // New models choose automatically; the dedicated decision runners may need it.
     if !options.environment.contains_key("YOUGORI_MODEL_PRECISION") {
@@ -288,7 +360,8 @@ async fn model_connection(
         "Model server is starting. Check Logs for installation/download progress and try again."
     })?)
     };
-    let request=format!("{} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nX-Yougori-Client: yougori\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{encoded}",if body.is_some(){"POST"}else{"GET"},encoded.len());
+    let control = if path == "/v1/yougori/optimizer" { format!("X-Yougori-GPU-Control: {}\r\n", crate::projects::secrets::variable(&options,"YOUGORI_GPU_CONTROL_TOKEN")?) } else {String::new()};
+    let request=format!("{} {path} HTTP/1.1\r\nHost: localhost\r\n{control}Authorization: Bearer {token}\r\nX-Yougori-Client: yougori\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{encoded}",if body.is_some(){"POST"}else{"GET"},encoded.len());
     stream
         .write_all(request.as_bytes())
         .await
@@ -313,7 +386,7 @@ async fn model_request(
     body: Option<Value>,
 ) -> Result<Value, String> {
     let stream = model_connection(app, id, path, body.as_ref()).await?;
-    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+    tokio::time::timeout(std::time::Duration::from_secs(if body.is_some() {1800} else {15}), async {
         let mut bytes = Vec::new();
         stream
             .take(2 * 1024 * 1024 + 1)
@@ -337,6 +410,9 @@ async fn model_request(
     .map_err(|_| "Model response timed out; try a shorter conversation")?
 }
 /// Only the local engine may lease optional free-provider recording.
+pub(crate) async fn configure_publishing(app: &AppHandle, id: &str, open: bool) -> Result<Value,String> {
+    model_request(app,id,"/v1/yougori/publishing",Some(json!({"downloads":open}))).await.map_err(|_|"Stop this model and run it again to enable publisher-hosted pages; its container and files are kept".to_owned())
+}
 pub(crate) async fn configure_listen(app: &AppHandle, id: &str, mode: &str, enabled: bool) -> Result<Value, String> {
     if enabled && mode != "free" { return Err("--listen requires --nowfree".into()); }
     model_request(app, id, "/v1/listen/config", Some(json!({"enabled":enabled,"mode":mode}))).await
@@ -631,7 +707,7 @@ async fn stream_reply(
             return Ok(result);
         }
     };
-    let idle = std::time::Duration::from_secs(120);
+    let idle = std::time::Duration::from_secs(1800);
     let mut buffer = Vec::new();
     let mut chunk = vec![0u8; 16 * 1024];
     let mut streaming = false;
@@ -799,6 +875,12 @@ pub fn model_chat_cancel(request_id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn registry_verifier_digest_is_portable_and_matches_the_embedded_runner() {
+        use sha2::{Digest,Sha256};
+        let source=include_str!("model_runner/registry_snapshot.py").replace("\r\n","\n");
+        let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
+        assert!(include_str!("model_server.py").contains(&digest));
+    }
     #[test]
     fn active_tunnels_are_offered_for_admission_but_failed_saved_links_are_not() {
         for status in ["active", "ready"] {
@@ -821,10 +903,8 @@ mod tests {
         assert!(!is_server_command("sleep infinity"));
         // The size reduction must preserve the exact script, including Unicode
         // and the fixes applied to reused model environments.
-        // shell_quote escapes the Python quotes for /bin/sh.
-        let unquoted = command.replace("'\"'\"'", "'");
-        let encoded = unquoted.split("b64decode('").nth(1).unwrap().split('\'').next().unwrap();
-        let compressed = STANDARD.decode(encoded).unwrap();
+        assert!(command.contains("YOUGORI_MODEL_SERVER_SOURCE"));
+        let compressed = STANDARD.decode(server_payload()).unwrap();
         let mut decoded = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
         assert_eq!(decoded, include_bytes!("model_server.py"));

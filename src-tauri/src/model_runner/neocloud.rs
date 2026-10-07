@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
     let model = normalize_model(&model)?;
+    if crate::model_registry::is_registry(&model){return Err("Published registry models run on this computer's GPU. To use your cloud GPU, connect its publisher-hosted API in Model library.".into())}
     let compatibility=super::preflight::preflight(&model).await?;
     if compatibility["supported"]!=true{return Err(compatibility["reason"].as_str().unwrap_or("Unsupported model runner").into())}
     // The pinned llama.cpp build needs a newer C library than RunPod's PyTorch images provide.

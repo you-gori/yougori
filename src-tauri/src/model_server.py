@@ -34,6 +34,8 @@ if os.name == "posix":
 
 MODEL = os.environ["YOUGORI_MODEL"]
 MODEL_REVISION = os.environ.get("YOUGORI_MODEL_REVISION")
+MODEL_PATH = os.environ.get("YOUGORI_MODEL_PATH")
+REGISTRY_VERIFIED = None
 TOKEN = os.environ["YOUGORI_MODEL_TOKEN"]
 # GGUF uses llama.cpp, vLLM uses its pinned native/plugin implementation; other weights use Transformers.
 FORMAT = os.environ.get("YOUGORI_MODEL_FORMAT", "safetensors")
@@ -461,6 +463,12 @@ def checkpoint():
     """Inspect metadata before downloading weights; never substitute a chat backbone for a custom head."""
     from huggingface_hub import HfApi
     from transformers import AutoConfig, AutoModelForCausalLM
+    if MODEL_PATH:
+        registry_snapshot()
+        config = local_checkpoint()
+        if type(config) not in AutoModelForCausalLM._model_mapping:
+            raise RuntimeError("This uploaded architecture needs a supported runner; repository code is not executed")
+        return config, MODEL_REVISION
     metadata = HfApi().model_info(MODEL, revision=MODEL_REVISION, files_metadata=True, timeout=30)
     files = {item.rfilename for item in metadata.siblings or []}
     if {"joint_head_config.json", "joint_head.safetensors"} <= files and MODEL != "Cloudflare/clef":
@@ -523,8 +531,19 @@ def verified_weight(path, expected, size=None):
     return True
 
 
+def registry_snapshot():
+    """Load the application's bundled verifier without growing the startup command."""
+    source = zlib.decompress(base64.b64decode(os.environ["YOUGORI_REGISTRY_SOURCE"]))
+    if hashlib.sha256(source).hexdigest() != "bedf3069cc49a6be9262a7648b3abdd55a7d90ff7175b99b14ee17ca161c603b":
+        raise RuntimeError("Bundled registry verifier failed integrity verification")
+    exec(compile(source, "yougori-registry-verifier", "exec"), globals())
+    return registry_snapshot()
+
+
 def verified_snapshot(revision):
     """Download directly into the persistent guest cache and verify pinned weight identities."""
+    if MODEL_PATH:
+        return REGISTRY_VERIFIED[2] if REGISTRY_VERIFIED and REGISTRY_VERIFIED[:2] == (MODEL_PATH, MODEL_REVISION) else registry_snapshot()
     from huggingface_hub import HfApi, hf_hub_download
     metadata = HfApi().model_info(MODEL, revision=revision, files_metadata=True, timeout=30)
     if metadata.sha != revision:
@@ -537,7 +556,7 @@ def verified_snapshot(revision):
             indexed = set(json.load(file).get("weight_map", {}).values())
         if indexed and indexed <= names:
             weights = sorted(indexed | ({"joint_head.safetensors"} if MODEL == "Cloudflare/clef" else set()))
-    patterns = weights + ["*.json", "*.txt", "*.model", "*.tiktoken", "*.jinja"]
+    patterns = weights + ["*.json", "*.txt", "*.model", "*.tiktoken", "*.jinja", "README.md", "LICENSE", "LICENSE.md", "COPYING", "NOTICE", "CITATION.cff"]
     selected = {item.rfilename: (getattr(item, "size", None) or 0) for item in metadata.siblings or []
                 if any(fnmatch.fnmatch(item.rfilename, pattern) for pattern in patterns)}
     root = download_snapshot(revision, selected)
@@ -595,12 +614,13 @@ def load_transformers():
     config, revision = checkpoint()
     verified_snapshot(revision)
     print("Downloading tokenizer for " + MODEL + "...", flush=True)
-    TOKENIZER = AutoTokenizer.from_pretrained(MODEL, revision=revision, trust_remote_code=False, local_files_only=True)
+    TOKENIZER = AutoTokenizer.from_pretrained(MODEL_PATH or MODEL, revision=None if MODEL_PATH else revision, trust_remote_code=False, local_files_only=True)
+    gpu_before_load()
     STATE["status"] = "loading"
     print("Downloading model weights and loading onto the GPU (cached files are reused)...", flush=True)
     options = inference_options(STATE.get("download", {}).get("totalBytes", 0), gpu_count)
     NETWORK = AutoModelForCausalLM.from_pretrained(
-        MODEL, config=config, revision=revision, trust_remote_code=False, use_safetensors=True,
+        MODEL_PATH or MODEL, config=config, revision=None if MODEL_PATH else revision, trust_remote_code=False, use_safetensors=True,
         local_files_only=True,
         dtype="auto",
         device_map="balanced" if gpu_count > 1 else {"": 0},
@@ -669,6 +689,7 @@ def load_clef():
     CLEF = types.ModuleType("yougori_clef")
     sys.modules[CLEF.__name__] = CLEF
     exec(compile(zlib.decompress(base64.b64decode(source)), "bundled-clef-adapter", "exec"), CLEF.__dict__)
+    gpu_before_load()
     options = inference_options(STATE.get("download", {}).get("totalBytes", 0), 1)
     STATE["status"] = "loading"
     NETWORK, PROCESSOR = CLEF.load_release_model(root, local_files_only=True, trust_remote_code=False,
@@ -727,7 +748,7 @@ def verified_gguf():
     """Downloads the pinned GGUF file(s) and checks their SHA-256 once per file version."""
     files = json.loads(os.environ["YOUGORI_MODEL_FILES"])
     STATE["modelFile"] = files[0]["name"]
-    root = download_snapshot(MODEL_REVISION, {item["name"]: item["size"] for item in files})
+    root = registry_snapshot() if MODEL_PATH else download_snapshot(MODEL_REVISION, {item["name"]: item["size"] for item in files})
     paths = []
     for item in files:
         print("Downloading " + item["name"] + " (" + str(item["size"] // 1048576) + " MB; cached files are reused)...", flush=True)
@@ -768,12 +789,14 @@ def load_gguf():
     STATE["status"] = "downloading"
     binary = llama_server()
     model = verified_gguf()
+    gpu_before_load()
     STATE["status"] = "loading"
     print("Loading " + MODEL + " onto the GPU with llama.cpp " + LLAMA_BUILD + "...", flush=True)
     environment = dict(os.environ)
     environment.pop("YOUGORI_MODEL_TOKEN", None)
     environment["LD_LIBRARY_PATH"] = os.path.dirname(binary) + (":" + environment["LD_LIBRARY_PATH"] if environment.get("LD_LIBRARY_PATH") else "")
-    process = subprocess.Popen(
+    global ENGINE_PROCESS
+    process = ENGINE_PROCESS = subprocess.Popen(
         [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
          "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none"],
         env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
@@ -811,7 +834,8 @@ def load_gguf():
 
     def watch():
         process.wait()
-        STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model.")
+        if ENGINE_PROCESS is process:
+            STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model.")
     threading.Thread(target=watch, daemon=True).start()
     gpu = (str(len(devices)) + " × " + devices[0]) if len(devices) > 1 else devices[0]
     STATE.update(status="ready", gpu=gpu, gpuCount=len(devices), context=LLAMA["context"], stream=True, weightsVerified=True,
@@ -820,6 +844,9 @@ def load_gguf():
 
 def load_model():
     try:
+        if FORMAT == "source":
+            load_source()
+            return
         print("Checking model dependencies...", flush=True)
         threading.Thread(target=report_loading, daemon=True).start()
         if FORMAT == "gguf":
@@ -838,6 +865,8 @@ def load_model():
             detail = detail.replace(os.environ["HF_TOKEN"], "[redacted]")
         STATE.update(status="error", error=detail[:2000])
         print("Model could not load: " + detail[:2000], file=sys.stderr, flush=True)
+    finally:
+        gpu_after_load()
 
 
 def vllm_hardware(config, weight_bytes, cuda):
@@ -898,6 +927,7 @@ def load_vllm():
         raise RuntimeError("A custom prediction head needs a reviewed decision adapter")
     weights = [s for s in metadata.siblings or [] if s.rfilename.endswith(".safetensors")]
     size = sum((getattr(s, "size", None) or (s.lfs.get("size") if isinstance(getattr(s,"lfs",None),dict) else getattr(getattr(s,"lfs",None),"size",0)) or 0) for s in weights)
+    gpu_before_load()
     count = vllm_hardware(config, size, torch.cuda)
     root = verified_snapshot(revision)
     template = None
@@ -939,7 +969,8 @@ def load_vllm():
         raise
     def watch():
         process.wait()
-        STATE.update(status="error", error="vLLM stopped unexpectedly. Restart this model.")
+        if ENGINE_PROCESS is process:
+            STATE.update(status="error", error="vLLM stopped unexpectedly. Restart this model.")
     threading.Thread(target=watch, daemon=True).start()
     gpu = torch.cuda.get_device_name(0)
     quant = (config.get("quantization_config") or {}).get("quant_method")
@@ -1561,7 +1592,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return self.reply(401, {"error": {"message": "A model API token is required"}})
         if self.path == "/health":
-            return self.reply(200, {**STATE, "listen": listen_snapshot()})
+            return self.reply(200, {**STATE, "listen": listen_snapshot(), "optimizer": gpu_snapshot()})
         if self.path == "/v1/models":
             return self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "local"}]})
         if self.path == "/v1/usage":
@@ -1579,6 +1610,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/chat/completions":
                 record_usage(source, "rejected")
             return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if gpu_route(self):
+            return
         if self.path == "/v1/listen/config":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -1599,10 +1632,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": {"message": "Endpoint not found"}})
         if self.path == "/v1/systemone" and not DECISION_MODEL:
             return self.reply(404, {"error": {"message": "This model serves chat; /v1/systemone requires a decision model"}})
-        if STATE["status"] != "ready":
-            return self.reply(503, {"error": {"message": STATE.get("error") or "Model is " + STATE["status"]}})
         started, meter = time.monotonic(), {"outcome": "error"}
         body, capture, original_writer = None, None, self.wfile
+        entered = False
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 65536 or self.headers.get("Transfer-Encoding"):
@@ -1611,6 +1643,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError("Incomplete request")
             body = json.loads(raw)
+            if self.path == "/v1/systemone": validate_decision(body)
+            else: validate_chat(body)
+            entered = gpu_enter(self)
+            if not entered:
+                return self.reply(503, {"error": {"message": STATE.get("error") or "Model preparation timed out"}})
             capture = ListenCapture(original_writer)
             self.wfile = capture
             reply = generate_decision(body, meter) if self.path == "/v1/systemone" else generate(body, self, meter)
@@ -1625,6 +1662,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(500, {"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})
         finally:
             self.wfile = original_writer
+            if entered: gpu_leave()
             seconds = time.monotonic() - started
             if capture is not None:
                 record_listen(capture, body, source, self.path, meter, seconds)
@@ -1655,6 +1693,17 @@ def stop(*_):
     if ENGINE_PROCESS is not None: ENGINE_PROCESS.terminate()
     os._exit(0)
 
+
+# The packaged helper is injected by the engine. Source imports use the same helper.
+_gpu_source = globals().get("__YOUGORI_GPU_SOURCE__") or os.environ.get("YOUGORI_GPU_SOURCE")
+if _gpu_source:
+    exec(compile(zlib.decompress(base64.b64decode(_gpu_source)), "yougori-gpu-optimizer", "exec"))
+else:
+    from pathlib import Path
+    exec(compile(Path(__file__).with_name("model_runner").joinpath("gpu_optimizer.py").read_text(encoding="utf-8"), "yougori-gpu-optimizer", "exec"))
+
+if os.environ.get("YOUGORI_PUBLISHER_SOURCE") or globals().get("__YOUGORI_PUBLISHER_SOURCE__"):
+    exec(compile(zlib.decompress(base64.b64decode(os.environ.get("YOUGORI_PUBLISHER_SOURCE") or __YOUGORI_PUBLISHER_SOURCE__)), "yougori-publisher", "exec"))
 
 if __name__ == "__main__":
     # As the container's first process the server would ignore stop signals it does not handle,

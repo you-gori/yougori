@@ -25,6 +25,7 @@ pub mod logs;
 pub mod vault;
 pub mod model_auth;
 pub mod network;
+pub mod model_registry;
 pub mod confidential;
 
 pub const SKILL: &str = include_str!("../../skills/yougori/SKILL.txt");

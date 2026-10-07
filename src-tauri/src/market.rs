@@ -10,6 +10,16 @@ use std::{collections::BTreeMap, sync::LazyLock, time::{Duration, Instant}};
 use tauri::{Emitter, Manager};
 
 const SESSION: &str = "yougori-network-session";
+pub(crate) fn registry_session() -> Option<String> { session() }
+pub(crate) async fn registry_request(method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    if !path.starts_with("/api/market/registry/") || path.contains("..") || path.contains(['#','%','\\']) || path.contains("//") { return Err("Invalid model registry path".into()); }
+    api(method, path, session().as_deref(), body).await.map_err(String::from)
+}
+pub(crate) async fn registry_connect(body: &Value) -> Result<Value, String> {
+    let mut result = api(reqwest::Method::POST, "/api/market/nodes", session().as_deref(), Some(body)).await.map_err(String::from)?;
+    if let Some(map) = result.as_object_mut() { map.remove("nodeToken"); }
+    Ok(result)
+}
 const HEARTBEAT: Duration = Duration::from_secs(60);
 const TICK: Duration = Duration::from_secs(15);
 const EVENT: &str = "yougori-market";
@@ -73,6 +83,11 @@ struct Share {
     listen: bool,
     #[serde(default)]
     node_id: Option<String>,
+    /// Some(true): closed weights; Some(false): open downloads; None: legacy API sharing.
+    #[serde(default)]
+    publish: Option<bool>,
+    #[serde(default)]
+    registry_version: Option<String>,
     /// The public link Yougori opened for sharing; removed again when sharing stops.
     #[serde(default)]
     published: Option<String>,
@@ -86,6 +101,8 @@ struct Live {
     listen_path: Option<String>,
     message: String,
     online: bool,
+    files_online: bool,
+    source_only: bool,
     beat: Option<Instant>,
     reported: Option<(String, Option<String>)>,
     sent_url: Option<String>,
@@ -95,6 +112,8 @@ struct Live {
     link_since: Option<Instant>,
     link_failures: u8,
     reconnected: Option<Instant>,
+    publication_synced: bool,
+    model_page: Option<String>,
 }
 
 struct ApiError {
@@ -200,11 +219,15 @@ fn describe(share: &Share) -> Value {
         "model": share.model,
         "listen": share.listen && share.mode == "free",
         "listenPath": share.live.listen_path,
+        "closedWeights": share.publish,
+        "modelPage": share.live.model_page,
         "mode": share.live.node.as_ref().and_then(|node| node["mode"].as_str()).unwrap_or(&share.mode),
         "nodeId": share.node_id,
         "status": if share.live.status.is_empty() { "starting" } else { share.live.status.as_str() },
         "message": share.live.message,
         "live": share.live.online,
+        "filesOnline": share.live.files_online,
+        "sourceOnly": share.live.source_only,
         "listing": share.live.listing.clone().or_else(|| share.node_id.as_ref().map(|id| format!("{}/network#{id}", website()))),
         "warnings": share.live.warnings,
         "node": share.live.node,
@@ -420,6 +443,7 @@ pub async fn market_sign_out(app: AppHandle) -> Result<Value, String> {
 
 /// Removes a share's registration, credentials and the public link Yougori opened for it.
 async fn leave(app: &AppHandle, share: &Share, token: Option<&str>) {
+    let _=crate::model_runner::configure_publishing(app,&share.environment_id,false).await;
     if share.listen { let _ = crate::model_runner::configure_listen(app, &share.environment_id, "free", false).await; }
     if let (Some(id), Some(token)) = (&share.node_id, token) {
         let _ = api(reqwest::Method::POST, &format!("/api/market/nodes/{id}/remove"), Some(token), Some(&json!({}))).await;
@@ -434,14 +458,15 @@ fn model_of(app: &AppHandle, environment_id: &str) -> Result<(String, Option<Str
     let state = app.state::<PlatformStore>().snapshot()?;
     let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model environment not found")?;
     let options = app.state::<RuntimeManager>().workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
-    let model = options.environment.get("YOUGORI_MODEL").cloned().ok_or("Only Yougori model environments can be shared on the network")?;
+    let model = options.environment.get("YOUGORI_REGISTRY_MODEL").or_else(|| options.environment.get("YOUGORI_MODEL")).cloned().ok_or("Only Yougori model environments can be shared on the network")?;
     let gguf = options.environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|format| format == "gguf");
-    Ok((model, Some(if gguf { "llama.cpp" } else { "transformers" }.to_owned()), options.environment.get("YOUGORI_MODEL_QUANT").cloned()))
+    let source_only=options.environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|format|format=="source");
+    Ok((model, Some(if source_only {"file-publisher"} else if gguf { "llama.cpp" } else { "transformers" }.to_owned()), options.environment.get("YOUGORI_MODEL_QUANT").cloned()))
 }
 
 /// `--now` (automatic paid pricing) or `--nowfree` (free).
 #[tauri::command]
-pub async fn market_share_model(environment_id: String, mode: String, listen: Option<bool>, app: AppHandle) -> Result<Value, String> {
+pub async fn market_share_model(environment_id: String, mode: String, listen: Option<bool>, publish: Option<bool>, app: AppHandle) -> Result<Value, String> {
     if !matches!(mode.as_str(), "paid" | "free") {
         return Err("Choose paid or free sharing".into());
     }
@@ -453,7 +478,11 @@ pub async fn market_share_model(environment_id: String, mode: String, listen: Op
     if session().is_none() {
         return Err("Sign in to the Yougori Network first: run `yougori login` or choose Sign in in the App's Network panel.".into());
     }
-    let (model, _, _) = model_of(&app, &environment_id)?;
+    let (model, runner, _) = model_of(&app, &environment_id)?;
+    let publish=if runner.as_deref()==Some("file-publisher") {
+        if mode!="free" || listen || publish==Some(true) {return Err("This folder has source files only. Use free downloads; weights are required for inference and recording.".into())}
+        Some(false)
+    } else {publish};
     {
         let market = app.state::<Market>();
         let mut inner = market.inner.lock().await;
@@ -463,14 +492,19 @@ pub async fn market_share_model(environment_id: String, mode: String, listen: Op
             mode: mode.clone(),
             listen,
             node_id: None,
+            publish,
+            registry_version: None,
             published: None,
             live: Live::default(),
         });
         let reregister = share.mode != mode || share.model != model;
+        if share.publish != publish { share.live.publication_synced=false; share.registry_version=None; }
+        share.publish = publish;
         share.mode = mode;
         share.listen = listen;
         share.model = model;
         if reregister {
+            if !crate::model_registry::is_registry(&share.model) {share.registry_version=None;}
             // A changed mode or model is a new registration of the same environment.
             share.live = Live::default();
             share.node_id = None;
@@ -511,6 +545,7 @@ async fn note(app: &AppHandle, environment_id: &str, message: String) {
     if let Some(share) = app.state::<Market>().inner.lock().await.shares.get_mut(environment_id) {
         share.live.message = message;
         share.live.online = false;
+        share.live.files_online = false;
     }
 }
 
@@ -560,6 +595,8 @@ fn sharing_details(status: &str, health: &Value, runner: Option<&str>, quant: Op
         "revision": health["revision"], "precision": health["precision"],
         "appVersion": env!("CARGO_PKG_VERSION"), "gpu": health["gpu"],
         "gpuCount": health["gpuCount"], "context": health["context"],
+        "optimizer": health["optimizer"], "residency":health["status"],
+        "sourceOnly": health["sourceOnly"], "inferenceAvailable": health["inferenceAvailable"],
     })
 }
 
@@ -585,14 +622,24 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     };
     // Apply recording before publishing/registering any model, including paid transitions.
     if let Some(health) = &health {
-        if health["listen"]["supported"] == true {
+        if health["sourceOnly"]==true {
+            share.live.listen_path=None;
+        } else if health["listen"]["supported"] == true {
             let settings = crate::model_runner::configure_listen(app, environment_id, &share.mode, share.listen).await?;
             share.live.listen_path = settings["path"].as_str().map(str::to_owned);
         } else if share.listen {
             return Err("This running model uses an older runner. Stop it and run it again with --nowfree --listen to enable recording; its model files are kept.".into());
         }
     }
-    let status = if running { health.as_ref().and_then(|h| h["status"].as_str()).unwrap_or("starting") } else { "stopped" }.to_owned();
+    if health.as_ref().is_some_and(|h|h["status"]=="ready" || h["weightsVerified"]==true && h["optimizer"]["enabled"]==true && matches!(h["status"].as_str(),Some("idle"|"queued"|"freeing_memory"|"loading"))) && share.publish.is_some() && !share.live.publication_synced {
+        if let Err(error)=crate::model_runner::configure_publishing(app,environment_id,share.publish==Some(false)).await {store_share(app,share).await?;return Err(error)}
+    }
+    let status = if running {
+        health.as_ref().map(|h| {
+            let phase=h["status"].as_str().unwrap_or("starting");
+            if h["optimizer"]["enabled"]==true && h["weightsVerified"]==true && matches!(phase,"idle"|"queued"|"freeing_memory"|"loading"|"unloading") {"ready"} else {phase}
+        }).unwrap_or("starting")
+    } else { "stopped" }.to_owned();
     let (_, runner, quant) = model_of(app, environment_id)?;
     let mut access = None;
     let mut link_error = None;
@@ -620,6 +667,8 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
         share.live.link_failures=0;
     }
     let health = health.unwrap_or(Value::Null);
+    share.live.source_only=health["sourceOnly"]==true || runner.as_deref()==Some("file-publisher");
+    if status!="ready" {share.live.files_online=false;}
     let mut details = sharing_details(&status, &health, runner.as_deref(), quant.as_deref());
     if let Some(map) = details.as_object_mut() {
         map.retain(|_, value| !value.is_null());
@@ -631,11 +680,14 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
             share.live.status = status.clone();
             share.live.message = "Sign in to share this model".into();
             share.live.online = false;
+        share.live.files_online = false;
             return store_share(app, share).await;
         };
         let mut body = details.clone();
         body["environmentKey"] = json!(hash(environment_id));
         body["model"] = json!(share.model);
+        let options = app.state::<RuntimeManager>().workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
+        if let Some(version) = share.registry_version.as_ref().or_else(||options.environment.get("YOUGORI_REGISTRY_VERSION")) { body["registryVersionId"] = json!(version); }
         body["mode"] = json!(share.mode);
         body["timezone"] = json!(iana_time_zone::get_timezone().ok());
         if let (Some(url), Some(key)) = (&public_url, &api_key) {
@@ -652,6 +704,7 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
                 share.live.status = status;
                 share.live.message = error.message.clone();
                 share.live.online = false;
+        share.live.files_online = false;
                 store_share(app, share).await?;
                 return Err(error.message);
             }
@@ -680,12 +733,15 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
         match api(reqwest::Method::POST, &format!("/api/market/nodes/{id}/heartbeat"), token.as_deref(), Some(&body)).await {
             Ok(value) => {
                 share.live.online = value["live"] == true;
+                share.live.files_online = value["filesOnline"] == true;
                 share.live.node = Some(value["node"].clone());
-                share.live.sent_url = public_url;
+                share.live.sent_url = public_url.clone();
                 share.live.reported = reported;
                 share.live.beat = Some(Instant::now());
                 share.live.link_failures=if share.live.online {0} else if status=="ready" && value["lastErrorCode"]=="public_link_unavailable" {share.live.link_failures.saturating_add(1)} else {0};
-                share.live.message = if share.live.online {
+                share.live.message = if share.live.files_online {
+                    "Source files available for download".into()
+                } else if share.live.online {
                     "Live on the Yougori Network".into()
                 } else if status == "ready" {
                     if value["lastError"].is_string() {value["lastError"].as_str().unwrap().into()} else {"Checking provider eligibility and measuring token speed".into()}
@@ -702,14 +758,28 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
                 let _ = secrets::delete_secret(&secret);
                 share.node_id = None;
                 share.live.online = false;
+        share.live.files_online = false;
                 share.live.message = error.message;
             }
             Err(error) => {
                 share.live.online = false;
+        share.live.files_online = false;
                 share.live.message = error.message;
             }
         }
     }
+    if status == "ready" && public_url.is_some() && share.publish.is_some() && !share.live.publication_synced {
+        let body=json!({"nodeId":share.node_id,"closed":share.publish.unwrap(),"keepAccess":share.registry_version.is_some()});
+        match registry_request(reqwest::Method::POST,"/api/market/registry/publisher",Some(&body)).await {
+            Ok(value)=>{
+                share.registry_version=value["model"]["version"]["id"].as_str().map(str::to_owned);
+                share.live.model_page=value["page"].as_str().map(|path|format!("{}{path}",website()));
+                share.live.publication_synced=true;
+            }
+            Err(error)=>{share.live.message=format!("{} connected; publishing page: {error}",if share.live.source_only{"Source files"}else{"Model API"});}
+        }
+    }
+    if status!="ready" {share.live.publication_synced=false;}
     if status=="ready" && reconnect_due(&share.live) && access.as_ref().is_some_and(|a|owned_quick_link(&share,a)) {
         let id=share.published.clone().unwrap();
         crate::automation::dispatch::dispatch(app,"unpublish_environment_service",&json!({"publicationId":id})).await?;
@@ -726,6 +796,7 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     }
     if let Some(error) = link_error {
         share.live.online = false;
+        share.live.files_online = false;
         share.live.message = format!("Model ready locally; public sharing offline. {error} Yougori will retry automatically.");
     }
     share.live.status = status;
@@ -736,9 +807,9 @@ async fn store_share(app: &AppHandle, share: Share) -> Result<(), String> {
     let market = app.state::<Market>();
     let mut inner = market.inner.lock().await;
     let Some(current) = inner.shares.get_mut(&share.environment_id) else { return Ok(()) };
-    let saved = current.node_id != share.node_id || current.published != share.published;
+    let saved = current.node_id != share.node_id || current.published != share.published || current.registry_version != share.registry_version;
     // A share command may have changed the mode while this pass ran; keep the newer intent.
-    if current.mode == share.mode && current.model == share.model && current.listen == share.listen {
+    if current.mode == share.mode && current.model == share.model && current.listen == share.listen && current.publish == share.publish {
         *current = share;
     }
     if saved {
@@ -804,7 +875,7 @@ mod tests {
     }
     #[test]
     fn tunnel_recovery_is_owned_bounded_and_waits_for_dns_propagation() {
-        let share=Share { environment_id:"env".into(),model:"owner/model".into(),mode:"free".into(),listen:false,node_id:None,published:Some("owned".into()),live:Live::default() };
+        let share=Share { environment_id:"env".into(),model:"owner/model".into(),mode:"free".into(),listen:false,node_id:None,publish:None,registry_version:None,published:Some("owned".into()),live:Live::default() };
         assert!(owned_quick_link(&share,&json!({"publicId":"owned","publicAccount":false})));
         assert!(!owned_quick_link(&share,&json!({"publicId":"other","publicAccount":false})));
         assert!(!owned_quick_link(&share,&json!({"publicId":"owned","publicAccount":true})));
@@ -866,7 +937,7 @@ mod tests {
     fn status_lists_shares_without_credentials() {
         let mut inner = Inner::default();
         inner.shares.insert("env-1".into(), Share {
-            environment_id: "env-1".into(), model: "google/gemma-4-31B".into(), mode: "paid".into(), listen: false,
+            environment_id: "env-1".into(), model: "google/gemma-4-31B".into(), mode: "paid".into(), listen: false, publish: None, registry_version: None,
             node_id: Some("nd_1".into()), published: Some("pub-1".into()),
             live: Live { status: "ready".into(), online: true, sent_url: Some("https://secret.trycloudflare.com/v1".into()), ..Live::default() },
         });

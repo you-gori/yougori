@@ -25,9 +25,13 @@ export interface NetworkShare {
   model: string
   mode: SharingMode
   nodeId: string | null
+  closedWeights?: boolean | null
+  modelPage?: string | null
   status: string
   message: string
   live: boolean
+  filesOnline?: boolean
+  sourceOnly?: boolean
   listing: string | null
   warnings: string[]
   node: NetworkNode | null
@@ -44,7 +48,7 @@ export const marketApi = {
   status: () => run<NetworkStatus>("market_status", {}, desktop),
   signIn: () => run<NetworkStatus>("market_sign_in", {}, desktop),
   signOut: () => run<NetworkStatus>("market_sign_out", {}, desktop),
-  share: (environmentId: string, mode: SharingMode) => run<NetworkShare>("market_share_model", { environmentId, mode }, desktop),
+  share: (environmentId: string, mode: SharingMode, closedWeights = false) => run<NetworkShare>("market_share_model", { environmentId, mode, publish: closedWeights }, desktop),
   unshare: (environmentId: string) => run<{ environmentId: string; shared: false }>("market_unshare_model", { environmentId }, desktop),
   listen: async (callback: (status: NetworkStatus) => void): Promise<() => void> => {
     if (!("__TAURI_INTERNALS__" in window)) return () => {}

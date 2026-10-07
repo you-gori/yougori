@@ -11,7 +11,7 @@ async fn fetch_metadata(client:&reqwest::Client,url:String,model:&str)->Result<V
     while let Some(chunk)=response.chunk().await.map_err(|_|"Cannot read Hugging Face model metadata")?{if bytes.len()+chunk.len()>2*1024*1024{return Err("Model metadata exceeds 2 MiB; inspect this repository's dedicated runner".into())}bytes.extend_from_slice(&chunk)}
     serde_json::from_slice(&bytes).map_err(|_|"Model metadata is invalid JSON".into())
 }
-fn inspect(model:&str,metadata:&Value,config:&Value)->Value{
+pub(crate) fn inspect(model:&str,metadata:&Value,config:&Value)->Value{
     let files=metadata["siblings"].as_array().cloned().unwrap_or_default();
     let has=|name:&str|files.iter().any(|f|f["rfilename"]==name);
     let decision=has("joint_head_config.json")&&has("joint_head.safetensors");
@@ -56,7 +56,7 @@ pub(crate) fn quant_label(file:&str)->Option<String>{
     })
 }
 /// The GGUF file(s) to serve: the requested quant or the preferred default, with every split part.
-fn gguf_choice(files:&[Value],quant:Option<&str>)->Result<Option<(String,Vec<Value>)>,String>{
+pub(crate) fn gguf_choice(files:&[Value],quant:Option<&str>)->Result<Option<(String,Vec<Value>)>,String>{
     let candidates=files.iter().filter_map(|f|{let name=f["rfilename"].as_str()?;Some((name,quant_label(name)?,f))}).collect::<Vec<_>>();
     if candidates.is_empty(){return Ok(None)}
     let available=|| {let mut labels=candidates.iter().map(|(_,label,_)|label.clone()).collect::<Vec<_>>();labels.sort();labels.dedup();labels.join(", ")};
@@ -75,7 +75,7 @@ fn gguf_choice(files:&[Value],quant:Option<&str>)->Result<Option<(String,Vec<Val
     };
     Ok(Some((label,chosen)))
 }
-fn inspect_gguf(model:&str,metadata:&Value,label:&str,chosen:&[Value])->Value{
+pub(crate) fn inspect_gguf(model:&str,metadata:&Value,label:&str,chosen:&[Value])->Value{
     let task=metadata["pipeline_tag"].as_str().unwrap_or("unknown");
     let files=chosen.iter().map(|f|json!({"name":f["rfilename"],"size":f["lfs"]["size"].as_u64().or(f["size"].as_u64()),"sha256":f["lfs"]["sha256"]})).collect::<Vec<_>>();
     let verifiable=files.iter().all(|f|f["size"].as_u64().is_some_and(|n|n>0)&&f["sha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())));
@@ -92,8 +92,13 @@ fn inspect_gguf(model:&str,metadata:&Value,label:&str,chosen:&[Value])->Value{
 pub(super) async fn preflight(model:&str)->Result<Value,String>{preflight_quant(model,None).await}
 /// GGUF repositories run with llama.cpp (quantized, so they fit consumer GPUs); others use Transformers safetensors.
 pub(super) async fn preflight_quant(model:&str,quant:Option<&str>)->Result<Value,String>{
+    if crate::model_registry::is_registry(model) { return crate::model_registry::preflight(model,quant).await; }
+    preflight_pinned(model,quant,None).await
+}
+pub(crate) async fn preflight_pinned(model:&str,quant:Option<&str>,revision:Option<&str>)->Result<Value,String>{
     let client=reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(10)).timeout(std::time::Duration::from_secs(35)).redirect(reqwest::redirect::Policy::limited(3)).build().map_err(|_|"Cannot initialize model preflight")?;
-    let metadata=fetch_metadata(&client,format!("https://huggingface.co/api/models/{model}?blobs=true"),model).await?;
+    let url=match revision {Some(sha) if sha.len()==40&&sha.bytes().all(|b|b.is_ascii_hexdigit())=>format!("https://huggingface.co/api/models/{model}/revision/{sha}?blobs=true"),Some(_)=>return Err("Invalid immutable Hugging Face revision".into()),None=>format!("https://huggingface.co/api/models/{model}?blobs=true")};
+    let metadata=fetch_metadata(&client,url,model).await?;
     let sha=metadata["sha"].as_str().filter(|s|s.len()==40&&s.bytes().all(|b|b.is_ascii_hexdigit())).ok_or("Model metadata did not provide an immutable revision")?;
     let files=metadata["siblings"].as_array().cloned().unwrap_or_default();
     if let Some((label,chosen))=gguf_choice(&files,quant)?{return Ok(inspect_gguf(model,&metadata,&label,&chosen))}
@@ -102,7 +107,7 @@ pub(super) async fn preflight_quant(model:&str,quant:Option<&str>)->Result<Value
     Ok(inspect(model,&metadata,&config))
 }
 #[tauri::command]
-pub async fn model_preflight(model:String,quant:Option<String>)->Result<Value,String>{let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);Ok(result)}
+pub async fn model_preflight(model:String,quant:Option<String>,folder:Option<String>)->Result<Value,String>{if let Some(folder)=folder{return super::local::preflight(normalize_model(&model)?,folder,quant).await;}let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);Ok(result)}
 #[tauri::command]
 pub async fn model_support_task(model:String,agent:String,quant:Option<String>)->Result<Value,String>{
     let preflight=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;
