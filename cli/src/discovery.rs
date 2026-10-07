@@ -6,7 +6,7 @@ pub const TOPICS: &[&str] = &["lifecycle", "files", "gpu", "deployment", "models
 
 pub fn topic(method: &str) -> &'static str {
     if method.starts_with("jobs_") { "jobs" }
-    else if method.contains("model") || method.starts_with("market_") { "models" }
+    else if method.contains("model") || method.starts_with("market_") || method == "confidential_network_chat" { "models" }
     else if method.contains("cuda") || method.contains("gpu") { "gpu" }
     else if method.contains("settings") || method.contains("startup_report") { "settings" }
     else if method.contains("terminal") || method.contains("window") || method.contains("execute_") || method.contains("guest_execution") || method.contains("log") { "terminal" }

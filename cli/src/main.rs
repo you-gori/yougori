@@ -110,7 +110,12 @@ Waiting for approval… (Ctrl+C cancels)")).await?,
         return Ok(0);
     }
     if args[0] == "schema" {
-        println!("{}", wire_json(yougori_cli::discovery::schema(&args[1..])?));
+        let schema = yougori_cli::discovery::schema(&args[1..])?;
+        if schema["detail"] == "index" {
+            println!("{}", serde_json::to_string(&wire::Response::success(schema)).map_err(|error| error.to_string())?);
+        } else {
+            println!("{}", wire_json(schema));
+        }
         return Ok(0);
     }
     if args[0] == "skills" {
