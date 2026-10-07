@@ -14,7 +14,8 @@ import model_server as model
 class OptimizerTests(unittest.TestCase):
     def setUp(self):
         model.GPU_ENABLED = True
-        model.GPU_PINNED = model.GPU_LOADING = model.GPU_INITIAL = False
+        model.GPU_PINNED = model.GPU_LOADING = model.GPU_INITIAL = model.GPU_WAITING_FOR_GRANT = False
+        model.GPU_GRANTED.clear()
         model.GPU_ACTIVE = 0
         model.GPU_WAITING_SINCE = None
         model.GPU_LEASES.clear()
@@ -54,12 +55,26 @@ class OptimizerTests(unittest.TestCase):
         thread.start()
         time.sleep(.03)
         self.assertTrue(thread.is_alive())
-        with patch.object(model.threading.Thread, "start"):
+        with patch.object(model.threading.Thread, "start") as extra_loader:
             model.gpu_control({"action":"grant"})
+            extra_loader.assert_not_called()
         thread.join(1)
         self.assertFalse(thread.is_alive())
         self.assertEqual(model.STATE["status"], "loading")
         self.assertEqual(os.environ["YOUGORI_MODEL_PRECISION"], "4bit")
+
+    def test_disabling_resumes_waiting_loader_without_starting_duplicate(self):
+        model.STATE.update(status="queued", precision="4bit")
+        thread = threading.Thread(target=model.gpu_before_load)
+        thread.start()
+        time.sleep(.03)
+        self.assertTrue(thread.is_alive())
+        with patch.object(model.threading.Thread, "start") as extra_loader:
+            model.gpu_control({"action":"configure", "enabled":False})
+            extra_loader.assert_not_called()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(model.GPU_WAITING_FOR_GRANT)
 
     def test_failed_load_drops_partial_weights_and_clears_the_allocation_cache(self):
         from types import SimpleNamespace

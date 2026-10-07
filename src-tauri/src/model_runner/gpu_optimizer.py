@@ -9,6 +9,7 @@ GPU_ENABLED = os.environ.get("YOUGORI_GPU_OPTIMIZER") == "1" and FORMAT != "sour
 GPU_PINNED = os.environ.get("YOUGORI_GPU_PINNED") == "1"
 GPU_ACTIVE = 0
 GPU_LOADING = False
+GPU_WAITING_FOR_GRANT = False
 GPU_LAST_USED = time.monotonic()
 GPU_WAITING_SINCE = None
 GPU_IDLE_SECONDS = max(10, min(3600, int(os.environ.get("YOUGORI_GPU_IDLE_SECONDS", "120"))))
@@ -39,16 +40,19 @@ def gpu_snapshot():
 
 def gpu_before_load():
     """Only the local host scheduler grants admission; public prepare merely queues demand."""
-    global GPU_LOADING, GPU_INITIAL, GPU_WAITING_SINCE
+    global GPU_LOADING, GPU_INITIAL, GPU_WAITING_SINCE, GPU_WAITING_FOR_GRANT
     with GPU_LOCK:
         if not GPU_ENABLED:
             return
         GPU_INITIAL = not STATE.get("weightsVerified", False)
         GPU_WAITING_SINCE = GPU_WAITING_SINCE or time.time()
+        GPU_WAITING_FOR_GRANT = True
         STATE.update(status="queued", error=None)
-    if not GPU_GRANTED.wait(1800):
-        raise RuntimeError("GPU admission timed out. Open Yougori and check Automatic GPU memory.")
+    granted = GPU_GRANTED.wait(1800)
     with GPU_LOCK:
+        GPU_WAITING_FOR_GRANT = False
+        if not granted:
+            raise RuntimeError("GPU admission timed out. Open Yougori and check Automatic GPU memory.")
         if STATE.get("weightsVerified") and STATE.get("precision") in ("original", "4bit", "8bit"):
             os.environ["YOUGORI_MODEL_PRECISION"] = STATE["precision"]
         GPU_GRANTED.clear()
@@ -135,13 +139,13 @@ def gpu_control(body):
                 STATE["status"] = "queued"
             if not GPU_ENABLED:
                 GPU_GRANTED.set()
-                if STATE["status"] in ("idle", "queued", "freeing_memory") and not GPU_LOADING:
+                if STATE["status"] in ("idle", "queued", "freeing_memory") and not GPU_LOADING and not GPU_WAITING_FOR_GRANT:
                     GPU_LOADING = True
                     threading.Thread(target=load_model, daemon=True).start()
         elif action == "grant":
             if GPU_ENABLED and not GPU_LOADING and STATE["status"] in ("idle", "queued", "freeing_memory"):
                 # A startup loader may already be blocked at gpu_before_load.
-                if STATE.get("weightsVerified"):
+                if STATE.get("weightsVerified") and not GPU_WAITING_FOR_GRANT:
                     GPU_LOADING = True
                     threading.Thread(target=load_model, daemon=True).start()
                 GPU_GRANTED.set()
