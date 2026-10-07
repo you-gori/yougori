@@ -12,7 +12,9 @@ GPU_LOADING = False
 GPU_WAITING_FOR_GRANT = False
 GPU_LAST_USED = time.monotonic()
 GPU_WAITING_SINCE = None
-GPU_IDLE_SECONDS = max(10, min(3600, int(os.environ.get("YOUGORI_GPU_IDLE_SECONDS", "120"))))
+GPU_IDLE_SECONDS = int(os.environ.get("YOUGORI_GPU_IDLE_SECONDS", "0"))
+if GPU_IDLE_SECONDS != 0:
+    GPU_IDLE_SECONDS = max(10, min(3600, GPU_IDLE_SECONDS))
 GPU_INITIAL = False
 
 
@@ -129,9 +131,9 @@ def gpu_control(body):
         if action == "configure":
             if type(body.get("enabled")) is not bool or type(body.get("pinned", False)) is not bool:
                 raise ValueError("Invalid optimizer settings")
-            timeout = body.get("idleTimeoutSeconds", 120)
-            if type(timeout) is not int or not 10 <= timeout <= 3600:
-                raise ValueError("Idle timeout must be 10–3600 seconds")
+            timeout = body.get("idleTimeoutSeconds", GPU_IDLE_SECONDS)
+            if type(timeout) is not int or (timeout != 0 and not 10 <= timeout <= 3600):
+                raise ValueError("Idle timeout must be 0 (keep loaded until switching) or 10–3600 seconds")
             GPU_ENABLED, GPU_PINNED, GPU_IDLE_SECONDS = body["enabled"], body.get("pinned", False), timeout
             if GPU_ENABLED and GPU_PINNED and STATE["status"] == "idle":
                 GPU_INITIAL = True

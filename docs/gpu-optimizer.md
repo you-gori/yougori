@@ -2,7 +2,9 @@
 
 New local Yougori GPU model environments use automatic residency management.
 The container and verified downloads stay available while weights are unloaded.
-After 120 seconds without work, an unpinned model releases GPU allocations.
+By default, the current model stays loaded until another model is requested.
+The scheduler releases its GPU allocations when switching, once active requests finish.
+An optional idle timeout can release memory sooner; 0 disables timed unloading.
 Requests load the cached checkpoint again and keep its previously served precision.
 Old running model servers need a restart with the updated engine to enable it.
 
@@ -17,6 +19,7 @@ The network permits up to 128 registered models per provider account.
 
 ```powershell
 yougori model optimize MODEL_ENV
+yougori model optimize MODEL_ENV --on --unpin --idle 0
 yougori model optimize MODEL_ENV --on --idle 120
 yougori model optimize MODEL_ENV --pin
 yougori model optimize MODEL_ENV --unpin

@@ -17,12 +17,30 @@ class OptimizerTests(unittest.TestCase):
         model.GPU_PINNED = model.GPU_LOADING = model.GPU_INITIAL = model.GPU_WAITING_FOR_GRANT = False
         model.GPU_GRANTED.clear()
         model.GPU_ACTIVE = 0
+        model.GPU_IDLE_SECONDS = 0
         model.GPU_WAITING_SINCE = None
         model.GPU_LEASES.clear()
         model.GPU_GRANTED.clear()
         model.STATE.update(status="ready", weightsVerified=True, precision="original", error=None)
         model.NETWORK = object()
         model.TORCH = model.ENGINE_PROCESS = None
+
+    def test_keep_loaded_setting_survives_pin_changes_and_still_allows_switching(self):
+        result = model.gpu_control({"action":"configure", "enabled":True, "idleTimeoutSeconds":0})
+        self.assertEqual(result["optimizer"]["idleTimeoutSeconds"], 0)
+        model.gpu_control({"action":"configure", "enabled":True, "pinned":True})
+        self.assertEqual(model.GPU_IDLE_SECONDS, 0)
+        self.assertFalse(model.gpu_unload())
+        model.gpu_control({"action":"configure", "enabled":True, "pinned":False})
+        self.assertTrue(model.gpu_unload())
+
+    def test_explicit_idle_timeout_validation(self):
+        for timeout in (-1, 1, 9, 3601, True, 10.5):
+            with self.assertRaises(ValueError):
+                model.gpu_control({"action":"configure", "enabled":True, "idleTimeoutSeconds":timeout})
+        model.gpu_control({"action":"configure", "enabled":True, "idleTimeoutSeconds":120})
+        model.gpu_control({"action":"configure", "enabled":True, "pinned":True})
+        self.assertEqual(model.GPU_IDLE_SECONDS, 120)
 
     def test_idle_unloads_weights_then_new_demand_is_queued(self):
         self.assertTrue(model.gpu_unload())

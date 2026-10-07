@@ -37,8 +37,8 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
     let health = super::model_status(environment_id.clone(), app.clone()).await?;
     if enabled.is_none() && pinned.is_none() && idle_timeout_seconds.is_none() { return Ok(health["optimizer"].clone()); }
     if health["optimizer"]["supported"] != true { return Err("Restart this model with the updated engine to enable Automatic GPU memory. Files are kept.".into()); }
-    let timeout = idle_timeout_seconds.unwrap_or(health["optimizer"]["idleTimeoutSeconds"].as_u64().unwrap_or(120));
-    if !(10..=3600).contains(&timeout) { return Err("Idle timeout must be 10–3600 seconds".into()); }
+    let timeout = idle_timeout_seconds.unwrap_or(health["optimizer"]["idleTimeoutSeconds"].as_u64().unwrap_or(0));
+    if timeout != 0 && !(10..=3600).contains(&timeout) { return Err("Idle timeout must be 0 (keep loaded until switching) or 10–3600 seconds".into()); }
     let on = enabled.unwrap_or(health["optimizer"]["enabled"] == true);
     let pin = pinned.unwrap_or(health["optimizer"]["pinned"] == true);
     let answer = model_request(&app, &environment_id, "/v1/yougori/optimizer", Some(json!({"action":"configure","enabled":on,"pinned":pin,"idleTimeoutSeconds":timeout}))).await?;
@@ -59,6 +59,12 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
 fn demand<'a>(rows: &'a [(String, Value)]) -> Option<&'a (String, Value)> {
     rows.iter().filter(|(_, h)| h["optimizer"]["pending"].as_u64().unwrap_or(0) > 0 && h["optimizer"]["resident"] != true && h["status"] != "error")
         .min_by(|a,b| a.1["optimizer"]["waitingSince"].as_f64().unwrap_or(f64::MAX).total_cmp(&b.1["optimizer"]["waitingSince"].as_f64().unwrap_or(f64::MAX)))
+}
+
+fn idle_expired(health: &Value) -> bool {
+    let o = &health["optimizer"];
+    let timeout = o["idleTimeoutSeconds"].as_u64().unwrap_or(0);
+    o["resident"] == true && timeout > 0 && o["idleSeconds"].as_u64().unwrap_or(0) >= timeout
 }
 
 pub(crate) fn start(app: &AppHandle) {
@@ -90,8 +96,7 @@ pub(crate) fn start(app: &AppHandle) {
                 if freed { let _ = model_request(&app,id,"/v1/yougori/optimizer",Some(json!({"action":"grant"}))).await; }
             } else {
                 for (id,h) in &rows {
-                    let o = &h["optimizer"];
-                    if o["resident"] == true && o["idleSeconds"].as_u64().unwrap_or(0) >= o["idleTimeoutSeconds"].as_u64().unwrap_or(120) {
+                    if idle_expired(h) {
                         let _ = model_request(&app,id,"/v1/yougori/optimizer",Some(json!({"action":"unload"}))).await;
                     }
                 }
@@ -102,6 +107,23 @@ pub(crate) fn start(app: &AppHandle) {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn resident_waits_for_other_model_demand_without_an_idle_deadline() {
+        let resident = json!({"status":"ready","optimizer":{"resident":true,"idleTimeoutSeconds":0,"idleSeconds":86400,"pending":0}});
+        let mut rows = vec![("current".into(),resident.clone())];
+        assert!(!idle_expired(&resident));
+        assert!(demand(&rows).is_none());
+        rows.push(("next".into(),json!({"status":"queued","optimizer":{"pending":1,"resident":false,"waitingSince":1}})));
+        assert_eq!(demand(&rows).unwrap().0,"next");
+        assert!(!idle_expired(&resident));
+    }
+    #[test] fn timed_idle_unloading_remains_opt_in() {
+        let mut health = json!({"optimizer":{"resident":true,"idleSeconds":119,"idleTimeoutSeconds":120}});
+        assert!(!idle_expired(&health));
+        health["optimizer"]["idleSeconds"] = json!(120);
+        assert!(idle_expired(&health));
+        health["optimizer"].as_object_mut().unwrap().remove("idleTimeoutSeconds");
+        assert!(!idle_expired(&health));
+    }
     #[test] fn oldest_waiter_wins_and_loaded_or_failed_models_are_excluded() {
         let rows = vec![("loaded".into(),json!({"status":"ready","optimizer":{"pending":3,"resident":true,"waitingSince":1}})),
             ("new".into(),json!({"status":"queued","optimizer":{"pending":1,"waitingSince":20}})),
