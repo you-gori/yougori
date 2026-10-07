@@ -275,7 +275,8 @@ async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String
         let abandoned = std::mem::replace(&mut runtime.cuda, yougori_cuda_runtime::CudaRuntime::new(test_root.clone())?);
         drop(abandoned);
         let busy = runtime.container_action(&id,"start",false).await.err().ok_or("An orphaned runtime was silently adopted")?;
-        ensure!(busy.contains("YOUGORI_RUNTIME_BUSY"));
+        ensure!(busy.contains("YOUGORI_RUNTIME_BUSY") || busy.contains("OPENDOCK_RUNTIME_BUSY"),
+            "Expected the competing-runtime ownership guard, got: {busy}");
         runtime.recover_container_provider(&RuntimeProviderKind::YougoriCuda).await?;
         runtime.container_action(&id,"start",false).await?;
         ensure_eq!(runtime.execute_container_command(&id,"cat /root/opendock-cuda-test").await?.stdout,"persistent");
