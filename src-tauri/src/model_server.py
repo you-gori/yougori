@@ -15,6 +15,7 @@ import os
 import queue
 import re
 import secrets
+import stat
 import shutil
 import signal
 import subprocess
@@ -34,7 +35,7 @@ if os.name == "posix":
 MODEL = os.environ["YOUGORI_MODEL"]
 MODEL_REVISION = os.environ.get("YOUGORI_MODEL_REVISION")
 TOKEN = os.environ["YOUGORI_MODEL_TOKEN"]
-# "gguf" serves quantized weights with llama.cpp; anything else uses Transformers safetensors.
+# GGUF uses llama.cpp, vLLM uses its pinned native/plugin implementation; other weights use Transformers.
 FORMAT = os.environ.get("YOUGORI_MODEL_FORMAT", "safetensors")
 STATE = {"status": "installing", "model": MODEL, "error": None}
 GENERATION = threading.Lock()
@@ -43,7 +44,7 @@ TOKENIZER = NETWORK = TORCH = None
 PROCESSOR = CLEF = None
 DECISION_MODEL = MODEL in ("Cloudflare/clef", "superagent-ai/security-one-27b")
 if DECISION_MODEL:
-    STATE.update(task="structured-decision", api="systemone", stream=False)
+    STATE.update(task="structured-decision", api="systemone", stream=True)
 MODEL_DEPENDENCIES = {"transformers": "5.18.0", "accelerate": "1.15.0", "huggingface-hub": "1.33.0"}
 CACHE = os.environ.get("HF_HOME", "/root/.cache/huggingface")
 # A pinned llama.cpp release built for CUDA 12.8, plus the CUDA runtime it links against.
@@ -53,7 +54,13 @@ LLAMA_ARCHIVES = (
     ("cudart-llama-b11425-bin-ubuntu-cuda-12.8-x64.tar.gz", "efe82ad6fea3820fef207e7cf73748760de3dcf604c1aaa9aa01d4c1ec2f79cb", 594377568),
 )
 LLAMA = {"port": 8001, "key": secrets.token_hex(24), "context": 0}
-# Usage lives beside the model cache so it survives restarts. Prompts and replies are never recorded.
+VLLM_VERSION = "0.29.0"
+KOLIBRI_WHEEL = ("aleph_alpha_inference-1.0.0-py3-none-any.whl",
+    "https://files.pythonhosted.org/packages/b0/d7/1eda35b6ee0293f2a52d7a653cf5a4d54c93f21e2e359fe70a7e7b87a851/aleph_alpha_inference-1.0.0-py3-none-any.whl",
+    "5a0ca118e67924f10c4f9c04dd64bef117007a17dd820233a8841b9cb8d6f211", 13392)
+ENGINE_PROCESS = None
+BASE_TEMPLATE = "{% for message in messages %}{{ message['role'] + ': ' + message['content'] + '\\n' }}{% endfor %}{% if add_generation_prompt %}{{ 'assistant:' }}{% endif %}"
+# Usage contains counters only. Free providers may explicitly enable a separate --listen log.
 USAGE_PATH = os.path.join(CACHE, "yougori-usage.json")
 USAGE_LOCK = threading.Lock()
 USAGE_HOURS = 90 * 24
@@ -230,6 +237,129 @@ def incomplete_downloads():
         return {entry.path for entry in os.scandir(root) if re.fullmatch(r"[a-fA-F0-9]+\.[a-f0-9]{8}\.incomplete", entry.name)}
     except FileNotFoundError:
         return set()
+
+
+
+# Explicit free-provider recording, leased by the authenticated local engine.
+# Restarting the runner leaves recording off until a free share renews its lease.
+LISTEN_PATH = os.path.join(CACHE, "yougori-listen", "requests.jsonl")
+LISTEN_LOCK = threading.Lock()
+LISTEN = {"enabled": False, "expires": 0.0, "generation": 0, "error": None}
+LISTEN_LEASE_SECONDS = 90
+LISTEN_MAX_RESPONSE = 2 * 1024 * 1024
+LISTEN_MAX_FILE = 16 * 1024 * 1024
+LISTEN_BACKUPS = 4
+
+
+def listen_snapshot():
+    with LISTEN_LOCK:
+        return {"supported": True, "enabled": LISTEN["enabled"] and time.monotonic() < LISTEN["expires"],
+                "path": LISTEN_PATH, "error": LISTEN["error"],
+                "maxFileBytes": LISTEN_MAX_FILE, "backups": LISTEN_BACKUPS}
+
+
+def listen_file():
+    directory = os.path.dirname(LISTEN_PATH)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise OSError("Recording directory must be a real directory")
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(LISTEN_PATH, flags, 0o600)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise OSError("Recording target must be a regular file")
+    if os.name == "posix":
+        os.chmod(directory, 0o700)
+        os.fchmod(fd, 0o600)
+    return os.fdopen(fd, "ab")
+
+
+def configure_listen(body):
+    if (not isinstance(body, dict) or set(body) != {"enabled", "mode"}
+            or type(body["enabled"]) is not bool or body["mode"] not in ("free", "paid")
+            or body["enabled"] and body["mode"] != "free"):
+        raise ValueError("Recording requires free sharing")
+    with LISTEN_LOCK:
+        if body["enabled"]:
+            # Validate storage before reporting recording as enabled.
+            with listen_file():
+                pass
+        if LISTEN["enabled"] != body["enabled"]:
+            LISTEN["generation"] += 1
+        LISTEN.update(enabled=body["enabled"], expires=time.monotonic() + LISTEN_LEASE_SECONDS, error=None)
+    return listen_snapshot()
+
+
+class ListenCapture:
+    """Capture only an inference response, never request headers or bearer credentials."""
+    def __init__(self, writer):
+        self.writer, self.data, self.truncated = writer, bytearray(), False
+        with LISTEN_LOCK:
+            self.generation = LISTEN["generation"] if LISTEN["enabled"] and time.monotonic() < LISTEN["expires"] else None
+
+    def __getattr__(self, name):
+        return getattr(self.writer, name)
+
+    def write(self, data):
+        if self.generation is not None:
+            room = LISTEN_MAX_RESPONSE - len(self.data)
+            self.data.extend(data[:max(0, room)])
+            self.truncated |= len(data) > room
+        return self.writer.write(data)
+
+    def response(self):
+        # HTTP headers are never retained. JSON and SSE use the same outer recorder,
+        # including native engines and typed decision responses.
+        raw = bytes(self.data).split(b"\r\n\r\n", 1)
+        body = raw[1] if len(raw) == 2 else b""
+        try:
+            return json.loads(body)
+        except (ValueError, UnicodeError):
+            events = []
+            for line in body.splitlines():
+                if not line.startswith(b"data: ") or line == b"data: [DONE]":
+                    continue
+                try:
+                    events.append(json.loads(line[6:]))
+                except (ValueError, UnicodeError):
+                    pass
+            text = "".join(str(choice.get("delta", {}).get("content") or "")
+                           for event in events if isinstance(event, dict)
+                           for choice in event.get("choices", []) if isinstance(choice, dict))
+            return {"stream": True, "content": text, "events": events}
+
+
+def record_listen(capture, body, source, endpoint, meter, seconds):
+    if capture.generation is None or not isinstance(body, dict):
+        return
+    fields = {"model", "messages", "max_tokens", "temperature", "stream", "truncate"} if endpoint == "/v1/chat/completions" else {"model", "state", "questions"}
+    if set(body) - fields or meter["outcome"] == "invalid":
+        return
+    record = {"id": "listen-" + secrets.token_hex(12), "time": int(time.time()), "model": MODEL,
+              "endpoint": endpoint, "source": source, "request": body, "response": capture.response(),
+              "outcome": meter["outcome"], "seconds": round(seconds, 3), "truncated": capture.truncated,
+              "prompt_tokens": meter.get("prompt_tokens", 0), "completion_tokens": meter.get("completion_tokens", 0)}
+    data = (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8", errors="backslashreplace")
+    with LISTEN_LOCK:
+        if (not LISTEN["enabled"] or time.monotonic() >= LISTEN["expires"]
+                or LISTEN["generation"] != capture.generation):
+            return
+        try:
+            with listen_file() as file:
+                rotate = os.fstat(file.fileno()).st_size + len(data) > LISTEN_MAX_FILE
+            if rotate:
+                for index in range(LISTEN_BACKUPS, 0, -1):
+                    source_path = LISTEN_PATH if index == 1 else LISTEN_PATH + "." + str(index - 1)
+                    if os.path.exists(source_path):
+                        os.replace(source_path, LISTEN_PATH + "." + str(index))
+            with listen_file() as file:
+                file.write(data)
+                file.flush()
+            LISTEN["error"] = None
+        except OSError:
+            LISTEN["error"] = "Cannot write recording history; check model storage"
+            # Never include caller content or exceptions in diagnostic logs.
 
 
 def usage_hour_valid(hour):
@@ -481,14 +611,14 @@ def load_transformers():
     STATE.update(status="ready", gpu=f"{gpu_count} × {gpu_name}" if gpu_count > 1 else gpu_name,
                  gpuCount=gpu_count, context=context_window(), stream=True, weightsVerified=True, revision=revision, runner="transformers")
     if not TOKENIZER.chat_template and MODEL not in ("Cloudflare/clef", "superagent-ai/security-one-27b"):
-        STATE.update(chatTemplate=False, chatWarning="This is a base checkpoint without a chat template. It can continue text but is not trained to act as an assistant. Use an instruction-tuned (-it/Instruct) checkpoint for chat.")
+        STATE.update(chatTemplate=False, singleReplyGuard=True, chatWarning="This is a base checkpoint without a chat template. It can continue text but is not trained to act as an assistant. Use an instruction-tuned (-it/Instruct) checkpoint for chat.")
         if MODEL in ("google/gemma-4-12B", "google/gemma-4-31B"):
             STATE["chatModelSuggestion"] = MODEL + "-it"
         print(STATE["chatWarning"], flush=True)
     else:
-        STATE["chatTemplate"] = True
+        STATE.update(chatTemplate=True, singleReplyGuard=False)
     if MODEL == "superagent-ai/security-one-27b":
-        STATE.update(task="structured-decision", stream=False, api="systemone", runner="security-one")
+        STATE.update(task="structured-decision", stream=True, api="systemone", runner="security-one")
 
 
 def inference_options(weight_bytes, gpu_count):
@@ -511,6 +641,7 @@ def inference_options(weight_bytes, gpu_count):
         else:
             raise RuntimeError("This model does not fit the available GPU memory even at 4-bit precision. Use a smaller checkpoint or a GPU with more free memory.")
     STATE["precision"] = precision
+    STATE["quant"] = {"4bit": "NF4", "8bit": "INT8"}.get(precision)
     if precision == "original":
         return {}
     install({"bitsandbytes": "0.50.2"})
@@ -544,7 +675,7 @@ def load_clef():
         use_safetensors=True, attn_implementation="eager", **options)
     TOKENIZER = PROCESSOR.tokenizer
     STATE.update(status="ready", gpu=torch.cuda.get_device_name(0), gpuCount=1, context=16384,
-        stream=False, weightsVerified=True, revision=revision, runner="clef", task="structured-decision", api="systemone")
+        stream=True, weightsVerified=True, revision=revision, runner="clef", task="structured-decision", api="systemone")
 
 
 def download(url, path, size, expected):
@@ -595,6 +726,7 @@ def llama_server():
 def verified_gguf():
     """Downloads the pinned GGUF file(s) and checks their SHA-256 once per file version."""
     files = json.loads(os.environ["YOUGORI_MODEL_FILES"])
+    STATE["modelFile"] = files[0]["name"]
     root = download_snapshot(MODEL_REVISION, {item["name"]: item["size"] for item in files})
     paths = []
     for item in files:
@@ -692,6 +824,8 @@ def load_model():
         threading.Thread(target=report_loading, daemon=True).start()
         if FORMAT == "gguf":
             load_gguf()
+        elif FORMAT == "vllm":
+            load_vllm()
         elif MODEL == "Cloudflare/clef":
             load_clef()
         else:
@@ -704,6 +838,114 @@ def load_model():
             detail = detail.replace(os.environ["HF_TOKEN"], "[redacted]")
         STATE.update(status="error", error=detail[:2000])
         print("Model could not load: " + detail[:2000], file=sys.stderr, flush=True)
+
+
+def vllm_hardware(config, weight_bytes, cuda):
+    """Every MoE expert stays resident. Check before downloading weights; no implicit CPU offload."""
+    count = cuda.device_count() if cuda.is_available() else 0
+    required = (weight_bytes / 1073741824 + 2) / 0.90
+    if not count or any(cuda.get_device_capability(i) < (7, 5) for i in range(count)):
+        raise RuntimeError("vLLM needs CUDA GPUs with compute capability 7.5 or newer")
+    available = count * min(cuda.mem_get_info(i)[0] for i in range(count)) / 1073741824
+    if not weight_bytes or available < required:
+        raise RuntimeError("This checkpoint needs approximately {:.0f} GB of free GPU memory; {:.1f} GB is available. All MoE experts must fit, including inactive experts. No model weights were downloaded.".format(required, available))
+    heads = int(config.get("num_attention_heads") or 1)
+    kv_heads = int(config.get("num_key_value_heads") or heads)
+    if heads % count or (kv_heads % count and count % kv_heads):
+        raise RuntimeError("This model's attention heads cannot be split across the available GPU count")
+    return count
+
+
+def kolibri_plugin():
+    """Install only the reviewed, checksum-pinned wheel; keep the image's torch/vLLM unchanged."""
+    try:
+        if importlib.metadata.version("aleph-alpha-inference") == "1.0.0": return
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    name, url, sha, size = KOLIBRI_WHEEL
+    folder = os.path.join(CACHE, "yougori-vllm-plugin")
+    os.makedirs(folder, exist_ok=True)
+    wheel = os.path.join(folder, name)
+    download(url, wheel, size, sha)
+    environment = {k:v for k,v in os.environ.items() if k not in ("HF_TOKEN", "YOUGORI_MODEL_TOKEN")}
+    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-index", wheel],
+                   env=environment, check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def load_vllm():
+    global ENGINE_PROCESS
+    if os.environ.get("YOUGORI_INSTALL_VLLM") == "1": install({"vllm": VLLM_VERSION})
+    if importlib.metadata.version("vllm") != VLLM_VERSION:
+        raise RuntimeError("Use Yougori's pinned vLLM runtime image (vLLM " + VLLM_VERSION + ")")
+    import torch
+    from huggingface_hub import HfApi, hf_hub_download
+    metadata = HfApi().model_info(MODEL, revision=MODEL_REVISION, files_metadata=True, timeout=30)
+    revision = metadata.sha
+    if not MODEL_REVISION or revision != MODEL_REVISION or not re.fullmatch(r"[a-fA-F0-9]{40}", revision):
+        raise RuntimeError("vLLM requires the exact immutable revision approved by preflight")
+    with open(hf_hub_download(MODEL, "config.json", revision=revision), encoding="utf-8") as file:
+        config = json.load(file)
+    kolibri = config.get("model_type") == "kolibri1"
+    if kolibri:
+        if "Kolibri1ForCausalLM" not in config.get("architectures", []): raise RuntimeError("Unknown Kolibri implementation")
+        kolibri_plugin()
+    else:
+        # Built-in registry only. vLLM's Transformers/remote-code fallback is never enabled.
+        from vllm.model_executor.models.registry import ModelRegistry
+        if not set(config.get("architectures", [])) & set(ModelRegistry.get_supported_archs()):
+            raise RuntimeError("No native implementation exists in the pinned vLLM runtime")
+    if {"joint_head_config.json", "joint_head.safetensors"} <= {s.rfilename for s in metadata.siblings or []}:
+        raise RuntimeError("A custom prediction head needs a reviewed decision adapter")
+    weights = [s for s in metadata.siblings or [] if s.rfilename.endswith(".safetensors")]
+    size = sum((getattr(s, "size", None) or (s.lfs.get("size") if isinstance(getattr(s,"lfs",None),dict) else getattr(getattr(s,"lfs",None),"size",0)) or 0) for s in weights)
+    count = vllm_hardware(config, size, torch.cuda)
+    root = verified_snapshot(revision)
+    template = None
+    tokenizer_config = os.path.join(root, "tokenizer_config.json")
+    if os.path.isfile(tokenizer_config):
+        with open(tokenizer_config, encoding="utf-8") as file: template = json.load(file).get("chat_template")
+    STATE["chatTemplate"] = bool(template) or os.path.isfile(os.path.join(root, "chat_template.jinja"))
+    if not STATE["chatTemplate"]:
+        STATE["chatWarning"] = "This is a base checkpoint without a chat template. Use an instruction-tuned checkpoint for assistant chat."
+    STATE["status"] = "loading"
+    LLAMA["context"] = min(int(config.get("max_position_embeddings") or 4096), 32768)
+    args = [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", root,
+        "--served-model-name", MODEL, "--host", "127.0.0.1", "--port", str(LLAMA["port"]),
+        "--model-impl", "vllm", "--load-format", "safetensors", "--max-model-len", str(LLAMA["context"]),
+        "--tensor-parallel-size", str(count), "--distributed-executor-backend", "mp", "--gpu-memory-utilization", "0.90",
+        "--max-num-seqs", "1", "--enforce-eager", "--generation-config", "vllm", "--disable-log-stats"]
+    if kolibri: args += ["--reasoning-parser", "kolibri1"]
+    if kolibri and (config.get("quantization_config") or {}).get("quant_method") == "fp8": args += ["--kv-cache-dtype", "fp8"]
+    environment = {k:v for k,v in os.environ.items() if k not in ("HF_TOKEN", "YOUGORI_MODEL_TOKEN")}
+    environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", VLLM_NO_USAGE_STATS="1",
+                       VLLM_PLUGINS="aleph_alpha_inference" if kolibri else "", VLLM_API_KEY=LLAMA["key"])
+    # Native engine diagnostics can contain caller content. Never forward them to workload logs.
+    process = ENGINE_PROCESS = subprocess.Popen(args, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 3600
+        while True:
+            if process.poll() is not None: raise RuntimeError("vLLM stopped while loading. Check GPU memory, driver and checkpoint compatibility.")
+            try:
+                connection, response = llama("/health", timeout=5)
+                response.read(); connection.close()
+                if response.status == 200: break
+            except OSError: pass
+            if time.monotonic() >= deadline: raise RuntimeError("vLLM did not finish loading within an hour")
+            time.sleep(2)
+    except BaseException:
+        process.terminate()
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired: process.kill(); process.wait()
+        raise
+    def watch():
+        process.wait()
+        STATE.update(status="error", error="vLLM stopped unexpectedly. Restart this model.")
+    threading.Thread(target=watch, daemon=True).start()
+    gpu = torch.cuda.get_device_name(0)
+    quant = (config.get("quantization_config") or {}).get("quant_method")
+    STATE.update(status="ready", gpu=(str(count) + " × " + gpu) if count > 1 else gpu, gpuCount=count,
+        context=LLAMA["context"], stream=True, weightsVerified=True, revision=revision, runner="vllm",
+        quant=str(quant).upper() if quant else None, precision=str(config.get("dtype") or config.get("torch_dtype") or "auto"))
 
 
 def report_loading():
@@ -766,6 +1008,12 @@ def prepare(messages, count, truncate):
 def prepare_gguf(messages, count, truncate):
     """Counts prompt tokens with llama.cpp's own template and tokenizer. Returns (messages to send, tokens, dropped)."""
     def measure(messages):
+        if FORMAT == "vllm":
+            request = {"model":MODEL, "messages":messages, "add_generation_prompt":True, "add_special_tokens":False, "chat_template_kwargs":{"enable_thinking":False}}
+            if STATE.get("chatTemplate") is False: request["chat_template"] = BASE_TEMPLATE
+            tokens = llama_json("/tokenize", request)["count"]
+            if type(tokens) is not int or tokens <= 0: raise ValueError("vLLM returned invalid prompt usage")
+            return messages, tokens
         try:
             prompt = llama_json("/apply-template", {"messages": messages})["prompt"]
         except ValueError:
@@ -907,7 +1155,11 @@ def generate_gguf(body, handler, meter):
         meter["prompt_tokens"] = input_tokens
         extra = {"truncated_messages": dropped, "context_window": LLAMA["context"]} if truncate else {}
         limit = STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS
-        request = {"messages": messages, "max_tokens": count, "temperature": temperature, "stream": stream, "t_max_predict_ms": limit * 1000}
+        request = {"messages": messages, "max_tokens": count, "temperature": temperature, "stream": stream}
+        if FORMAT == "vllm":
+            request.update(model=MODEL, chat_template_kwargs={"enable_thinking":False})
+            if STATE.get("chatTemplate") is False: request.update(chat_template=BASE_TEMPLATE, stop=["\nuser:", "\nUser:", "\nassistant:", "\nAssistant:"])
+        else: request["t_max_predict_ms"] = limit * 1000
         if stream:
             request["stream_options"] = {"include_usage": True}
         connection, response = llama("/v1/chat/completions", request, timeout=limit + 30)
@@ -917,6 +1169,7 @@ def generate_gguf(body, handler, meter):
                     detail = str(json.loads(response.read(65536))["error"]["message"])[:500]
                 except (ValueError, KeyError, TypeError):
                     detail = "Generation failed. Check the model's compatibility and available GPU memory."
+                if FORMAT == "vllm": detail = "vLLM rejected the request. Check context length and checkpoint compatibility."
                 meter["outcome"] = "invalid" if response.status == 400 else "error"
                 return (400 if response.status == 400 else 500), {"error": {"message": detail}}
             if stream:
@@ -960,11 +1213,15 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter):
         return {"id": ident, "object": "chat.completion.chunk", "created": created, "model": MODEL, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **more}
 
     generated, finish, failed = 0, None, None
+    deadline = time.monotonic() + STREAM_MAX_SECONDS
     if not send(chunk({"role": "assistant", "content": ""})):
         meter["outcome"] = "cancelled"
         return
     try:
         while True:
+            if time.monotonic() >= deadline:
+                failed = "Model generation exceeded its time limit"
+                break
             raw = response.readline(1 << 20)
             if not raw:
                 break
@@ -990,6 +1247,7 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter):
     except (OSError, ValueError):
         failed = "The model stopped responding; try again or shorten the conversation"
     meter["completion_tokens"] = generated
+    if not failed and finish is None: failed = "The model stream ended before a complete response was received"
     if failed:
         meter["outcome"] = "error"
         send({"error": {"message": failed}})
@@ -1104,12 +1362,11 @@ def generate_decision(body, meter):
 def generate(body, handler, meter):
     """Returns (status, json) for a regular reply, or None after streaming server-sent events to handler.
     Fills meter with the outcome and token counts for usage tracking."""
-    if FORMAT == "gguf":
+    if FORMAT in ("gguf", "vllm"):
         return generate_gguf(body, handler, meter)
     messages, count, temperature, stream, truncate = validate_chat(body)
     if DECISION_MODEL:
-        if stream:
-            raise ValueError("Decision models return typed probabilities and do not stream")
+        meter["stream"] = stream
         try:
             request = json.loads(next(message["content"] for message in reversed(messages) if message["role"] == "user"))
         except (ValueError, StopIteration):
@@ -1118,8 +1375,23 @@ def generate(body, handler, meter):
         if status != 200:
             return status, result
         usage = {"prompt_tokens": meter["prompt_tokens"], "completion_tokens": 0, "total_tokens": meter["prompt_tokens"]}
-        return 200, {"id": completion_id(), "object": "chat.completion", "created": int(time.time()), "model": MODEL,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": json.dumps(result, ensure_ascii=False)}, "finish_reason": "stop"}], "usage": usage}
+        content = json.dumps(result, ensure_ascii=False, indent=2)
+        ident, created = completion_id(), int(time.time())
+        if stream:
+            # A decision is one forward-pass result. Deliver it atomically through
+            # the same SSE transport used by CLI cancellation and API clients.
+            chunk = {"id": ident, "object": "chat.completion.chunk", "created": created, "model": MODEL,
+                     "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": usage}
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            handler.send_header("Cache-Control", "no-store")
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+            handler.wfile.write(b"data: " + json.dumps(chunk, ensure_ascii=False).encode("utf-8") + b"\n\ndata: [DONE]\n\n")
+            handler.wfile.flush()
+            return None
+        return 200, {"id": ident, "object": "chat.completion", "created": created, "model": MODEL,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": usage}
     meter["stream"] = stream
     if not GENERATION.acquire(blocking=False):
         meter["outcome"] = "busy"
@@ -1289,12 +1561,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return self.reply(401, {"error": {"message": "A model API token is required"}})
         if self.path == "/health":
-            return self.reply(200, dict(STATE))
+            return self.reply(200, {**STATE, "listen": listen_snapshot()})
         if self.path == "/v1/models":
             return self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "local"}]})
         if self.path == "/v1/usage":
             with USAGE_LOCK:
                 usage = json.loads(json.dumps(USAGE))
+            usage["listen"] = listen_snapshot()
+            usage["speedMetric"] = "input_tokens" if DECISION_MODEL else "output_tokens"
             return self.reply(200, usage)
         self.reply(404, {"error": {"message": "Endpoint not found"}})
 
@@ -1305,6 +1579,16 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/chat/completions":
                 record_usage(source, "rejected")
             return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if self.path == "/v1/listen/config":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 256 or self.headers.get("Transfer-Encoding"):
+                    raise ValueError("Invalid recording settings")
+                return self.reply(200, configure_listen(json.loads(self.rfile.read(length))))
+            except (ValueError, TypeError):
+                return self.reply(400, {"error": {"message": "--listen requires --nowfree"}})
+            except OSError:
+                return self.reply(503, {"error": {"message": "Cannot open recording history; check model storage"}})
         if self.path == "/v1/usage/reset":
             global USAGE
             with USAGE_LOCK:
@@ -1318,6 +1602,7 @@ class Handler(BaseHTTPRequestHandler):
         if STATE["status"] != "ready":
             return self.reply(503, {"error": {"message": STATE.get("error") or "Model is " + STATE["status"]}})
         started, meter = time.monotonic(), {"outcome": "error"}
+        body, capture, original_writer = None, None, self.wfile
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 65536 or self.headers.get("Transfer-Encoding"):
@@ -1325,7 +1610,10 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise ValueError("Incomplete request")
-            reply = generate_decision(json.loads(raw), meter) if self.path == "/v1/systemone" else generate(json.loads(raw), self, meter)
+            body = json.loads(raw)
+            capture = ListenCapture(original_writer)
+            self.wfile = capture
+            reply = generate_decision(body, meter) if self.path == "/v1/systemone" else generate(body, self, meter)
             if reply is not None:
                 self.reply(*reply)
         except (ValueError, TypeError):
@@ -1336,6 +1624,10 @@ class Handler(BaseHTTPRequestHandler):
             meter["outcome"] = "error"
             self.reply(500, {"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})
         finally:
+            self.wfile = original_writer
+            seconds = time.monotonic() - started
+            if capture is not None:
+                record_listen(capture, body, source, self.path, meter, seconds)
             record_usage(source, meter["outcome"], meter.get("prompt_tokens", 0), meter.get("completion_tokens", 0), time.monotonic() - started, meter.get("stream", False))
 
 
@@ -1360,6 +1652,7 @@ class Server(ThreadingHTTPServer):
 def stop(*_):
     # A usage save in progress finishes first; each save replaces the file atomically anyway.
     USAGE_LOCK.acquire(timeout=2)
+    if ENGINE_PROCESS is not None: ENGINE_PROCESS.terminate()
     os._exit(0)
 
 

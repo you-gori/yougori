@@ -294,7 +294,7 @@ export const platformApi = {
         id: environmentId,
         ...request,
         name,
-        networkAccess: ["container", "microVm", "fullVm"].includes(request.kind) && Boolean(request.networkAccess),
+        networkAccess: ["container", "microVm", "fullVm"].includes(request.kind) && (request.networkAccess ?? true),
         gpuAccess: (request.kind === "container" || request.kind === "fullVm") && (request.provider === "yougoriCuda" || Boolean(request.gpuAccess)),
         runtime: request.runtime.trim(),
         description: request.description.trim(),

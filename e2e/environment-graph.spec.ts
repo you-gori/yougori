@@ -274,7 +274,7 @@ test("cloud setup accepts a pasted public key and explains a missing matching ag
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await dialog.getByRole("textbox", { name: "Node name" }).fill("Agent server")
   await dialog.getByRole("textbox", { name: "Server address" }).fill("server.example.test")
-  const identity = dialog.getByRole("textbox", { name: "SSH identity file or public key", exact: true })
+  const identity = dialog.getByRole("textbox", { name: "SSH identity file" })
   await identity.fill(publicKey)
   await dialog.getByRole("button", { name: "Connect", exact: true }).click()
   await expect(dialog.getByRole("alert")).toHaveText(help)
@@ -489,13 +489,9 @@ async function openGraph(page: Page, environments = [fixture("Alpha"), fixture("
   // Keep that cold-start budget separate from normal locator/action waits.
   test.setTimeout(Math.max(test.info().timeout, 60_000))
   await page.goto("/")
-  const readySelector = environments.some(e => e.kind !== "cloud") ? "[data-environment-connection-point]" : "[data-environment-canvas]"
-  await page.waitForFunction(selector => document.querySelector(selector) || document.querySelector('.startup-screen [role="alert"]'), readySelector, { polling: 100, timeout: 45_000 })
-  // Vite can briefly return 404 for a module while rebuilding its dev cache.
-  // Retry that preview-only load once; a persistent startup failure still fails.
+  await page.waitForFunction(() => document.querySelector('[data-environment-canvas]') || document.querySelector('.startup-screen [role="alert"]'), undefined, { polling: 100, timeout: 45_000 })
   if (await page.locator('.startup-screen [role="alert"]').count()) await page.reload()
-  await expect(page.locator("[data-environment-connection-point]")).toHaveCount(environments.filter(e => e.kind !== "cloud").length, { timeout: 45_000 })
-  await page.getByRole("button", { name: "Fit environments", exact: true }).click()
+  await expect(page.locator('[data-environment-id]')).toHaveCount(environments.length, { timeout: 45_000 })
 }
 
 for (const kind of ["container", "gpu", "microVm", "fullVm"] as const) test(`native folder drop shows an independent copy on the ${kind} node`, async ({ page }) => {
@@ -1150,7 +1146,7 @@ test("dashboard action styling stays compact, accessible and usable in both them
       await expect(page.locator("html")).toHaveClass(dark ? /dark/ : /^(?!.*dark)/)
       await expect(page.getByRole("region", { name: "Host resources and storage" })).toBeVisible()
       await expect(page.getByRole("button", { name: "Instructions", exact: true })).toBeVisible()
-      for (const name of ["Personal Vault MCP", "Huggingface", "Network", "Settings", "New environment"]) {
+      for (const name of ["Personal Vault MCP", "Huggingface", "Neo Grid", "Settings", "New environment"]) {
         await expect(toolbar.getByRole("button", { name, exact: true })).toBeVisible()
       }
       await expect(toolbar.locator("svg")).toHaveCount(0)
@@ -2457,7 +2453,7 @@ test("creation stays centered with margins, no visible header, and usable slider
     await page.setViewportSize(viewport)
     await expect.poll(async () => dialog.evaluate(element => {
       const rect = element.getBoundingClientRect()
-      return rect.width >= Math.min(1440, innerWidth * 0.85) && rect.left > 0 && rect.top > 0 && rect.right < innerWidth && rect.bottom < innerHeight
+      return rect.width >= Math.min(1120, innerWidth - 32) - 1 && rect.left > 0 && rect.top > 0 && rect.right < innerWidth && rect.bottom < innerHeight
     })).toBe(true)
     await expect(dialog.locator('[data-slot="dialog-header"]')).toHaveCount(0)
     const types = dialog.getByRole("radiogroup", { name: "Environment type", exact: true })
@@ -2757,7 +2753,7 @@ test("container purpose shortcuts select base images and preserve the rest of th
   expect(saved.runtime).toBe("docker.io/library/node:slim")
   expect(saved.containerCommand).toBe("sleep 2147483647")
   expect(saved.description).toBe("Keep my notes")
-  expect(saved.networkAccess).toBe(false)
+  expect(saved.networkAccess).toBe(true)
   expect(saved.gpuAccess).toBe(false)
   expect(saved.resourcePolicy.dynamic).toBe(true)
 })
@@ -3153,15 +3149,11 @@ test("Cloudflare account failure allows retry without an anonymous fallback or e
 })
 
 
-test("node and list views share actions, remember selection and preserve node positions", async ({ page }) => {
+test("environment list keeps permissions and configuration across reloads", async ({ page }) => {
   await openGraph(page)
-  const modes = page.getByRole("group", { name: "Environment view" })
-  const alphaNode = page.locator('.react-flow__node[data-id="Alpha"]')
-  const position = await alphaNode.getAttribute("style")
-  await modes.getByRole("button", { name: "List", exact: true }).click()
   const list = page.getByRole("table", { name: "Environments", exact: true })
   await expect(list.locator("tbody tr")).toHaveCount(2)
-  await expect(page.getByRole("button", { name: "Fit environments", exact: true })).toBeHidden()
+  await expect(page.getByRole("button", { name: "Fit environments", exact: true })).toHaveCount(0)
   await expect(page.getByRole("region", { name: "Host resources and storage" })).toBeVisible()
   const alpha = list.locator('[data-environment-id="Alpha"]')
   await alpha.getByRole("switch", { name: "Internet access for Alpha", exact: true }).click()
@@ -3170,19 +3162,14 @@ test("node and list views share actions, remember selection and preserve node po
   await alpha.getByRole("button", { name: "Configure Alpha", exact: true }).click()
   await expect(page.getByRole("region", { name: "Resource allocation", exact: true })).toBeVisible()
   await page.keyboard.press("Escape")
-  await modes.getByRole("button", { name: "Nodes", exact: true }).click()
-  await expect(alphaNode).toBeVisible()
-  await expect(alphaNode).toHaveAttribute("style", position!)
-  await modes.getByRole("button", { name: "List", exact: true }).click()
   await page.reload()
-  await expect(modes.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true")
   await expect(list.locator("tbody tr")).toHaveCount(2)
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await expect(alpha.getByRole("button", { name: "Configure Alpha", exact: true })).toBeVisible()
 })
 
-for (const view of ["Nodes", "List"] as const) test(`${view} uses one state-aware lifecycle button and double-click configuration`, async ({ page }) => {
+test("list uses one state-aware lifecycle button and double-click configuration", async ({ page }) => {
   const alpha = fixture("Alpha")
   alpha.networkAccess = true
   await openGraph(page, [alpha])
@@ -3190,32 +3177,17 @@ for (const view of ["Nodes", "List"] as const) test(`${view} uses one state-awar
     const { platformApi } = await import("/src/api/platform-api.ts")
     platformApi.openEnvironmentWindow = async () => true
   })
-  await page.getByRole("group", { name: "Environment view" }).getByRole("button", { name: view, exact: true }).click()
   const item = page.locator('[data-environment-id="Alpha"]')
   const actions = item.locator(".environment-card-actions")
   await expect(actions.getByRole("button", { name: /Shut down|Configure Alpha|Connect Alpha/ })).toHaveCount(0)
-  if (view === "Nodes") {
-    const capabilities = item.getByLabel("Attached capabilities")
-    await expect(capabilities).toHaveText("")
-    const internet = capabilities.getByRole("button", { name: "Detach Internet access from Alpha", exact: true })
-    await expect(internet.locator("svg")).toHaveCount(1)
-    await expect(internet).toHaveAttribute("title", "Click to detach Internet access")
-    await item.locator("dl").dblclick()
-  } else {
-    await item.locator(".environment-list-type").dblclick()
-  }
+  await item.locator(".environment-list-type").dblclick()
   const settings = page.getByRole("dialog", { name: "Alpha", exact: true })
   await expect(settings).toBeVisible()
   await page.keyboard.press("Escape")
   await item.getByRole("button", { name: "Start", exact: true }).click()
   await expect(item.getByRole("button", { name: "Stop", exact: true })).toBeEnabled()
   await expect(item.getByRole("button", { name: "Open", exact: true })).toBeEnabled()
-  if (view === "Nodes") {
-    await item.getByRole("button", { name: "Pause Alpha", exact: true }).click()
-    await expect(item.getByRole("button", { name: "Resume", exact: true })).toBeEnabled()
-    await item.getByRole("button", { name: "Resume", exact: true }).click()
-    await expect(item.getByRole("button", { name: "Stop", exact: true })).toBeEnabled()
-  } else await expect(item.getByRole("button", { name: "Pause Alpha", exact: true })).toHaveCount(0)
+  await expect(item.getByRole("button", { name: "Pause Alpha", exact: true })).toHaveCount(0)
   await item.getByRole("button", { name: "Stop", exact: true }).click()
   await expect(item.getByRole("button", { name: "Start", exact: true })).toBeEnabled()
   await expect(settings).toHaveCount(0)
@@ -3235,13 +3207,12 @@ test("list searches, filters, sorts, expands details, shows links and acts on se
     localStorage.setItem("yougori.platform.v1", JSON.stringify(state))
   })
   await page.reload()
-  await page.getByRole("group", { name: "Environment view" }).getByRole("button", { name: "List", exact: true }).click()
   const table = page.getByRole("table", { name: "Environments", exact: true })
   const rows = table.locator("tbody tr[data-environment-id]")
   const toolbar = page.getByRole("toolbar", { name: "Filter and sort environments" })
   await expect(rows).toHaveCount(3)
-  await expect(table.locator('[data-environment-id="Alpha"]').getByRole("button", { name: "Link to Beta, active", exact: true })).toBeVisible()
-  await expect(table.locator('[data-environment-id="Beta"]').getByRole("button", { name: "Link from Alpha, active", exact: true })).toBeVisible()
+  await expect(table.locator('[data-environment-id="Alpha"]').getByRole("button", { name: "Connection to Beta, active", exact: true })).toBeVisible()
+  await expect(table.locator('[data-environment-id="Beta"]').getByRole("button", { name: "Connection from Alpha, active", exact: true })).toBeVisible()
 
   await page.keyboard.press("/")
   await expect(toolbar.getByRole("searchbox", { name: "Search environments" })).toBeFocused()
@@ -3262,7 +3233,7 @@ test("list searches, filters, sorts, expands details, shows links and acts on se
 
   await table.getByRole("button", { name: "Show details for Alpha", exact: true }).click()
   await expect(page.getByRole("region", { name: "Resources of Alpha" })).toContainText("0.25 cores")
-  await expect(page.getByRole("region", { name: "Links of Alpha" })).toContainText("To Beta")
+  await expect(page.getByRole("region", { name: "Connections of Alpha" })).toContainText("To Beta")
   await table.getByRole("button", { name: "Hide details for Alpha", exact: true }).click()
   await expect(page.getByRole("region", { name: "Resources of Alpha" })).toHaveCount(0)
 
@@ -3287,7 +3258,6 @@ test("list searches, filters, sorts, expands details, shows links and acts on se
 test("list access switches reflect saved permissions and recover from disconnect failures", async ({ page }) => {
   const env = fixture("Alpha"); env.status = "running"
   await openGraph(page, [env])
-  await page.getByRole("group", { name: "Environment view" }).getByRole("button", { name: "List", exact: true }).click()
   const row = page.locator('[data-environment-id="Alpha"]')
   const internet = row.getByRole("switch", { name: "Internet access for Alpha", exact: true })
   const pc = row.getByRole("switch", { name: "My PC access for Alpha", exact: true })
@@ -3296,6 +3266,7 @@ test("list access switches reflect saved permissions and recover from disconnect
   await expect(internet).toBeChecked()
   await internet.uncheck()
   await expect(internet).not.toBeChecked()
+  await expect(row.getByRole("button", { name: "Stop", exact: true })).toBeEnabled()
   await expect(pc).not.toBeChecked()
   await pc.click()
   const shares = page.getByRole("dialog", { name: "My PC · Alpha", exact: true })
@@ -3364,7 +3335,6 @@ test("all drives appear in the footer and new environments use the selected driv
 
 test("list view keeps the empty workspace guidance", async ({ page }) => {
   await openGraph(page, [])
-  await page.getByRole("group", { name: "Environment view" }).getByRole("button", { name: "List", exact: true }).click()
   await expect(page.getByText("Your workspace starts here", { exact: true })).toBeVisible()
   await expect(page.getByRole("table", { name: "Environments" }).locator("tbody tr")).toHaveCount(0)
 })
@@ -3379,9 +3349,8 @@ test("list columns align and environment errors stay in configuration", async ({
   await expect(node.getByText("Needs attention", { exact: true })).toBeVisible()
   await expect(node).not.toContainText(broken.lastError)
   await expect(node.locator('[title]').filter({ hasText: broken.lastError })).toHaveCount(0)
-  await page.getByRole("group", { name: "Environment view" }).getByRole("button", { name: "List", exact: true }).click()
   const table = page.getByRole("table", { name: "Environments" })
-  await expect(table.getByRole("columnheader")).toHaveText(["", "Environment", "Type", "Status", "CPU", "Memory", "Storage", "Links", "Access", "Services", "Actions"])
+  await expect(table.getByRole("columnheader")).toHaveText(["", "Environment", "Status", "CPU", "GPU", "Memory", "Storage", "Connections", "Access", "Services", "Actions"])
   await expect(node.getByText("Needs attention", { exact: true })).toBeVisible()
   await expect(table).not.toContainText(broken.lastError)
   const aligned = await table.evaluate(element => {
@@ -3396,14 +3365,13 @@ test("list columns align and environment errors stay in configuration", async ({
 
 test("CLI shares the environments canvas and keeps its session across views", async ({ page }) => {
   await openGraph(page)
-  const views = page.getByRole("group", { name: "Environment view" })
-  await expect(views.getByRole("button")).toHaveText(["List", "Nodes", "CLI"])
-  await views.getByRole("button", { name: "List", exact: true }).click()
+  const views = page.locator(".workspace-footer-actions")
+  await expect(page.getByRole("button", { name: "Nodes", exact: true })).toHaveCount(0)
   await views.getByRole("button", { name: "CLI", exact: true }).click()
   const panel = page.getByRole("region", { name: "Yougori CLI" })
   await expect(panel).toBeVisible()
   await expect(page.locator('[data-environment-canvas] #host-terminal-panel')).toBeVisible()
-  await expect(page.getByRole("region", { name: "Environment capabilities" })).toBeHidden()
+  await expect(page.getByRole("region", { name: "Environment capabilities" })).toHaveCount(0)
   await expect(page.getByRole("table", { name: "Environments" })).toHaveCount(0)
   const marker = await panel.evaluate(element => { element.setAttribute("data-session-test", "retained"); return element.getBoundingClientRect().bottom })
   expect(marker).toBeLessThanOrEqual(1000)
@@ -3441,15 +3409,15 @@ test("CLI shares the environments canvas and keeps its session across views", as
   await expect.poll(() => page.evaluate(() => (window as unknown as { cliInstallerWrites: string[] }).cliInstallerWrites.join(""))).toContain("npm.cmd install --global @openai/codex")
   await panel.getByRole("button", { name: "CLI actions" }).click()
   await page.getByRole("menuitem", { name: "Hide CLI" }).click()
-  await expect(views.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true")
+  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-view", "list")
   await page.keyboard.press("Control+Backquote")
   await expect(panel).toBeVisible()
   await expect(panel).toHaveAttribute("data-session-test", "retained")
   await page.reload()
   await expect(views.getByRole("button", { name: "CLI", exact: true })).toHaveAttribute("aria-pressed", "true")
   await expect(panel).toBeVisible()
-  await views.getByRole("button", { name: "Nodes", exact: true }).click()
-  await expect(page.locator(".react-flow")).toBeVisible()
+  await page.locator(".workspace-view-toolbar").getByRole("button", { name: "Environments", exact: true }).click()
+  await expect(page.getByRole("table", { name: "Environments" })).toBeVisible()
   await expect(panel).toBeHidden()
 })
 
@@ -3462,16 +3430,15 @@ test("closing instructions restores List, CLI and its keyboard shortcut", async 
     startInstructions()
     stopInstructions()
   })
-  const views = page.getByRole("group", { name: "Environment view" })
-  await expect(views.getByRole("button", { name: "List", exact: true })).toBeEnabled()
-  await views.getByRole("button", { name: "List", exact: true }).click()
+  const views = page.locator(".workspace-footer-actions")
+  await expect(views.getByRole("button", { name: "CLI", exact: true })).toBeEnabled()
   await expect(page.getByRole("table", { name: "Environments" })).toBeVisible()
   await views.getByRole("button", { name: "CLI", exact: true }).click()
   await expect(page.getByRole("region", { name: "Yougori CLI" })).toBeVisible()
   await page.keyboard.press("Control+Backquote")
-  await expect(views.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true")
+  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-view", "list")
   await page.reload()
-  await expect(views.getByRole("button", { name: "List", exact: true })).toHaveAttribute("aria-pressed", "true")
+  await expect(page.locator("[data-environment-graph]")).toHaveAttribute("data-view", "list")
   await views.getByRole("button", { name: "CLI", exact: true }).click()
   await expect(page.getByRole("region", { name: "Yougori CLI" })).toBeVisible()
 })
@@ -3518,7 +3485,7 @@ for (const view of ["nodes", "list"] as const) test(`duplication destinations an
   if (view === "list") await page.getByRole("button", { name: "List", exact: true }).click()
   const local = page.locator('[data-environment-id="Alpha"]')
   const remote = page.locator('[data-environment-id="Cloud"]')
-  for (const [row, predecessor, name] of [[local, view === "list" ? "Network for Alpha" : "Add service port to Alpha", "Alpha"], [remote, "Configuration for Cloud", "Cloud"]] as const) {
+  for (const [row, predecessor, name] of [[local, view === "list" ? "Ports & access for Alpha" : "Add service port to Alpha", "Alpha"], [remote, "Configuration for Cloud", "Cloud"]] as const) {
     const before = await row.getByRole("button", { name: predecessor, exact: true }).boundingBox()
     const after = await row.getByRole("button", { name: `Duplicate ${name}`, exact: true }).boundingBox()
     expect(after!.x).toBeGreaterThan(before!.x)

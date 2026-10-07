@@ -48,7 +48,7 @@ export function SnapshotDialog({ environmentId, environmentName, trigger, open: 
   return (
     <Dialog onOpenChange={setOpen} open={open}>
       {trigger ? <DialogTrigger render={trigger as React.ReactElement} /> : null}
-      <DialogPopup className="sm:max-w-md">
+      <DialogPopup className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Create snapshot</DialogTitle>
           <DialogDescription>Capture {environmentName} as a local copy-on-write restore point.</DialogDescription>

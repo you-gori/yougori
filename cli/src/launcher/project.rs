@@ -25,6 +25,8 @@ struct Setup {
     environment: Option<String>,
     gpu: bool,
     allocation: [u32; 3],
+    #[serde(default)]
+    storage_drive: Option<String>,
     guest_port: u16,
     local_port: u16,
     network: String,
@@ -103,7 +105,7 @@ fn load(path: &Path, directory: &Path) -> Result<Option<Setup>, String> {
 }
 
 fn reconcile_saved_setup(path: &Path, key: &str, saved: Option<Setup>, state: &Value) -> Result<Option<Setup>, String> {
-    let Some(saved) = saved else { return Ok(None) };
+    let Some(mut saved) = saved else { return Ok(None) };
     let environments = state["environments"].as_array().ok_or("Missing environment list; saved settings were kept")?;
     let marker = format!("Yougori launch · {key}");
     let node = environments.iter().find(|node| match &saved.environment {
@@ -111,7 +113,11 @@ fn reconcile_saved_setup(path: &Path, key: &str, saved: Option<Setup>, state: &V
         None => node["description"] == marker,
     });
     match node {
-        Some(node) if node["description"] == marker && node["kind"] == "container" => Ok(Some(saved)),
+        Some(node) if node["description"] == marker && node["kind"] == "container" => {
+            saved.environment = node["id"].as_str().map(str::to_owned);
+            if let Some(drive) = node["storageDrive"].as_str() { saved.storage_drive = Some(drive.into()); }
+            Ok(Some(saved))
+        },
         Some(_) => Err("The saved environment is no longer owned by this project launcher.".into()),
         None => {
             yougori_cli::launcher_state::clear(path)?;
@@ -346,6 +352,18 @@ async fn configure(
     let (bytes, measured_storage) = measured?;
     // Existing disks can grow, but changing recommendations must never shrink them.
     let storage = measured_storage.max(old.map_or(1, |s| s.allocation[2]));
+    let selected = if old.is_none() {
+        let host = call("refresh_host_metrics", json!({})).await?["host"].take();
+        Some(super::storage::choose(&host, None, storage)?)
+    } else { None };
+    let host = if let Some(selected) = &selected {
+        selected.host.clone()
+    } else {
+        let id = old.and_then(|s|s.environment.as_deref()).ok_or("Project environment has no ID")?;
+        let env = state["environments"].as_array().and_then(|nodes|nodes.iter().find(|env|env["id"]==id)).ok_or("Project environment is unavailable")?;
+        super::storage::for_environment(&state["host"], env).await?
+    };
+    limits(&host, false, storage)?;
     let suggested = [2, 4, storage];
     let mut note = vec![format!("Project folder: {} · storage is 2× its size, rounded up to whole GB (minimum 1 GB).", ui::bytes(bytes))];
     if storage > measured_storage {
@@ -374,7 +392,7 @@ async fn configure(
     let allocation = if recommended {
         suggested
     } else {
-        resources(&state["host"], false, Some(old.map_or(suggested, |s| s.allocation)))?
+        sliders(&host, false, storage, Some(old.map_or(suggested, |s| s.allocation)))?
     };
     let guest_port = if recommended {
         app_port
@@ -413,6 +431,7 @@ async fn configure(
         environment: old.and_then(|s| s.environment.clone()),
         gpu,
         allocation,
+        storage_drive: selected.and_then(|selection|selection.drive).or_else(||old.and_then(|s|s.storage_drive.clone())),
         guest_port,
         local_port,
         network: kind.into(),
@@ -633,6 +652,9 @@ fn creation_request(setup: &Setup, key: &str, folder: &Path) -> Result<Value, St
     ];
     if setup.gpu {
         flags.extend(["--gpu".into(), "nvidia".into()]);
+    }
+    if let Some(drive) = &setup.storage_drive {
+        flags.extend(["--storage-drive".into(), drive.clone()]);
     }
     // A dedicated PC cache can be reused across OCI/CUDA runtimes without
     // assigning one container's private volume quota to another container.
@@ -1452,6 +1474,7 @@ mod tests {
             environment: None,
             gpu: false,
             allocation: [1, 2, 4],
+            storage_drive: None,
             guest_port: 3000,
             local_port: port,
             network: "computer".into(),
@@ -1730,6 +1753,7 @@ mod tests {
             environment: Some("env-test".into()),
             gpu: false,
             allocation: [2, 4, 10],
+            storage_drive: Some("D:\\".into()),
             guest_port: 3000,
             local_port: 3000,
             network: "computer".into(),
@@ -1760,8 +1784,10 @@ mod tests {
         assert_eq!(saved.sync_priority, Some(sync::Priority::Remote));
         assert!(saved.continuous_sync);
         assert!(saved.sync_timing_reviewed);
+        assert_eq!(saved.storage_drive, Some("D:\\".into()));
         let mut legacy = serde_json::to_value(&setup).unwrap();
         legacy.as_object_mut().unwrap().remove("custom_command");
+        legacy.as_object_mut().unwrap().remove("storage_drive");
         legacy.as_object_mut().unwrap().remove("command_reviewed");
         legacy.as_object_mut().unwrap().remove("two_way");
         legacy.as_object_mut().unwrap().remove("sync_reviewed");
@@ -1777,6 +1803,7 @@ mod tests {
         assert!(legacy.sync_priority.is_none());
         assert!(!legacy.continuous_sync, "existing projects must migrate to on-demand sync");
         assert!(!legacy.sync_timing_reviewed);
+        assert!(legacy.storage_drive.is_none());
         assert_eq!(
             directory_key(dir.path()).unwrap(),
             directory_key(&dir.path().join(".")).unwrap()
@@ -1784,6 +1811,7 @@ mod tests {
         let request =
             creation_request(&setup, &directory_key(dir.path()).unwrap(), dir.path()).unwrap();
         assert_eq!(request["containerCommand"], BOOT);
+        assert_eq!(request["storageDrive"], "D:\\");
         assert_eq!(request["runtime"], "docker.io/library/node:24-bookworm");
         assert_eq!(
             request["name"],

@@ -113,15 +113,21 @@ function WorkspaceDialogContent({ dialog, model, onBusyChange }: { dialog: Works
     setCloudflare(current => ({ ...current, token: "" }))
   })
 
-  return <DialogPopup className={dialog.type === "service" ? "w-[min(62rem,calc(100vw-2rem))] max-w-none" : undefined} closeProps={{ disabled: busy }} data-service-options={dialog.type === "service" ? dialog.environmentId : undefined} data-service-port={port}>
-    <DialogHeader className={dialog.type === "service" ? "gap-1 px-5 pb-4 pt-5" : undefined}>
-      <DialogTitle>{dialog.type === "shares" ? "My PC" : port ? `Port ${port}` : "Add a service port"} · {env?.name ?? "Environment"}</DialogTitle>
-      <DialogDescription>{dialog.type === "shares" ? "Only the folders you choose are shared. Disconnecting revokes access; stopping the environment removes its shares." : "Choose where people can reach this app."}</DialogDescription>
-    </DialogHeader>
-    <DialogPanel className={dialog.type === "service" ? "flex flex-col gap-4 px-5 pb-5" : "flex flex-col gap-4"}>
-      {!running ? <p className="text-sm text-muted-foreground">Start this environment to share files or publish services.</p> : null}
-      {error ? <p className="text-sm text-destructive-foreground" role="alert">{error}</p> : null}
-      {notice ? <p className="text-sm text-muted-foreground" role="status">{notice}</p> : null}
+  return <DialogPopup className={dialog.type === "service" ? "w-[min(68rem,calc(100vw-2rem))] max-w-none" : undefined} closeProps={{ disabled: busy }} data-service-options={dialog.type === "service" ? dialog.environmentId : undefined} data-service-port={port}>
+    {dialog.type === "service" ? <DialogHeader className="flex-row items-center gap-4 border-b px-6 pb-5! pt-6 pe-14">
+      <span aria-hidden="true" className="flex size-14 shrink-0 flex-col items-center justify-center rounded-xl border border-primary/30 bg-primary/10 font-mono text-primary"><span className="text-[10px] font-medium uppercase leading-none tracking-wider opacity-70">Port</span><span className="mt-1 text-base font-semibold leading-none">{port}</span></span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-2"><DialogTitle className="min-w-0 truncate">{`Port ${port}`} · <span className="font-normal text-muted-foreground">{env?.name ?? "Environment"}</span></DialogTitle><span className={`inline-flex h-5 items-center gap-1.5 rounded-full border px-2 text-[11px] font-medium ${running ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : "bg-muted text-muted-foreground"}`}><span className={`size-1.5 rounded-full ${running ? "bg-emerald-500" : "bg-muted-foreground/60"}`} />{running ? "Running" : "Stopped"}</span></div>
+        <DialogDescription>Choose who can open this app: devices on your network, or anyone with a public link.</DialogDescription>
+      </div>
+    </DialogHeader> : <DialogHeader>
+      <DialogTitle>My PC · {env?.name ?? "Environment"}</DialogTitle>
+      <DialogDescription>Only the folders you choose are shared. Disconnecting revokes access; stopping the environment removes its shares.</DialogDescription>
+    </DialogHeader>}
+    <DialogPanel className={dialog.type === "service" ? "flex flex-col gap-4 px-6 pb-6 pt-5!" : "flex flex-col gap-4"}>
+      {!running ? <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-sm">Start this environment to share files or publish services.</p> : null}
+      {error ? <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive-foreground" role="alert">{error}</p> : null}
+      {notice ? <p className="rounded-xl border bg-muted/60 px-3.5 py-2.5 text-sm text-muted-foreground" role="status">{notice}</p> : null}
       {dialog.type === "shares" ? <>
         <div className="flex items-center justify-between gap-2 rounded-lg border p-3 text-sm"><span>{env?.workspace?.shares.length ? "PC access: selected folders only" : "No Access — this environment cannot access your PC files"}</span>{env?.workspace?.shares.length ? <Button disabled={busy} variant="outline" onClick={() => void perform(async () => { for (const share of env.workspace?.shares ?? []) await workspaceApi.unshare(share.id) })}>Set No Access</Button> : null}</div>
         {env?.kind === "fullVm" ? <p className="text-xs text-muted-foreground">Open the private folder URL in the VM browser to view files and edit them when permitted. Read-only WebDAV is also available. Containers and managed microVMs mount folders automatically.</p> : null}
@@ -158,8 +164,8 @@ function WorkspaceDialogContent({ dialog, model, onBusyChange }: { dialog: Works
         {busy ? <p className="text-xs text-muted-foreground" role="status">Connecting… The first Cloudflare download can take a few minutes.</p> : null}
       </>}
     </DialogPanel>
-    {dialog.type === "service" ? <DialogFooter variant="bare" className="flex-row flex-wrap items-center justify-between gap-3 border-t bg-card/50 px-5 py-3">
-      {model.manual[dialog.environmentId]?.includes(port) && !publications.length ? <Button disabled={busy} onClick={() => void perform(() => model.removePort(dialog.environmentId, port))} size="sm" variant="destructive">Remove manual port</Button> : <p className="max-w-56 text-xs leading-4 text-muted-foreground">Saved connections reconnect when this node starts. Links work while the node and Yougori are running.</p>}
+    {dialog.type === "service" ? <DialogFooter variant="bare" className="flex-row flex-wrap items-center justify-between gap-3 border-t bg-muted/40 px-6 py-4">
+      {model.manual[dialog.environmentId]?.includes(port) && !publications.length ? <Button disabled={busy} onClick={() => void perform(() => model.removePort(dialog.environmentId, port))} size="sm" variant="destructive">Remove manual port</Button> : <p className="max-w-80 text-xs leading-4 text-muted-foreground">Saved connections reconnect when this node starts. Links work while the node and Yougori are running.</p>}
       <div className="ml-auto flex items-center gap-2"><DialogClose render={<Button disabled={busy} type="button" variant="ghost" />}>Done</DialogClose><Button disabled={!running || (kind === "cloudflare" && cloudflareLoading) || publications.some(p => p.kind === kind)} loading={busy} onClick={publishService}>{kind === "local" ? "Connect local network" : "Publish service"}</Button></div>
     </DialogFooter> : <DialogFooter><DialogClose render={<Button disabled={busy} type="button" variant="ghost" />}>Done</DialogClose></DialogFooter>}
   </DialogPopup>

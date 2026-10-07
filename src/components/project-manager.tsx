@@ -38,7 +38,7 @@ export function ProjectManager() {
   })
   return <Dialog open={open} onOpenChange={value => { if (!busy) setOpen(value) }}>
     <DialogTrigger render={<Button size="xs" variant="ghost" className="workspace-footer-reclaim" />}>Projects{projects.length ? <span className="text-muted-foreground">{projects.length}</span> : null}</DialogTrigger>
-    <DialogPopup className="max-w-4xl">
+    <DialogPopup className="max-w-5xl">
       <DialogHeader><DialogTitle>Projects</DialogTitle><DialogDescription>Open yougori.yaml or import an existing Docker Compose project.</DialogDescription></DialogHeader>
       <DialogPanel className="space-y-4">
         <div className="flex flex-wrap gap-2">

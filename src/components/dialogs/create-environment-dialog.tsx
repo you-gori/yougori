@@ -64,6 +64,7 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
   const drives = state ? storageDrives(state.host) : []
   const [kind, setKind] = useState<EnvironmentKind>("container")
   const [gpuEnabled, setGpuEnabled] = useState(false)
+  const [internetEnabled, setInternetEnabled] = useState(true)
   const cudaContainer = kind === "container" && gpuEnabled
   const containerRuntime = cudaContainer ? "yougoriCuda" : "yougoriOci"
   const [name, setName] = useState("")
@@ -108,6 +109,7 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
       setWorkflow(initialKind === "cloud" ? "cloud" : null)
       setKind(initialKind === "computerBranch" || initialKind === "cloud" ? "container" : initialKind ?? "container")
       setGpuEnabled(false)
+      setInternetEnabled(true)
       setCudaStatus(null)
     }
   }, [initialKind, open])
@@ -219,7 +221,7 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
         runtime: runtime.trim(),
         provider: kind === "container" ? containerRuntime : "qemu",
         containerCommand: kind === "container" ? containerCommand.trim() : undefined,
-        networkAccess: false,
+        networkAccess: internetEnabled,
         gpuAccess: cudaContainer,
         description: description.trim() || (cudaContainer ? "A GPU container using NVIDIA CUDA and the shared WSL kernel." : environmentKindDescription[kind]),
         resourcePolicy: {
@@ -263,6 +265,10 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
         <DialogTitle className="sr-only">New environment</DialogTitle>
         <DialogDescription className="sr-only">Choose an environment type, its image, and resources.</DialogDescription>
             <section aria-label="Isolation options" className="creation-isolation">
+              <div className="creation-heading">
+                <h2 aria-hidden="true">New environment</h2>
+                {!workflow ? <p className="creation-isolation-description">{guided ? "The guide uses one default container for your first website. Other types and images are available after the guide." : cudaContainer ? "GPU containers for AI and computing. NVIDIA CUDA access is included." : isolationPresentation[kind].description}</p> : null}
+              </div>
               <div className="creation-type-tabs">
               <RadioGroup aria-label="Environment type" disabled={submitting || workflowBusy} className="creation-types" onValueChange={value => { if (value === "cloud" || value === "neocloud" || value === "backup" || value === "shared") setWorkflow(value); else { setWorkflow(null); setKind(value as EnvironmentKind); if (value !== "container") { setGpuEnabled(false); setCudaStatus(null) } } }} value={workflow ?? kind}>
                 {[...kinds, "neocloud", "shared", "backup"].map(item => {
@@ -274,7 +280,6 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
                 })}
               </RadioGroup>
               </div>
-              {!workflow ? <p className="creation-isolation-description">{guided ? "The guide uses one default container for your first website. Other types and images are available after the guide." : cudaContainer ? "GPU containers for AI and computing. NVIDIA CUDA access is included." : isolationPresentation[kind].description}</p> : null}
             </section>
         {workflow ? (
           <div className="contents" key={workflow}>
@@ -285,10 +290,16 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
             <div className="creation-columns">
               <section aria-label="Environment configuration" className="creation-configuration">
                 <div className="creation-section-heading"><h2><TerminalIcon aria-hidden="true" />Configuration</h2><span>{cudaContainer ? "NVIDIA CUDA" : kind === "container" ? "OCI runtime" : "QEMU runtime"}</span></div>
+                <div className="creation-toggles">
                 {kind === "container" ? <div className="creation-gpu-option" data-instruction-kind="gpu">
                   <div><Label htmlFor="creation-gpu-access"><GpuIcon aria-hidden="true" />GPU access</Label><p>NVIDIA CUDA for AI and GPU workloads</p></div>
                   <Switch id="creation-gpu-access" checked={gpuEnabled} disabled={submitting || cudaInstalling || guided} onCheckedChange={checked => { setCudaStatus(null); setGpuEnabled(checked) }} />
                 </div> : null}
+                <div className="creation-gpu-option">
+                  <div><Label htmlFor="creation-internet-access">Internet access</Label><p>Change any time, no restart</p></div>
+                  <Switch id="creation-internet-access" checked={internetEnabled} disabled={submitting} onCheckedChange={setInternetEnabled} />
+                </div>
+                </div>
                 {cudaContainer ? <CudaRuntimePanel key={storageDrive} storageDrive={storageDrive} onBusyChange={setCudaInstalling} onStatus={setCudaStatus} /> : null}
                 <Field name="name" data-tour="create-name">
                   <FieldLabel>Name</FieldLabel>

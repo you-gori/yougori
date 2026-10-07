@@ -39,7 +39,9 @@ struct Options {
     environment: Option<String>,
     api_port: Option<u16>,
     share_mode: Option<&'static str>,
+    listen: bool,
     quant: Option<String>,
+    storage_drive: Option<String>,
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
@@ -51,7 +53,9 @@ fn options(args: &[String]) -> Result<Options, String> {
     let mut environment = None;
     let mut api_port = None;
     let mut share_mode = None;
+    let mut listen = false;
     let mut quant = None;
+    let mut storage_drive = None;
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
@@ -59,9 +63,14 @@ fn options(args: &[String]) -> Result<Options, String> {
                 if share_mode.is_some() { return Err("Use only one of --now or --nowfree".into()); }
                 share_mode = network::mode(flag);
             }
+            "--listen" if run && !listen => listen = true,
             "--quant" if run => {
                 i += 1;
                 quant = Some(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--quant needs a quantization such as Q4_K_M")?.clone());
+            }
+            "--storage-drive" if run => {
+                i+=1;
+                storage_drive=Some(args.get(i).filter(|path|!path.trim().is_empty()&&!path.starts_with('-')).ok_or("--storage-drive needs a drive path")?.clone());
             }
             flag @ ("--cpu" | "--memory" | "--storage") if run => {
                 let number = args
@@ -91,13 +100,15 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             // `npm run yougori -- model run ...` habits: a bare separator changes nothing.
             "--" => {}
-            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
+            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
         }
         i += 1;
     }
+    network::validate_listen(share_mode, listen)?;
     public::validate_model_resources(&resources)?;
     public::validate_model_neocloud(neocloud, environment.as_deref(), change || !resources.is_empty())?;
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
+    if neocloud && storage_drive.is_some() { return Err("--storage-drive selects local storage; it cannot be used with --neocloud".into()); }
     Ok(Options {
         resources,
         fresh,
@@ -106,8 +117,16 @@ fn options(args: &[String]) -> Result<Options, String> {
         environment,
         api_port,
         share_mode,
+        listen,
         quant,
+        storage_drive,
     })
+}
+
+/// Validate flags before the optional model prompt starts any engine work.
+pub(super) fn validate_run_options(args:&[String])->Result<(),String>{
+    let args:Vec<String>=args.iter().filter(|a|a.as_str()!="--dry-run").cloned().collect();
+    options(&args).map(|_|())
 }
 
 /// What a model reserves after `changes`, e.g. `2 CPU · 4 GB memory · 20 GB storage`.
@@ -150,6 +169,15 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         ui::intro(&short(target), &clean(target));
         if let Some(engine) = engine.take() {
             engine.done("Engine ready");
+        }
+    }
+    let launch_preflight = if !chat_only && (options.neocloud || options.quant.is_some() || public::find_model(target).await?.is_none()) {Some(call("model_preflight",json!({"model":target,"quant":options.quant})).await?)}else{None};
+    if let Some(preflight)=&launch_preflight {
+        if preflight["supported"]!=true {
+            let Some(task)=super::offer_architecture_support(target,options.quant.as_deref(),preflight).await? else {return Ok(0);};
+            ui::outro(&format!("Opening coding agent · task saved at {}",task["path"].as_str().unwrap_or("")));
+            drop(_session);drop(_raw);
+            return yougori_cli::architecture_support::launch(&task);
         }
     }
     if options.share_mode.is_some() && !network::signed_in().await? {
@@ -200,7 +228,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         if options.api_port.is_some() {
             if let Some(mode) = options.share_mode {
                 let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
-                result["network"] = network::share(&id, mode).await?;
+                result["network"] = network::share_with_listen(&id, mode, options.listen).await?;
             }
             ui::outro("API configured; model weights may still be loading");
             // Keys are explicitly requested with --api, as with the scripted local runner.
@@ -209,6 +237,10 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         }
         (result["id"].as_str().ok_or("Model environment missing")?.to_owned(), short(target))
     } else if let Some(env) = public::find_model(target).await?.filter(|_| options.quant.is_none()) {
+        if options.storage_drive.is_some() {
+            let state=call("get_platform_state",json!({})).await?;
+            yougori_cli::storage::validate_reuse(&env,&state["host"],options.storage_drive.as_deref())?;
+        }
         // One environment per model: start the one that already has it.
         let name = clean(env["name"].as_str().unwrap_or(""));
         let running = env["status"] == "running";
@@ -216,7 +248,8 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         // one, whose container takes new CPU, memory and storage without a restart.
         if options.resources.is_empty() && (options.change || !running) {
             ui::step(&format!("{name} already has this model"));
-            let host = call("get_platform_state", json!({})).await?["host"].take();
+            let state = call("get_platform_state", json!({})).await?;
+            let host = super::storage::for_environment(&state["host"], &env).await?;
             if let Some(changes) = super::changed_model_resources(&host, &env, options.change)? {
                 options.resources = changes;
             }
@@ -238,16 +271,20 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             short(target),
         )
     } else {
+        let preflight=launch_preflight.as_ref().ok_or("Missing model preflight")?;
+        let host=call("refresh_host_metrics",json!({})).await?["host"].take();
+        let plan=super::ModelStorage {minimum:preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).ceil().max(12.0) as u32,supports_selection:preflight["storageDriveSelection"]==true};
+        let minimum=plan.minimum.max(options.resources.get("storageGb").and_then(Value::as_f64).unwrap_or(0.0).ceil() as u32);
+        let selected=super::storage::choose_model(&host,options.storage_drive.as_deref(),minimum,plan.supports_selection)?;
         if options.resources.is_empty() {
-            let host = call("get_platform_state", json!({})).await?["host"].take();
-            let minimum = super::model_storage(target, options.quant.as_deref()).await?;
-            let [cpu, memory, storage] = super::model_resources(&host, options.change, minimum)?;
+            let [cpu, memory, storage] = super::model_resources(&selected.host, options.change, minimum)?;
             options.resources = Map::from_iter([
                 ("cpu".into(), json!(cpu)),
                 ("memoryGb".into(), json!(memory)),
                 ("storageGb".into(), json!(storage)),
             ]);
         }
+        if let Some(drive)=selected.drive {options.resources.insert("storageDrive".into(),json!(drive));}
         let creating = ui::task("Creating the model environment");
         creating.detail("a GPU container with PyTorch; the first run downloads it");
         let result = call(
@@ -263,13 +300,33 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         (id, short(target))
     };
     if let Some(mode) = options.share_mode {
-        match network::share(&id, mode).await {
+        match network::share_with_listen(&id, mode, options.listen).await {
             Ok(share) => show_network_share(&share),
             Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
         }
     }
-    session(&id, &name, options.fresh).await?;
+    if options.listen { listen_session(&id, &name).await?; } else { session(&id, &name, options.fresh).await?; }
     Ok(0)
+}
+
+/// Free-provider recording opens a live view in an owned guest terminal.
+async fn listen_session(id: &str, name: &str) -> Result<(), String> {
+    let status = {
+        let _raw = ui::Raw::on()?;
+        loop { match wait_ready(id, name).await? {
+            Ok(status) => break status,
+            Err(Exit::Stop) => { if stop_choice(id).await? { return Ok(()); } }
+            Err(_) => { ui::outro("Detached; model keeps running"); return Ok(()); }
+        }}
+    };
+    let share = network::settled(id, Duration::from_secs(45)).await?.ok_or("This model is not shared; recording is off")?;
+    show_network_share(&share);
+    let status = if status["listen"]["enabled"] == true { status } else {call("model_status",json!({"environmentId":id})).await?};
+    if status["listen"]["enabled"] != true { return Err("Recording is off. Check the free share status; stop and rerun an older model runner with --nowfree --listen.".into()); }
+    let path=status["listen"]["path"].as_str().ok_or("The runner did not return its recording path")?;
+    ui::outro(&format!("Listening · saved in the model container: {}",clean(path)));
+    ui::line("Ctrl+] detaches this view; the model keeps running. Run without --listen to turn recording off.");
+    yougori_cli::terminal::attach(id, Some(&network::listen_command(path))).await
 }
 
 /// Waits for the model, then chats until the user leaves. The model keeps running.
@@ -293,8 +350,11 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
         id,
         true,
     );
-    let exit = match wait_ready(id, name).await? {
-        Err(exit) => exit,
+    let exit = loop { match wait_ready(id, name).await? {
+        Err(Exit::Stop) => {
+            if stop_choice(id).await? { break Exit::Stopped; }
+        }
+        Err(exit) => break exit,
         Ok(status) => {
             if let Some(warning)=status["chatWarning"].as_str() {
                 ui::warn(&clean(warning));
@@ -303,11 +363,7 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
                 }
             }
             if status["task"] == "structured-decision" {
-                drop(footer);
-                ui::outro(&format!("{name} is ready for typed decisions"));
-                ui::info(&format!("yougori model decide {environment} --file request.json"));
-                ui::info("Request JSON contains state and questions (choice, score or noul). The App has a Decisions panel; the API also serves POST /v1/systemone.");
-                return Ok(());
+                ui::info("Decision model: paste JSON containing state and questions. /example shows a request.");
             }
             match network::settled(id, Duration::from_secs(45)).await {
                 Ok(Some(share)) => show_network_share(&share),
@@ -326,9 +382,9 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
                     ("ctrl+c", "stop options"),
                 ]);
             });
-            chat(id, name, fresh, &status).await?
+            break chat(id, name, fresh, &status).await?
         }
-    };
+    }};
     drop(footer);
     match exit {
         Exit::Detach => {
@@ -340,15 +396,17 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
                 ))
             ));
         }
-        Exit::Stop => {
-            stop_choice(id).await?;
-        }
+        Exit::Stop | Exit::Stopped => {}
     }
     Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum StopAction { Stop, Delete }
+
+fn stop_action(picked: usize) -> Option<StopAction> {
+    match picked { 1 => Some(StopAction::Stop), 2 => Some(StopAction::Delete), _ => None }
+}
 
 fn stop_request(state: &Value, id: &str, action: StopAction) -> Result<(&'static str, Value), String> {
     let env = state["environments"].as_array().and_then(|all| all.iter().find(|e| e["id"] == id))
@@ -364,8 +422,9 @@ fn stop_request(state: &Value, id: &str, action: StopAction) -> Result<(&'static
     }
 }
 
-/// One explicit choice, one operation. Raw input stays on until the operation finishes.
-pub(super) async fn stop_choice(id: &str) -> Result<(), String> {
+/// Cancel resumes the caller; true means the selected stop operation completed.
+/// Raw input stays on until the operation finishes.
+pub(super) async fn stop_choice(id: &str) -> Result<bool, String> {
     let _raw = ui::Raw::on()?;
     let state = call("get_platform_state", json!({})).await?;
     // Validate the target before presenting a destructive choice.
@@ -374,11 +433,12 @@ pub(super) async fn stop_choice(id: &str) -> Result<(), String> {
     let env = state["environments"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap();
     let name = clean(env["name"].as_str().unwrap_or(id));
     let choices = [
+        ui::Choice::new("Cancel", "keep the model running and return"),
         ui::Choice::new("Stop", if cloud {"stop the RunPod pod; keep it for later"} else {"stop the model; keep its environment"}),
         ui::Choice::new("Stop and delete", if cloud {"permanently delete the RunPod pod and its local data"} else {"permanently delete the model environment and its managed data"}),
     ];
     let picked = ui::select_required("How do you want to stop?", &[name.clone()], &choices)?;
-    let action = if picked == 0 { StopAction::Stop } else { StopAction::Delete };
+    let Some(action) = stop_action(picked) else { return Ok(false); };
     let (method, params) = stop_request(&state, id, action)?;
     let task = ui::task(&format!("{} {name}", if action == StopAction::Delete {"Stopping and deleting"} else {"Stopping"}));
     let result = async {
@@ -409,16 +469,17 @@ pub(super) async fn stop_choice(id: &str) -> Result<(), String> {
             task.done(&format!("{name} {}", if action == StopAction::Delete {"deleted"} else {"stopped"}));
             if cloud && action == StopAction::Stop { ui::info("The pod is stopped. RunPod storage charges may continue."); }
             ui::outro(if action == StopAction::Delete {"Stopped and deleted"} else {"Stopped"});
-            Ok(())
+            Ok(true)
         }
         Err(error) => { task.fail("Could not complete the selected action"); Err(error) }
     }
 }
 
-/// How the user left: stopping the model's container, or leaving it running.
+/// A pending stop request, a completed stop, or leaving the model running.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Exit {
     Stop,
+    Stopped,
     Detach,
 }
 
@@ -763,6 +824,7 @@ async fn start_new_chat(id: &str, store: &mut Value, editor: &mut Editor) {
 }
 
 async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit, String> {
+    let decision = status["task"] == "structured-decision";
     let mut store = call("model_chat_history", json!({"environmentId":id}))
         .await
         .unwrap_or(Value::Null);
@@ -806,14 +868,22 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
     let mut streaming = true;
     loop {
         let Some(text) = read(&block, &mut editor, name).await? else {
-            return Ok(Exit::Stop);
+            if stop_choice(id).await? { return Ok(Exit::Stopped); }
+            continue;
         };
         match text.as_str() {
+            "/example" if decision => {
+                ui::line(yougori_cli::decisions::EXAMPLE);
+                continue;
+            }
             "/terminal" => {
                 super::open_terminal(id, false, None);
                 continue;
             }
-            "/exit" | "/quit" | "/stop" => return Ok(Exit::Stop),
+            "/exit" | "/quit" | "/stop" => {
+                if stop_choice(id).await? { return Ok(Exit::Stopped); }
+                continue;
+            }
             "/detach" => return Ok(Exit::Detach),
             "/new" => {
                 start_new_chat(id, &mut store, &mut editor).await;
@@ -831,7 +901,7 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
                     Ok(api::MenuExit::Done) => {},
                     Err(error) => ui::warn(&clean(&error)),
                 }
-                if ui::take_interrupt() { return Ok(Exit::Stop); }
+                if ui::take_interrupt() && stop_choice(id).await? { return Ok(Exit::Stopped); }
                 ui::line("");
                 continue;
             }
@@ -842,7 +912,7 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
                     ("/api", "local and public API access, the key and code examples"),
                     ("/new", "start a new conversation"),
                     ("/clear", "clear the screen"),
-                    ("/exit", "choose Stop or Stop and delete (ctrl+c too)"),
+                    ("/exit", "choose Cancel, Stop or Stop and delete (ctrl+c too)"),
                     ("/detach", "leave; the model keeps running"),
                     ("esc", "stop a reply while it is being written"),
                     ("↑ ↓", "earlier messages"),
@@ -853,6 +923,9 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
                 continue;
             }
             _ => {}
+        }
+        if decision {
+            if let Err(error) = yougori_cli::decisions::parse(&text) { ui::warn(&error); continue; }
         }
         you(&text);
         let index = store["conversations"]
@@ -867,21 +940,21 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
             return Err("Saved conversation is invalid".into());
         };
         messages.push(json!({"id":public::new_id(),"role":"user","content":text}));
-        let request = public::fit_messages(&system, messages);
+        let request = if decision { vec![json!({"role":"user","content":text})] } else { public::fit_messages(&system, messages) };
         let started = Instant::now();
         let mut leave = false;
-        match reply(&block, id, name, request, max_tokens, temperature, &mut streaming, &mut leave).await {
+        match reply(&block, id, name, request, if decision {1} else {max_tokens}, if decision {0.0} else {temperature}, &mut streaming, &mut leave).await {
             Ok((reply, result)) => {
                 let seconds = started.elapsed().as_secs_f64();
-                let tokens = result["usage"]["completion_tokens"].as_u64();
+                let tokens = result["usage"][if decision {"prompt_tokens"} else {"completion_tokens"}].as_u64();
                 let finish = result["finishReason"].as_str().unwrap_or("stop").to_owned();
                 let mut facts = Vec::new();
                 if let Some(tokens) = tokens {
-                    facts.push(format!("{tokens} tokens"));
+                    facts.push(format!("{tokens} {}tokens", if decision {"input "} else {""}));
                 }
                 facts.push(format!("{seconds:.1}s"));
                 if let Some(tokens) = tokens.filter(|_| seconds > 0.0) {
-                    facts.push(format!("{:.0} tokens/s", tokens as f64 / seconds));
+                    facts.push(format!("{:.0} {}tokens/s", tokens as f64 / seconds, if decision {"input "} else {""}));
                 }
                 match finish.as_str() {
                     "length" => facts.push("stopped at the reply length limit".into()),
@@ -892,11 +965,11 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
                 ui::line("");
                 if reply.is_empty() {
                     messages.pop();
-                    if leave { return Ok(Exit::Stop); }
+                    if leave && stop_choice(id).await? { return Ok(Exit::Stopped); }
                     continue;
                 }
                 messages.push(json!({"id":public::new_id(),"role":"assistant","content":reply,
-                    "stats":{"tokens":tokens,"seconds":seconds,"finish":if finish == "length" {"length"} else {"stop"}}}));
+                    "stats":{"tokens":if decision {Some(0)} else {tokens},"inputTokens":if decision {tokens} else {None},"seconds":seconds,"finish":if finish == "length" {"length"} else {"stop"}}}));
                 conversation["updatedAt"] = public::now_millis().into();
                 if let Err(error) = call(
                     "save_model_chat_history",
@@ -912,7 +985,7 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
                 ui::warn(&clean(&error));
             }
         }
-        if leave { return Ok(Exit::Stop); }
+        if leave && stop_choice(id).await? { return Ok(Exit::Stopped); }
     }
 }
 
@@ -1099,15 +1172,19 @@ mod tests {
             {"id":"local","kind":"container","name":"Small model"},
             {"id":"cloud","kind":"cloud","name":"Display name"}
         ],"neocloudDeployments":{"cloud":{"provider":"runpod","name":"Exact provider name"}}});
-        let (method, params) = stop_request(&state, "local", StopAction::Stop).unwrap();
+        // The default Cancel choice creates no stop/delete request, even for a missing target.
+        assert!(stop_action(0).map(|action| stop_request(&state, "missing", action)).is_none());
+        let stop = stop_action(1).unwrap();
+        let delete = stop_action(2).unwrap();
+        let (method, params) = stop_request(&state, "local", stop).unwrap();
         assert_eq!(method, "stop_model");
         assert_eq!(params, json!({"environmentId":"local"}));
-        assert_eq!(stop_request(&state, "local", StopAction::Delete).unwrap().0, "delete_environment");
-        let (method, params) = stop_request(&state, "cloud", StopAction::Stop).unwrap();
+        assert_eq!(stop_request(&state, "local", delete).unwrap().0, "delete_environment");
+        let (method, params) = stop_request(&state, "cloud", stop).unwrap();
         assert_eq!(method, "neocloud_action");
         assert_eq!(params["action"], "stop");
         assert!(params["confirmation"].is_null());
-        let (method, params) = stop_request(&state, "cloud", StopAction::Delete).unwrap();
+        let (method, params) = stop_request(&state, "cloud", delete).unwrap();
         assert_eq!(method, "neocloud_action");
         assert_eq!(params["action"], "delete");
         assert_eq!(params["confirmation"], "Exact provider name");
@@ -1167,10 +1244,20 @@ mod tests {
         assert!(options(&args("model run hf.co/a/b --quant")).is_err());
         assert!(options(&args("model run hf.co/a/b --neocloud --quant Q8_0")).is_err());
         assert!(options(&args("model chat env --now")).is_err());
+        assert_eq!(options(&args("model run hf.co/a/b --storage-drive D:/ --nowfree")).unwrap().storage_drive.as_deref(), Some("D:/"));
+        assert!(options(&args("model run hf.co/a/b --storage-drive")).is_err());
+        assert!(options(&args("model chat env --storage-drive D:/")).is_err());
+        assert!(options(&args("model run hf.co/a/b --neocloud --storage-drive D:/")).is_err());
         assert_eq!(short("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"), "TinyLlama-1.1B-Chat-v1.0");
         assert_eq!(short("model-env"), "model-env");
     }
 
+    #[test]
+    fn listen_requires_free_sharing_before_any_model_work() {
+        let args = |flags: &[&str]| {let mut result=vec!["model".into(),"run".into(),"hf.co/example/model".into()];result.extend(flags.iter().map(|s|s.to_string()));result};
+        assert!(options(&args(&["--nowfree","--listen"])).unwrap().listen);
+        for flags in [vec!["--listen"],vec!["--now","--listen"],vec!["--nowfree","--listen","--listen"]] {assert!(options(&args(&flags)).is_err());}
+    }
     #[test]
     fn the_editor_moves_recalls_and_sends() {
         let mut editor = Editor::default();

@@ -318,7 +318,7 @@ async fn create(state: &Value, model: &str) -> Result<Value, String> {
                     offer.total_hourly(),
                     offer.total_hourly() * 24.0
                 ),
-                "Billing starts when created. Ctrl+C opens Stop / Stop and delete.".into(),
+                "Billing starts when created. Ctrl+C opens Cancel / Stop / Stop and delete.".into(),
             ],
             &[
                 ui::Choice::new("Create and run", &name),

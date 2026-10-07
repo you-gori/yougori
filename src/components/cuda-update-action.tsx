@@ -3,9 +3,7 @@ import { gpuApi } from "@/api/gpu-api"
 import { Button } from "@/components/ui/button"
 import type { Environment } from "@/types/platform"
 
-export function needsCudaUpdate(environment: Environment, error: string | null | undefined) {
-  return environment.provider === "yougoriCuda" && Boolean(error && /\[YOUGORI_CUDA_UPDATE_REQUIRED\]|CUDA runtime update is (?:required|available)/i.test(error))
-}
+import { needsCudaUpdate } from "@/lib/cuda-update"
 
 /** Show beside a failed startup/storage check, using this environment's runtime drive. */
 export function CudaUpdateAction({ environment, error, disabled, onUpdated, onBusyChange }: {

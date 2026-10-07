@@ -44,7 +44,7 @@ it("opens RunPod with a simple account connection first", async () => {
   expect((screen.getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(true)
 })
 
-it("creates a GPU container from the Container GPU switch without network or PC folder access", async () => {
+it("creates a GPU container from the Container GPU switch with Internet on and no PC folder access", async () => {
   render(<CreateEnvironmentDialog open onOpenChange={() => {}} />)
   expect(screen.queryByRole("radio", { name: "GPU" })).toBeNull()
   fireEvent.click(await screen.findByRole("switch", { name: "GPU access" }))
@@ -53,8 +53,21 @@ it("creates a GPU container from the Container GPU switch without network or PC 
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "AI workspace" } })
   fireEvent.click(screen.getByRole("button", { name: "Create environment" }))
   await waitFor(() => expect(create).toHaveBeenCalledOnce())
-  expect(create).toHaveBeenCalledWith(expect.objectContaining({ kind: "container", provider: "yougoriCuda", runtime: "docker.io/library/ubuntu:24.04", gpuAccess: true, networkAccess: false, storageGb: 20 }))
+  expect(create).toHaveBeenCalledWith(expect.objectContaining({ kind: "container", provider: "yougoriCuda", runtime: "docker.io/library/ubuntu:24.04", gpuAccess: true, networkAccess: true, storageGb: 20 }))
   expect(create.mock.calls[0]![0]).not.toHaveProperty("shares")
+})
+
+it("can create offline without changing the default for the next environment", async () => {
+  const view = render(<CreateEnvironmentDialog open onOpenChange={() => {}} />)
+  const internet = await screen.findByRole("switch", { name: "Internet access" })
+  expect(internet.getAttribute("aria-checked")).toBe("true")
+  fireEvent.click(internet)
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Offline workspace" } })
+  fireEvent.click(screen.getByRole("button", { name: "Create environment" }))
+  await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ networkAccess: false })))
+  view.rerender(<CreateEnvironmentDialog open={false} onOpenChange={() => {}} />)
+  view.rerender(<CreateEnvironmentDialog open onOpenChange={() => {}} />)
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Internet access" }).getAttribute("aria-checked")).toBe("true"))
 })
 
 it.each([false, true])("offers 1 GB through the available maximum with GPU access %s", async gpuEnabled => {
@@ -79,7 +92,7 @@ it("does not leak GPU permission or image selection back into standard container
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Standard workspace" } })
   fireEvent.click(screen.getByRole("button", { name: "Create environment" }))
   await waitFor(() => expect(create).toHaveBeenCalledOnce())
-  expect(create).toHaveBeenCalledWith(expect.objectContaining({ kind: "container", provider: "yougoriOci", runtime: defaultOciImage.value, gpuAccess: false, networkAccess: false }))
+  expect(create).toHaveBeenCalledWith(expect.objectContaining({ kind: "container", provider: "yougoriOci", runtime: defaultOciImage.value, gpuAccess: false, networkAccess: true }))
 })
 
 it("blocks unsupported computers from creating GPU environments", async () => {

@@ -134,13 +134,13 @@ export default function HostCliView({ visible, onHide, mode = "cli" }: { visible
       {!tabs.length ? <div className="grid flex-1 place-items-center p-6 text-sm text-muted-foreground">{info ? mode === "edit" && !sourceCheckout ? <Button size="sm" onClick={() => void chooseFolder()}>Choose Yougori source folder</Button> : <Button size="sm" disabled={!canCreate} onClick={() => start()}>New terminal</Button> : <span role="status">Starting {mode === "edit" ? "editor" : "CLI"}…</span>}</div> : null}
     </Tabs>
     <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
-      <DialogPopup className="max-w-lg" bottomStickOnMobile={false}>
+      <DialogPopup className="max-w-2xl" bottomStickOnMobile={false}>
         <DialogHeader><DialogTitle>{mode === "edit" ? "App editing access" : "CLI access"}</DialogTitle><DialogDescription>This terminal runs on your computer using your signed-in account.</DialogDescription></DialogHeader>
         <div className="space-y-4 px-6 pb-6 text-sm"><div className="flex justify-between gap-4"><span>{mode === "edit" ? "Source files" : "Environments"}</span><span className="text-muted-foreground">{mode === "edit" ? "Your selected checkout" : "All local environments"}</span></div><div className="flex justify-between gap-4"><span>Internet and PC folders</span><span className="text-muted-foreground">Your computer’s access</span></div><div className="border-t pt-4"><p className="mb-1 text-xs text-muted-foreground">Starting folder</p><p className="break-all font-mono text-xs">{mode === "edit" ? sourceCheckout : workingDirectory ?? info?.cwd}</p></div></div>{feedback}
       </DialogPopup>
     </Dialog>
     <Dialog open={skillsOpen} onOpenChange={setSkillsOpen}>
-      <DialogPopup className="max-w-lg" bottomStickOnMobile={false}>
+      <DialogPopup className="max-w-2xl" bottomStickOnMobile={false}>
         <DialogHeader><DialogTitle>Skills</DialogTitle><DialogDescription>{mode === "edit" ? "Guidance for editing this checkout and managing its environments." : "Keep Yougori instructions in your workspace for any coding agent."}</DialogDescription></DialogHeader>
         <div className="space-y-4 px-6 pb-6">{mode === "edit" ? <div className="rounded-md border p-3 text-sm"><p className="font-medium">Edit Yougori</p><p className="mt-1 text-xs text-muted-foreground">This checkout includes an editing skill for source layout, tests, and builds.</p><p className="mt-2 break-all font-mono text-xs">{editSkillPath}</p></div> : null}<p className="text-sm text-muted-foreground">{info?.skill.message}</p><p className="break-all font-mono text-xs text-muted-foreground">{info?.skill.path}</p><p className="text-xs text-muted-foreground">{mode === "edit" ? "The Yougori management skill covers CLI operations. Ask your agent to read the editing skill in the checkout and the management skill in your workspace." : "Ask your agent to read skills/yougori/SKILL.md from your Yougori workspace, or copy the guide below."}</p><div className="flex flex-wrap gap-2">
           <Button size="sm" disabled={!info || busy || info.skill.state === "conflict" || info.skill.state === "ready"} onClick={() => void perform(async () => { const skill = await hostTerminalApi.setup(); setInfo(current => current ? { ...current, skill } : current); setNotice(skill.message) })}>{info?.skill.state === "ready" ? "Skill installed" : info?.skill.state === "updateAvailable" ? "Update skill" : "Install skill"}</Button>
@@ -149,7 +149,7 @@ export default function HostCliView({ visible, onHide, mode = "cli" }: { visible
       </DialogPopup>
     </Dialog>
     <Dialog open={Boolean(ending)} onOpenChange={open => { if (!open && !busy) setEnding("") }}>
-      <DialogPopup className="max-w-sm"><DialogHeader><DialogTitle>Close terminal?</DialogTitle><DialogDescription>This stops its shell and any commands running in it.</DialogDescription></DialogHeader><div className="flex justify-end gap-2 px-6 pb-6"><Button size="sm" variant="ghost" disabled={busy} onClick={() => setEnding("")}>Cancel</Button><Button size="sm" disabled={busy} onClick={() => void closeTab()}>Close terminal</Button></div>{error ? feedback : null}</DialogPopup>
+      <DialogPopup className="max-w-md"><DialogHeader><DialogTitle>Close terminal?</DialogTitle><DialogDescription>This stops its shell and any commands running in it.</DialogDescription></DialogHeader><div className="flex justify-end gap-2 px-6 pb-6"><Button size="sm" variant="ghost" disabled={busy} onClick={() => setEnding("")}>Cancel</Button><Button size="sm" disabled={busy} onClick={() => void closeTab()}>Close terminal</Button></div>{error ? feedback : null}</DialogPopup>
     </Dialog>
   </section>
 }

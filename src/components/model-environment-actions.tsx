@@ -15,7 +15,7 @@ export function ModelEnvironmentActions({ environment, onChat }: { environment: 
     <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" disabled={environment.status !== "running"} onClick={onChat}>Chat</Button>
     <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => setView("api")}>API skill</Button>
     <Dialog open={view !== null} onOpenChange={open => { if (!open) setView(null) }}>
-      <DialogPopup className="max-h-[calc(100dvh-4rem)] max-w-3xl">
+      <DialogPopup className="max-h-[calc(100dvh-4rem)] max-w-4xl">
         <DialogHeader>
           <DialogTitle>API skill</DialogTitle>
           <DialogDescription>{environment.description.slice("Hugging Face · ".length)}</DialogDescription>

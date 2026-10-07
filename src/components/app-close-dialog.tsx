@@ -61,7 +61,7 @@ export function AppCloseDialog() {
 
   const active = state?.environments.filter(environment => ["running", "paused", "provisioning"].includes(environment.status)) ?? []
   return <Dialog open={phase !== "idle"} onOpenChange={value => { if (!busy && !value) setPhase("idle") }}>
-    <DialogPopup showCloseButton={!busy} className={busy ? "max-w-sm" : undefined}>
+    <DialogPopup showCloseButton={!busy} className={busy ? "max-w-md" : undefined}>
       <DialogHeader>
         <DialogTitle>{busy ? <span className="flex items-center gap-3"><Spinner aria-hidden="true" className="size-5 shrink-0" />Closing Yougori…</span> : "Environments are still active"}</DialogTitle>
         <DialogDescription>{phase === "hiding" ? "Closing the windows. Your environments will keep running." : busy ? "Please wait while Yougori finishes closing." : "Choose what happens before closing Yougori."}</DialogDescription>

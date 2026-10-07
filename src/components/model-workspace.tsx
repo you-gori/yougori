@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { ModelChat } from "@/components/model-chat"
+import { ModelArchitectureSupport } from "@/components/model-architecture-support"
 import { HuggingfaceAccess } from "@/components/huggingface-access"
 import { ModelApiPanel } from "@/components/model-api-panel"
 import { ModelUsagePanel } from "@/components/model-usage-panel"
@@ -18,6 +19,8 @@ import "@/components/model-workspace.css"
 
 export { ModelChat }
 
+const NeocloudForm = lazy(async () => ({ default: (await import("@/components/dialogs/neocloud-form")).NeocloudForm }))
+
 /** `compact` renders a small "Chat" trigger for use inside a graph node. */
 export function ModelWorkspace({ environmentId, compact = false }: { environmentId?: string; compact?: boolean }) {
   const { state, refreshPlatform } = usePlatform()
@@ -30,6 +33,9 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const [view, setView] = useState<"chat" | "api" | "usage" | "network">("chat")
   const [sharing, setSharing] = useState<"off" | SharingMode>("off")
   const [quant, setQuant] = useState("")
+  const [target, setTarget] = useState<"local" | "neocloud">("local")
+  const [pod, setPod] = useState("")
+  const [creatingPod, setCreatingPod] = useState(false)
   const network = useNetwork(open && sharing !== "off" && !selected)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
@@ -54,9 +60,23 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const pendingModel = launching ? state?.environments.find(e => !previousIds.current.has(e.id) && e.description === `Hugging Face · ${normalizedModel}`) : undefined
   const visibleId = selected || pendingModel?.id
   const models = state?.environments.filter(e => e.description.startsWith("Hugging Face · ")) ?? []
+  // Same pods the CLI offers for `--neocloud`: RunPod GPU pods that still exist.
+  const pods = state?.environments.filter(env => {
+    const deployment = state.neocloudDeployments?.[env.id]
+    return env.kind === "cloud" && deployment?.provider === "runpod" && ["pod", "gpu"].includes(deployment.product)
+      && !["Deleted", "Terminated"].includes(deployment.state) && deployment.extra?.compute !== "cpu"
+  }) ?? []
+  const firstPod = pods[0]?.id ?? ""
+  const podAvailable = pods.some(env => env.id === pod)
+  useEffect(() => { if (!podAvailable) setPod(firstPod) }, [podAvailable, firstPod])
   const launch = async () => {
     if (lock.current) return
     lock.current = true; setBusy(true)
+    try {
+      const result = await modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined)
+      setPreflight(result)
+      if (!result.supported) { setError(result.reason); lock.current = false; setBusy(false); return }
+    } catch (reason) { setError(String(reason)); lock.current = false; setBusy(false); return }
     if (sharing !== "off") {
       setError("")
       try {
@@ -72,7 +92,7 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
     previousIds.current = new Set(state?.environments.map(e => e.id))
     lock.current = true; setBusy(true); setLaunching(true); setElapsed(0); setError(""); setOpen(false)
     try {
-      const result = await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined)
+      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined)
       setSelected(result.id); setView("chat")
       if (sharing !== "off") {
         try { await marketApi.share(result.id, sharing); setView("network") }
@@ -100,25 +120,63 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
       </header> : null}
       <DialogPanel className="model-panel" scrollFade={false}>
         {!environmentId && !selected ? <div className="model-form">
-          <label className="model-label" htmlFor="hf-model">Model</label>
-          <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
-          <p className="model-hint">Text-generation and supported decision models with safetensors or GGUF. Larger models select a lower precision when needed to fit the GPU.</p>
-          <HuggingfaceAccess />
-          <label className="model-label" htmlFor="hf-quant">GGUF quantization (optional)</label>
-          <Input id="hf-quant" value={quant} disabled={busy} placeholder="Q4_K_M by default" onChange={e => { setQuant(e.target.value); setPreflight(null) }} />
-          <div className="model-tabs" role="group" aria-label="Network sharing">
-            {([['off', 'Off'], ['paid', 'Paid (--now)'], ['free', 'Free (--nowfree)']] as const).map(([mode, label]) => <button key={mode} type="button" disabled={busy} aria-pressed={sharing === mode} onClick={() => setSharing(mode)}>{label}</button>)}
+          <div className="model-intro">
+            <h2>Run a Hugging Face model</h2>
+            <p>Text-generation and supported decision models with safetensors or GGUF. Larger models select a lower precision when needed to fit the GPU.</p>
           </div>
-          {sharing !== "off" ? <><p className="model-hint">Share through the Yougori endpoint. Paid pricing covers ten models; other models are shared free. Free access needs no wallet.</p><NetworkAccount network={network} />{network.error ? <p role="alert" className="model-error">{network.error}</p> : null}</> : null}
-          <div className="model-api-row">
-            <div><label htmlFor="hf-api">Local API</label><p>OpenAI-compatible, this PC only.</p></div>
-            <div className="model-api-controls">
-              {api ? <Input className="w-24" aria-label="Model API port" type="number" min={1} max={65535} value={port} disabled={busy} onChange={e => setPort(e.target.value)} /> : null}
-              <Switch id="hf-api" checked={api} disabled={busy} onCheckedChange={setApi} />
+
+          <section className="model-card">
+            <label className="model-label" htmlFor="hf-model">Model</label>
+            <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
+            <HuggingfaceAccess />
+          </section>
+
+          <section className="model-card">
+            <span className="model-label" id="hf-target-label">Where to run</span>
+            <div className="model-targets" role="radiogroup" aria-labelledby="hf-target-label">
+              <button type="button" role="radio" aria-checked={target === "local"} disabled={busy} onClick={() => { setTarget("local"); setPreflight(null) }}><strong>This PC</strong><span>Your NVIDIA GPU</span></button>
+              <button type="button" role="radio" aria-checked={target === "neocloud"} disabled={busy} onClick={() => { setTarget("neocloud"); setPreflight(null) }}><strong>Neo Cloud <code>--neocloud</code></strong><span>An existing RunPod GPU pod</span></button>
             </div>
+            {target === "neocloud" ? <div className="model-neocloud">
+              {pods.length ? <label className="model-pod"><span className="model-label">RunPod GPU pod</span>
+                <select value={pod} disabled={busy} onChange={e => setPod(e.target.value)}>{pods.map(env => <option key={env.id} value={env.id}>{env.name} · {env.status}</option>)}</select>
+              </label> : <p className="model-hint">No RunPod GPU pod yet. Create one, then choose it here.</p>}
+              <Dialog open={creatingPod} onOpenChange={setCreatingPod}>
+                <DialogTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>Create a RunPod pod</DialogTrigger>
+                <DialogPopup className="model-neocloud-create" bottomStickOnMobile={false}>
+                  <DialogTitle className="sr-only">Create a RunPod pod</DialogTitle>
+                  <DialogPanel><Suspense fallback={<p className="model-hint">Loading…</p>}><NeocloudForm onClose={() => setCreatingPod(false)} /></Suspense></DialogPanel>
+                </DialogPopup>
+              </Dialog>
+              <p className="model-hint">Uses the pod's own resources. Yougori connects to a powered-on pod and never starts or rents one for you. GGUF models run on this PC only.</p>
+            </div> : null}
+          </section>
+
+          <div className="model-options">
+            {target === "local" ? <section className="model-card">
+              <label className="model-label" htmlFor="hf-quant">GGUF quantization (optional)</label>
+              <Input id="hf-quant" value={quant} disabled={busy} placeholder="Q4_K_M by default" onChange={e => { setQuant(e.target.value); setPreflight(null) }} />
+            </section> : null}
+            <section className="model-card model-api-row">
+              <div><label htmlFor="hf-api">Local API</label><p>OpenAI-compatible, this PC only.</p></div>
+              <div className="model-api-controls">
+                {api ? <Input className="w-24" aria-label="Model API port" type="number" min={1} max={65535} value={port} disabled={busy} onChange={e => setPort(e.target.value)} /> : null}
+                <Switch id="hf-api" checked={api} disabled={busy} onCheckedChange={setApi} />
+              </div>
+            </section>
           </div>
-          {preflight ? <div aria-label="Model compatibility" className="model-hint"><p>{preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
-          <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, quant.trim() || undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
+
+          <section className="model-card">
+            <span className="model-label">Neo Grid sharing</span>
+            <div className="model-tabs" role="group" aria-label="Neo Grid sharing">
+              {([['off', 'Off'], ['paid', 'Paid (--now)'], ['free', 'Free (--nowfree)']] as const).map(([mode, label]) => <button key={mode} type="button" disabled={busy} aria-pressed={sharing === mode} onClick={() => setSharing(mode)}>{label}</button>)}
+            </div>
+            {sharing !== "off" ? <><p className="model-hint">Share through the Yougori endpoint. Paid pricing covers ten models; other models are shared free. Free access needs no wallet.</p><NetworkAccount network={network} />{network.error ? <p role="alert" className="model-error">{network.error}</p> : null}</> : null}
+          </section>
+
+          {preflight ? <div aria-label="Model compatibility" className="model-card model-preflight" data-supported={preflight.supported || undefined}><p className="model-preflight-title">{preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
+          {preflight?.supported === false && preflight.supportAvailable ? <ModelArchitectureSupport key={`${model}:${quant}`} model={model} quant={quant.trim() || undefined} active={open} /> : null}
+          <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort) || (target === "neocloud" && !pod)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
         </div> : null}
 
         {selected ? <div className="model-view-row">
@@ -126,7 +184,7 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
             <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")}>Chat</button>
             <button type="button" aria-pressed={view === "api"} onClick={() => setView("api")}>API access</button>
             <button type="button" aria-pressed={view === "usage"} onClick={() => setView("usage")}>Usage</button>
-            <button type="button" aria-pressed={view === "network"} onClick={() => setView("network")}>Network</button>
+            <button type="button" aria-pressed={view === "network"} onClick={() => setView("network")}>Neo Grid</button>
           </div>
           {close}
         </div> : null}

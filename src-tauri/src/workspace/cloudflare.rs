@@ -8,6 +8,39 @@ const VAULT_SERVICE: &str = "Yougori.CloudflareTunnel.v1";
 const PREVIOUS_VAULT_SERVICE: &str = "OpenDock.CloudflareTunnel.v1";
 const PUBLIC_PRESET_SCOPE: &str = "public-presets";
 
+const QUICK_RATE_LIMIT: &str = "Cloudflare temporarily rate-limited Quick Tunnel creation (1015/429)";
+// One budget for restoration, model sync and other Quick Tunnel callers.
+static QUICK_RETRY: std::sync::LazyLock<tokio::sync::Mutex<QuickRetry>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(QuickRetry::default()));
+
+#[derive(Default)]
+struct QuickRetry {
+    next: Option<std::time::Instant>,
+    rate_failures: u32,
+}
+impl QuickRetry {
+    fn remaining(&self, now: std::time::Instant) -> Option<Duration> {
+        self.next.and_then(|next| next.checked_duration_since(now)).filter(|d| !d.is_zero())
+    }
+    fn finished(&mut self, now: std::time::Instant, succeeded: bool, rate_limited: bool) {
+        let seconds = if succeeded {
+            self.rate_failures = 0;
+            15
+        } else if rate_limited {
+            self.rate_failures = self.rate_failures.saturating_add(1);
+            (120u64 * (1u64 << self.rate_failures.saturating_sub(1).min(3))).min(900)
+        } else { 30 };
+        self.next = Some(now + Duration::from_secs(seconds));
+    }
+    fn deferred(&self, now: std::time::Instant) -> Option<String> {
+        self.remaining(now).map(|remaining| format!(
+            "{}; next public-link attempt in {} seconds. The local service keeps running.",
+            if self.rate_failures > 0 { QUICK_RATE_LIMIT } else { "Cloudflare Quick Tunnel creation is cooling down" },
+            remaining.as_secs().saturating_add(1)
+        ))
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountOptions {
@@ -793,6 +826,22 @@ pub(crate) async fn start(
     port: u16,
     account: Option<&Account>,
 ) -> Result<Started, String> {
+    let mut retry = if account.is_none() { Some(QUICK_RETRY.lock().await) } else { None };
+    if let Some(error) = retry.as_ref().and_then(|retry| retry.deferred(std::time::Instant::now())) {
+        return Err(error);
+    }
+    let result = start_once(executable, root, port, account).await;
+    if let Some(retry) = &mut retry {
+        let limited = result.as_ref().is_err_and(|error| error.contains(QUICK_RATE_LIMIT));
+        retry.finished(std::time::Instant::now(), result.is_ok(), limited);
+        if limited {
+            return Err(retry.deferred(std::time::Instant::now()).unwrap());
+        }
+    }
+    result
+}
+
+async fn start_once(executable: &Path, root: &Path, port: u16, account: Option<&Account>) -> Result<Started, String> {
     let config = ConfigFile::create(root).await?;
     let mut child = command(executable, &config.0, port, account)
         .spawn()
@@ -833,6 +882,10 @@ async fn connected_url(
     let mut url = account_url;
     let mut connected = false;
     while let Some(line) = bounded_line(reader).await? {
+        if !named && quick_rate_limited(&line) {
+            // Never expose raw helper output containing account details.
+            return Err(QUICK_RATE_LIMIT.into());
+        }
         if !named && url.is_none() {
             url = quick_url(&line);
         }
@@ -846,6 +899,12 @@ async fn connected_url(
         }
     }
     Err(startup_error(named, false))
+}
+
+fn quick_rate_limited(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("error code: 1015") || lower.contains("status code: 429")
+        || lower.contains("429 too many requests") || lower.contains("too many requests")
 }
 
 fn startup_error(named: bool, timed_out: bool) -> String {

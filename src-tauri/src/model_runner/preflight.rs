@@ -24,7 +24,8 @@ fn inspect(model:&str,metadata:&Value,config:&Value)->Value{
     let safetensors=files.iter().filter(|f|f["rfilename"].as_str().is_some_and(|s|s.ends_with(".safetensors"))).collect::<Vec<_>>();
     // Multimodal checkpoints still serve text chat when their architecture has built-in causal generation.
     let task_compatible=["unknown","text-generation","image-text-to-text","any-to-any"].contains(&task);
-    let supported=known&&!safetensors.is_empty()&&(clef||security||!decision&&task_compatible);
+    let vllm=if !known&&!decision&&!security&&task_compatible { super::vllm::inspect(config) } else { None };
+    let supported=(known||vllm.is_some())&&!safetensors.is_empty()&&(clef||security||!decision&&task_compatible);
     let weight_bytes=safetensors.iter().filter_map(|f|f["lfs"]["size"].as_u64().or(f["size"].as_u64())).sum::<u64>();
     let parameters=metadata["safetensors"]["total"].as_u64();
     let estimated_bytes=if weight_bytes>0{Some(weight_bytes)}else{parameters.map(|p|p.saturating_mul(2))};
@@ -32,7 +33,15 @@ fn inspect(model:&str,metadata:&Value,config:&Value)->Value{
     let vram=estimated_bytes.map(|n|((n as f64/(1024.0*1024.0*1024.0))*1.2+2.0).ceil());
     let reason=if clef{"Clef typed decisions use the bundled, reviewed joint schema head and /v1/systemone"}else if security{"Security-One typed decisions use its calibrated single-token readout; Hugging Face access is required"}else if decision{"Structured decision model with a custom prediction head; use its dedicated SDK/decision API, not the generic chat runner"}else if !task_compatible{"This repository's task requires a specialized runner; the Yougori chat runner accepts causal text generation"}else if !known{"The pinned Transformers architecture catalog does not support this model type with built-in causal generation"}else if safetensors.is_empty(){"No safetensors or GGUF weights were found; this runner does not execute remote code or load pickle checkpoints"}else{"Built-in Transformers causal generation is supported; guest dependency/config validation remains required"};
     let dependencies=if supported{json!({"applicable":true,"pythonMinimum":"3.10","transformers":"5.18.0","accelerate":"1.15.0","huggingfaceHub":"1.33.0","pytorch":"2.8.0","cuda":"12.8","additionalRepositoryDependenciesVerified":false})}else{json!({"applicable":false,"requiresDedicatedSdk":true,"pythonMinimum":null,"reason":"Select the repository's dedicated SDK and required Python version, then pin them in the deployment setup; generic chat dependencies do not establish compatibility"})};
-    json!({"model":model,"task":if decision||security{"structured-decision"}else{task},"modelType":model_type,"supported":supported,"runner":if clef{"yougori-clef"}else if security{"yougori-security-one"}else if supported{"yougori-transformers-chat"}else{"dedicatedRunnerRequired"},"format":"safetensors","reason":reason,"revision":metadata["sha"],"dependencies":dependencies,"resources":{"cpuRecommended":2,"memoryGbRecommended":4,"storageGbRecommended":storage,"gpuMemoryGbEstimated":vram,"weightsBytes":estimated_bytes,"estimateOnly":true},"downloads":{"location":"persistent guest model volume","revisionPinned":true,"safetensorsOnly":true,"checksumVerification":"requiredBeforeLoad","checksumsVerified":false,"hostWeightImportRequired":false},"remoteCodeAllowed":false})
+    let mut result=json!({"model":model,"task":if decision||security{"structured-decision"}else{task},"modelType":model_type,"supported":supported,"runner":if clef{"yougori-clef"}else if security{"yougori-security-one"}else if supported{"yougori-transformers-chat"}else{"dedicatedRunnerRequired"},"format":"safetensors","reason":reason,"revision":metadata["sha"],"dependencies":dependencies,"resources":{"cpuRecommended":2,"memoryGbRecommended":4,"storageGbRecommended":storage,"gpuMemoryGbEstimated":vram,"weightsBytes":estimated_bytes,"estimateOnly":true},"downloads":{"location":"persistent guest model volume","revisionPinned":true,"safetensorsOnly":true,"checksumVerification":"requiredBeforeLoad","checksumsVerified":false,"hostWeightImportRequired":false},"remoteCodeAllowed":false});
+    result["supportAvailable"]=json!(!supported&&!safetensors.is_empty()&&(decision||task_compatible&&!known));
+    result["architectures"]=json!(config["architectures"].as_array().into_iter().flatten().take(16).cloned().collect::<Vec<_>>());
+    if let Some(vllm)=vllm.filter(|_|supported) {
+        for field in ["runner","format","reason","dependencies","runtimeImage"] { result[field]=vllm[field].clone(); }
+        result["resources"]["storageGbRecommended"]=json!(estimated_bytes.map(|n|((n as f64/1073741824.0)*1.15+24.0).ceil()));
+        result["resources"]["gpuMemoryGbEstimated"]=json!(estimated_bytes.map(|n|((n as f64/1073741824.0+2.0)/0.90).ceil()));
+    }
+    result
 }
 /// `Model-Q4_K_M.gguf` → `Q4_K_M`. Split parts and helper files (vision projectors, draft models) have no model quant.
 pub(crate) fn quant_label(file:&str)->Option<String>{
@@ -93,9 +102,27 @@ pub(super) async fn preflight_quant(model:&str,quant:Option<&str>)->Result<Value
     Ok(inspect(model,&metadata,&config))
 }
 #[tauri::command]
-pub async fn model_preflight(model:String,quant:Option<String>)->Result<Value,String>{preflight_quant(&normalize_model(&model)?,quant.as_deref()).await}
+pub async fn model_preflight(model:String,quant:Option<String>)->Result<Value,String>{let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);Ok(result)}
+#[tauri::command]
+pub async fn model_support_task(model:String,agent:String,quant:Option<String>)->Result<Value,String>{
+    let preflight=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;
+    yougori_cli::architecture_support::prepare(&preflight,&agent)
+}
 #[cfg(test)]mod tests{
     use super::*;
+    #[test] fn custom_native_text_models_and_kolibri_use_vllm_without_enabling_arbitrary_code() {
+        let metadata=json!({"sha":"a".repeat(40),"pipeline_tag":"text-generation","siblings":[{"rfilename":"model.safetensors","size":78103074560u64}]});
+        for config in [json!({"model_type":"kolibri1","architectures":["Kolibri1ForCausalLM"]}),json!({"model_type":"internlm2","architectures":["InternLM2ForCausalLM"]})] {
+            let result=inspect("example/custom",&metadata,&config);
+            assert_eq!(result["supported"],true);assert_eq!(result["runner"],"yougori-vllm");assert_eq!(result["format"],"vllm");assert_eq!(result["remoteCodeAllowed"],false);
+            assert!(result["resources"]["gpuMemoryGbEstimated"].as_f64().unwrap()>80.0);
+            assert_eq!(result["dependencies"]["vllm"],"0.29.0");
+        }
+        let result=inspect("example/custom",&metadata,&json!({"model_type":"unknown","architectures":["RemoteOnlyForCausalLM"]}));
+        assert_eq!(result["supported"],false);
+        let mut decision=metadata.clone();decision["siblings"].as_array_mut().unwrap().extend([json!({"rfilename":"joint_head.safetensors"}),json!({"rfilename":"joint_head_config.json"})]);
+        assert_eq!(inspect("example/custom",&decision,&json!({"model_type":"kolibri1","architectures":["Kolibri1ForCausalLM"]}))["supported"],false);
+    }
     #[test] fn reviewed_decision_models_select_their_own_runners() {
         let meta=json!({"sha":"a".repeat(40),"siblings":[{"rfilename":"model.safetensors"},{"rfilename":"joint_head.safetensors"},{"rfilename":"joint_head_config.json"}],"pipeline_tag":"image-text-to-text"});
         let clef=inspect("Cloudflare/clef",&meta,&json!({"model_type":"qwen3_5"}));
@@ -105,6 +132,14 @@ pub async fn model_preflight(model:String,quant:Option<String>)->Result<Value,St
     }
     #[test]fn decision_models_never_get_a_chat_deployment(){let meta=json!({"sha":"a".repeat(40),"siblings":[{"rfilename":"joint_head_config.json"},{"rfilename":"joint_head.safetensors"}],"pipeline_tag":"text-generation"});let result=inspect("example/joint-decision",&meta,&json!({"model_type":"qwen3_5"}));assert_eq!(result["supported"],false);assert_eq!(result["task"],"structured-decision");assert_eq!(result["dependencies"]["applicable"],false);assert_eq!(result["dependencies"]["requiresDedicatedSdk"],true);assert!(result["dependencies"]["pythonMinimum"].is_null());}
     #[test]fn unknown_architectures_and_unsafe_weights_are_rejected_before_creation(){for(config,files)in[(json!({"model_type":"future_unknown"}),json!([{"rfilename":"model.safetensors"}])),(json!({"model_type":"llama"}),json!([{"rfilename":"pytorch_model.bin"}]))]{let result=inspect("test/model",&json!({"siblings":files}),&config);assert_eq!(result["supported"],false);}}
+    #[test]fn coding_support_is_only_offered_for_missing_architectures_or_prediction_heads(){
+        let meta=json!({"sha":"a".repeat(40),"pipeline_tag":"text-generation","siblings":[{"rfilename":"model.safetensors"}]});
+        let unknown=inspect("test/model",&meta,&json!({"model_type":"new_model","architectures":["CustomForCausalLM"]}));
+        assert_eq!(unknown["supportAvailable"],true);assert_eq!(unknown["architectures"],json!(["CustomForCausalLM"]));
+        assert_eq!(inspect("test/model",&meta,&json!({"model_type":"llama"}))["supportAvailable"],false);
+        let unsafe_weights=json!({"pipeline_tag":"text-generation","siblings":[{"rfilename":"pytorch_model.bin"}]});
+        assert_eq!(inspect("test/model",&unsafe_weights,&json!({"model_type":"new_model"}))["supportAvailable"],false);
+    }
     #[test]fn known_supported_weights_report_persistent_direct_download_and_resources(){let result=inspect("test/model",&json!({"pipeline_tag":"text-generation","siblings":[{"rfilename":"model.safetensors","size":54713606072u64}]}),&json!({"model_type":"llama"}));assert_eq!(result["supported"],true);assert_eq!(result["resources"]["storageGbRecommended"],71.0);assert_eq!(result["downloads"]["hostWeightImportRequired"],false);}
     #[test]fn any_to_any_checkpoints_with_causal_architectures_serve_text_chat(){let result=inspect("google/gemma-4-12B",&json!({"pipeline_tag":"any-to-any","siblings":[{"rfilename":"model.safetensors"}]}),&json!({"model_type":"gemma4_unified"}));assert_eq!(result["supported"],true);}
     #[test]fn gguf_labels_skip_helpers_and_read_quant_names(){

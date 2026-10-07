@@ -95,7 +95,7 @@ export function ConnectionSkillsDialog({ environmentId, remoteCanInstall = false
   return <>
     {renderTrigger ? renderTrigger(openSkills) : <Button aria-label="Connection skills" title="Install environment instructions for your AI agent" size="sm" variant="ghost" onClick={openSkills} className="text-xs text-muted-foreground">Skills</Button>}
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogPopup className="max-w-4xl sm:max-w-4xl">
+      <DialogPopup className="max-w-5xl sm:max-w-5xl">
         <DialogHeader><DialogTitle>Connection skills</DialogTitle><DialogDescription>Every directly connected node, its access rules and what to do when it cannot be reached. My PC shares are included when attached.</DialogDescription></DialogHeader>
         <DialogPanel>
           <section aria-label="Installed skill files" className="mb-4 rounded-md border p-3 text-xs">

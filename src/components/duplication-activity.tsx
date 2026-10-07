@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react"
-import { CopyIcon } from "lucide-react"
 import { duplicationApi } from "@/api/duplication-api"
 import { usePlatform } from "@/context/platform-context"
 import { Button } from "@/components/ui/button"
@@ -25,8 +24,8 @@ export function DuplicationActivity() {
   }
   if (!jobs.length) return null
   return <Dialog open={open} onOpenChange={setOpen}>
-    <DialogTrigger render={<Button size="xs" variant="ghost" />}><CopyIcon aria-hidden="true" />Copies{running ? "…" : ""}</DialogTrigger>
-    <DialogPopup className="max-w-2xl">
+    <DialogTrigger render={<Button size="xs" variant="ghost" className="workspace-footer-reclaim" />}>Copies{running ? "…" : ""}</DialogTrigger>
+    <DialogPopup className="max-w-3xl">
       <DialogHeader><DialogTitle>Environment copies</DialogTitle><DialogDescription>Progress, recovery and transfer-resource cleanup.</DialogDescription></DialogHeader>
       <DialogPanel className="space-y-3">
         {jobs.map(([id, job]) => {

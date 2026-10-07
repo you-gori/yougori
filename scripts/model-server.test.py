@@ -89,6 +89,37 @@ class ModelServerTests(unittest.TestCase):
         with patch.object(server,"TOKENIZER",SimpleNamespace(chat_template="official")):
             self.assertFalse(server.base_chat())
 
+    def test_stream_stops_at_the_invented_phone_conversation_without_marking_it_cancelled(self):
+        class Streamer:
+            def __init__(self, *args, **kwargs): self.queue=queue.Queue()
+            def __iter__(self): return self
+            def __next__(self):
+                value=self.queue.get(timeout=1)
+                if value is None: raise StopIteration
+                return value
+            def end(self): self.queue.put(None)
+        def generate(**kwargs):
+            for text in ["Hello! How can I assist you today?", "\n\n  u", "ser: i want to get a new phone", "\nassistant: Great choice!"]:
+                kwargs["streamer"].queue.put(text)
+            self.assertTrue(kwargs["stopping_criteria"][0].event.wait(2))
+            kwargs["streamer"].end()
+            return SimpleNamespace(shape=(1,15))
+        output=io.BytesIO()
+        handler=SimpleNamespace(wfile=output,send_response=lambda *args:None,send_header=lambda *args:None,end_headers=lambda:None)
+        torch=SimpleNamespace(inference_mode=lambda:ExitStack(),cuda=SimpleNamespace(OutOfMemoryError=MemoryError))
+        meter={}
+        with patch.dict("sys.modules",transformers=SimpleNamespace(TextIteratorStreamer=Streamer,StoppingCriteriaList=list)), \
+             patch.object(server,"TOKENIZER",SimpleNamespace(chat_template=None,pad_token_id=0,eos_token_id=1)), \
+             patch.object(server,"TORCH",torch),patch.object(server,"NETWORK",SimpleNamespace(generate=generate)), \
+             patch.object(server,"prepare",return_value=({},2,0)),patch.object(server,"GENERATION",threading.Lock()):
+            server.generate({"messages":[{"role":"user","content":"hi"}],"stream":True},handler,meter)
+        events=[json.loads(line[6:]) for line in output.getvalue().decode().splitlines() if line.startswith("data: {")]
+        text="".join(event["choices"][0]["delta"].get("content","") for event in events)
+        self.assertEqual(text,"Hello! How can I assist you today?\n")
+        self.assertNotIn("phone",text)
+        self.assertEqual(meter["outcome"],"ok")
+        self.assertEqual(events[-1]["choices"][0]["finish_reason"],"stop")
+
     def test_model_http_failures_never_disclose_the_api_key(self):
         torch = SimpleNamespace(inference_mode=lambda: ExitStack(), cuda=SimpleNamespace(OutOfMemoryError=MemoryError))
         for failure in (ValueError, TypeError, TimeoutError):
@@ -529,6 +560,287 @@ class ModelServerTests(unittest.TestCase):
             http.shutdown()
             http.server_close()
             worker.join()
+
+class NetworkPrecisionTests(unittest.TestCase):
+    def test_original_precision_clears_previous_quantized_identity(self):
+        with patch.dict(os.environ, YOUGORI_MODEL_PRECISION="original"), patch.dict(server.STATE, quant="NF4", precision="4bit"):
+            self.assertEqual(server.inference_options(10, 1), {})
+            self.assertIsNone(server.STATE["quant"])
+            self.assertEqual(server.STATE["precision"], "original")
+
+    def test_four_and_eight_bit_precision_are_exposed_in_health(self):
+        for precision, quant in [("4bit", "NF4"), ("8bit", "INT8")]:
+            module = SimpleNamespace(BitsAndBytesConfig=Mock(return_value=object()))
+            with patch.dict(os.environ, YOUGORI_MODEL_PRECISION=precision), patch.dict(server.STATE), patch.object(server, "install"), patch.object(server, "TORCH", SimpleNamespace(bfloat16="bf16")), patch.dict("sys.modules", transformers=module):
+                server.inference_options(10, 1)
+                self.assertEqual(server.STATE["quant"], quant)
+
+class TypedDecisionTransportTests(unittest.TestCase):
+    def test_decision_sse_completes_with_json_and_real_input_usage(self):
+        class Handler:
+            def __init__(self): self.wfile = io.BytesIO(); self.headers = {}
+            def send_response(self, status): self.status = status
+            def send_header(self, name, value): self.headers[name] = value
+            def end_headers(self): pass
+        request = {"state": "new state", "questions": {"risk": {"type": "noul"}}}
+        result = {"model": server.MODEL, "answers": {"risk": {"type": "noul", "noul": 0.9}}, "usage": {"input_tokens": 123, "output_tokens": 0}}
+        def decide(value, meter):
+            self.assertEqual(value, request)
+            meter.update(outcome="ok", prompt_tokens=123, completion_tokens=0)
+            return 200, result
+        handler, meter = Handler(), {}
+        messages = [{"role": "user", "content": '{"state":"old"}'}, {"role": "assistant", "content": "old answer"}, {"role": "user", "content": json.dumps(request)}]
+        with patch.object(server, "DECISION_MODEL", True), patch.object(server, "FORMAT", "transformers"), patch.object(server, "generate_decision", side_effect=decide):
+            self.assertIsNone(server.generate({"messages": messages, "stream": True}, handler, meter))
+        data = handler.wfile.getvalue().decode()
+        chunk = json.loads(data.splitlines()[0][6:])
+        self.assertEqual(json.loads(chunk["choices"][0]["delta"]["content"]), result)
+        self.assertEqual(chunk["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(chunk["usage"], {"prompt_tokens":123, "completion_tokens":0, "total_tokens":123})
+        self.assertIn("data: [DONE]", data)
+        self.assertTrue(meter["stream"])
+
+    def test_invalid_decision_json_never_starts_inference(self):
+        with patch.object(server, "DECISION_MODEL", True), patch.object(server, "FORMAT", "transformers"), patch.object(server, "generate_decision") as run:
+            with self.assertRaises(ValueError): server.generate({"messages":[{"role":"user","content":"hello"}], "stream":True}, None, {})
+            run.assert_not_called()
+
+class VllmRunnerTests(unittest.TestCase):
+    def test_authenticated_public_proxy_streams_vllm_and_hides_native_endpoints(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        captured=[]
+        class Engine(BaseHTTPRequestHandler):
+            def log_message(self,*args): pass
+            def do_POST(self):
+                if self.headers.get('Authorization') != 'Bearer '+server.LLAMA['key']:
+                    self.send_response(401);self.end_headers();return
+                body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                captured.append((self.path,body))
+                self.send_response(200)
+                self.send_header('Content-Type','text/event-stream' if self.path.startswith('/v1/') else 'application/json')
+                self.end_headers()
+                if self.path=='/tokenize': self.wfile.write(b'{"count":5}')
+                else:
+                    for value in [{'choices':[{'delta':{'content':'Hello'},'finish_reason':None}]}, {'choices':[{'delta':{},'finish_reason':'stop'}]}, {'choices':[], 'usage':{'completion_tokens':1}}]:
+                        self.wfile.write(b'data: '+json.dumps(value).encode()+b'\n\n')
+                    self.wfile.write(b'data: [DONE]\n\n')
+        native=ThreadingHTTPServer(('127.0.0.1',0),Engine)
+        public=server.Server(('127.0.0.1',0),server.Handler)
+        for listener in (native,public):threading.Thread(target=listener.serve_forever,daemon=True).start()
+        try:
+            with patch.object(server,'FORMAT','vllm'),patch.object(server,'DECISION_MODEL',False),patch.dict(server.LLAMA,port=native.server_port,context=2048),patch.dict(server.STATE,status='ready'),patch.object(server,'record_usage'):
+                base='http://127.0.0.1:'+str(public.server_port)
+                body=json.dumps({'messages':[{'role':'user','content':'Hello'}],'stream':True}).encode()
+                with self.assertRaises(HTTPError) as unauthorized: urlopen(Request(base+'/v1/chat/completions',data=body),timeout=3)
+                self.assertEqual(unauthorized.exception.code,401)
+                self.assertEqual(captured,[])
+                with self.assertRaises(HTTPError) as hidden: urlopen(Request(base+'/tokenize',data=b'{}',headers={'Authorization':'Bearer '+server.TOKEN}),timeout=3)
+                self.assertEqual(hidden.exception.code,404)
+                with urlopen(Request(base+'/v1/chat/completions',data=body,headers={'Authorization':'Bearer '+server.TOKEN}),timeout=3) as response:
+                    content=response.read().decode()
+                events=[json.loads(line[6:]) for line in content.splitlines() if line.startswith('data: {')]
+                self.assertEqual(events[1]['choices'][0]['delta']['content'],'Hello')
+                self.assertEqual(events[-1]['usage'],{'prompt_tokens':5,'completion_tokens':1,'total_tokens':6})
+                self.assertIn('data: [DONE]',content)
+                self.assertEqual([p for p,_ in captured],['/tokenize','/v1/chat/completions'])
+                self.assertFalse(server.GENERATION.locked())
+        finally:
+            for listener in (public,native):listener.shutdown();listener.server_close()
+
+    def test_moe_memory_counts_all_weights_before_any_download(self):
+        cuda = SimpleNamespace(is_available=lambda:True, device_count=lambda:1,
+            get_device_capability=lambda i:(12,0), mem_get_info=lambda i:(24*2**30,24*2**30))
+        with self.assertRaisesRegex(RuntimeError, "No model weights were downloaded"):
+            server.vllm_hardware({"num_attention_heads":48,"num_key_value_heads":4}, 78*2**30, cuda)
+        cuda.device_count=lambda:2
+        cuda.mem_get_info=lambda i:(80*2**30,80*2**30)
+        self.assertEqual(server.vllm_hardware({"num_attention_heads":48,"num_key_value_heads":4},78*2**30,cuda),2)
+        cuda.device_count=lambda:5
+        with self.assertRaisesRegex(RuntimeError,"attention heads"):
+            server.vllm_hardware({"num_attention_heads":48,"num_key_value_heads":4},78*2**30,cuda)
+
+    def test_tokenization_and_generation_share_the_same_template_options(self):
+        request={"messages":[{"role":"user","content":"Hello"}],"max_tokens":20,"stream":False}
+        upstream={"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"completion_tokens":2}}
+        connection, response=Mock(),Mock(status=200)
+        response.read.return_value=json.dumps(upstream).encode()
+        def tokenize(path, body):
+            self.assertEqual(path,"/tokenize")
+            self.assertEqual(body["chat_template_kwargs"],{"enable_thinking":False})
+            self.assertFalse(body["add_special_tokens"])
+            return {"count":5}
+        with patch.object(server,"FORMAT","vllm"),patch.dict(server.STATE,chatTemplate=False),patch.dict(server.LLAMA,context=2048),patch.object(server,"llama_json",side_effect=tokenize),patch.object(server,"llama",return_value=(connection,response)) as call:
+            meter={}
+            status,result=server.generate(request,None,meter)
+        self.assertEqual(status,200)
+        self.assertEqual(result["choices"][0]["message"]["content"],"Hi")
+        self.assertEqual(result["usage"],{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7})
+        forwarded=call.call_args.args[1]
+        self.assertEqual(forwarded["model"],server.MODEL)
+        self.assertEqual(forwarded["chat_template_kwargs"],{"enable_thinking":False})
+        self.assertEqual(forwarded["chat_template"],server.BASE_TEMPLATE)
+        self.assertIn("\nuser:",forwarded["stop"])
+        self.assertNotIn("t_max_predict_ms",forwarded)
+        connection.close.assert_called_once()
+        self.assertFalse(server.GENERATION.locked())
+
+    def test_partial_stream_is_an_error_and_not_a_completed_response(self):
+        handler=Mock(wfile=io.BytesIO())
+        response=io.BytesIO(b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
+        meter={}
+        server.stream_gguf(handler,response,10,30,{},meter)
+        self.assertEqual(meter["outcome"],"error")
+        self.assertIn(b'before a complete response',handler.wfile.getvalue())
+
+    def test_kolibri_startup_pins_revision_and_keeps_private_engine_offline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config={"model_type":"kolibri1","architectures":["Kolibri1ForCausalLM"],"num_attention_heads":48,"num_key_value_heads":4,"max_position_embeddings":262144,"quantization_config":{"quant_method":"fp8"},"dtype":"bfloat16"}
+            path=Path(folder)/'config.json';path.write_text(json.dumps(config))
+            cuda=SimpleNamespace(is_available=lambda:True,device_count=lambda:2,get_device_capability=lambda i:(9,0),mem_get_info=lambda i:(80*2**30,80*2**30),get_device_name=lambda i:'H100')
+            meta=SimpleNamespace(sha='a'*40,siblings=[SimpleNamespace(rfilename='model.safetensors',size=78*2**30)])
+            hub=SimpleNamespace(HfApi=Mock(),hf_hub_download=Mock(return_value=str(path)))
+            hub.HfApi.return_value.model_info.return_value=meta
+            process=Mock();process.poll.return_value=None
+            connection,response=Mock(),Mock(status=200)
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict('sys.modules',torch=SimpleNamespace(cuda=cuda),huggingface_hub=hub))
+                stack.enter_context(patch.object(server,'MODEL_REVISION','a'*40))
+                stack.enter_context(patch.object(server.importlib.metadata,'version',return_value='0.29.0'))
+                stack.enter_context(patch.object(server,'kolibri_plugin'))
+                snapshot=stack.enter_context(patch.object(server,'verified_snapshot',return_value=folder))
+                spawn=stack.enter_context(patch.object(server.subprocess,'Popen',return_value=process))
+                stack.enter_context(patch.object(server,'llama',return_value=(connection,response)))
+                stack.enter_context(patch.object(server.threading,'Thread'))
+                stack.enter_context(patch.dict(server.STATE));stack.enter_context(patch.dict(server.LLAMA))
+                stack.enter_context(patch.object(server,'ENGINE_PROCESS',None))
+                stack.enter_context(patch.dict(os.environ,HF_TOKEN='private-hf',YOUGORI_MODEL_TOKEN='private-model'))
+                server.load_vllm()
+                self.assertEqual(server.STATE['runner'],'vllm')
+                self.assertEqual(server.STATE['quant'],'FP8')
+                self.assertEqual(server.STATE['context'],32768)
+                snapshot.assert_called_once_with('a'*40)
+                args=spawn.call_args.args[0];env=spawn.call_args.kwargs['env']
+                self.assertIn('--reasoning-parser',args);self.assertIn('kolibri1',args)
+                self.assertNotIn('--trust-remote-code',args);self.assertNotIn('--enable-log-requests',args)
+                self.assertNotIn('HF_TOKEN',env);self.assertNotIn('YOUGORI_MODEL_TOKEN',env)
+                self.assertEqual(env['HF_HUB_OFFLINE'],'1')
+                self.assertEqual(env['VLLM_PLUGINS'],'aleph_alpha_inference')
+                self.assertEqual(args[args.index('--host')+1],'127.0.0.1')
+                self.assertEqual(spawn.call_args.kwargs['stdout'],server.subprocess.DEVNULL)
+                self.assertEqual(spawn.call_args.kwargs['stderr'],server.subprocess.DEVNULL)
+                meta.sha='b'*40
+                snapshot.reset_mock()
+                with self.assertRaisesRegex(RuntimeError,'immutable revision'): server.load_vllm()
+                snapshot.assert_not_called()
+
+class FreeListenerTests(unittest.TestCase):
+    def records(self,path):
+        deadline=time.monotonic()+2
+        while time.monotonic()<deadline:
+            data=path.read_text() if path.exists() else ""
+            if data.endswith("\n"): return json.loads(data)
+            time.sleep(0.01)
+        self.fail("Inference recording was not saved")
+    @contextmanager
+    def listener(self, generate=None):
+        with ExitStack() as stack:
+            folder=stack.enter_context(tempfile.TemporaryDirectory())
+            path=Path(folder)/"yougori-listen"/"requests.jsonl"
+            stack.enter_context(patch.object(server,"LISTEN_PATH",str(path)))
+            stack.enter_context(patch.object(server,"LISTEN",{"enabled":False,"expires":0.0,"generation":0,"error":None}))
+            stack.enter_context(patch.object(server,"record_usage"))
+            stack.enter_context(patch.dict(server.STATE,status="ready"))
+            if generate: stack.enter_context(patch.object(server,"generate",side_effect=generate))
+            http=server.Server(("127.0.0.1",0),server.Handler)
+            worker=threading.Thread(target=http.serve_forever,daemon=True);worker.start()
+            base="http://127.0.0.1:"+str(http.server_port)
+            def request(endpoint, body=None, authorized=True):
+                headers={"Authorization":"Bearer "+server.TOKEN} if authorized else {}
+                return urlopen(Request(base+endpoint,data=json.dumps(body).encode() if body is not None else None,headers=headers),timeout=3)
+            try: yield path,request
+            finally: http.shutdown();http.server_close();worker.join()
+
+    def test_recording_is_off_by_default_and_requires_authenticated_free_configuration(self):
+        def generate(body,handler,meter):
+            meter.update(outcome="ok",prompt_tokens=5,completion_tokens=2)
+            return 200,{"choices":[{"message":{"content":"private reply"}}]}
+        body={"messages":[{"role":"user","content":"private prompt"}]}
+        with self.listener(generate) as (path,request):
+            request("/v1/chat/completions",body).close()
+            self.assertFalse(path.exists())
+            for config,auth,status in [({"enabled":True,"mode":"free"},False,401),({"enabled":True,"mode":"paid"},True,400),({"enabled":True,"mode":"free","token":"secret"},True,400)]:
+                with self.assertRaises(HTTPError) as error: request("/v1/listen/config",config,auth)
+                self.assertEqual(error.exception.code,status)
+            request("/v1/listen/config",{"enabled":True,"mode":"free"}).close()
+            request("/v1/chat/completions",body).close()
+            value=self.records(path)
+            self.assertEqual(value["request"],body)
+            self.assertEqual(value["response"]["choices"][0]["message"]["content"],"private reply")
+            self.assertNotIn(server.TOKEN,path.read_text())
+            size=path.stat().st_size
+            request("/v1/listen/config",{"enabled":False,"mode":"paid"}).close()
+            request("/v1/chat/completions",body).close()
+            self.assertEqual(path.stat().st_size,size)
+            with self.assertRaises(HTTPError) as error: request("/v1/listen/requests")
+            self.assertEqual(error.exception.code,404,"Recording files must not be public API endpoints")
+
+    def test_streamed_reply_and_cancelled_partial_output_are_recorded_without_headers(self):
+        def generate(body,handler,meter):
+            meter.update(outcome="cancelled",stream=True,prompt_tokens=6,completion_tokens=2)
+            handler.send_response(200);handler.send_header("Content-Type","text/event-stream");handler.end_headers()
+            for content in ["hello ","world"]:
+                event={"choices":[{"delta":{"content":content}}]}
+                handler.wfile.write(("data: "+json.dumps(event)+"\n\n").encode())
+            handler.wfile.write(b"data: [DONE]\n\n")
+        with self.listener(generate) as (path,request):
+            request("/v1/listen/config",{"enabled":True,"mode":"free"}).close()
+            request("/v1/chat/completions",{"messages":[{"role":"user","content":"hi"}],"stream":True}).read()
+            value=self.records(path)
+            self.assertEqual(value["response"]["content"],"hello world")
+            self.assertEqual(value["outcome"],"cancelled")
+            self.assertEqual(len(value["response"]["events"]),2)
+            self.assertNotIn("Content-Type",path.read_text())
+
+    def test_typed_decisions_and_storage_errors_do_not_break_inference(self):
+        def decide(body,meter):
+            meter.update(outcome="ok",prompt_tokens=42,completion_tokens=0)
+            return 200,{"answers":{"risk":0.7}}
+        with self.listener() as (path,request), patch.object(server,"DECISION_MODEL",True), patch.object(server,"generate_decision",side_effect=decide):
+            request("/v1/listen/config",{"enabled":True,"mode":"free"}).close()
+            body={"model":server.MODEL,"state":"account activity","questions":{"risk":{"type":"score"}}}
+            request("/v1/systemone",body).read()
+            value=self.records(path);self.assertEqual(value["request"],body);self.assertEqual(value["response"]["answers"]["risk"],0.7)
+            with patch.object(server,"listen_file",side_effect=OSError("caller content must not leak")):
+                result=json.load(request("/v1/systemone",body));self.assertEqual(result["answers"]["risk"],0.7)
+                self.assertEqual(server.listen_snapshot()["error"],"Cannot write recording history; check model storage")
+
+    def test_lease_expiry_rotation_and_disable_discard_inflight_recording(self):
+        with self.listener() as (path,request):
+            server.configure_listen({"enabled":True,"mode":"free"})
+            body={"messages":[{"role":"user","content":"hello"}]};meter={"outcome":"ok"}
+            def capture():
+                value=server.ListenCapture(io.BytesIO());value.write(b'HTTP/1.1 200 OK\r\nAuthorization: Bearer secret\r\n\r\n{"answer":"reply"}');return value
+            with patch.object(server,"LISTEN_MAX_FILE",256):
+                for _ in range(8): server.record_listen(capture(),body,"api","/v1/chat/completions",meter,1)
+            self.assertEqual(len(list(path.parent.glob("requests.jsonl*"))),5)
+            for item in path.parent.glob("requests.jsonl*"): self.assertNotIn("Bearer",item.read_text())
+            old=capture();size=path.stat().st_size
+            server.configure_listen({"enabled":False,"mode":"paid"})
+            server.record_listen(old,body,"api","/v1/chat/completions",meter,1)
+            self.assertEqual(path.stat().st_size,size)
+            server.configure_listen({"enabled":True,"mode":"free"})
+            server.LISTEN["expires"]=0
+            self.assertFalse(server.listen_snapshot()["enabled"])
+            self.assertIsNone(capture().generation)
+
+    def test_oversized_output_is_bounded_and_marked_truncated(self):
+        with self.listener() as (path,request):
+            server.configure_listen({"enabled":True,"mode":"free"})
+            with patch.object(server,"LISTEN_MAX_RESPONSE",128):
+                capture=server.ListenCapture(io.BytesIO());capture.write(b'HTTP/1.1 200 OK\r\n\r\n'+b'x'*1000)
+                self.assertEqual(len(capture.data),128);self.assertTrue(capture.truncated)
+            server.record_listen(capture,{"messages":[{"role":"user","content":"hi"}]},"api","/v1/chat/completions",{"outcome":"ok"},1)
+            self.assertTrue(self.records(path)["truncated"])
 
 if __name__ == "__main__":
     unittest.main()

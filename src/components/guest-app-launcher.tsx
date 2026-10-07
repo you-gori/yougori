@@ -37,7 +37,7 @@ export function GuestAppLauncher({ environment }: { environment: Environment }) 
   const place = container ? "container" : "MicroVM"
   return <Dialog open={open} onOpenChange={setOpen}>
     <DialogTrigger render={<Button type="button" aria-label="Apps" title="Graphical apps" variant="outline" size="sm" disabled={environment.status !== "running"} />}><AppWindowIcon aria-hidden="true" /><span className="hidden sm:inline">Apps</span></DialogTrigger>
-    <DialogPopup className="sm:max-w-xl">
+    <DialogPopup className="sm:max-w-3xl">
       <DialogHeader><DialogTitle>Apps · {environment.name}</DialogTitle><DialogDescription>Run graphical Linux apps in this {place}, each in its own window. Closing a viewer leaves the app running; Stop app ends it.</DialogDescription></DialogHeader>
       <DialogPanel className="flex flex-col gap-5">
         {!enoughMemory ? <p role="status" className="rounded-lg border p-3 text-xs text-muted-foreground">This {place} is running with {environment.resourcePolicy.memoryGb.current} GB. {container ? "Give it at least 0.5 GB for graphical apps, and 2 GB for browsers." : "Set Preferred memory to at least 0.5 GB and restart for graphical apps. For browsers, start with 2 GB."}</p> : null}

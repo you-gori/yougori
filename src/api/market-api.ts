@@ -6,7 +6,12 @@ export interface NetworkNode {
   mode: SharingMode
   gpu: string | null
   tps: number | null
-  tpsSource: "window" | "average" | null
+  tpsSource: "window" | "average" | "benchmark" | null
+  task?: "structured-decision" | "text-generation"
+  speedMetric?: "input_tokens" | "output_tokens"
+  quant?: string | null
+  modelId?: string
+  admission?: "pending" | "passed" | "failed"
   uptimeTodaySeconds: number
   uptimeWeekSeconds: number
   availability: number | null
@@ -34,7 +39,7 @@ export interface NetworkStatus {
   login: { userCode: string; verificationUrl: string; verificationUrlComplete: string; expiresIn: number; error: string | null } | null
   shares: NetworkShare[]
 }
-const desktop = () => { throw new Error("Open Yougori Desktop to use the Network") }
+const desktop = () => { throw new Error("Open Yougori Desktop to use Neo Grid") }
 export const marketApi = {
   status: () => run<NetworkStatus>("market_status", {}, desktop),
   signIn: () => run<NetworkStatus>("market_sign_in", {}, desktop),

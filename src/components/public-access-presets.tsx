@@ -30,7 +30,7 @@ export function SavedSetupCard({ preset, onManage, wiring }: { preset: PublicAcc
   </div>
 }
 
-export function PublicAccessPresets({ environments, refresh, wiring }: { environments: GraphEnvironment[]; refresh(id: string): Promise<void>; wiring: PresetWiring }) {
+export function PublicAccessPresets({ environments, refresh, wiring }: { environments: GraphEnvironment[]; refresh(id: string): Promise<void>; wiring?: PresetWiring }) {
   const [open, setOpen] = useState(false)
   const topic = useTopicWalkthroughModal(open)
   const [presets, setPresets] = useState(readPublicAccessPresets)
@@ -129,9 +129,9 @@ export function PublicAccessPresets({ environments, refresh, wiring }: { environ
   const openManager = () => { setPresets(readPublicAccessPresets()); setTarget(null); setError(""); setMessage(""); setOpen(true) }
 
   return <>
-    {presets.map(preset => <SavedSetupCard key={preset.id} preset={preset} onManage={openManager} wiring={wiring} />)}
+    {wiring ? presets.map(preset => <SavedSetupCard key={preset.id} preset={preset} onManage={openManager} wiring={wiring} />) : null}
     <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!busy && !(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
-      <DialogPopup data-instruction="public-presets-dialog" className="max-w-2xl" closeProps={{ disabled: busy }}>
+      <DialogPopup data-instruction="public-presets-dialog" className="max-w-3xl" closeProps={{ disabled: busy }}>
         <DialogHeader><DialogTitle>Public access setups</DialogTitle><DialogDescription>Save a domain and app port once, then use it with any environment running an app on that port. Each domain needs its own dedicated Cloudflare tunnel and local bridge port.</DialogDescription></DialogHeader>
         <DialogPanel className="space-y-5">
           {error ? <p role="alert" className="text-sm text-destructive-foreground">{error}</p> : null}

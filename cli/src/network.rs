@@ -62,9 +62,34 @@ pub async fn signed_in() -> Result<bool, String> {
 
 pub const SIGN_IN_FIRST: &str = "Sign in to the Yougori Network first: yougori login. Sign in or create a free account with your wallet in the browser, then approve the CLI or App.";
 
+pub fn validate_listen(mode: Option<&str>, listen: bool) -> Result<(), String> {
+    if listen && mode != Some("free") { return Err("--listen requires --nowfree".into()); }
+    Ok(())
+}
+
 pub async fn share(environment_id: &str, mode: &str) -> Result<Value, String> {
-    eprintln!("Network privacy: providers and the Yougori gateway can read prompts and replies during inference. Do not record or reuse caller content. Hardware-enforced host privacy is unavailable. https://yougori.com/privacy");
-    call("market_share_model", json!({"environmentId": environment_id, "mode": mode})).await
+    share_with_listen(environment_id, mode, false).await
+}
+
+pub async fn share_with_listen(environment_id: &str, mode: &str, listen: bool) -> Result<Value, String> {
+    validate_listen(Some(mode), listen)?;
+    if !listen { eprintln!("Network privacy: providers and the Yougori gateway can read prompts and replies during inference. Hardware-enforced host privacy is unavailable. https://yougori.com/privacy"); }
+    let result = call("market_share_model", json!({"environmentId": environment_id, "mode": mode, "listen": listen})).await?;
+    if listen {
+        if let Some(path) = result["listenPath"].as_str() {
+            eprintln!("Listening · prompts and replies saved in the model container: {path}");
+            eprintln!("View: yougori terminal {environment_id}, then tail -F {}", shell_words::quote(path));
+        } else {
+            eprintln!("Listening requested · recording starts when the free model runner is ready; its container path will appear in model status.");
+        }
+    }
+    Ok(result)
+}
+
+/// Caller text is printed as JSON so terminal control sequences remain escaped.
+pub fn listen_command(path: &str) -> String {
+    let formatter = "import sys,json\nfor line in sys.stdin:\n try:\n  record=json.loads(line); reply=record['response']; reply={k:v for k,v in reply.items() if k!='events'} if isinstance(reply,dict) else reply\n  print('\\nREQUEST '+record['id']+' | '+record['outcome']+'\\nPROMPT\\n'+json.dumps(record['request'],ensure_ascii=False,indent=2)+'\\nOUTPUT\\n'+json.dumps(reply,ensure_ascii=False,indent=2),flush=True)\n except (ValueError,KeyError): pass";
+    format!("tail -n 10 -F -- {} | python3 -u -c {}",shell_words::quote(path),shell_words::quote(formatter))
 }
 
 /// This environment's share, once the engine has registered and checked it (up to `wait`).
@@ -110,8 +135,11 @@ pub fn summary(share: &Value) -> String {
     if node.is_object() {
         parts.push(if node["mode"] == "free" { "free for everyone".into() } else { price(node) });
         if let Some(tps) = node["tps"].as_f64() {
-            parts.push(format!("{tps:.1} tok/s ({})", if node["tpsSource"] == "window" { "last 15 min" } else { "average" }));
+            parts.push(format!("{tps:.1} {}tok/s ({})", if node["speedMetric"] == "input_tokens" {"input "} else {""}, if node["tpsSource"] == "window" { "last 15 min" } else if node["tpsSource"] == "benchmark" { "connection benchmark" } else { "average" }));
         }
+    }
+    if share["listen"] == true {
+        parts.push(share["listenPath"].as_str().map(|path|format!("recording to {path}")).unwrap_or_else(||"recording requested".into()));
     }
     parts.join(" · ")
 }
@@ -182,5 +210,14 @@ mod tests {
         let text = render("account", &account);
         assert!(text.contains("a@b.c") && text.contains("$1.50 credit") && text.contains("not connected"));
         assert!(render("account", &json!({"signedIn":false})).contains("yougori login"));
+    }
+}
+
+#[cfg(test)] mod listen_tests {
+    #[test] fn recording_path_is_shell_quoted_as_data() {
+        let path="/cache/owner's models/requests;bad.jsonl";
+        let args=shell_words::split(&super::listen_command(path)).unwrap();
+        assert_eq!(args[5],path);assert_eq!(args[6],"|");assert_eq!(args[9],"-c");
+        assert!(args[10].contains("json.dumps"));
     }
 }

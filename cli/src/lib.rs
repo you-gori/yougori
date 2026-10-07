@@ -1,4 +1,7 @@
 pub mod catalog;
+pub mod decisions;
+pub mod architecture_support;
+pub mod model_invocation;
 pub mod client;
 pub mod parse;
 pub mod skills;
@@ -6,6 +9,7 @@ pub mod wire;
 pub mod manifest;
 pub mod workload;
 pub mod public;
+pub mod storage;
 pub mod overview;
 pub mod project_files;
 pub mod launcher_state;

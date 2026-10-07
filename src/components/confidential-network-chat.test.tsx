@@ -13,7 +13,7 @@ function form() {
   fireEvent.change(screen.getByLabelText("Local attestation policy"), { target: { value: "C:/verified/policy.json" } })
   fireEvent.change(screen.getByLabelText("Provider ID"), { target: { value: "nd_example" } })
   fireEvent.change(screen.getByLabelText("Model repository"), { target: { value: "hf.co/test/model" } })
-  fireEvent.change(screen.getByLabelText("Network API key"), { target: { value: "synthetic-key" } })
+  fireEvent.change(screen.getByLabelText("Neo Grid API key"), { target: { value: "synthetic-key" } })
   fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "synthetic private prompt" } })
   return screen.getByRole("button", { name: "Verify and send encrypted" })
 }
@@ -23,7 +23,7 @@ it("uses direct native encryption without storing keys or conversation history",
   fireEvent.click(form())
   expect(await screen.findByLabelText("Decrypted response")).toHaveTextContent("decrypted test reply")
   expect(mocks.invoke).toHaveBeenCalledWith("confidential_network_chat", { apiKey: "synthetic-key", nodeId: "nd_example", model: "test/model", prompt: "synthetic private prompt", policyPath: "C:/verified/policy.json" })
-  expect(screen.getByLabelText("Network API key")).toHaveValue("")
+  expect(screen.getByLabelText("Neo Grid API key")).toHaveValue("")
   expect(store).not.toHaveBeenCalled(); store.mockRestore()
 })
 it("reports attestation denial without falling back to another inference path", async () => {
@@ -32,5 +32,5 @@ it("reports attestation denial without falling back to another inference path", 
   expect(await screen.findByRole("alert")).toHaveTextContent("No prompt was sent")
   expect(mocks.invoke).toHaveBeenCalledTimes(1)
   expect(screen.queryByLabelText("Decrypted response")).not.toBeInTheDocument()
-  await waitFor(() => expect(screen.getByLabelText("Network API key")).toHaveValue(""))
+  await waitFor(() => expect(screen.getByLabelText("Neo Grid API key")).toHaveValue(""))
 })

@@ -70,6 +70,8 @@ struct Share {
     model: String,
     mode: String,
     #[serde(default)]
+    listen: bool,
+    #[serde(default)]
     node_id: Option<String>,
     /// The public link Yougori opened for sharing; removed again when sharing stops.
     #[serde(default)]
@@ -81,6 +83,7 @@ struct Share {
 #[derive(Clone, Default)]
 struct Live {
     status: String,
+    listen_path: Option<String>,
     message: String,
     online: bool,
     beat: Option<Instant>,
@@ -195,6 +198,8 @@ fn describe(share: &Share) -> Value {
     json!({
         "environmentId": share.environment_id,
         "model": share.model,
+        "listen": share.listen && share.mode == "free",
+        "listenPath": share.live.listen_path,
         "mode": share.live.node.as_ref().and_then(|node| node["mode"].as_str()).unwrap_or(&share.mode),
         "nodeId": share.node_id,
         "status": if share.live.status.is_empty() { "starting" } else { share.live.status.as_str() },
@@ -415,6 +420,7 @@ pub async fn market_sign_out(app: AppHandle) -> Result<Value, String> {
 
 /// Removes a share's registration, credentials and the public link Yougori opened for it.
 async fn leave(app: &AppHandle, share: &Share, token: Option<&str>) {
+    if share.listen { let _ = crate::model_runner::configure_listen(app, &share.environment_id, "free", false).await; }
     if let (Some(id), Some(token)) = (&share.node_id, token) {
         let _ = api(reqwest::Method::POST, &format!("/api/market/nodes/{id}/remove"), Some(token), Some(&json!({}))).await;
     }
@@ -433,12 +439,14 @@ fn model_of(app: &AppHandle, environment_id: &str) -> Result<(String, Option<Str
     Ok((model, Some(if gguf { "llama.cpp" } else { "transformers" }.to_owned()), options.environment.get("YOUGORI_MODEL_QUANT").cloned()))
 }
 
-/// `--now` (paid) or `--nowfree` (free). Paid sharing applies to priced models; others are shared free.
+/// `--now` (automatic paid pricing) or `--nowfree` (free).
 #[tauri::command]
-pub async fn market_share_model(environment_id: String, mode: String, app: AppHandle) -> Result<Value, String> {
+pub async fn market_share_model(environment_id: String, mode: String, listen: Option<bool>, app: AppHandle) -> Result<Value, String> {
     if !matches!(mode.as_str(), "paid" | "free") {
         return Err("Choose paid or free sharing".into());
     }
+    let listen = listen.unwrap_or(false);
+    if listen && mode != "free" { return Err("--listen requires --nowfree".into()); }
     ensure_loaded(&app).await;
     let market = app.state::<Market>();
     let _guard = market.sync.lock().await;
@@ -453,12 +461,14 @@ pub async fn market_share_model(environment_id: String, mode: String, app: AppHa
             environment_id: environment_id.clone(),
             model: model.clone(),
             mode: mode.clone(),
+            listen,
             node_id: None,
             published: None,
             live: Live::default(),
         });
         let reregister = share.mode != mode || share.model != model;
         share.mode = mode;
+        share.listen = listen;
         share.model = model;
         if reregister {
             // A changed mode or model is a new registration of the same environment.
@@ -541,6 +551,18 @@ fn reconnect_due(live: &Live) -> bool {
 }
 
 /// Brings one share up to date: public link when the model is ready, registration, heartbeat.
+fn sharing_details(status: &str, health: &Value, runner: Option<&str>, quant: Option<&str>) -> Value {
+    let measured_quant = health["quant"].as_str().or_else(|| match health["precision"].as_str() {
+        Some("4bit") => Some("NF4"), Some("8bit") => Some("INT8"), _ => quant,
+    });
+    json!({
+        "status": status, "runner": health["runner"].as_str().or(runner), "quant": measured_quant,
+        "revision": health["revision"], "precision": health["precision"],
+        "appVersion": env!("CARGO_PKG_VERSION"), "gpu": health["gpu"],
+        "gpuCount": health["gpuCount"], "context": health["context"],
+    })
+}
+
 async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     let market = app.state::<Market>();
     let Some(mut share) = market.inner.lock().await.shares.get(environment_id).cloned() else { return Ok(()) };
@@ -561,9 +583,19 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     } else {
         None
     };
+    // Apply recording before publishing/registering any model, including paid transitions.
+    if let Some(health) = &health {
+        if health["listen"]["supported"] == true {
+            let settings = crate::model_runner::configure_listen(app, environment_id, &share.mode, share.listen).await?;
+            share.live.listen_path = settings["path"].as_str().map(str::to_owned);
+        } else if share.listen {
+            return Err("This running model uses an older runner. Stop it and run it again with --nowfree --listen to enable recording; its model files are kept.".into());
+        }
+    }
     let status = if running { health.as_ref().and_then(|h| h["status"].as_str()).unwrap_or("starting") } else { "stopped" }.to_owned();
     let (_, runner, quant) = model_of(app, environment_id)?;
     let mut access = None;
+    let mut link_error = None;
     if status == "ready" {
         let mut current = crate::model_runner::api_status(app, environment_id).await?;
         if current["publicUrl"].is_null() {
@@ -571,9 +603,13 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
                 let id=share.published.take().unwrap();
                 crate::automation::dispatch::dispatch(app,"unpublish_environment_service",&json!({"publicationId":id})).await?;
             }
-            let publication = crate::automation::dispatch::dispatch(app, "publish_environment_service", &json!({"environmentId": environment_id, "port": 8000, "kind": "cloudflare"})).await?;
-            share.published = publication["id"].as_str().map(str::to_owned);
-            current = crate::model_runner::api_status(app, environment_id).await?;
+            match crate::automation::dispatch::dispatch(app, "publish_environment_service", &json!({"environmentId": environment_id, "port": 8000, "kind": "cloudflare"})).await {
+                Ok(publication) => {
+                    share.published = publication["id"].as_str().map(str::to_owned);
+                    current = crate::model_runner::api_status(app, environment_id).await?;
+                }
+                Err(error) => link_error = Some(error),
+            }
         }
         access = Some(current);
     }
@@ -584,10 +620,7 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
         share.live.link_failures=0;
     }
     let health = health.unwrap_or(Value::Null);
-    let mut details = json!({
-        "status": status, "runner": runner, "quant": quant, "appVersion": env!("CARGO_PKG_VERSION"),
-        "gpu": health["gpu"], "gpuCount": health["gpuCount"], "context": health["context"],
-    });
+    let mut details = sharing_details(&status, &health, runner.as_deref(), quant.as_deref());
     if let Some(map) = details.as_object_mut() {
         map.retain(|_, value| !value.is_null());
     }
@@ -637,7 +670,7 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
     let reported = Some((status.clone(), public_url.clone()));
     if share.live.beat.is_none_or(|at| at.elapsed() >= if status=="ready" && !share.live.online { TICK } else { HEARTBEAT }) || share.live.reported != reported {
         let mut body = details;
-        if share.live.sent_url != public_url {
+        if share.live.sent_url != public_url || link_error.is_some() {
             body["publicUrl"] = json!(public_url);
             if public_url.is_some() {
                 body["apiKey"] = json!(api_key);
@@ -651,11 +684,11 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
                 share.live.sent_url = public_url;
                 share.live.reported = reported;
                 share.live.beat = Some(Instant::now());
-                share.live.link_failures=if share.live.online {0} else if status=="ready" && value["lastError"].is_string() {share.live.link_failures.saturating_add(1)} else {0};
+                share.live.link_failures=if share.live.online {0} else if status=="ready" && value["lastErrorCode"]=="public_link_unavailable" {share.live.link_failures.saturating_add(1)} else {0};
                 share.live.message = if share.live.online {
                     "Live on the Yougori Network".into()
                 } else if status == "ready" {
-                    if value["lastError"].is_string() {"Local model ready; public link is offline".into()} else {"Checking the public link".into()}
+                    if value["lastError"].is_string() {value["lastError"].as_str().unwrap().into()} else {"Checking provider eligibility and measuring token speed".into()}
                 } else {
                     waiting(&status).into()
                 };
@@ -691,6 +724,10 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
         share.live.reported=None;
         share.live.beat=None;
     }
+    if let Some(error) = link_error {
+        share.live.online = false;
+        share.live.message = format!("Model ready locally; public sharing offline. {error} Yougori will retry automatically.");
+    }
     share.live.status = status;
     store_share(app, share).await
 }
@@ -701,7 +738,7 @@ async fn store_share(app: &AppHandle, share: Share) -> Result<(), String> {
     let Some(current) = inner.shares.get_mut(&share.environment_id) else { return Ok(()) };
     let saved = current.node_id != share.node_id || current.published != share.published;
     // A share command may have changed the mode while this pass ran; keep the newer intent.
-    if current.mode == share.mode && current.model == share.model {
+    if current.mode == share.mode && current.model == share.model && current.listen == share.listen {
         *current = share;
     }
     if saved {
@@ -756,8 +793,18 @@ pub(crate) fn start(app: &AppHandle) {
 mod tests {
     use super::*;
     #[test]
+    fn sharing_reports_actual_runtime_precision_and_revision() {
+        let health = json!({"runner":"transformers", "precision":"4bit", "revision":"a".repeat(40)});
+        let details = sharing_details("ready", &health, Some("transformers"), None);
+        assert_eq!(details["quant"], "NF4");
+        assert_eq!(details["revision"], health["revision"]);
+        let gguf = sharing_details("ready", &json!({"quant":"Q5_K_M", "runner":"llama.cpp"}), Some("transformers"), Some("Q4_K_M"));
+        assert_eq!(gguf["quant"], "Q5_K_M");
+        assert_eq!(gguf["runner"], "llama.cpp");
+    }
+    #[test]
     fn tunnel_recovery_is_owned_bounded_and_waits_for_dns_propagation() {
-        let share=Share { environment_id:"env".into(),model:"owner/model".into(),mode:"free".into(),node_id:None,published:Some("owned".into()),live:Live::default() };
+        let share=Share { environment_id:"env".into(),model:"owner/model".into(),mode:"free".into(),listen:false,node_id:None,published:Some("owned".into()),live:Live::default() };
         assert!(owned_quick_link(&share,&json!({"publicId":"owned","publicAccount":false})));
         assert!(!owned_quick_link(&share,&json!({"publicId":"other","publicAccount":false})));
         assert!(!owned_quick_link(&share,&json!({"publicId":"owned","publicAccount":true})));
@@ -819,7 +866,7 @@ mod tests {
     fn status_lists_shares_without_credentials() {
         let mut inner = Inner::default();
         inner.shares.insert("env-1".into(), Share {
-            environment_id: "env-1".into(), model: "google/gemma-4-31B".into(), mode: "paid".into(),
+            environment_id: "env-1".into(), model: "google/gemma-4-31B".into(), mode: "paid".into(), listen: false,
             node_id: Some("nd_1".into()), published: Some("pub-1".into()),
             live: Live { status: "ready".into(), online: true, sent_url: Some("https://secret.trycloudflare.com/v1".into()), ..Live::default() },
         });

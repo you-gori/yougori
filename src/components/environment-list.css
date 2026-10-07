@@ -60,7 +60,7 @@
 .environment-list-subtitle { display: block; max-width: 150px; margin-top: 3px; overflow: hidden; color: var(--muted-foreground); font-size: 10.5px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .environment-list-name > .environment-list-subtitle { padding-left: 24px; }
 
-.environment-list-type { min-width: 90px; color: var(--muted-foreground); white-space: nowrap; }
+.environment-list-type { display: flex; align-items: center; margin-top: 2px; padding-left: 24px; color: var(--muted-foreground); font-size: 11px; font-weight: 400; white-space: nowrap; }
 .environment-list-tag { margin-left: 6px; padding: 1px 5px; border: 1px solid var(--workspace-outline); border-radius: 4px; color: var(--foreground); font-size: 9.5px; font-weight: 550; letter-spacing: .03em; }
 .environment-list-status { min-width: 115px; white-space: nowrap; }
 .environment-list-status > span:first-child { font-size: 11px; }

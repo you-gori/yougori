@@ -1,0 +1,44 @@
+Model runner expansion — 6 October 2026
+
+Existing compatible Transformers and llama.cpp workloads keep their runners.
+Unknown Transformers model types can select native vLLM text generation when
+config.architectures matches the pinned native text registry. Arbitrary remote
+code, pooling-only models and unreviewed prediction heads stay unsupported.
+
+Pins:
+- vLLM 0.29.0, official vllm/vllm-openai image index:
+  sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+- 123 native text architecture class names extracted from the upstream registry:
+  src-tauri/src/model_runner/architectures-vllm-0.29.0.json
+  That file records the source URL and source digest; the existing Transformers
+  model-type catalog remains separate. These counts cannot be added together
+  because their coverage overlaps and their identifiers use different schemes.
+- Kolibri1ForCausalLM / kolibri1 uses aleph-alpha-inference 1.0.0.
+  Wheel SHA-256: 5a0ca118e67924f10c4f9c04dd64bef117007a17dd820233a8841b9cb8d6f211
+  The reviewed wheel is installed without replacing image dependencies.
+
+The native runtime binds to container loopback. Only Yougori's authenticated
+proxy is exposed, preserving chat, SSE, cancellation, usage and sharing. vLLM
+request/output logging is disabled by default and its stdout/stderr are discarded.
+The inference subprocess receives no HF download token and uses verified cached
+weights offline. CPU/GPU host administrators can still inspect inference memory.
+
+Local creation checks compatible GPU memory before creating the environment.
+The guest checks free CUDA memory and tensor-parallel attention divisibility
+before downloading weights. All experts count, not just active parameters.
+Context is capped at 32768 and concurrency at one. Thinking is disabled for the
+current text-only chat contract. Tool calls and multimodal inputs are not added
+by this integration. No automatic RAM offload is implemented.
+
+Connected RunPod GPU environments use an isolated Python environment with the
+pinned vLLM package; their global Python/torch installation is not replaced.
+No paid pod is created by this integration.
+
+References:
+https://github.com/vllm-project/vllm/tree/v0.29.0
+https://github.com/Aleph-Alpha/aleph-alpha-inference
+https://huggingface.co/Aleph-Alpha/Kolibri-1
+
+Validation limitation: full Kolibri inference needs suitable GPU hardware.
+Architecture preflight, startup configuration, resource rejection, proxy and
+transport tests do not establish numerical accuracy or native kernel acceptance.

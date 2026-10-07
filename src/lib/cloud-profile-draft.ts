@@ -11,7 +11,7 @@ const subscribe = (listener: () => void) => {
 }
 
 export function useCloudProfileDraft(environmentId?: string, initialProfile?: Partial<CloudProfile>) {
-  const [defaults] = useState<CloudProfile>(() => ({ name: "", vendor: "aws", host: "", port: 22, username: "ubuntu", identityFile: "", hostKey: "", ...initialProfile }))
+  const [defaults] = useState<CloudProfile>(() => ({ name: "", vendor: "aws", host: "", port: 22, username: "ec2-user", identityFile: "", hostKey: "", ...initialProfile }))
   const key = environmentId ?? "new"
   const profile = useSyncExternalStore(subscribe, () => drafts.get(key) ?? defaults)
   const setProfile = (next: CloudProfile) => {

@@ -1,5 +1,43 @@
 use super::*;
 
+#[tokio::test]
+async fn rate_limit_is_reported_without_leaking_helper_output() {
+    for line in [
+        "{\"level\":\"error\",\"message\":\"Error unmarshaling QuickTunnel response: error code: 1015\\n private-value\"}\n",
+        "429 Too Many Requests private-value\n",
+    ] {
+        let error = connected_url(&mut BufReader::new(line.as_bytes()), None).await.unwrap_err();
+        assert_eq!(error, QUICK_RATE_LIMIT);
+        assert!(!error.contains("private-value"));
+        let named = connected_url(&mut BufReader::new(line.as_bytes()), Some("https://named.example.com".into())).await.unwrap_err();
+        assert!(named.contains("account tunnel"));
+        assert!(!named.contains(QUICK_RATE_LIMIT));
+    }
+}
+
+#[test]
+fn quick_tunnel_backoff_is_shared_bounded_and_not_extended_by_deferred_retries() {
+    let mut retry = QuickRetry::default();
+    let mut now = std::time::Instant::now();
+    assert!(retry.deferred(now).is_none());
+    for seconds in [120, 240, 480, 900, 900] {
+        retry.finished(now, false, true);
+        assert_eq!(retry.remaining(now), Some(Duration::from_secs(seconds)));
+        let deadline = retry.next;
+        assert!(retry.deferred(now + Duration::from_secs(15)).unwrap().contains(QUICK_RATE_LIMIT));
+        assert_eq!(retry.next, deadline, "A background poll must not extend the block");
+        now += Duration::from_secs(seconds);
+        assert!(retry.deferred(now).is_none());
+    }
+    retry.finished(now, true, false);
+    assert_eq!(retry.rate_failures, 0);
+    assert_eq!(retry.remaining(now), Some(Duration::from_secs(15)));
+    now += Duration::from_secs(15);
+    retry.finished(now, false, false);
+    assert_eq!(retry.remaining(now), Some(Duration::from_secs(30)));
+    assert!(!retry.deferred(now).unwrap().contains(QUICK_RATE_LIMIT));
+}
+
 fn test_token() -> String {
     STANDARD.encode(serde_json::to_vec(&json!({"a":"0123456789abcdef0123456789abcdef", "t":"01234567-89ab-4def-8123-456789abcdef", "s":STANDARD.encode([7u8;32])})).unwrap())
 }

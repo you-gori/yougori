@@ -61,9 +61,9 @@ Create an environment:
   env create --kind microvm --name small --yes
   env create --kind vm --name ubuntu --source C:\Images\ubuntu.iso --yes
 
-Creation options: --cpu CORES, --memory GB, --storage GB,
+Creation options: --cpu CORES, --memory GB, --storage GB, --storage-drive PATH,
   --cpu-min / --cpu-max, --memory-min / --memory-max,
-  --priority low|normal|high|critical, --internet true|false (default false).
+  --priority low|normal|high|critical, --internet true|false (default true).
 Containers: --startup image uses the image's entrypoint (e.g. a database);
   --command TEXT overrides it. Otherwise a keep-alive shell is used.
 Resource edits: env resources ENV_ID --memory 4 --memory-max 8 --yes
@@ -385,7 +385,7 @@ pub fn parse(
                         _ => None,
                     })
                     .ok_or("VM creation requires --source PATH_TO_ISO_OR_DISK")?;
-                let mut request = json!({"name":required(&mut flags,"name")?,"kind":backend_kind,"provider":provider,"runtime":runtime,"description":flags.remove("description").unwrap_or_default(),"networkAccess":false,"gpuAccess":kind=="gpu","resourcePolicy":policy(&mut flags,floor,memory)?});
+                let mut request = json!({"name":required(&mut flags,"name")?,"kind":backend_kind,"provider":provider,"runtime":runtime,"description":flags.remove("description").unwrap_or_default(),"networkAccess":true,"gpuAccess":kind=="gpu","resourcePolicy":policy(&mut flags,floor,memory)?});
                 if let Some(internet) = flags.remove("internet") {
                     request["networkAccess"] = match internet.as_str() {
                         "true" => true.into(),
@@ -395,6 +395,10 @@ pub fn parse(
                 }
                 if flags.contains_key("storage") {
                     request["storageGb"] = take_number(&mut flags, "storage", 64.0)?.into();
+                }
+                if let Some(drive) = flags.remove("storage-drive") {
+                    if drive.trim().is_empty() { return Err("--storage-drive requires a drive path".into()); }
+                    request["storageDrive"] = drive.into();
                 }
                 let startup = flags.remove("startup");
                 let command = flags.remove("command");
@@ -816,7 +820,7 @@ mod tests {
                 .request
                 .params;
             assert_eq!(p["request"]["provider"], provider);
-            assert_eq!(p["request"]["networkAccess"], false);
+            assert_eq!(p["request"]["networkAccess"], true);
             assert_eq!(p["request"]["gpuAccess"], kind == "gpu");
         }
         assert!(run(&["env", "create", "--name", "test", "--kind", "vm"]).is_err());
@@ -943,6 +947,8 @@ mod tests {
 
     #[test]
     fn creation_internet_is_explicit_and_strictly_boolean() {
+        let offline = run(&["env", "create", "--name", "offline", "--internet", "false"]).unwrap();
+        assert_eq!(offline.request.params["request"]["networkAccess"], false);
         let p = run(&["env", "create", "--name", "web", "--internet", "true"])
             .unwrap()
             .request

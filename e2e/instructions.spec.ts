@@ -18,6 +18,8 @@ test.describe("first-launch instructions", () => {
     await expect(page.locator("[data-environment-canvas]")).toBeVisible({ timeout: 60000 })
     await step(page, "welcome")
     await expect(page.locator('[data-tour-preview]')).toBeVisible()
+    await expect(page.getByRole('checkbox', { name: 'Select Tutorial preview', exact: true })).toBeDisabled()
+    await expect(page.getByRole('checkbox', { name: 'Select all shown environments', exact: true })).toHaveCount(0)
     await next(page, "stats")
     await guide(page).getByRole("button", { name: "Skip to hands-on", exact: true }).click()
     await step(page, "create-open")

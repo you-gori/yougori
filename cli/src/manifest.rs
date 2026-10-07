@@ -62,7 +62,7 @@ pub struct Environment {
     pub storage_drive: Option<String>,
     #[serde(default)]
     pub ports: Vec<Port>,
-    #[serde(default)]
+    #[serde(default = "internet_enabled")]
     pub internet: bool,
     #[serde(default)]
     pub pc_access: Vec<PcAccess>,
@@ -131,6 +131,7 @@ impl HealthCheck {
         Ok(())
     }
 }
+fn internet_enabled() -> bool { true }
 fn container() -> String {
     "container".into()
 }
@@ -548,6 +549,11 @@ pub fn to_yaml(project: &Project) -> Result<String, String> {
 }
 
 #[cfg(test)]mod deployment_tests{
+    #[test]fn internet_defaults_on_but_explicit_off_is_preserved(){
+        assert!(super::Environment::default().internet);
+        let offline:super::Environment=serde_json::from_value(serde_json::json!({"internet":false})).unwrap();
+        assert!(!offline.internet);
+    }
     use super::*;
     #[test]fn complete_deployment_roundtrips_protected_references_and_pinned_sdk(){
         let text=r#"project: verified-api

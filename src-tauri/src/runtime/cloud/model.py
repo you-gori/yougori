@@ -100,6 +100,9 @@ def request(action, body):
         if action != 'run':
             raise ValueError('Unknown model operation')
         model, token = body['model'], body['token']
+        model_format = body.get('format', 'safetensors')
+        if model_format not in ('safetensors', 'vllm'):
+            raise ValueError('Unsupported model runner')
         revision=body.get('revision')
         if revision is not None and not re.fullmatch(r'[a-f0-9]{40}',revision):
             raise ValueError('Model revision must be an immutable checkpoint SHA')
@@ -127,7 +130,7 @@ def request(action, body):
         hf_token = body.get('hfToken')
         if hf_token is not None and (not isinstance(hf_token, str) or not 1 <= len(hf_token) <= 1024 or any(char in hf_token for char in '\r\n\0')):
             raise ValueError('Invalid protected Hugging Face token; value withheld')
-        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'revision':revision, 'hfToken':hf_token}))]:
+        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'revision':revision, 'hfToken':hf_token, 'format':model_format}))]:
             path = root / name
             with open(path, 'w', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
                 file.write(data)
@@ -142,6 +145,8 @@ config = json.loads((root / 'config.json').read_text())
 os.environ.update(YOUGORI_MODEL=config['model'], YOUGORI_MODEL_TOKEN=config['token'],
     YOUGORI_MODEL_BIND='127.0.0.1', YOUGORI_INSTALL_TORCH='1',
     HF_HOME=str(root / 'cache'), HF_HUB_DISABLE_TELEMETRY='1')
+os.environ['YOUGORI_MODEL_FORMAT']=config.get('format','safetensors')
+os.environ['YOUGORI_INSTALL_VLLM']='1' if config.get('format')=='vllm' else '0'
 if config.get('revision'):
     os.environ['YOUGORI_MODEL_REVISION']=config['revision']
 if config.get('hfToken'):

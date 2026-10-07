@@ -167,8 +167,8 @@ function TourOverlay({ tour, onCreate }: { tour: InstructionsTour; onCreate?(): 
     : tour.step === "create-submit" ? creating ? "Preparing the container…" : "Press Create environment to begin."
     : tour.step === "create-type" && selectedType !== "container" ? "Choose Container to follow this walkthrough, or Skip to use a different type."
     : tour.step === "start" && environment?.lastError ? environment.lastError.slice(0, 400)
-    : missing && tour.step === "service-ports" ? "PORT appears after you create a container, MicroVM or VM. Cloud nodes do not use these publishing controls."
-    : missing && ["node-controls", "configuration", "connections"].includes(tour.step) ? "No node yet? These controls appear on each node after creation."
+    : missing && tour.step === "service-ports" ? "Ports & access appears after you create a container, MicroVM or VM. Cloud environments do not use these publishing controls."
+    : missing && ["node-controls", "configuration", "connections"].includes(tour.step) ? "No environment yet? These controls appear in each row after creation."
     : null
   return createPortal(<div className="tour-layer" data-tour-ui data-tour-step={tour.step}>
     <svg className="tour-dimmer" aria-hidden="true"><defs><mask id="tour-spotlight"><rect width="100%" height="100%" fill="white" />{layout.rects.map((r, i) => <rect key={i} x={r.left} y={r.top} width={r.width} height={r.height} rx={9} fill="black" />)}</mask></defs><rect width="100%" height="100%" fill="rgba(0,0,0,.62)" mask="url(#tour-spotlight)" /></svg>

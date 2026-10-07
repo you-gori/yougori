@@ -42,3 +42,11 @@ it("explains how to enable tracking on models started by an older version", asyn
   render(<ModelUsagePanel environmentId="model-one" />)
   expect(await screen.findByRole("alert")).toHaveTextContent("Run this model again")
 })
+
+it("shows the free-provider recording location instead of claiming content is never stored", async () => {
+  usage.mockResolvedValue({ ...data, listen: { enabled: true, path: "/root/.cache/huggingface/yougori-listen/requests.jsonl" } })
+  render(<ModelUsagePanel environmentId="model-one" />)
+  expect(await screen.findByText("/root/.cache/huggingface/yougori-listen/requests.jsonl")).toBeInTheDocument()
+  expect(screen.getByText(/Free-provider recording is on/)).toBeInTheDocument()
+  expect(screen.queryByText(/never recorded/)).not.toBeInTheDocument()
+})

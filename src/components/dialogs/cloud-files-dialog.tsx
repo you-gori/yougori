@@ -52,7 +52,7 @@ export function CloudFilesDialog({ environment, onClose }: { environment: Enviro
     finally { guard.current = false; if (alive.current) setBusy(false) }
   }
   return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
-    <DialogPopup className="w-[min(48rem,calc(100vw-2rem))] max-w-none">
+    <DialogPopup className="w-[min(56rem,calc(100vw-2rem))] max-w-none">
       <DialogHeader><DialogTitle>Duplicate environment</DialogTitle><DialogDescription>{environment.name} → Local files</DialogDescription></DialogHeader>
       <form className="contents" onSubmit={event => { event.preventDefault(); void submit() }}>
         <DialogPanel className="space-y-4">

@@ -385,9 +385,23 @@ fn validate_connection_output(success: bool, output: &[u8], errors: &[u8]) -> Re
         let detail = String::from_utf8_lossy(errors).trim().to_owned();
         return Err(if detail.is_empty() {
             "Could not connect. Requires key-based SSH and a Linux server with Python 3.".into()
-        } else { format!("Could not connect over SSH: {detail}") });
+        } else { format!("Could not connect over SSH: {detail}{}", ssh_hint(&detail)) });
     }
     Ok(())
+}
+
+/// Next steps for the failures people hit most when connecting an EC2 instance with a .pem key.
+fn ssh_hint(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("unprotected private key") || lower.contains("bad permissions") {
+        "\n\nOpenSSH refused the key because other accounts can read it. Restrict the file to your user, for example in PowerShell: icacls KEY.pem /inheritance:r /grant:r \"$($env:USERNAME):(R)\""
+    } else if lower.contains("permission denied (publickey") {
+        "\n\nThe server rejected this user or key. Amazon Linux, RHEL and SUSE use ec2-user; Ubuntu uses ubuntu; Debian uses admin. Use the .pem file of the instance's key pair."
+    } else if lower.contains("timed out") || lower.contains("connection refused") || lower.contains("no route to host") {
+        "\n\nCheck that the instance is running, that you used its public IPv4 address or public DNS, and that its security group allows inbound TCP 22 from your IP."
+    } else if lower.contains("could not resolve hostname") {
+        "\n\nCheck the server address. For EC2, copy the Public IPv4 DNS or Public IPv4 address from the instance page."
+    } else { "" }
 }
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
@@ -784,6 +798,9 @@ mod tests {
         assert!(validate_connection_output(false, b"yougori-cloud-ready\n", b"Permission denied").unwrap_err().contains("Permission denied"));
         assert!(validate_connection_output(true, b"Welcome to SSH\n", b"").is_err());
         assert!(validate_connection_output(false, b"", b"python3: command not found").unwrap_err().contains("python3"));
+        assert!(validate_connection_output(false, b"", b"ec2-user@1.2.3.4: Permission denied (publickey).").unwrap_err().contains("Ubuntu uses ubuntu"));
+        assert!(validate_connection_output(false, b"", b"WARNING: UNPROTECTED PRIVATE KEY FILE!").unwrap_err().contains("icacls"));
+        assert!(validate_connection_output(false, b"", b"ssh: connect to host 1.2.3.4 port 22: Connection timed out").unwrap_err().contains("security group"));
         assert!(validate_connection_output(true, &vec![b'x'; 16385], b"").is_err());
     }
 

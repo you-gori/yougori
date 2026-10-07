@@ -34,7 +34,7 @@ export default function IsolatedCliView({onHide}:{onHide():void}){
     <Button size="xs" variant="ghost" className="gap-1.5 text-xs text-muted-foreground" onClick={() => setAccessOpen(true)} aria-label="CLI access" title="Manage environment and PC folder access"><ShieldCheckIcon aria-hidden="true" />Access</Button>
   } /></div> : <div className="grid flex-1 place-items-center p-6 text-sm text-muted-foreground">{busy ? <span role="status">Starting CLI…</span> : <Button size="sm" onClick={() => void open()}>Start CLI</Button>}</div>}
   <Dialog open={accessOpen} onOpenChange={setAccessOpen}>
-    <DialogPopup className="max-w-lg" bottomStickOnMobile={false}>
+    <DialogPopup className="max-w-2xl" bottomStickOnMobile={false}>
       <DialogHeader><DialogTitle>CLI access</DialogTitle><DialogDescription>Choose what this isolated terminal can access.</DialogDescription></DialogHeader>
       <div className="min-h-0 overflow-y-auto px-6 pb-6">
         <div className="mb-5 flex items-center justify-between gap-3 border-b pb-5">

@@ -1,10 +1,20 @@
 import { test, expect } from "@playwright/test"
 
+test.beforeEach(async ({ page }) => { await page.addInitScript(() => localStorage.setItem("yougori.instructions.seen.v1", "1")) })
+
 test("host CLI restores the startup shell, preserves it across views, and closes only the selected tab", async ({ page }) => {
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
+  await page.addInitScript(() => localStorage.setItem("yougori.workspace-view", "nodes"))
   await page.goto("/")
-  await page.getByRole("group", { name: "Environment view" }).getByRole("button", { name: "CLI", exact: true }).click()
+  await expect(page.getByRole("table", { name: "Environments", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Nodes", exact: true })).toHaveCount(0)
+  await expect(page.locator(".react-flow")).toHaveCount(0)
+  expect(await page.evaluate(() => localStorage.getItem("yougori.workspace-view"))).toBe("list")
+  const footer = page.locator(".workspace-footer-actions")
+  await expect(footer.getByRole("button", { name: /^(CLI|Projects)$/ })).toHaveText(["CLI", "Projects"])
+  await expect(page.locator(".workspace-view-toolbar").getByRole("button", { name: "CLI", exact: true })).toHaveCount(0)
+  await footer.getByRole("button", { name: "CLI", exact: true }).click()
   const panel = page.getByRole("region", { name: "Yougori CLI", exact: true })
   await expect(panel.getByRole("tab", { name: "Terminal 1", exact: true })).toBeVisible()
   await expect(panel.locator(".xterm-screen")).toBeVisible()
@@ -48,11 +58,11 @@ test("host CLI restores the startup shell, preserves it across views, and closes
 
 test("Edit the App opens a separate terminal in the source checkout with editing guidance", async ({ page }) => {
   await page.goto("/")
-  const views = page.getByRole("group", { name: "Environment view" })
+  const views = page.locator(".workspace-footer-actions")
   // Navigation completes at the lightweight loading document. Assert the
   // workspace is ready before checking controls that only exist inside it.
   await expect(views).toBeVisible({ timeout: 60000 })
-  await expect(views.getByRole("button", { name: "Edit the App" })).toHaveCount(0)
+  await expect(page.locator(".workspace-view-toolbar").getByRole("button", { name: "Edit the App" })).toHaveCount(0)
   const editButton = page.getByRole("button", { name: "Edit the App" })
   await expect(editButton).toBeVisible()
   await expect(editButton).toHaveAttribute("aria-pressed", "false")

@@ -22,7 +22,7 @@ const account = { email: "provider@example.com", wallet: null, creditMicros: 200
 it("shows browser approval, receives a CLI sign-in event, and unsubscribes on close", async () => {
   const view = render(<NetworkPanel />)
   expect(mocks.status).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole("button", { name: "Network" }))
+  fireEvent.click(screen.getByRole("button", { name: "Neo Grid" }))
   await waitFor(() => expect(mocks.listen).toHaveBeenCalledOnce())
   mocks.signIn.mockImplementation(async () => { current = { ...current, login: { userCode: "ABCD-EFGH", verificationUrl: "https://yougori.com/device", verificationUrlComplete: "https://yougori.com/device?code=ABCD-EFGH", expiresIn: 600, error: null } }; return current })
   fireEvent.click(await screen.findByRole("button", { name: "Sign in" }))
@@ -32,7 +32,8 @@ it("shows browser approval, receives a CLI sign-in event, and unsubscribes on cl
   current = { ...current, signedIn: true, account, login: null }
   await act(async () => event(current))
   expect(screen.getByText("provider@example.com")).toBeVisible()
-  expect(screen.getByText(/Credit \$2.00 · Earnings \$1.00/)).toBeVisible()
+  expect(screen.getByText("$2.00")).toBeVisible()
+  expect(screen.getByText("$1.00")).toBeVisible()
   mocks.signOut.mockImplementation(async () => { current = { ...current, signedIn: false, account: null, shares: [] }; return current })
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
   await waitFor(() => expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled())

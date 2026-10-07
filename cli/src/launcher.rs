@@ -27,6 +27,8 @@ mod project;
 mod releases;
 mod scripts;
 mod stream;
+pub(crate) mod storage;
+pub(crate) const CANCELLED: &str = ui::CANCELLED;
 mod sync;
 mod ui;
 
@@ -49,6 +51,15 @@ pub(crate) async fn command_progress<T>(
 
 fn hf(s: &str) -> bool {
     s.starts_with("hf.co/") || s.starts_with("https://huggingface.co/")
+}
+pub(crate) fn prompt_model(args:&[String])->Result<Option<String>,String>{
+    chat::validate_run_options(args)?;
+    let _raw=ui::Raw::on()?;
+    match ui::input_prefilled("Model · OWNER/MODEL", "hf.co/", &yougori_cli::model_invocation::model_id) {
+        Ok(value)=>Ok(Some(value)),
+        Err(error) if error.to_lowercase().contains("cancel")=>Ok(None),
+        Err(error)=>Err(error),
+    }
 }
 pub fn requested(args: &[String]) -> bool {
     if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
@@ -166,9 +177,6 @@ fn limits(host: &Value, model: bool, min_storage: u32) -> Result<([u32; 3], [(u3
     Ok((defaults, limits))
 }
 /// Arrow-key resources, starting from `initial` when settings are being changed.
-fn resources(host: &Value, model: bool, initial: Option<[u32; 3]>) -> Result<[u32; 3], String> {
-    sliders(host, model, if model { 12 } else { 1 }, initial)
-}
 fn sliders(host: &Value, model: bool, min_storage: u32, initial: Option<[u32; 3]>) -> Result<[u32; 3], String> {
     let (defaults, limits) = limits(host, model, min_storage)?;
     let start = initial.unwrap_or(defaults);
@@ -218,12 +226,21 @@ fn model_resources(host: &Value, customize: bool, min_storage: u32) -> Result<[u
         Ok(recommended)
     }
 }
-async fn model_storage(model: &str, quant: Option<&str>) -> Result<u32, String> {
-    let preflight = call("model_preflight", json!({"model": model, "quant": quant})).await?;
-    if preflight["supported"] != true {
-        return Err(preflight["reason"].as_str().unwrap_or("This model needs a dedicated runner").into());
-    }
-    Ok(preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).ceil().max(12.0) as u32)
+async fn offer_architecture_support(model: &str,quant: Option<&str>,preflight: &Value) -> Result<Option<Value>,String> {
+    ui::warn(&clean(preflight["reason"].as_str().unwrap_or("This model needs a dedicated runner")));
+    if preflight["supportAvailable"]!=true {return Err(preflight["reason"].as_str().unwrap_or("Unsupported model").into());}
+    let mut choices=vec![ui::Choice::new("Cancel","leave the model unchanged")];
+    choices.extend(yougori_cli::architecture_support::AGENTS.iter().map(|(_,name)|ui::Choice::new(*name,"implement support with its coding agent")));
+    let picked=ui::select("Implement architecture support with AI?",&["Uses the selected agent's account and permissions. Support is enabled after testing and installing its build.".into()],&choices,0)?;
+    if picked==0 {return Ok(None);}
+    let agent=yougori_cli::architecture_support::AGENTS[picked-1].0;
+    Ok(Some(call("model_support_task",json!({"model":model,"quant":quant,"agent":agent})).await?))
+}
+struct ModelStorage { minimum: u32, supports_selection: bool }
+async fn model_storage(model: &str, quant: Option<&str>) -> Result<ModelStorage, String> {
+    let preflight=call("model_preflight",json!({"model":model,"quant":quant})).await?;
+    if preflight["supported"]!=true {return Err(preflight["reason"].as_str().unwrap_or("This model needs a dedicated runner").into());}
+    Ok(ModelStorage{minimum:preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).ceil().max(12.0) as u32,supports_selection:preflight["storageDriveSelection"]==true})
 }
 /// Changes for an existing model's resources, or `None` to start it as before.
 /// Its disk can grow but never shrink. `change` goes straight to the sliders.
@@ -514,13 +531,28 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
                 .and_then(|access| access["apiUrl"].as_str().and_then(url_port));
         }
     }
-    let allocation = match existing {
-        Some(_) => None,
-        None => Some(model_resources(&state["host"], false, model_storage(&target, None).await?)?),
+    let plan = if existing.is_none() {
+        let preflight=call("model_preflight",json!({"model":target})).await?;
+        if preflight["supported"]!=true {
+            let Some(task)=offer_architecture_support(&target,None,&preflight).await? else {return Ok(0);};
+            ui::outro(&format!("Opening coding agent · task saved at {}",task["path"].as_str().unwrap_or("")));
+            drop(session);drop(_raw);
+            return yougori_cli::architecture_support::launch(&task);
+        }
+        Some(ModelStorage{minimum:preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).ceil().max(12.0) as u32,supports_selection:preflight["storageDriveSelection"]==true})
+    } else {None};
+    let minimum = plan.as_ref().map_or(12, |plan|plan.minimum);
+    let selected = if existing.is_none() {
+        let host = call("refresh_host_metrics", json!({})).await?["host"].take();
+        Some(storage::choose_model(&host, None, minimum, plan.as_ref().is_some_and(|plan|plan.supports_selection))?)
+    } else { None };
+    let allocation = match &selected {
+        Some(selected) => Some(model_resources(&selected.host, false, minimum)?),
+        None => None,
     };
     // A running model keeps its resources; a stopped one can change them before it starts.
     let changes = match &existing {
-        Some(env) if env["status"] != "running" => changed_model_resources(&state["host"], env, false)?,
+        Some(env) if env["status"] != "running" => changed_model_resources(&storage::for_environment(&state["host"], env).await?, env, false)?,
         _ => None,
     };
     let guest = 8000;
@@ -557,6 +589,7 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
             (None, Some(name)) => format!("Reuses {name}"),
             (None, None) => String::new(),
         },
+        selected.as_ref().map_or_else(|| "Keeping its existing storage location".into(), |selection| format!("Storage drive: {}", selection.label)),
         format!("Local port {local} → model port {guest}"),
         destination,
     ];
@@ -606,7 +639,9 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
             let allocation = allocation.unwrap_or_default();
             let creating = ui::task("Creating model environment");
             creating.detail("image and model downloads can take several minutes");
-            let result = call("run_model",json!({"model":target,"port":local,"resources":{"cpu":allocation[0],"memoryGb":allocation[1],"storageGb":allocation[2]}})).await?;
+            let mut resources=json!({"cpu":allocation[0],"memoryGb":allocation[1],"storageGb":allocation[2]});
+            if let Some(drive)=selected.as_ref().and_then(|selection|selection.drive.as_deref()) {resources["storageDrive"]=json!(drive);}
+            let result = call("run_model",json!({"model":target,"port":local,"resources":resources})).await?;
             let id = result["id"]
                 .as_str()
                 .ok_or("Created environment did not return an ID")?
@@ -807,9 +842,8 @@ async fn dashboard(id: &str, local: &str, chat: bool) -> Result<bool, String> {
                 _ => {}
             }
         }
-        if stop {
+        if stop && chat::stop_choice(id).await? {
             drop(_close);
-            chat::stop_choice(id).await?;
             return Ok(false);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

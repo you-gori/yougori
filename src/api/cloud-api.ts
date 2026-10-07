@@ -34,10 +34,11 @@ export const cloudApi = {
   details(environmentId: string) {
     return run<{ profile: CloudProfile; connection: { socksPort: number; filesPort: number } | null }>("get_cloud_connection", { environmentId }, () => ({ profile: JSON.parse(localStorage.getItem(`yougori.cloud.${environmentId}`) || "null") as CloudProfile, connection: { socksPort: 1080, filesPort: 8080 } }))
   },
-  async selectKey() {
+  /** `pem` offers EC2 key pair files first. */
+  async selectKey(pem = false) {
     if (!("__TAURI_INTERNALS__" in window)) return null
     const { open } = await import("@tauri-apps/plugin-dialog")
-    const selected = await open({ multiple: false, directory: false, title: "Choose SSH identity file" })
+    const selected = await open({ multiple: false, directory: false, title: pem ? "Choose your EC2 key pair (.pem)" : "Choose SSH identity file", ...(pem ? { filters: [{ name: "EC2 key pair", extensions: ["pem"] }, { name: "All files", extensions: ["*"] }] } : {}) })
     return typeof selected === "string" ? selected : null
   },
 }

@@ -38,9 +38,17 @@ fn install_skill(args: &[String]) -> Result<Value, String> {
     serde_json::to_value(status).map_err(|e| e.to_string())
 }
 async fn run(args: Vec<String>) -> Result<i32, String> {
-    let args = if args.is_empty() {
+    let mut args = if args.is_empty() {
         vec!["cli".into()]
     } else { args };
+    let invocation=yougori_cli::model_invocation::normalize(args)?;
+    args=invocation.args;
+    if invocation.needs_model {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal()||!std::io::stdout().is_terminal(){return Err("Supply a model ID in scripts, for example: yougori model run hf.co/OWNER/MODEL --nowfree. Leave it out in an interactive terminal to fill in hf.co/.".into());}
+        let Some(model)=launcher::prompt_model(&args)? else {return Ok(0);};
+        args[2]=model;
+    }
     if args[0]=="confidential" {
         if args.iter().any(|a| matches!(a.as_str(),"--help"|"-h")) { println!("{}",yougori_cli::confidential::command::HELP); return Ok(0); }
         println!("{}",wire_json(yougori_cli::confidential::command::run(&args[1..]).await?));
@@ -74,6 +82,11 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
             wire::VERSION
         );
         return Ok(0);
+    }
+    if args.starts_with(&["model".into(), "support".into()]) {
+        let result=yougori_cli::public::model_support(&args).await?;
+        let code=result["exitCode"].as_i64().unwrap_or(0).clamp(0,255) as i32;
+        println!("{}",wire_json(result));return Ok(code);
     }
     if matches!(args[0].as_str(), "login" | "logout" | "account") {
         if args.len() != 1 { return Err(yougori_cli::network::USAGE.into()); }
@@ -273,6 +286,10 @@ Refreshing every 2 seconds * Ctrl+C to leave
         }).await?;
         if table { print!("{}", presentation::text(&rendered)) } else { println!("{}", wire_json(value)) }
         return Ok(0);
+    }
+    if let Err(error) = launcher::storage::prepare_args(&mut args).await {
+        if error == launcher::CANCELLED { return Ok(130); }
+        return Err(error);
     }
     if let Some(result) = launcher::command_progress(&args, yougori_cli::public::handle(&args)).await? {
         let code=result["exitCode"].as_i64().unwrap_or(0).clamp(0,255) as i32;

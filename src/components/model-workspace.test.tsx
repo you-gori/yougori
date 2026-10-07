@@ -11,7 +11,8 @@ vi.mock("@/context/platform-context", () => ({ usePlatform: () => platform }))
 vi.mock("@/api/projects-api", () => ({ modelsApi: { status, chat, run, preflight, stream, history, saveHistory, huggingface: async () => ({ configured: false }) } }))
 // An in-memory engine store for chat history.
 let savedHistory: unknown = null
-beforeEach(() => { savedHistory = null; history.mockImplementation(async () => savedHistory); saveHistory.mockImplementation(async (_id: string, value: unknown) => { savedHistory = value }) })
+beforeEach(() => { savedHistory = null; history.mockImplementation(async () => savedHistory); saveHistory.mockImplementation(async (_id: string, value: unknown) => { savedHistory = value }); preflight.mockResolvedValue({supported:true,task:"text-generation",resources:{},downloads:{}}) })
+vi.mock("@/components/host-terminal-canvas", () => ({ HostTerminalCanvas: () => null }))
 vi.mock("@/components/guest-logs", () => ({
   GuestLogs: ({ environmentId, active }: { environmentId: string; active: boolean }) =>
     <div aria-label="Live startup output">{active ? environmentId : "paused"}</div>,
@@ -26,6 +27,14 @@ it("rejects an unsupported decision model before creating a chat environment", a
   expect(await screen.findByLabelText("Model compatibility")).toHaveTextContent("Requires a dedicated runner")
   expect(screen.getByRole("button", {name:"Run model"})).toBeDisabled()
   expect(run).not.toHaveBeenCalled()
+})
+it("checks architecture before sharing sign-in and offers AI implementation without creating a model", async () => {
+  preflight.mockResolvedValue({supported:false,supportAvailable:true,task:"text-generation",reason:"Unknown custom architecture",resources:{},downloads:{}})
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button",{name:"Huggingface"}))
+  fireEvent.click(await screen.findByRole("button",{name:"Run model"}))
+  expect(await screen.findByRole("button",{name:"Implement architecture support with AI"})).toBeInTheDocument()
+  expect(run).not.toHaveBeenCalled();expect(market.signIn).not.toHaveBeenCalled()
 })
 
 it("requires browser sign-in before creating a shared model", async () => {
@@ -122,7 +131,7 @@ it("closes the model dialog immediately while creation continues", async () => {
   render(<ModelWorkspace />)
   fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
   fireEvent.click(await screen.findByRole("button", { name: "Run model" }))
-  expect(run).toHaveBeenCalledOnce()
+  await waitFor(() => expect(run).toHaveBeenCalledOnce())
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
   await act(async () => { finish({ id: "model-1", model: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" }) })
 })

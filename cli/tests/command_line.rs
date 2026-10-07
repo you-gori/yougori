@@ -12,6 +12,50 @@ fn cli(args: &[&str]) -> Output {
 fn response(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
+#[test]
+fn optional_model_entry_is_interactive_only_and_preserves_flags() {
+    for args in [vec!["model","run"],vec!["model","run","--nowfree"],vec!["run","mode","--freenow"],vec!["model","run","--neocoud"],vec!["model","run","hf.co/","-free"]] {
+        let output=cli(&args);assert!(!output.status.success());
+        assert!(response(&output)["error"].as_str().unwrap().contains("Supply a model ID in scripts"));
+    }
+    let help=cli(&["run","model","--help"]);assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Omit the model"));
+    for flag in ["--freenow","--free","-free","-nowfree"] {
+        let output=cli(&["run","mode",flag,"--storage-drive","D:/","owner/model","--dry-run"]);
+        assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
+        let value=response(&output);assert_eq!(value["result"]["shareMode"],"free");
+        assert_eq!(value["result"]["model"],"hf.co/owner/model");
+    }
+    let output=cli(&["model","run","--neocoud","--environment","pod","owner/model","--dry-run"]);
+    assert!(output.status.success());assert_eq!(response(&output)["result"]["neocloud"],true);
+}
+#[test]
+fn architecture_handoff_never_launches_agents_from_pipes_or_unrecognized_choices() {
+    for args in [
+        vec!["model","support","hf.co/example/model","--agent","codex","--launch"],
+        vec!["model","support","hf.co/example/model","--agent","codex;bad"],
+        vec!["model","support","hf.co/example/model"],
+        vec!["model","support","hf.co/example/model","--agent","codex","--launch","--launch"],
+    ] {
+        let output=cli(&args);assert!(!output.status.success());
+        let value=response(&output);assert_eq!(value["ok"],false);
+        let error=value["error"].as_str().unwrap();
+        assert!(error.contains("interactive terminal")||error.contains("coding agent")||error.contains("Choose --agent")||error.contains("Use --agent"),"{error}");
+        assert!(!error.contains("engine"),"Argument validation must finish before contacting the engine");
+    }
+}
+
+#[test]
+fn listening_is_free_only_and_validated_before_engine_or_login() {
+    for tail in [vec!["--listen"],vec!["--now","--listen"],vec!["--nowfree","--listen","--listen"]] {
+        let mut args=vec!["model","run","hf.co/example/model"];args.extend(tail);args.push("--dry-run");
+        let output=cli(&args);assert!(!output.status.success());
+        assert_eq!(response(&output)["ok"],false);
+    }
+    let output=cli(&["model","run","--listen","--nowfree","example/model","--dry-run"]);
+    assert!(output.status.success());let result=response(&output);
+    assert_eq!(result["result"]["listen"],true);assert_eq!(result["result"]["shareMode"],"free");
+}
 
 #[test]
 fn network_model_flags_are_validated_offline_before_side_effects() {

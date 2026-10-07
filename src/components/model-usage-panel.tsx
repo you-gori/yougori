@@ -39,7 +39,9 @@ export function ModelUsagePanel({ environmentId }: { environmentId: string }) {
   if (!usage) return <section className="model-usage" aria-label="Model usage">{error ? <p role="alert" className="model-error">{error}</p> : <p className="model-hint">Loading usage…</p>}</section>
   const days = usageByDay(usage, range)
   const totals = sumDays(days)
-  const speed = averageSpeed(usage.recent)
+  const inputSpeed = usage.speedMetric === "input_tokens"
+  const speedField = inputSpeed ? "prompt_tokens" : "completion_tokens"
+  const speed = averageSpeed(usage.recent, speedField)
   const peak = Math.max(1, ...days.map(day => day.requests))
   const recent = [...usage.recent].reverse().slice(0, 25)
   const tip = hovered === null ? null : days[hovered]!
@@ -57,7 +59,7 @@ export function ModelUsagePanel({ environmentId }: { environmentId: string }) {
       <div><span className="model-label">Requests</span><strong>{number(totals.requests)}</strong><small>{number(totals.yougori ?? 0)} chat · {number(totals.api ?? 0)} API</small></div>
       <div><span className="model-label">Tokens in</span><strong>{compact(totals.prompt_tokens)}</strong><small>Prompts and history</small></div>
       <div><span className="model-label">Tokens out</span><strong>{compact(totals.completion_tokens)}</strong><small>Generated replies</small></div>
-      <div><span className="model-label">Speed</span><strong>{speed === null ? "—" : `${speed.toFixed(1)}`}</strong><small>Tokens per second</small></div>
+      <div><span className="model-label">Speed</span><strong>{speed === null ? "—" : `${speed.toFixed(1)}`}</strong><small>{inputSpeed ? "Input tokens per second" : "Tokens per second"}</small></div>
       <div><span className="model-label">Problems</span><strong>{number(totals.errors + totals.rejected)}</strong><small>{number(totals.errors)} failed · {number(totals.rejected)} wrong key</small></div>
     </div>
 
@@ -89,14 +91,14 @@ export function ModelUsagePanel({ environmentId }: { environmentId: string }) {
           <td data-outcome={request.outcome}>{OUTCOMES[request.outcome] ?? request.outcome}</td>
           <td>{number(request.prompt_tokens)}</td>
           <td>{number(request.completion_tokens)}</td>
-          <td>{request.outcome === "ok" && request.completion_tokens && request.seconds ? `${(request.completion_tokens / request.seconds).toFixed(1)} tok/s` : "—"}</td>
+          <td>{request.outcome === "ok" && request[speedField] && request.seconds ? `${(request[speedField] / request.seconds).toFixed(1)} ${inputSpeed ? "input " : ""}tok/s` : "—"}</td>
           <td>{request.seconds ? `${request.seconds.toFixed(1)} s` : "—"}</td>
         </tr>)}</tbody>
       </table></div> : <p className="model-hint">No requests yet. Chat with the model or call its API to see usage here.</p>}
     </div>
 
     <div className="model-usage-footer">
-      <p className="model-hint">Counts and token totals only. Prompts and replies are never recorded. "Wrong API key" counts calls that were refused.</p>
+      <p className="model-hint">{usage.listen?.enabled ? <>Free-provider recording is on. Prompts and replies are saved in the container at <code>{usage.listen.path}</code>. {usage.listen.error ?? ""}</> : "Recording is off. Usage contains counts and token totals only."} "Wrong API key" counts calls that were refused.</p>
       {confirmReset
         ? <div className="model-api-enable"><Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmReset(false)}>Cancel</Button><Button size="sm" variant="destructive" loading={busy} onClick={() => void reset()}>Clear usage history</Button></div>
         : <Button size="sm" variant="ghost" onClick={() => setConfirmReset(true)}>Reset usage</Button>}

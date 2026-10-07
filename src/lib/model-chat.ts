@@ -74,7 +74,7 @@ export function parseMarkdown(source: string): Block[] {
 }
 
 
-export interface ChatStats { tokens?: number; seconds: number; finish: "stop" | "length" | "cancelled" | "error" }
+export interface ChatStats { tokens?: number; inputTokens?: number; seconds: number; finish: "stop" | "length" | "cancelled" | "error" }
 export interface StoredMessage extends ChatMessage { id: string; stats?: ChatStats; error?: string }
 export interface Conversation { id: string; title: string; messages: StoredMessage[]; updatedAt: number; usage?: ChatUsage; dropped?: number }
 export interface ChatSettings { system: string; temperature: number; maxTokens: number }

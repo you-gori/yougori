@@ -665,7 +665,7 @@ pub struct CreateEnvironmentRequest {
     pub provider: RuntimeProviderKind,
     #[serde(default)]
     pub container_command: Option<String>,
-    #[serde(default)]
+    #[serde(default = "allocation_always_enabled")]
     pub network_access: bool,
     #[serde(default)]
     pub gpu_access: bool,
@@ -754,6 +754,21 @@ pub struct CommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creation_defaults_to_internet_on_and_preserves_explicit_off() {
+        let mut value=serde_json::json!({
+            "name":"Network default", "kind":"container", "runtime":"alpine:3.24",
+            "provider":"yougoriOci", "description":"",
+            "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1},
+                "memoryGb":{"min":1,"preferred":1,"max":1},"priority":"normal"}
+        });
+        let request:CreateEnvironmentRequest=serde_json::from_value(value.clone()).unwrap();
+        assert!(request.network_access);
+        value["networkAccess"]=false.into();
+        let request:CreateEnvironmentRequest=serde_json::from_value(value).unwrap();
+        assert!(!request.network_access);
+    }
 
     #[test]
     fn allocation_is_enabled_for_legacy_policies_and_creation_requests() {

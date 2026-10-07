@@ -48,7 +48,7 @@ export function AddServicePortDialog({ environment, onAddPort, onBusyChange }: {
     }
   }
 
-  return <DialogPopup closeProps={{ disabled: busy }} data-add-service-port={environment?.id} bottomStickOnMobile={false} className="service-port-workbench max-h-[calc(100dvh-2rem)] max-w-[820px] overflow-hidden sm:max-w-[820px]">
+  return <DialogPopup closeProps={{ disabled: busy }} data-add-service-port={environment?.id} bottomStickOnMobile={false} className="service-port-workbench max-h-[calc(100dvh-2rem)] max-w-[920px] overflow-hidden sm:max-w-[920px]">
     <DialogHeader className="service-port-header">
       <WaypointsIcon aria-hidden="true" />
       <DialogTitle className="service-port-title text-base leading-5"><span>Add a service port</span><span className="service-port-environment" title={name}> · {name}</span></DialogTitle>

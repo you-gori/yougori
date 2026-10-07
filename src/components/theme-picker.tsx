@@ -64,7 +64,7 @@ export function ThemePicker() {
 
   return <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
     <Button className="dashboard-theme workspace-footer-reclaim" data-tour="theme" size="xs" type="button" variant="ghost" onClick={() => setOpen(true)}><Palette aria-hidden="true" className="size-3.5" /> Theme</Button>
-    <DialogPopup data-instruction="theme-dialog" className="theme-dialog max-w-[500px]" closeProps={{ disabled: busy }}>
+    <DialogPopup data-instruction="theme-dialog" className="theme-dialog max-w-[600px]" closeProps={{ disabled: busy }}>
       <DialogHeader className="gap-1 pb-2"><DialogTitle>Appearance</DialogTitle><DialogDescription>Choose a palette for Yougori.</DialogDescription></DialogHeader>
       <DialogPanel className="theme-panel">
         <div className="theme-basics" aria-label="Standard themes">

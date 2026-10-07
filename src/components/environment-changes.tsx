@@ -25,7 +25,7 @@ export function EnvironmentChanges({ environmentId }: { environmentId: string })
   const s = report?.summary
   return <Dialog open={open} onOpenChange={value => { setOpen(value); if (value) void refresh() }}>
     <DialogTrigger render={<Button variant="outline" size="sm" />}><FileDiffIcon aria-hidden="true" />Changes</DialogTrigger>
-    <DialogPopup className="max-w-5xl">
+    <DialogPopup className="max-w-6xl">
       <DialogHeader><DialogTitle>Changes</DialogTitle><DialogDescription>{report?.baselineAt ? `Since ${new Date(report.baselineAt).toLocaleString()}` : "Files and configuration changed since your shared-folder baseline."}</DialogDescription></DialogHeader>
       <DialogPanel className="space-y-4">
         {s ? <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-lg bg-muted/50 px-4 py-3 text-sm" aria-label="Change counts">{[[s.modified, "files modified"], [s.created, "files created"], [s.deleted, "files deleted"], [s.renamed, "files renamed"], [s.variables, "environment variables changed"], [s.packagesInstalled, "packages installed"]].map(([value, label]) => <span key={label}><strong className="tabular-nums">{value}</strong> {label}</span>)}</div> : null}

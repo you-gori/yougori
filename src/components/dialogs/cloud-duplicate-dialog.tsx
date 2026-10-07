@@ -67,7 +67,7 @@ export function CloudDuplicateDialog({ environment, destination, onClose }: { en
   if (target.provider === "azure") targetFields.push(["resourceGroup", "Resource group"], ["securityGroup", "Network security group"])
   if (target.provider === "aws") targetFields.push(["securityGroup", "Security group ID"], ["keyPair", "SSH key pair name"])
   return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
-    <DialogPopup className="w-[min(66rem,calc(100vw-2rem))] max-w-none">
+    <DialogPopup className="w-[min(72rem,calc(100vw-2rem))] max-w-none">
       <DialogHeader><DialogTitle>Duplicate environment</DialogTitle><DialogDescription>{environment.name} → {destination === "cloud" ? "New cloud VM" : "Local VM"}</DialogDescription></DialogHeader>
       <form className="contents" onSubmit={event => { event.preventDefault(); void submit() }}>
         <DialogPanel className="space-y-4">

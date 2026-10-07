@@ -87,7 +87,7 @@ export function SharingPanel({ environmentId, reconnectEnvironmentId, onConnecte
     <DialogTrigger render={<Button className="nodrag" size={compact ? "icon-xs" : "sm"} variant={compact ? "ghost" : "outline"} aria-label={environmentId ? `Share ${targetName} via Tunnel` : "Connect to Shared Environment"} title={environmentId ? "Share via Tunnel" : "Connect to Shared Environment"} />}>
       {environmentId ? <Share2Icon aria-hidden="true" /> : <LinkIcon aria-hidden="true" />}{compact ? null : environmentId ? "Share via Tunnel" : "Connect to Shared Environment"}
     </DialogTrigger>
-    <DialogPopup data-instruction="sharing-dialog" className={environmentId ? "share-popup" : "sm:max-w-md"}>
+    <DialogPopup data-instruction="sharing-dialog" className={environmentId ? "share-popup" : "sm:max-w-xl"}>
       <DialogHeader><DialogTitle>{environmentId ? `Share ${targetName}` : reconnectEnvironmentId ? "Reconnect shared environment" : "Connect to a shared environment"}</DialogTitle><DialogDescription>{environmentId ? "Invite people to work here. Files, workloads and compute stay on this machine." : "Use the link and recipient credentials supplied by the owner."}</DialogDescription></DialogHeader>
       <DialogPanel className={environmentId ? "share-panel" : "space-y-5"}>
         {!environmentId ? <SharedEnvironmentForm environmentId={reconnectEnvironmentId} onConnected={onConnected} onBusyChange={setBusy} onClose={() => setOpen(false)} /> : <>

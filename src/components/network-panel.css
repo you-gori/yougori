@@ -1,14 +1,52 @@
-.network-popup { width: min(720px, calc(100vw - 32px)); }
-.network-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.network-panel, .network-account { display: grid; gap: 14px; }
-.network-panel p, .network-account p { overflow-wrap: anywhere; font-size: 13px; color: var(--muted-foreground); }
-.network-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.network-share { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
-.network-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; font-size: 13px; }
-.network-stats dt { color: var(--muted-foreground); }
-.network-stats dd { margin: 4px 0 0; }
-@media (max-width: 500px) { .network-stats { grid-template-columns: 1fr; } }
+.network-popup { width: min(880px, calc(100vw - 32px)); max-width: none; }
+.network-header { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.network-popup .network-panel { padding-top: 20px; }
+.network-footer { align-items: center; }
 
-.confidential-chat { display: grid; gap: 12px; margin-top: 12px; }
-.confidential-chat label { display: grid; gap: 6px; }
-.confidential-chat pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.network-panel { display: grid; gap: 16px; }
+.network-section { display: grid; gap: 10px; }
+.network-section h3 { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-foreground); }
+.network-section h3 span { min-width: 20px; padding: 1px 7px; border-radius: 999px; background: var(--muted); color: var(--foreground); font-size: 11px; text-align: center; letter-spacing: 0; }
+.network-empty { padding: 20px; border: 1px dashed var(--border); border-radius: 12px; font-size: 13px; text-align: center; color: var(--muted-foreground); }
+
+.network-card { display: grid; gap: 14px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); overflow-wrap: anywhere; }
+.network-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; }
+.network-identity { display: grid; flex: 1 1 260px; min-width: 0; gap: 4px; }
+.network-identity strong { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.network-identity > span { font-size: 13px; line-height: 1.45; color: var(--muted-foreground); }
+.network-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.network-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.network-chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: 11px; font-weight: 550; letter-spacing: 0; text-transform: none; }
+.network-chip[data-live] { border-color: color-mix(in srgb, #16a34a 40%, transparent); background: color-mix(in srgb, #16a34a 12%, transparent); color: #15803d; }
+.network-chip[data-live]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #16a34a; }
+.dark .network-chip[data-live] { color: #4ade80; }
+
+.network-balances { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.network-balances > div, .network-stats > div { padding: 10px 12px; border-radius: 10px; background: var(--muted); }
+.network-balances dt, .network-stats dt { font-size: 11px; font-weight: 550; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted-foreground); }
+.network-balances dd { margin-top: 4px; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.network-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; font-size: 13px; }
+.network-stats dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+
+.network-login { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 12px 14px; border-radius: 10px; background: var(--muted); }
+.network-login-code { display: grid; gap: 2px; }
+.network-login-code span { font-size: 11px; color: var(--muted-foreground); }
+.network-login-code strong { font-family: ui-monospace, monospace; font-size: 20px; letter-spacing: 0.08em; }
+.network-login .network-identity { flex-basis: 200px; }
+
+.network-message { font-size: 13px; color: var(--muted-foreground); }
+.network-warning { padding: 10px 12px; border: 1px solid color-mix(in srgb, #d97706 35%, transparent); border-radius: 10px; background: color-mix(in srgb, #d97706 10%, transparent); font-size: 13px; line-height: 1.45; }
+.network-error { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--destructive) 10%, transparent); font-size: 13px; color: var(--destructive-foreground); overflow-wrap: anywhere; }
+.network-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 12px 14px; border-left: 3px solid var(--border); border-radius: 0 10px 10px 0; background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.network-notice p { flex: 1 1 360px; font-size: 12px; line-height: 1.5; color: var(--muted-foreground); }
+
+@media (max-width: 560px) { .network-balances { grid-template-columns: 1fr; } }
+
+.confidential-chat { display: grid; gap: 12px; }
+.confidential-chat > p:not([class]) { font-size: 13px; line-height: 1.45; color: var(--muted-foreground); }
+.confidential-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.confidential-chat label { display: grid; gap: 6px; font-size: 13px; font-weight: 500; }
+.confidential-chat .confidential-send { justify-self: end; }
+.confidential-chat pre { padding: 12px; border-radius: 10px; background: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .confidential-grid { grid-template-columns: 1fr; } }

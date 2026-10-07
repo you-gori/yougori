@@ -58,17 +58,19 @@ Public commands:
   yougori machine run IMAGE_OR_ISO
   yougori vm run IMAGE_OR_ISO      Alias for machine run
   yougori microvm run IMAGE        Alias for run --isolation microvm
-  yougori model run hf.co/OWNER/MODEL [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
+  yougori model run [hf.co/OWNER/MODEL] [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
+                                  Omit the model in a terminal to fill in hf.co/; Esc cancels
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
-  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--quant Q4_K_M]
+  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
                                    Share paid (10 priced models) or free through Yougori
   yougori model unshare ENV        Stop sharing; leave the model running
   yougori model auth login | status | logout  Protected Hugging Face token shared with the App
   yougori model decide ENV --file REQUEST.json|-  Typed decision probabilities
   yougori model stop ENV           Stop the model; a Neocloud pod stays billable
   yougori model preflight hf.co/OWNER/MODEL   Compatibility and requirements before weights
+  yougori model support hf.co/OWNER/MODEL --agent claude|codex|kilo|opencode|gemini [--launch]
                                    Reuses this model's environment when one exists
   yougori model chat ENV | model status ENV | model api ENV [--port 8000]
   yougori model chat ENV [--new]   Continues the conversation shared with the app
@@ -99,6 +101,9 @@ Run options: --cpu CORES, --memory 4GB, --storage 30GB, --storage-drive PATH,
 Ports bind to 127.0.0.1. Use `ports publish` for explicit LAN/public access.
 up/apply preserve removed nodes and data; down stops without deleting volumes.
 Use --dry-run to validate before starting. No Docker installation is needed.
+In a terminal, new local environments ask which drive to use and show free space.
+--storage-drive PATH skips that question. Scripts use the default when omitted.
+Reusing an environment keeps its existing storage location.
 "#;
 
 pub async fn call(method: &str, params: Value) -> Result<Value, String> {
@@ -121,6 +126,21 @@ pub async fn call_with_progress(method: &str, params: Value, progress: impl FnMu
     } else {
         Ok(result)
     }
+}
+
+/// Older running engines place models on their configured drive and reject the new resource field.
+/// An explicitly chosen drive may be omitted only when it is exactly that configured drive.
+pub fn model_storage_drive(supports_selection: bool, host: &Value, requested: Option<&str>) -> Result<Option<String>, String> {
+    if supports_selection {
+        return Ok(requested.map(str::to_owned));
+    }
+    if let Some(requested) = requested {
+        if host["storageDrive"].as_str().filter(|path| !path.is_empty())
+            .is_none_or(|current| !crate::storage::same_drive(current, requested)) {
+            return Err("The running engine can create models only on its configured storage drive. Quit and reopen the updated Yougori app to choose another drive, then retry. No environment was created.".into());
+        }
+    }
+    Ok(None)
 }
 /// `hf.co/Owner/Name` and `https://huggingface.co/Owner/Name` as the Hugging Face ID `Owner/Name`.
 pub fn model_name(model: &str) -> String {
@@ -859,8 +879,27 @@ pub fn validate_model_resources(resources: &serde_json::Map<String, Value>) -> R
     }
     Ok(())
 }
+pub async fn model_support(args: &[String]) -> Result<Value,String> {
+    let target=args.get(2).ok_or("Usage: yougori model support MODEL --agent claude|codex|kilo|opencode|gemini [--quant Q] [--launch]")?;
+    let mut agent=None;let mut quant=None;let mut launch=false;let mut i=3;
+    while i<args.len(){match args[i].as_str(){
+        "--agent" if agent.is_none()=>agent=Some(value(args,&mut i,"--agent")?),
+        "--quant" if quant.is_none()=>quant=Some(value(args,&mut i,"--quant")?),
+        "--launch" if !launch=>launch=true,
+        _=>return Err("Use --agent AGENT, optional --quant Q and --launch".into()),
+    }i+=1;}
+    let agent=agent.ok_or("Choose --agent claude, codex, kilo, opencode or gemini")?;
+    if !crate::architecture_support::AGENTS.iter().any(|(id,_)|*id==agent){return Err("Unknown coding agent".into());}
+    if launch&&(!std::io::stdin().is_terminal()||!std::io::stdout().is_terminal()){return Err("--launch requires an interactive terminal; omit it to prepare the task only".into());}
+    client::start(None).await?;
+    let mut task=call("model_support_task",json!({"model":target,"agent":agent,"quant":quant})).await?;
+    if launch {let code=crate::architecture_support::launch(&task)?;task["exitCode"]=json!(code);task["agentStarted"]=json!(code!=127);}
+    Ok(task)
+}
+
 async fn model(args: &[String]) -> Result<Value, String> {
     let action = args.get(1).map(String::as_str).unwrap_or("");
+    if action=="support" {return model_support(args).await;}
     if action == "auth" { return crate::model_auth::run(&args[2..]).await; }
     if action == "decide" {
         let (target,path)=match &args[2..] {
@@ -903,14 +942,18 @@ async fn model(args: &[String]) -> Result<Value, String> {
     let mut neocloud = false;
     let mut environment = None;
     let mut share_mode = None;
+    let mut listen = false;
     let mut quant = None;
+    let mut storage_drive = None;
     while i < args.len() {
         match args[i].as_str() {
             flag @ ("--now" | "--nowfree") if action == "run" => {
                 if share_mode.is_some() { return Err("Use only one of --now or --nowfree".into()); }
                 share_mode = crate::network::mode(flag);
             }
+            "--listen" if action == "run" && !listen => listen = true,
             "--quant" if action == "run" => quant = Some(value(args, &mut i, "--quant")?),
+            "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
             "--environment" if action == "run" => environment = Some(value(args, &mut i, "--environment")?),
             "--cpu" | "--memory" | "--storage" if action == "run" => {
@@ -941,17 +984,20 @@ async fn model(args: &[String]) -> Result<Value, String> {
         }
         i += 1;
     }
+    crate::network::validate_listen(share_mode, listen)?;
     if port == 0 {
         return Err("Model API port must be between 1 and 65535".into());
     }
     validate_model_resources(&resources)?;
     validate_model_neocloud(neocloud, environment.as_deref(), !resources.is_empty())?;
+    if neocloud && storage_drive.is_some() { return Err("--storage-drive selects local storage; it cannot be used with --neocloud".into()); }
+    if storage_drive.as_deref().is_some_and(|path| path.trim().is_empty()) { return Err("--storage-drive requires a drive path".into()); }
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
     if reset && !confirmed {
         return Err("Resetting model usage permanently clears its history. Repeat with --yes.".into());
     }
     if dry {
-        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"quant":quant}));
+        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"quant":quant,"storageDrive":storage_drive}));
     }
     if neocloud && environment.is_none() { return Err("Choosing a Neocloud pod needs an interactive terminal. For scripts add --environment POD_NAME --api.".into()); }
     let chat_mode = model_chat_mode(action, api, std::io::stdin().is_terminal(), std::io::stdout().is_terminal());
@@ -970,8 +1016,24 @@ async fn model(args: &[String]) -> Result<Value, String> {
         call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port)})).await?
     } else if action == "run" {
         match find_model(target).await?.filter(|_| quant.is_none()) {
-            Some(env) => reuse_model(&env, &resources, api.then_some(port)).await?,
+            Some(env) => {
+                if storage_drive.is_some() {
+                    let state=call("get_platform_state",json!({})).await?;
+                    crate::storage::validate_reuse(&env,&state["host"],storage_drive.as_deref())?;
+                }
+                reuse_model(&env, &resources, api.then_some(port)).await?
+            },
             None => {
+                if let Some(drive)=storage_drive {
+                    let preflight=call("model_preflight",json!({"model":target,"quant":quant})).await?;
+                    let supports_selection=preflight["storageDriveSelection"]==true;
+                    let host=if supports_selection {Value::Null} else {call("get_platform_state",json!({})).await?["host"].take()};
+                    if let Some(drive)=model_storage_drive(supports_selection,&host,Some(&drive))? {
+                        resources.insert("storageDrive".into(),json!(drive));
+                    } else {
+                        eprintln!("Using the running engine's configured model storage drive: {drive}. Quit and reopen the updated Yougori app to enable other drives.");
+                    }
+                }
                 call(
                     "run_model",
                     json!({"model":target,"port":if api{Some(port)}else{None::<u16>},"resources":resources,"quant":quant}),
@@ -984,7 +1046,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     };
     let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
     let id = id.as_str();
-    if let Some(mode) = share_mode { result["network"] = crate::network::share(id, mode).await?; }
+    if let Some(mode) = share_mode { result["network"] = crate::network::share_with_listen(id, mode, listen).await?; }
     if action == "unshare" { return call("market_unshare_model", json!({"environmentId":id})).await; }
     if action == "stop" { return call("stop_model", json!({"environmentId":id})).await; }
     if action == "chat" { call("start_model", json!({"environmentId":id})).await?; }
@@ -1037,6 +1099,7 @@ fn scripted_prompts(input: &mut impl Read) -> Result<Vec<String>, String> {
     input.take(SCRIPTED_CHAT_INPUT_LIMIT as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("Cannot read model chat input: {e}"))?;
     if bytes.len() > SCRIPTED_CHAT_INPUT_LIMIT { return Err("Model chat input must be at most 64 KiB".into()); }
     let text = String::from_utf8(bytes).map_err(|_| "Model chat input must be UTF-8")?;
+    if text.trim_start().starts_with('{') && serde_json::from_str::<Value>(&text).is_ok() { return Ok(vec![text.trim().to_owned()]); }
     let prompts: Vec<_> = text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned).collect();
     if prompts.len() > SCRIPTED_CHAT_PROMPT_LIMIT { return Err("Model chat input must contain at most 32 nonempty lines".into()); }
     if prompts.iter().any(|prompt| prompt.len() > 16 * 1024) { return Err("Each model chat prompt must be at most 16 KiB".into()); }
@@ -1076,6 +1139,8 @@ where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Re
     let mut store = invoke("model_chat_history", json!({"environmentId":id})).await?;
     store = chat_history_or_default(store);
     let status = invoke("model_status", json!({"environmentId":id})).await?;
+    let decision = status["task"] == "structured-decision";
+    if decision { for prompt in &prompts { crate::decisions::parse(prompt)?; } }
     let (max_tokens, temperature, system) = chat_settings(&store, &status);
     if fresh || !store["conversations"].as_array().unwrap().iter().any(|c| c["id"] == store["activeId"]) {
         start_conversation(&mut store);
@@ -1094,8 +1159,8 @@ where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Re
         if conversation["title"] == "New chat" { conversation["title"] = chat_title(prompt).into(); }
         let messages = conversation["messages"].as_array_mut().ok_or("Saved conversation is invalid")?;
         messages.push(json!({"id":new_id(),"role":"user","content":prompt}));
-        let request = fit_messages(&system, messages);
-        let response = client::capture_errors(invoke("model_chat", json!({"environmentId":id,"messages":request,"maxTokens":max_tokens,"temperature":temperature}))).await;
+        let request = if decision { vec![json!({"role":"user","content":prompt})] } else { fit_messages(&system, messages) };
+        let response = client::capture_errors(invoke("model_chat", json!({"environmentId":id,"messages":request,"maxTokens":if decision {1} else {max_tokens},"temperature":if decision {0.0} else {temperature}}))).await;
         let answer = match response {
             Ok(answer) => answer,
             Err(error) => { messages.pop(); errors.push(transcript_error("reply", attempted, error)); break; }
@@ -1408,6 +1473,39 @@ fn now_hour() -> u64 {
 #[cfg(test)]
 mod scripted_chat_tests {
     use super::*;
+    #[test]
+    fn pretty_printed_decision_json_is_one_scripted_request() {
+        let text = serde_json::to_string_pretty(&crate::decisions::parse(crate::decisions::EXAMPLE).unwrap()).unwrap();
+        assert_eq!(scripted_prompts(&mut std::io::Cursor::new(text.as_bytes())).unwrap(), vec![text]);
+    }
+
+    #[tokio::test]
+    async fn decision_requests_are_independent_and_share_the_saved_history() {
+        let first = crate::decisions::EXAMPLE.to_owned();
+        let second = first.replace("upload secrets", "delete a file");
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let result = scripted_chat("decision-env", true, vec![first.clone(), second.clone()], move |method, params| {
+            let captured = captured.clone();
+            async move { Ok(match method {
+                "model_chat_history" => Value::Null,
+                "model_status" => json!({"status":"ready","task":"structured-decision"}),
+                "model_chat" => {
+                    captured.lock().unwrap().push(params);
+                    json!({"choices":[{"message":{"content":"{\"answers\":{}}"}}]})
+                },
+                "save_model_chat_history" => { assert_eq!(params["history"]["conversations"][0]["messages"].as_array().unwrap().len(), captured.lock().unwrap().len() * 2); json!({"saved":true}) },
+                _ => panic!("Unexpected operation: {method}"),
+            }) }
+        }).await.unwrap();
+        assert_eq!(result["completed"], 2);
+        let requests = requests.lock().unwrap();
+        for (request, text) in requests.iter().zip([first, second]) {
+            assert_eq!(request["messages"], json!([{"role":"user","content":text}]));
+            assert_eq!(request["maxTokens"], 1);
+            assert_eq!(request["temperature"], 0.0);
+        }
+    }
 
     #[test]
     fn automatic_chat_requires_both_terminal_streams() {
@@ -1555,7 +1653,7 @@ fn usage_summary(id: &str, usage: &Value, days: u32, now_hour: u64) -> Value {
         }
     }
     let recent = usage["recent"].as_array().map(|r| r.iter().rev().take(10).cloned().collect::<Vec<_>>()).unwrap_or_default();
-    json!({"environmentId":id,"since":usage["since"],"totals":usage["totals"],"days":buckets,"recent":recent,"note":"UTC days. Counts and tokens only; prompts are never recorded."})
+    json!({"environmentId":id,"since":usage["since"],"totals":usage["totals"],"days":buckets,"recent":recent,"listen":usage["listen"],"note":"UTC days. Usage counters exclude content; optional free-provider recordings are stored separately."})
 }
 #[cfg(test)]
 mod tests {
@@ -1720,6 +1818,28 @@ mod tests {
         assert_eq!(r.request["provider"], "yougoriCuda");
         assert_eq!(r.request["workload"]["args"][1], "a; touch /bad");
         assert_eq!(r.request["workload"]["environment"]["KEY"], "with spaces")
+    }
+    #[test]
+    fn storage_selection_does_not_consume_guest_command_options() {
+        let run=parse_run(&args(&["--storage-drive","D:/","alpine","echo","--storage-drive","guest-value"]),false).unwrap();
+        assert_eq!(run.request["storageDrive"],"D:/");
+        assert_eq!(run.request["workload"]["args"],json!(["echo","--storage-drive","guest-value"]));
+    }
+    #[test]
+    fn older_model_engines_only_omit_an_explicit_drive_when_it_matches_their_default() {
+        let host=json!({"storageDrive":"D:\\"});
+        assert_eq!(model_storage_drive(false,&host,None).unwrap(),None);
+        assert_eq!(model_storage_drive(false,&host,Some("d:/")).unwrap(),None);
+        assert!(model_storage_drive(false,&host,Some("C:\\")).unwrap_err().contains("No environment was created"));
+        assert!(model_storage_drive(false,&json!({}),Some("D:\\")).is_err());
+        assert_eq!(model_storage_drive(true,&host,Some("C:\\")).unwrap(),Some("C:\\".into()));
+    }
+    #[tokio::test]
+    async fn model_storage_dry_runs_keep_scripts_noninteractive() {
+        let plan=model(&args(&["model","run","hf.co/test/model","--storage-drive","D:/","--nowfree","--dry-run"])).await.unwrap();
+        assert_eq!(plan["storageDrive"],"D:/");
+        assert_eq!(plan["shareMode"],"free");
+        assert!(model(&args(&["model","run","hf.co/test/model","--neocloud","--storage-drive","D:/","--dry-run"])).await.is_err());
     }
     #[test]
     fn validates_before_engine_start() {

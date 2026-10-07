@@ -52,8 +52,8 @@ export function OverviewPage({ onOpenEnvironment, onSelectEnvironment }: {
 
       </div>
 
-      <section aria-label="Environment graph">
-        <EnvironmentGraph connections={state.connections} environments={environments} errorContainer={graphErrorContainer} onConnect={openConnection} onOpen={onOpenEnvironment} onSelect={onSelectEnvironment} footer={(openEdit, editDisabled, editActive) =>
+      <section aria-label="Environments workspace">
+        <EnvironmentGraph connections={state.connections} environments={environments} errorContainer={graphErrorContainer} onConnect={openConnection} onOpen={onOpenEnvironment} onSelect={onSelectEnvironment} footer={(openEdit, editDisabled, editActive, toggleCli, cliActive) =>
           <section aria-label="Host resources and storage" className="workspace-footer-stats">
             <div className="workspace-footer-resources">
             <span className="workspace-footer-running" title={`${runningCount} running · ${environments.length - runningCount} not running`}><i aria-hidden="true" data-active={runningCount > 0} /><strong>{runningCount}</strong> running<span className="sr-only"> · {environments.length - runningCount} not running</span></span>
@@ -64,6 +64,7 @@ export function OverviewPage({ onOpenEnvironment, onSelectEnvironment }: {
             <ConfigurationHelp label="Storage usage details">{storageDrives(state.host).map(drive => <span className="block" key={drive.path}>{driveLabel(drive.path)}: {formatBytesFromGb(drive.freeGb)} free of {formatBytesFromGb(drive.totalGb)}{drive.readOnly ? " · Read-only" : ""}</span>)}Choose a drive in New environment. Each drive has its own free-space limit.</ConfigurationHelp>
             </div>
             <div className="workspace-footer-actions">
+            <Button id="host-terminal-toggle" data-instruction-view="cli" size="xs" variant="ghost" className="workspace-footer-reclaim" aria-pressed={cliActive} aria-controls="host-terminal-panel" title="CLI (Ctrl+`)" disabled={editDisabled} onClick={toggleCli} type="button">CLI</Button>
             <ProjectManager />
             <DuplicationActivity />
             <Button id="edit-app-toggle" size="xs" variant="ghost" className="workspace-footer-reclaim" aria-pressed={editActive} aria-controls="edit-app-terminal-panel" disabled={editDisabled} onClick={openEdit} type="button">Edit the App</Button>

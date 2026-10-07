@@ -42,7 +42,7 @@ pub fn methods() -> Vec<Method> {
     method!(duplicate_environment, "Run or resume a reviewed local/cloud copy. Cloud destinations create billable resources; use the same operationId when retrying.", "request:object",json!({"request":{"operationId":"00000000-0000-4000-8000-000000000001","environmentId":"env-ID","name":"Copy","destination":"local","reviewed":false}}),true,Some("May create billable cloud resources and transfer environment data. Review the destination and recovery plan."));
     method!(inspect_duplication_source, "Verify an existing cloud source before copying it.", "environmentId:string source:object",json!({"environmentId":"env-ID","source":{"provider":"aws","account":"profile","region":"eu-west-1","instance":"i-ID"}}),true,None);
     method!(cleanup_environment_duplication, "Remove owned temporary transfer resources belonging to a recorded copy operation.", "operationId:string",json!({"operationId":"00000000-0000-4000-8000-000000000001"}),true,Some("Deletes this copy operation's temporary transfer resources."));
-    method!(run_model, "Create a NVIDIA CUDA container serving a Hugging Face causal language model. GGUF repositories run with llama.cpp (quant picks the file, Q4_K_M by default); others use Transformers safetensors. Optional fixed resources: cpu, memoryGb, storageGb. Downloads model weights; optional API binds only to localhost and returns a private API key.", "model:string port?:port resources?:object quant?:string",json!({"model":"hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"}),true,None);
+    method!(run_model, "Create a NVIDIA CUDA container serving a Hugging Face causal language model. GGUF repositories run with llama.cpp (quant picks the file, Q4_K_M by default); others use Transformers safetensors. Optional resources: cpu, memoryGb, storageGb, storageDrive (available local drive). Downloads model weights; optional API binds only to localhost and returns a private API key.", "model:string port?:port resources?:object quant?:string",json!({"model":"hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"}),true,None);
     method!(model_api, "Enable or reconnect a model's authenticated localhost API and reveal its private API key to this user.", "environmentId:string port:port",json!({"environmentId":"env-ID","port":8000}),true,None);
     method!(model_status, "Read model installation/download/loading/ready status.", "environmentId:string",json!({"environmentId":"env-ID"}),false,None);
     method!(model_chat, "Generate a response in a local GPU model environment. maxTokens defaults to 256 (up to 4096 on models started with this version); temperature defaults to 0.7.", "environmentId:string messages:array maxTokens?:number temperature?:number",json!({"environmentId":"env-ID","messages":[{"role":"user","content":"Hello"}]}),true,None);
@@ -55,7 +55,7 @@ pub fn methods() -> Vec<Method> {
     method!(market_status, "Yougori Network sign-in, account (email, wallet, balances) and the models this computer shares, with their speed, uptime and token counts. Shared by the app and the CLI.", "", json!({}), false, None);
     method!(market_sign_in, "Start a Yougori Network sign-in: returns a code to approve at yougori.com/device and opens the browser. One approval signs in this computer's app and CLI; read market_status until signedIn.", "", json!({}), true, None);
     method!(market_sign_out, "Sign out of the Yougori Network on this computer and stop sharing every model.", "", json!({}), true, Some("Stops sharing every model this computer shares on the Yougori Network."));
-    method!(market_share_model, "Share a running or starting model on the Yougori Network through a private public link that only yougori.com sees. paid lists priced models at the network price (others are shared free); free lets anyone use it without a wallet. Requires market_sign_in.", "environmentId:string mode:paid|free", json!({"environmentId":"env-ID","mode":"free"}), true, Some("Lets other people send requests to this model on your GPU through the Yougori Network."));
+    method!(market_share_model, "Share a running or starting model on the Yougori Network through a private public link that only yougori.com sees. paid lists priced models at the network price (others are shared free); free lets anyone use it without a wallet. Requires market_sign_in.", "environmentId:string mode:paid|free listen?:bool", json!({"environmentId":"env-ID","mode":"free"}), true, Some("Lets other people send requests to this model on your GPU through the Yougori Network."));
     method!(market_unshare_model, "Stop sharing a model on the Yougori Network and close the public link Yougori opened for it.", "environmentId:string", env.clone(), true, None);
     method!(model_api_status, "A model's private API key and any localhost and public (Cloudflare) API addresses currently serving it.", "environmentId:string", json!({"environmentId":"env-ID"}), false, None);
     method!(environment_changes, "Compare explicitly shared PC folders, guest packages, variables and configuration with a saved baseline. baseline:true accepts current changes as a new baseline without editing any source file.", "environmentId:string baseline:bool offset?:number",json!({"environmentId":"env-ID","baseline":false}),true,None);
@@ -117,7 +117,7 @@ pub fn methods() -> Vec<Method> {
         false,
         None
     );
-    method!(create_environment, "Create Container, GPU (container/yougoriCuda), VM (fullVm), or microVM (microVm). GPU needs compatible hardware/runtime. VM creation waits for disk preparation, not OS installation.", "request:object", json!({"request":{"name":"web","kind":"container","provider":"yougoriOci","runtime":"docker.io/library/node:24","description":"","networkAccess":false,"gpuAccess":false,"resourcePolicy":policy.clone()}}), true, None);
+    method!(create_environment, "Create Container, GPU (container/yougoriCuda), VM (fullVm), or microVM (microVm). GPU needs compatible hardware/runtime. VM creation waits for disk preparation, not OS installation.", "request:object", json!({"request":{"name":"web","kind":"container","provider":"yougoriOci","runtime":"docker.io/library/node:24","description":"","networkAccess":true,"gpuAccess":false,"resourcePolicy":policy.clone()}}), true, None);
     method!(
         set_environment_status,
         "Start, stop or pause using the same recovery and lifecycle checks as the desktop.",
@@ -175,7 +175,7 @@ pub fn methods() -> Vec<Method> {
     method!(
         get_storage_allocation,
         "Inspect this node's storage capacity, usage and available maximum. Containers also report whether their independent writable limit is enforced.",
-        "environmentId?:string newVm?:bool",
+        "environmentId?:string newVm?:bool storageDrive?:string",
         env.clone(),
         false,
         None
@@ -190,7 +190,7 @@ pub fn methods() -> Vec<Method> {
     );
     method!(
         update_container_network,
-        "Plug/unplug Internet for a container, microVM or VM. Private node links are separate.",
+        "Toggle Internet immediately for running or paused containers, microVMs and VMs without restarting. Private connections are separate.",
         "environmentId:string enabled:bool",
         json!({"environmentId":"env-ID","enabled":true}),
         true,
@@ -550,6 +550,7 @@ pub fn methods() -> Vec<Method> {
     method!(publication_preflight, "Check domain availability and listener ownership, then report a precise transition preserving unrelated publications. An optional saved domain resolves its protected listener configuration.", "environmentId:string port:port kind:loopback|local|cloudflare hostPort?:port cloudflare?:object domain?:string", json!({"environmentId":"env-ID","port":3000,"kind":"loopback","hostPort":3000}), false, None);
     method!(host_share_credentials, "Explicitly retrieve this user's selected host-folder access capability. Routine metadata never includes the bearer URL.", "shareId:string", json!({"shareId":"share-ID"}), false, Some("Reveals the selected host-folder access capability."));
     method!(model_preflight, "Inspect model task, architecture, runner compatibility, dependencies and likely resources before creating a runtime or downloading weights. quant chooses a GGUF quantization such as Q4_K_M.", "model:string quant?:string", json!({"model":"hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"}), false, None);
+    method!(model_support_task, "Prepare an isolated architecture-support skill and public checkpoint request for the selected coding agent. Does not launch an agent or enable unverified code.", "model:string agent:string quant?:string", json!({"model":"hf.co/OWNER/MODEL","agent":"codex"}), true, None);
     method!(set_deployment_secret, "Store a protected application secret binding. Supply value through stdin or a private request file; values are never returned.", "name:string value:string", json!({"name":"api-token","value":"EXAMPLE-NOT-A-SECRET"}), true, Some("Stores this application credential in the user's protected vault."));
     method!(delete_deployment_secret, "Remove a protected deployment secret reference; applications using it require a new binding.", "name:string", json!({"name":"api-token"}), true, Some("Removes this protected application credential."));
     method!(
@@ -707,5 +708,13 @@ mod tests {
         assert!(action.validate(&json!({"environmentId":"env-ID", "action":"terminate"})).is_err());
         assert!(find("runpod_endpoint_run").unwrap().validate(&json!({"environmentId":"env-ID", "input":"invalid"})).is_err());
         assert!(find("runpod_attach").unwrap().validate(&json!({"kind":"volume", "resourceId":"id"})).is_err());
+    }
+}
+
+#[cfg(test)] mod listen_schema_tests {
+    #[test] fn shared_model_recording_flag_accepts_json_booleans() {
+        let method=super::find("market_share_model").unwrap();
+        for listen in [true,false] {method.validate(&serde_json::json!({"environmentId":"fixture","mode":"free","listen":listen})).unwrap();}
+        assert!(method.validate(&serde_json::json!({"environmentId":"fixture","mode":"free","listen":"true"})).is_err());
     }
 }

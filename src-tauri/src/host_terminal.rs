@@ -459,7 +459,7 @@ fn spawn_shell(owner: &str, config: ShellConfig, size: PtySize) -> Result<Arc<Se
         // optional .ps1 wrappers under a restricted PowerShell script policy.
         let mut bootstrap =
             String::from("function global:yougori { & $env:YOUGORI_CLI @args }; function global:opendock { & $env:YOUGORI_CLI @args }; ");
-        for name in ["codex", "claude", "gemini"] {
+        for name in ["codex", "claude", "gemini", "kilo", "opencode"] {
             if let Some(path) = search_command(name) {
                 command.env(format!("YOUGORI_AGENT_{}", name.to_uppercase()), path);
                 bootstrap.push_str(&format!(

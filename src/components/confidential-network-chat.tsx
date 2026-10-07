@@ -25,18 +25,23 @@ export function ConfidentialNetworkChat() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
     finally { setKey(""); setBusy(false) }
   }
-  return <section aria-label="Confidential Network inference">
-    <Button size="sm" variant="outline" aria-expanded={open} onClick={() => setOpen(!open)}>Confidential inference</Button>
+  return <section className="network-card" aria-label="Confidential Neo Grid inference">
+    <div className="network-card-head">
+      <div className="network-identity"><strong>Confidential inference <span className="network-chip">Experimental</span></strong><span>Requires attested confidential hardware and a locally verified policy.</span></div>
+      <Button aria-label="Confidential inference" size="sm" variant="outline" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Hide" : "Set up"}</Button>
+    </div>
     {open ? <div className="confidential-chat">
-      <p>Experimental native client. No approved hardware policy ships yet, so requests are blocked by default. Compatible confidential CPU/GPU hardware and an independently verified image are required.</p>
+      <p className="network-warning">No approved hardware policy ships yet, so requests are blocked by default. Compatible confidential CPU/GPU hardware and an independently verified image are required.</p>
       <p>Encryption stays in the native client. A website cannot supply its trust policy. Prompts and replies are not saved here, and failed verification never falls back to standard inference.</p>
+      <div className="confidential-grid">
       <label>Local attestation policy<Input value={policy} onChange={e => setPolicy(e.target.value)} placeholder="Path to independently verified policy.json" disabled={busy} /></label>
       <label>Provider ID<Input value={node} onChange={e => setNode(e.target.value)} placeholder="nd_…" disabled={busy} /></label>
       <label>Model repository<Input value={model} onChange={e => setModel(e.target.value)} placeholder="owner/model" disabled={busy} /></label>
-      <label>Network API key<Input type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} disabled={busy} /></label>
+      <label>Neo Grid API key<Input type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} disabled={busy} /></label>
+      </div>
       <label>Prompt<Textarea value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={32768} disabled={busy} /></label>
-      <Button size="sm" disabled={busy || !key || !node || !model || !prompt} onClick={() => void send()}>{busy ? "Verifying and sending…" : "Verify and send encrypted"}</Button>
-      {error ? <p role="alert">{error}</p> : null}
+      <Button className="confidential-send" size="sm" disabled={busy || !key || !node || !model || !prompt} onClick={() => void send()}>{busy ? "Verifying and sending…" : "Verify and send encrypted"}</Button>
+      {error ? <p className="network-error" role="alert">{error}</p> : null}
       {reply ? <pre aria-label="Decrypted response">{reply}</pre> : null}
     </div> : null}
   </section>

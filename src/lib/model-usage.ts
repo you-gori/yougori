@@ -25,9 +25,8 @@ export function sumDays(days: UsageDay[]): UsageCounters {
 }
 
 /** Average generation speed across completed replies, in tokens per second. */
-export function averageSpeed(recent: UsageRequest[]): number | null {
-  const done = recent.filter(r => r.outcome === "ok" && r.completion_tokens > 0 && r.seconds > 0)
+export function averageSpeed(recent: UsageRequest[], field: "prompt_tokens" | "completion_tokens" = "completion_tokens"): number | null {
+  const done = recent.filter(r => r.outcome === "ok" && r[field] > 0 && r.seconds > 0)
   const seconds = done.reduce((sum, r) => sum + r.seconds, 0)
-  return seconds ? done.reduce((sum, r) => sum + r.completion_tokens, 0) / seconds : null
+  return seconds ? done.reduce((sum, r) => sum + r[field], 0) / seconds : null
 }
-

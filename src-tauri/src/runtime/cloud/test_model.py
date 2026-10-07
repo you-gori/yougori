@@ -94,6 +94,19 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
         self.assertNotIn('hf_private_read_token', json.dumps(self.runner.request('status', self.body)))
 
+    def test_reviewed_vllm_runner_is_persisted_and_injected_into_isolated_bootstrap(self):
+        self.body['format']='vllm'
+        self.body['source']=SERVER.replace("'status':'ready'", "'status':'ready', 'format':os.environ.get('YOUGORI_MODEL_FORMAT'), 'installVllm':os.environ.get('YOUGORI_INSTALL_VLLM')")
+        self.assertEqual(self.runner.request('run',self.body),{'reused':False})
+        result=self.ready()
+        self.assertEqual(result['format'],'vllm');self.assertEqual(result['installVllm'],'1')
+        self.assertEqual(json.loads((self.runner.root_dir()/'config.json').read_text())['format'],'vllm')
+
+    def test_arbitrary_runner_is_rejected_before_launch(self):
+        with self.assertRaisesRegex(ValueError,'Unsupported model runner'):
+            self.runner.request('run',{**self.body,'format':'unreviewed-plugin'})
+        self.assertFalse(self.runner.running(self.runner.root_dir()))
+
     def test_conflicting_model_and_key_cannot_replace_or_stop_active_model(self):
         self.runner.request('run', self.body)
         self.ready()

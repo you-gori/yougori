@@ -332,8 +332,13 @@ describe("browser platform adapter", () => {
     await expect(platformApi.executeEnvironmentCommand(environment.id, "uname -a")).rejects.toThrow("read-only serial console")
   })
 
+  it("defaults new environments to Internet on and preserves explicit offline creation", async () => {
+    expect((await createTestEnvironment("Online default")).networkAccess).toBe(true)
+    expect((await createTestEnvironment("Offline explicit", { networkAccess: false })).networkAccess).toBe(false)
+  })
+
   it("persists and guards container internet access", async () => {
-    const environment = await createTestEnvironment("Network policy")
+    const environment = await createTestEnvironment("Network policy", { networkAccess: false })
     expect(environment.networkAccess).toBe(false)
     const enabled = await platformApi.updateContainerNetwork(environment.id, true)
     expect(enabled.environments.find((item) => item.id === environment.id)?.networkAccess).toBe(true)

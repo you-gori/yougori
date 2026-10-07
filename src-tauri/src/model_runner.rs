@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod neocloud;
 pub(crate) mod huggingface;
 pub(crate) mod preflight;
+mod vllm;
 pub use preflight::model_preflight;
 pub(crate) use neocloud::{run_neocloud_model, start_model, stop_model};
 pub fn normalize_model(model: &str) -> Result<String, String> {
@@ -38,6 +39,11 @@ pub fn normalize_model(model: &str) -> Result<String, String> {
 pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, app: AppHandle) -> Result<Value, String> {
     run_model_with_resources(model, port, None, quant, app).await
 }
+/// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod.
+#[tauri::command]
+pub async fn run_model_on_neocloud(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
+    run_neocloud_model(model, environment_id, port, app).await
+}
 /// Safetensors models run on the PyTorch CUDA image. GGUF models need a newer C library for the
 /// pinned llama.cpp CUDA build, which the model server downloads and verifies itself.
 const TRANSFORMERS_IMAGE: &str = "docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime";
@@ -49,6 +55,7 @@ pub struct ModelResources {
     pub cpu: Option<f64>,
     pub memory_gb: Option<f64>,
     pub storage_gb: Option<f64>,
+    pub storage_drive: Option<String>,
 }
 
 impl ModelResources {
@@ -73,17 +80,21 @@ impl ModelResources {
 pub async fn run_model_with_resources(model: String, port: Option<u16>, resources: Option<ModelResources>, quant: Option<String>, app: AppHandle) -> Result<Value, String> {
     let model = normalize_model(&model)?;
     let compatibility=preflight::preflight_quant(&model, quant.as_deref()).await?;
-    if compatibility["supported"]!=true{return Err(format!("{}: {}. No environment was created.",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")))}
+    if compatibility["supported"]!=true {
+        let help=if compatibility["supportAvailable"]==true {format!(" Implement support with `yougori model support hf.co/{model} --agent codex --launch` or choose a coding agent in the App.")}else{String::new()};
+        return Err(format!("{}: {}. No environment was created.{help}",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")));
+    }
+    vllm::check_local_hardware(&compatibility).await?;
     if port == Some(0) {
         return Err("Invalid API port".into());
     }
+    let mut resources=resources.unwrap_or_default();
     let available = app
         .state::<RuntimeManager>()
-        .new_storage_on_drive(None)?
+        .new_storage_on_drive(resources.storage_drive.as_deref())?
         .maximum_gb;
     let state = app.state::<PlatformStore>().snapshot()?;
     let host = state.host;
-    let mut resources=resources.unwrap_or_default();
     let required_storage=compatibility["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).max(12.0);
     if resources.storage_gb.is_none(){resources.storage_gb=Some(required_storage.max(20.0));}
     if resources.storage_gb.is_some_and(|s|s<required_storage){return Err(format!("This model needs approximately {required_storage:.0} GB of persistent storage for its weights and runtime. No environment was created."))}
@@ -100,6 +111,7 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
     let range = |n: f64| json!({"min":n,"preferred":n,"max":n});
     let command = server_command();
     let gguf = compatibility["runner"] == "yougori-llama-cpp";
+    let vllm = compatibility["runner"] == "yougori-vllm";
     let mut protected = json!({"YOUGORI_MODEL_TOKEN": token_reference});
     if let Some(token) = huggingface::token() {
         crate::projects::secrets::store(huggingface::TOKEN_REFERENCE, &token)?;
@@ -113,7 +125,8 @@ pub async fn run_model_with_resources(model: String, port: Option<u16>, resource
         environment["YOUGORI_MODEL_QUANT"] = compatibility["quant"].clone();
         environment["YOUGORI_MODEL_FILES"] = json!(compatibility["files"].to_string());
     }
-    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
+    if vllm { environment["YOUGORI_MODEL_FORMAT"] = json!("vllm"); }
+    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else if vllm {vllm::IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
     let mut result = crate::projects::run_workload(request, true, app).await?;
     result["model"] = model.into();
     result["status"] = json!("loading");
@@ -230,7 +243,8 @@ pub(crate) async fn refresh_server(
         .map(|_| ())
 }
 fn is_server_command(command: &str) -> bool {
-    command.starts_with("exec python -u -c ") && command.contains(",'\"'\"'yougori-model'\"'\"',")
+    command.starts_with("exec python -u -c ") && ["yougori-model", "yougori-model-local-fix"].iter()
+        .any(|name| command.contains(&format!(",'\"'\"'{name}'\"'\"',")))
 }
 fn shell_quote(v: &str) -> String {
     format!("'{}'", v.replace('\'', "'\"'\"'"))
@@ -322,6 +336,11 @@ async fn model_request(
     .await
     .map_err(|_| "Model response timed out; try a shorter conversation")?
 }
+/// Only the local engine may lease optional free-provider recording.
+pub(crate) async fn configure_listen(app: &AppHandle, id: &str, mode: &str, enabled: bool) -> Result<Value, String> {
+    if enabled && mode != "free" { return Err("--listen requires --nowfree".into()); }
+    model_request(app, id, "/v1/listen/config", Some(json!({"enabled":enabled,"mode":mode}))).await
+}
 #[tauri::command]
 pub async fn model_status(environment_id: String, app: AppHandle) -> Result<Value, String> {
     let state = app.state::<PlatformStore>().snapshot()?;
@@ -380,6 +399,13 @@ pub async fn model_api(environment_id: String, port: u16, app: AppHandle) -> Res
     )
 }
 /// Current API access for a model: its key plus any localhost and public (Cloudflare) addresses.
+fn public_api_url(publication: &Value) -> Option<String> {
+    // Publication readiness is the tunnel's active connection, separate from
+    // model health and the website's independent provider admission checks.
+    if !matches!(publication["status"].as_str(), Some("active" | "ready")) { return None; }
+    publication["urls"][0].as_str().map(|url| format!("{}/v1", url.trim_end_matches('/')))
+}
+
 pub(crate) async fn api_status(app: &AppHandle, environment_id: &str) -> Result<Value, String> {
     let runtime = app.state::<RuntimeManager>();
     let env = app
@@ -413,7 +439,7 @@ pub(crate) async fn api_status(app: &AppHandle, environment_id: &str) -> Result<
         "model": model,
         "apiKey": token,
         "apiUrl": local.map(|p| format!("http://127.0.0.1:{}/v1", p["hostPort"])),
-        "publicUrl": public.filter(|p|p["status"]=="ready").and_then(|p| p["urls"][0].as_str()).map(|url| format!("{}/v1", url.trim_end_matches('/'))),
+        "publicUrl": public.and_then(public_api_url),
         "publicStatus": public.map(|p|p["status"].clone()),
         "publicId": public.map(|p| p["id"].clone()),
         "publicAccount": public.is_some_and(|p| p["cloudflareAccount"] == true),
@@ -774,9 +800,22 @@ pub fn model_chat_cancel(request_id: String) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn active_tunnels_are_offered_for_admission_but_failed_saved_links_are_not() {
+        for status in ["active", "ready"] {
+            let publication = json!({"status":status,"urls":["https://provider.example.test/"]});
+            assert_eq!(public_api_url(&publication).as_deref(), Some("https://provider.example.test/v1"));
+        }
+        for status in ["error", "stopped", "reconnecting", "starting"] {
+            assert!(public_api_url(&json!({"status":status,"urls":["https://stale.example.test"]})).is_none());
+        }
+        assert!(public_api_url(&json!({"status":"active","urls":[]})).is_none());
+    }
+
+    #[test]
     fn only_model_server_commands_are_refreshed() {
         let command = server_command();
         assert!(is_server_command(&command));
+        assert!(is_server_command(&command.replace("yougori-model", "yougori-model-local-fix")));
         assert!(command.len() < 32 * 1024, "startup commands are limited to 32 KB");
         assert!(!is_server_command("exec python -u -c 'print(1)'"));
         assert!(!is_server_command("sleep infinity"));
@@ -792,7 +831,8 @@ mod tests {
     }
     #[test]
     fn model_resource_allocation_preserves_fixed_values_and_rejects_impossible_limits() {
-        let custom = ModelResources { cpu:Some(3.0), memory_gb:Some(6.0), storage_gb:Some(25.0) };
+        let custom: ModelResources = serde_json::from_value(json!({"cpu":3,"memoryGb":6,"storageGb":25,"storageDrive":"D:\\"})).unwrap();
+        assert_eq!(custom.storage_drive.as_deref(),Some("D:\\"));
         assert_eq!(custom.allocation(8,16.0,100.0).unwrap(),(3.0,6.0,25.0));
         assert_eq!(ModelResources::default().allocation(8,16.0,100.0).unwrap(),(2.0,4.0,20.0));
         assert!(ModelResources::default().allocation(1,16.0,100.0).is_err());

@@ -24,12 +24,12 @@ function readPrefs(): Prefs {
 
 const columns: Array<{ key: SortKey | null; label: string; className?: string }> = [
   { key: "name", label: "Environment" },
-  { key: "type", label: "Type" },
   { key: "status", label: "Status" },
   { key: "cpu", label: "CPU", className: "environment-list-metric" },
+  { key: null, label: "GPU", className: "environment-list-metric" },
   { key: "memory", label: "Memory", className: "environment-list-metric" },
   { key: "storage", label: "Storage", className: "environment-list-metric" },
-  { key: "links", label: "Links" },
+  { key: "links", label: "Connections" },
   { key: null, label: "Access" },
   { key: null, label: "Services" },
   { key: null, label: "Actions", className: "environment-list-actions-head" },
@@ -58,7 +58,7 @@ interface RowContext {
 }
 const ListContext = createContext<RowContext | null>(null)
 
-export function EnvironmentList<T extends { id: string; data: { environment: GraphEnvironment } }>({ items, connections, colors, onConnect, children }: {
+export function EnvironmentList<T extends { id: string; data: { environment: GraphEnvironment; preview?: boolean } }>({ items, connections, colors, onConnect, children }: {
   items: T[]
   connections: ListConnection[]
   colors: Record<string, string>
@@ -82,6 +82,7 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
 
   const environments = useMemo(() => items.map(item => item.data.environment), [items])
   const byId = useMemo(() => new Map(environments.map(environment => [environment.id, environment])), [environments])
+  const previewIds = useMemo(() => new Set(items.filter(item => item.data.preview).map(item => item.id)), [items])
   const itemById = useMemo(() => new Map(items.map(item => [item.id, item])), [items])
   const links = useMemo(() => {
     const result = new Map<string, ListConnection[]>()
@@ -154,9 +155,10 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
 
   const toggleExpanded = useCallback((id: string) => setExpanded(current => { const next = new Set(current); if (!next.delete(id)) next.add(id); return next }), [])
   const toggleSelected = useCallback((id: string, range: boolean) => {
+    if (previewIds.has(id)) return
     setSelected(current => {
       const next = new Set(current)
-      const ids = visible.map(environment => environment.id)
+      const ids = visible.filter(environment => !previewIds.has(environment.id)).map(environment => environment.id)
       const from = anchor.current ? ids.indexOf(anchor.current) : -1
       const to = ids.indexOf(id)
       const checked = !current.has(id)
@@ -166,10 +168,11 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
       return next
     })
     anchor.current = id
-  }, [visible])
+  }, [visible, previewIds])
 
-  const selectedVisible = visible.filter(environment => selected.has(environment.id))
-  const allSelected = visible.length > 0 && selectedVisible.length === visible.length
+  const selectableVisible = visible.filter(environment => !previewIds.has(environment.id))
+  const selectedVisible = selectableVisible.filter(environment => selected.has(environment.id))
+  const allSelected = selectableVisible.length > 0 && selectedVisible.length === selectableVisible.length
   const canStart = (environment: GraphEnvironment) => environment.kind !== "cloud" && environment.kind !== "computerBranch" && environment.provider !== "nativeSandbox" && (environment.status === "stopped" || environment.status === "paused") && !environmentActions[environment.id]
   const canStop = (environment: GraphEnvironment) => environment.kind !== "cloud" && environment.kind !== "computerBranch" && environment.provider !== "nativeSandbox" && (environment.status === "running" || environment.status === "paused") && !environmentActions[environment.id]
   const startable = selectedVisible.filter(canStart), stoppable = selectedVisible.filter(canStop)
@@ -246,14 +249,14 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
       <div className="environment-list-scroll" ref={bodyRef}>
         <table className="workspace-environment-list" aria-label="Environments" aria-rowcount={visible.length + 1}>
           <thead><tr>
-            <th scope="col" className="environment-list-select-cell">{visible.length ? <input type="checkbox" aria-label="Select all shown environments" checked={allSelected} ref={input => { if (input) input.indeterminate = selectedVisible.length > 0 && !allSelected }} onChange={() => setSelected(allSelected ? new Set([...selected].filter(id => !visible.some(environment => environment.id === id))) : new Set([...selected, ...visible.map(environment => environment.id)]))} /> : null}</th>
+            <th scope="col" className="environment-list-select-cell">{selectableVisible.length ? <input type="checkbox" aria-label="Select all shown environments" checked={allSelected} ref={input => { if (input) input.indeterminate = selectedVisible.length > 0 && !allSelected }} onChange={() => setSelected(allSelected ? new Set([...selected].filter(id => !visible.some(environment => environment.id === id))) : new Set([...selected, ...selectableVisible.map(environment => environment.id)]))} /> : null}</th>
             {columns.map(column => <th scope="col" key={column.label} className={column.className} aria-sort={column.key && prefs.sort === column.key ? prefs.descending ? "descending" : "ascending" : undefined}>
               {column.key ? <button type="button" className="environment-list-sort" data-active={prefs.sort === column.key || undefined} data-descending={prefs.sort === column.key && prefs.descending || undefined} onClick={() => sortBy(column.key!)} title={`Sort by ${column.label.toLowerCase()}`}>{column.label}</button> : column.label}
             </th>)}
           </tr></thead>
           {groups.map(group => <tbody key={group.label || "all"}>
             {group.label ? <tr className="environment-list-group"><th colSpan={columnCount} scope="rowgroup">
-              <button type="button" onClick={() => setSelected(current => new Set([...current, ...group.rows.map(environment => environment.id)]))} title="Select this group">{group.label}</button><span>{group.rows.length}</span>
+              <button type="button" onClick={() => setSelected(current => new Set([...current, ...group.rows.filter(environment => !previewIds.has(environment.id)).map(environment => environment.id)]))} title="Select this group">{group.label}</button><span>{group.rows.length}</span>
             </th></tr> : null}
             {group.rows.map(environment => children(itemById.get(environment.id)!))}
           </tbody>)}
@@ -282,13 +285,29 @@ function LinkChip({ link, self }: { link: ListConnection; self: string }) {
   const arrow = link.direction === "bidirectional" ? "↔" : link.sourceId === self ? "→" : "←"
   const state = !link.active ? "off" : link.enforcementStatus === "error" ? "error" : link.enforcementStatus === "pending" ? "pending" : "on"
   const stateText = state === "off" ? "turned off" : state === "error" ? "needs attention" : state === "pending" ? "pending" : "active"
-  return <button type="button" className="environment-list-link" data-state={state} style={{ "--link-accent": context.colors[otherId] ?? "var(--muted-foreground)" } as CSSProperties} onClick={() => context.onConnect(link.sourceId, link.targetId)} aria-label={`Link ${arrow === "←" ? "from" : "to"} ${other?.name ?? otherId}, ${stateText}`} title={`${arrow === "↔" ? "Two-way" : "One-way"} · ${stateText}`}>
+  return <button type="button" className="environment-list-link" data-state={state} style={{ "--link-accent": context.colors[otherId] ?? "var(--muted-foreground)" } as CSSProperties} onClick={() => context.onConnect(link.sourceId, link.targetId)} aria-label={`Connection ${arrow === "←" ? "from" : "to"} ${other?.name ?? otherId}, ${stateText}`} title={`${arrow === "↔" ? "Two-way" : "One-way"} · ${stateText}`}>
     <span aria-hidden="true">{arrow}</span>{other?.name ?? otherId}
   </button>
 }
 
-export function EnvironmentListRow({ environment, accent, canLink, busy, fileHovered, fileStatus, dropHint, status, access, services, actions, onConfigure, onDoubleClick }: {
+function GpuUsage({ environment }: { environment: GraphEnvironment }) {
+  const { state } = usePlatform()
+  if (!environment.gpuAccess) return <span className="text-muted-foreground">—</span>
+  if (environment.status !== "running") return <span className="text-muted-foreground">{environment.status === "paused" ? "Paused" : "Not running"}</span>
+  // Host telemetry is shared across GPU workloads; cloud usage is not measured by this PC.
+  const local = environment.kind === "container" && environment.provider === "yougoriCuda"
+  const usage = local ? state?.host.gpuUsagePercent : null
+  return <div title={local ? "GPU access is enabled. Usage is measured across this computer, shared by its GPU workloads." : "GPU access is enabled; usage is not available for this environment."}>
+    <span>{local ? "Running" : "Enabled"}</span>
+    {typeof usage === "number" && Number.isFinite(usage) ? <>
+      <Meter label="GPU on this computer" value={Math.max(0, Math.min(100, usage))} max={100} text={`${Math.round(Math.max(0, Math.min(100, usage)))}% shared`} dim={false} />
+    </> : <span className="environment-list-subtitle">Usage unavailable</span>}
+  </div>
+}
+
+export function EnvironmentListRow({ environment, preview = false, accent, canLink, busy, fileHovered, fileStatus, dropHint, status, access, services, actions, onConfigure, onDoubleClick }: {
   environment: GraphEnvironment
+  preview?: boolean
   accent: string
   canLink: boolean
   busy: boolean
@@ -312,26 +331,27 @@ export function EnvironmentListRow({ environment, accent, canLink, busy, fileHov
   const subtitle = environment.description || (cloud || environment.runtime.startsWith("shared://") ? "" : environment.runtime)
   const detailsId = `environment-list-details-${environment.id}`
   return <>
-    <EnvironmentNodeMenu environment={environment} asChild>
-    <tr className="workspace-list-row" onDoubleClick={onDoubleClick} data-environment-id={environment.id} data-selected={selected || undefined} data-expanded={expanded || undefined} data-file-drop-target={fileHovered || undefined} aria-busy={busy} aria-selected={selected} style={{ "--node-accent": accent } as CSSProperties}>
-      <td className="environment-list-select-cell"><input type="checkbox" aria-label={`Select ${environment.name}`} checked={selected} onChange={() => undefined} onClick={event => context.toggleSelected(environment.id, event.shiftKey)} /></td>
+    <EnvironmentNodeMenu environment={environment} disabled={preview} asChild>
+    <tr data-tour-preview={preview || undefined} onClickCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} onPointerDownCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} className="workspace-list-row" onDoubleClick={onDoubleClick} data-environment-id={environment.id} data-selected={selected || undefined} data-expanded={expanded || undefined} data-file-drop-target={fileHovered || undefined} aria-busy={busy} aria-selected={selected} style={{ "--node-accent": accent } as CSSProperties}>
+      <td className="environment-list-select-cell"><input type="checkbox" aria-label={`Select ${environment.name}`} disabled={preview} checked={selected} onChange={() => undefined} onClick={event => context.toggleSelected(environment.id, event.shiftKey)} /></td>
       <th scope="row" className="environment-list-name">
         <div className="environment-list-name-line">
           <button type="button" className="environment-list-disclosure" aria-expanded={expanded} aria-controls={expanded ? detailsId : undefined} aria-label={`${expanded ? "Hide" : "Show"} details for ${environment.name}`} onClick={() => context.toggleExpanded(environment.id)} />
-          <button data-list-focus aria-label={`Configure ${environment.name}`} onClick={onConfigure} title={environment.name} type="button">{environment.name}</button>
+          <button data-tour="node-configure" data-list-focus aria-label={`Configure ${environment.name}`} onClick={onConfigure} title={environment.name} type="button">{environment.name}</button>
         </div>
+        <span className="environment-list-type">{environmentLabel(environment)}{environment.gpuAccess ? <span className="environment-list-tag">GPU</span> : null}</span>
         {subtitle ? <span className="environment-list-subtitle" title={subtitle}>{subtitle}</span> : null}
         {fileStatus}
         {fileHovered ? <span role="status" className="text-xs">{dropHint}</span> : null}
       </th>
-      <td className="environment-list-type">{environmentLabel(environment)}{environment.gpuAccess ? <span className="environment-list-tag">GPU</span> : null}</td>
       <td className="environment-list-status">{status}{environment.lastOpenedAt ? <span className="environment-list-subtitle" title={formatDateTime(environment.lastOpenedAt)}>Opened {formatRelativeTime(environment.lastOpenedAt)}</span> : null}</td>
       <td className="environment-list-number">{cloud ? <span className="text-muted-foreground">—</span> : <Meter label="CPU" value={environment.cpuUsage} max={100} text={`${Math.round(environment.cpuUsage)}%`} dim={dim} />}</td>
+      <td className="environment-list-number"><GpuUsage environment={environment} /></td>
       <td className="environment-list-number">{cloud ? <span className="text-muted-foreground">—</span> : <Meter label="Memory" value={environment.memoryUsageGb} max={memoryLimit} text={`${environment.memoryUsageGb.toFixed(1)} GB`} total={memoryLimit ? `${memoryLimit} GB` : undefined} dim={dim} />}</td>
       <td className="environment-list-number">{cloud ? <span className="text-muted-foreground">—</span> : <Meter label="Storage" value={environment.storageDeltaGb} max={environment.storageLimitGb} text={`+${formatBytesFromGb(environment.storageDeltaGb)}`} total={environment.storageLimitGb ? `${environment.storageLimitGb} GB` : undefined} dim={false} />}</td>
       <td className="environment-list-links">
         {links.map(link => <LinkChip key={link.id} link={link} self={environment.id} />)}
-        {canLink ? <button type="button" className="environment-list-link environment-list-link-add" aria-label={`Link ${environment.name} to another environment`} onClick={() => context.onConnect(environment.id)}>+ Link</button> : links.length ? null : <span className="text-muted-foreground">—</span>}
+        {canLink ? <button type="button" className="environment-list-link environment-list-link-add" data-tour="row-connect" aria-label={`Connect ${environment.name} to another environment`} onClick={() => context.onConnect(environment.id)}>+ Connect</button> : links.length ? null : <span className="text-muted-foreground">—</span>}
       </td>
       <td className="environment-list-access">{access ?? <span className="text-muted-foreground">—</span>}</td>
       <td className="environment-list-services">{services ?? <span className="text-muted-foreground">—</span>}</td>
@@ -376,8 +396,8 @@ function EnvironmentDetails({ environment, links }: { environment: GraphEnvironm
         <div><dt>Priority</dt><dd className="capitalize">{policy.priority}{policy.dynamic ? " · dynamic" : ""}</dd></div>
       </dl>
     </section> : null}
-    <section aria-label={`Links of ${environment.name}`}>
-      <h4>Links <span>{links.length}</span></h4>
+    <section aria-label={`Connections of ${environment.name}`}>
+      <h4>Connections <span>{links.length}</span></h4>
       {links.length ? <ul>
         {links.map(link => {
           const otherId = link.sourceId === environment.id ? link.targetId : link.sourceId
@@ -390,7 +410,7 @@ function EnvironmentDetails({ environment, links }: { environment: GraphEnvironm
             <small data-state={!link.active ? "off" : link.enforcementStatus ?? "enforced"}>{!link.active ? "Turned off" : link.enforcementStatus === "error" ? "Needs attention" : link.enforcementStatus === "pending" ? "Pending" : "Active"}{other ? ` · ${other.status}` : ""}</small>
           </li>
         })}
-      </ul> : <p>Not linked to other environments.</p>}
+      </ul> : <p>No connections to other environments.</p>}
     </section>
     {!cloud ? <section aria-label={`Ports of ${environment.name}`}>
       <h4>Ports & publishing <span>{workspace?.services.length ?? 0}</span></h4>

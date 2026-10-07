@@ -1362,10 +1362,16 @@ pub fn input(
     secret: bool,
     check: &dyn Fn(&str) -> Result<String, String>,
 ) -> Result<String, String> {
+    input_with_initial(question,default,secret,"",check)
+}
+pub fn input_prefilled(question:&str,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    input_with_initial(question,"",false,initial,check)
+}
+fn input_with_initial(question:&str,default:&str,secret:bool,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
     let raw = Raw::on()?;
     let id = add(Item::Lines(Vec::new()));
     let caret = if caps().color { "\x1b[7m \x1b[27m" } else { "_" };
-    let mut value = String::new();
+    let mut value = initial.to_owned();
     let mut problem = String::new();
     let result = loop {
         let room = size().0.saturating_sub(12);
@@ -2065,22 +2071,22 @@ mod tests {
 
     #[test]
     fn stop_menu_requires_enter_even_after_ten_ctrl_c_presses() {
-        for initial in [0, 1] {
+        for initial in 0..3 {
             let mut at = initial;
             for _ in 0..10 {
                 let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
                 assert!(!cancels_prompt(key, false));
-                assert_eq!(selection_key(&mut at, 2, key), None);
+                assert_eq!(selection_key(&mut at, 3, key), None);
                 assert_eq!(at, initial);
             }
             let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
             assert!(!cancels_prompt(escape, false));
-            assert_eq!(selection_key(&mut at, 2, escape), None);
-            assert_eq!(selection_key(&mut at, 2, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(initial));
+            assert_eq!(selection_key(&mut at, 3, escape), None);
+            assert_eq!(selection_key(&mut at, 3, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(initial));
         }
         assert!(cancels_prompt(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), true));
         let mut at = 0;
-        selection_key(&mut at, 2, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        selection_key(&mut at, 3, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(at, 1);
     }
 

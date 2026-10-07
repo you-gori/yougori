@@ -332,7 +332,7 @@ const ChatMessageView = memo(function ChatMessageView({ message, modelName, stre
       : streaming ? <p className="model-chat-pending">Thinking…</p> : null}
     {message.error ? <p role="alert" className="model-error">{message.error}</p> : null}
     {!streaming ? <div className="model-message-footer">
-      {!user && stats?.tokens ? <span className="model-message-stats">{stats.tokens.toLocaleString()} tokens · {(stats.tokens / Math.max(stats.seconds, 0.001)).toFixed(1)} tok/s</span> : null}
+      {!user && stats && (stats.inputTokens ?? stats.tokens) ? <span className="model-message-stats">{(stats.inputTokens ?? stats.tokens)!.toLocaleString()} {stats.inputTokens != null ? "input " : ""}tokens · {((stats.inputTokens ?? stats.tokens)! / Math.max(stats.seconds, 0.001)).toFixed(1)} {stats.inputTokens != null ? "input " : ""}tok/s</span> : null}
       {!user && stats?.finish === "cancelled" ? <span className="model-message-stats">Stopped</span> : null}
       {!user && stats?.finish === "length" ? <span className="model-message-stats">Reached the reply length limit</span> : null}
       <div className="model-message-actions">

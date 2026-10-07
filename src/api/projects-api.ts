@@ -37,25 +37,29 @@ export const changesApi = { inspect: (environmentId: string, baseline = false, o
 /** context and stream are reported by models started with streaming support. */
 export interface ModelStatus { status: "installing" | "downloading" | "verifying" | "loading" | "ready" | "error"; model: string; error: string | null; gpu?: string; context?: number; stream?: boolean; task?: string; api?: string; precision?: string; chatTemplate?: boolean; chatWarning?: string; chatModelSuggestion?: string; download?: { receivedBytes: number; totalBytes: number; bytesPerSecond: number; transport: string }; verification?: { checkedBytes: number; totalBytes: number } }
 export interface ModelRun { id: string; model: string; apiUrl?: string; apiKey?: string }
-export interface ModelPreflight { format?: string; quant?: string; files?: { rfilename: string; size: number; sha256?: string }[]; model: string; task: string; modelType: string; supported: boolean; reason: string; runner: string; revision: string; resources: { storageGbRecommended: number | null; gpuMemoryGbEstimated: number | null; estimateOnly: boolean }; downloads: { location: string; checksumVerification: string; hostWeightImportRequired: boolean } }
+export type ArchitectureAgent = "claude" | "codex" | "kilo" | "opencode" | "gemini"
+export interface ArchitectureTask { path: string; skillPath: string; promptPath: string; agent: ArchitectureAgent; launchCommand: string; resumeCommand: string; model: string; revision: string; agentStarted: false }
+export interface ModelPreflight { supportAvailable?: boolean; architectures?: string[]; format?: string; quant?: string; files?: { rfilename: string; size: number; sha256?: string }[]; model: string; task: string; modelType: string; supported: boolean; reason: string; runner: string; revision: string; resources: { storageGbRecommended: number | null; gpuMemoryGbEstimated: number | null; estimateOnly: boolean }; downloads: { location: string; checksumVerification: string; hostWeightImportRequired: boolean } }
 /** Key plus any localhost and public (Cloudflare) addresses currently serving the model API. */
 export interface ModelApiAccess { id: string; model: string; apiKey: string; apiUrl: string | null; publicUrl: string | null; publicId: string | null; publicAccount: boolean }
 export interface UsageCounters { requests: number; prompt_tokens: number; completion_tokens: number; errors: number; rejected: number; yougori?: number; api?: number }
 export type UsageOutcome = "ok" | "cancelled" | "busy" | "invalid" | "error" | "rejected"
 export interface UsageRequest { time: number; source: "yougori" | "api"; outcome: UsageOutcome; prompt_tokens: number; completion_tokens: number; seconds: number; stream: boolean }
 /** Recorded by the model server; `hours` is keyed by Unix hour. Prompts are never stored. */
-export interface ModelUsage { since: number; totals: UsageCounters; hours: Record<string, UsageCounters>; recent: UsageRequest[] }
+export interface ModelUsage { listen?: { enabled: boolean; path: string; error?: string | null }; since: number; totals: UsageCounters; hours: Record<string, UsageCounters>; recent: UsageRequest[]; speedMetric?: "input_tokens" | "output_tokens" }
 export interface ChatMessage { role: "system" | "user" | "assistant"; content: string }
 export interface ChatOptions { maxTokens: number; temperature: number }
 export interface ChatUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; truncated_messages?: number; context_window?: number }
 export interface ChatReply { finishReason: "stop" | "length" | "cancelled"; usage?: ChatUsage }
 export const modelsApi = {
+  supportTask: (model: string, agent: ArchitectureAgent, quant?: string) => run<ArchitectureTask>("model_support_task", { model, agent, quant }, desktop),
   huggingface: () => run<{ configured: boolean; reference: string; tokensUrl: string }>("model_huggingface_status", {}, desktop),
   saveHuggingfaceToken: (value: string) => run("set_deployment_secret", { name: "huggingface-model-downloads", value }, desktop),
   forgetHuggingfaceToken: () => run("delete_deployment_secret", { name: "huggingface-model-downloads" }, desktop),
   preflight: (model: string, quant?: string) => run<ModelPreflight>("model_preflight", { model, quant }, desktop),
   api: (environmentId: string, port: number) => run<ModelRun>("model_api", { environmentId, port }, desktop),
   run: (model: string, port: number | null, quant?: string) => run<ModelRun>("run_model", { model, port, quant }, desktop),
+  runNeocloud: (model: string, environmentId: string, port: number | null) => run<ModelRun>("run_model_on_neocloud", { model, environmentId, port }, desktop),
   status: (environmentId: string) => run<ModelStatus>("model_status", { environmentId }, desktop),
   /** Conversations and chat settings shared with the CLI; null when none are saved. */
   history: (environmentId: string) => run<unknown>("model_chat_history", { environmentId }, () => JSON.parse(localStorage.getItem(`yougori.model-chat.v1:${environmentId}`) ?? "null")),

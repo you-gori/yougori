@@ -255,8 +255,9 @@ fn create_args(
     source: &str,
     allocation: [u32; 3],
     internet: bool,
+    storage_drive: Option<&str>,
 ) -> Vec<String> {
-    [
+    let mut args: Vec<String> = [
         "env",
         "create",
         "--kind",
@@ -277,7 +278,9 @@ fn create_args(
     ]
     .iter()
     .map(|s| (*s).into())
-    .collect()
+    .collect();
+    if let Some(drive)=storage_drive {args.extend(["--storage-drive".into(),drive.into()]);}
+    args
 }
 
 async fn create() -> Result<(), String> {
@@ -313,10 +316,11 @@ async fn create() -> Result<(), String> {
             false,
         )?
     };
-    let host = state().await?;
-    let allocation = resources(&host["host"], false, None)?;
-    let internet = menu("Internet access", &["Disabled", "Enabled"])? == 1;
-    let mut args = create_args(kind, &name, &source, allocation, internet);
+    let host = call("refresh_host_metrics", json!({})).await?;
+    let selected=super::storage::choose(&host["host"],None,if kind=="microvm" {6}else{1})?;
+    let allocation = super::sliders(&selected.host, false, if kind=="microvm" {6}else{1}, None)?;
+    let internet = menu("Internet access", &["Enabled", "Disabled"])? == 0;
+    let mut args = create_args(kind, &name, &source, allocation, internet, selected.drive.as_deref());
     if matches!(kind, "container" | "gpu")
         && menu(
             "Container startup",
@@ -331,10 +335,11 @@ async fn create() -> Result<(), String> {
     confirm(
         "Create environment?",
         &format!(
-            "{} · {kind}\n{}\n{}\nInternet: {}",
+            "{} · {kind}\n{}\n{}\nStorage drive: {}\nInternet: {}",
             clean(&name),
             clean(&source),
             allocation_text(allocation),
+            selected.label,
             if internet { "enabled" } else { "disabled" }
         ),
     )?;
@@ -1134,7 +1139,7 @@ mod tests {
                 "microvm" => "builtin:alpine",
                 _ => "alpine:3.24",
             };
-            let args = create_args(kind, "My workspace", source, [3, 6, 30], true);
+            let args = create_args(kind, "My workspace", source, [3, 6, 30], true, Some("D:\\"));
             let parsed =
                 yougori_cli::parse::parse(&args, |_| panic!("No file input needed")).unwrap();
             assert!(parsed.request.confirmed);
@@ -1143,6 +1148,7 @@ mod tests {
             assert_eq!(request["runtime"], source);
             assert_eq!(request["resourcePolicy"]["cpu"]["preferred"], 3.0);
             assert_eq!(request["storageGb"], 30.0);
+            assert_eq!(request["storageDrive"], "D:\\");
             assert_eq!(request["gpuAccess"], kind == "gpu");
             assert_eq!(request["networkAccess"], true);
         }
