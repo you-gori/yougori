@@ -3477,7 +3477,7 @@ dependencies = [
 
 [[package]]
 name = "yougori-cli"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "age",
  "axum",
@@ -3502,7 +3502,7 @@ dependencies = [
 
 [[package]]
 name = "yougori-vault"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "age",
  "axum",
