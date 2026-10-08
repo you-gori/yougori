@@ -363,9 +363,18 @@ impl RuntimeManager {
     }
 
     pub async fn delete_container(&self, id: &str) -> Result<(), String> {
-        if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.delete_container(id)).await; }
+        self.delete_container_inner(id, false).await
+    }
 
-        let _lease = self.appliance_operations.read().await;
+    pub async fn delete_container_and_model_cache(&self, id: &str) -> Result<(), String> {
+        self.delete_container_inner(id, true).await
+    }
+
+    async fn delete_container_inner(&self, id: &str, remove_model_cache: bool) -> Result<(), String> {
+        if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.delete_container_inner(id, remove_model_cache)).await; }
+
+        let _lease = self.appliance_operations.write().await;
+        let caches = if remove_model_cache { self.unshared_model_caches(id)? } else { Vec::new() };
         let _: AgentCommandOutput = self
             .agent_post_unlocked(
                 "/v1/containers/delete",
@@ -376,6 +385,18 @@ impl RuntimeManager {
                 },
             )
             .await?;
+        // Keep workload metadata until cleanup succeeds, so a failed removal
+        // can be retried after the container itself has already gone.
+        for name in caches {
+            let result = self.volume_request_unlocked(
+                &self.container_provider(id)?, &serde_json::json!({"action":"remove","name":name}),
+            ).await;
+            if let Err(error) = result {
+                if !error.contains("no volume named") {
+                    return Err(format!("Container removed, but model cache {name} cleanup is pending. Retry deleting this environment: {error}"));
+                }
+            }
+        }
         if let Some(process) = self.appliance.lock().await.as_mut() {
             process.active_containers.remove(id);
         }

@@ -42,7 +42,10 @@ impl RuntimeManager {
                 Ok(engine) => {
                     if !seen.insert(engine.data_root.clone()) { continue; }
                     if include_stopped || engine.appliance_running().await {
-                        stores.push(VolumeStore { location: engine.data_root.display().to_string(), provider: RuntimeProviderKind::YougoriOci, engine: Some(engine) });
+                        stores.push(VolumeStore { location: engine.data_root.display().to_string(), provider: RuntimeProviderKind::YougoriOci, engine: Some(engine.clone()) });
+                    }
+                    if engine.cuda.current_endpoint().await.is_ok() {
+                        stores.push(VolumeStore { location: format!("GPU runtime ({})", engine.data_root.display()), provider: RuntimeProviderKind::YougoriCuda, engine: Some(engine) });
                     }
                 }
                 Err(error) => unavailable.push(error),
@@ -57,8 +60,12 @@ impl RuntimeManager {
     pub async fn volume_request(&self, store: &VolumeStore, body: &Value) -> Result<Value, String> {
         let engine = self.store_engine(store);
         let _lease = engine.appliance_operations.read().await;
-        let endpoint = engine.provider_endpoint(&store.provider).await?;
-        let response = engine.client.post(format!("{}/v1/volumes/action", endpoint.base_url))
+        engine.volume_request_unlocked(&store.provider, body).await
+    }
+
+    pub(super) async fn volume_request_unlocked(&self, provider: &RuntimeProviderKind, body: &Value) -> Result<Value, String> {
+        let endpoint = self.provider_endpoint(provider).await?;
+        let response = self.client.post(format!("{}/v1/volumes/action", endpoint.base_url))
             .bearer_auth(&endpoint.token).json(body).send().await
             .map_err(|error| format!("Cannot reach the container runtime: {error}"))?;
         let response = super::appliance::successful_response(response).await?;

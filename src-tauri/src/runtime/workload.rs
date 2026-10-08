@@ -1,6 +1,25 @@
 use super::RuntimeManager;
 use yougori_cli::workload::Options;
 impl RuntimeManager {
+    /// Only generated model caches are owned by model deletion. Named user
+    /// volumes and PC binds retain their independent lifetime. Check saved
+    /// workloads too: stopped/unprovisioned peers may not exist in the agent.
+    pub(super) fn unshared_model_caches(&self, id: &str) -> Result<Vec<String>, String> {
+        let options = self.workload_options(id)?;
+        let mut names = model_cache_names(&options);
+        if names.is_empty() { return Ok(names); }
+        for entry in std::fs::read_dir(self.data_root.join("workload-options")).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
+            let peer = path.file_stem().and_then(|s| s.to_str()).ok_or("Invalid workload metadata filename")?;
+            if peer == id { continue; }
+            let peer = self.workload_options(peer)?;
+            names.retain(|name| !peer.volumes.iter().any(|volume| &volume.source == name));
+        }
+        Ok(names)
+    }
+
     pub fn save_micro_workload(&self, id: &str, spec: &serde_json::Value) -> Result<(), String> {
         let directory = self
             .environment_storage_root(id)?
@@ -165,5 +184,50 @@ impl RuntimeManager {
                 .map_err(|e| e.to_string())?;
         options.validate()?;
         Ok(options)
+    }
+}
+
+fn model_cache_names(options: &Options) -> Vec<String> {
+    if !options.environment.contains_key("YOUGORI_MODEL")
+        || !(options.secret_environment.contains_key("YOUGORI_MODEL_TOKEN") || options.environment.contains_key("YOUGORI_MODEL_TOKEN")) {
+        return Vec::new();
+    }
+    options.volumes.iter().filter(|v| {
+        !v.read_only && v.target == "/root/.cache/huggingface"
+            && v.source.strip_prefix("model-").and_then(|s| s.strip_suffix("-models"))
+                .is_some_and(|id| id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+    }).map(|v| v.source.clone()).collect()
+}
+
+#[cfg(test)]
+mod model_cache_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn model_deletion_keeps_user_data_and_shared_or_unreadable_peer_caches() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        let model: Options = serde_json::from_value(json!({
+            "environment":{"YOUGORI_MODEL":"owner/model"}, "secretEnvironment":{"YOUGORI_MODEL_TOKEN":"model-key"},
+            "volumes":[{"source":"model-1234abcd-models","target":"/root/.cache/huggingface"}, {"source":"user-data","target":"/data"}],
+            "binds":[{"source":"C:/weights","target":"/weights"}]
+        })).unwrap();
+        runtime.save_workload_options("model", &model).unwrap();
+        assert_eq!(runtime.unshared_model_caches("model").unwrap(), ["model-1234abcd-models"]);
+        let mut user = model.clone();
+        user.secret_environment.clear();
+        assert!(model_cache_names(&user).is_empty());
+        user.secret_environment = model.secret_environment.clone();
+        user.volumes[0].source = "my-own-cache".into();
+        assert!(model_cache_names(&user).is_empty());
+        let mut peer = Options::default();
+        peer.volumes.push(model.volumes[0].clone());
+        runtime.save_workload_options("stopped-peer", &peer).unwrap();
+        assert!(runtime.unshared_model_caches("model").unwrap().is_empty());
+        runtime.save_workload_options("stopped-peer", &Options::default()).unwrap();
+        assert_eq!(runtime.unshared_model_caches("model").unwrap().len(), 1);
+        std::fs::write(runtime.storage_root().join("workload-options/stopped-peer.json"), b"broken").unwrap();
+        assert!(runtime.unshared_model_caches("model").is_err());
     }
 }

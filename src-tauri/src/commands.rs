@@ -1685,6 +1685,13 @@ pub async fn set_environment_status(
     };
     if status == EnvironmentStatus::Stopped {
         forget_applied_resource_limits(runtime_id(&environment));
+        let cuda_busy = provider(&environment) == RuntimeProviderKind::YougoriCuda && next.environments.iter().any(|peer|
+            provider(peer) == RuntimeProviderKind::YougoriCuda && matches!(peer.status, EnvironmentStatus::Running | EnvironmentStatus::Paused | EnvironmentStatus::Provisioning));
+        if !cuda_busy {
+            if let Err(error) = runtime.reclaim_pending_container_storage(runtime_id(&environment), &provider(&environment)).await {
+                eprintln!("Storage cleanup remains pending: {error}");
+            }
+        }
     }
     if status == EnvironmentStatus::Running {
         reconcile_connections(&store, &runtime).await?;
@@ -1823,7 +1830,7 @@ pub async fn delete_environment(
                     .delete_container_snapshot(runtime_id(&environment), &snapshot.id)
                     .await.map_err(|error| format!("Snapshot cleanup did not finish; the environment was kept so deletion can be retried. {error}"))?;
             }
-            runtime.delete_container(runtime_id(&environment)).await?;
+            runtime.delete_container_and_model_cache(runtime_id(&environment)).await?;
         }
         RuntimeProviderKind::Qemu => {
             for snapshot in state
