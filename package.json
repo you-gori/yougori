@@ -2,7 +2,7 @@
   "name": "yougori",
   "private": true,
   "license": "AGPL-3.0-only",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "type": "module",
   "packageManager": "npm@11.17.0",
   "engines": {
