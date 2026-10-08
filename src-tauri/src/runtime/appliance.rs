@@ -375,6 +375,9 @@ impl RuntimeManager {
 
         let _lease = self.appliance_operations.write().await;
         let caches = if remove_model_cache { self.unshared_model_caches(id)? } else { Vec::new() };
+        // Persist before deleting anything: a crash must not lose the need to
+        // return freed blocks to Windows on the next idle maintenance pass.
+        self.mark_storage_reclaim(&self.container_provider(id)?)?;
         let _: AgentCommandOutput = self
             .agent_post_unlocked(
                 "/v1/containers/delete",
@@ -627,7 +630,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         snapshot_id: &str,
     ) -> Result<(), String> {
         if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.delete_container_snapshot(id, snapshot_id)).await; }
-
+        self.mark_storage_reclaim(&self.container_provider(id)?)?;
         let _: serde_json::Value = self
             .agent_post(
                 "/v1/snapshots/delete",

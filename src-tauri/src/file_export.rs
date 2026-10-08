@@ -24,7 +24,7 @@ struct ExportControl {
     total_limit: Duration,
     temporary_staging: bool,
     cleanup_grace: Duration,
-    staging: Option<Arc<tempfile::TempDir>>,
+    staging: Option<Arc<crate::temporary_storage::Staging>>,
 }
 
 impl ExportControl {
@@ -199,7 +199,7 @@ struct HostFile {
     directory: Dir,
     path: PathBuf,
     complete: bool,
-    staging: Option<Arc<tempfile::TempDir>>,
+    staging: Option<Arc<crate::temporary_storage::Staging>>,
 }
 impl Drop for HostFile {
     fn drop(&mut self) {
@@ -441,7 +441,7 @@ pub async fn copy_files_between_environments(
     let staging_root = runtime.storage_root().join("cross-environment-transfers");
     let staging = control.host_work(move|| {
         std::fs::create_dir_all(&staging_root).map_err(|_| "Cannot prepare temporary transfer storage")?;
-        Ok(Arc::new(tempfile::Builder::new().prefix("copy-").tempdir_in(&staging_root).map_err(|_| "Cannot prepare temporary transfer storage")?))
+        Ok(Arc::new(crate::temporary_storage::Staging::new(&staging_root)?))
     }).await?;
     control.staging = Some(staging.clone());
     let copied = copy_out_controlled(source, &relative, &staging.path().to_string_lossy(), folder, &control).await?;

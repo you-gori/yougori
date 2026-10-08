@@ -230,6 +230,21 @@ else:
                 model.download_snapshot("a" * 40, {"weights.safetensors": 100})
         self.assertNotIn("PRIVATE", str(error.exception))
 
+    def test_failed_final_download_attempt_does_not_leave_large_partial_files(self):
+        worker = '''import json,os,sys
+r=json.load(sys.stdin)
+root=os.path.join(os.environ["HF_HOME"],"hub","models--"+r["model"].replace("/","--"),"blobs")
+with open(os.path.join(root,"bbbbbbbb.22222222.incomplete"),"wb") as f:f.write(b"partial"*1024)
+sys.exit(1)
+'''
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, HF_HOME=directory), patch.object(model, "CACHE", directory), patch.object(model, "DOWNLOAD_WORKER", worker):
+            root = os.path.join(directory, "hub", "models--" + model.MODEL.replace("/", "--"), "blobs")
+            os.makedirs(root)
+            for name in ["completed-weight", "aaaaaaaa.11111111.incomplete"]:
+                with open(os.path.join(root, name), "wb") as file: file.write(b"existing data")
+            with self.assertRaises(RuntimeError): model.download_snapshot("a"*40, {"weights.safetensors":100})
+            self.assertEqual(set(os.listdir(root)), {"completed-weight", "aaaaaaaa.11111111.incomplete"})
+
     def test_checksum_cache_reuses_unchanged_weights_and_rechecks_changed_bytes(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(model, "CACHE", directory):
             path = os.path.join(directory, "model.safetensors")

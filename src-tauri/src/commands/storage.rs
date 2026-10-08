@@ -38,7 +38,7 @@ pub async fn set_storage_location(path: String, app: AppHandle, store: State<'_,
 
 #[tauri::command]
 pub async fn reclaim_storage(store: State<'_, PlatformStore>, runtime: State<'_, RuntimeManager>) -> Result<EnvironmentDeletionResult, String> {
-    let mut cleanup = StorageCleanupResult::default();
+    let mut cleanup = runtime.clean_temporary_storage();
     for provider in [RuntimeProviderKind::YougoriOci, RuntimeProviderKind::YougoriCuda] {
         let mut _pool_guards = Vec::new();
         for root in runtime.storage_pool_roots() {
@@ -55,7 +55,7 @@ pub async fn reclaim_storage(store: State<'_, PlatformStore>, runtime: State<'_,
     }
     let current = store.snapshot()?;
     match runtime.garbage_collect_vm_bases(&referenced_vm_sources(&current)).await {
-        Ok(bytes) => cleanup.reclaimed_cache_bytes = bytes,
+        Ok(bytes) => cleanup.reclaimed_cache_bytes = cleanup.reclaimed_cache_bytes.saturating_add(bytes),
         Err(error) => cleanup.warnings.push(format!("Unused VM images were kept: {error}")),
     }
     cleanup.notes.sort();

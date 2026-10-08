@@ -6,6 +6,7 @@ mod commands;
 mod instance_lock;
 mod host_files;
 mod file_import;
+mod temporary_storage;
 mod host_terminal;
 #[cfg(all(target_os = "windows", not(feature = "engine-only")))]
 mod node_context_menu;
@@ -577,6 +578,7 @@ pub fn run() {
             if !headless { tray::install(app.handle())?; }
             app.manage(lifecycle::StartupRecoveryCandidates(startup_recovery_candidates));
             lifecycle::start(app.handle());
+            automation::start_storage_maintenance(app.handle());
             peer_sharing::start_refresh(app.handle());
             remote_access::start_cleanup(app.handle());
             environment_download::start_cleanup(app.handle());

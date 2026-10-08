@@ -34,6 +34,42 @@ pub(crate) async fn prepare_shutdown(app: &AppHandle, timeout: Duration) -> Valu
     }
 }
 
+/// Housekeeping uses the normal job queue so shutdown drains disk operations
+/// and errors remain inspectable. No workload is stopped to make space.
+pub(crate) fn start_storage_maintenance(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let shutdown = shutdown_signal(&app);
+        let mut delay = Duration::from_secs(30);
+        loop {
+            tokio::select! { _ = shutdown.cancelled() => break, _ = tokio::time::sleep(delay) => {} }
+            delay = Duration::from_secs(15 * 60);
+            let cleanup_app = app.clone();
+            let result = tokio::task::spawn_blocking(move || cleanup_app.state::<RuntimeManager>().clean_temporary_storage()).await;
+            if let Ok(result) = result {
+                if result.reclaimed_cache_bytes > 0 { eprintln!("Recovered {} bytes of abandoned transfer staging", result.reclaimed_cache_bytes); }
+                for warning in result.warnings { eprintln!("Storage maintenance: {}", crate::lifecycle::safe_diagnostic(&warning)); }
+            }
+            if is_shutting_down(&app) { break; }
+            let Ok(state) = app.state::<PlatformStore>().snapshot() else { continue };
+            if !storage_maintenance_idle(&state) || !app.state::<RuntimeManager>().has_pending_storage_reclaim() { continue; }
+            let control = app.state::<Arc<Control>>();
+            if control.jobs.lock().await.iter().any(|job| matches!(job.status, "queued" | "running")) { continue; }
+            let response = control.handle(app.clone(), Request {
+                version: wire::VERSION, method: "reclaim_storage".into(), params: json!({}), confirmed: true, dry_run: false,
+            }).await;
+            if !response.ok { eprintln!("Storage maintenance could not queue cleanup: {}", crate::lifecycle::safe_diagnostic(response.error.as_deref().unwrap_or("unknown error"))); }
+        }
+    });
+}
+
+fn storage_maintenance_idle(state: &crate::models::PlatformState) -> bool {
+    use crate::models::EnvironmentStatus;
+    !state.startup_report.as_ref().is_some_and(|report| report.status == "running")
+        && !state.environments.iter().any(|environment| crate::commands::provider(environment).is_container()
+            && matches!(environment.status, EnvironmentStatus::Running | EnvironmentStatus::Paused | EnvironmentStatus::Provisioning))
+}
+
 async fn connection(
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
     control: Arc<Control>,

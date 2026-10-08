@@ -46,6 +46,17 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn pending_cleanup_survives_engine_restart_without_environment_entries() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        assert!(!runtime.has_pending_storage_reclaim());
+        runtime.mark_storage_reclaim(&RuntimeProviderKind::YougoriCuda).unwrap();
+        drop(runtime);
+        let reopened = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        assert!(reopened.has_pending_storage_reclaim());
+    }
+
+    #[test]
     fn compaction_runs_only_when_trimmed_clusters_exist() {
         let info = |snapshots: serde_json::Value| serde_json::json!({ "actual-size": 8_094_154_752_u64, "virtual-size": 82_678_120_448_u64, "cluster-size": 65536, "snapshots": snapshots, "format-specific": { "data": { "refcount-bits": 16, "extended-l2": false } } });
         let check = |allocated: u64| serde_json::json!({ "allocated-clusters": allocated });
@@ -112,6 +123,14 @@ mod tests {
 }
 
 impl RuntimeManager {
+    pub(super) fn mark_storage_reclaim(&self, provider: &RuntimeProviderKind) -> Result<(), String> {
+        std::fs::write(self.reclaim_marker(provider), b"pending").map_err(|e| format!("Record pending storage cleanup: {e}"))
+    }
+    pub(crate) fn has_pending_storage_reclaim(&self) -> bool {
+        let pending = |engine: &Self| [RuntimeProviderKind::YougoriCuda, RuntimeProviderKind::YougoriOci]
+            .iter().any(|provider| engine.reclaim_marker(provider).is_file());
+        pending(self) || self.registered_storage_runtimes().iter().any(|engine| engine.as_ref().is_ok_and(|engine| pending(engine)))
+    }
     pub async fn reclaim_pending_container_storage(&self, id: &str, provider: &RuntimeProviderKind) -> Result<(), String> {
         if *provider == RuntimeProviderKind::YougoriCuda {
             let mut pending = self.reclaim_marker(provider).try_exists().map_err(|e| e.to_string())?;
@@ -127,7 +146,7 @@ impl RuntimeManager {
             return Box::pin(engine.reclaim_pending_container_storage(id, provider)).await;
         }
         if provider.is_container() && self.reclaim_marker(provider).try_exists().map_err(|e| e.to_string())? {
-            let result = self.reclaim_container_storage_here(provider).await?;
+            let result = self.reclaim_container_storage_here(provider, true).await?;
             for warning in result.warnings { eprintln!("Pending storage cleanup: {warning}"); }
         }
         Ok(())
@@ -146,10 +165,13 @@ impl RuntimeManager {
             // runs. Reclaim independent GPU pools together so every idle pool
             // shuts down before the native compaction handle retry expires.
             let engines = self.registered_storage_runtimes();
+            let busy = futures_util::future::join_all(std::iter::once(self)
+                .chain(engines.iter().filter_map(|engine| engine.as_ref().ok().map(|engine| engine.as_ref())))
+                .map(|engine| engine.cuda_storage_busy())).await.into_iter().any(|busy| busy);
             let children = futures_util::future::join_all(engines.iter().map(|engine| async move {
-                match engine { Ok(engine) => engine.reclaim_container_storage_here(provider).await, Err(error) => Err(error.clone()) }
+                match engine { Ok(engine) => engine.reclaim_container_storage_here(provider, !busy).await, Err(error) => Err(error.clone()) }
             }));
-            let (local, children) = tokio::join!(self.reclaim_container_storage_here(provider), children);
+            let (local, children) = tokio::join!(self.reclaim_container_storage_here(provider, !busy), children);
             let mut total = StorageCleanupResult::default();
             for result in std::iter::once(local).chain(children) {
                 match result {
@@ -163,9 +185,9 @@ impl RuntimeManager {
             }
             return Ok(total);
         }
-        let mut total = self.reclaim_container_storage_here(provider).await?;
+        let mut total = self.reclaim_container_storage_here(provider, true).await?;
         for engine in self.registered_storage_runtimes() {
-            let result = match engine { Ok(engine) => engine.reclaim_container_storage_here(provider).await, Err(error) => Err(error) };
+            let result = match engine { Ok(engine) => engine.reclaim_container_storage_here(provider, true).await, Err(error) => Err(error) };
             match result {
                 Ok(result) => {
                     total.reclaimed_cache_bytes = total.reclaimed_cache_bytes.saturating_add(result.reclaimed_cache_bytes);
@@ -179,7 +201,18 @@ impl RuntimeManager {
         Ok(total)
     }
 
-    async fn reclaim_container_storage_here(&self, provider: &RuntimeProviderKind) -> Result<StorageCleanupResult, String> {
+    async fn cuda_storage_busy(&self) -> bool {
+        let Ok(endpoint) = self.cuda.current_endpoint().await else { return false };
+        // Probe the real agent, not potentially stale UI status. Failure defers
+        // compaction; it must never be interpreted as permission to stop it.
+        let result = async {
+            self.client.post(format!("{}/v1/storage/reclaim", endpoint.base_url)).bearer_auth(&endpoint.token)
+                .timeout(Duration::from_secs(100)).send().await?.error_for_status()?.json::<TrimResult>().await
+        }.await;
+        result.map(|result| result.busy).unwrap_or(true)
+    }
+
+    async fn reclaim_container_storage_here(&self, provider: &RuntimeProviderKind, allow_compaction: bool) -> Result<StorageCleanupResult, String> {
         if !provider.is_container() { return Err("Only managed container pools support shared-disk reclamation.".into()); }
         let _lease = self.appliance_operations.write().await;
         let cuda = *provider == RuntimeProviderKind::YougoriCuda;
@@ -188,7 +221,13 @@ impl RuntimeManager {
         // Survives app restarts. Normal stops retry deferred compaction;
         // GPU pools coordinate after their final workload stops across drives.
         let marker = self.reclaim_marker(provider);
-        std::fs::write(&marker, b"pending").map_err(|e| format!("Record pending storage cleanup: {e}"))?;
+        self.mark_storage_reclaim(provider)?;
+        if cuda && !allow_compaction && self.cuda.current_endpoint().await.is_err() {
+            return Ok(StorageCleanupResult {
+                notes: vec!["GPU disk cleanup is pending until workloads on all drives are idle; stopped runtimes were not started.".into()],
+                ..Default::default()
+            });
+        }
         let before = if cuda { self.cuda.storage_sizes()?.1 } else { (self.inspect_storage(&path, true).await?.physical_gb * 1_073_741_824.0) as u64 };
         if cuda && self.cuda.current_endpoint().await.is_err() {
             let status = self.cuda_status().await;
@@ -215,7 +254,7 @@ impl RuntimeManager {
         let result: TrimResult = response.error_for_status().map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())?;
         let mut cleanup = StorageCleanupResult { warnings: result.warnings, ..Default::default() };
         if cuda || cfg!(windows) {
-            if result.busy {
+            if result.busy || !allow_compaction {
                 cleanup.warnings.push(format!("{} containers are still running or paused. Free space is reusable inside their disk; Windows disk compaction will retry automatically when the last container is stopped. Storage → Reclaim space also retries it. No workloads were stopped.", if cuda { "GPU" } else { "Standard" }));
             } else {
                 // The agent verified no running/paused containers while the

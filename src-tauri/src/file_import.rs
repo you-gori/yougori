@@ -626,8 +626,8 @@ pub(crate) async fn copy_files_into_reusing_lease(
     let cancel = operation.clone();
     let mut preparation = tokio::task::spawn_blocking(move || -> Result<_, String> {
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        let staging = tempfile::Builder::new().prefix("copy-").tempdir_in(&root).map_err(|e| e.to_string())?;
-        let manifest = tempfile::Builder::new().prefix("files-").tempfile_in(&root).map_err(|e| e.to_string())?;
+        let staging = crate::temporary_storage::Staging::new(&root)?;
+        let manifest = tempfile::Builder::new().prefix("files-").tempfile_in(staging.path()).map_err(|e| e.to_string())?;
         let plan = scan_copy_cancellable(&paths, manifest, |p| report(p), Some(cancel.clone()))?;
         let disks = sysinfo::Disks::new_with_refreshed_list();
         let disk = crate::runtime::storage::runtime_disk(&disks, &root).ok_or("Could not check free space for the copy")?;

@@ -272,7 +272,7 @@ impl RuntimeManager {
         self.storage_runtime(&key)
     }
 
-    pub(super) fn registered_storage_runtimes(&self) -> Vec<Result<Arc<Self>, String>> {
+    pub(crate) fn registered_storage_runtimes(&self) -> Vec<Result<Arc<Self>, String>> {
         let volumes: BTreeMap<_, _> = self.volumes.routes.lock().unwrap_or_else(|p| p.into_inner()).entries.values().map(|v| (v.directory.clone(), v.clone())).collect();
         volumes.values().map(|volume| self.volume_runtime(volume)).collect()
     }

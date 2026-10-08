@@ -220,15 +220,15 @@ def download_snapshot(revision, files):
         if root and process.returncode == 0:
             STATE["download"] = {**STATE["download"], "receivedBytes": total}
             return root
+        # Both transports create process-unique, non-resumable partial files.
+        # The worker has exited: discard only this attempt's unfinished files,
+        # including the final failed attempt. Preserve complete and older data.
+        for path in incomplete_downloads() - temporary_before:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
         if not attempt:
-            # Hub 1.33 writes process-unique partial files. A killed Xet worker
-            # cannot resume them; remove only new temporary files from this
-            # attempt so the HTTPS retry has room. Old cache/data stay intact.
-            for path in incomplete_downloads() - temporary_before:
-                try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    pass
             print("Download stalled or failed; retrying through HTTPS. Completed cached files are reused.", flush=True)
     raise RuntimeError("Model download stopped making progress. Completed files are cached; restart the model to retry. Check the Hugging Face connection and available storage.")
 

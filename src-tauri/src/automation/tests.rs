@@ -1,5 +1,31 @@
 use super::*;
 
+#[test]
+fn automatic_storage_cleanup_waits_for_idle_containers_and_finished_startup() {
+    use crate::models::EnvironmentStatus;
+    let data = tempfile::tempdir().unwrap();
+    let store = PlatformStore::load(data.path().join("state.json")).unwrap();
+    let mut state = store.snapshot().unwrap();
+    state.environments.clear();
+    assert!(storage_maintenance_idle(&state));
+    state.environments.push(serde_json::from_value(json!({
+        "id":"env-maintenance", "name":"test", "kind":"container", "provider":"yougoriCuda", "status":"stopped",
+        "runtime":"ubuntu", "description":"fixture", "createdAt":"test", "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+        "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":1,"preferred":1,"max":1,"current":0},"priority":"normal","dynamic":true}
+    })).unwrap());
+    for status in [EnvironmentStatus::Running, EnvironmentStatus::Paused, EnvironmentStatus::Provisioning] {
+        state.environments[0].status = status;
+        assert!(!storage_maintenance_idle(&state));
+    }
+    state.environments[0].status = EnvironmentStatus::Stopped;
+    assert!(storage_maintenance_idle(&state));
+    state.startup_report = Some(crate::lifecycle::StartupReport {
+        started_at:"test".into(), completed_at:None, status:"running".into(), trigger:"engineLaunch".into(),
+        starts_before_sign_in:false, service_registration:None, environments:vec![],
+    });
+    assert!(!storage_maintenance_idle(&state));
+}
+
 #[cfg(all(windows, not(feature = "engine-only")))]
 #[test]
 #[ignore = "opens isolated native windows and a disposable OCI container; tests background close through the real CLI transport without user data or public tunnels"]
