@@ -66,7 +66,7 @@ fn options(args: &[String]) -> Result<Options, String> {
                 share_mode = network::mode(flag);
             }
             "--listen" if run && !listen => listen = true,
-            "--publish" if run && !publish => publish = true,
+            "--closed-weights" | "--publish" if run && !publish => publish = true,
             "--folder" if run && !resources.contains_key("modelFolder") => {
                 i += 1; resources.insert("modelFolder".into(),json!(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--folder needs a model folder")?));
             }
@@ -106,12 +106,12 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             // `npm run yougori -- model run ...` habits: a bare separator changes nothing.
             "--" => {}
-            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
+            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--closed-weights] [--listen (free only)] [--folder PATH] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
         }
         i += 1;
     }
     network::validate_listen(share_mode, listen)?;
-    if publish && share_mode.is_none() {return Err("--publish requires --now or --nowfree".into())}
+    if publish && share_mode.is_none() {return Err("--closed-weights requires --now or --nowfree".into())}
     if neocloud && resources.contains_key("modelFolder") {return Err("--folder selects local weights; use a local GPU".into())}
     public::validate_model_resources(&resources)?;
     public::validate_model_neocloud(neocloud, environment.as_deref(), change || !resources.is_empty())?;
@@ -1198,9 +1198,12 @@ mod tests {
     #[test]
     fn publication_and_local_folder_options_do_not_change_container_options() {
         let args=|flags:&[&str]| ["model","run","owner/model"].into_iter().chain(flags.iter().copied()).map(str::to_owned).collect::<Vec<_>>();
-        let parsed=options(&args(&["--nowfree","--publish","--folder","D:/Models/private"])).unwrap();
-        assert!(parsed.publish);assert_eq!(parsed.resources["modelFolder"],"D:/Models/private");
-        for flags in [vec!["--publish"],vec!["--nowfree","--publish","--publish"],vec!["--nowfree","--folder"],vec!["--nowfree","--folder","D:/M","--neocloud"]] {assert!(options(&args(&flags)).is_err());}
+        for flag in ["--closed-weights", "--publish"] {
+            let parsed=options(&args(&["--nowfree",flag,"--listen","--folder","D:/Models/private"])).unwrap();
+            assert!(parsed.publish && parsed.listen);assert_eq!(parsed.resources["modelFolder"],"D:/Models/private");
+            assert!(options(&args(&["--now",flag])).unwrap().publish);
+        }
+        for flags in [vec!["--closed-weights"],vec!["--publish"],vec!["--nowfree","--closed-weights","--publish"],vec!["--nowfree","--closed-weights","--closed-weights"],vec!["--nowfree","--publish","--publish"],vec!["--nowfree","--folder"],vec!["--nowfree","--folder","D:/M","--neocloud"]] {assert!(options(&args(&flags)).is_err());}
         assert!(!options(&args(&["--nowfree"])).unwrap().publish);
     }
     #[test]

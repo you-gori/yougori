@@ -64,8 +64,9 @@ Public commands:
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
   yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]
-  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--publish (closed weights)] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
-                                   Share paid or free through Yougori
+  yougori model run hf.co/OWNER/MODEL --now|--nowfree [--closed-weights] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
+                                   Share paid or free; --closed-weights offers chat/API without weight downloads
+                                   Open weights by default. --publish is a legacy model alias for --closed-weights
   yougori model library [--mine]    Browse published open and private models
   yougori model publish --file publication.json  Create a model publication
   yougori model connect yg/PUBLISHER/MODEL --file endpoint.json|-  Connect a publisher-hosted API
@@ -979,7 +980,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 share_mode = crate::network::mode(flag);
             }
             "--listen" if action == "run" && !listen => listen = true,
-            "--publish" if action == "run" && !publish => publish = true,
+            "--closed-weights" | "--publish" if action == "run" && !publish => publish = true,
             "--folder" if action == "run" && !resources.contains_key("modelFolder") => {resources.insert("modelFolder".into(),json!(value(args,&mut i,"--folder")?));}
             "--quant" if action == "run" => quant = Some(value(args, &mut i, "--quant")?),
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
@@ -1014,7 +1015,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         i += 1;
     }
     crate::network::validate_listen(share_mode, listen)?;
-    if publish && share_mode.is_none() {return Err("--publish requires --now or --nowfree".into())}
+    if publish && share_mode.is_none() {return Err("--closed-weights requires --now or --nowfree".into())}
     if neocloud && resources.contains_key("modelFolder") {return Err("--folder needs a local GPU".into())}
     if port == 0 {
         return Err("Model API port must be between 1 and 65535".into());

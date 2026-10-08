@@ -1,6 +1,6 @@
 # CLI operations
 
-In the interactive menu, Manage an environment → Open terminal here uses the current terminal. Creation offers the same action for containers, GPU containers and built-in microVMs. Type exit or press Ctrl+] to return without stopping the environment. Full VMs use Open environment window for their console. The direct command is `yougori terminal ENV`.
+In the interactive menu, Manage an environment → Open terminal here uses the current terminal. Creation offers the same action for containers, GPU containers and built-in microVMs. Ctrl+D at an empty shell prompt, exit, or Ctrl+] returns without stopping the environment. Full VMs use Open environment window for their console. The direct command is `yougori terminal ENV`.
 
 Run `yougori help` and `yougori schema` (compact index; `--topic TOPIC` narrows it and `--all` opts into full definitions) for the current complete command catalog. Schemas include required/optional parameters, examples, and confirmation requirements. In a development checkout replace `yougori` with `npm run cli --`.
 
@@ -196,6 +196,8 @@ When piped, `model run` returns one versioned result and does not consume stdin 
 
 ## Yougori Network
 
+Model sharing offers open weight downloads by default. Add `--closed-weights` to offer chat and API inference while keeping downloads closed, for example `yougori model run OWNER/MODEL --folder D:/Models/my-model --nowfree --listen --closed-weights`. Closed weights require `--now` or `--nowfree`; `--listen` works with free inference only. The former model flag `--publish` remains a compatibility alias for `--closed-weights`. The container run/create option `--publish HOST:GUEST` still publishes a service port.
+
 `yougori login` opens browser approval; signing in or out also updates the app on this computer. `yougori account` shows your wallet, credit, earnings and shared models. Connect a wallet on the website account page to deposit or withdraw.
 
 ```text
@@ -329,6 +331,8 @@ Saved domains are reusable Cloudflare account tunnels shared by the app and the 
 `ports add` / `ports remove` only change the persisted graph declaration; they do not start a guest process, open a firewall, or unpublish an existing listener. Use `ports unpublish PUBLICATION_ID` to revoke access. CLI and desktop declarations are synchronized, including stopped environments.
 
 ## Desktop terminal and agent setup
+
+The interactive guest terminal opens on a clean screen with the environment name and resources; local containers use a session-only named prompt. Press Ctrl+G at the shell for Tools & sharing: install any supported tool into the same local container through a separate PTY, create password-protected remote access with selected folder/view/edit/full-control permissions and expiry, or inspect and revoke recipients. Sharing requires explicit confirmation in this menu. Ctrl+G stays with full-screen guest apps. Ctrl+C interrupts the guest command; three consecutive presses within two seconds show exit guidance. Ctrl+D at an empty shell prompt, exit, or Ctrl+] returns without stopping the environment.
 
 Yougori command installers automatically set up the skill. The packaged app and engine also set it up for the current user on startup, covering native system installs. Open **CLI → Skills → Install skill** in the dashboard, or run `yougori skills install`. The default location is `Yougori/Workspace/skills/yougori` inside the user's profile; `--path` selects another skill directory. Repeating setup safely updates only unchanged Yougori-managed files; personal edits are not overwritten. Ask your agent to read `skills/yougori/SKILL.md` from the workspace. Automatic discovery depends on the agent. Codex, Claude, and Gemini launch buttons start detected local commands in a fresh terminal tab; they do not install or sign in to an agent. **Copy agent guide** also works without installing anything in an agent's configuration.
 

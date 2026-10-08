@@ -2,7 +2,7 @@
 use crate::{client, public::call};
 use serde_json::{json, Value};
 use std::{io::Read, path::PathBuf};
-pub const HELP:&str="yougori model library [--mine] | run OWNER/MODEL [--folder PATH] --nowfree [--publish (closed weights)] | download yg/PUBLISHER/MODEL --output PATH | permissions yg/PUBLISHER/MODEL --wallet 0x... --role caller|downloader|host|remove";
+pub const HELP:&str="yougori model library [--mine] | run OWNER/MODEL [--folder PATH] --nowfree [--closed-weights (chat/API only)] | download yg/PUBLISHER/MODEL --output PATH | permissions yg/PUBLISHER/MODEL --wallet 0x... --role caller|downloader|host|remove";
 async fn request(path:String,body:Option<Value>)->Result<Value,String>{call("model_registry_request",json!({"path":path,"body":body})).await}
 fn option(args:&[String],name:&str)->Result<Option<String>,String>{
     let mut found=None;let mut i=0;
@@ -30,7 +30,7 @@ pub async fn handle(args:&[String])->Result<Option<Value>,String>{
             if let Some(version)=version {let id=created["model"]["id"].as_str().ok_or("Missing model ID")?;created["version"]=request(format!("/models/{id}/versions"),Some(version)).await?["version"].clone();}
             created
         },
-        "upload"=>{return Err("Model weights stay on your computer. Run `yougori model run OWNER/MODEL --folder PATH --nowfree` to publish from its GPU container; add --publish for closed weights".into());},
+        "upload"=>{return Err("Model weights stay on your computer. Run `yougori model run OWNER/MODEL --folder PATH --nowfree` to publish from its GPU container; add --closed-weights to offer chat/API without weight downloads".into());},
         "download"=>{let model=args.get(2).ok_or(HELP)?;options(&args[3..],&["--output"])?;call("model_registry_download",json!({"model":model,"output":absolute(option(&args[3..],"--output")?.ok_or(HELP)?)?})).await?},
         "connect"=>{
             let model=args.get(2).ok_or(HELP)?;options(&args[3..],&["--file"])?;

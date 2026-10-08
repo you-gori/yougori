@@ -82,6 +82,25 @@ async fn execute(args: &[&str]) -> Result<(), String> {
     // Box the future because a command can itself open the model launcher.
     // Pause the painter while the normal CLI writes its result or live output.
     let args: Vec<String> = args.iter().map(|s| (*s).into()).collect();
+    // Guided create/start actions need a human receipt, not the complete
+    // platform-state JSON (including unrelated recovery reports).
+    if args.starts_with(&["env".into(), "create".into()]) {
+        let creating = ui::task("Creating environment");
+        let invocation = yougori_cli::parse::parse(&args, |_| Err("This action takes no JSON input".into()))?;
+        call(&invocation.request.method, invocation.request.params).await?;
+        creating.clear();
+        let name = args.windows(2).find(|pair| pair[0] == "--name").map(|pair| pair[1].as_str()).unwrap_or("Environment");
+        ui::info(&format!("Created {}.", clean(name)));
+        return Ok(());
+    }
+    if args.first().is_some_and(|arg| matches!(arg.as_str(), "start" | "stop" | "restart")) {
+        let activity = ui::task(activity_label(&args));
+        public::handle(&args).await?.ok_or("This lifecycle action was not recognized")?;
+        activity.clear();
+        let action = match args[0].as_str() { "start" => "Started", "stop" => "Stopped", _ => "Restarted" };
+        ui::info(&format!("{action} environment."));
+        return Ok(());
+    }
     let interactive = super::requested(&args);
     if !interactive {
         ui::pause(true);

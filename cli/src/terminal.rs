@@ -12,6 +12,7 @@ use std::{
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+mod ui;
 
 fn project_command(container: Option<&str>) -> String {
     let command = "cd /workspace && { if [ -f /yougori/venv/bin/activate ]; then . /yougori/venv/bin/activate; fi; if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi; }";
@@ -175,7 +176,6 @@ async fn run_inner(args: &[String]) -> Result<(), String> {
     }
     crate::client::start(None).await?;
     let id = crate::public::resolve(target).await?;
-    println!("Yougori terminal · {}\nType exit or press Ctrl+] to close this shell. Your workload keeps running.\n", target.chars().filter(|c| !c.is_control()).collect::<String>());
     attach(&id, project.then(|| project_command(container)).as_deref()).await
 }
 
@@ -233,7 +233,7 @@ fn detach_key(key: KeyEvent) -> bool {
 }
 
 #[derive(Default)]
-struct InputBatch { bytes: Vec<u8>, resize: Option<(u16, u16)>, detached: bool }
+struct InputBatch { bytes: Vec<u8>, resize: Option<(u16, u16)>, detached: bool, pasted: bool }
 
 #[cfg(not(windows))]
 #[derive(Default)]
@@ -251,7 +251,7 @@ impl InputReader {
                     if detach_key(key) { batch.detached = true; break; }
                     batch.bytes.extend(key_bytes(key));
                 }
-                Event::Paste(text) => batch.bytes.extend(text.into_bytes()),
+                Event::Paste(text) => { batch.pasted = true; batch.bytes.extend(text.into_bytes()); },
                 Event::Resize(cols, rows) => batch.resize = Some((cols, rows)),
                 _ => {},
             }
@@ -294,6 +294,11 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
             "A shell requires an interactive terminal; the environment is still running".into(),
         );
     }
+    let state = call("get_platform_state", json!({})).await?;
+    let environment = state["environments"].as_array()
+        .and_then(|items| items.iter().find(|item| item["id"] == id))
+        .ok_or("This environment is no longer available")?;
+    let context = ui::Context::new(environment);
     let raw = Raw(terminal::is_raw_mode_enabled().map_err(|e| e.to_string())?);
     terminal::enable_raw_mode().map_err(|e| e.to_string())?;
     let session = format!(
@@ -312,6 +317,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
     .await?;
     let status = format!("/tmp/yougori-tool-{session}.status");
     let result = async {
+        if tool.is_none() { context.welcome()?; }
         let launch = if let Some((tool, arguments)) = tool {
             let probe = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("{TOOL_ENV}; if command -v {tool} >/dev/null 2>&1; then printf ready; else printf missing; fi")}})).await?;
             if probe["exitCode"] != 0 { return Err("Could not check the tool inside this container".into()); }
@@ -324,14 +330,40 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
             if staged["exitCode"] != 0 { return Err("Could not stage the tool launcher inside this container".into()); }
             Some(format!("exec sh {}", shell_words::quote(&path)))
         } else { command.map(str::to_owned) };
+        let mut offset = 0;
+        if launch.is_none() && context.local_shell {
+            // Set a session-only prompt, and consume the echoed setup command.
+            // The marker is split in the command so its echo cannot match it.
+            let marker = format!("yougori-ready-{session}");
+            let setup = ui::shell_setup(&context.name, &marker);
+            call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{setup}\r"))})).await?;
+            let mut pending = Vec::new();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let read = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"read","offset":offset})).await?;
+                pending.extend(B64.decode(read["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?);
+                offset = read["offset"].as_u64().unwrap_or(offset);
+                if let Some(position) = pending.windows(marker.len()).position(|bytes| bytes == marker.as_bytes()) {
+                    io::stdout().write_all(&pending[position + marker.len()..]).map_err(|e| e.to_string())?;
+                    break;
+                }
+                if read["done"] == true || pending.len() > 64 * 1024 || std::time::Instant::now() >= deadline {
+                    io::stdout().write_all(&pending).map_err(|e| e.to_string())?;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }
         if let Some(command) = launch {
             call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{command}\r"))})).await?;
         }
-        let mut offset = 0;
         let mut input_reader = InputReader::default();
+        let mut interrupts = ui::Interrupts::default();
+        let mut screen = ui::GuestScreen::default();
         loop {
             let result = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"read","offset":offset})).await?;
             let bytes = B64.decode(result["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
+            screen.feed(&bytes);
             io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
             io::stdout().flush().map_err(|e| e.to_string())?;
             offset = result["offset"].as_u64().unwrap_or(offset);
@@ -345,13 +377,28 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
             }
             // Send queued input together. Splitting ESC/control reports across
             // RPC round trips makes full-screen tools treat their tails as text.
-            let input = input_reader.read_batch()?;
+            let mut input = input_reader.read_batch()?;
             if input.detached { return Ok(()); }
+            let actions = if input.pasted { ui::Actions::default() }
+                else { ui::filter_input(&mut input.bytes, &mut interrupts, tool.is_none() && !screen.alternate) };
             if let Some((cols, rows)) = input.resize {
                 call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"resize","cols":cols,"rows":rows})).await?;
             }
             for chunk in input.bytes.chunks(12 * 1024) {
                 call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(chunk)})).await?;
+            }
+            if actions.exit_hint {
+                ui::line("")?;
+                ui::line(if tool.is_some() { "Ctrl+C interrupts the guest tool. Press Ctrl+] to return to your PC terminal; the container and files remain." }
+                    else { "Ctrl+C interrupts the guest command. Press Ctrl+D at an empty shell prompt, type exit, or press Ctrl+] to return to your PC terminal." })?;
+            }
+            if actions.menu {
+                if let Err(error) = context.menu(&mut input_reader).await {
+                    ui::line(&format!("Could not complete that action: {}", ui::clean(&error)))?;
+                }
+                // Redraw full-screen programs/readline after the host menu closes.
+                let (cols, rows) = terminal::size().unwrap_or((cols, rows));
+                call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"resize","cols":cols,"rows":rows})).await?;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
@@ -368,6 +415,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
     let _ = io::stdout().write_all(b"\x1b[?1049l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[<u\x1b[>4;0m\x1b[0 q\x1b[0m\x1b[?25h\r\n");
     let _ = io::stdout().flush();
     drop(raw);
+    if tool.is_none() { println!("Returned to your PC terminal. {} keeps running.", ui::clean(&context.name)); }
     result
 }
 

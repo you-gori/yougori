@@ -1,6 +1,6 @@
 //! Normalize interactive model entry without guessing container image names.
 pub struct Invocation { pub args: Vec<String>, pub needs_model: bool }
-fn alias(flag: &str) -> &str {match flag {"--freenow"|"--free"|"-free"|"-nowfree"=>"--nowfree","--neocoud"=>"--neocloud",_=>flag}}
+fn alias(flag: &str) -> &str {match flag {"--freenow"|"--free"|"-free"|"-nowfree"=>"--nowfree","--neocoud"=>"--neocloud","--publish"=>"--closed-weights",_=>flag}}
 fn model_flag(flag: &str) -> bool {matches!(alias(flag),"--now"|"--nowfree"|"--neocloud")}
 pub fn model_id(value: &str) -> Result<String,String> {
     let value=crate::public::model_name(value);
@@ -60,6 +60,14 @@ pub fn normalize(args: Vec<String>) -> Result<Invocation,String> {
         for input in ["run model --freenow","run mode -free","run --free","model run --neocoud"] {assert!(normalize(words(input)).unwrap().needs_model);}
         assert_eq!(normalize(words("run mode --freenow")).unwrap().args,vec!["model","run","","--nowfree"]);
         for input in ["run --gpu nvidia ubuntu","run -d model","run mode","model chat env","model support owner/model --agent codex"] {let result=normalize(words(input)).unwrap();assert_eq!(result.args,words(input));assert!(!result.needs_model);}
+    }
+    #[test]fn legacy_publish_only_normalizes_for_model_run_and_keeps_missing_model_options(){
+        let result=normalize(words("model run owner/model --nowfree --publish --listen")).unwrap();
+        assert_eq!(result.args,words("model run hf.co/owner/model --nowfree --closed-weights --listen"));
+        let result=normalize(words("model run --nowfree --publish")).unwrap();
+        assert!(result.needs_model);assert_eq!(&result.args[3..],&words("--nowfree --closed-weights"));
+        let container=words("run --publish 8080:80 nginx");
+        assert_eq!(normalize(container.clone()).unwrap().args,container);
     }
     #[test]fn help_and_complete_names_stay_offline_and_incomplete_ids_cannot_reach_the_engine(){
         assert!(!normalize(words("run model --help")).unwrap().needs_model);

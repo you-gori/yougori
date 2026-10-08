@@ -1,78 +1,67 @@
 <div align="center">
 
-<a href="https://yougori.com/"><img src="logo1.png" width="240" alt="Yougori"></a>
-
 # Yougori
 
-### Your apps. Your AI. Your choice of compute.
+### Publish models. Serve inference. Build with AI. Go live.
 
-Start on your computer. Connect cloud servers. Add Neocloud GPUs when you need more.<br>
-Run your apps, models and agents from the CLI or App, with access you control.
+Serve models through Neo Grid, publish your model files, build in shared AI sandboxes,<br>
+and put your apps online from your local project. Use the CLI or App, with access you control.
 
 <br>
 
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-1f2937?style=for-the-badge)](LICENSE)
 [![Platforms](https://img.shields.io/badge/Windows%20·%20Ubuntu%20·%20macOS-1f2937?style=for-the-badge)](#run-from-source)
-[![Version](https://img.shields.io/badge/version-1.0.0-1f2937?style=for-the-badge)](package.json)
+[![Version](https://img.shields.io/badge/version-1.0.9-1f2937?style=for-the-badge)](package.json)
 
 **[Website](https://yougori.com/)** &nbsp;·&nbsp; **[Discord](https://discord.gg/Eqhf4Hq3AG)** &nbsp;·&nbsp; **[X](https://x.com/withYougori)** &nbsp;·&nbsp; **[Run from source](#run-from-source)**
 
 <br>
 
-<img src="yougori1.png" alt="Yougori app showing containers, a GPU environment, a virtual machine and their connections" width="49%">
-<img src="image.png" alt="Yougori app" width="49%">
-<br>
-<img src="yougori2.png" alt="Yougori app list view" width="49%">
+<img src="Yoo-app.png" alt="Yougori desktop app" width="49%">
+<img src="yougori1.png" alt="Yougori workspace" width="49%">
 
 </div>
 
 <br>
 
-## What you can do
+## Four main features
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### Containers + VMs
+### Neo Grid — Serve your models
 
-Your project needs a place to run. Give it one. Keep your app and database in containers, or boot a full OS in a VM. Choose their resources and start your configured project with `npm run yougori`.
+Host supported AI models on your GPU and make them available through Yougori Chat and its API. Offer free inference with `--nowfree`, or use `--now` for supported paid inference with USDC earnings. On free inference, optionally enable `--listen` to record conversations on your provider and understand how people use your model.
 
 </td>
 <td width="50%" valign="top">
 
-### Local ↔︎ Cloud + Neocloud
+### AI Model Publishing — Share your models
 
-More compute when you need it. A way home when you don’t. Work across your computer and connected Linux servers, move supported VMs between local and cloud, and use your **Neocloud** account for GPU pods, CPU pods and serverless endpoints.
+Publish the models you build with descriptions, versions, licenses and downloadable files. Yougori hosts the model page; your files are served from your publishing environment. Use a local model folder without uploading it to Hugging Face. Choose open downloads or use `--closed-weights` to offer inference while keeping weight downloads closed.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-### AI Models + Your Own API
+### Shared AI Sandboxes — Build together
 
-Run the model. Own the endpoint. Choose a supported Hugging Face model, run it locally or on Neocloud compute, and chat with it. Connect your app to its OpenAI-style API with access keys you control.
+Run AI coding tools in isolated environments, keep their files and share access to the workspace. Launch tools such as Codex and Claude directly in your terminal with `yougori codex` or `yougori claude`. Choose the folders, connections and recipient permissions, then publish the apps you build to a public URL or your own domain.
 
 </td>
 <td valign="top">
 
-### Isolated AI Agents + GPUs
+### Instant App Publishing — Put your project online
 
-An agent can do a lot. You choose what it gets access to. Give it a separate container or VM and choose the folders, networks and environments it can reach. Run GPU workloads in supported NVIDIA containers or rent Neocloud GPUs.
-
-</td>
-</tr>
-<tr>
-<td colspan="2" valign="top">
-
-### Personal Vault MCP
-
-Your agent needs a secret. It can ask you for it. Keep credentials and personal information in an encrypted vault on your computer. Connect local agents, ChatGPT and Claude through MCP, then review requests and approve access in the Windows App.
+Set up your project once, then run `npm run yougori` to start its development command inside a Yougori environment. Sync your project files and choose access for yourself, your local network, a public link or your own domain. Keep the running app's logs and links in your terminal.
 
 </td>
 </tr>
 </table>
+
+Containers, VMs, connected cloud servers, Neocloud GPUs and Personal Vault MCP support these workflows. Yougori uses USDC for supported paid inference and has no cryptocurrency of its own.
 
 <br>
 
@@ -244,6 +233,8 @@ npm run desktop:dev
 | --- | --- |
 | [Projects, CLI and models](docs/projects-and-models.txt) | Every command, `yougori.yaml` fields and the model runner |
 | [Neocloud](docs/neocloud.md) | Renting GPUs, pods, serverless endpoints and volumes |
+| [Model publishing](docs/model-publishing.md) | Model pages, downloads, open and closed weights |
+| [Tool containers](docs/tool-containers.md) | AI tools running directly in your terminal |
 | [Remote sharing](docs/remote-sharing.txt) | Tunnels, domains, recipients and permission levels |
 | [Personal Vault](docs/personal-vault.txt) | Encrypted credential broker for agents |
 | [Build cache](docs/build-cache.md) | Faster Rust builds during development |
@@ -258,8 +249,6 @@ Yougori's original code is open source under **[AGPL-3.0-only](LICENSE)**, with 
 <br>
 
 <div align="center">
-
-<a href="https://yougori.com/"><img src="logo1.png" width="80" alt="Yougori"></a>
 
 <sub>Made by Yougori LLC</sub>
 

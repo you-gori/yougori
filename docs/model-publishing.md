@@ -10,17 +10,19 @@ Sign in once with `yougori login`; the CLI and App share that account.
 yougori model run hf.co/OWNER/MODEL --nowfree
 
 # Your local model folder; weights remain closed
-yougori model run OWNER/MODEL --folder D:\Models\my-model --nowfree --publish
+yougori model run OWNER/MODEL --folder D:\Models\my-model --nowfree --closed-weights
 
 # Close downloads for the same already-running model container
-yougori model run OWNER/MODEL --nowfree --publish
+yougori model run OWNER/MODEL --nowfree --closed-weights
 
 # Reopen downloads without creating another container
 yougori model run OWNER/MODEL --nowfree
 ```
 
-`--publish` means closed weights; it requires `--now` or `--nowfree`. Free versus paid
- inference is independent of whether downloads are offered. Publish only model files
+`--closed-weights` offers chat and API inference without weight downloads; it requires
+`--now` or `--nowfree`. Sharing offers open weight downloads by default. The former
+`--publish` model flag remains an alias for `--closed-weights` so existing commands keep
+their behavior. Free versus paid inference is independent of whether downloads are offered. Publish only model files
 you are allowed to distribute or serve. The website imports license declarations, languages,
 datasets, tags, base models and task/library metadata from README.md and recognizes common
 license headers. Unspecified licenses stay unspecified; page settings can override them.

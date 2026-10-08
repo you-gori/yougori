@@ -75,6 +75,35 @@ fn listening_is_free_only_and_validated_before_engine_or_login() {
     assert!(output.status.success());let result=response(&output);
     assert_eq!(result["result"]["listen"],true);assert_eq!(result["result"]["shareMode"],"free");
 }
+#[test]
+fn closed_weights_is_explicit_and_legacy_model_commands_keep_their_privacy() {
+    for mode in ["--now", "--nowfree"] {
+        for flag in ["--closed-weights", "--publish"] {
+            let mut args=vec!["model","run","owner/model",mode,flag,"--folder","D:/Private Models/checkpoint","--dry-run"];
+            if mode=="--nowfree" { args.push("--listen"); }
+            let output=cli(&args);
+            assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
+            let result=response(&output)["result"].clone();
+            assert_eq!(result["closedWeights"],true);
+            assert_eq!(result["listen"],mode=="--nowfree");
+            assert_eq!(result["resources"]["modelFolder"],"D:/Private Models/checkpoint");
+            assert_eq!(result["shareMode"],if mode=="--now" {"paid"} else {"free"});
+        }
+        let open=cli(&["model","run","owner/model",mode,"--dry-run"]);
+        assert!(open.status.success());assert_eq!(response(&open)["result"]["closedWeights"],false);
+    }
+    for flags in [vec!["--closed-weights"],vec!["--publish"],vec!["--nowfree","--closed-weights","--publish"],vec!["--nowfree","--closed-weights","--closed-weights"]] {
+        let mut args=vec!["model","run","owner/model"];args.extend(flags);args.push("--dry-run");
+        let output=cli(&args);assert!(!output.status.success());
+        assert_eq!(response(&output)["ok"],false);
+    }
+    let missing_mode=cli(&["model","run","owner/model","--closed-weights","--dry-run"]);
+    assert!(response(&missing_mode)["error"].as_str().unwrap().contains("--closed-weights requires --now or --nowfree"));
+    let help=cli(&["model","--help"]);
+    assert!(help.status.success());
+    let text=String::from_utf8_lossy(&help.stdout);
+    assert!(text.contains("--closed-weights") && text.contains("Open weights by default"));
+}
 
 #[test]
 fn network_model_flags_are_validated_offline_before_side_effects() {
