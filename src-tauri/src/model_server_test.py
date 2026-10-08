@@ -18,6 +18,24 @@ os.environ.update(YOUGORI_MODEL="ressl/gemma-4-31B-it-uncensored-GGUF",
 import model_server as model
 
 
+class CudaDevicesTests(unittest.TestCase):
+    def test_device_listing_works_without_old_startup_diagnostics(self):
+        listing = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 5090 Laptop GPU (24462 MiB, 23119 MiB free)\n  CUDA1: NVIDIA RTX 4090 (24564 MiB, 22000 MiB free)\n"
+        with patch.object(model.subprocess, "run", return_value=SimpleNamespace(stdout=listing, stderr="")) as run:
+            devices = model.llama_cuda_devices("/runner/llama-server", {"LD_LIBRARY_PATH": "/runner"})
+        self.assertEqual(devices, {"CUDA0": "NVIDIA GeForce RTX 5090 Laptop GPU", "CUDA1": "NVIDIA RTX 4090"})
+        self.assertEqual(run.call_args.args[0], ["/runner/llama-server", "--list-devices"])
+
+    def test_no_cuda_and_failed_query_remain_errors(self):
+        for listing in ("Available devices:\n", "Available devices:\n  CPU: Generic processor (32000 MiB, 16000 MiB free)\n"):
+            with patch.object(model.subprocess, "run", return_value=SimpleNamespace(stdout=listing)):
+                with self.assertRaisesRegex(RuntimeError, "found no CUDA GPU"):
+                    model.llama_cuda_devices("runner", {})
+        with patch.object(model.subprocess, "run", side_effect=subprocess.TimeoutExpired("runner", 30)):
+            with self.assertRaisesRegex(RuntimeError, "could not query CUDA devices"):
+                model.llama_cuda_devices("runner", {})
+
+
 class Output:
     def __init__(self):
         self.wfile = io.BytesIO()

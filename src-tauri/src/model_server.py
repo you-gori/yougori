@@ -779,6 +779,19 @@ def llama_json(path, body=None, timeout=30):
     return value
 
 
+def llama_cuda_devices(binary, environment):
+    """Query the backend directly; diagnostic log wording/verbosity is not an API."""
+    try:
+        result = subprocess.run([binary, "--list-devices"], env=environment, capture_output=True,
+                                text=True, errors="replace", timeout=30, check=True)
+    except (OSError, subprocess.SubprocessError):
+        raise RuntimeError("llama.cpp could not query CUDA devices. Check the GPU runtime and NVIDIA driver in Yougori.") from None
+    devices = dict(re.findall(r"^\s*(CUDA\d+):\s+(.+?)\s+\(\d+ MiB,.*\)\s*$", result.stdout, re.MULTILINE))
+    if not devices:
+        raise RuntimeError("llama.cpp found no CUDA GPU. Check the GPU runtime and NVIDIA driver in Yougori.")
+    return devices
+
+
 def load_gguf():
     if not any(os.path.exists(os.path.join(folder, "libgomp.so.1")) for folder in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu")):
         print("Installing the OpenMP runtime used by llama.cpp...", flush=True)
@@ -795,21 +808,18 @@ def load_gguf():
     environment = dict(os.environ)
     environment.pop("YOUGORI_MODEL_TOKEN", None)
     environment["LD_LIBRARY_PATH"] = os.path.dirname(binary) + (":" + environment["LD_LIBRARY_PATH"] if environment.get("LD_LIBRARY_PATH") else "")
+    devices = llama_cuda_devices(binary, environment)
     global ENGINE_PROCESS
     process = ENGINE_PROCESS = subprocess.Popen(
         [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
-         "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none"],
+         "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none", "--device", ",".join(devices)],
         env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
-    devices = []
 
     def logs():
         for line in process.stderr:
-            line = line.rstrip()
-            found = re.search(r"Device \d+: (.+?), compute capability", line)
-            if found:
-                devices.append(found.group(1))
             # Native diagnostics may include prompt text. Drain stderr without
             # retaining or forwarding it to workload logs or health responses.
+            pass
     threading.Thread(target=logs, daemon=True).start()
     deadline = time.monotonic() + 3600
     while True:
@@ -828,16 +838,14 @@ def load_gguf():
         time.sleep(2)
     settings = llama_json("/props").get("default_generation_settings") or {}
     LLAMA["context"] = int(settings.get("n_ctx") or 4096)
-    if not devices:
-        process.kill()
-        raise RuntimeError("llama.cpp found no CUDA GPU. Check the GPU runtime and NVIDIA driver in Yougori.")
 
     def watch():
         process.wait()
         if ENGINE_PROCESS is process:
             STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model.")
     threading.Thread(target=watch, daemon=True).start()
-    gpu = (str(len(devices)) + " × " + devices[0]) if len(devices) > 1 else devices[0]
+    first_device = next(iter(devices.values()))
+    gpu = (str(len(devices)) + " × " + first_device) if len(devices) > 1 else first_device
     STATE.update(status="ready", gpu=gpu, gpuCount=len(devices), context=LLAMA["context"], stream=True, weightsVerified=True,
                  revision=MODEL_REVISION, runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
 
