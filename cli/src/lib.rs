@@ -17,6 +17,7 @@ pub mod terminal;
 pub mod terminal_stream;
 pub mod container_tools;
 mod tool_public_access;
+mod tool_credentials;
 pub mod tool_sharing;
 pub mod sandbox_stop;
 #[path = "launcher/ui.rs"]

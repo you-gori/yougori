@@ -26,7 +26,11 @@ keeps existing resources; use --new to create a sandbox with different settings.
 
 Installation and the tool run right in this terminal. Ctrl+] disconnects the
 session; the container and installed files remain. Tool authentication and account
-setup happen inside the container. No credentials are copied from the host.
+setup happen inside the container. Every launch asks whether to copy this tool's
+supported credential files from this computer. Nothing is copied unless you choose
+Yes. Matching sandbox credentials are replaced; other settings stay unchanged.
+OS keychains, extension logins and environment-only keys require sign-in inside
+the tool. Anyone controlling the sandbox can read or use imported credentials.
 Ctrl+C opens Cancel / Stop sandbox / Stop and delete, with Cancel selected.
 Cancel resumes without interrupting the tool. Only Enter confirms a stop/delete.
 
@@ -349,7 +353,7 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     let mut options = Options::parse(args)?;
     if options.dry {
         return Ok(Some(
-            json!({"dryRun":true,"tool":options.tool,"request":if options.environment.is_none(){options.request(options.name.as_deref().unwrap_or(&options.tool))?}else{Value::Null},"environment":options.environment,"reuse":!options.fresh,"arguments":launch_arguments(&options.tool,&options.arguments),"terminal":"current","share":options.share,"gpuChoiceRequired":options.asks_gpu(),"resourceChoicesRequired":{"cpu":options.resource_choices()[0],"memory":options.resource_choices()[1]},"publicAccessPrompt":true}),
+            json!({"dryRun":true,"tool":options.tool,"request":if options.environment.is_none(){options.request(options.name.as_deref().unwrap_or(&options.tool))?}else{Value::Null},"environment":options.environment,"reuse":!options.fresh,"arguments":launch_arguments(&options.tool,&options.arguments),"terminal":"current","share":options.share,"gpuChoiceRequired":options.asks_gpu(),"resourceChoicesRequired":{"cpu":options.resource_choices()[0],"memory":options.resource_choices()[1]},"publicAccessPrompt":true,"credentialImportPrompt":true}),
         ));
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -408,6 +412,7 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     if crate::terminal::setup_tool(&id, &options.tool).await? != crate::terminal::SessionExit::Completed {
         return Ok(None);
     }
+    if !crate::tool_credentials::configure(&id, &options.tool, options.share).await? {return Ok(None);}
     if !crate::tool_public_access::configure(&id,&options.tool).await? {return Ok(None);}
     if options.share {
         if !crate::tool_sharing::share(&id, &name).await? {

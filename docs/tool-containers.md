@@ -45,7 +45,25 @@ still opens the sandbox stop choices. Custom tool arguments keep their normal be
 
 OpenClaw starts interactive `onboard`; complete its
 own account setup and permissions there. Other shortcuts start the tool's usual
-interactive interface. Yougori does not sign in or copy host credentials.
+interactive interface.
+
+Every interactive launch, including reconnects and `--share`, asks:
+"Do you want to use credentials from this computer?" No is selected by default.
+Choosing No keeps the sandbox's current sign-in. Choosing Yes copies only the
+selected tool's supported credential files and replaces matching files in the
+sandbox. Credentials are transferred as files, never printed or put in shell
+arguments, and installed with owner-only file permissions. Host originals stay
+unchanged; this is a copy, not ongoing synchronization.
+
+File imports support Codex, Claude Code, Gemini CLI, OpenCode, Kilo CLI, and
+Ollama's cloud identity. OS keychains, VS Code extension storage, environment-only
+API keys, and OpenClaw's database credential store are not imported. Missing or
+expired credentials fall back to the tool's normal sign-in. Custom provider
+configuration is not copied. Local Ollama models do not require authentication.
+
+Anyone controlling the sandbox, including existing recipients and teammates added
+with `--share`, can use or read imported credentials and consume that account's
+credits. The credential prompt explains this before anything is copied.
 
 ```powershell
 yougori codex --new --memory 8GB
@@ -114,7 +132,8 @@ The tool commands and sharing flow use Yougori's existing animated wordmark,
 colors, progress display, masked password inputs and arrow-key menus.
 
 `--share` works with every tool shortcut and with `--new`, `--name`, or
-`--environment`. Yougori installs/checks the tool first, then asks how many
+`--environment`. Yougori installs/checks the tool first, offers credential import
+and project public access, then asks how many
 teammates to add, their individual usernames and passwords, and an access expiry
 (24 hours, 7 days, or 1 hour). It uses the existing password-protected sharing
 gateway. Each teammate gets their own grant and link with control of this sandbox,

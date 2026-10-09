@@ -23,6 +23,7 @@ fn tool_shortcuts_validate_offline_and_do_not_create_from_pipes() {
         let value = response(&dry);
         assert_eq!(value["result"]["tool"], tool);
         assert_eq!(value["result"]["terminal"], "current");
+        assert_eq!(value["result"]["credentialImportPrompt"], true);
         let rejected = cli(&[tool]);
         assert!(!rejected.status.success());
         assert!(response(&rejected)["error"].as_str().unwrap().contains("interactive terminal"));
