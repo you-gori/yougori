@@ -33,6 +33,7 @@ pub(crate) trait ApplicationStream: tokio::io::AsyncRead + tokio::io::AsyncWrite
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> ApplicationStream for T {}
 pub(crate) type BoxStream = Box<dyn ApplicationStream>;
 pub mod installers;
+pub(crate) mod terminal_stream;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

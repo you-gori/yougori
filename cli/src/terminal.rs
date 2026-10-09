@@ -13,6 +13,13 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 mod ui;
+mod tool_setup;
+mod transport;
+mod ollama;
+
+pub(crate) async fn open_ollama(id: &str,name: &str) -> Result<SessionExit,String> {
+    ollama::open(id,name).await
+}
 
 fn project_command(container: Option<&str>) -> String {
     let command = "cd /workspace && { if [ -f /yougori/venv/bin/activate ]; then . /yougori/venv/bin/activate; fi; if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi; }";
@@ -262,33 +269,68 @@ impl InputReader {
 }
 
 pub async fn attach(id: &str, command: Option<&str>) -> Result<(), String> {
-    attach_session(id, command, None).await
+    attach_session(id, command, None).await.map(|_| ())
 }
 
 pub async fn attach_tool(id: &str, tool: &str, arguments: &[String]) -> Result<(), String> {
+    attach_tool_session(id, tool, arguments).await.map(|_| ())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SessionExit { Completed, Detached, Stopped }
+
+pub(crate) async fn attach_tool_session(id: &str, tool: &str, arguments: &[String]) -> Result<SessionExit, String> {
     if !crate::container_tools::TOOLS.contains(&tool) { return Err("Unknown tool".into()); }
+    let setup = setup_tool(id, tool).await?;
+    if setup != SessionExit::Completed || arguments == ["--version"] { return Ok(setup); }
+    attach_prepared_tool(id, tool, arguments).await
+}
+
+pub(crate) async fn attach_prepared_tool(id: &str, tool: &str, arguments: &[String]) -> Result<SessionExit, String> {
+    if !crate::container_tools::TOOLS.contains(&tool) { return Err("Unknown tool".into()); }
+    if arguments == ["--version"] { return Ok(SessionExit::Completed); }
     attach_session(id, None, Some((tool, arguments))).await
+}
+
+pub(crate) async fn setup_tool(id: &str, tool: &str) -> Result<SessionExit, String> {
+    tool_setup::ensure(id, tool).await
+}
+
+pub(crate) async fn tool_ready(id: &str, tool: &str) -> Result<bool, String> {
+    if !crate::container_tools::TOOLS.contains(&tool) { return Err("Unknown tool".into()); }
+    let probe = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("{TOOL_ENV}; if command -v {tool} >/dev/null 2>&1; then printf ready; else printf missing; fi")}})).await?;
+    if probe["exitCode"] != 0 { return Err("Could not check the tool inside this container".into()); }
+    match probe["stdout"].as_str().unwrap_or("").trim() {
+        "ready" => Ok(true),
+        "missing" => Ok(false),
+        _ => Err("The tool check returned an unexpected result".into()),
+    }
 }
 
 const TOOL_ENV: &str = "[ ! -r \"$HOME/.local/share/yougori/tool-env.sh\" ] || . \"$HOME/.local/share/yougori/tool-env.sh\"";
 
-fn tool_command(tool: &str, arguments: &[String], installer: Option<&str>, status: &str) -> Result<String, String> {
-    let install = if let Some(installer) = installer {
-        let parts = shell_words::split(installer).map_err(|_| "Invalid installer launcher")?;
-        let path = parts.get(2).ok_or("Invalid installer launcher")?;
-        let suffix = path.strip_prefix("/tmp/yougori-install.").and_then(|value| value.strip_suffix("/install.sh")).ok_or("Invalid installer launcher")?;
-        if parts.len() != 3 || parts[0] != "exec" || parts[1] != "sh" || suffix.is_empty() || suffix.len() > 32 || !suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return Err("Invalid installer launcher".into());
-        }
-        format!("sh {}; ", shell_words::quote(path))
-    } else { String::new() };
+pub(crate) fn shared_tool_shell() -> String {
+    format!("export PATH=\"$HOME/.local/share/yougori/bin:$HOME/.local/bin:$PATH\"; {TOOL_ENV}; cd /workspace && {{ if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi; }}")
+}
+
+fn tool_command(tool: &str, arguments: &[String], status: &str) -> Result<String, String> {
     let launch = shell_words::join(std::iter::once(tool.to_owned()).chain(arguments.iter().cloned()));
     let cleanup = format!("od_status=$?; rm -f {}; printf '%s\\n' \"$od_status\" > {}; exit \"$od_status\"", shell_words::quote(&format!("{status}.sh")), shell_words::quote(status));
-    let script = format!("umask 077; trap {} EXIT; set -e; {install}{TOOL_ENV}; mkdir -p /workspace; cd /workspace; {launch}", shell_words::quote(&cleanup));
+    let script = format!("umask 077; trap {} EXIT; set -e; {TOOL_ENV}; mkdir -p /workspace; cd /workspace; {launch}", shell_words::quote(&cleanup));
     Ok(format!("exec sh -c {}", shell_words::quote(&script)))
 }
 
-async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[String])>) -> Result<(), String> {
+fn installer_path(installer: &str) -> Result<String, String> {
+    let parts = shell_words::split(installer).map_err(|_| "Invalid installer launcher")?;
+    let path = parts.get(2).ok_or("Invalid installer launcher")?;
+    let suffix = path.strip_prefix("/tmp/yougori-install.").and_then(|value| value.strip_suffix("/install.sh")).ok_or("Invalid installer launcher")?;
+    if parts.len() != 3 || parts[0] != "exec" || parts[1] != "sh" || suffix.is_empty() || suffix.len() > 32 || !suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err("Invalid installer launcher".into());
+    }
+    Ok(path.clone())
+}
+
+async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[String])>) -> Result<SessionExit, String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
             "A shell requires an interactive terminal; the environment is still running".into(),
@@ -299,8 +341,10 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
         .and_then(|items| items.iter().find(|item| item["id"] == id))
         .ok_or("This environment is no longer available")?;
     let context = ui::Context::new(environment);
+    let sandbox_controls = crate::sandbox_stop::is_local_sandbox(environment);
     let raw = Raw(terminal::is_raw_mode_enabled().map_err(|e| e.to_string())?);
     terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+    let _painter = crate::cli_ui::Paused::new();
     let session = format!(
         "term-cli-{}-{}",
         std::process::id(),
@@ -319,11 +363,9 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
     let result = async {
         if tool.is_none() { context.welcome()?; }
         let launch = if let Some((tool, arguments)) = tool {
-            let probe = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("{TOOL_ENV}; if command -v {tool} >/dev/null 2>&1; then printf ready; else printf missing; fi")}})).await?;
-            if probe["exitCode"] != 0 { return Err("Could not check the tool inside this container".into()); }
-            let installer = if probe["stdout"].as_str().unwrap_or("").trim() == "ready" { None }
-                else { Some(call("prepare_terminal_installer", json!({"environmentId":id,"sessionId":session,"tool":tool})).await?.as_str().ok_or("Invalid installer response")?.to_owned()) };
-            let command = tool_command(tool, arguments, installer.as_deref(), &status)?;
+            // Tool setup completed in its separate quiet PTY. Only the running
+            // tool owns this visible terminal; package output never reaches it.
+            let command = tool_command(tool, arguments, &status)?;
             let script = shell_words::split(&command).map_err(|_| "Invalid tool launcher")?.pop().ok_or("Missing tool launcher")?;
             let path = format!("{status}.sh");
             let staged = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("umask 077; printf %s {} > {}",shell_words::quote(&script),shell_words::quote(&path))}})).await?;
@@ -354,38 +396,92 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
         }
-        if let Some(command) = launch {
-            call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{command}\r"))})).await?;
-        }
         let mut input_reader = InputReader::default();
         let mut interrupts = ui::Interrupts::default();
         let mut screen = ui::GuestScreen::default();
-        loop {
-            let result = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"read","offset":offset})).await?;
-            let bytes = B64.decode(result["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
-            screen.feed(&bytes);
-            io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
-            io::stdout().flush().map_err(|e| e.to_string())?;
-            offset = result["offset"].as_u64().unwrap_or(offset);
-            if result["done"] == true {
+        let opening = std::time::Instant::now();
+        let mut stream = transport::open(id, &session, offset).await?;
+        let open_elapsed = opening.elapsed();
+        let mut pending = std::collections::VecDeque::new();
+        if let Some(command) = launch {
+            for chunk in format!("{command}\r").as_bytes().chunks(12*1024) {
+                if pending.len() >= 32 { return Err("Terminal launch command is too large".into()); }
+                pending.push_back(crate::terminal_stream::Frame::Input(chunk.to_vec()));
+            }
+        }
+        let mut keyboard = tokio::time::interval(Duration::from_millis(4));
+        keyboard.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let started = std::time::Instant::now();
+        let mut output_bytes = 0_u64;
+        let mut input_bytes = 0_u64;
+        let exit = loop {
+            use crate::terminal_stream::Frame;
+            let done = tokio::select! {
+                frame = stream.rx.recv() => match frame.ok_or("Terminal connection ended; input was not resent")?? {
+                    Frame::Output { offset: next, bytes } => {
+                        if next.checked_sub(bytes.len() as u64) != Some(offset) { return Err("Terminal output cursor expired; reconnect to restore the screen".into()); }
+                        offset = next;
+                        output_bytes += bytes.len() as u64;
+                        screen.feed(&bytes);
+                        io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
+                        io::stdout().flush().map_err(|e| e.to_string())?;
+                        continue;
+                    },
+                    Frame::Done => true,
+                    Frame::Error(error) => return Err(error),
+                    _ => return Err("Invalid server terminal frame".into()),
+                },
+                permit = stream.tx.reserve(), if !pending.is_empty() => {
+                    let frame = pending.pop_front().unwrap();
+                    if let Frame::Input(bytes) = &frame { input_bytes += bytes.len() as u64; }
+                    permit.map_err(|_| "Terminal input connection ended; input was not resent")?.send(frame);
+                    continue;
+                },
+                _ = keyboard.tick() => false,
+            };
+            if done {
+                if std::env::var_os("YOUGORI_TERMINAL_TRACE").is_some() {
+                    eprintln!("Terminal timing: {:.3}s stream opening; {:.3}s attached; {input_bytes} input bytes; {output_bytes} output bytes", open_elapsed.as_secs_f64(), started.elapsed().as_secs_f64());
+                }
                 if tool.is_some() {
                     let exit = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("test -f {0} && cat {0} && rm -f {0}",shell_words::quote(&status))}})).await?;
                     let code = exit["stdout"].as_str().unwrap_or("").trim().parse::<u8>().map_err(|_| "The tool session ended without an exit result. The container and files remain.")?;
                     if code != 0 { return Err(format!("The tool session exited with status {code}. Read its terminal output above; the container and files remain.")); }
                 }
-                break;
+                break SessionExit::Completed;
             }
             // Send queued input together. Splitting ESC/control reports across
             // RPC round trips makes full-screen tools treat their tails as text.
             let mut input = input_reader.read_batch()?;
-            if input.detached { return Ok(()); }
+            if input.detached { return Ok(SessionExit::Detached); }
             let actions = if input.pasted { ui::Actions::default() }
-                else { ui::filter_input(&mut input.bytes, &mut interrupts, tool.is_none() && !screen.alternate) };
+                else { ui::filter_input(&mut input.bytes, &mut interrupts, tool.is_none() && !screen.alternate, sandbox_controls) };
+            if actions.stop {
+                // Nothing from this input batch reaches the guest. In particular
+                // Ctrl+C cannot terminate an installer/tool before Cancel resumes it.
+                input.bytes.clear();
+                let stopped = {
+                    let _overlay = ui::StopOverlay::enter(screen.alternate)?;
+                    crate::sandbox_stop::menu(id).await
+                };
+                match stopped {
+                    Ok(true) => return Ok(SessionExit::Stopped),
+                    Ok(false) => {},
+                    Err(error) => return Err(error),
+                }
+                // Repaint a full-screen tool after restoring its screen. Cancel
+                // never closes this PTY or sends an interrupt into it.
+                let (cols, rows) = terminal::size().unwrap_or((cols, rows));
+                pending.push_back(Frame::Resize(cols.saturating_sub(1).max(1),rows));
+                pending.push_back(Frame::Resize(cols,rows));
+            }
             if let Some((cols, rows)) = input.resize {
-                call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"resize","cols":cols,"rows":rows})).await?;
+                if matches!(pending.back(),Some(Frame::Resize(_, _))) { pending.pop_back(); }
+                pending.push_back(Frame::Resize(cols,rows));
             }
             for chunk in input.bytes.chunks(12 * 1024) {
-                call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(chunk)})).await?;
+                if pending.len() >= 32 { return Err("Terminal input queue is full. The connection is too slow; input was not resent.".into()); }
+                pending.push_back(Frame::Input(chunk.to_vec()));
             }
             if actions.exit_hint {
                 ui::line("")?;
@@ -398,13 +494,12 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                 }
                 // Redraw full-screen programs/readline after the host menu closes.
                 let (cols, rows) = terminal::size().unwrap_or((cols, rows));
-                call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"resize","cols":cols,"rows":rows})).await?;
+                pending.push_back(Frame::Resize(cols,rows));
             }
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
-        Ok(())
+        };
+        Ok(exit)
     }.await;
-    // Close only this new PTY, even on transport/input errors. Never stop the environment.
+    // Close only this new PTY. Lifecycle changes require the explicit choices above.
     let _ = call(
         "terminal_action",
         json!({"environmentId":id,"sessionId":session,"action":"close"}),
@@ -415,7 +510,8 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
     let _ = io::stdout().write_all(b"\x1b[?1049l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[<u\x1b[>4;0m\x1b[0 q\x1b[0m\x1b[?25h\r\n");
     let _ = io::stdout().flush();
     drop(raw);
-    if tool.is_none() { println!("Returned to your PC terminal. {} keeps running.", ui::clean(&context.name)); }
+    if result == Ok(SessionExit::Stopped) { println!("Returned to your PC terminal after the sandbox stop action."); }
+    else if tool.is_none() && result.is_ok() { println!("Returned to your PC terminal. {} keeps running.", ui::clean(&context.name)); }
     result
 }
 
@@ -423,17 +519,16 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
 mod tests {
     use super::*;
     #[test]
-    fn tool_launcher_preserves_literal_arguments_and_runs_install_before_launch() {
+    fn visible_tool_launcher_preserves_literal_arguments_and_never_runs_installers() {
         let args = vec!["--prompt".into(), "spaces; $(touch /tmp/no) and 'quotes'".into()];
-        let command = tool_command("codex", &args, Some("exec sh '/tmp/yougori-install.abc123/install.sh'"), "/tmp/status").unwrap();
+        let command = tool_command("codex", &args, "/tmp/status").unwrap();
         let outer = shell_words::split(&command).unwrap();
         assert_eq!(&outer[..3], &["exec", "sh", "-c"]);
         let script = &outer[3];
-        assert!(script.find("sh /tmp/yougori-install.abc123/install.sh").unwrap() < script.find("cd /workspace").unwrap());
+        assert!(!script.contains("/install.sh"));
         let tail = script.split("cd /workspace; ").last().unwrap();
         assert_eq!(shell_words::split(tail).unwrap(), [vec!["codex".to_owned()], args].concat());
-        for bad in ["exec sh '/tmp/other/install.sh'", "sh '/tmp/yougori-install.abc/install.sh'", "exec sh '/tmp/yougori-install.a/../install.sh'", "exec sh '/tmp/yougori-install.abc/install.sh' ; whoami"] { assert!(tool_command("codex", &[], Some(bad), "/tmp/status").is_err()); }
-        assert!(!tool_command("claude", &[], None, "/tmp/status").unwrap().contains("/install.sh"));
+        assert!(!tool_command("claude", &[], "/tmp/status").unwrap().contains("/install.sh"));
     }
     #[test]
     fn cloud_shell_enters_the_project_container_with_quoted_arguments() {

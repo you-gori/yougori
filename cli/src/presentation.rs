@@ -2,6 +2,13 @@
 //! this module. SSH clients sometimes decode UTF-8 as a legacy code page.
 use std::{borrow::Cow, sync::OnceLock};
 
+pub fn stdout_color() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
+        && std::env::var("NO_COLOR").ok().is_none_or(|value| value.is_empty())
+        && !matches!(std::env::var("TERM").ok().as_deref(), Some("dumb" | "xterm-mono"))
+}
+
 pub fn ascii() -> bool {
     static ASCII: OnceLock<bool> = OnceLock::new();
     *ASCII.get_or_init(|| {

@@ -332,7 +332,7 @@ Saved domains are reusable Cloudflare account tunnels shared by the app and the 
 
 ## Desktop terminal and agent setup
 
-The interactive guest terminal opens on a clean screen with the environment name and resources; local containers use a session-only named prompt. Press Ctrl+G at the shell for Tools & sharing: install any supported tool into the same local container through a separate PTY, create password-protected remote access with selected folder/view/edit/full-control permissions and expiry, or inspect and revoke recipients. Sharing requires explicit confirmation in this menu. Ctrl+G stays with full-screen guest apps. Ctrl+C interrupts the guest command; three consecutive presses within two seconds show exit guidance. Ctrl+D at an empty shell prompt, exit, or Ctrl+] returns without stopping the environment.
+The interactive guest terminal opens on a clean screen with the environment name and resources; local containers use a session-only named prompt. Press Ctrl+G at the shell for Tools & sharing: install any supported tool into the same local container through a separate PTY, create password-protected remote access with selected folder/view/edit/full-control permissions and expiry, or inspect and revoke recipients. Sharing requires explicit confirmation in this menu. Ctrl+G stays with full-screen guest apps. In an owner's local sandbox, Ctrl+C opens Cancel / Stop sandbox / Stop and delete, with Cancel selected. It never reaches the guest before the decision, so Cancel resumes without interrupting the tool; only Enter confirms a choice. Stop retains data; Stop and delete stops first and permanently removes the exact sandbox and managed data. Remote/SSH sessions retain guest Ctrl+C interrupts. Ctrl+D at an empty shell prompt, exit, or Ctrl+] returns without stopping the environment.
 
 Yougori command installers automatically set up the skill. The packaged app and engine also set it up for the current user on startup, covering native system installs. Open **CLI → Skills → Install skill** in the dashboard, or run `yougori skills install`. The default location is `Yougori/Workspace/skills/yougori` inside the user's profile; `--path` selects another skill directory. Repeating setup safely updates only unchanged Yougori-managed files; personal edits are not overwritten. Ask your agent to read `skills/yougori/SKILL.md` from the workspace. Automatic discovery depends on the agent. Codex, Claude, and Gemini launch buttons start detected local commands in a fresh terminal tab; they do not install or sign in to an agent. **Copy agent guide** also works without installing anything in an agent's configuration.
 
@@ -445,8 +445,62 @@ Decision models (Security-One and Clef): model run / model chat open the same CL
 container, install the tool if missing, and attach it directly to the invoking
 terminal. Later calls reuse that tool's container and sign-in. `--new` creates
 another one; `--environment ENV` explicitly uses a chosen local container.
+Before creating a new sandbox, every tool shortcut offers CPU and RAM sliders:
+arrow keys adjust values, typing sets a value, and Enter confirms. Defaults are
+2 CPU cores and 4 GB RAM, capped by host capacity. --cpu and --memory skip their
+respective choices; supplying both skips this prompt. Reused sandboxes keep their
+saved resources without prompting or resizing. Cancelling creates nothing, and
+--dry-run reports resourceChoicesRequired without prompting or changing anything.
 Creation options need a new container. No host folders or credentials are copied
 by default. Tool arguments follow `--`; `--dry-run` works without a terminal or
 engine and changes nothing. `TOOL --help` lists exact options. Ollama starts
 `serve`; OpenClaw starts interactive `onboard`. Ctrl+] closes only this terminal
 session, leaving its container and files; the attached program may stop.
+
+Add `--share` to any tool shortcut to install/check its tool, choose a teammate
+count, enter separate usernames and passwords, and choose an expiry. After
+confirmation it creates individual control grants through the existing remote
+sharing gateway. It prints password-inclusive connection commands for PowerShell
+7 and macOS/Linux before opening the tool; choose Open tool after copying them.
+The flow uses the same branded painter, masked inputs and arrow-key menus as the
+main CLI. Ctrl+C opens stop options during tool installation or sharing; Cancel
+returns to the current step and retains teammates already entered.
+Installation uses a separate quiet terminal and shows an animated loading bar;
+package output cannot move the host cursor or overlap the next question. Setup
+success and terminal closure are confirmed before sharing/tool launch, without
+an extra Enter. Typing during setup is discarded, so an early Enter cannot skip
+the next prompt. A failed setup shows only a bounded error summary.
+`--share --dry-run` reports the plan without prompts, installation or sharing.
+
+`yougori ollama` asks whether to use an NVIDIA GPU container or CPU container. It
+reuses a matching sandbox and preserves the other mode's files; explicit --gpu or
+--environment skips the question. Ollama starts its internal model API quietly
+on port 11434, shows an animated startup bar, verifies readiness, then opens actions
+to run a model, open the sandbox shell, refresh, or return with the server running.
+An existing responding server is reused. No models are downloaded automatically.
+All tool shortcuts offer optional public project access after setup: choose the
+website/project port, then a quick HTTPS link or a saved domain. Default: 3000,
+including Ollama sandboxes; the internal Ollama API stays on 11434. Copy the printed
+URL before opening the tool. The website becomes
+reachable when the project listens on that port inside the sandbox; a created
+tunnel is not proof the project is running. In-use domains are preserved. Skipping
+keeps current access; --dry-run never creates public access. --share still creates
+separate password-protected teammate shell links.
+
+Updated engines and guest agents stream terminal bytes over persistent connections.
+Older engines/agents, LAN shares and cloud shells use independent read/write polling.
+Input never waits for an output read. Disconnects do not automatically replay input;
+reconnecting opens a new shell in the same sandbox. YOUGORI_TERMINAL_TRACE=1 prints
+stream-opening/attached durations and byte counts on normal exit, without contents.
+
+`yougori connect LINK USERNAME PASSWORD` opens a separate terminal session in the
+owner's shared sandbox, in the recipient's current terminal. Use three separate
+quoted arguments and the complete HTTPS share link; then run the installed tool
+in that shell. Files, installed tools, sign-in and connected access are shared.
+The owner must keep Yougori, the sandbox and its gateway running. Printed invites
+include passwords and can remain in scrollback; recipient commands can appear
+in shell history/process arguments. The existing `remote connect --file -`
+credential-input path remains available. Use `remote list` for current links and
+`remote revoke SHARE_ID --yes` to remove access. A quick link may change when the
+gateway restarts. Partial failures report already-created grant IDs; inspect
+before retrying instead of creating duplicates.

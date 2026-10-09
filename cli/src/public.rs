@@ -94,6 +94,7 @@ Public commands:
   yougori remote create|connect|list|update|revoke|disconnect|remove|start|stop|files|inspect|download
                                   Remote tunnel sharing; use --file - for credentials
   yougori remote start --domain app.example.com   Share on a saved domain
+  yougori connect LINK USERNAME PASSWORD  Connect to a shared sandbox in this terminal
   yougori agent inventory         Machine-readable compute targets and current capabilities
   yougori agent discover          Current CLI/engine, protocol and canonical skill identity
   yougori neocloud providers | discover --provider P [--location REGION]
@@ -104,6 +105,7 @@ Public commands:
   yougori help | --help | --version
   yougori codex | claude | gemini | ollama | opencode | kilo | openclaw
                                   Install/start a tool container in this terminal; TOOL --help for options
+  yougori TOOL --share             Add teammates and print their connection commands before launch
 
 Run options: --cpu CORES, --memory 4GB, --storage 30GB, --storage-drive PATH,
   --volume NAME:/guest/path[:ro], --mount PC_FOLDER:/guest/path[:ro],

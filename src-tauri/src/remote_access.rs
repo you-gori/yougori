@@ -2,6 +2,7 @@
 //! neither the engine API nor the Personal Vault is reachable through it.
 pub(crate) mod client;
 pub(crate) mod bridge;
+mod terminal;
 mod desktop;
 mod files;
 #[cfg(test)]
@@ -194,6 +195,7 @@ pub struct RemoteAccess {
     attempts: Mutex<VecDeque<(i64, String)>>,
     hashes: Arc<Semaphore>,
     bridge_slots: Arc<Semaphore>,
+    terminal_slots: Arc<Semaphore>,
     displays: Mutex<HashMap<String, desktop::Display>>,
 }
 impl RemoteAccess {
@@ -215,6 +217,8 @@ impl RemoteAccess {
             displays: Mutex::new(HashMap::new()),
             hashes: Arc::new(Semaphore::new(2)),
             bridge_slots: Arc::new(Semaphore::new(8)),
+            // Leave gateway admission slots for login/RPC alongside streams.
+            terminal_slots: Arc::new(Semaphore::new(16)),
         })
     }
     fn save(&self, db: &Database) -> Result<(), String> {
@@ -601,7 +605,7 @@ async fn serve(listener: TcpListener, app: AppHandle) {
                         tokio::time::sleep(Duration::from_millis(5)).await;
                     }
                 }).await else { return };
-                if websocket { bridge::serve(socket, app).await; return }
+                if websocket { terminal::serve_or_bridge(socket, app).await; return }
                 let Ok(Ok((header,body)))=tokio::time::timeout(Duration::from_secs(12),crate::host_files::read_http(&mut socket)).await else{return};
                 let result=tokio::time::timeout(Duration::from_secs(90),http(&app,&header,&body)).await.unwrap_or_else(|_|Err("Operation timed out; inspect the target before retrying".into()));
                 let (status,body)=match result {Ok(v)=>(200,v),Err(error)=>(403,json!({"error":error}))};
@@ -808,9 +812,10 @@ async fn dispatch(
     }
     let env = target(app, &grant.target_id)?;
     if method == "inspect" {
-        return Ok(
-            json!({"environment":crate::peer_sharing::summary(env.clone(),if grant.permission==Permission::Control {"control"}else{"view"})["environment"],"permission":grant.permission,"fabricId":if grant.permission==Permission::Control {Some(env.runtime_id.as_deref().unwrap_or(&env.id))} else {None},"files":grant.folder.is_some(),"commands":grant.permission==Permission::Control && env.kind!=EnvironmentKind::FullVm,"power":grant.permission==Permission::Control && env.kind!=EnvironmentKind::Cloud,"desktop":grant.permission==Permission::Control && env.kind==EnvironmentKind::FullVm,"apps":grant.permission==Permission::Control && crate::guest_apps::supports_apps(&env),"appKind":env.kind,"installers":grant.permission==Permission::Control && (env.kind==EnvironmentKind::Container || env.kind==EnvironmentKind::MicroVm && env.runtime=="builtin:alpine"),"internet":env.network_access,"skills":grant.permission==Permission::Control}),
-        );
+        let mut result =
+            json!({"environment":crate::peer_sharing::summary(env.clone(),if grant.permission==Permission::Control {"control"}else{"view"})["environment"],"permission":grant.permission,"fabricId":if grant.permission==Permission::Control {Some(env.runtime_id.as_deref().unwrap_or(&env.id))} else {None},"files":grant.folder.is_some(),"commands":grant.permission==Permission::Control && env.kind!=EnvironmentKind::FullVm,"power":grant.permission==Permission::Control && env.kind!=EnvironmentKind::Cloud,"desktop":grant.permission==Permission::Control && env.kind==EnvironmentKind::FullVm,"apps":grant.permission==Permission::Control && crate::guest_apps::supports_apps(&env),"appKind":env.kind,"installers":grant.permission==Permission::Control && (env.kind==EnvironmentKind::Container || env.kind==EnvironmentKind::MicroVm && env.runtime=="builtin:alpine"),"internet":env.network_access,"skills":grant.permission==Permission::Control});
+        result["terminalStreamVersion"] = json!(1);
+        return Ok(result);
     }
     if grant.permission == Permission::Control {
         check_control_scope(app, &grant.target_id, grant.acknowledge_existing_access).await?;

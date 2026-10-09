@@ -34,6 +34,7 @@ pub(super) struct Context {
     pub local_shell: bool,
     details: String,
     installable: bool,
+    sandbox_controls: bool,
 }
 
 impl Context {
@@ -57,6 +58,7 @@ impl Context {
             name: clean(env["name"].as_str().unwrap_or("Environment")),
             local_shell: local,
             installable: local && env["networkAccess"] != false,
+            sandbox_controls: crate::sandbox_stop::is_local_sandbox(env),
             details: details.join(" · "),
         }
     }
@@ -72,8 +74,9 @@ impl Context {
         ))?;
         line(&format!("  {}", paint(&self.details, "90")))?;
         line("")?;
-        line(&format!("  {}  Tools & sharing\r\n  {}  Return to your PC terminal\r\n  {}  Interrupt the guest command",
-            paint("Ctrl+G", "36"), paint("Ctrl+D / exit / Ctrl+]", "36"), paint("Ctrl+C", "36")))?;
+        line(&format!("  {}  Tools & sharing\r\n  {}  Return to your PC terminal\r\n  {}  {}",
+            paint("Ctrl+G", "36"), paint("Ctrl+D / exit / Ctrl+]", "36"), paint("Ctrl+C", "36"),
+            if self.sandbox_controls {"Cancel / Stop sandbox / Stop and delete"} else {"Interrupt the guest command"}))?;
         line("")?;
         line(&format!(
             "  {}",
@@ -120,7 +123,8 @@ impl Context {
     }
 
     fn help(&self) -> Result<(), String> {
-        line("Ctrl+C interrupts a command inside this environment.")?;
+        line(if self.sandbox_controls {"Ctrl+C opens Cancel / Stop sandbox / Stop and delete. Cancel returns without interrupting the guest."}
+            else {"Ctrl+C interrupts a command inside this environment."})?;
         line("Ctrl+D at an empty shell prompt, exit, or Ctrl+] returns to your PC terminal.")?;
         line("Ctrl+G opens tools and sharing at the shell. Full-screen apps keep their own Ctrl+G shortcut.")?;
         line(&format!(
@@ -365,6 +369,25 @@ impl MenuScreen {
         Ok(Self)
     }
 }
+
+pub(super) struct StopOverlay { guest_alternate: bool }
+impl StopOverlay {
+    pub fn enter(guest_alternate: bool) -> Result<Self, String> {
+        // A full-screen guest already owns the alternate buffer. Return to the
+        // host screen for controls, then restore/repaint the guest on Cancel.
+        print!("{}", if guest_alternate {"\x1b[?1049l"} else {"\x1b[?1049h\x1b[2J\x1b[H"});
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        crate::cli_ui::pause(false);
+        Ok(Self { guest_alternate })
+    }
+}
+impl Drop for StopOverlay {
+    fn drop(&mut self) {
+        crate::cli_ui::pause(true);
+        print!("{}", if self.guest_alternate {"\x1b[?1049h"} else {"\x1b[?1049l"});
+        let _ = io::stdout().flush();
+    }
+}
 impl Drop for MenuScreen {
     fn drop(&mut self) {
         print!("\x1b[0m\x1b[?25h\x1b[?1049l");
@@ -478,12 +501,14 @@ pub(super) struct Interrupts {
 pub(super) struct Actions {
     pub menu: bool,
     pub exit_hint: bool,
+    pub stop: bool,
 }
 
 pub(super) fn filter_input(
     bytes: &mut Vec<u8>,
     interrupts: &mut Interrupts,
     menu_enabled: bool,
+    sandbox_controls: bool,
 ) -> Actions {
     let mut action = Actions::default();
     bytes.retain(|byte| {
@@ -534,6 +559,10 @@ pub(super) fn filter_input(
             return false;
         }
         if *byte == 3 {
+            if sandbox_controls {
+                action.stop = true;
+                return false;
+            }
             let now = Instant::now();
             if interrupts
                 .last
@@ -598,20 +627,20 @@ mod tests {
         for i in 0..3 {
             let mut bytes = vec![3];
             assert_eq!(
-                filter_input(&mut bytes, &mut interrupts, true).exit_hint,
+                filter_input(&mut bytes, &mut interrupts, true, false).exit_hint,
                 i == 2
             );
             assert_eq!(bytes, [3]);
         }
         let mut bytes = b"a\x03\x03".to_vec();
-        assert!(!filter_input(&mut bytes, &mut interrupts, true).exit_hint);
+        assert!(!filter_input(&mut bytes, &mut interrupts, true, false).exit_hint);
         interrupts.last = Some(Instant::now() - Duration::from_secs(3));
-        assert!(!filter_input(&mut vec![3], &mut interrupts, true).exit_hint);
+        assert!(!filter_input(&mut vec![3], &mut interrupts, true, false).exit_hint);
         let mut bytes = vec![7];
-        assert!(filter_input(&mut bytes, &mut interrupts, true).menu);
+        assert!(filter_input(&mut bytes, &mut interrupts, true, false).menu);
         assert!(bytes.is_empty());
         let mut bytes = vec![7, 4];
-        assert!(!filter_input(&mut bytes, &mut interrupts, false).menu);
+        assert!(!filter_input(&mut bytes, &mut interrupts, false, false).menu);
         assert_eq!(bytes, [7, 4]);
     }
     #[test]
@@ -651,10 +680,27 @@ mod tests {
             b"\x03\x03\x1b[201~",
         ] {
             let mut bytes = data.to_vec();
-            let actions = filter_input(&mut bytes, &mut interrupts, true);
-            assert!(!actions.menu && !actions.exit_hint);
+            let actions = filter_input(&mut bytes, &mut interrupts, true, true);
+            assert!(!actions.menu && !actions.exit_hint && !actions.stop);
             assert_eq!(bytes, data);
         }
-        assert!(filter_input(&mut vec![7], &mut interrupts, true).menu);
+        assert!(filter_input(&mut vec![7], &mut interrupts, true, true).menu);
+    }
+    #[test]
+    fn ctrl_c_is_owned_by_the_stop_menu_before_it_can_interrupt_a_local_tool() {
+        for menu_enabled in [true, false] {
+            let mut interrupts = Interrupts::default();
+            let mut bytes = vec![3, 3, 3];
+            let actions = filter_input(&mut bytes, &mut interrupts, menu_enabled, true);
+            assert!(actions.stop);
+            assert!(bytes.is_empty());
+            assert!(!actions.exit_hint);
+            let mut bytes = b"hello".to_vec();
+            assert!(!filter_input(&mut bytes, &mut interrupts, menu_enabled, true).stop);
+            assert_eq!(bytes, b"hello");
+        }
+        let mut bytes = vec![3];
+        assert!(!filter_input(&mut bytes, &mut Interrupts::default(), false, false).stop);
+        assert_eq!(bytes, [3]);
     }
 }

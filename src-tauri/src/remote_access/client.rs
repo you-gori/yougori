@@ -144,6 +144,22 @@ pub(crate) fn forget(id: &str) -> Result<(), String> {
     }
 }
 
+pub(crate) async fn terminal_stream(env: &Environment, session: &str, offset: u64) -> Result<Option<yougori_cli::terminal_stream::Channel>, String> {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    // Read the secure store once per connection, never per terminal byte.
+    let saved = entry(&env.id)?.get_password().map_err(|_| "Sign in to the shared environment again")?;
+    let saved: Connection = serde_json::from_str(&saved).map_err(|_| "Invalid saved remote session")?;
+    let (base, _) = share_url(&saved.link)?;
+    let summary = call(&saved.link, Some(&saved.token), json!({"method":"inspect","params":{}})).await?;
+    if summary["terminalStreamVersion"] != 1 { return Ok(None); }
+    let endpoint = format!("{}/remote/terminal", base.replacen("https://", "wss://", 1));
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(12), tokio_tungstenite::connect_async_with_config(endpoint, Some(crate::workspace::terminal_stream::websocket_config()), true)).await.map_err(|_| "Remote terminal connection timed out")?.map_err(|_| "Remote terminal streaming connection failed")?;
+    socket.send(Message::Text(json!({"token":saved.token,"sessionId":session,"offset":offset}).to_string().into())).await.map_err(|_| "Remote terminal sign-in failed")?;
+    crate::workspace::terminal_stream::stream_ready(&mut socket).await?;
+    Ok(Some(crate::workspace::terminal_stream::from_websocket(socket)))
+}
+
 fn connection_target<'a>(
     environments: &'a [Environment],
     environment_id: Option<&str>,

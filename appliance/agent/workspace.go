@@ -21,13 +21,15 @@ import (
 )
 
 type terminalSession struct {
-	environment string
-	command     *exec.Cmd
-	master      *os.File
-	mu          sync.Mutex
-	output      []byte
-	base        uint64
-	done        bool
+	environment  string
+	command      *exec.Cmd
+	master       *os.File
+	mu           sync.Mutex
+	output       []byte
+	base         uint64
+	done         bool
+	changed      chan struct{}
+	streamOffset *uint64
 }
 type terminalRequest struct {
 	ID        string `json:"id"`
@@ -53,8 +55,11 @@ func (s *server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/files/import", s.auth(method(http.MethodPost, s.importFiles)))
 	mux.HandleFunc("/v1/files/import/progress", s.auth(method(http.MethodGet, s.importProgress)))
 	mux.HandleFunc("/v1/files/import/cancel", s.auth(method(http.MethodPost, s.cancelImport)))
-    mux.HandleFunc("/v1/project-files/activate", s.auth(method(http.MethodPost, s.activateProjectFiles)))
-	mux.HandleFunc("/v1/workspace/version", s.auth(method(http.MethodGet, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]int{"version": 1}) })))
+	mux.HandleFunc("/v1/project-files/activate", s.auth(method(http.MethodPost, s.activateProjectFiles)))
+	mux.HandleFunc("/v1/workspace/version", s.auth(method(http.MethodGet, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]int{"version": 1, "terminalStreamVersion": 1})
+	})))
+	mux.HandleFunc("/v1/terminal/stream", s.auth(method(http.MethodGet, s.terminalStream)))
 	mux.HandleFunc("/v1/terminal/create", s.auth(method(http.MethodPost, s.terminalCreate)))
 	mux.HandleFunc("/v1/terminal/read", s.auth(method(http.MethodPost, s.terminalRead)))
 	mux.HandleFunc("/v1/terminal/write", s.auth(method(http.MethodPost, s.terminalWrite)))
@@ -149,7 +154,7 @@ func (s *server) terminalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slave.Close()
-	session := &terminalSession{environment: request.ID, command: command, master: master}
+	session := &terminalSession{environment: request.ID, command: command, master: master, changed: make(chan struct{})}
 	if _, loaded := s.terminals.LoadOrStore(request.SessionID, session); loaded {
 		master.Close()
 		command.Process.Kill()
@@ -162,17 +167,9 @@ func (s *server) terminalCreate(w http.ResponseWriter, r *http.Request) {
 		for {
 			n, err := master.Read(buffer)
 			if n > 0 {
-				session.mu.Lock()
-				session.output = append(session.output, buffer[:n]...)
-				if len(session.output) > 1024*1024 {
-					// Trim in large batches and reuse storage, not a 1 MiB
-					// allocation/copy for every small write from a busy shell.
-					excess := len(session.output) - 512*1024
-					copy(session.output, session.output[excess:])
-					session.output = session.output[:len(session.output)-excess]
-					session.base += uint64(excess)
+				if !session.appendOutput(buffer[:n]) {
+					break
 				}
-				session.mu.Unlock()
 			}
 			if err != nil {
 				break
@@ -182,6 +179,7 @@ func (s *server) terminalCreate(w http.ResponseWriter, r *http.Request) {
 		master.Close()
 		session.mu.Lock()
 		session.done = true
+		session.notifyLocked()
 		session.mu.Unlock()
 	}()
 	writeJSON(w, 201, map[string]string{"sessionId": request.SessionID})
@@ -262,6 +260,10 @@ func (s *server) terminalClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.terminals.Delete(request.SessionID)
+	session.mu.Lock()
+	session.done = true
+	session.notifyLocked()
+	session.mu.Unlock()
 	session.master.Close()
 	_ = syscall.Kill(-session.command.Process.Pid, syscall.SIGHUP)
 	writeJSON(w, 200, map[string]bool{"ok": true})

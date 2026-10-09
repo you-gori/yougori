@@ -5,7 +5,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal,
 };
-use yougori_cli::presentation;
+use crate::presentation;
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal, Write},
@@ -60,7 +60,7 @@ fn caps() -> &'static Caps {
         let vt = true;
         let var = |name: &str| std::env::var(name).unwrap_or_default();
         let live = vt && io::stdout().is_terminal() && var("TERM") != "dumb";
-        let color = live && crate::output::stdout_color();
+        let color = live && presentation::stdout_color();
         let truecolor = color
             && (matches!(var("COLORTERM").as_str(), "truecolor" | "24bit")
                 || !var("WT_SESSION").is_empty()
@@ -360,6 +360,7 @@ struct TaskState {
     detail: String,
     started: Instant,
     progress: Option<CopyProgress>,
+    loading: bool,
 }
 
 struct CopyProgress {
@@ -517,6 +518,7 @@ impl Painter {
                 }
                 Item::Task(task) => {
                     lines.push(task_line(task, self.tick, now));
+                    if task.loading { lines.push(loading_line(self.tick, columns)); }
                     if let Some(progress) = &task.progress { lines.extend(progress.lines(columns)); }
                 }
                 Item::Lines(item) => lines.extend(item.iter().cloned()),
@@ -801,6 +803,37 @@ impl Drop for CommandActivity {
     }
 }
 
+pub async fn command_activity<T>(label: &str, work: impl std::future::Future<Output = T>) -> T {
+    let _activity = CommandActivity::start(label);
+    work.await
+}
+
+/// Guest output owns the terminal while this guard is alive. Host menus can
+/// temporarily resume the same painter without leaving an animation behind.
+pub struct Paused(bool);
+impl Paused {
+    pub fn new() -> Self {
+        let previous = with(|p, _| p.paused);
+        pause(true);
+        Self(previous)
+    }
+}
+impl Drop for Paused {
+    fn drop(&mut self) { pause(self.0); }
+}
+
+pub struct Visible(bool);
+impl Visible {
+    pub fn new() -> Self {
+        let previous = with(|p, _| p.paused);
+        pause(false);
+        Self(previous)
+    }
+}
+impl Drop for Visible {
+    fn drop(&mut self) { pause(self.0); }
+}
+
 static START: OnceLock<Instant> = OnceLock::new();
 
 /// Time since the launcher started, for "ready in" messages.
@@ -814,7 +847,7 @@ pub struct Session;
 impl Session {
     pub fn start(title: &str, tagline: &str) -> Self {
         START.get_or_init(Instant::now);
-        yougori_cli::client::QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+        crate::client::QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
         let item = Item::Banner {
             started: Instant::now(),
             title: title.into(),
@@ -945,6 +978,16 @@ fn task_line(task: &TaskState, tick: usize, now: Instant) -> String {
     line
 }
 
+fn loading_line(tick: usize, columns: usize) -> String {
+    let cells = columns.saturating_sub(7).clamp(3, 28);
+    let segment = cells.min(5);
+    let travel = cells - segment;
+    let step = (tick / 2) % (2 * travel).max(1);
+    let at = if step <= travel { step } else { 2 * travel - step };
+    format!("{}  [{}{}{}]", muted("│"), muted(&"░".repeat(at)),
+        paint(&"█".repeat(segment), SKY), muted(&"░".repeat(cells - at - segment)))
+}
+
 /// A step in progress. Dropped without `done`, it is shown as failed.
 pub struct Task {
     id: u64,
@@ -960,6 +1003,7 @@ pub fn task(text: &str) -> Task {
         detail: String::new(),
         started,
         progress: None,
+        loading: false,
     }));
     Task {
         id,
@@ -967,6 +1011,13 @@ pub fn task(text: &str) -> Task {
         started,
         open: true,
     }
+}
+
+/// Indeterminate work: keep moving without inventing a percentage or ETA.
+pub fn loading_task(text: &str) -> Task {
+    let task = task(text);
+    update(task.id, |item| { if let Item::Task(state) = item { state.loading = true; } });
+    task
 }
 
 impl Task {
@@ -1371,7 +1422,7 @@ fn input_with_initial(question:&str,default:&str,secret:bool,initial:&str,check:
     let raw = Raw::on()?;
     let id = add(Item::Lines(Vec::new()));
     let caret = if caps().color { "\x1b[7m \x1b[27m" } else { "_" };
-    let mut value = initial.to_owned();
+    let mut value = zeroize::Zeroizing::new(initial.to_owned());
     let mut problem = String::new();
     let result = loop {
         let room = size().0.saturating_sub(12);
@@ -1403,11 +1454,7 @@ fn input_with_initial(question:&str,default:&str,secret:bool,initial:&str,check:
             Err(e) => break Err(e),
             Ok(key) => match key.code {
                 KeyCode::Enter => {
-                    let entry = if value.trim().is_empty() {
-                        default
-                    } else {
-                        value.trim()
-                    };
+                    let entry = input_entry(value.as_str(), default, secret);
                     match check(entry) {
                         Ok(answer) => break Ok(answer),
                         Err(e) => problem = e,
@@ -1446,6 +1493,14 @@ pub struct Slider {
     pub min: u32,
     pub max: u32,
     pub default: u32,
+}
+
+fn input_entry<'a>(value: &'a str, default: &'a str, secret: bool) -> &'a str {
+    if secret {
+        if value.is_empty() { default } else { value }
+    } else {
+        if value.trim().is_empty() { default } else { value.trim() }
+    }
 }
 
 fn gauge(fraction: f64, cells: usize, color: Rgb) -> String {
@@ -1933,11 +1988,20 @@ mod tests {
     }
 
     #[test]
+    fn secret_inputs_keep_literal_whitespace_while_regular_inputs_are_trimmed() {
+        assert_eq!(input_entry("  literal password  ", "", true), "  literal password  ");
+        assert_eq!(input_entry("   ", "", true), "   ");
+        assert_eq!(input_entry("  alice  ", "", false), "alice");
+        assert_eq!(input_entry("   ", "default", false), "default");
+        assert_eq!(input_entry("", "default", true), "default");
+    }
+
+    #[test]
     fn menu_command_activity_survives_waits_and_cleans_up_before_output() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all().build().unwrap();
         runtime.block_on(async {
-            let args = vec!["rm".into(), "env-test".into(), "--yes".into()];
+            let label = "Deleting environment";
             let assert_active = || with(|p, _| {
                 assert!(!p.paused);
                 assert!(p.items.iter().any(|(_, item)| matches!(item,
@@ -1946,7 +2010,7 @@ mod tests {
             // The menu pauses its painter before dispatching a normal command.
             pause(true);
             for fail in [false, true] {
-                let result = super::super::command_progress(&args, async {
+                let result = command_activity(label, async {
                     assert_active();
                     tokio::task::yield_now().await;
                     assert_active();
@@ -1959,7 +2023,7 @@ mod tests {
                 });
             }
             // Dropping a pending command must also release its animation.
-            let mut pending = Box::pin(super::super::command_progress(&args, async {
+            let mut pending = Box::pin(command_activity(label, async {
                 assert_active();
                 std::future::pending::<()>().await;
             }));
@@ -1974,7 +2038,7 @@ mod tests {
             });
             pause(false);
             // Scripted commands and screens that already show progress stay alone.
-            super::super::command_progress(&args, async {
+            command_activity(label, async {
                 with(|p, _| assert!(p.items.is_empty()));
             }).await;
         });
@@ -1987,6 +2051,7 @@ mod tests {
             detail: String::new(),
             started: Instant::now(),
             progress: None,
+            loading: false,
         };
         let now = task.started + Duration::from_secs(129);
         let first = task_line(&task, 0, now);
@@ -1994,6 +2059,19 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.contains("Deleting environment"));
         assert!(first.contains(&clock(Duration::from_secs(129))));
+    }
+
+    #[test]
+    fn setup_loading_bar_moves_and_fits_without_inventing_progress() {
+        for columns in [20, 40, 80, 160] {
+            for tick in 0..120 {
+                let line = loading_line(tick, columns);
+                assert!(width(&line) < columns);
+                assert!(!line.contains('%'));
+                assert!(line.contains('[') && line.contains(']'));
+            }
+        }
+        assert_ne!(loading_line(0, 80), loading_line(6, 80));
     }
 
     #[test]

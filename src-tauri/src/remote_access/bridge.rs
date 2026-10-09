@@ -4,7 +4,7 @@ use super::*;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
-use tokio_tungstenite::{tungstenite::{handshake::server::{ErrorResponse, Request, Response}, Message}, WebSocketStream};
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 pub(crate) fn websocket_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
     tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
@@ -118,7 +118,7 @@ where S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin {
     }
 }
 
-async fn serve_authenticated(websocket: &mut WebSocketStream<TcpStream>, app: AppHandle) -> Result<(), String> {
+pub(super) async fn serve_authenticated(websocket: &mut WebSocketStream<TcpStream>, app: AppHandle) -> Result<(), String> {
     let first = tokio::time::timeout(Duration::from_secs(10), websocket.next()).await
         .map_err(|_| "Private connection sign-in timed out")?
         .ok_or("Private connection sign-in ended")?
@@ -178,22 +178,6 @@ async fn serve_authenticated(websocket: &mut WebSocketStream<TcpStream>, app: Ap
     runtime.close_bridge_peer(&rule_id, &open.peer_id);
     manager.audit(&grant.id, "private connection closed", true).await;
     Ok(())
-}
-
-pub(super) async fn serve(socket: TcpStream, app: AppHandle) {
-    let accepted = tokio_tungstenite::accept_hdr_async_with_config(socket, |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
-        if request.uri().path() != "/remote/bridge" || request.headers().contains_key("origin") {
-            return Err(tokio_tungstenite::tungstenite::http::Response::builder().status(403).body(Some("Use Yougori Desktop to connect".into())).unwrap());
-        }
-        Ok(response)
-    }, Some(websocket_config())).await;
-    if let Ok(mut websocket) = accepted {
-        // Authentication errors are sent only inside the encrypted WebSocket.
-        // Never include the session token in the URL or a server log.
-        if let Err(error) = serve_authenticated(&mut websocket, app).await {
-            let _ = websocket.send(Message::Text(json!({"error":error}).to_string().into())).await;
-        }
-    }
 }
 
 #[cfg(test)]

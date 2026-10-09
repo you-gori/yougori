@@ -14,7 +14,13 @@ pub mod overview;
 pub mod project_files;
 pub mod launcher_state;
 pub mod terminal;
+pub mod terminal_stream;
 pub mod container_tools;
+mod tool_public_access;
+pub mod tool_sharing;
+pub mod sandbox_stop;
+#[path = "launcher/ui.rs"]
+pub mod cli_ui;
 pub mod presentation;
 pub mod doctor;
 pub mod update;

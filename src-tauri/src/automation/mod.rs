@@ -71,7 +71,7 @@ fn storage_maintenance_idle(state: &crate::models::PlatformState) -> bool {
 }
 
 async fn connection(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    mut stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     control: Arc<Control>,
     app: AppHandle,
     _connection: tokio::sync::OwnedSemaphorePermit,
@@ -84,6 +84,10 @@ async fn connection(
     {
         Ok(Ok(bytes)) => match serde_json::from_slice::<Request>(&bytes) {
             Ok(request) => {
+                if request.method == "terminal_stream" {
+                    crate::workspace::terminal_stream::serve_local(stream, app, request).await;
+                    return;
+                }
                 let lane=if queue::is_control_method(&request.method){&control.control_clients}else{&control.regular_clients};
                 match lane.clone().try_acquire_owned() {
                     Ok(_client)=>control.handle(app,request).await,

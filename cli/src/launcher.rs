@@ -30,7 +30,7 @@ mod stream;
 pub(crate) mod storage;
 pub(crate) const CANCELLED: &str = ui::CANCELLED;
 mod sync;
-mod ui;
+use yougori_cli::cli_ui as ui;
 
 fn open_terminal(id: &str, project: bool, container: Option<&str>) {
     match yougori_cli::terminal::open(id, project, container) {
@@ -45,8 +45,7 @@ pub(crate) async fn command_progress<T>(
     args: &[String],
     work: impl std::future::Future<Output = T>,
 ) -> T {
-    let _activity = ui::CommandActivity::start(menu::activity_label(args));
-    work.await
+    ui::command_activity(menu::activity_label(args), work).await
 }
 
 fn hf(s: &str) -> bool {

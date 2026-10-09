@@ -1,6 +1,6 @@
 [package]
 name = "yougori-cli"
-version = "1.0.11"
+version = "1.0.12"
 edition = "2021"
 description = "Local, same-user command line control for Yougori"
 license = "AGPL-3.0-only"

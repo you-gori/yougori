@@ -57,6 +57,14 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         }
         return Ok(0);
     }
+    if args[0] == "connect" {
+        if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+            println!("{}", yougori_cli::tool_sharing::HELP);
+        } else {
+            yougori_cli::tool_sharing::connect(&args[1..]).await?;
+        }
+        return Ok(0);
+    }
     if args[0]=="confidential" {
         if args.iter().any(|a| matches!(a.as_str(),"--help"|"-h")) { println!("{}",yougori_cli::confidential::command::HELP); return Ok(0); }
         println!("{}",wire_json(yougori_cli::confidential::command::run(&args[1..]).await?));

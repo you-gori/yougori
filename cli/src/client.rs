@@ -75,9 +75,14 @@ async fn engine_identity_at(endpoint:&str)->Result<Value,String>{
     Ok(identity)
 }
 
-async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, String> {
+#[cfg(windows)]
+type ControlStream = tokio::net::windows::named_pipe::NamedPipeClient;
+#[cfg(unix)]
+type ControlStream = tokio::net::UnixStream;
+
+async fn connect_at(endpoint: &str) -> Result<ControlStream, String> {
     #[cfg(windows)]
-    let mut stream = {
+    let stream = {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
@@ -88,7 +93,7 @@ async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, Stri
         }
     };
     #[cfg(unix)]
-    let mut stream = tokio::net::UnixStream::connect(endpoint)
+    let stream = tokio::net::UnixStream::connect(endpoint)
         .await
         .map_err(|error| {
             format!("Cannot reach the Yougori engine: {error}. Run yougori app start.")
@@ -108,6 +113,31 @@ async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, Stri
             "Yougori control endpoint belongs to another user. No request was sent.".into(),
         );
     }
+    Ok(stream)
+}
+
+pub async fn open_terminal_stream(environment: &str, session: &str, offset: u64) -> Result<Option<crate::terminal_stream::Channel>, String> {
+    let endpoint = wire::endpoint().map_err(|e| e.to_string())?;
+    let mut stream = connect_at(&endpoint).await?;
+    let request = request("terminal_stream", json!({"environmentId":environment,"sessionId":session,"offset":offset}));
+    let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+    let response = tokio::time::timeout(Duration::from_secs(30), async {
+        wire::write_frame(&mut stream, &bytes, wire::MAX_REQUEST).await?;
+        wire::read_frame(&mut stream, wire::MAX_RESPONSE).await
+    }).await.map_err(|_| "Terminal stream opening timed out; input was not sent")?.map_err(|e| e.to_string())?;
+    let response: Response = serde_json::from_slice(&response).map_err(|_| "Invalid terminal stream response")?;
+    if response.version != wire::VERSION { return Err("CLI/engine protocol mismatch. Update both Yougori and its CLI.".into()); }
+    if !response.ok {
+        let error = response.error.unwrap_or_default();
+        if error == crate::terminal_stream::UNSUPPORTED || error.starts_with("Unknown method 'terminal_stream'.") { return Ok(None); }
+        return Err(error);
+    }
+    if response.result.as_ref().and_then(|v| v["terminalStreamVersion"].as_u64()) != Some(crate::terminal_stream::VERSION as u64) { return Err("Unsupported terminal stream protocol".into()); }
+    Ok(Some(crate::terminal_stream::from_io(stream)))
+}
+
+async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, String> {
+    let mut stream = connect_at(endpoint).await?;
     let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
     let reply=tokio::time::timeout(request_timeout(request), async {
         wire::write_frame(&mut stream,&bytes,wire::MAX_REQUEST).await?;

@@ -3146,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "yougori-vault"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "age",
  "axum",
