@@ -6,12 +6,12 @@
   },
   {
     "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-    "sha256": "fddfbe28f5cc757c325d69b5cd930b96b7fa60f83909287dd14dadec09bfe7c6",
-    "bytes": 17153097
+    "sha256": "97428c7597f50fcd904b5d2625442fb0aa321553270d904cfbbe23c684cb52d4",
+    "bytes": 16889526
   },
   {
     "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-    "sha256": "2c8c3af3522e63125183b318bb12f592cc46db571aa4fecd0a681e7e391e5d61",
+    "sha256": "6d12c68481e1ed16476ab227ea2cf7e83eac846270e04564be7a799b7d3809e1",
     "bytes": 247
   },
   {
@@ -51,8 +51,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/opendock-agent",
-    "sha256": "5a9809b7c9659e8504521bd36a362d6be179ed85ab360b0332315da8948c38fe",
-    "bytes": 15290492
+    "sha256": "0dd6d8c573e7a9077466ba208bcd588a52754cee1a9ebeb3b7757fcc0aa57d46",
+    "bytes": 14708862
   },
   {
     "path": "src-tauri/resources/runtime/cuda/opendock-cuda-probe",
@@ -66,7 +66,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-    "sha256": "7bb73aa36dff5d513f7a275c4d69bd9274f1a6c89b6ba8a874bdaad48f4c2c48",
+    "sha256": "c02bd6ec5f9c748d4cd1159398ca946f04a9a2f2fc25ad1bd5145272c16e0b0e",
     "bytes": 255
   },
   {

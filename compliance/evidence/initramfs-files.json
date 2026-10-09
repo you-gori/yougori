@@ -1181,8 +1181,8 @@
   },
   {
     "path": "opendock-agent-update",
-    "bytes": 15290492,
-    "sha256": "5a9809b7c9659e8504521bd36a362d6be179ed85ab360b0332315da8948c38fe"
+    "bytes": 14708862,
+    "sha256": "0dd6d8c573e7a9077466ba208bcd588a52754cee1a9ebeb3b7757fcc0aa57d46"
   },
   {
     "path": "bin",
