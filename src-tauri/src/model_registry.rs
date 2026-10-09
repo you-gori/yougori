@@ -51,8 +51,8 @@ pub(crate) fn model_files(folder: &Path) -> Result<Vec<(String, u64)>, String> {
             if kind.is_dir() { if entry.file_name().to_string_lossy().starts_with('.') {continue} walk(root, &path, out)?; }
             else if kind.is_file() {
                 let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                if !["safetensors", "gguf", "py", "json", "txt", "model", "tiktoken", "jinja", "md"].contains(&extension) && !["LICENSE","NOTICE","COPYING","CITATION.cff"].contains(&entry.file_name().to_string_lossy().as_ref()) {continue}
-                if matches!(extension,"json"|"txt"|"model"|"tiktoken"|"jinja"|"md") && !["README.md","LICENSE","LICENSE.txt","LICENSE.md","COPYING","COPYING.txt","NOTICE","NOTICE.txt","PAPER_LICENSE.txt","CITATION.cff","requirements.txt","config.json","generation_config.json","tokenizer.json","tokenizer_config.json","special_tokens_map.json","added_tokens.json","vocab.json","merges.txt","tokenizer.model","tokenizer.tiktoken","chat_template.jinja","model.safetensors.index.json","joint_head_config.json"].contains(&entry.file_name().to_string_lossy().as_ref()) {continue}
+                if !["safetensors", "gguf", "py", "json", "txt", "model", "tiktoken", "jinja", "md", "yaml", "yml", "cff"].contains(&extension) && !["LICENSE","NOTICE","COPYING","CITATION.cff"].contains(&entry.file_name().to_string_lossy().as_ref()) {continue}
+
                 let name = path.strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
                 safe_relative(&name)?;
                 out.push((name, entry.metadata().map_err(|e| e.to_string())?.len()));

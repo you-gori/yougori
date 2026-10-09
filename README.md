@@ -39,7 +39,7 @@ Host supported AI models on your GPU and make them available through Yougori Cha
 
 ### AI Model Publishing — Share your models
 
-Publish the models you build with descriptions, versions, licenses and downloadable files. Yougori hosts the model page; your files are served from your publishing environment. Use a local model folder without uploading it to Hugging Face. Choose open downloads or use `--closed-weights` to offer inference while keeping weight downloads closed.
+Upload LLMs created in the EU and Horizon Europe-associated countries to Yougori, with model cards, versions and licenses. Yougori stores and serves the files using lossless compression and resumable, checksum-verified transfers. Browse models on the homepage or in the dedicated model library. Running an inference provider is optional and separate from publishing files.
 
 </td>
 </tr>
