@@ -46,7 +46,11 @@ pub(crate) fn model_files(folder: &Path) -> Result<Vec<(String, u64)>, String> {
         for entry in std::fs::read_dir(at).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?; let path = entry.path();
             let kind = entry.file_type().map_err(|e| e.to_string())?;
-            if entry.file_name().to_string_lossy().starts_with('.') {continue}
+            let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if file_name.starts_with('.') || matches!(file_name.as_str(),
+                "chat-history.json" | "model-chat-history.json" | "credentials.json" |
+                "credentials.txt" | "secrets.json" | "secrets.txt" | "token.json" | "token.txt"
+            ) {continue}
             if kind.is_symlink() { return Err("Model uploads cannot include symbolic links".into()); }
             if kind.is_dir() { if entry.file_name().to_string_lossy().starts_with('.') {continue} walk(root, &path, out)?; }
             else if kind.is_file() {

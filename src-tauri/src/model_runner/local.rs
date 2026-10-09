@@ -114,10 +114,14 @@ pub(super) async fn run(model:String,port:Option<u16>,resources:ModelResources,q
         std::fs::write(root.join("model.safetensors"),"model bytes").unwrap();
         std::fs::write(root.join("chat-history.json"),"private").unwrap();
         std::fs::write(root.join(".env"),"credential").unwrap();
+        std::fs::write(root.join("credentials.json"),"{\"token\":\"private test credential\"}").unwrap();
+        std::fs::write(root.join("SECRETS.txt"),"private test secret").unwrap();
         std::fs::write(root.join("remote_model.py"),"raise RuntimeError('never executed')").unwrap();
         let(check,manifest)=inspect_folder("local/model",root.to_str().unwrap(),None,true).unwrap();
         assert_eq!(check["supported"],true);assert_eq!(check["resources"]["storageGbRecommended"],20);
         assert_eq!(manifest["files"].as_array().unwrap().len(),4);
+        assert!(manifest["files"].as_array().unwrap().iter().all(|file|
+            !["chat-history.json", "credentials.json", "SECRETS.txt", ".env"].contains(&file["name"].as_str().unwrap())));
         let weights=manifest["files"].as_array().unwrap().iter().find(|f|f["name"]=="model.safetensors").unwrap();
         assert_eq!(weights["sha256"],format!("{:x}",Sha256::digest(b"model bytes")));
         assert!(!root.join(".yougori-verified-files.json").exists());

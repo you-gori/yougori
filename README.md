@@ -11,7 +11,7 @@ and put your apps online from your local project. Use the CLI or App, with acces
 
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-1f2937?style=for-the-badge)](LICENSE)
 [![Platforms](https://img.shields.io/badge/Windows%20·%20Ubuntu%20·%20macOS-1f2937?style=for-the-badge)](#run-from-source)
-[![Version](https://img.shields.io/badge/version-1.0.11-1f2937?style=for-the-badge)](package.json)
+[![Version](https://img.shields.io/badge/version-1.0.12-1f2937?style=for-the-badge)](package.json)
 
 **[Website](https://yougori.com/)** &nbsp;·&nbsp; **[Discord](https://discord.gg/Eqhf4Hq3AG)** &nbsp;·&nbsp; **[X](https://x.com/withYougori)** &nbsp;·&nbsp; **[Run from source](#run-from-source)**
 
