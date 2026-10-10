@@ -1,17 +1,17 @@
 [
   {
     "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-    "sha256": "ee598ba085975cbb5d17dfea63598459ac17c2a2263cd91609e2942b730fdbcf",
-    "bytes": 137570816
+    "sha256": "13b01cf3466f838b53d753327dbbfc2275ea34601b6fc5c67b336f17cb8e9b60",
+    "bytes": 180811776
   },
   {
     "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-    "sha256": "384726838be551593fd8e0023d23fff981247e004d623dcaeb691938f8e351ea",
-    "bytes": 47340791
+    "sha256": "d560fd2d7ef9429a8f70f6f5733d93b415f84a19acf56d3608faa10ff87494d9",
+    "bytes": 94062900
   },
   {
     "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-    "sha256": "a141f7b2574a52f375f9b0e071bf909fd688be2099f8ac37fc09a90f468ab2b0",
+    "sha256": "ed1895184ea0a99861d277280b45fb6a780a82ca5ae03b509f0ffd31aa70a003",
     "bytes": 247
   },
   {
@@ -51,7 +51,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/opendock-agent",
-    "sha256": "340661e73c70dce9fe7794c8cce207dda2a2f3f0a23a63fd1236f6a6fe6d40a2",
+    "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90",
     "bytes": 15347836
   },
   {
@@ -61,13 +61,33 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/opendock-mount-helper",
-    "sha256": "f663e53d110abce0db8f26a6d8b04deec6c85b53b6576b9f7a847008eeb3424f",
-    "bytes": 38328
+    "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1",
+    "bytes": 51120
   },
   {
     "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-    "sha256": "2fcbfb6d676b4517518589cd1576f31d99fee907697abc254d022d4cfad322c8",
-    "bytes": 255
+    "sha256": "312ae6178652df75b684809c12583989ea302262abe973089736e6fc53fba985",
+    "bytes": 687
+  },
+  {
+    "path": "src-tauri/resources/runtime/cuda/yougori-nvidia-cdi-linux-amd64.manifest.json",
+    "sha256": "fe4b6bc9618c23759be196a432df2aa51cb99f609fae2a1eb3d91a58fc1e9818",
+    "bytes": 5507
+  },
+  {
+    "path": "src-tauri/resources/runtime/cuda/yougori-nvidia-cdi-linux-amd64.tar.gz",
+    "sha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73",
+    "bytes": 7754791
+  },
+  {
+    "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.manifest.json",
+    "sha256": "fe3f79540154ef8b05d0093d7c1f869e3a69789b89089c2d9cb385882eba50e1",
+    "bytes": 25040
+  },
+  {
+    "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.tar.gz",
+    "sha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba",
+    "bytes": 46790081
   },
   {
     "path": "src-tauri/resources/runtime/qemu/ANGLE-NOTICES.txt",

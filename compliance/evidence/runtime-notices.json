@@ -4,7 +4,7 @@
     "texts": [
       {
         "path": "recipe-verified.json",
-        "sha256": "56d141a4cb7ff6c464fec6fc866c44e7847239d16c00bfdefa9e4b9d0d6d8ad2"
+        "sha256": "13bc098e2eca8f8072f29ba46d00e0b4729292400f2bfe369a8138bc73dc1688"
       },
       {
         "path": "distfiles/protocols-6.4",
@@ -89,7 +89,7 @@
     "texts": [
       {
         "path": "recipe-verified.json",
-        "sha256": "26aca0e50f0ba234dfcf0badae6baa3860ecb043fa2c05ed6eab0210cd51d6ed"
+        "sha256": "9c43f3182c480ba0d16b65965337d81db439e38b28e97fe823abf6244e4edb1f"
       },
       {
         "path": "recipe/alpine-devel@lists.alpinelinux.org-4a6a0840.rsa.pub",
@@ -174,7 +174,7 @@
     "texts": [
       {
         "path": "recipe-verified.json",
-        "sha256": "e42bc46b848641ae9dd2431e1caf9999143b67d5b3250cc81528ccda03d82040"
+        "sha256": "acfd76c5c7f16230a1d7f54ac1305420ed81098682e1e4928cd54f5689550149"
       },
       {
         "path": "recipe/APKBUILD",
@@ -196,7 +196,7 @@
     "texts": [
       {
         "path": "recipe-verified.json",
-        "sha256": "14b161b025a8df494fad8ccc0a3be5f211bc5fa10feef803d852906a0633151e"
+        "sha256": "7e0179b106ab2dbca111ed64a51a9ae5a2b947a09cdda6dec8dd214ea2b629ee"
       },
       {
         "path": "recipe/APKBUILD",
@@ -247,7 +247,7 @@
     "texts": [
       {
         "path": "recipe-verified.json",
-        "sha256": "e5ec814ef587be0fb68fb336806790b741ad66a476842bb64d8f47d8e47f98b7"
+        "sha256": "8795f496131055067aae00b8f1adda5dd730b71650173a5b4d8569c454f32633"
       },
       {
         "path": "recipe/APKBUILD",
@@ -396,7 +396,7 @@
     "texts": [
       {
         "path": "recipe-verified.json",
-        "sha256": "dc6c5ea2fa0ef95d285d168bb8b3a3d2fdadb5ae7aece27470993926758c956e"
+        "sha256": "0762661f25edeafde2920df366db6c774bcfba99932e92914481dc7ca7077fad"
       },
       {
         "path": "recipe/APKBUILD",
@@ -605,7 +605,7 @@
     ]
   },
   {
-    "component": "alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed",
+    "component": "alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
     "texts": [
       {
         "path": "distfiles/linux-6.18.tar.xz/linux-6.18/COPYING",

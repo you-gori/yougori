@@ -1,6 +1,6 @@
 {
   "status": "pending",
-  "pendingReason": "The September 29 repository audit repaired and refreshed source/notice evidence. Exact final desktop and engine artifacts, public matching-source delivery, guest-agent binary reproducibility and historical installer coverage still require release-specific verification.",
+  "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",
   "reviewer": "Codex engineering review",
   "date": "2026-09-14",
   "evidence": "docs/compliance-status.md; compliance/evidence; docs/rebuilding-third-party.txt",
@@ -38,5 +38,18 @@
     "dependencyRecords": 907,
     "sourceArchives": 239,
     "basis": "All initial 1377 tracked paths inventoried; notices and source archives refreshed; native evidence rechecked. This does not approve any final installer or waive third-party obligations."
+  },
+  "securityReview": {
+    "date": "2026-10-10",
+    "status": "implementation-and-guest-media-reviewed-final-release-validation-pending",
+    "evidence": "docs/sandbox-security-review.txt; scripts/vendor-oci-build; scripts/vendor-nvidia-build; compliance/evidence; exact per-platform release reports",
+    "scope": "All 13 supplied PDF pages reviewed, supported layered controls implemented, native host network inventory tested on Windows/Linux, Mac helper compile checked only, preserved 512 MiB guest migrated without replacing its backing image. All 15 actual Go executables audited; raw stripped OpenPGP notices retained with matching code and compiled-source proofs. This is an engineering scope record, not an absolute isolation or blanket legal certification.",
+    "requiredFinalEvidence": [
+      "Fresh package/source hashes and full platform checks",
+      "Exact packaged runtime verification",
+      "Retained environment/resource settings and live CPU/GPU acceptance",
+      "Public corresponding sources before package publication",
+      "Website health and public asset hash verification"
+    ]
   }
 }

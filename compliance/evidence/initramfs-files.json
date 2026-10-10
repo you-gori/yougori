@@ -1200,14 +1200,34 @@
     "sha256": "7782f5df9c82d604976526d87e2a3d12dfacaf7385edc67e37f6e7ca6159bf50"
   },
   {
+    "path": "usr/local/lib/yougori-boot/oci-runtime.files",
+    "bytes": 1020,
+    "sha256": "3ad33163b5e7be2d9d9ee2312ad0cd7dcd55311d3fe03ece3e61b2835ffa16c2"
+  },
+  {
+    "path": "usr/local/lib/yougori-boot/oci-runtime.sha256",
+    "bytes": 65,
+    "sha256": "6d3227fead1c4a009c363fa268a0f7af5c92a3f816125e64d39b249543426e97"
+  },
+  {
+    "path": "usr/local/lib/yougori-boot/oci-runtime.tar.gz",
+    "bytes": 46790228,
+    "sha256": "024903897c8b2aa8844019cbbbfc966d05b77faf7bcf95b8a8e2131fa2951104"
+  },
+  {
     "path": "usr/local/sbin/opendock-agent",
     "bytes": 15347836,
-    "sha256": "340661e73c70dce9fe7794c8cce207dda2a2f3f0a23a63fd1236f6a6fe6d40a2"
+    "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90"
+  },
+  {
+    "path": "usr/local/sbin/opendock-mount-helper",
+    "bytes": 51120,
+    "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1"
   },
   {
     "path": "usr/local/sbin/yougori-upgrade-root",
-    "bytes": 5377,
-    "sha256": "8b3e42a98aa4075b49a7b3b1c88a12091ff2b889061d8a7656515e1e4c748d54"
+    "bytes": 9149,
+    "sha256": "599f1f144b4a75d2b58258f0be732bf58d480207ac6377351e1a123e4dbf748a"
   },
   {
     "path": "usr/sbin/apk",

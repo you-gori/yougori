@@ -9,9 +9,9 @@ See compliance/evidence/runtime-notices.json and docs/compliance-status.md.
 alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f
 File: recipe-verified.json
 
-{
-  "revision": "60a7585bbab2fa0f762504eb617dbca90216e31f"
-}
+{
+  "revision": "60a7585bbab2fa0f762504eb617dbca90216e31f"
+}
 
 
 ========================================================================
@@ -1477,9 +1477,9 @@ fi
 alpine/alpine-keys/b9f23becced4d7b3ccc0fa0f28530243ccd314a0
 File: recipe-verified.json
 
-{
-  "revision": "b9f23becced4d7b3ccc0fa0f28530243ccd314a0"
-}
+{
+  "revision": "b9f23becced4d7b3ccc0fa0f28530243ccd314a0"
+}
 
 
 ========================================================================
@@ -1891,9 +1891,9 @@ bad4da65221150a5d4cc6f63981e4dd203d40844d32e82c17f346eee5350e460e32d28f0e231a2b7
 alpine/alpine-base/0934530484bbcde7498e2c694c710a49616a450e
 File: recipe-verified.json
 
-{
-  "revision": "0934530484bbcde7498e2c694c710a49616a450e"
-}
+{
+  "revision": "0934530484bbcde7498e2c694c710a49616a450e"
+}
 
 
 ========================================================================
@@ -2301,9 +2301,9 @@ of this License.
 alpine/bridge/8bac74716d06c84627ab02d101fd9d2bafd0a34c
 File: recipe-verified.json
 
-{
-  "revision": "8bac74716d06c84627ab02d101fd9d2bafd0a34c"
-}
+{
+  "revision": "8bac74716d06c84627ab02d101fd9d2bafd0a34c"
+}
 
 
 ========================================================================
@@ -3006,9 +3006,9 @@ exit 0
 alpine/ca-certificates/e41cbd2ae991adfe8df298ba8e8e777e90bd0e03
 File: recipe-verified.json
 
-{
-  "revision": "e41cbd2ae991adfe8df298ba8e8e777e90bd0e03"
-}
+{
+  "revision": "e41cbd2ae991adfe8df298ba8e8e777e90bd0e03"
+}
 
 
 ========================================================================
@@ -10332,9 +10332,9 @@ Public License instead of this License.
 alpine/lddtree/007305e7880a70d5c804019aa3da115da732776b
 File: recipe-verified.json
 
-{
-  "revision": "007305e7880a70d5c804019aa3da115da732776b"
-}
+{
+  "revision": "007305e7880a70d5c804019aa3da115da732776b"
+}
 
 
 ========================================================================
@@ -18217,7 +18217,7 @@ Public License instead of this License.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/COPYING
 
 The Linux Kernel is provided under:
@@ -18243,7 +18243,7 @@ All contributions to the Linux Kernel are subject to this COPYING file.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/Documentation/images/COPYING-logo
 
 This is the full-colour version of the currently unofficial Linux logo
@@ -18270,7 +18270,7 @@ Garrett's repository:
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/Documentation/process/license-rules.rst
 
 .. SPDX-License-Identifier: GPL-2.0
@@ -18763,7 +18763,7 @@ _`MODULE_LICENSE`
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/Documentation/scsi/LICENSE.FlashPoint
 
                      FlashPoint Driver Developer's Kit
@@ -18829,7 +18829,7 @@ SUCH DAMAGE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/Documentation/translations/it_IT/process/license-rules.rst
 
 .. SPDX-License-Identifier: GPL-2.0
@@ -19335,7 +19335,7 @@ _`MODULE_LICENSE`
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/Documentation/translations/zh_CN/process/license-rules.rst
 
 .. SPDX-License-Identifier: GPL-2.0
@@ -19711,7 +19711,7 @@ _`模块许可`
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/Documentation/translations/zh_TW/process/license-rules.rst
 
 .. SPDX-License-Identifier: GPL-2.0
@@ -20089,7 +20089,7 @@ _`模塊許可`
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/0BSD
 
 Valid-License-Identifier: 0BSD
@@ -20118,7 +20118,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/CC0-1.0
 
 Valid-License-Identifier: CC0-1.0
@@ -20253,7 +20253,7 @@ express Statement of Purpose.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/GFDL-1.1
 
 Valid-License-Identifier: GPL-2.0 OR GFDL-1.1-no-invariants-or-later
@@ -20636,7 +20636,7 @@ to permit their use in free software.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/GFDL-1.2
 
 Valid-License-Identifier: GPL-2.0 OR GFDL-1.2-no-invariants-or-later
@@ -21059,7 +21059,7 @@ to permit their use in free software.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/GPL-1.0
 
 Valid-License-Identifier: GPL-1.0+
@@ -21325,7 +21325,7 @@ That's all there is to it!
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/ISC
 
 Valid-License-Identifier: ISC
@@ -21355,7 +21355,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/Linux-OpenIB
 
 Valid-License-Identifier: Linux-OpenIB
@@ -21387,7 +21387,7 @@ DEALINGS IN THE SOFTWARE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/X11
 
 Valid-License-Identifier: X11
@@ -21430,7 +21430,7 @@ X Window System is a trademark of X Consortium, Inc.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/deprecated/Zlib
 
 Valid-License-Identifier: Zlib
@@ -21463,7 +21463,7 @@ misrepresented as being the original software.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/dual/Apache-2.0
 
 Valid-License-Identifier: Apache-2.0
@@ -21656,7 +21656,7 @@ END OF TERMS AND CONDITIONS
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/dual/CC-BY-4.0
 
 Valid-License-Identifier: CC-BY-4.0
@@ -22072,7 +22072,7 @@ Creative Commons may be contacted at creativecommons.org.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/dual/CDDL-1.0
 
 Valid-License-Identifier: CDDL-1.0
@@ -22446,7 +22446,7 @@ Version 1.0
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/dual/MPL-1.1
 
 Valid-License-Identifier: MPL-1.1
@@ -22934,7 +22934,7 @@ EXHIBIT A -Mozilla Public License.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/dual/copyleft-next-0.3.1
 
 Valid-License-Identifier: copyleft-next-0.3.1
@@ -23176,7 +23176,7 @@ License-Text:
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/exceptions/GCC-exception-2.0
 
 SPDX-Exception-Identifier: GCC-exception-2.0
@@ -23200,7 +23200,7 @@ distribution when not linked into another program.)
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/exceptions/Linux-syscall-note
 
 SPDX-Exception-Identifier: Linux-syscall-note
@@ -23231,7 +23231,7 @@ License-Text:
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/BSD-2-Clause
 
 Valid-License-Identifier: BSD-2-Clause
@@ -23269,7 +23269,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/BSD-3-Clause
 
 Valid-License-Identifier: BSD-3-Clause
@@ -23311,7 +23311,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/BSD-3-Clause-Clear
 
 Valid-License-Identifier: BSD-3-Clause-Clear
@@ -23358,7 +23358,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/GPL-2.0
 
 Valid-License-Identifier: GPL-2.0
@@ -23721,7 +23721,7 @@ Public License instead of this License.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/LGPL-2.0
 
 Valid-License-Identifier: LGPL-2.0
@@ -24213,7 +24213,7 @@ That's all there is to it!
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/LGPL-2.1
 
 Valid-License-Identifier: LGPL-2.1
@@ -24724,7 +24724,7 @@ That's all there is to it!
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/LICENSES/preferred/MIT
 
 Valid-License-Identifier: MIT
@@ -24760,7 +24760,7 @@ DEALINGS IN THE SOFTWARE.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/drivers/net/LICENSE.SRC
 
 Code in this directory written at the IDA Supercomputing Research Center
@@ -24781,7 +24781,7 @@ carries the following copyright and license.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/drivers/net/wireless/marvell/libertas/LICENSE
 
   Copyright (c) 2003-2006, Marvell International Ltd.
@@ -24803,7 +24803,7 @@ File: distfiles/linux-6.18.tar.xz/linux-6.18/drivers/net/wireless/marvell/libert
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/fs/jffs2/LICENCE
 
 The files in this directory and elsewhere which refer to this LICENCE
@@ -24839,7 +24839,7 @@ this file might be covered by the GNU General Public License.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/include/linux/license.h
 
 /* SPDX-License-Identifier: GPL-2.0-only */
@@ -24860,7 +24860,7 @@ static inline int license_is_gpl_compatible(const char *license)
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/scripts/package/debian/copyright
 
 This is a packaged upstream version of the Linux kernel.
@@ -24882,7 +24882,7 @@ License version 2 can be found in `/usr/share/common-licenses/GPL-2'.
 
 
 ========================================================================
-alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed
+alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4
 File: distfiles/linux-6.18.tar.xz/linux-6.18/tools/usb/usbip/COPYING
 
 		    GNU GENERAL PUBLIC LICENSE

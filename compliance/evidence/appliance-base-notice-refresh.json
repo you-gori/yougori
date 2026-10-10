@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "scope": "Offline notice-only regeneration of the newly generated appliance base; no user disk or executable content changed",
+  "oldBase": {
+    "bytes": 179501056,
+    "sha256": "902fb468c4ccaa04b04bfdde4be56a231625823b1fdc24bf2256c75c843b02e3"
+  },
+  "newBase": {
+    "bytes": 180811776,
+    "sha256": "13b01cf3466f838b53d753327dbbfc2275ea34601b6fc5c67b336f17cb8e9b60"
+  },
+  "oldNotice": {
+    "bytes": 7479989,
+    "sha256": "60c0cff8bec59a3ab1753cf10cffef6ea1ab935b9dafec351b8d890ee1887e2e"
+  },
+  "newNotice": {
+    "bytes": 7479971,
+    "sha256": "a300d3ab2da5551364181903ca012769e8d20b683953182f74e73bfa450b3bf9"
+  },
+  "filesystemEntries": 2744,
+  "onlyChangedPaths": [
+    "usr/share/licenses/yougori-runtime/RUNTIME_LICENSES.txt"
+  ],
+  "unchangedFilesystemFingerprint": "f2978c4bae0c88d9c9d4535cf2edf8d1460f9945701b824e43009d6c98dbc6da",
+  "unchangedAPKDatabase": {
+    "bytes": 142547,
+    "sha256": "c1ef249c58e36ad2d8abd43c6e78d854288d7f7484d6c8be0ecf0c7aace72ff3"
+  },
+  "unchangedRuntimeExecutables": {
+    "usr/local/libexec/cni/bridge": {
+      "bytes": 4456572,
+      "sha256": "14730583d4d3ef4b5d52951cc196460e6d8b4802f65025d3c99af88c58020631"
+    },
+    "usr/local/libexec/cni/firewall": {
+      "bytes": 4358268,
+      "sha256": "af665c8a7925686c17a1ee6cdb2d0cd223172de9eedef966c02648e1f528e9e0"
+    },
+    "usr/local/libexec/cni/host-local": {
+      "bytes": 3514492,
+      "sha256": "a1ccad7e6795ccc42162f93a8442ddef63c8633b7034580e1c849d84fc9c5b8c"
+    },
+    "usr/local/libexec/cni/loopback": {
+      "bytes": 3477628,
+      "sha256": "b35752ee20ac4d6adcb1c7cf7172d210abbd738d7eb027b10e2c5760950454e1"
+    },
+    "usr/local/libexec/cni/portmap": {
+      "bytes": 4014204,
+      "sha256": "fcbf3a1bac70a79f906cb04c283b9aad50d91b6a60701d57f1d04a19b5b7e515"
+    },
+    "usr/local/libexec/cni/tuning": {
+      "bytes": 3534972,
+      "sha256": "45c765cf64ef7ff629d5d5ef349c5350fd0e22892c47f414130f837c6cef73e9"
+    },
+    "usr/local/sbin/opendock-agent": {
+      "bytes": 15347836,
+      "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90"
+    },
+    "usr/local/sbin/opendock-mount-helper": {
+      "bytes": 51120,
+      "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1"
+    },
+    "usr/local/sbin/yougori-upgrade-root": {
+      "bytes": 9149,
+      "sha256": "599f1f144b4a75d2b58258f0be732bf58d480207ac6377351e1a123e4dbf748a"
+    },
+    "usr/local/bin/containerd": {
+      "bytes": 41114176,
+      "sha256": "28d35f307982b38171cd71f96c144f023c2d82ede80929051220e7e5cdcaad60"
+    },
+    "usr/local/bin/containerd-shim-runc-v2": {
+      "bytes": 16319264,
+      "sha256": "21c710881d07df2d30f488f134d5d6a65049e85cde45c22443c6635931acbbe2"
+    },
+    "usr/local/bin/nerdctl": {
+      "bytes": 32424060,
+      "sha256": "1405bb5adc4b7e998eba663aa4751050455d3d46d12992024f44cecc4d46654d"
+    },
+    "usr/local/bin/runc": {
+      "bytes": 9945552,
+      "sha256": "5b52fa88cabc718b395b03e7c46b04d51462245d789b74381f4e23ce788a0bb4"
+    }
+  },
+  "qemuImgCheck": {
+    "exitCode": 0,
+    "result": "No errors were found on the image."
+  },
+  "fullVerificationSHA256": "e032cd85082dbcf1c47c8ed6f7a783c4257dd4a19753b4251394f7361ec5c2b4",
+  "unchangedBootMedia": {
+    "kernelSHA256": "fcee60bd42bdcc5f165278e092de0bb00d969843be326f7bd9a9602c2f52de9e",
+    "initramfsSHA256": "d560fd2d7ef9429a8f70f6f5733d93b415f84a19acf56d3608faa10ff87494d9"
+  }
+}

@@ -115,9 +115,12 @@ struct RuntimeLayout {
 }
 
 struct ApplianceProcess {
+    // Fields drop in declaration order. Request child termination before
+    // releasing packet redirectors or deleting the private boot token, even
+    // when a shutdown future is cancelled after taking this process owner.
+    child: Child,
     internet: microvm_network::MicroVmNetwork,
     _boot_token: boot_token::BootTokenFile,
-    child: Child,
     endpoint: AgentEndpoint,
     qmp_port: u16,
     max_memory_mib: usize,

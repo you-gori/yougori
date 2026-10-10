@@ -172,6 +172,13 @@ source rebuild of the two consumed CDI tools. The source and binary scan records
 state their exact scope and retain any platform-only or unreachable findings.
 No report of zero findings extends to the host driver, all system packages or
 unexamined third-party commands.
+The host Rust review checked 859 registry package/version pairs across six
+committed lockfiles against current RustSec/OSV records. The known glib 0.18.5
+VariantIter advisory is fixed in this repository's selected local glib source;
+its optimized regression remains a final native build gate. Six additional
+RustSec records are informational unmaintained notices for proc-macro-error and
+UNIC crates, retained as maintenance debt rather than hidden by an ignore list.
+No additional applicable vulnerability was found in that recorded inventory.
 
 11. Shared-folder mount targets are resolved one directory descriptor at a time
     without following workload-controlled links. The trusted native helper pins
@@ -254,6 +261,11 @@ checks passed on that same preserved overlay.
 Release packages are previews when a trusted signing key is unavailable. An
 unsigned preview must not be promoted by removing the production signing gate.
 Hardware/Linux/macOS acceptance is reported only where actually exercised.
+The macOS host-address helper was compile-checked for Apple Silicon, with no
+native runtime acceptance. Unexpected parent-death containment equivalent to
+Linux PDEATHSIG or Windows kill-on-close jobs is not established on macOS.
+Native macOS downloads remain unavailable; a future native release requires
+validation and a tested parent-crash supervision design.
 
 Primary references
 
@@ -299,3 +311,5 @@ https://pkg.go.dev/vuln/GO-2026-5932
 Govulncheck binary analysis and limitations:
 https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck
 https://raw.githubusercontent.com/golang/vuln/v1.8.0/internal/vulncheck/binary.go
+RustSec glib VariantIter advisory:
+https://rustsec.org/advisories/RUSTSEC-2024-0429.html
