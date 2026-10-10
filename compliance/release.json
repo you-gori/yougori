@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "5022ad228dc47ff12a798ad2c033457438e109c4",
+  "sourceCommit": "d09602e6709b9a695168a7b6f4f28fd677331dd3",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
@@ -1983,9 +1983,9 @@
     },
     {
       "path": "appliance/boot/smoke_legacy_overlay.py",
-      "sha256": "d6348564fb90dbf7abf4d9818553ce0630107dfaf3930fd3d7cdc552fa01d3bf",
+      "sha256": "27331e71a9dbe49f79981b3786303234e77717f61b92ffc389e4e6d0b1b3fe67",
       "normalization": "lf",
-      "bytes": 19439
+      "bytes": 20262
     },
     {
       "path": "appliance/boot/test_upgrade_root.py",
@@ -2055,9 +2055,9 @@
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "09be9401c07a538ea2e0a538b2546220ab3339b1c5c3af6f09d18ec60e847738",
+      "sha256": "45827ca218902fda771ae799ad03f29480926f53b62b1e82f76f5b368d07cdc0",
       "normalization": "lf",
-      "bytes": 8060
+      "bytes": 8359
     },
     {
       "path": "compliance/evidence/all-guest-go-modules.json",
@@ -2121,7 +2121,7 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "6043f903ea41a149c089e998f38a0a5a1995eccb0090e6322a01abba0a8ff19f",
+      "sha256": "762f25ff841c71e4b9430ea851202c5f8ffcdfe04041e37513287ef70785b861",
       "normalization": "lf",
       "bytes": 243393
     },
@@ -7568,13 +7568,13 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "0fe7ef495743aad1e719bc3a55f37f616085aa158a316e47994619dbdd44b6c3",
-      "bytes": 15495384
+      "sha256": "aa95ea386903a7662bf9c0e9ebbef2a1cdde58979b0991a5728cbac074a71860",
+      "bytes": 15495887
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "8a23b1275731e42757ca4dbc6801bdda6c55ec354e91ea3d0e7b7eca3053ca28",
-      "bytes": 11584503
+      "sha256": "22bd73bac5ec75ea4d82af41f253574f0efb12c9a53ea3a1877dbe7c879d968e",
+      "bytes": 11584828
     }
   ],
   "components": [
@@ -7822,17 +7822,17 @@
       "id": "local-build-material",
       "status": "collected",
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "8a23b1275731e42757ca4dbc6801bdda6c55ec354e91ea3d0e7b7eca3053ca28",
-      "bytes": 11584503
+      "sha256": "22bd73bac5ec75ea4d82af41f253574f0efb12c9a53ea3a1877dbe7c879d968e",
+      "bytes": 11584828
     },
     {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "0fe7ef495743aad1e719bc3a55f37f616085aa158a316e47994619dbdd44b6c3",
-      "bytes": 15495384,
+      "sha256": "aa95ea386903a7662bf9c0e9ebbef2a1cdde58979b0991a5728cbac074a71860",
+      "bytes": 15495887,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "6043f903ea41a149c089e998f38a0a5a1995eccb0090e6322a01abba0a8ff19f",
+      "manifestSha256": "762f25ff841c71e4b9430ea851202c5f8ffcdfe04041e37513287ef70785b861",
       "fileCount": 1289
     },
     {
@@ -13369,7 +13369,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "bd2efbf9dc087107db2756261eee0361e4c56513094ed94d6ea8cbd6e567205d",
+  "reviewFingerprint": "5efb25088279abdbde73df36b88b069b52590af627f9294c7cd9d8ebf832cb53",
   "review": {
     "status": "pending",
     "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",
@@ -13415,7 +13415,7 @@
       "date": "2026-10-10",
       "status": "implementation-and-guest-media-reviewed-final-release-validation-pending",
       "evidence": "docs/sandbox-security-review.txt; scripts/vendor-oci-build; scripts/vendor-nvidia-build; compliance/evidence; exact per-platform release reports",
-      "scope": "All 13 supplied PDF pages reviewed, supported layered controls implemented, native host network inventory tested on Windows/Linux, Mac helper compile checked only, preserved 512 MiB guest migrated without replacing its backing image. A fresh 256 MiB boot regression was corrected with a verified built-in 512 MiB floor bounded by saved maximum, coherent admission/current allocation and unchanged custom-media behavior; the real guest reached authenticated readiness in 8.387 seconds. All 15 actual Go executables audited; raw stripped OpenPGP notices retained with matching code and compiled-source proofs. This is an engineering scope record, not an absolute isolation or blanket legal certification.",
+      "scope": "All 13 supplied PDF pages reviewed, supported layered controls implemented, native host network inventory tested on Windows/Linux, Mac helper compile checked only, preserved 512 MiB guest migrated without replacing its backing image. A fresh 256 MiB boot regression was corrected with a verified built-in 512 MiB floor bounded by saved maximum, coherent admission/current allocation and unchanged custom-media behavior; the real guest reached authenticated readiness in 8.387 seconds. A software CPU 48-bit addressing profile corrected the verified older-TCG/LA57 kernel pathname incompatibility without changing guest media or updater guards; actual OCI and 512 MiB microVM workspaces plus control-authentication/host-isolation checks passed. Hardware CPU profiles remain unchanged. All 15 actual Go executables audited; raw stripped OpenPGP notices retained with matching code and compiled-source proofs. This is an engineering scope record, not an absolute isolation or blanket legal certification.",
       "requiredFinalEvidence": [
         "Fresh package/source hashes and full platform checks",
         "Exact packaged runtime verification",

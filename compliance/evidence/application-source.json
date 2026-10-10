@@ -583,8 +583,8 @@
     },
     {
       "path": "appliance/boot/smoke_legacy_overlay.py",
-      "sha256": "d6348564fb90dbf7abf4d9818553ce0630107dfaf3930fd3d7cdc552fa01d3bf",
-      "bytes": 19439,
+      "sha256": "27331e71a9dbe49f79981b3786303234e77717f61b92ffc389e4e6d0b1b3fe67",
+      "bytes": 20262,
       "mode": 420
     },
     {
@@ -1237,8 +1237,8 @@
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "09be9401c07a538ea2e0a538b2546220ab3339b1c5c3af6f09d18ec60e847738",
-      "bytes": 8060,
+      "sha256": "45827ca218902fda771ae799ad03f29480926f53b62b1e82f76f5b368d07cdc0",
+      "bytes": 8359,
       "mode": 420
     },
     {
@@ -1603,8 +1603,8 @@
     },
     {
       "path": "docs/sandbox-security-review.txt",
-      "sha256": "597d09987a0053ec611b97606920d63a87762aaba4a1d6562a5f9c2fdc4e1d13",
-      "bytes": 20742,
+      "sha256": "81d5813c31814f9496d4c88f6ad6a4709dccff537844a02bc19a10c9d0e04801",
+      "bytes": 22099,
       "mode": 420
     },
     {
@@ -4603,8 +4603,8 @@
     },
     {
       "path": "src-tauri/src/runtime/vm.rs",
-      "sha256": "836497cbdea5465fec18f04af351c74be7a2b6914917c7295c26df35b83b7269",
-      "bytes": 200208,
+      "sha256": "5bf80517056ef8536d16278f74c5d3a311f911f7ccd7f182144ade5e014dcd05",
+      "bytes": 200492,
       "mode": 420
     },
     {
