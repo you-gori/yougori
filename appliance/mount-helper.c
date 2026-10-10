@@ -162,10 +162,17 @@ int main(int argc, char **argv) {
     return 0;
   }
   int namespace_fd = openat(process, "ns/mnt", O_RDONLY | O_CLOEXEC);
+  if (namespace_fd < 0 && unmount_only && (errno == ENOENT || errno == ESRCH)) {
+    close(root);
+    close(process);
+    return 0;
+  }
   if (namespace_fd < 0) fail("open environment mount namespace");
   int target_fd = open_relative_directory(root, destination + 1, !unmount_only);
+  int target_errno = errno;
   close(root);
   close(process);
+  errno = target_errno;
   if (unmount_only) {
     // Do not require an umount binary in the container, and do not chroot into
     // an untrusted image. Resolve its mount before entering its namespace.
