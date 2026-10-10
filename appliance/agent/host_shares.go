@@ -57,14 +57,10 @@ type hostShareRequest struct {
 }
 
 func unmountHostShare(ctx context.Context, share *mountedHostShare) error {
-	if cudaMode() {
-		bounded, cancel := context.WithTimeout(ctx, 4*time.Second)
-		defer cancel()
-		if _, err := run(bounded, "opendock-mount-helper", strconv.Itoa(share.pid), "--unmount", share.destination); err != nil {
-			return err
-		}
-	} else {
-		_, _ = run(ctx, "nsenter", "-t", strconv.Itoa(share.pid), "-m", "-r", "--", "umount", "-l", share.destination)
+	bounded, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	if _, err := run(bounded, "opendock-mount-helper", strconv.Itoa(share.pid), "--unmount", share.destination); err != nil {
+		return err
 	}
 	return share.server.Unmount()
 }
@@ -302,7 +298,7 @@ func (s *server) attachHostShare(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Connection {
 		if err = ensureYougoriSharedAlias(pid); err != nil {
-			_, _ = run(r.Context(), "nsenter", "-t", strconv.Itoa(pid), "-m", "-r", "--", "umount", "-l", destination)
+			_, _ = run(r.Context(), "opendock-mount-helper", strconv.Itoa(pid), "--unmount", destination)
 			mount.Unmount()
 			writeError(w, 500, "cannot make the Yougori shared folder visible: "+err.Error())
 			return

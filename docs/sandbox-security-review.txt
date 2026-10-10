@@ -163,6 +163,16 @@ state their exact scope and retain any platform-only or unreachable findings.
 No report of zero findings extends to the host driver, all system packages or
 unexamined third-party commands.
 
+11. Shared-folder mount targets are resolved one directory descriptor at a time
+    without following workload-controlled links. The trusted native helper pins
+    the source and target before entering the mount namespace, creates the
+    product alias directly and detaches shares without executing tools from the
+    workload image. Hosts and resolver configuration lookups stay inside a pinned
+    workload root, including absolute symlinks, and reject procfs magic links,
+    nonregular files and files larger than 1 MiB. Hosts edits keep one inode open
+    for the entire read/write operation and serialize concurrent edits per PID.
+    Preserved-disk boot migration includes this helper along with the agent.
+
 Retained protections and compatibility decisions
 
 The application already verifies bundled runtime checksums and preserves exact

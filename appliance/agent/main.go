@@ -1616,8 +1616,8 @@ func removeConnectionResources(ctx context.Context, id string, sourcePID, target
 		_, _ = namespaceIptables(ctx, values.pid, "-D", "OUTPUT", "-d", values.destination, "-j", values.chain)
 		_, _ = namespaceIptables(ctx, values.pid, "-F", values.chain)
 		_, _ = namespaceIptables(ctx, values.pid, "-X", values.chain)
-		for _, target := range []string{"/yougori/shared/" + id, "/opendock/shared/" + id, "/opendock/secrets/" + id} {
-			_, _ = run(ctx, "nsenter", "-t", strconv.Itoa(values.pid), "-m", "-r", "--", "umount", target)
+		for _, target := range []string{"/opendock/shared/" + id, "/opendock/secrets/" + id} {
+			_, _ = run(ctx, "opendock-mount-helper", strconv.Itoa(values.pid), "--unmount", target)
 		}
 		_ = removeHostEntry(values.pid, id)
 	}
@@ -1629,45 +1629,11 @@ func firewallChain(id, suffix string) string {
 }
 
 func setHostEntry(pid int, id, address, name string) error {
-	if err := removeHostEntry(pid, id); err != nil {
-		return err
-	}
-	path := "/proc/" + strconv.Itoa(pid) + "/root/etc/hosts"
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("open environment hosts file: %w", err)
-	}
-	defer file.Close()
-	if _, err := fmt.Fprintf(file, "%s %s # opendock:%s\n", address, name, id); err != nil {
-		return fmt.Errorf("write environment hosts entry: %w", err)
-	}
-	return nil
+	return changeHostEntry(pid, id, fmt.Sprintf("%s %s # opendock:%s", address, name, id))
 }
 
 func removeHostEntry(pid int, id string) error {
-	path := "/proc/" + strconv.Itoa(pid) + "/root/etc/hosts"
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	marker := "# opendock:" + id
-	lines := strings.Split(string(contents), "\n")
-	filtered := lines[:0]
-	for _, line := range lines {
-		if !strings.HasSuffix(strings.TrimSpace(line), marker) {
-			filtered = append(filtered, line)
-		}
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.WriteString(strings.Join(filtered, "\n"))
-	return err
+	return changeHostEntry(pid, id, "")
 }
 
 func mountSharedPath(ctx context.Context, id string, sourcePID, targetPID int, bidirectional bool) error {
@@ -1693,30 +1659,10 @@ func mountSharedPath(ctx context.Context, id string, sourcePID, targetPID int, b
 // Keep the appliance's historical mount target for existing disks while
 // exposing the product path immediately in each connected guest.
 func ensureYougoriSharedAlias(pid int) error {
-	root := "/proc/" + strconv.Itoa(pid) + "/root/yougori"
-	if info, err := os.Lstat(root); err == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("/yougori is already used by another file")
-		}
-	} else if !os.IsNotExist(err) {
-		return err
+	output, err := run(context.Background(), "opendock-mount-helper", strconv.Itoa(pid), "--shared-alias")
+	if err != nil {
+		return fmt.Errorf("create environment shared alias: %w (%s)", err, strings.TrimSpace(output.Stderr))
 	}
-	if _, err := run(context.Background(), "nsenter", "-t", strconv.Itoa(pid), "-m", "-r", "--", "mkdir", "-p", "/yougori"); err != nil {
-		return err
-	}
-	alias := root + "/shared"
-	if info, err := os.Lstat(alias); err == nil {
-		if info.Mode()&os.ModeSymlink == 0 {
-			return fmt.Errorf("/yougori/shared is already used by another file")
-		}
-		if destination, err := os.Readlink(alias); err == nil && destination == "/opendock/shared" {
-			return nil
-		}
-		return fmt.Errorf("/yougori/shared points somewhere else")
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	_, err := run(context.Background(), "nsenter", "-t", strconv.Itoa(pid), "-m", "-r", "--", "ln", "-s", "/opendock/shared", "/yougori/shared")
 	return err
 }
 
@@ -1844,7 +1790,7 @@ fi`
 }
 
 func containerNameservers(pid int) []string {
-	contents, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/root/etc/resolv.conf")
+	contents, err := readContainerConfig(pid, "etc/resolv.conf")
 	if err != nil {
 		return nil
 	}

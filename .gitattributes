@@ -27,6 +27,9 @@
 # Generated inventories preserve their existing Windows line endings.
 /compliance/**/*.json whitespace=cr-at-eol
 /compliance/*.json whitespace=cr-at-eol
+# Frozen vendor recipes, patches and module files are hashed build inputs.
+/scripts/vendor-oci-build/** text eol=lf
+/scripts/vendor-nvidia-build/** text eol=lf
 # Keep upstream license texts intact, including their original whitespace.
 /src-tauri/resources/*LICENSES.txt -whitespace
 
