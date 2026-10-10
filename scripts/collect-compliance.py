@@ -639,7 +639,9 @@ def collect_go():
     write_json(EVIDENCE / "guest-main-modules.json", main_modules)
     mains = []
     for item in {entry["module"]: entry for entry in main_modules}.values():
-        if item["module"].startswith("opendock.local/"):
+        if item["module"] in ("opendock.local/appliance-agent", "yougori.local/cloud-share-mount"):
+            # These exact local modules are covered by the complete application
+            # archive and build-material archive, rather than a GitHub upstream.
             continue
         record = {"id": "go-main/" + item["module"], **item}
         try:
@@ -757,7 +759,7 @@ def collect_build_material():
         for relative in sorted(set(candidates)):
             if not (relative in frontend_files or relative in ("LICENSE", "COPYING", "NOTICE", "COMMERCIAL_LICENSE.txt", "docs/licensing.txt", "docs/rebuilding-third-party.txt",
                                                               "package.json", "package-lock.json") or
-                    relative.startswith(("runtime/security/", "runtime/gpu/", "appliance/", "runtime/cuda/", "scripts/",
+                    relative.startswith(("runtime/security/", "runtime/gpu/", "appliance/", "cloud-share-mount/", "runtime/cuda/", "scripts/",
                                          "compliance/notices/", "src-tauri/boot-helper/"))):
                 continue
             path = ROOT / relative
