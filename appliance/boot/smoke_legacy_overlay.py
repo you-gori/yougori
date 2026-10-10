@@ -33,6 +33,43 @@ VENDOR_FILES = (
     "usr/local/libexec/cni/host-local", "usr/local/libexec/cni/loopback",
     "usr/local/libexec/cni/portmap", "usr/local/libexec/cni/tuning",
 )
+BOOT_EXECUTABLES = ("usr/local/sbin/opendock-agent", "usr/local/sbin/opendock-mount-helper")
+
+
+def trusted_boot_executables(initramfs):
+    """Hash the shipped agent/helper without extracting or loading either ELF."""
+    entries = {}
+    with gzip.open(initramfs, "rb") as source:
+        while True:
+            header = source.read(110)
+            if len(header) != 110 or header[:6] not in (b"070701", b"070702"):
+                raise RuntimeError("Unsupported candidate initramfs cpio format")
+            size, namesize = int(header[54:62], 16), int(header[94:102], 16)
+            if not 0 < namesize <= 4096:
+                raise RuntimeError("Invalid candidate initramfs filename")
+            name = source.read(namesize).rstrip(b"\x00").decode().removeprefix("./")
+            source.read(-(110 + namesize) % 4)
+            if name == "TRAILER!!!":
+                raise RuntimeError("Candidate initramfs omits a trusted agent/helper")
+            selected = name in BOOT_EXECUTABLES
+            if selected and (name in entries or not stat.S_ISREG(int(header[14:22], 16))
+                             or not 0 < size <= 96 * 1024 * 1024
+                             or int(header[14:22], 16) & 0o777 != 0o755):
+                raise RuntimeError("Invalid trusted agent/helper metadata")
+            checksum = hashlib.sha256() if selected else None
+            remaining = size
+            while remaining:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise RuntimeError("Truncated candidate initramfs")
+                if selected:
+                    checksum.update(chunk)
+                remaining -= len(chunk)
+            source.read(-size % 4)
+            if selected:
+                entries[name] = {"sha256": checksum.hexdigest(), "bytes": size}
+                if set(entries) == set(BOOT_EXECUTABLES):
+                    return entries
 
 
 def trusted_vendor_manifest(initramfs):
@@ -241,6 +278,11 @@ def candidate_stage(args, server, report):
             assert vm.execute(f"stat -c '%s %a' /{name}").strip() == f"{entry['bytes']} 755", name
         report["trustedVendorManifest"] = trusted
         report["candidateVendorSHA256"] = actual
+        boot = trusted_boot_executables(args.candidate / "initramfs-virt")
+        for name, entry in boot.items():
+            assert vm.execute(f"sha256sum /{name}").split()[0] == entry["sha256"], name
+            assert vm.execute(f"stat -c '%s %a' /{name}").strip() == f"{entry['bytes']} 755", name
+        report["trustedBootExecutables"] = boot
         assert vm.execute("cat /var/lib/opendock/migration-fixture-data/marker") == MARKER
         modules = vm.execute("test -d /lib/modules/$(uname -r); modprobe fuse; modprobe br_netfilter; modprobe nf_conntrack; grep -E '^(fuse|br_netfilter|nf_conntrack) ' /proc/modules")
         report["moduleLoadEvidence"] = modules
@@ -249,6 +291,10 @@ def candidate_stage(args, server, report):
         vm.request("/v1/microvm/workload", {"image": args.image, "options": MICRO_OPTIONS})
         app_command = "nerdctl --namespace yougori-workload exec app /bin/sh -c "
         assert vm.execute(app_command + "'cat /legacy-marker'") == MARKER
+        vm.execute('app_pid=$(nerdctl --namespace yougori-workload inspect --format "{{.State.Pid}}" app); '
+                   '/usr/local/sbin/opendock-mount-helper "$app_pid" --shared-alias')
+        assert vm.execute(app_command + "'readlink /yougori/shared'").strip() == "/opendock/shared"
+        report["trustedSharedAliasHelper"] = True
         status = vm.execute(app_command + "'grep -E \"^(NoNewPrivs|Seccomp|CapEff):\" /proc/self/status; cat /sys/fs/cgroup/pids.max'")
         assert "NoNewPrivs:\t1" in status and "Seccomp:\t2" in status and "4096" in status, status
         cap_effective = int(next(line.split()[1] for line in status.splitlines() if line.startswith("CapEff:")), 16)

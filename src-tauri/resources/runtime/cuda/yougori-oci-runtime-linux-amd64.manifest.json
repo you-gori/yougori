@@ -191,7 +191,7 @@
     "flags": "-O2 -ffile-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci -fdebug-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci",
     "gcc": "gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
     "initialPreparationInputsSha256": "4fe62545d76336b85f118dc2b3f6217b9e6611149b8d590ddff0872b5fac8e4d",
-    "inputsSha256": "2a0a4fa08d0755b120daa49664acd1a9149201748d723ee5c00833c96dd4de21",
+    "inputsSha256": "1679bafc8de20d7b8a5894adc6726b747677e5b86e93f559533c1a55988538a9",
     "libcStrategy": {
       "containerd": "static Ubuntu glibc; netgo/osusergo/static_build; original btrfs 6.14",
       "runc": "static PIE patched Alpine musl 1.2.6-r2 and libseccomp 2.6.1; seccomp retained"
@@ -357,10 +357,6 @@
       "sha256": "5fbc92f00d4edb8c1d128f6551136414e6c6a24c9d90638951343e949ef7f813"
     }
   },
-  "provenanceRefresh": {
-    "reason": "Bind current frozen Go input lock after strictly verifying unchanged reused native C sources, patches, compiler and link inputs",
-    "sourceAndLinkInputsUnchanged": true
-  },
   "reproducibility": {
     "builds": 2,
     "identicalExecutables": 10
@@ -379,7 +375,7 @@
       "packagesSha256": "a194f5f534b9583c36b420b6138ceead3e5ef209ce8120922ef8fdc05fc9fcee",
       "path": "bin/containerd",
       "rawBinaryFindings": 15,
-      "reportSha256": "c64a0e4ed04506b658d3fae55d0b6c72fcf4fad8d7a73b8aff0b496ffc5f4bbe",
+      "reportSha256": "d57aae2bdcd8a0956f5437973284b480b149508e2f40edb5173eeda4e76cc758",
       "sourceModuleOnlyAssessments": [
         {
           "advisory": "GO-2026-5932",
@@ -387,7 +383,7 @@
           "level": "module"
         }
       ],
-      "sourceReportSha256": "1dc1266abbf3715f3f8b61240546a739aa1b42c38e2b5b47de80878b36f30ca8",
+      "sourceReportSha256": "ed1aecccd1b90227e2b2d6410d8c7b03de3d83ac85bf76e895762f441630c10a",
       "status": "passed",
       "strippedFallbackReference": {
         "bytes": 58065200,
@@ -430,7 +426,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "b5f3c9b0713f2223905fd81afcc1241164c7a2a7d2f918d645fb0f09fd7dddfb",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "1770957b82ca397119b62aeee9cbd2b6cdab42956fbe0e4322d90fc023c2b4cc",
+      "sourceReportSha256": "e68eab2e7d019b47159f92f1d377fa16bf4009813a4069e96e8d3345de2cce61",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
@@ -446,7 +442,7 @@
       "packagesSha256": "f9da10b015f615ef6d0d170be67cbe2a046f28d4bf007d0d19cbf7a40a2a9938",
       "path": "bin/nerdctl",
       "rawBinaryFindings": 15,
-      "reportSha256": "afe68b386f7b012c95fb9a9f5a56bd13b3e0836fc7ce3e73e434aafe049363d7",
+      "reportSha256": "1f7587ad88a1d877eca64976cf82f2251245cc5ffc68039b69ac6e30100feec3",
       "sourceModuleOnlyAssessments": [
         {
           "advisory": "GO-2026-5932",
@@ -454,7 +450,7 @@
           "level": "module"
         }
       ],
-      "sourceReportSha256": "61c36dccd3702c585a8876890239570ad4c0af5ead44a23b1e558c20558f2e04",
+      "sourceReportSha256": "3b28be0fb62bac7f02ea17b5267ccd619ad2d0c62ef3e9db30bb40310b299082",
       "status": "passed",
       "strippedFallbackReference": {
         "bytes": 47169442,
@@ -497,7 +493,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "6daf2d6ede675aad41f0e39ef4edda80790cf32b033b0990ebb13e41207c8f3c",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "60cd10f986235743f22f6141555620806ea3aa8c6398783d346d1d44c5114ea4",
+      "sourceReportSha256": "d6419bc88de5541c10c8f17e82a5ff9ff948b9000535c060a18f7c21ef4ff85b",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
@@ -510,7 +506,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "7de005892f01181eb50150e6eb12c6102b5c31d5e8a77506dcc321eb2c5c3e14",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "c445e65d2b843f039679b45a6f9d28e8718b5535cf865e91ab1273fc3152db5a",
+      "sourceReportSha256": "605e53b7ba0f42506df7dd48c3397c3ff7ef91853e4b0639660ab02282953c8a",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
@@ -523,7 +519,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "a77b3e174351d3d97a447f3ecc7c0657c2d5374adba42146864c68eabe84c40d",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "2460b2de39543f844f23d96f8cb03447aa8ece47d98bc7596e3a0725477aaf6a",
+      "sourceReportSha256": "bf80773e2d2746e0c63282777e4a580b70a48a1f04dbf609959ad956e4e27b66",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
@@ -536,7 +532,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "32fd13ec75fe1ae405c903aeaca4b282b31defdc5c50bafe498481a35c46e138",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "f88b2cb314ce1f963305f085fbdca9688274ec07c97f08754c8d523c88d89249",
+      "sourceReportSha256": "ba9463b1525f2041874c4888ee0a58d51ee90658ed4b04ade0f657f7a0fe5af3",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
@@ -562,7 +558,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "bd680ef00ce5478145fa27099576cf96b4e11eba5aed546e995808378c02168f",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "591877963e02b3c5965b4173fb630d1a8c11fed1baf92c79900df06b8934cf92",
+      "sourceReportSha256": "fcb5995ae95a6dbec8505fd0a496fe3878877f63cd1dd167ac63e03e4c91ec78",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
@@ -575,7 +571,7 @@
       "rawBinaryFindings": 0,
       "reportSha256": "c4c6c38c4aa7b4764c424d8a3af109a6169db8f15e1896a942c3093263b1e516",
       "sourceModuleOnlyAssessments": [],
-      "sourceReportSha256": "16e79b4f3715cc10dee305cb387f3da8edd74a7e460286827259e2cc5a78091e",
+      "sourceReportSha256": "812de2d21b195c1fd8616550b3848b2214d07e076577cc84d30e5f4ad8df27df",
       "status": "passed",
       "strippedFallbackReference": null,
       "symbolFindings": 0
