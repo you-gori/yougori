@@ -84,6 +84,13 @@ Implemented controls
    sessions are permitted. Guest-chosen source ports do not create reply grants.
    Bounded flow tables, expiry, strict framing and fail-closed filter failures
    limit abuse. Policy changes wait for in-flight forwarding to finish.
+   Error-aware native IPv4 inventories include software, VPN and loopback
+   interfaces. New outbound flows query current host addresses; Windows/Linux
+   address notifications invalidate active leases, and other Unix hosts poll at
+   250 ms. Active flows have a one-second lease. Inventory failure blocks
+   Internet traffic, while explicit virtual-gateway grants remain available.
+   A 4096-flow bound and 256-lookups-per-second budget limit enumeration abuse.
+   Source-zero traffic is restricted to DHCP bootstrap broadcasts.
 
 2. Host folder grants follow the service lifetime, including stop, drop and
    task completion. Private fabric listeners retain only their own grant.
@@ -183,6 +190,13 @@ tests preserve encrypted-image support. Other maintained x/crypto packages
 remain dependencies; their module inventory can still mention the unrelated
 OpenPGP advisory. Final evidence must distinguish these module-only notices from
 actual compiled vulnerable packages and preserve the raw scan findings.
+The final independent media audit checked all 15 actually shipped Go
+executables. Thirteen raw binary scans had no findings. The two stripped OCI
+executables retained module/wildcard OpenPGP notices; unstripped references had
+identical executable code and pclntab sections, exposed actual symbols, and
+contained no affected OpenPGP package. Their frozen compiled source graphs and
+fresh source/reference scans corroborated this result. Raw notices remain in
+the evidence, and unrelated advisories or mismatched references fail the gate.
 
 Retained protections and compatibility decisions
 
@@ -230,6 +244,12 @@ modules loaded, and the saved app gained no-new-privileges, seccomp and PID/cap
 limits. The boot updater handles Alpine's initially read-only root and fails on
 cleanup/restoration errors. This is tested version migration, not a guarantee
 that every historical/custom guest can be upgraded without separate validation.
+The final migration run verified the hashes and sizes of all ten OCI tools,
+the current agent and the native mount helper against the verified initramfs.
+Every OCI tool differed from its legacy counterpart, and the original backing
+image remained unchanged. The actual helper created the shared-folder alias
+inside the migrated workload namespace; existing files, mounts and policy
+checks passed on that same preserved overlay.
 
 Release packages are previews when a trusted signing key is unavailable. An
 unsigned preview must not be promoted by removing the production signing gate.
