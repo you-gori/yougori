@@ -13,14 +13,23 @@ yougori_temp=
 yougori_module_temp=
 yougori_restore_read_only=0
 cleanup() {
-  [ -z "$yougori_temp" ] || rm -f "$yougori_temp"
-  [ -z "$yougori_module_temp" ] || rm -rf "$yougori_module_temp"
-  if [ "$yougori_restore_read_only" = 1 ]; then
-    sync
-    mount -t ext4 -o remount,ro none "$yougori_root" || true
+  yougori_status=$1
+  if [ -n "$yougori_temp" ]; then
+    rm -f "$yougori_temp" || { [ "$yougori_status" -ne 0 ] || yougori_status=1; }
   fi
+  if [ -n "$yougori_module_temp" ]; then
+    rm -rf "$yougori_module_temp" || { [ "$yougori_status" -ne 0 ] || yougori_status=1; }
+  fi
+  if [ "$yougori_restore_read_only" = 1 ]; then
+    sync || { [ "$yougori_status" -ne 0 ] || yougori_status=1; }
+    mount -t ext4 -o remount,ro none "$yougori_root" || { [ "$yougori_status" -ne 0 ] || yougori_status=1; }
+  fi
+  exit "$yougori_status"
 }
-trap cleanup EXIT HUP INT TERM
+trap 'cleanup $?' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Alpine mounts the persistent root read-only until OpenRC checks/remounts it.
 # /proc has already moved under sysroot at this hook. Use the trusted mount

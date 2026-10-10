@@ -621,7 +621,8 @@ def collect_go():
                                  "revision": revision[1].decode() if revision else None})
         for module, version, checksum in re.findall(rb"dep\t([^\t\n]+)\t([^\t\n]+)\t(h1:[a-zA-Z0-9+/=]+)", contents):
             modules.append({"binary": binary, "module": module.decode(), "version": version.decode(), "goSum": checksum.decode()})
-    for binary in (RUNTIME / "cuda").glob("opendock-*"):
+    for binary in [*(RUNTIME / "cuda").glob("opendock-*"),
+                   *(RUNTIME / "cloud").glob("yougori-share-linux-*")]:
         if binary.is_file():
             inspect(binary.relative_to(RUNTIME).as_posix(), binary.read_bytes())
     distribution = ROOT / "build/appliance-cache/nerdctl-full-2.3.5-linux-amd64.tar.gz"

@@ -152,6 +152,23 @@ class BootUpgradeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             self.assertEqual((root / "usr/lib/modules" / os.uname().release / "kernel/fs/fuse/fuse.ko").read_bytes(), b"trusted-module")
 
+    def test_cleanup_preserves_failure_and_rejects_failed_readonly_restore(self):
+        # Exercise the actual shipped cleanup function with a failed mount;
+        # simulated roots cannot perform a real ext4 remount in unit tests.
+        source = UPDATER.read_text()
+        function = "cleanup() {" + source.split("cleanup() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        with tempfile.TemporaryDirectory() as temp:
+            mount = Path(temp) / "mount"
+            mount.write_text("#!/bin/sh\nexit 1\n")
+            mount.chmod(0o755)
+            env = {**os.environ, "PATH": temp + ":" + os.environ["PATH"]}
+            variables = "yougori_temp=\nyougori_module_temp=\nyougori_restore_read_only=1\nyougori_root=/fixture-root\n"
+            for status, expected in ((0, 1), (7, 7)):
+                result = subprocess.run(["/bin/sh", "-c", function + variables + f"cleanup {status}\n"], env=env)
+                self.assertEqual(result.returncode, expected)
+            result = subprocess.run(["/bin/sh", "-c", function + variables + "yougori_restore_read_only=0\ncleanup 7\n"], env=env)
+            self.assertEqual(result.returncode, 7)
+
 
 if __name__ == "__main__":
     unittest.main()
