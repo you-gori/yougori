@@ -33,6 +33,7 @@ mod changes;
 mod releases;
 mod model_runner;
 mod market;
+mod swarm;
 mod model_registry;
 mod file_export;
 mod ignore_rules;
@@ -557,6 +558,7 @@ pub fn run() {
             app.manage(environment_download::Downloads::new(&storage_directory));
             app.manage(host_terminal::HostTerminalManager::default());
             app.manage(market::Market::default());
+            app.manage(swarm::Swarm::default());
             // Native system installers cannot provision every user's home.
             // Set up the shared skill for the user who actually runs this app
             // or engine. Development checkouts do not change installed skills.
@@ -626,6 +628,7 @@ pub fn run() {
             model_runner::optimizer::model_optimizer,
             model_runner::model_usage,
             market::market_status,
+            swarm::swarm_dispatch,
             model_registry::model_registry_request,
             model_registry::model_registry_connect,
             model_registry::model_registry_pause,

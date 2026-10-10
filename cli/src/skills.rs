@@ -96,6 +96,7 @@ pub fn reference_topic_mapping() -> BTreeMap<&'static str, &'static str> {
         ("files", "files"), ("gpu", "models"), ("models", "models"),
         ("deployment", "deployment"), ("connections", "connections"), ("cloud", "connections"),
         ("terminal", "access"), ("vault", "access"),
+        ("bounty", "containers"),
         ("containers", "containers"), ("access", "access"),
     ])
 }

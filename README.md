@@ -11,7 +11,7 @@ and put your apps online from your local project. Use the CLI or App, with acces
 
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-1f2937?style=for-the-badge)](LICENSE)
 [![Platforms](https://img.shields.io/badge/Windows%20·%20Ubuntu%20·%20macOS-1f2937?style=for-the-badge)](#run-from-source)
-[![Version](https://img.shields.io/badge/version-1.0.12-1f2937?style=for-the-badge)](package.json)
+[![Version](https://img.shields.io/badge/version-1.0.15-1f2937?style=for-the-badge)](package.json)
 
 **[Website](https://yougori.com/)** &nbsp;·&nbsp; **[Discord](https://discord.gg/Eqhf4Hq3AG)** &nbsp;·&nbsp; **[X](https://x.com/withYougori)** &nbsp;·&nbsp; **[Run from source](#run-from-source)**
 
@@ -24,7 +24,7 @@ and put your apps online from your local project. Use the CLI or App, with acces
 
 <br>
 
-## Four main features
+## Five main features
 
 <table>
 <tr>
@@ -56,6 +56,17 @@ Run AI coding tools in isolated environments, keep their files and share access 
 ### Instant App Publishing — Put your project online
 
 Set up your project once, then run `npm run yougori` to start its development command inside a Yougori environment. Sync your project files and choose access for yourself, your local network, a public link or your own domain. Keep the running app's logs and links in your terminal.
+
+</td>
+</tr>
+<tr>
+<td colspan="2" valign="top">
+
+### Swarm Mining — Authorized AI bounty research
+
+Run `yougori start bounty` to prepare a supported Hugging Face GGUF model and a private local OpenCode worker. Publishers submit their source, written authorization, offline scope and USDC reward promise on [the bounty page](https://yougori.com/swarm/bounties). The service owner reviews each exact source and terms version before it is listed. Participants choose a bounty and explicitly accept its terms before testing. Agents coordinate recorded attempts; you can guide your own agent privately, and the publisher can read the disclosed shared coordination for their bounty. The publisher reviews qualifying reports and pays the winner directly outside Yougori. Rewards are promises, not verified or guaranteed funding.
+
+[Explore Swarm Mining](https://yougori.com/swarm) · [Submit a bounty](https://yougori.com/swarm/company/new) · [Workflow and commands](docs/swarm-mining.md) · [Responsible use rules](docs/swarm-responsible-use.txt)
 
 </td>
 </tr>
@@ -244,12 +255,12 @@ npm run desktop:dev
 
 ## License
 
-Yougori's original code is open source under **[AGPL-3.0-only](LICENSE)**, with a **[separate commercial license](COMMERCIAL_LICENSE.txt)** available from Yougori LLC. Commercial use is allowed under the AGPL when its conditions are met. Third-party components keep their own licenses. See [NOTICE](NOTICE) and the [licensing guide](docs/licensing.txt).
+Yougori's original code is open source under **[AGPL-3.0-only](LICENSE)**. A **[separate commercial agreement](COMMERCIAL_LICENSE.txt)** may be requested from the relevant copyright holders. Commercial use is allowed under the AGPL when its conditions are met. Third-party components keep their own licenses. See [NOTICE](NOTICE) and the [licensing guide](docs/licensing.txt).
 
 <br>
 
 <div align="center">
 
-<sub>Made by Yougori LLC</sub>
+<sub>Made by Yougori</sub>
 
 </div>

@@ -2,10 +2,11 @@
 use crate::{catalog, skills, wire};
 use serde_json::{json, Value};
 
-pub const TOPICS: &[&str] = &["lifecycle", "files", "gpu", "deployment", "models", "connections", "cloud", "vault", "terminal", "settings", "jobs"];
+pub const TOPICS: &[&str] = &["lifecycle", "files", "gpu", "deployment", "models", "connections", "cloud", "vault", "terminal", "settings", "jobs", "bounty"];
 
 pub fn topic(method: &str) -> &'static str {
-    if method.starts_with("jobs_") { "jobs" }
+    if method == "swarm_dispatch" { "bounty" }
+    else if method.starts_with("jobs_") { "jobs" }
     else if method.contains("model") || method.starts_with("market_") || method == "confidential_network_chat" { "models" }
     else if method.contains("cuda") || method.contains("gpu") { "gpu" }
     else if method.contains("settings") || method.contains("startup_report") { "settings" }

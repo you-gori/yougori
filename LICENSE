@@ -1,8 +1,8 @@
 Yougori - Create and manage containers, microVMs and virtual machines from one desktop workspace.
 Copyright (C) 2026 Yougori
 
-Original Yougori code is offered by Yougori LLC under the GNU Affero General
-Public License, version 3 only (SPDX-License-Identifier: AGPL-3.0-only),
+Original Yougori code is offered by its copyright holders under the GNU Affero
+General Public License, version 3 only (SPDX-License-Identifier: AGPL-3.0-only),
 except for material carrying a separate license notice.
 
 This program is free software: you can redistribute it and/or modify it under
@@ -22,7 +22,8 @@ Source repository: https://github.com/you-gori/yougori
 Matching component sources: see docs/licensing.txt and compliance/release.json.
 
 A separate paid commercial license is available by written agreement with
-Yougori LLC for material it owns or has authority to license commercially.
+the relevant copyright holders for material they own or have authority to
+license commercially.
 See COMMERCIAL_LICENSE.txt. No commercial agreement is granted by this file.
 The AGPL option remains available without purchasing a commercial license.
 

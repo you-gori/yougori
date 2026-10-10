@@ -49,6 +49,22 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         let Some(model)=launcher::prompt_model(&args)? else {return Ok(0);};
         args[2]=model;
     }
+    // Swarm Mining owns exactly `start bounty`; explicit environment selectors
+    // preserve access to an environment whose name happens to be bounty.
+    if args.len() == 3 && args[0] == "start" && args[1] == "--environment" {
+        let result = yougori_cli::public::handle(&["start".into(), args[2].clone()]).await?
+            .ok_or("Could not start the selected environment")?;
+        println!("{}", wire_json(result));
+        return Ok(0);
+    }
+    if args.first().is_some_and(|a| a == "bounty") || (args.len() >= 2 && args[0] == "start" && args[1] == "bounty") {
+        if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+            println!("{}", yougori_cli::bounty::HELP);
+        } else if let Some(result) = yougori_cli::bounty::run(&args).await? {
+            println!("{}", wire_json(result));
+        }
+        return Ok(0);
+    }
     if yougori_cli::container_tools::TOOLS.contains(&args[0].as_str()) {
         if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
             println!("{}", yougori_cli::container_tools::HELP);

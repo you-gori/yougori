@@ -34,7 +34,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Original Yougori modifications in this version are offered under AGPL-3.0-only,
-with a separate commercial option where Yougori LLC has the necessary rights.
+with a separate commercial option where the identified licensor has the necessary rights.
 Neither option replaces the MIT terms
 for the upstream portions of these files. See the root LICENSE and
 COMMERCIAL_LICENSE.txt.

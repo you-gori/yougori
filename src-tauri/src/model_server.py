@@ -55,6 +55,9 @@ LLAMA_ARCHIVES = (
     ("llama-b11425-bin-ubuntu-cuda-12.8-x64.tar.gz", "ff7f7134ee3677bddf9ead356a1bc8b9cbc479d2b1e26b9e0d6753a5401e632b", 171642941),
     ("cudart-llama-b11425-bin-ubuntu-cuda-12.8-x64.tar.gz", "efe82ad6fea3820fef207e7cf73748760de3dcf604c1aaa9aa01d4c1ec2f79cb", 594377568),
 )
+LLAMA_CPU_ARCHIVES = (
+    ("llama-b11425-bin-ubuntu-x64.tar.gz", "6a47856d08ecc4030b2fa8b8bf761c96d142d689567f69a0f75e42de430dc34c", 17682320),
+)
 LLAMA = {"port": 8001, "key": secrets.token_hex(24), "context": 0}
 VLLM_VERSION = "0.29.0"
 KOLIBRI_WHEEL = ("aleph_alpha_inference-1.0.0-py3-none-any.whl",
@@ -429,7 +432,7 @@ def record_usage(source, outcome, prompt_tokens=0, completion_tokens=0, seconds=
 
 def validate_chat(body):
     # "truncate" is a Yougori extension: drop the oldest turns instead of failing when the context is full.
-    if not isinstance(body, dict) or set(body) - {"model", "messages", "max_tokens", "temperature", "stream", "truncate"}:
+    if not isinstance(body, dict) or set(body) - {"model", "messages", "max_tokens", "temperature", "stream", "truncate", "tools", "tool_choice", "parallel_tool_calls", "stream_options", "max_completion_tokens", "top_p", "stop"}:
         raise ValueError("Use model, messages, max_tokens, temperature, stream and truncate")
     if body.get("model", MODEL) != MODEL:
         raise ValueError("This endpoint serves " + MODEL)
@@ -439,23 +442,82 @@ def validate_chat(body):
     messages = body.get("messages")
     if not isinstance(messages, list) or not 1 <= len(messages) <= 128:
         raise ValueError("Provide 1–128 chat messages")
+    tools = body.get("tools")
+    if tools is not None:
+        if FORMAT != "gguf" or not isinstance(tools, list) or not 1 <= len(tools) <= 32:
+            raise ValueError("Agent tools require the GGUF runner and 1–32 function definitions")
+        names = set()
+        for tool in tools:
+            if not isinstance(tool, dict) or set(tool) != {"type", "function"} or tool["type"] != "function":
+                raise ValueError("Invalid function tool")
+            function = tool["function"]
+            if not isinstance(function, dict) or set(function) - {"name", "description", "parameters", "strict"}:
+                raise ValueError("Invalid function definition")
+            name = function.get("name")
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", name) or name in names:
+                raise ValueError("Invalid or duplicate function name")
+            names.add(name)
+            if not isinstance(function.get("parameters"), dict) or len(json.dumps(function)) > 16384:
+                raise ValueError("Invalid or oversized tool schema")
+        if len(json.dumps(tools)) > 49152:
+            raise ValueError("Tool definitions exceed 48 KiB")
+        choice = body.get("tool_choice", "auto")
+        valid_choice = choice in ("auto", "none", "required") if isinstance(choice, str) else (isinstance(choice, dict) and choice.get("type") == "function" and isinstance(choice.get("function"), dict) and choice["function"].get("name") in names)
+        if not valid_choice:
+            raise ValueError("Invalid tool choice")
+    elif "tool_choice" in body:
+        raise ValueError("tool_choice requires tools")
+    if "parallel_tool_calls" in body and type(body["parallel_tool_calls"]) is not bool:
+        raise ValueError("parallel_tool_calls must be a boolean")
+    if "stream_options" in body and body["stream_options"] != {"include_usage": True}:
+        raise ValueError("Only include_usage stream options are supported")
     total = 0
+    pending_calls = set()
     for message in messages:
-        if not isinstance(message, dict) or set(message) != {"role", "content"}:
+        if not isinstance(message, dict) or set(message) - {"role", "content", "tool_calls", "tool_call_id", "name"} or "role" not in message:
             raise ValueError("Messages require role and content")
-        if message["role"] not in ("system", "user", "assistant") or not isinstance(message["content"], str):
+        role, content = message["role"], message.get("content")
+        if isinstance(content, list):
+            if any(not isinstance(part, dict) or set(part) != {"type", "text"} or part["type"] != "text" or not isinstance(part["text"], str) for part in content):
+                raise ValueError("Only text message parts are supported")
+            content = message["content"] = "\n".join(part["text"] for part in content)
+        if role not in ("system", "user", "assistant", "tool") or not isinstance(content, str) and not (role == "assistant" and content is None and message.get("tool_calls")):
             raise ValueError("Invalid message role/content")
-        total += len(message["content"])
-    if total > 32768:
+        if role == "tool":
+            call_id = message.get("tool_call_id")
+            if FORMAT != "gguf" or call_id not in pending_calls:
+                raise ValueError("Tool result must match a preceding assistant call")
+            pending_calls.remove(call_id)
+        elif "tool_call_id" in message:
+            raise ValueError("Only tool results have tool_call_id")
+        if "tool_calls" in message:
+            calls = message["tool_calls"]
+            if FORMAT != "gguf" or role != "assistant" or not isinstance(calls, list) or not 1 <= len(calls) <= 32:
+                raise ValueError("Invalid assistant tool calls")
+            for call in calls:
+                if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", call["id"]) or call["id"] in pending_calls or call.get("type") != "function":
+                    raise ValueError("Invalid tool call identity")
+                function = call.get("function")
+                if not isinstance(function, dict) or not isinstance(function.get("arguments"), str) or not isinstance(function.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", function["name"]):
+                    raise ValueError("Invalid tool call function")
+                pending_calls.add(call["id"])
+        total += len(content or "") + len(json.dumps(message.get("tool_calls", [])))
+    if total > (131072 if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else 32768):
         raise ValueError("Conversation exceeds 32,768 characters; start a new chat")
     if not any(m["role"] == "user" for m in messages):
         raise ValueError("Include at least one user message")
-    tokens = body.get("max_tokens", 256)
+    if "max_tokens" in body and "max_completion_tokens" in body and body["max_tokens"] != body["max_completion_tokens"]:
+        raise ValueError("Conflicting token limits")
+    tokens = body.get("max_tokens", body.get("max_completion_tokens", 256))
     temperature = body.get("temperature", 0.7)
     if type(tokens) is not int or not 1 <= tokens <= 4096:
         raise ValueError("max_tokens must be 1–4096")
     if type(temperature) not in (int, float) or not 0 <= temperature <= 2:
         raise ValueError("temperature must be 0–2")
+    if "top_p" in body and (type(body["top_p"]) not in (int, float) or not 0 < body["top_p"] <= 1):
+        raise ValueError("top_p must be above 0 and at most 1")
+    if "stop" in body and not (isinstance(body["stop"], str) or isinstance(body["stop"], list) and len(body["stop"]) <= 8 and all(isinstance(s, str) and len(s) <= 256 for s in body["stop"])):
+        raise ValueError("Invalid stop sequences")
     return messages, tokens, temperature, stream, truncate
 
 
@@ -718,7 +780,8 @@ def download(url, path, size, expected):
 
 def llama_server():
     """The pinned llama.cpp server with its CUDA runtime beside it, kept in persistent model storage."""
-    root = os.path.join(CACHE, "yougori-llama.cpp", LLAMA_BUILD)
+    cpu_only = os.environ.get("YOUGORI_MODEL_CPU") == "1"
+    root = os.path.join(CACHE, "yougori-llama.cpp", LLAMA_BUILD + ("-cpu" if cpu_only else ""))
     folder = os.path.join(root, "llama-" + LLAMA_BUILD)
     binary = os.path.join(folder, "llama-server")
     marker = os.path.join(root, "verified")
@@ -726,7 +789,7 @@ def llama_server():
         return binary
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root)
-    for name, expected, size in LLAMA_ARCHIVES:
+    for name, expected, size in (LLAMA_CPU_ARCHIVES if cpu_only else LLAMA_ARCHIVES):
         print("Downloading " + name + " (" + str(size // 1048576) + " MB)...", flush=True)
         path = os.path.join(root, name)
         download("https://github.com/ggml-org/llama.cpp/releases/download/" + LLAMA_BUILD + "/" + name, path, size, expected)
@@ -735,9 +798,10 @@ def llama_server():
         os.remove(path)
     runtime = os.path.join(root, "cudart-llama-" + LLAMA_BUILD + "-bin-ubuntu-cuda-12.8-x64")
     # The binaries load the CUDA runtime from their own folder ($ORIGIN).
-    for library in os.listdir(runtime):
-        shutil.move(os.path.join(runtime, library), os.path.join(folder, library))
-    os.rmdir(runtime)
+    if not cpu_only:
+        for library in os.listdir(runtime):
+            shutil.move(os.path.join(runtime, library), os.path.join(folder, library))
+        os.rmdir(runtime)
     os.chmod(binary, 0o755)
     with open(marker, "w", encoding="utf-8") as file:
         file.write(LLAMA_BUILD)
@@ -792,6 +856,19 @@ def llama_cuda_devices(binary, environment):
     return devices
 
 
+def llama_cpu_options():
+    if os.environ.get("YOUGORI_MODEL_CPU") != "1":
+        return []
+    try:
+        threads = max(1, min(64, int(os.environ.get("YOUGORI_MODEL_CPU_THREADS", "2"))))
+    except ValueError:
+        threads = 2
+    # Respect the sandbox CPU quota instead of spawning a thread per host core.
+    # Polling threads also consume a constrained container's CPU budget.
+    return ["-ngl", "0", "--threads", str(threads), "--threads-batch", str(threads),
+            "--poll", "0", "--poll-batch", "0"]
+
+
 def load_gguf():
     if not any(os.path.exists(os.path.join(folder, "libgomp.so.1")) for folder in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu")):
         print("Installing the OpenMP runtime used by llama.cpp...", flush=True)
@@ -804,15 +881,16 @@ def load_gguf():
     model = verified_gguf()
     gpu_before_load()
     STATE["status"] = "loading"
-    print("Loading " + MODEL + " onto the GPU with llama.cpp " + LLAMA_BUILD + "...", flush=True)
+    cpu_only = os.environ.get("YOUGORI_MODEL_CPU") == "1"
+    print("Loading " + MODEL + " on " + ("CPU" if cpu_only else "GPU") + " with llama.cpp " + LLAMA_BUILD + "...", flush=True)
     environment = dict(os.environ)
     environment.pop("YOUGORI_MODEL_TOKEN", None)
     environment["LD_LIBRARY_PATH"] = os.path.dirname(binary) + (":" + environment["LD_LIBRARY_PATH"] if environment.get("LD_LIBRARY_PATH") else "")
-    devices = llama_cuda_devices(binary, environment)
+    devices = {} if cpu_only else llama_cuda_devices(binary, environment)
     global ENGINE_PROCESS
     process = ENGINE_PROCESS = subprocess.Popen(
         [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
-         "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none", "--device", ",".join(devices)],
+         "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none", "--device", ",".join(devices) if devices else "none", *llama_cpu_options()],
         env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
 
     def logs():
@@ -844,9 +922,9 @@ def load_gguf():
         if ENGINE_PROCESS is process:
             STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model.")
     threading.Thread(target=watch, daemon=True).start()
-    first_device = next(iter(devices.values()))
+    first_device = next(iter(devices.values()), "CPU")
     gpu = (str(len(devices)) + " × " + first_device) if len(devices) > 1 else first_device
-    STATE.update(status="ready", gpu=gpu, gpuCount=len(devices), context=LLAMA["context"], stream=True, weightsVerified=True,
+    STATE.update(status="ready", gpu=gpu, gpuCount=len(devices), context=LLAMA["context"], stream=True, toolCalling=True, weightsVerified=True,
                  revision=MODEL_REVISION, runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
 
 
@@ -1044,7 +1122,7 @@ def prepare(messages, count, truncate):
     return inputs.to("cuda"), tokens, dropped
 
 
-def prepare_gguf(messages, count, truncate):
+def prepare_gguf(messages, count, truncate, tools=None):
     """Counts prompt tokens with llama.cpp's own template and tokenizer. Returns (messages to send, tokens, dropped)."""
     def measure(messages):
         if FORMAT == "vllm":
@@ -1054,12 +1132,12 @@ def prepare_gguf(messages, count, truncate):
             if type(tokens) is not int or tokens <= 0: raise ValueError("vLLM returned invalid prompt usage")
             return messages, tokens
         try:
-            prompt = llama_json("/apply-template", {"messages": messages})["prompt"]
+            prompt = llama_json("/apply-template", {"messages": messages, **({"tools": tools} if tools else {})})["prompt"]
         except ValueError:
             folded = fold_system(messages)
             if folded is None:
                 raise
-            messages, prompt = folded, llama_json("/apply-template", {"messages": folded})["prompt"]
+            messages, prompt = folded, llama_json("/apply-template", {"messages": folded, **({"tools": tools} if tools else {})})["prompt"]
         return messages, len(llama_json("/tokenize", {"content": prompt, "add_special": True})["tokens"])
     return fit(messages, count, truncate, LLAMA["context"], measure)
 
@@ -1190,15 +1268,21 @@ def generate_gguf(body, handler, meter):
         meter["outcome"] = "busy"
         return 429, {"error": {"message": "The GPU is busy with another response; retry shortly"}}
     try:
-        messages, input_tokens, dropped = prepare_gguf(messages, count, truncate)
+        messages, input_tokens, dropped = prepare_gguf(messages, count, truncate, body.get("tools"))
         meter["prompt_tokens"] = input_tokens
         extra = {"truncated_messages": dropped, "context_window": LLAMA["context"]} if truncate else {}
         limit = STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS
         request = {"messages": messages, "max_tokens": count, "temperature": temperature, "stream": stream}
+        for key in ("tools", "tool_choice", "parallel_tool_calls", "top_p", "stop"):
+            if key in body:
+                request[key] = body[key]
         if FORMAT == "vllm":
             request.update(model=MODEL, chat_template_kwargs={"enable_thinking":False})
             if STATE.get("chatTemplate") is False: request.update(chat_template=BASE_TEMPLATE, stop=["\nuser:", "\nUser:", "\nassistant:", "\nAssistant:"])
-        else: request["t_max_predict_ms"] = limit * 1000
+        else:
+            request["t_max_predict_ms"] = limit * 1000
+            if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1":
+                request["chat_template_kwargs"] = {"enable_thinking": False}
         if stream:
             request["stream_options"] = {"include_usage": True}
         connection, response = llama("/v1/chat/completions", request, timeout=limit + 30)
@@ -1219,7 +1303,7 @@ def generate_gguf(body, handler, meter):
             generated = int((value.get("usage") or {}).get("completion_tokens") or 0)
             meter.update(outcome="ok", completion_tokens=generated)
             return 200, {"id": completion_id(), "object": "chat.completion", "created": int(time.time()), "model": MODEL,
-                         "choices": [{"index": 0, "message": {"role": "assistant", "content": (choice.get("message") or {}).get("content") or ""}, "finish_reason": choice.get("finish_reason") or "stop"}],
+                         "choices": [{"index": 0, "message": {"role": "assistant", "content": (choice.get("message") or {}).get("content") or "", **({"tool_calls": choice["message"]["tool_calls"]} if (choice.get("message") or {}).get("tool_calls") else {})}, "finish_reason": choice.get("finish_reason") or "stop"}],
                          "usage": {"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **extra}}
         finally:
             connection.close()
@@ -1276,8 +1360,9 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter):
                 break
             choices = event.get("choices") or []
             if choices:
-                text = (choices[0].get("delta") or {}).get("content")
-                if text and not send(chunk({"content": text})):
+                delta = choices[0].get("delta") or {}
+                forwarded = {key: delta[key] for key in ("content", "tool_calls") if delta.get(key)}
+                if forwarded and not send(chunk(forwarded)):
                     meter.update(outcome="cancelled", completion_tokens=generated)
                     return
                 finish = choices[0].get("finish_reason") or finish
@@ -1645,7 +1730,7 @@ class Handler(BaseHTTPRequestHandler):
         entered = False
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 65536 or self.headers.get("Transfer-Encoding"):
+            if not 0 < length <= (262144 if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else 65536) or self.headers.get("Transfer-Encoding"):
                 raise ValueError("Send a JSON body of at most 64 KiB with Content-Length")
             raw = self.rfile.read(length)
             if len(raw) != length:

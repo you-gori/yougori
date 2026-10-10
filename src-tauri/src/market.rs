@@ -11,6 +11,19 @@ use tauri::{Emitter, Manager};
 
 const SESSION: &str = "yougori-network-session";
 pub(crate) fn registry_session() -> Option<String> { session() }
+/// Bounty account operations stay bound to the configured website. Worker
+/// credentials are held by the native supervisor, never exposed to the CLI.
+pub(crate) async fn swarm_account_request(method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    if !path.starts_with("/api/swarm/") || path.contains("..") || path.contains(['#','%','\\']) || path.contains("//") {
+        return Err("Invalid Swarm Mining account path".into());
+    }
+    #[cfg(test)]
+    let testing = std::env::var("YOUGORI_SWARM_TEST_ACCOUNT").ok().filter(|_| website().starts_with("http://127.0.0.1:") && std::env::var("YOUGORI_SWARM_FIXTURE_PATH").is_ok());
+    #[cfg(not(test))]
+    let testing: Option<String> = None;
+    let token = testing.or_else(session).ok_or("Connect your Yougori account before registering a bounty worker")?;
+    api(method, path, Some(&token), body).await.map_err(String::from)
+}
 pub(crate) async fn registry_request(method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value, String> {
     if !path.starts_with("/api/market/registry/") || path.contains("..") || path.contains(['#','%','\\']) || path.contains("//") { return Err("Invalid model registry path".into()); }
     api(method, path, session().as_deref(), body).await.map_err(String::from)

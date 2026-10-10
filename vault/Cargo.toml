@@ -1,6 +1,6 @@
 [package]
 name = "yougori-vault"
-version = "1.0.14"
+version = "1.0.15"
 edition = "2021"
 license = "AGPL-3.0-only"
 publish = false

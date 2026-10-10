@@ -1,17 +1,20 @@
 # Commercial licensing
 
-Yougori LLC offers original Yougori code under two alternative licensing routes:
+Yougori is a project name, not a representation that a registered company exists.
+Its relevant copyright holders may offer original code under two alternative
+licensing routes:
 
 - **AGPL-3.0-only:** the public license in [LICENSE](LICENSE). No payment to
-  Yougori LLC is required to exercise this license. Commercial use, distribution
+  the project is required to exercise this license. Commercial use, distribution
   and hosting are allowed when the applicable AGPL requirements are met.
 - **A separate paid commercial agreement:** individually agreed rights for
   covered Yougori-owned material, for example where a customer needs permission
   for a proprietary integration or modified deployment that they cannot provide
   under the AGPL option.
 
-To request commercial terms, contact Yougori LLC through
+To request commercial terms, contact the project maintainer through
 [yougori.com](https://yougori.com/), identifying the intended use and versions.
+An agreement must identify the actual contracting person and their authority.
 The covered code, license grant, fees, duration, distribution or hosting rights,
 and any support or warranty are specified in the written agreement. This page
 announces the commercial option; it is not an executed agreement and grants no
@@ -20,17 +23,16 @@ such an agreement does not change the software license.
 
 ## Third-party and contributor rights
 
-A commercial agreement can cover only rights Yougori LLC owns or is authorized
-to grant. It does not remove GPL, LGPL, MPL, Apache, MIT, BSD or other third-party
+A commercial agreement can cover only rights its identified licensor owns or
+is authorized to grant. It does not remove GPL, LGPL, MPL, Apache, MIT, BSD or other third-party
 conditions. QEMU, its GPL-covered modifications, and separately licensed project
 components retain their own terms. Their source, notice, replacement/relinking
 and other applicable obligations remain in force.
 
-New original contributions require a separate signed copyright assignment to
-Yougori LLC before acceptance. This policy does not transfer ownership of
-earlier contributions or third-party components. Any contributions still owned
-by others require documented permission for the proposed commercial licensing;
-publication under AGPL alone is not such permission.
+Accepting a contribution does not by itself transfer ownership. Commercial
+licensing of another contributor's material requires documented permission or
+a valid written assignment from that contributor; publication under AGPL alone
+is not such permission. Third-party components retain their own rights.
 
 ## Existing licenses
 

@@ -1,9 +1,11 @@
 # Licensing and source distribution
 
-Original Yougori code is offered by **Yougori LLC** under
+Original Yougori code is offered by its copyright holders under
 [AGPL-3.0-only](../LICENSE), except where a file or directory has a separate
 notice. A [separate paid commercial license](../COMMERCIAL_LICENSE.txt) is
-available by written agreement for material Yougori LLC has authority to cover.
+available only by a written agreement identifying the actual licensor and material
+they have authority to cover. Yougori is a project name; these notices do not
+represent that a registered company exists.
 [NOTICE](../NOTICE) carries the Yougori attribution.
 
 [LICENSE](../LICENSE) contains the completed Yougori copyright and license
@@ -28,7 +30,7 @@ container workloads, VM images or applications under AGPL.
 Customers needing different rights for Yougori-owned code can request a paid
 commercial agreement. The agreement must identify its actual scope; the public
 commercial-licensing page grants no automatic exception to AGPL. It does not
-waive third-party copyleft obligations or provide rights Yougori LLC does not own.
+waive third-party copyleft obligations or provide rights the licensor does not own.
 Project metadata identifies AGPL-3.0-only as the public license; any commercial
 permission is supplied separately to the customer.
 

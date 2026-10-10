@@ -774,6 +774,7 @@ impl Control {
                 | "get_environment_health_check"
                 | "get_environment_log_window"
                 | "market_status"
+                | "swarm_dispatch"
         ) {
             return dispatch::dispatch(&app, method.name, &request.params).await;
         }

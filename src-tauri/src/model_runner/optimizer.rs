@@ -21,6 +21,10 @@ pub(super) fn environment(environment: &mut Value, protected: &mut Value) -> Res
 pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
     options.environment.insert("YOUGORI_MODEL_SERVER_SOURCE".into(),super::server_payload());
     options.environment.insert("YOUGORI_GPU_SOURCE".into(),source());
+    if options.environment.get("YOUGORI_MODEL_CPU").is_some_and(|v|v == "1") {
+        options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(),"0".into());
+        return Ok(());
+    }
     if options.environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|v| v == "source") { return Ok(()); }
     options.environment.insert("YOUGORI_GPU_SOURCE".into(), source());
     options.environment.entry("YOUGORI_GPU_OPTIMIZER".into()).or_insert("1".into());

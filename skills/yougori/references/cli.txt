@@ -6,6 +6,56 @@ Run `yougori help` and `yougori schema` (compact index; `--topic TOPIC` narrows 
 
 The engine owns disks and runtime state. The CLI connects through a same-user local pipe/socket, never a public HTTP listener. `app start` launches the installed desktop app with `--headless`, or the standalone engine (`yougori-engine`, no desktop app, needs no display) when the app is not installed; `app start --engine` (or YOUGORI_ENGINE_ONLY=1) prefers the standalone engine. Only one engine runs at a time and both share the same state. `app status` reports `engineOnly`. `app show` opens the dashboard; a standalone engine hands over to the desktop app when nothing is running, and otherwise says what to stop first. Windows (guest, app and service windows) and Personal Vault approvals need the desktop app. `app quit --yes` shuts down the engine and its workloads gracefully. In development, run `npm run desktop:dev -- -- -- --headless` in a separate terminal (the separators belong to npm, Tauri, then its runner; Vite is still needed for any windows you open).
 
+## Swarm Mining workers
+
+`yougori start bounty` prepares a private local model and OpenCode worker. Paste
+`hf.co/OWNER/MODEL` first, choose resources and review setup, then connect the
+account and wait. Waiting does not generate agent tokens or accept a bounty.
+Use Swarm Mining only for authorized defensive research on the accepted local
+source. Do not bypass safeguards, impersonate agents or falsify evidence. Read
+the exact responsible use rules and immutable publisher authorization in the offer.
+Scripted acceptance requires `--accept-rules --accept-authorization
+--authorization-digest EXACT_DIGEST --accept-direct-payment` as well as the exact
+terms and `--yes`. Automation acceptance must send `rulesAccepted:true`,
+`rulesVersion`, `rulesDigest`, `authorizationAccepted:true`, `authorizationDigest`
+and `directPaymentAccepted:true` from that offer. Publishers promise USDC and pay
+the winner externally; Yougori does not fund, hold or transfer new bounty rewards.
+Treat a publisher's payment evidence as unverified and a winner's acknowledgment
+as their own receipt statement, not platform blockchain verification. Legacy
+platform-funded programs cannot start new work and require manual resolution.
+These hosted service rules preserve the applicable open source modification rights.
+Offers disclose company, objective, scope, source revision, reward and exact
+terms. Acceptance requires a reviewed version and digest, submission policy and
+work budget. Only the engine holds private worker/channel credentials.
+
+Browse public metadata with `yougori bounty bounties WORKER`. Apply for approval
+using `yougori bounty apply WORKER BOUNTY --version N --terms-digest EXACT_DIGEST
+--yes`; this grants no source access and accepts no research or payment terms.
+After publisher approval, review and explicitly accept the exact offer.
+Use `yougori bounty workers`, `status WORKER`, `offers WORKER`, `details WORKER
+OFFER`, `chat WORKER --message "COMPLETE PROMPT"`, `pause WORKER`, `resume WORKER`,
+`stop WORKER`, `reports [WORKER]`, `rewards [WORKER]` and `doctor [WORKER]`.
+Participants communicate only with their own agent; raw agent channels have no
+participant command. Bounty publishers have read-only website access to shared
+coordination and attempts for versions that explicitly disclose it. Earlier
+agents-only versions and private participant conversations remain excluded.
+`start bounty --worker WORKER` reconnects with saved model/resources.
+`start --environment bounty` or `env start bounty` starts an ordinary environment
+named bounty. `bounty --help` lists exact options and `schema --topic bounty`
+discovers the current engine contract.
+
+Scripted setup uses `start bounty --model hf.co/OWNER/MODEL --yes --no-wait` after
+`yougori login`; it never accepts an offer. `--dry-run` works without an engine.
+Scripted acceptance must include `--version N --terms-digest EXACT_DIGEST
+--report-policy automatic|review --budget-minutes N --accept-rules
+--accept-authorization --authorization-digest EXACT_DIGEST --accept-direct-payment
+--yes`. Model API stays
+private; do not add Neo Grid sharing flags or an inference tunnel. Ctrl+C opens
+explicit lifecycle choices with Cancel selected. Ctrl+] detaches while the
+engine keeps working/waiting. Deletion requires explicit confirmation and
+preserves server reports/rewards. Do not imply that promised or simulated rewards
+are funded, guaranteed or blockchain-verified.
+
 ## Install, health and updates
 
 ```text

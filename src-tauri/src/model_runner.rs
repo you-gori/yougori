@@ -60,6 +60,10 @@ pub struct ModelResources {
     pub storage_gb: Option<f64>,
     pub storage_drive: Option<String>,
     pub model_folder: Option<String>,
+    #[serde(default)]
+    pub cpu_only: bool,
+    #[serde(default)]
+    pub agent_api: bool,
 }
 
 impl ModelResources {
@@ -93,7 +97,11 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
         let help=if compatibility["supportAvailable"]==true {format!(" Implement support with `yougori model support hf.co/{model} --agent codex --launch` or choose a coding agent in the App.")}else{String::new()};
         return Err(format!("{}: {}. No environment was created.{help}",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")));
     }
-    vllm::check_local_hardware(&compatibility).await?;
+    let cpu_only = resources.as_ref().is_some_and(|r| r.cpu_only);
+    if cpu_only && compatibility["runner"] != "yougori-llama-cpp" {
+        return Err("CPU model workers currently require a supported GGUF repository. Choose a GGUF variant or an NVIDIA GPU.".into());
+    }
+    if !cpu_only { vllm::check_local_hardware(&compatibility).await?; }
     if port == Some(0) {
         return Err("Invalid API port".into());
     }
@@ -127,6 +135,7 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
         protected["HF_TOKEN"] = json!(huggingface::TOKEN_REFERENCE);
     }
     let mut environment = json!({"YOUGORI_MODEL":model,"YOUGORI_MODEL_REVISION":compatibility["revision"],"HF_HOME":"/root/.cache/huggingface","HF_HUB_DISABLE_TELEMETRY":"1"});
+    if resources.agent_api { environment["YOUGORI_MODEL_AGENT_API"] = json!("1"); }
     environment["YOUGORI_PUBLISHER_SOURCE"] = json!(publisher_source());
     environment["YOUGORI_MODEL_PRECISION"] = json!(precision.as_deref().unwrap_or(if pinned.is_some(){"original"}else{"auto"}));
     if model == "Cloudflare/clef" { environment["YOUGORI_CLEF_SOURCE"] = json!(clef_source()); }
@@ -137,7 +146,12 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
     }
     if vllm { environment["YOUGORI_MODEL_FORMAT"] = json!("vllm"); }
     optimizer::environment(&mut environment, &mut protected)?;
-    let request = json!({"name":name,"kind":"container","provider":"yougoriCuda","autoSetupCuda":true,"runtime":if gguf {LLAMA_CPP_IMAGE} else if vllm {vllm::IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":true,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
+    if cpu_only {
+        environment["YOUGORI_MODEL_CPU"] = json!("1");
+        environment["YOUGORI_MODEL_CPU_THREADS"] = json!(cpu.floor().max(1.).min(64.).to_string());
+        environment["YOUGORI_GPU_OPTIMIZER"] = json!("0");
+    }
+    let request = json!({"name":name,"kind":"container","provider":if cpu_only {"yougoriOci"} else {"yougoriCuda"},"autoSetupCuda":!cpu_only,"runtime":if gguf {LLAMA_CPP_IMAGE} else if vllm {vllm::IMAGE} else {TRANSFORMERS_IMAGE},"containerCommand":command,"gpuAccess":!cpu_only,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"volumes":[{"source":volume,"target":"/root/.cache/huggingface","readOnly":false}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()});
     let mut result = crate::projects::run_workload(request, true, app).await?;
     result["model"] = model.into();
     result["status"] = json!("loading");
@@ -379,7 +393,7 @@ fn model_error(status_line: &str, body: &[u8]) -> Option<String> {
             .unwrap_or_else(|| "Model request failed".into()),
     )
 }
-async fn model_request(
+pub(crate) async fn model_request(
     app: &AppHandle,
     id: &str,
     path: &str,

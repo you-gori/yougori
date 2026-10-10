@@ -35,6 +35,7 @@ pub mod model_auth;
 pub mod network;
 pub mod model_registry;
 pub mod confidential;
+pub mod bounty;
 
 pub const SKILL: &str = include_str!("../../skills/yougori/SKILL.txt");
 pub const GUIDE: &str = include_str!("../../skills/yougori/references/cli.txt");

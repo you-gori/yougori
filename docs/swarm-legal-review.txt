@@ -1,0 +1,514 @@
+SUPERSEDED DESIGN REVIEW
+
+This document described Swarm's earlier platform-funded design. The current
+direct-payment and source-authorization review is swarm-risk-reduction-review.txt.
+Do not use the old funding descriptions below as current product instructions.
+The original text is preserved for historic-obligation and change review.
+
+YOUGORI SWARM MINING LEGAL MEMORANDUM
+
+To: Yougori project maintainer
+From: Codex research draft for the maintainer and qualified legal counsel
+Date: 10 October 2026
+Re: Responsible use rules, open source rights, liability and the hosted USDC bounty service
+
+This is an implementation-focused legal risk assessment and drafting review. It
+is not a signed lawyer's opinion, a finding of compliance in every country, or a
+claim of attorney-client privilege. The text follows the Background, Analysis
+and Conclusion structure of the supplied Legal Memorandum template. The
+maintainer requested text instead of a DOCX after the template's required
+document runtime was found unavailable.
+
+Recommendation: continue controlled, authorized, local-source testing with the
+recorded rules implemented here. Do not treat these rules as clearance for a
+worldwide paid launch. Before taking or settling real bounty funds, identify
+the actual operator and obtain jurisdiction-specific advice on the financial
+flow, privacy arrangements and service terms. Open source distribution and
+operation of a hosted service have different responsibilities.
+
+BACKGROUND
+
+1. Instructions and confirmed facts
+
+The maintainer confirmed that Yougori is individually built, has no registered
+legal company name, is open source, and is intended for worldwide users. Bounty
+offers come from Yougori's hosted platform. No governing law, legal operator
+name, operator address, insurance, financial authorization, or business-only
+restriction has been supplied. This memorandum does not invent those facts.
+An individual can be the relevant operator; incorporation is not asserted to
+be universally mandatory. The operator's personal exposure needs local advice.
+
+The public Yougori source is offered under AGPL-3.0-only, with separately
+licensed components. The bounty coordination backend is in the private website
+checkout. Calling the local client open source does not establish that the
+private service is open source. The hosted agent channel's privacy is an access
+policy, not an assurance that administrators cannot inspect a computer.
+
+The current pilot works on company-authorized local source snapshots. A
+participant prepares a Hugging Face model, receives an offer, reviews its exact
+scope, source revision, deadlines and reward, and explicitly accepts before
+investigation. The model API is private. OpenCode's configured tools are limited
+to reading the source and managed tasks. Company-declared checks run in a
+separate offline test sandbox. This pilot does not authorize live-target tests.
+
+The platform stores source, structured attempts, evidence, reports, agent
+coordination, private human-agent messages, acceptance evidence and financial
+records. Accepted workers receive source on participant-controlled computers.
+Platform encryption protects stored records at rest; the service controls its
+keys. Delivered local copies cannot reliably be recalled. An administrator can
+inspect files, memory or credentials. Confidentiality therefore needs both
+accurate notices and enforceable obligations between actual parties.
+
+Rewards use third-party USDC, not a Yougori-issued cryptocurrency. Confirmed
+account credit funds a reserve. After the review and appeal process, a winning
+award credits account earnings. A withdrawal is a separate pending request
+requiring operator settlement. An earnings credit is not an on-chain payment.
+Test funding is explicitly simulated and unavailable in production. Database
+balance reservations do not establish legal escrow or segregated custody.
+
+2. Materials reviewed
+
+Public checkout: LICENSE, COPYING, NOTICE, COMMERCIAL_LICENSE.txt,
+docs/licensing.txt, docs/swarm-mining.md, cli/src/bounty.rs,
+src-tauri/src/swarm/mod.rs, guest.rs, runner.rs, worker-rules.md, AGENTS.md,
+tests.rs and real_tests.rs, plus the current installer identity configuration.
+
+Private website checkout: server/swarm/index.mjs, schema.mjs, validation.mjs,
+rules.mjs and service-rules.json; the company wizard, scope editor, participant
+acceptance portal and public rules page; privacy/security notices; release
+packaging; Swarm server, runtime-contract and browser tests. The existing model
+library's stored-file delivery was also checked where the privacy notice had
+an outdated statement about publisher-hosted downloads.
+
+The official legal and regulator sources linked in the analysis were consulted
+on the memorandum date. Some EUR-Lex links redirected or presented a browser
+challenge; official regulator rulebooks and Commission pages were used where
+available. National transpositions, court practice, all countries' laws, the
+operator's actual regulatory status and model-by-model licenses have not been
+independently audited. This limitation affects any launch decision.
+
+3. Changes made in this review
+
+The service now exposes responsible use rules at /api/swarm/rules and the
+website displays them at /swarm/rules, including while the pilot is disabled.
+There are eleven sections covering eligibility, authorization, malicious use,
+integrity, open source rights, confidentiality, access, processing permissions,
+responsibilities, rewards and stopping when authorization ends.
+
+Publication and new scope versions require the publisher to affirm the exact
+rule version and SHA-256 digest as well as source authority, local delivery and
+reward obligations. Participants must explicitly accept the exact rules in
+their offer. The full rule document is included in the immutable bounty terms
+and therefore in the bounty terms digest. The server refuses missing, false,
+stale or mismatched rule acceptance. A bypassed website checkbox does not
+bypass that server requirement.
+
+Acceptance evidence records the account, role, bounty version or membership,
+rule version, digest, encrypted rule document and timestamp. Idempotent retries
+do not create duplicate acceptances. Database triggers prevent ordinary edits
+or deletion of these records. An administrator with database control is still
+technically capable of overriding the database; no absolute tamper-proof or
+cryptographic identity guarantee is claimed.
+
+Schema migration adds the acceptance table without rewriting old terms or
+fabricating past consent. An old published offer lacking rules cannot gain a
+new acceptance until republished with rules. Existing receipts and reward
+obligations are not silently replaced. Scripted CLI acceptance requires the
+new --accept-rules option, alongside exact bounty terms and --yes. Interactive
+acceptance displays the full attached rules before the final choice.
+
+Agent operating instructions now prohibit malicious use, out-of-scope testing,
+safeguard bypasses, impersonation and evidence tampering. These instructions
+supplement the existing server permissions and isolated execution; they do not
+make a modified model or participant computer trustworthy.
+
+The website notices now describe Swarm storage and administrator access,
+conditional USDC rewards and private source handling. An unrelated inaccurate
+privacy sentence saying library downloads connect to publishers was corrected
+to describe the existing Yougori stored-file delivery.
+
+Current top-level project, licensing and installer notices were corrected so
+they no longer represent that an LLC exists. The original AGPL text and
+third-party licenses remain intact. Historical compliance inventories and
+previously generated packages were not rewritten; they need review before
+reuse as evidence for a new release. These edits do not resolve who legally
+owns every contribution or create an executed commercial agreement.
+
+ANALYSIS
+
+4. Worldwide operation and the identity of the operator
+
+"Every country" is an intended audience, not a governing law. Applicable rules
+can depend on the operator, users, publisher, target, payment provider and data
+locations. A chosen contract law would not automatically displace mandatory
+rules. EU consumer conflict-of-law rules preserve relevant mandatory consumer
+protection in qualifying cases. The users here are not contractually limited
+to businesses, so the review cannot assume that consumer protections never
+apply. Authority: Rome I Regulation, Article 6, official text:
+https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=celex%3A32008R0593
+
+Practical recommendation: identify the person actually operating the service,
+the contact and service address, and the legal jurisdiction of that operation.
+Publish whatever disclosures applicable law requires. Keep the brand Yougori,
+but do not describe it as an incorporated limited-liability entity without
+evidence. Whether incorporation, business registration or a representative is
+needed depends on the chosen activity and locations. Decide initially supported
+paid markets from legal advice rather than a worldwide marketing claim.
+
+No legal operator name or address has been inserted into public terms. The
+existing hi@yougori.com contact is provided for reporting, but an email address
+alone is not a complete operator identification or regulatory contact regime.
+
+5. Open source and the request to prevent editing
+
+The existing LICENSE explicitly permits modification and redistribution under
+AGPL-3.0-only. COPYING contains the unmodified license. A blanket "do not edit
+Yougori" restriction would conflict with the rights this project already
+grants. A policy cannot make every downstream fork obey Yougori's hosted
+service controls or give Yougori rights it does not own.
+
+The implemented distinction is appropriate: lawful modification remains
+permitted under the software license, while service users must not bypass
+authentication, target scope, isolation, budgets or stop controls, impersonate
+agents, or falsify canonical records. Legitimate edits to a test copy are
+allowed when documented; they do not rewrite the accepted source revision.
+The host may enforce access requirements through its API. It should not claim
+that a lawful software fork itself automatically breaches these service rules.
+
+AGPL notices and applicable corresponding-source obligations remain. A private
+checkout does not prove a proprietary backend is exempt from AGPL: counsel
+must inspect its provenance, copied or linked code and actual interaction with
+covered works. Separate communication is relevant but not a conclusive legal
+classification. The server must not simply incorporate AGPL-covered code and
+assume that naming it a private service removes license obligations.
+
+Model and tool licenses also matter. A Hugging Face repository or "unrestricted"
+label is not evidence of permission for every use. The rules require lawful
+access and applicable license compliance. Preserve notices for the exact
+OpenCode version and other distributed components; the current upstream
+OpenCode license is MIT, but release-specific provenance still needs recording.
+Authority for the upstream license:
+https://github.com/anomalyco/opencode/blob/dev/LICENSE
+
+6. Authorization and computer misuse
+
+The EU attacks-against-information-systems framework concerns unauthorized
+conduct and does not supply a platform-wide permission to test third parties.
+Ownership or valid authorization must cover the actual code and test. A
+publisher's assertion is useful evidence but is not verification of authority.
+Authority: Directive 2013/40/EU, including its authorization definition:
+https://eur-lex.europa.eu/eli/dir/2013/40/oj/eng
+
+Other countries apply their own computer misuse rules. For example, the UK
+Computer Misuse Act addresses unauthorized access. US Department of Justice
+policy protects qualifying good-faith security research from its CFAA charging
+policy, but it is not a universal immunity or permission for extortion. It does
+not settle other countries' laws or private claims. Authorities:
+https://www.legislation.gov.uk/ukpga/1990/18?timeline=false
+https://www.justice.gov/archives/opa/pr/department-justice-announces-new-policy-charging-cases-under-computer-fraud-and-abuse-act
+
+The local-source-only pilot is a sensible risk boundary. Keep live production,
+external services, real users, host/LAN systems and unrelated participants
+outside scope. Require written source authority and exact permitted tests.
+Check source rights, corporate representation and dependent third-party rights
+before enrolling confidential projects. A paid production publisher should be
+reviewed as an actual counterparty, not treated as verified because it supplied
+an organization name.
+
+A future publisher safe-harbor clause can state that the publisher authorizes
+the described research and will not assert its own claims against compliant
+researchers for that authorized conduct. It must identify the publisher, exact
+scope, permitted acts, confidentiality and disclosure process. It cannot bind
+third-party owners, regulators or prosecutors. No universal safe harbor has
+been inserted into the current rules.
+
+Keep evidence of scope versions, acceptance, source hashes, pause/revocation
+and completed checks. On unclear or accidental out-of-scope access, pause,
+minimize retained sensitive data and contact the authorized reviewer privately.
+Do not continue exploring merely to establish a stronger report.
+
+7. Liability and warranty wording
+
+The requested blanket statement "we are not responsible" is not a reliable
+legal solution. Standard terms can be unenforceable where unfair or contrary
+to mandatory protections. EU consumer rules require intelligible terms and do
+not bind consumers to unfair standard provisions. Authority:
+https://commission.europa.eu/law/law-topic/consumer-protection-law/consumer-contract-law/unfair-contract-terms-directive_en
+
+The implemented clause allocates the participant's permissions, lawful
+instructions, uploads and local computer to that participant. It explains that
+Yougori provides coordination and tooling and does not certify security or
+guarantee availability, findings, earnings or payment timing. The exclusion
+for losses caused by unauthorized user conduct is expressly limited by
+applicable law. It preserves Yougori's own legal obligations and liability
+that cannot lawfully be excluded.
+
+This is a drafting choice, not an assertion that the same clause is enforceable
+everywhere. The text does not impose a zero liability cap, blanket indemnity,
+mandatory arbitration, waiver of every claim or forfeiture of all balances.
+Any future business liability cap should be tied to the actual paid service,
+counterparty, fees, insurance, foreseeable losses and mandatory carve-outs
+after local advice. A disclaimer does not protect deliberate wrongdoing or
+replace reasonable security and response procedures.
+
+The individual operator must not assume that project branding creates limited
+liability. Investigate appropriate structure and insurance before entering
+commercial source-handling and payment arrangements. Software can itself
+engage product obligations in applicable circumstances. The Commission states
+that the new EU Product Liability Directive must be transposed by 9 December
+2026; national implementation and the relevant product/date need checking.
+Authority:
+https://single-market-economy.ec.europa.eu/single-market/goods/free-movement-sectors/liability-defective-products_en
+
+8. USDC funding and payments
+
+This is the highest unresolved launch issue. The actual flow involves receipt
+of USDC by an operator wallet, internal user credits, earmarked bounty reserves,
+winner earnings and operator-settled withdrawals. Neither being open source,
+having no proprietary coin, describing a balance as credit, nor operating
+manually establishes an exemption from financial rules.
+
+Inference: custody, transfer, payment-service or related obligations may be
+engaged, depending on control of funds and keys, contractual rights, operator
+location and customers. This memorandum does not determine that Yougori is
+already an authorized CASP, or conclusively classify it as one. MiCA Article 59
+restricts provision of relevant crypto-asset services in the Union to authorized
+or otherwise eligible entities. Authority:
+https://www.esma.europa.eu/publications-and-data/interactive-single-rulebook/mica/article-59-authorisation
+
+If custody rules apply, an internal reserve table is not sufficient proof of
+the required segregation or client protection. MiCA Article 75 addresses
+custody agreements, custody policies, recordkeeping, return of assets,
+segregation and liability for attributable losses. The rules must not call the
+current implementation regulated escrow, insured custody or bankruptcy-safe
+funds without establishing those arrangements. Authority:
+https://www.esma.europa.eu/publications-and-data/interactive-single-rulebook/mica/article-75-providing-custody-and
+
+Electronic-money-token services can also raise payment-services issues. The
+EBA's 2026 opinion addresses supervision after the MiCA/PSD2 transition period
+ended on 2 March 2026. Do not assume an old transition announcement permits
+present unlicensed operation; the subset of activities, conditions and current
+national treatment need professional assessment. Authority:
+https://eba.europa.eu/sites/default/files/2026-02/3b8b6f18-ca26-4ce1-83eb-d060276f3301/Opinion%20on%20the%20end%20of%20the%20NAL%20transition%20period.pdf
+
+Where applicable, AML and transfer-information requirements require a real
+operational process. Wallet ownership signatures alone are not customer due
+diligence. The EBA travel-rule guidance describes information accompanying
+covered crypto-asset transfers. Authority:
+https://www.eba.europa.eu/activities/single-rulebook/regulatory-activities/anti-money-laundering-and-countering-financing-terrorism/guidelines-information-requirements-relation-transfers-funds-and-certain-crypto-assets-transfers
+
+US availability raises separate questions. FinCEN's CVC guidance distinguishes
+software and business activities using or accepting/transmitting value. Do not
+treat publishing code as identical to operating this treasury and withdrawal
+service. Federal and relevant state requirements need assessment before
+supporting US money flows. Authority:
+https://www.fincen.gov/system/files/2019-05/FinCEN%20Guidance%20CVC%20FINAL%20508.pdf
+
+Sanctions applicability and counterparties also need screening appropriate to
+the actual operator and transaction nexus. A user checkbox does not discharge
+the operator's own applicable sanctions duties. OFAC's virtual-currency guidance
+is one relevant US source, not a universal statement that every operator has
+the same US obligations. Authority:
+https://ofac.treasury.gov/system/files/126/virtual_currency_guidance_brochure.pdf
+
+Recommendation before live funds: obtain a written classification of the exact
+funds flow; select supported markets; use an appropriately authorized provider
+where needed; document treasury ownership, client rights, segregation,
+reconciliation, refunds, fees, withdrawal timing and failure handling; complete
+required identity, AML and sanctions processes. Continue simulated funding
+until those questions are resolved. No real transfer or production deployment
+was made during this review.
+
+9. Reward contracts and fair review
+
+The current rules correctly distinguish an attempted investigation, candidate,
+submitted report, verified qualifying report, award and settled payment. The
+earliest complete server-received report subsequently verified under the
+accepted criteria wins. Automatic private submission and human-reviewed
+submission have different receipt timing; the participant chooses explicitly.
+There is no automatic split among contributing agents.
+
+Keep qualifying criteria, exclusions, root-cause duplicate treatment, evidence
+requirements, deadlines, review/appeal windows and payout descriptions clear
+before acceptance. Scope changes require fresh acceptance and preserve older
+report versions. Do not retroactively shorten prior obligations or confiscate
+earned rights solely because an account is restricted.
+
+The independent appeal reviewer is a technical separation of account roles,
+not proof of institutional independence, a legally binding arbitration forum,
+or a guaranteed impartial adjudicator. Identify the actual reviewer, conflict
+policy and escalation route in a production program. Internal appeals cannot
+remove non-waivable external remedies. Avoid marketing "mine guaranteed USDC"
+or implying that participation creates investment returns. Here, "Swarm
+Mining" is a name for security bounty work, not blockchain consensus mining.
+
+10. Source intellectual property and confidentiality
+
+Publishers should attest to authority for code, documentation, fixtures and
+dependent materials and provide a limited license for the accepted research.
+The implemented rules permit operation, delivery, analysis, authorized agent
+coordination, review and disputes; they preserve existing ownership and do not
+make confidential source publicly redistributable or authorize model training.
+
+Participant reports and evidence need permission for private processing and
+publisher verification/remediation. An assignment of inventions, exclusive
+rights or a broad publication license is not imposed here. If a particular
+publisher needs different report rights, use clear bounty-specific terms and
+review them before acceptance. Reward payment does not automatically resolve
+copyright ownership in every jurisdiction.
+
+For trade-secret material, use approved enrollment, actual participant
+identity and confidentiality agreements where appropriate, least-necessary
+snapshots, synthetic data and prompt revocation. Do not promise that local
+administrators cannot copy delivered source. Confidentiality does not create
+cryptographic recall. Protect disclosures legally required by regulators,
+courts or protected reporting; avoid a clause forbidding all reports of misuse.
+
+11. Privacy and international local workers
+
+Inference from the actual operation: Yougori is likely to determine purposes
+for account administration, abuse controls, acceptance evidence and rewards.
+It may process some publisher project data on the publisher's instructions.
+Participant operators may have additional roles. Roles must follow the facts,
+not simply a clause calling everyone a processor. Processor arrangements and
+authorized subprocessors need concrete obligations. Authority: EDPB Guidelines
+07/2020, especially the controller/processor analysis and contract requirements:
+https://www.edpb.europa.eu/system/files/documents/2023-10/EDPB_guidelines_202007_controllerprocessor_final_en.pdf
+
+Serving EU users can bring an operator outside the EU within GDPR scope in
+qualifying circumstances. Physical server location or open source status is
+not the only criterion. The operator's actual establishment, offering and
+processing need assessment; representative requirements may also need review.
+Authority: EDPB territorial-scope guidance:
+https://www.edpb.europa.eu/documents/guideline/guidelines-32018-on-the-territorial-scope-of-the-gdpr-article-3-version-adopted_en
+
+The privacy program needs identified controllers, lawful bases, recipients,
+retention, data-subject rights, security and breach procedures, and valid
+international-transfer arrangements where required. Consent to service rules
+is not blanket GDPR consent or a substitute for a lawful basis. The GDPR
+processor, security, breach and international-transfer provisions are relevant
+to the actual data flows. Official text:
+https://eur-lex.europa.eu/legal-content/EN-DE/TXT/?from=EN&uri=CELEX%3A32016R0679
+
+Current gaps from the code review: there is no complete Swarm retention job,
+dedicated export/deletion workflow, project-specific DPA, participant-operator
+subprocessor registry or geographic source-delivery restriction. Accounts and
+bot identifiers can identify people indirectly. Do not assume synthetic project
+fixtures eliminate personal data in messages, logs, evidence or billing.
+
+Recommendation: first minimize data and prohibit production secrets. Before
+confidential live projects, map each recipient and local-worker location,
+determine roles, obtain necessary agreements and transfer safeguards, define
+retention by record type and implement deletion/export with documented legal
+holds. Database immutability is an audit mechanism, not a legal right to retain
+personal data forever. A controlled, accountable deletion process may need to
+handle trigger-protected records when retention no longer has a lawful basis.
+The new notice candidly describes current storage; it does not claim these
+missing operational processes already exist.
+
+12. AI transparency and cybersecurity product obligations
+
+Local inference and open source do not automatically remove AI obligations.
+Determine whether Yougori is acting as a provider, deployer or another actor
+for the actual system and models. The Commission's current AI Act timeline
+states that general application began on 2 August 2026, with separate phased
+dates and 2026 Omnibus changes for certain high-risk systems. Do not rely on
+an older timeline or assume every security tool is automatically high-risk.
+Authority:
+https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai
+
+Practical recommendation: label agent messages and findings as AI-generated;
+retain human review of awards and authority; give users scope/stop controls;
+record foreseeable misuse and limitations. Classify intended uses before
+adding autonomous live-target execution, critical-infrastructure use or other
+materially different deployments. This is not a conformity assessment.
+
+The Commission explains that commercially supplied open source can fall
+within the Cyber Resilience Act. Its main obligations apply from 11 December
+2027 and reporting obligations from 11 September 2026. The product/activity
+classification and the actual operator's role need checking now rather than
+assuming every obligation is deferred. Authorities:
+https://digital-strategy.ec.europa.eu/en/policies/cra-open-source
+https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act
+
+Maintain component provenance, security updates, vulnerability handling and
+an incident escalation owner. The service email and software prompts alone
+are not a complete legally required vulnerability-reporting process.
+
+13. Hosted content and misuse response
+
+If the hosted service qualifies as an intermediary/hosting service under the
+DSA, relevant duties can include mechanisms for reporting illegal content,
+action on notices and reasons for certain restrictions. Qualification,
+territorial scope and applicable exemptions need assessment. Merely calling
+the system a bot-only room does not decide that classification, and a liability
+disclaimer does not create intermediary immunity. Authorities:
+https://eur-lex.europa.eu/eli/reg/2022/2065
+https://digital-strategy.ec.europa.eu/en/faqs/dsa-transparency-database-questions-and-answers
+
+The implemented policy provides a private reporting contact, permits lawful
+service restrictions and preserves valid reward obligations. Complete the
+operational process: receive reports, preserve necessary evidence, assess
+authority, pause scoped access, decide proportionate restrictions, communicate
+reasons where required and maintain an appeal or correction route. Develop a
+restricted incident workflow rather than publishing private evidence in a
+public issue tracker. No claim is made that an automated classifier currently
+detects every malicious bounty or that every report email will be monitored
+within a particular promised period.
+
+CONCLUSION
+
+14. Decision and actions
+
+The maintainer can adopt these locally implemented responsible use rules for
+the authorized source-only pilot. They make the user's obligations explicit,
+preserve AGPL rights, improve contract evidence and avoid a misleading blanket
+liability waiver. They cannot guarantee nobody will misuse an open-source fork,
+prove publisher ownership, make private code inaccessible to administrators,
+or authorize a worldwide financial service.
+
+Before a paid public launch, the maintainer should resolve these matters with
+qualified counsel and, where applicable, a regulated payment partner:
+
+1) Identify the actual legal operator, service disclosures and initial supported
+   paid markets. Determine applicable law from real facts; do not invent an LLC.
+2) Obtain the financial-services classification and required authorizations or
+   partner arrangement for deposits, reserves, earnings and withdrawals.
+3) Complete authority/counterparty review, review independence, refund and
+   withdrawal terms and documented financial reconciliation.
+4) Complete privacy roles, DPA/subprocessor and transfer arrangements, retention,
+   export/deletion and incident handling for confidential source and user data.
+5) Check current AI/CRA/product duties and third-party/model license provenance.
+6) Review localized service terms, consumer treatment, liability, complaints,
+   source confidentiality and any publisher safe-harbor wording.
+
+These are launch recommendations, not implemented features or completed legal
+approvals. The operator decides the supported markets after obtaining advice.
+If those requirements cannot yet be met, the fallback is a closed controlled
+pilot with synthetic authorized source and simulated rewards, not a disclaimer
+asserting every activity is legal everywhere.
+
+The current changes have not been committed, pushed, deployed or installed into
+the running desktop application. No live funds were sent. The prior instruction
+to keep Swarm changes local remains in force.
+
+15. Implemented user-facing wording
+
+The complete canonical wording is in docs/swarm-responsible-use.txt and the
+private service's service-rules.json, version 2026-10-10.1. It is shown in the
+offer before acceptance and at /swarm/rules. The responsibility clause reads:
+
+"You are responsible for your permissions, lawful instructions, uploads, local
+computer, and actions you direct. Review AI findings: models can be wrong, and
+an unsuccessful test does not prove a project is safe. Yougori supplies
+coordination and tooling; it does not certify security or guarantee availability,
+a correct finding, earnings, or payment timing. To the extent permitted by
+applicable law, no warranty of those outcomes is given and Yougori is not
+responsible for losses caused by a user's unauthorized conduct. This does not
+exclude Yougori's own legal obligations or liability that cannot lawfully be
+excluded, including applicable consumer, data protection, fraud, intent, gross
+negligence, or personal injury protections. No blanket waiver, automatic
+indemnity, or arbitrary monetary liability cap is imposed by these rules."
+
+The legal review is a draft for jurisdiction-specific validation, not a promise
+that clicking a checkbox removes anyone's statutory rights or obligations.

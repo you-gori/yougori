@@ -51,6 +51,7 @@ fn merge_limits(policy: &mut ResourcePolicy, p: &Value) -> Result<(), String> {
 pub(super) fn validate(method: &str, p: &Value) -> Result<(), String> {
     // Validate nested native types even on dry runs, without touching runtime state.
     match method {
+        "swarm_dispatch" => crate::swarm::validate(&arg::<Value>(p,"request")?)?,
         "start_environment_download" => {
             let request: crate::environment_download::StartRequest = arg(p, "request")?;
             crate::environment_download::validate(&request)?;
@@ -126,6 +127,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "list_environment_folders" | "request_connected_files" | "read_environment_console" | "get_guest_session" | "terminal_action" | "prepare_terminal_installer" | "install_terminal_tool" | "micro_vm_apps" | "open_environment_window" | "open_micro_vm_app_window" | "close_environment_window" | "list_environment_windows" | "focus_environment_window" | "title_environment_window" | "set_guest_keyboard_capture" | "open_workspace_url" | "open_service_window" => dispatch_group_11(app,method,p,progress),
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
         "model_registry_connect" | "model_registry_request" | "model_registry_upload" | "model_registry_download" | "model_registry_pause" | "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
+        "swarm_dispatch" => Box::pin(async move {crate::swarm::swarm_dispatch(arg(p,"request")?,app.clone()).await}),
         _ => Box::pin(async move { Err(format!("No backend handler for {method}")) }),
     }
 }

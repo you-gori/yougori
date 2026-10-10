@@ -41,7 +41,8 @@ def model_startup(count=1, files=("model.safetensors",), config=None, versions=N
     hub.HfApi.return_value.model_info.return_value = SimpleNamespace(
         sha="a" * 40, siblings=[SimpleNamespace(rfilename=name, lfs={"sha256":hashlib.sha256(b"test weights").hexdigest()}) for name in files])
     torch = SimpleNamespace(float16="float16", cuda=SimpleNamespace(
-        is_available=lambda: True, device_count=lambda: count, get_device_name=lambda index: "Test GPU"))
+        is_available=lambda: True, device_count=lambda: count, get_device_name=lambda index: "Test GPU",
+        empty_cache=Mock()))
     installed = {"transformers": "5.18.0", "accelerate": "1.15.0", "huggingface-hub": "1.33.0", **(versions or {})}
     with ExitStack() as stack:
         snapshot = stack.enter_context(tempfile.TemporaryDirectory())
@@ -138,7 +139,9 @@ class ModelServerTests(unittest.TestCase):
                     client.request("POST", "/v1/chat/completions", json.dumps({"messages":[{"role":"user", "content":"hello"}]}),
                                    {"Authorization":"Bearer " + server.TOKEN})
                     response = client.getresponse()
-                    self.assertEqual(response.status, 400 if failure in (ValueError, TypeError) else 500)
+                    # These exceptions originate in the model's generation
+                    # thread, after request validation. They are server errors.
+                    self.assertEqual(response.status, 500)
                     body = response.read()
                     self.assertNotIn(server.TOKEN.encode(), body)
                     self.assertNotIn(b"sensitive detail", body)
@@ -553,7 +556,7 @@ class ModelServerTests(unittest.TestCase):
             with urlopen(Request(base + "/health", headers=headers)) as response:
                 self.assertEqual(json.load(response)["status"], "installing")
             with self.assertRaises(HTTPError) as loading:
-                urlopen(Request(base + "/v1/chat/completions", data=b'{}', headers=headers))
+                urlopen(Request(base + "/v1/chat/completions", data=b'{"messages":[{"role":"user","content":"hello"}]}', headers=headers))
             self.assertEqual(loading.exception.code, 503)
             self.assertNotIn("a" * 64, loading.exception.read().decode())
         finally:
@@ -807,7 +810,7 @@ class FreeListenerTests(unittest.TestCase):
             return 200,{"answers":{"risk":0.7}}
         with self.listener() as (path,request), patch.object(server,"DECISION_MODEL",True), patch.object(server,"generate_decision",side_effect=decide):
             request("/v1/listen/config",{"enabled":True,"mode":"free"}).close()
-            body={"model":server.MODEL,"state":"account activity","questions":{"risk":{"type":"score"}}}
+            body={"model":server.MODEL,"state":"account activity","questions":{"risk":{"type":"noul"}}}
             request("/v1/systemone",body).read()
             value=self.records(path);self.assertEqual(value["request"],body);self.assertEqual(value["response"]["answers"]["risk"],0.7)
             with patch.object(server,"listen_file",side_effect=OSError("caller content must not leak")):

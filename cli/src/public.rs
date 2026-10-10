@@ -47,6 +47,9 @@ Public commands:
   yougori top [--once]             Live CPU, memory, storage and network per environment
   Add --format json|table to status/ps/ports (table in a terminal, JSON when piped)
   yougori start|stop|restart ENV   Accepts an ID or exact environment name
+  yougori start bounty            Prepare a private local Swarm Mining worker; model first
+  yougori bounty --help           Offers, own-agent chat, reports, rewards and lifecycle
+  yougori start --environment ENV Explicit selector, including an environment named bounty
   yougori rm ENV --yes             Permanently delete an environment and its managed data
   yougori pull IMAGE | images | image rm IMAGE
   yougori up|apply|down [-f yougori.yaml]

@@ -1,0 +1,327 @@
+YOUGORI SWARM MINING LEGAL MEMORANDUM
+
+To: Yougori project maintainer
+From: Codex implementation and legal research draft for qualified counsel
+Date: 10 October 2026
+Re: Direct external payments and authorized offline source research
+Rules version: 2026-10-10.3
+
+Recommendation: operate Swarm as an authorized offline source-review service,
+with publishers making and paying their own external USDC commitments. Remove
+Yougori from receipt, custody, balances, signing and transfer control for new
+bounty rewards. Preserve historic obligations rather than relabeling them.
+Obtain exact publisher authorization and participant consent before delivering
+source or running work. This changes the activity that creates exposure; it
+does not merely rename a financial service or insert a blanket disclaimer.
+
+This is a researched risk-reduction design and implementation review, not a
+signed lawyer's opinion, privileged communication or worldwide legal clearance.
+The maintainer requested text. The Background, Analysis and Conclusion structure
+follows the supplied Legal Memorandum template. Classification follows the
+actual operation and applicable law, not a claim that the service is open source.
+
+BACKGROUND
+
+1. Operator and scope
+
+The maintainer says Yougori is individually built, has no registered legal
+company name, and is intended for worldwide users. No operator legal name,
+service address, governing law, insurance or regulatory authorization has been
+supplied. Nothing here invents a company, a country clause or a registration.
+The public client code is AGPL-3.0-only; the hosted coordination backend is
+private. The user authorized actual changes to reduce exposure for payments
+and bug hunting. All changes remain local; no push or deployment was requested.
+
+Swarm's new direct-payment flow is separate from Neo Grid's paid inference
+system. That other system still has its own deposits, earnings, withdrawals,
+historic liabilities and regulatory questions. This redesign does not exempt it.
+
+2. New reward operation
+
+The named publisher records a USDC promise and acknowledges that Yougori has
+not verified or reserved its funds. It offers compensation for a qualifying
+report under the exact accepted criteria, not a token sale or investment return.
+After review and appeals, an award records the publisher's external payment
+obligation. It is not a Yougori account balance or earnings credit.
+New publication and scope versions require nonempty written payment terms.
+Missing terms cannot change a prior accepted document or revoke its membership;
+the server inserts no hidden payment deadline or promise of automatic payment.
+
+The publisher pays the winner from its own wallet outside Yougori. New Swarm
+programs provide no deposit collection, reward escrow, private-key access,
+signing, transfer initiation/control, withdrawal or reward-linked commission.
+Swarm does not construct a payment in a Yougori wallet transaction flow.
+
+Publisher transaction evidence is publisher_reported_unverified. The winner
+separately acknowledges receipt: winner_acknowledged_receipt records that
+statement. chainVerified remains false. None of those records is a platform
+guarantee of funds, legal compliance, receipt on a chain or eventual payment.
+
+3. Historic obligations
+
+Earlier reserves, credited awards, receipts and obligations remain recorded.
+They are not silently converted into unfunded promises, erased, forfeited, sent
+or refunded. New work on those programs is blocked pending manual resolution;
+existing reports and review/appeal history remain available for disputes.
+An explicit resolution request records a pending case and outstanding amount.
+It is not a statement that money has been returned. Existing actual funds still
+need operator reconciliation. Redesign cannot remove liabilities from past conduct.
+
+4. Source authorization and access
+
+New programs require the actual publisher identity, signer and capacity, rights
+statement, defensive purpose and permitted offline tests. Authorization is
+bound to the exact source revision, digest and terms version, with its own
+digest. Server-owned minimum exclusions prohibit live systems, third-party
+targets and production secrets. The declaration is publisher-declared, not
+platform verification of identity, source ownership or legal authority.
+
+Source requires publisher-approved participants. New scope/source versions
+require fresh approval and acceptance. Participants expressly accept source
+authorization, exact rules and direct-payment risk. API callers cannot obtain
+source or start work by omitting frontend checkboxes. A metadata-only application
+does not grant source or execution. Scripted CLI acceptance requires separate
+authorization and direct-payment flags as well as the terms and rules digest.
+
+Work remains local source review and bounded declared offline checks in a
+separate test sandbox. Live production, host/LAN/cloud targets and unrelated
+participants are excluded. No arbitrary shell or external target scanning is
+granted. Known secret file paths/private-key content are refused. Inspection
+is not proof that every sensitive datum has been removed. Model instructions,
+project text and human suggestions cannot enlarge scope or defeat stop controls.
+
+5. Agreements and disclosures
+
+Rules version 2026-10-10.3 preserves software-license modification rights and
+prohibits malicious use, safeguard bypasses, false attribution and falsified
+records in the hosted service. The publisher grants limited research permission
+and, to the extent lawful, promises not to assert its own civil claims solely
+for strictly compliant research. This cannot bind third parties or authorities,
+waive mandatory duties or authorize harm outside scope. Ownership is retained;
+no blanket private-source redistribution or training permission is imposed.
+
+Production Swarm requires operator legal identity, type, service contact and
+address, feature enablement and an independent appeal-review account. The
+operator may be an actual individual or entity. Configuration does not register
+a company, verify identity or grant legal approval. Missing disclosures keep
+production Swarm disabled. Development fixtures are not a real operator.
+
+ANALYSIS
+
+6. Payment exposure is reduced by avoiding the actual activity
+
+MiCA defines custody through safekeeping/control of assets or access on behalf
+of clients, and transfer services through transfers between addresses/accounts
+on behalf of others. Inference: removing those activities from Swarm removes
+important factual elements of the prior design's custody/transfer concern.
+Other services, actual control and applicable jurisdictions still need assessment.
+Authority, Article 3:
+https://www.esma.europa.eu/publications-and-data/interactive-single-rulebook/mica/article-3-definitions
+
+FinCEN distinguishes software production/distribution itself from a business
+accepting and transmitting value, with classification based on facts and
+circumstances. Inference: recording an externally paid research reward without
+fund/key control materially differs from the former treasury, balance and
+withdrawal service. This is not a conclusive US or state-law exemption.
+Authority, FIN-2014-R002:
+https://www.fincen.gov/resources/statutes-regulations/administrative-rulings/application-fincens-regulations-virtual
+
+Do not add a Yougori-controlled release key, upgradeable escrow, publisher-funded
+wallet, custody account, hosted signing, transaction routing or automatic reward
+settlement and keep claiming this boundary. A noncustodial label does not decide
+whether the actual service controls another person's transfer. A research-review
+decision should not become authority to move money.
+
+The design does not rely on a fully decentralized exception. ESMA describes
+that exception as requiring no intermediary, assessed case by case. Yougori
+operates central coordination. Open source and wallet-to-wallet payments do
+not by themselves make the hosted service fully decentralized. Authority:
+https://www.esma.europa.eu/publications-data/questions-answers/2671
+
+7. Counterparty obligations remain real
+
+A publisher can fail to pay, dispute a decision, make a wallet mistake or submit
+false evidence. Participants expressly accept this risk before work. Do not
+market new rewards as funded, escrowed, insured or guaranteed. Do not turn a
+transaction hash into a platform-verified payment claim.
+
+Accepted terms should identify the actual publisher, amount, USDC network,
+qualifying criteria, duplicate rules, receipt priority, deadlines, payment due
+date and review/appeal contact. Preserve older report rights when scope changes.
+Service restrictions and insolvency do not automatically erase valid obligations.
+Internal appeals are not a waiver of non-waivable external remedies.
+
+Payers and recipients have their own tax, wallet, sanctions and payment duties.
+Yougori must still assess duties from its own conduct and nexus. Naming the
+publisher as debtor matches the new operation; it does not remove liability
+for Yougori's own wrongdoing or misleading representations. This review does
+not determine that every USDC transaction is permissible everywhere.
+
+8. Authorization reduces research exposure
+
+The EU information-systems framework distinguishes conduct lacking relevant
+authorization/legal right. Publishers cannot give rights they do not possess.
+Inference: an exact lawfully supplied local snapshot with written permission
+avoids many live-target access issues, while source rights and other duties
+remain. Authority, Directive 2013/40/EU:
+https://eur-lex.europa.eu/eli/dir/2013/40/oj/eng
+
+The DOJ vulnerability-disclosure framework recommends defining scope, handling
+sensitive data and examining third-party interests. It creates no enforceable
+rights and focuses on online systems; it is design guidance, not clearance for
+this local-source pilot. Authority:
+https://www.justice.gov/media/905211/dl?inline=
+
+The DOJ's own VDP illustrates a scoped non-assertion commitment while preserving
+independent third-party and prosecutorial authority. It does not cover Yougori.
+Only the named publisher promises limited non-assertion here, within its own
+rights and the exact permitted lawful research. Authority:
+https://www.justice.gov/jmd/vulnerability-disclosure-policy
+
+The DOJ's CFAA good-faith research policy is not immunity for bad-faith conduct
+such as extortion or a resolution of other countries' laws/private claims.
+Authority:
+https://www.justice.gov/archives/opa/pr/department-justice-announces-new-policy-charging-cases-under-computer-fraud-and-abuse-act
+
+Maintain the technical local-only boundary, declared checks, budget/stop controls,
+honest evidence and incident handling. An unrestricted model or a publisher's
+checkbox is not permission to attack others. A false authorization declaration
+remains false even when its hash and timestamp are correctly recorded.
+
+9. Source rights and privacy
+
+The publisher needs rights for supplied code, dependencies, documents and
+delivery to approved researchers. Open source availability does not authorize
+access to an author's live systems. Private-source permissions remain limited
+to accepted research, authorized coordination, verification/remediation and
+disputes. A reward does not automatically assign every invention or copyright
+in every country; extensions require clear bounty-specific terms.
+
+Source approval, secret refusal and immutable scope reduce disclosure risk.
+They do not make delivered local files recallable, prove a snapshot contains
+no personal data, or prevent a participant administrator reading it. Ordinary participant
+sessions cannot read shared agent channels. New versions explicitly marked
+agents_and_publisher disclose read-only shared messages and attempts to that
+bounty's account-owning publisher. Private participant conversations remain
+excluded. Earlier agents-only versions are not retroactively exposed; new scope
+requires fresh approval and acceptance. These are access boundaries, not
+end-to-end secrecy against administrators.
+
+Swarm still processes accounts, publisher identities, source, evidence, reports,
+agent messages, consents and external payment metadata. Controller/processor
+roles follow actual purposes and means, not a clause calling Yougori software.
+The operator likely determines purposes for accounts, abuse handling and
+contract evidence; project-data roles require factual assessment. Authority:
+https://www.edpb.europa.eu/system/files/documents/2023-10/EDPB_guidelines_202007_controllerprocessor_final_en.pdf
+
+Privacy by design includes minimizing data, accessibility and storage. Synthetic
+fixtures, approved source delivery, secret refusal and separate private contexts
+reduce risk but do not replace retention, rights-request or breach procedures.
+Authority:
+https://www.edpb.europa.eu/sme/be-compliant/be-compliant_en
+
+Acceptance of rules is not blanket GDPR consent. Determine lawful bases,
+recipients, notices, processing agreements and international-transfer safeguards
+where required. Worldwide confidential-source workers need real location and
+recipient assessment. Open source or an individually built project does not
+decide territorial scope. Authority:
+https://www.edpb.europa.eu/documents/guideline/guidelines-32018-on-the-territorial-scope-of-the-gdpr-article-3-version-adopted_en
+
+Remaining gap: this redesign does not supply a complete automatic source
+retention/deletion/export process, project DPA, participant subprocessor registry
+or transfer program. Prefer controlled synthetic pilots while completing these.
+Database immutability is not permission to retain personal data indefinitely.
+Historic financial/dispute records need lawful retention and hold decisions.
+
+10. Liability and the operator
+
+The rules accurately allocate publisher payment promises and user-directed
+actions, explain service limits and preserve mandatory liability. They do not
+impose a blanket zero-liability cap, all-purpose indemnity or waiver of every
+remedy. EU consumer guidance confirms that unfair standard terms are not binding.
+Authority:
+https://commission.europa.eu/law/law-topic/consumer-protection-law/consumer-contract-law/unfair-contract-terms-directive_en
+
+The individual operator can remain personally exposed. A genuine legal entity
+and appropriate insurance may add protection in applicable circumstances, but
+an LLC suffix, project name or checkbox cannot create one. An actual entity
+does not universally shield personal wrongdoing, guarantees or statutory duties.
+No entity, domicile, insurance or ownership of every contribution was established.
+
+AGPL modification rights remain. The host can enforce actual service access
+conditions without adding a software-license ban on editing. Preserve notices,
+corresponding-source duties and third-party/model licenses. The private backend
+needs provenance/combination assessment; another checkout is not an automatic
+exemption from a license obligation.
+
+11. Other service duties
+
+AI, cybersecurity product and hosting responsibilities follow actual product
+and operator roles. The Commission's current AI Act timeline includes general
+application from 2 August 2026 and later dates for specified categories after
+2026 amendments. Neither every security tool is necessarily high-risk nor every
+local/open-source system exempt. Authority:
+https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai
+
+Commercial open-source supply can fall within the Cyber Resilience Act. The
+Commission lists reporting from 11 September 2026 and main obligations from
+11 December 2027. Maintain component provenance, security updates and incident
+response and assess actual applicability. Authorities:
+https://digital-strategy.ec.europa.eu/en/policies/cra-open-source
+https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act
+
+Hosted source/report operation also needs applicable illegal-content and abuse
+handling. A bots-only room does not determine legal hosting classification or
+immunity. Monitor the reporting contact, handle scoped revocation, preserve
+necessary evidence and make proportionate decisions. A prompt cannot detect
+every unlawful publisher or discharge the operator's own responsibilities.
+
+CONCLUSION
+
+12. Result and remaining decisions
+
+Removing custody and transfer activity materially improves Swarm's payment
+risk position. Exact written permission, approved source access, minimal offline
+checks, secret refusal and consent evidence improve its research risk position.
+Historic amounts and obligations stay visible rather than being rewritten.
+
+This is a lawful product boundary, not a claim of zero duties. The residual
+issues are actual authority, source/privacy handling, truthful operation,
+incident response, contracts, historic funds, applicable product obligations
+and the separate Neo Grid payment system. Worldwide clearance requires facts
+about the actual operator and supported markets which have not been supplied.
+
+Keep new payments external. Supply truthful operator disclosures before
+production enablement. Review relevant market-specific contracts, data and
+product duties; use synthetic local source until necessary arrangements exist.
+If old funded programs exist, reconcile holders, amounts, beneficiaries,
+receipts and obligations explicitly. Pending manual resolution is not payment.
+Separately review Neo Grid's financial flow. Real incorporation, insurance and
+qualified jurisdiction-specific advice can further reduce exposure, but cannot
+be fabricated by software. No country or company identity has been invented.
+
+13. Verification and change status
+
+Relevant code: private server/swarm authorization, lifecycle, schema and external
+evidence; Swarm creation/participation/reward UI; CLI/native exact authorization
+consent, scoped execution and separate prompts; privacy/security notices and
+documentation. Checks must cover no account/ledger/payout mutations for new
+rewards, only-publisher evidence, only-winner receipt acknowledgment, consent
+and source digest failures, approval after new versions, legacy preservation,
+operator gating and denied live/source access. Actual results are reported in
+the completion response; this memorandum is not a substitute for testing.
+
+Local verification including publisher access: 161 server tests passed, including 35 focused
+Swarm/backend fixture checks; six browser tests and the website build passed.
+The native focused suite passed 39 tests, and the actual HTTP-only native fixture
+verified offer/CLI consent/policy/membership digests against the private service
+without creating a model or sandbox. CLI bounty unit and executable tests passed;
+CLI, native and engine all-target checks passed. Browser direct-payment lifecycle
+uses real loopback HTTP and synthetic accounts; the historical UI display uses
+mocked legacy records, with actual legacy preservation checked in backend tests.
+No real payment was sent. The optional full model/OpenCode sandbox QA was not
+rerun for this redesign; passing these checks is not worldwide legal clearance.
+
+No push, production deployment, external registration, insurance purchase,
+live payment or installed-app replacement has been made. The prior design
+review is preserved as swarm-legal-review-2026-10-10-before-direct-payments.txt.

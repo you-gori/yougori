@@ -85,7 +85,7 @@ test("all desktop packages retain the logo, identity and license", () => {
   const config = json("src-tauri/tauri.conf.json")
   assert.equal(config.productName, "Yougori")
   assert.equal(config.identifier, "com.yougori.desktop")
-  assert.equal(config.bundle.publisher, "Yougori LLC")
+  assert.equal(config.bundle.publisher, "Yougori")
   assert.equal(config.bundle.licenseFile, "../COPYING")
   assert.equal(config.bundle.windows.allowDowngrades, false)
   for (const icon of ["icons/icon.ico", "icons/icon.icns", "icons/128x128.png"]) {
