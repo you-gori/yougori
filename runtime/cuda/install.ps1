@@ -190,7 +190,12 @@ for file in /etc/wsl.conf /etc/opendock-cuda-runtime /usr/local/sbin/opendock-ag
   if test -e "$file"; then test -f "$file" && test "$(stat -c %h "$file")" = 1 || { echo 'Aliased CUDA payload file; files were kept.' >&2; exit 1; }; fi
 done
 '@
-    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', '/bin/sh', '-c', $preflight)
+    # Windows PowerShell 5 rewrites embedded quotes in native argv. Keep shell
+    # source out of argv and use the existing binary/BOM-safe stdin sender.
+    if ($distro -cnotmatch '^OpenDock-CUDA-[a-f0-9]{12}$') { throw 'Invalid owned CUDA distribution name. Setup stopped.' }
+    $preflightPath = Join-Path $staging 'preflight.sh'
+    [IO.File]::WriteAllText($preflightPath, ($preflight.Replace("`r`n", "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+    Send-CudaPayload ([Diagnostics.ProcessStartInfo]::new('wsl.exe', "--distribution $distro --user root --exec /bin/sh -s")) $preflightPath
     Send-CudaPayload ([Diagnostics.ProcessStartInfo]::new('wsl.exe', "--distribution $distro --user root --exec tar -xf - -C /")) $bundle
     Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', 'chmod', '0755', '/usr/local/sbin/opendock-agent', '/usr/local/sbin/opendock-mount-helper', '/usr/local/sbin/opendock-cuda-probe', '/usr/local/sbin/opendock-cuda-start', '/usr/local/sbin/opendock-cuda-setup')
     # Apply only this owned distribution's no-automount/no-interop configuration.

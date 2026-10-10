@@ -102,6 +102,13 @@ export async function runStep(name, command, args, { cwd, env, logs, timeoutMs =
 async function main() {
   const target = nativeTarget()
   const { output, runtimeTests } = options(process.argv.slice(2))
+  const cudaTestDistro = process.env.YOUGORI_CUDA_WSL_TEST_DISTRO
+  if (process.platform === "win32" && runtimeTests && !cudaTestDistro) {
+    throw new Error("Windows runtime release requires explicit YOUGORI_CUDA_WSL_TEST_DISTRO for the owned inert CUDA preflight fixture")
+  }
+  if (cudaTestDistro && !/^[A-Za-z0-9][A-Za-z0-9-]{0,100}$/.test(cudaTestDistro)) {
+    throw new Error("YOUGORI_CUDA_WSL_TEST_DISTRO must be a literal owned test distribution name")
+  }
   await mkdir(output) // A candidate is immutable: existing directories are rejected.
   const logs = join(output, "logs")
   await mkdir(logs)
@@ -118,6 +125,10 @@ async function main() {
   const baseEnv = { ...process.env }
   // Candidate source metadata must not inherit a different checkout's Git index.
   for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete baseEnv[key]
+  const unitEnv = { ...baseEnv }
+  // Native WSL is exercised explicitly below, not implicitly by the wildcard
+  // unit suite. Default/unsupported runs report the five native cases skipped.
+  delete unitEnv.YOUGORI_CUDA_WSL_TEST_DISTRO
   const step = async (name, command, args, cwd = candidate, env = baseEnv) => {
     const result = await runStep(name, command, args, { cwd, env, logs })
     report.checks.push(result)
@@ -164,10 +175,23 @@ async function main() {
     if (process.platform === "win32") await step("test-prerequisites", "pwsh", ["-NoProfile", "-File", "scripts/check-windows-test-prerequisites.ps1"], candidate, candidateEnv)
     await npm("dependency-audit", ["audit", "--audit-level=moderate"])
     await npm("lint", ["run", "lint"])
-    await npm("unit-tests", ["test"])
+    await npm("unit-tests", ["test"], unitEnv)
+    await npm("cuda-setup-tests", ["run", "test:cuda-setup"], unitEnv)
     await npm("source-collector-tests", ["run", "test:compliance"])
     await step("snapshot-tests", python, ["scripts/prepare-release-checkout.test.py"], candidate, candidateEnv)
     await step("cuda-payload-tests", python, ["runtime/cuda/test_install_oci.py"], candidate, candidateEnv)
+    if (process.platform === "win32" && cudaTestDistro) {
+      await step("cuda-wsl-preflight-native", process.execPath,
+        ["--test", "--test-reporter=tap", "scripts/cuda-wsl-preflight-native.test.mjs"], candidate, baseEnv)
+      const summary = await readFile(join(logs, "cuda-wsl-preflight-native.log"), "utf8")
+      for (const [name, value] of [["tests", 5], ["pass", 5], ["fail", 0], ["skipped", 0]]) {
+        if (!new RegExp(`^# ${name} ${value}\\s*$`, "m").test(summary)) {
+          throw new Error("Native CUDA preflight must report exactly five passing tests and zero skips")
+        }
+      }
+      report.cudaWslPreflight = { distribution: cudaTestDistro, tests: 5, passed: 5, skipped: 0 }
+      await save()
+    }
     if (process.platform === "linux") await step("mount-helper-tests", python, ["appliance/test_mount_helper.py"], candidate, candidateEnv)
     await npm("frontend-build", ["run", "build"])
     await npm("browser-install", ["exec", "--", "playwright", "install", "chromium", "--no-shell"])

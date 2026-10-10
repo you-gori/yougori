@@ -243,6 +243,23 @@ Focused real Linux TCG checks passed for normal OCI and 512 MiB microVM
 workspaces, authenticated control, Internet policy and host-port isolation.
 Live QEMU arguments independently confirmed the tested CPU profile and RAM.
 
+The first installed CUDA upgrade exposed a Windows PowerShell 5.1 native-argv
+failure: forwarding the quoted multiline preflight through sh -c stripped
+quotes and joined command-substitution words, producing a shell syntax error
+before payload installation. The unchanged preflight is now written as LF,
+BOM-free UTF-8 in the existing owned staging directory and sent through the
+verified binary stdin sender to sh -s. Distribution identity, payload hashes,
+redirect/hardlink refusal, error propagation and existing disks are preserved.
+Five real stock-PowerShell5.1-to-WSL regressions passed in an owned inert test
+distribution: actual preflight syntax, exact UTF-8/quotes/substitutions/Unicode
+bytes and execution, invalid distribution refusal, nonzero exit and partial
+pipe closure. The caller encoding is restored on success and failure.
+The maintained CUDA command skips native cases without explicit
+YOUGORI_CUDA_WSL_TEST_DISTRO opt-in; a Windows runtime release requires the
+opt-in and records exactly five passes with zero skips. No import, update or
+distribution termination is performed by these native fixtures. Fresh packages
+must embed this corrected script; historical package hashes remain historical.
+
 Host firewall, Secure Boot/HVCI, IOMMU, SMT/firmware settings and cloud-specific
 attestation require platform administration and hardware validation. They are
 not silently toggled by an application update. Kernel patching is still required.
