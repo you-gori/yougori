@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "d09602e6709b9a695168a7b6f4f28fd677331dd3",
+  "sourceCommit": "7d8cf856fcb76bf315afe24439372bff620362a0",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
@@ -2121,9 +2121,9 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "762f25ff841c71e4b9430ea851202c5f8ffcdfe04041e37513287ef70785b861",
+      "sha256": "824232f3fc07a74bba8eeaf480c91cc8d025df100786aa7d7e4886519440fb47",
       "normalization": "lf",
-      "bytes": 243393
+      "bytes": 243589
     },
     {
       "path": "compliance/evidence/firmware-provenance.json",
@@ -2349,9 +2349,9 @@
     },
     {
       "path": "package.json",
-      "sha256": "4d4d0fcefd2592ac954e5b739a97df494d525eebe6a524c84894faf4085fc0c5",
+      "sha256": "50daf6d4d21b8fd3c6ab697c7fe01eb7a5f74d60c53229c6722681ab30335702",
       "normalization": "lf",
-      "bytes": 7161
+      "bytes": 7270
     },
     {
       "path": "runtime/cuda/cleanup.sh",
@@ -2397,9 +2397,9 @@
     },
     {
       "path": "runtime/cuda/install.ps1",
-      "sha256": "ef63491fa1ab2e9b414806e2b09188b555a1470d63ddd7dc8cb4db4a344bacbf",
+      "sha256": "6c9a113c63f7b4acf454e62b67e6376081e357e5f21c3ce38e9e697a0f83f32c",
       "normalization": "lf",
-      "bytes": 15525
+      "bytes": 16036
     },
     {
       "path": "runtime/cuda/kernel-probe.c",
@@ -2894,6 +2894,12 @@
       "bytes": 16482
     },
     {
+      "path": "scripts/cuda-wsl-preflight-native.test.mjs",
+      "sha256": "4d261f36d2d6128a780c27e00f029dc693e909943ddbc8e0138ba78ade03410f",
+      "normalization": "lf",
+      "bytes": 7819
+    },
+    {
       "path": "scripts/desktop-dev.mjs",
       "sha256": "6dfef7939ade17ae66cef7009b80fbcb31e4863d3ce408eece973d7c4d2b6dd0",
       "normalization": "lf",
@@ -3129,9 +3135,9 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "d30587522b9712164b14a5a0715c5a4d40f457c69821d7a4d1a64c547c397a3e",
+      "sha256": "30695507691e11b685a83c1837098d8770076f2d351262839ae65b94ca49d3ba",
       "normalization": "lf",
-      "bytes": 15186
+      "bytes": 16705
     },
     {
       "path": "scripts/release-local.test.mjs",
@@ -7568,13 +7574,13 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "aa95ea386903a7662bf9c0e9ebbef2a1cdde58979b0991a5728cbac074a71860",
-      "bytes": 15495887
+      "sha256": "020027035958db5f44c8f39f527534f53890f8bb3d074d3b3ee5394bc184eeab",
+      "bytes": 15498309
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "22bd73bac5ec75ea4d82af41f253574f0efb12c9a53ea3a1877dbe7c879d968e",
-      "bytes": 11584828
+      "sha256": "3b3038fe0abfe6eb50c83c49e6190619357d8e22671f7b163fbed2a37e1c99af",
+      "bytes": 11587332
     }
   ],
   "components": [
@@ -7822,18 +7828,18 @@
       "id": "local-build-material",
       "status": "collected",
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "22bd73bac5ec75ea4d82af41f253574f0efb12c9a53ea3a1877dbe7c879d968e",
-      "bytes": 11584828
+      "sha256": "3b3038fe0abfe6eb50c83c49e6190619357d8e22671f7b163fbed2a37e1c99af",
+      "bytes": 11587332
     },
     {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "aa95ea386903a7662bf9c0e9ebbef2a1cdde58979b0991a5728cbac074a71860",
-      "bytes": 15495887,
+      "sha256": "020027035958db5f44c8f39f527534f53890f8bb3d074d3b3ee5394bc184eeab",
+      "bytes": 15498309,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "762f25ff841c71e4b9430ea851202c5f8ffcdfe04041e37513287ef70785b861",
-      "fileCount": 1289
+      "manifestSha256": "824232f3fc07a74bba8eeaf480c91cc8d025df100786aa7d7e4886519440fb47",
+      "fileCount": 1290
     },
     {
       "id": "alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f",
@@ -13369,7 +13375,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "5efb25088279abdbde73df36b88b069b52590af627f9294c7cd9d8ebf832cb53",
+  "reviewFingerprint": "9379f342af4b2790225ec87e7743dc9edb09830274f92b0b8990e7c40f71cafa",
   "review": {
     "status": "pending",
     "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",

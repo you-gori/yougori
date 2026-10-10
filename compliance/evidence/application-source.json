@@ -1603,8 +1603,8 @@
     },
     {
       "path": "docs/sandbox-security-review.txt",
-      "sha256": "81d5813c31814f9496d4c88f6ad6a4709dccff537844a02bc19a10c9d0e04801",
-      "bytes": 22099,
+      "sha256": "2d468884519b1018fbdd649050a6d9aaf64b2adac150b66a0be04185b88d21dc",
+      "bytes": 23317,
       "mode": 420
     },
     {
@@ -2029,8 +2029,8 @@
     },
     {
       "path": "package.json",
-      "sha256": "4d4d0fcefd2592ac954e5b739a97df494d525eebe6a524c84894faf4085fc0c5",
-      "bytes": 7161,
+      "sha256": "50daf6d4d21b8fd3c6ab697c7fe01eb7a5f74d60c53229c6722681ab30335702",
+      "bytes": 7270,
       "mode": 420
     },
     {
@@ -2107,8 +2107,8 @@
     },
     {
       "path": "runtime/cuda/install.ps1",
-      "sha256": "ef63491fa1ab2e9b414806e2b09188b555a1470d63ddd7dc8cb4db4a344bacbf",
-      "bytes": 15525,
+      "sha256": "6c9a113c63f7b4acf454e62b67e6376081e357e5f21c3ce38e9e697a0f83f32c",
+      "bytes": 16036,
       "mode": 420
     },
     {
@@ -2604,6 +2604,12 @@
       "mode": 420
     },
     {
+      "path": "scripts/cuda-wsl-preflight-native.test.mjs",
+      "sha256": "4d261f36d2d6128a780c27e00f029dc693e909943ddbc8e0138ba78ade03410f",
+      "bytes": 7819,
+      "mode": 420
+    },
+    {
       "path": "scripts/desktop-dev.mjs",
       "sha256": "6dfef7939ade17ae66cef7009b80fbcb31e4863d3ce408eece973d7c4d2b6dd0",
       "bytes": 6755,
@@ -2839,8 +2845,8 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "d30587522b9712164b14a5a0715c5a4d40f457c69821d7a4d1a64c547c397a3e",
-      "bytes": 15186,
+      "sha256": "30695507691e11b685a83c1837098d8770076f2d351262839ae65b94ca49d3ba",
+      "bytes": 16705,
       "mode": 420
     },
     {
