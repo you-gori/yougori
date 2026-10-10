@@ -341,6 +341,10 @@ impl RuntimeManager {
             "opendock-agent",
             "opendock-mount-helper",
             "opendock-cuda-probe",
+            "yougori-oci-runtime-linux-amd64.tar.gz",
+            "yougori-oci-runtime-linux-amd64.manifest.json",
+            "yougori-nvidia-cdi-linux-amd64.tar.gz",
+            "yougori-nvidia-cdi-linux-amd64.manifest.json",
         ] {
             let expected = include_str!("../../resources/runtime/cuda/SHA256SUMS")
                 .lines()

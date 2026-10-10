@@ -200,7 +200,7 @@ export async function preflight(root, env = process.env) {
     qemu: ["qemu-system-x86_64.exe", "qemu-img.exe", "share/edk2-x86_64-code.fd", "share/edk2-i386-vars.fd"],
     "qemu-secure": ["qemu-system-x86_64.exe", "opendock-tpm.dll", "opendock-tpm-init.exe", "opendock-tpm-worker.exe", "OVMF.qemuvars.fd", "secure-vars.json"],
     appliance: ["appliance-base.qcow2", "vmlinuz-virt", "initramfs-virt"],
-    cuda: ["opendock-agent", "opendock-mount-helper", "opendock-cuda-probe"],
+    cuda: ["opendock-agent", "opendock-mount-helper", "opendock-cuda-probe", "yougori-oci-runtime-linux-amd64.tar.gz", "yougori-oci-runtime-linux-amd64.manifest.json", "yougori-nvidia-cdi-linux-amd64.tar.gz", "yougori-nvidia-cdi-linux-amd64.manifest.json"],
   }
   for (const part of process.platform !== "win32" ? ["appliance"] : ["qemu", "qemu-secure", "appliance", "cuda"]) {
     const allowed = part === "appliance" ? ["storage-notices/SOURCES.md", "storage-notices/musl-COPYRIGHT.txt", "storage-notices/e2fsprogs-NOTICE.txt", "storage-notices/BUILD-PACKAGES.txt"] : []

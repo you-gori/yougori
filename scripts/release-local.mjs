@@ -167,6 +167,7 @@ async function main() {
     await npm("unit-tests", ["test"])
     await npm("source-collector-tests", ["run", "test:compliance"])
     await step("snapshot-tests", python, ["scripts/prepare-release-checkout.test.py"], candidate, candidateEnv)
+    await step("cuda-payload-tests", python, ["runtime/cuda/test_install_oci.py"], candidate, candidateEnv)
     await npm("frontend-build", ["run", "build"])
     await npm("browser-install", ["exec", "--", "playwright", "install", "chromium", "--no-shell"])
     await npm("browser-tests", ["run", "test:e2e"])

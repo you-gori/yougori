@@ -373,6 +373,7 @@ impl CudaRuntime {
             ("install.ps1", include_str!("../../install.ps1")),
             ("paths.ps1", include_str!("../../paths.ps1")),
             ("setup.sh", include_str!("../../setup.sh")),
+            ("install-oci.py", include_str!("../../install-oci.py")),
             ("start.sh", include_str!("../../start.sh")),
             ("wsl.conf", include_str!("../../wsl.conf")),
         ] {

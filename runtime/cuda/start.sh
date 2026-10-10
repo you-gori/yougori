@@ -11,7 +11,7 @@ export OPENDOCK_CUDA_MODE=1 OPENDOCK_CUDA_TOKEN
 export OPENDOCK_CUDA_LISTEN="127.0.0.1:$cuda_port"
 mkdir -p /run/cdi
 /usr/local/sbin/opendock-agent --prepare-container-storage
-nvidia-ctk cdi generate --output=/run/cdi/nvidia.yaml
+/usr/local/bin/nvidia-ctk cdi generate --nvidia-cdi-hook-path=/usr/local/bin/nvidia-cdi-hook --output=/run/cdi/nvidia.yaml
 containerd --config /etc/containerd/config.toml &
 containerd_pid=$!
 agent_pid=''
