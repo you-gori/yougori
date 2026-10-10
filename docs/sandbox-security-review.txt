@@ -121,6 +121,13 @@ Implemented controls
    applies compatible kernel/sysctl hardening while retaining required CNI,
    dynamic drivers, FUSE and GPU functions.
 
+7. Fresh primary-source vulnerability checks found security fixes beyond this
+   PDF. Custom Go agents/helpers now require verified Go 1.27.2. Reachable HTTP/2
+   dependencies use x/net 0.60.0 with updated x/sys/x/text. The patched appliance
+   and cloud-share source scans report zero findings with govulncheck 1.8.0.
+   The website release uses verified Node 24.21.0, replacing its older bundled
+   runtime; this does not replace the host's system Node installation.
+
 Retained protections and compatibility decisions
 
 The application already verifies bundled runtime checksums and preserves exact
@@ -160,6 +167,13 @@ The verified initramfs installs the current agent and trusted service/config
 files atomically before switching into an older preserved root filesystem. It
 rejects redirected ancestor paths and preserves user application data. Matching
 kernel modules still require release validation if a guest kernel version changes.
+The 512 MiB real migration test booted the same legacy overlay from kernel
+6.18.52 to 6.18.55 with its original backing image unchanged. Guest/app markers,
+real FUSE reads, CNI Internet and private-host denial passed. Matching kernel
+modules loaded, and the saved app gained no-new-privileges, seccomp and PID/cap
+limits. The boot updater handles Alpine's initially read-only root and fails on
+cleanup/restoration errors. This is tested version migration, not a guarantee
+that every historical/custom guest can be upgraded without separate validation.
 
 Release packages are previews when a trusted signing key is unavailable. An
 unsigned preview must not be promoted by removing the production signing gate.
@@ -189,3 +203,12 @@ Firecracker host-hardening guidance:
 https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md
 NVIDIA MIG hardware scope:
 https://docs.nvidia.com/datacenter/tesla/mig-user-guide/introduction.html
+Go security releases:
+https://go.dev/doc/devel/release
+Go net/http security advisories:
+https://pkg.go.dev/vuln/GO-2026-6613
+https://pkg.go.dev/vuln/GO-2026-6605
+HTTP/2 dependency advisory (fixed in x/net 0.60.0):
+https://pkg.go.dev/vuln/GO-2026-6611
+Node June 2026 security release:
+https://nodejs.org/en/blog/vulnerability/june-2026-security-releases

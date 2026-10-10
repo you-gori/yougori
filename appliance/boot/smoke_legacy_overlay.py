@@ -73,6 +73,9 @@ class VM:
         self.token = secrets.token_hex(32)
         self.port = unused_port()
         self.serial = args.workdir / (stage + "-serial.log")
+        # A repeated candidate phase must not interpret a previous boot's
+        # retained panic log before QEMU opens/truncates its serial output.
+        self.serial.unlink(missing_ok=True)
         self.log = (args.workdir / (stage + "-qemu.log")).open("wb")
         command = [args.qemu, "-machine", "q35", "-accel", args.accel, "-cpu", "max" if args.accel == "tcg" else "host",
                    "-m", "512", "-smp", "2", "-nodefaults", "-display", "none", "-monitor", "none",
@@ -197,7 +200,7 @@ def candidate_stage(args, server, report):
         assert vm.execute(command + "'cat /project/project.txt'") == PROJECT.decode()
         vm.execute(command + "'wget -q -T 20 -O /tmp/internet-result http://example.com; test -s /tmp/internet-result'")
         vm.execute(command + f"\"if wget -q -T 2 -O /tmp/private-host http://10.0.2.2:{server.server_port}/; then exit 1; fi\"")
-        report.update({"memoryMiB": 512, "sameOverlay": True, "filesPreserved": True, "fuseRead": True,
+        report.update({"status": "passed", "memoryMiB": 512, "sameOverlay": True, "filesPreserved": True, "fuseRead": True,
                        "internetCNI": True, "privateHostBlocked": True, "securityStatus": status,
                        "candidateInitramfsBytes": (args.candidate / "initramfs-virt").stat().st_size})
         vm.execute(f"nerdctl --namespace opendock stop --time 10 {ENVIRONMENT}; nerdctl --namespace yougori-workload stop --time 10 app")
