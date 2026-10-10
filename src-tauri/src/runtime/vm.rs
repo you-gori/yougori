@@ -2863,6 +2863,9 @@ impl RuntimeManager {
         } else {
             ""
         };
+        let (kernel, initrd) = micro_vm_boot_files(
+            manifest, &self.layout.appliance_kernel, &self.layout.appliance_initramfs,
+        )?;
         let disk_file = json!({
             "driver": "file",
             "filename": path_string(disk_path),
@@ -2924,7 +2927,7 @@ impl RuntimeManager {
             "-no-user-config".into(),
             "-nodefaults".into(),
             "-kernel".into(),
-            path_string(&manifest.kernel),
+            path_string(kernel),
             "-append".into(),
             cmdline,
             "-blockdev".into(),
@@ -2953,7 +2956,7 @@ impl RuntimeManager {
             if cfg!(any(target_os = "linux", target_os = "macos")) { "panic=pause" } else { "panic=exit-failure" }.into(),
             "-no-reboot".into(),
         ];
-        if let Some(initrd) = manifest.initrd.as_ref() {
+        if let Some(initrd) = initrd {
             arguments.extend(["-initrd".into(), path_string(initrd)]);
         }
         arguments.extend(["-cpu".into(), full_vm_cpu_model(accelerator).into()]);
@@ -3448,13 +3451,13 @@ async fn read_managed_micro_vm_manifest(path: &Path) -> Result<ManagedMicroVmMan
         ));
     }
     validate_micro_vm_cmdline(&manifest.cmdline)?;
-    if !manifest.kernel.is_file() {
+    if !manifest.builtin && !manifest.kernel.is_file() {
         return Err(format!(
             "managed microVM kernel is missing: {}",
             manifest.kernel.display()
         ));
     }
-    if let Some(initrd) = manifest.initrd.as_ref() {
+    if let Some(initrd) = manifest.initrd.as_ref().filter(|_| !manifest.builtin) {
         if !initrd.is_file() {
             return Err(format!(
                 "managed microVM initramfs is missing: {}",
@@ -3463,6 +3466,27 @@ async fn read_managed_micro_vm_manifest(path: &Path) -> Result<ManagedMicroVmMan
         }
     }
     Ok(manifest)
+}
+
+fn micro_vm_boot_files<'a>(
+    manifest: &'a ManagedMicroVmManifest,
+    current_kernel: &'a Path,
+    current_initrd: &'a Path,
+) -> Result<(&'a Path, Option<&'a Path>), String> {
+    // Built-in disks use this installation's verified boot upgrade, even if
+    // their metadata came from an older/source installation. Custom guests
+    // retain their selected kernel and optional initramfs without mutation.
+    let (kernel, initrd) = if manifest.builtin {
+        (current_kernel, Some(current_initrd))
+    } else {
+        (manifest.kernel.as_path(), manifest.initrd.as_deref())
+    };
+    for (label, file) in [("kernel", Some(kernel)), ("initramfs", initrd)] {
+        if file.is_some_and(|path| !path.is_file()) {
+            return Err(format!("Selected microVM {label} is missing; no older boot fallback was attempted"));
+        }
+    }
+    Ok((kernel, initrd))
 }
 
 pub(super) async fn write_durable_file(path: PathBuf, bytes: Vec<u8>) -> Result<(), String> {
@@ -4340,6 +4364,47 @@ mod tests {
             .await
             .unwrap_err()
             .contains("1 MiB safety limit"));
+    }
+
+    #[tokio::test]
+    async fn builtin_micro_vm_uses_current_boot_upgrade_without_rewriting_custom_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let current_kernel = directory.path().join("current-kernel");
+        let current_initrd = directory.path().join("current-initrd");
+        fs::write(&current_kernel, b"current").unwrap();
+        fs::write(&current_initrd, b"trusted upgrade").unwrap();
+        let path = directory.path().join("microvm.json");
+        let saved = ManagedMicroVmManifest {
+            version: MICRO_VM_MANIFEST_VERSION,
+            builtin: true,
+            kernel: directory.path().join("removed-install/kernel"),
+            initrd: Some(directory.path().join("removed-install/initrd")),
+            cmdline: "root=/dev/vda rw console=ttyS0 custom-option=keep".into(),
+        };
+        let original = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &original).unwrap();
+        let manifest = read_managed_micro_vm_manifest(&path).await.unwrap();
+        let (kernel, initrd) = micro_vm_boot_files(&manifest, &current_kernel, &current_initrd).unwrap();
+        assert_eq!(kernel, current_kernel);
+        assert_eq!(initrd, Some(current_initrd.as_path()));
+        assert_eq!(manifest.cmdline, saved.cmdline);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_file(&current_initrd).unwrap();
+        assert!(micro_vm_boot_files(&manifest, &current_kernel, &current_initrd).is_err());
+
+        let custom_kernel = directory.path().join("custom-kernel");
+        fs::write(&custom_kernel, b"custom").unwrap();
+        let mut custom = saved.clone();
+        custom.builtin = false;
+        custom.kernel = custom_kernel.clone();
+        custom.initrd = None;
+        fs::write(&path, serde_json::to_vec(&custom).unwrap()).unwrap();
+        let custom = read_managed_micro_vm_manifest(&path).await.unwrap();
+        let (kernel, initrd) = micro_vm_boot_files(&custom, &current_kernel, &current_initrd).unwrap();
+        assert_eq!(kernel, custom_kernel);
+        assert!(initrd.is_none());
+        fs::remove_file(&custom_kernel).unwrap();
+        assert!(read_managed_micro_vm_manifest(&path).await.is_err());
     }
 
     #[tokio::test]

@@ -57,6 +57,9 @@ struct State {
 }
 struct Peer {
     gateway_access: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // Reserve the authorized gateway port until the peer ends. Keeping only
+    // the accepted stream would let another listener reuse the allowed port.
+    gateway_listener: Option<tokio::net::TcpListener>,
     file_context: Option<super::connection_files::SharedFiles>,
     files: Option<mpsc::Sender<Vec<u8>>>,
     identity: ([u8; 4], [u8; 6]),
@@ -185,6 +188,7 @@ impl Fabric {
             id.into(),
             Peer {
                 gateway_access: None,
+                gateway_listener: None,
                 file_context: None,
                 files: None,
                 identity: address(id),
@@ -658,7 +662,7 @@ impl RuntimeManager {
             uuid::Uuid::new_v4().simple()
         );
         let gateway_access = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        self.grant_qemu_host_service(id, port, Arc::downgrade(&gateway_access)).await?;
+        self.grant_qemu_host_service(id, port, Arc::downgrade(&gateway_access), true).await?;
         self.workspace_request(environment,"/v1/fabric/attach",serde_json::json!({"id":id,"port":port,"token":token,"address":ip_text(id),"mac":mac_text(id)})).await?;
         let stream = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -678,6 +682,7 @@ impl RuntimeManager {
         self.fabric.attach(id, stream)?;
         if let Some(peer) = self.fabric.0.lock().map_err(|_| "Private network unavailable")?.peers.get_mut(id) {
             peer.gateway_access = Some(gateway_access);
+            peer.gateway_listener = Some(listener);
         }
         Ok(())
     }

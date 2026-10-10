@@ -429,6 +429,15 @@ mod tests {
             let vm = runtime
                 .provision_micro_vm("internet-test", "builtin:alpine")
                 .await?;
+            // Model an existing built-in disk whose old installation was
+            // removed. It must boot this installation's trusted upgrade files.
+            let mut saved: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(&vm.source_path).map_err(|error| error.to_string())?
+            ).map_err(|error| error.to_string())?;
+            saved["kernel"] = serde_json::json!(data.path().join("removed-install/kernel"));
+            saved["initrd"] = serde_json::json!(data.path().join("removed-install/initrd"));
+            std::fs::write(&vm.source_path, serde_json::to_vec(&saved).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
             let policy = ResourcePolicy {
                 cpu: ResourceRange {
                     min: 1.,
@@ -455,9 +464,20 @@ mod tests {
                 )
                 .await?;
             let host_service = Arc::new(AtomicBool::new(true));
-            runtime.grant_qemu_host_service("internet-test", port, Arc::downgrade(&host_service)).await?;
+            runtime.grant_qemu_host_service("internet-test", port, Arc::downgrade(&host_service), false).await?;
+            let qmp_port = runtime.vms.lock().await.get("internet-test")
+                .ok_or("MicroVM disappeared during host isolation test")?.qmp_port;
+            // Prove this is an active management listener before testing its
+            // guest isolation; a stale/unbound port would give a false pass.
+            crate::runtime::vm::qmp_request(qmp_port, "query-status", None).await?;
             for enabled in [false, true, false, true] {
                 runtime.update_vm_internet("internet-test", enabled).await?;
+                let blocked_qmp = runtime.execute_micro_vm_command("internet-test", &format!(
+                    "command -v nc >/dev/null && command -v timeout >/dev/null || exit 42; if timeout 3 nc -w 2 10.0.2.2:{qmp_port} </dev/null; then echo HOST_SOCKET_OPEN; exit 41; fi; echo HOST_SOCKET_BLOCKED"
+                )).await?;
+                if blocked_qmp.exit_code != 0 || !blocked_qmp.stdout.contains("HOST_SOCKET_BLOCKED") {
+                    return Err(format!("guest reached host QMP with internet={enabled}: {blocked_qmp:?}"));
+                }
                 let management = runtime
                     .execute_micro_vm_command(
                         "internet-test",
@@ -478,6 +498,37 @@ mod tests {
                 if (external.exit_code == 0) != enabled {
                     return Err(format!("internet={enabled} not enforced: {external:?}"));
                 }
+            }
+            // Keep the HTTP listener alive while revoking its grant. Failure
+            // must be enforced by the filter, rather than a closed host socket.
+            host_service.store(false, Ordering::Release);
+            let revoked = runtime.execute_micro_vm_command("internet-test", &format!(
+                "wget -T 2 -qO- http://10.0.2.2:{port}"
+            )).await?;
+            if revoked.exit_code == 0 {
+                return Err("revoked host service remained reachable with Internet enabled".into());
+            }
+            {
+                let processes = runtime.vms.lock().await;
+                processes.get("internet-test").and_then(|process| process.internet.as_ref())
+                    .ok_or("MicroVM filter disappeared")?.set_local_services(&[port])?;
+            }
+            let published = runtime.execute_micro_vm_command("internet-test", &format!(
+                "wget -T 3 -qO- http://10.0.2.2:{port}"
+            )).await?;
+            if published.exit_code != 0 || published.stdout != "OK" {
+                return Err(format!("explicit local service publication failed: {published:?}"));
+            }
+            {
+                let processes = runtime.vms.lock().await;
+                processes.get("internet-test").and_then(|process| process.internet.as_ref())
+                    .ok_or("MicroVM filter disappeared")?.set_local_services(&[])?;
+            }
+            let unpublished = runtime.execute_micro_vm_command("internet-test", &format!(
+                "wget -T 2 -qO- http://10.0.2.2:{port}"
+            )).await?;
+            if unpublished.exit_code == 0 {
+                return Err("removed local service publication remained reachable".into());
             }
             runtime.vm_action("internet-test", "pause").await?;
             runtime.update_vm_internet("internet-test", false).await?;

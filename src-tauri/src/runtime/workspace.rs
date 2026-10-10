@@ -26,9 +26,6 @@ impl RuntimeManager {
                 }
             }
         }
-        if let Some(process) = self.appliance.lock().await.as_ref() {
-            process.internet.set_local_services(ports)?;
-        }
         let mut qemu_ids = Vec::new();
         let mut cuda_ids = Vec::new();
         for id in ids {
@@ -45,7 +42,14 @@ impl RuntimeManager {
                 _ => None,
             }
         };
-        if let Some(endpoint) = endpoint { batches.push((qemu_ids, endpoint, false)); }
+        if let Some(endpoint) = endpoint {
+            if let Some(process) = self.appliance.lock().await.as_ref() {
+                process.internet.set_local_services(if qemu_ids.is_empty() { &[] } else { ports })?;
+            }
+            if !qemu_ids.is_empty() {
+                batches.push((qemu_ids, endpoint, false));
+            }
+        }
         if let Ok(endpoint) = self.cuda.current_endpoint().await {
             batches.push((cuda_ids, super::AgentEndpoint { base_url: endpoint.base_url, token: endpoint.token }, true));
         }

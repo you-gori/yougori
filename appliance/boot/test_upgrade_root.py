@@ -2,9 +2,12 @@
 
 from pathlib import Path
 import importlib.util
+import hashlib
+import io
 import os
 import subprocess
 import tempfile
+import tarfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +27,17 @@ class BootUpgradeTests(unittest.TestCase):
             source = payload / name
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_bytes(b"current-security-payload:" + name.encode())
+        modules = payload / "usr/local/lib/yougori-boot"
+        modules.mkdir(parents=True, exist_ok=True)
+        kernel = os.uname().release
+        (modules / "kernel-version").write_text(kernel + "\n")
+        archive = modules / "kernel-modules.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            info = tarfile.TarInfo(kernel + "/kernel/fs/fuse/fuse.ko")
+            info.size = len(b"trusted-module")
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(b"trusted-module"))
+        (modules / "kernel-modules.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + "\n")
         return root, payload
 
     def run_upgrade(self, root, payload):
@@ -44,6 +58,7 @@ class BootUpgradeTests(unittest.TestCase):
             self.assertEqual(legacy_agent.stat().st_mode & 0o777, 0o755)
             self.assertEqual((root / "etc/sysctl.d/90-yougori-security.conf").stat().st_mode & 0o777, 0o644)
             self.assertEqual(application.read_bytes(), b"user data stays byte-for-byte")
+            self.assertEqual((root / "lib/modules" / os.uname().release / "kernel/fs/fuse/fuse.ko").read_bytes(), b"trusted-module")
             result = self.run_upgrade(root, payload)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             self.assertEqual(application.read_bytes(), b"user data stays byte-for-byte")
@@ -97,6 +112,45 @@ class BootUpgradeTests(unittest.TestCase):
         for malformed in ["exec switch_root /sysroot /sbin/init\n", source + 'exec switch_root $sysroot "$KOPT_init"\n']:
             with self.assertRaises(ValueError):
                 prepare.patch_init(malformed)
+
+    def test_modules_reject_wrong_version_and_tampered_archive(self):
+        for tamper in ("version", "archive"):
+            with self.subTest(tamper=tamper), tempfile.TemporaryDirectory() as temp:
+                root, payload = self.fixture(temp)
+                modules = payload / "usr/local/lib/yougori-boot"
+                if tamper == "version":
+                    (modules / "kernel-version").write_text("wrong-kernel\n")
+                else:
+                    with (modules / "kernel-modules.tar.gz").open("ab") as archive:
+                        archive.write(b"tampered")
+                result = self.run_upgrade(root, payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((root / "usr/local/sbin/opendock-agent").exists())
+
+    def test_module_archive_is_deterministic_and_rejects_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            module = root / "lib/modules/6.18.55-0-virt/kernel/fs/fuse/fuse.ko"
+            module.parent.mkdir(parents=True)
+            module.write_bytes(b"trusted-module")
+            (module.parents[3] / "vmlinuz").symlink_to("/boot/vmlinuz-virt")
+            prepare.prepare_modules(root)
+            archive = root / "usr/local/lib/yougori-boot/kernel-modules.tar.gz"
+            before = archive.read_bytes()
+            prepare.prepare_modules(root)
+            self.assertEqual(before, archive.read_bytes())
+            (module.parent / "escape.ko").symlink_to("/etc/passwd")
+            with self.assertRaises(ValueError):
+                prepare.prepare_modules(root)
+
+    def test_supports_only_expected_usr_library_alias(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, payload = self.fixture(temp)
+            (root / "usr/lib").mkdir(parents=True)
+            (root / "lib").symlink_to("usr/lib", target_is_directory=True)
+            result = self.run_upgrade(root, payload)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual((root / "usr/lib/modules" / os.uname().release / "kernel/fs/fuse/fuse.ko").read_bytes(), b"trusted-module")
 
 
 if __name__ == "__main__":

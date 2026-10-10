@@ -6,6 +6,7 @@ fn peer(fabric: &Fabric, id: &str) -> mpsc::Receiver<Vec<u8>> {
         id.into(),
         Peer {
             gateway_access: None,
+            gateway_listener: None,
             file_context: None,
             files: None,
             identity: address(id),

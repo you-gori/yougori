@@ -146,7 +146,7 @@ install -D -m 0644 "$repo_root/appliance/rootfs/etc/sysctl.d/90-yougori-security
 install -m 0755 "$repo_root/appliance/boot/upgrade-root.sh" "$rootfs/usr/local/sbin/yougori-upgrade-root"
 
 # A preserved appliance overlay retains its old backing image. Ship the
-# current agent/configs in the verified initramfs so the next boot updates
+# current agent/configs and matching kernel modules in the verified initramfs so the next boot updates
 # product-owned files without rebasing or discarding any application data.
 python3 "$repo_root/scripts/prepare-appliance-initramfs.py" "$rootfs" "$work_directory/initramfs-init"
 install -m 0755 "$work_directory/initramfs-init" "$rootfs/usr/share/mkinitfs/yougori-init"
