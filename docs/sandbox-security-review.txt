@@ -136,6 +136,33 @@ Implemented controls
    deliberate recreation. This differs from the managed guest's in-place OCI
    specification migration and is a documented compatibility limit.
 
+9. The third-party OCI runtime is rebuilt from verified source commits instead
+   of reusing the older nerdctl-full binary distribution. Containerd 2.3.6 fixes
+   an OCI image-index pull denial of service relevant to image creation here.
+   Its shim, nerdctl, runc and exactly six consumed CNI plugins use Go 1.27.2
+   and frozen dependency updates. Runc retains syscall filtering with patched
+   libseccomp 2.6.1 and musl 1.2.6-r2; containerd retains its static BTRFS support.
+   Build records identify native link inputs, source patches and exact outputs.
+   Unused upstream BuildKit and rootless helper executables are not packaged.
+
+10. Existing CUDA disks receive the same verified OCI executable updates before
+    any daemon starts, including installations whose dependency-ready marker
+    already exists. The updater verifies the complete bounded archive, exact
+    paths, architecture, modes and hashes before atomic leaf replacements. It
+    rejects redirected directories and retains backups if rollback fails. The
+    two NVIDIA CDI tools have a separate explicit allowlist; GPU device discovery
+    selects the verified hook path. Existing configuration, image layers and
+    application data are preserved. The minimum-memory preserved-disk migration
+    and actual GPU acceptance must pass for the final packaged release bytes.
+
+Binary vulnerability scans identify retained symbols, which are not proof of an
+exploitable application path. The official NVIDIA 1.20.0 package already exceeds
+the 1.19.1 fix for CVE-2026-24260, but its older Go compiler still warrants a
+source rebuild of the two consumed CDI tools. The source and binary scan records
+state their exact scope and retain any platform-only or unreachable findings.
+No report of zero findings extends to the host driver, all system packages or
+unexamined third-party commands.
+
 Retained protections and compatibility decisions
 
 The application already verifies bundled runtime checksums and preserves exact
@@ -220,3 +247,9 @@ HTTP/2 dependency advisory (fixed in x/net 0.60.0):
 https://pkg.go.dev/vuln/GO-2026-6611
 Node June 2026 security release:
 https://nodejs.org/en/blog/vulnerability/june-2026-security-releases
+Containerd OCI image-index pull advisory (fixed in 2.3.6):
+https://github.com/containerd/containerd/security/advisories/GHSA-pg57-6jwg-q645
+Libseccomp 2.6.1 fixes and supported release:
+https://github.com/seccomp/libseccomp/releases/tag/v2.6.1
+NVIDIA June 2026 Container Toolkit security bulletin:
+https://nvidia.custhelp.com/app/answers/detail/a_id/5850
