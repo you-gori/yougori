@@ -59,7 +59,69 @@ fn is_volume_root(path: &Path) -> bool {
         && components.next().is_none()
 }
 
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let mut path = path.components();
+        // Windows path spelling is case insensitive. A case-only spelling
+        // change must never turn managed data into an allowed share.
+        return root.components().all(|root_component| path.next().is_some_and(|component| {
+            component.as_os_str().to_string_lossy().to_lowercase()
+                == root_component.as_os_str().to_string_lossy().to_lowercase()
+        }));
+    }
+    #[cfg(not(windows))]
+    path.starts_with(root)
+}
+
+fn is_redirected(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Junctions and other reparse points need the same treatment as links.
+        return metadata.file_attributes() & 0x400 != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn validate_managed_directory(root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path.strip_prefix(root).map_err(|_| "native branch path is outside managed data")?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        if !matches!(component, Component::Normal(_)) {
+            return Err("native branch path has an unsafe component".into());
+        }
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if !metadata.is_dir() || is_redirected(&metadata) => {
+                return Err("native branch directories must not be links or reparse points".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect native branch directory: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn validate_resource_limits(cpu_cores: f64, memory_gb: f64) -> Result<(), String> {
+    if !cpu_cores.is_finite() || cpu_cores <= 0.0
+        || !memory_gb.is_finite() || memory_gb <= 0.0
+        || memory_gb * 1_073_741_824.0 >= usize::MAX as f64
+    {
+        return Err("native sandbox resources must be finite positive CPU and memory limits".into());
+    }
+    Ok(())
+}
+
 fn normalize_policy(policy: &SandboxPolicy, managed_root: &Path) -> Result<SandboxPolicy, String> {
+    if policy.executable.contains('\0') || policy.arguments.contains('\0') {
+        return Err("native sandbox launch parameters contain a NUL character".into());
+    }
     let executable = PathBuf::from(policy.executable.trim());
     if !executable.is_file() {
         return Err(format!(
@@ -77,9 +139,14 @@ fn normalize_policy(policy: &SandboxPolicy, managed_root: &Path) -> Result<Sandb
     let executable = executable
         .canonicalize()
         .map_err(|error| format!("resolve application path: {error}"))?;
-    let managed_root = managed_root
-        .canonicalize()
-        .unwrap_or_else(|_| managed_root.to_path_buf());
+    let managed_root = canonical_directory(managed_root, "managed data directory")?;
+    let application_directory = executable.parent().ok_or("application has no parent directory")?;
+    if is_volume_root(application_directory)
+        || path_is_within(application_directory, &managed_root)
+        || path_is_within(&managed_root, application_directory)
+    {
+        return Err("The application directory cannot expose a whole drive or Yougori's managed data".into());
+    }
 
     let mut shares: Vec<SandboxShare> = Vec::new();
     for share in &policy.shares {
@@ -90,7 +157,7 @@ fn normalize_policy(policy: &SandboxPolicy, managed_root: &Path) -> Result<Sandb
                 path.display()
             ));
         }
-        if path.starts_with(&managed_root) || managed_root.starts_with(&path) {
+        if path_is_within(&path, &managed_root) || path_is_within(&managed_root, &path) {
             return Err("Yougori's managed data directory cannot be shared with a branch".into());
         }
         if let Some(existing) = shares
@@ -120,7 +187,9 @@ fn normalize_policy(policy: &SandboxPolicy, managed_root: &Path) -> Result<Sandb
 impl RuntimeManager {
     fn sandbox_root(&self, id: &str) -> Result<PathBuf, String> {
         validate_id(id)?;
-        Ok(self.data_root.join("environments").join(id))
+        let root = self.data_root.join("environments").join(id);
+        validate_managed_directory(&self.data_root, &root)?;
+        Ok(root)
     }
 
     pub async fn provision_native_sandbox(
@@ -130,6 +199,7 @@ impl RuntimeManager {
     ) -> Result<SandboxProvisionResult, String> {
         let root = self.sandbox_root(id)?;
         let workspace = root.join("workspace");
+        validate_managed_directory(&self.data_root, &workspace.join("Temp"))?;
         fs::create_dir_all(workspace.join("Temp"))
             .map_err(|error| format!("create native branch workspace: {error}"))?;
         let normalized = normalize_policy(policy, &self.data_root)?;
@@ -154,6 +224,8 @@ impl RuntimeManager {
         if workspace != expected_workspace {
             return Err("native branch workspace metadata is invalid".into());
         }
+        validate_managed_directory(&self.data_root, &workspace.join("Temp"))?;
+        validate_resource_limits(resources.cpu.preferred, resources.memory_gb.preferred)?;
         let normalized = normalize_policy(policy, &self.data_root)?;
         platform::prepare_profile_and_access(id, workspace, &normalized).await?;
         let process = platform::launch(id, workspace, &normalized, resources)?;
@@ -280,19 +352,21 @@ mod platform {
                 JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
                 JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
-                JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             },
             Threading::{
                 CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
                 InitializeProcThreadAttributeList, ResumeThread, UpdateProcThreadAttribute,
-                WaitForSingleObject, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+                TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED,
+                CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
                 PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW,
             },
         },
     };
 
     use super::{
-        profile_name, Command, NativeSandboxProcess, ResourcePolicy, SandboxFileAccess,
+        profile_name, validate_resource_limits, Command, NativeSandboxProcess, ResourcePolicy, SandboxFileAccess,
         SandboxPolicy,
     };
 
@@ -362,7 +436,8 @@ mod platform {
     }
 
     fn run_icacls(path: &Path, sid: &str, permission: &str, remove: bool) -> Result<(), String> {
-        let mut command = Command::new("icacls.exe");
+        let system_root = std::env::var_os("SystemRoot").ok_or("Windows system directory is unavailable")?;
+        let mut command = Command::new(Path::new(&system_root).join("System32/icacls.exe"));
         command.arg(path);
         if remove {
             command.args(["/remove:g", &format!("*{sid}")]);
@@ -372,7 +447,9 @@ mod platform {
         // An inheritable ACE on the selected directory covers its normal
         // descendants without rewriting every file ACL. This keeps setup fast
         // and avoids touching an entire application tree or shared workspace.
-        command.args(["/C", "/Q"]);
+        command.arg("/Q");
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -405,6 +482,16 @@ mod platform {
         unsafe { LocalFree(sid.cast()) };
         let identity = identity?;
 
+        // CreateProcess rewrites TEMP for an AppContainer using its package
+        // name under LOCALAPPDATA. Prepare that location too, so applications
+        // can immediately create temporary files with the private environment.
+        let package_temp = format!("AppData/Local/Packages/{}/AC/Temp", profile_name(id)?.to_ascii_lowercase());
+        for directory in ["Temp", "AppData/Local", "AppData/Roaming", &package_temp] {
+            let path = workspace.join(directory);
+            // Existing workspace children are untrusted application output.
+            super::validate_managed_directory(workspace, &path)?;
+            std::fs::create_dir_all(path).map_err(|error| format!("create private application directory: {error}"))?;
+        }
         run_icacls(workspace, &identity, "(OI)(CI)(M)", false)?;
         let executable = Path::new(&policy.executable);
         let application_directory = executable
@@ -537,12 +624,50 @@ mod platform {
         result
     }
 
+    fn private_environment(workspace: &Path, application: &Path) -> Result<Vec<u16>, String> {
+        let system_root = std::env::var_os("SystemRoot").ok_or("Windows system directory is unavailable")?;
+        let mut entries = Vec::<(String, std::ffi::OsString)>::new();
+        // Only OS directory/architecture hints cross the boundary. API keys,
+        // access tokens, proxies, loader hooks and other host variables do not.
+        for name in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData",
+            "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"] {
+            if let Some(value) = std::env::var_os(name) {
+                entries.push((name.into(), value));
+            }
+        }
+        entries.extend([
+            ("SystemRoot".into(), system_root.clone()),
+            ("WINDIR".into(), system_root.clone()),
+            ("USERPROFILE".into(), workspace.as_os_str().to_owned()),
+            ("TEMP".into(), workspace.join("Temp").into_os_string()),
+            ("TMP".into(), workspace.join("Temp").into_os_string()),
+            ("APPDATA".into(), workspace.join("AppData/Roaming").into_os_string()),
+            ("LOCALAPPDATA".into(), workspace.join("AppData/Local").into_os_string()),
+            ("PATH".into(), std::env::join_paths([
+                application.parent().ok_or("application has no parent directory")?,
+                &Path::new(&system_root).join("System32"), Path::new(&system_root),
+            ]).map_err(|error| format!("create sandbox executable search path: {error}"))?),
+        ]);
+        entries.sort_by(|left, right| left.0.to_ascii_uppercase().cmp(&right.0.to_ascii_uppercase()));
+        let mut block = Vec::new();
+        for (name, value) in entries {
+            block.extend(OsStr::new(&name).encode_wide());
+            block.push('=' as u16);
+            block.extend(value.encode_wide());
+            block.push(0);
+        }
+        block.push(0);
+        Ok(block)
+    }
+
     pub fn launch(
         id: &str,
         workspace: &Path,
         policy: &SandboxPolicy,
         resources: &ResourcePolicy,
     ) -> Result<NativeSandboxProcess, String> {
+        validate_resource_limits(resources.cpu.preferred, resources.memory_gb.preferred)?;
+        let environment = private_environment(workspace, Path::new(&policy.executable))?;
         unsafe {
             let package_sid = profile_sid(id)?;
             let internet = if policy.network_access {
@@ -643,8 +768,8 @@ mod platform {
                 null(),
                 null(),
                 0,
-                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                null(),
+                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                environment.as_ptr().cast(),
                 current_directory.as_ptr(),
                 &startup.StartupInfo,
                 &mut process_info,
@@ -656,11 +781,14 @@ mod platform {
                 return Err(windows_error("launch application in native sandbox"));
             }
             if AssignProcessToJobObject(job, process_info.hProcess) == 0 {
-                TerminateJobObject(job, 1);
+                // Assignment failed, so terminating the empty job does not
+                // terminate this suspended child. Kill the child directly.
+                let error = windows_error("contain native sandbox process tree");
+                TerminateProcess(process_info.hProcess, 1);
                 CloseHandle(process_info.hThread);
                 CloseHandle(process_info.hProcess);
                 CloseHandle(job);
-                return Err(windows_error("contain native sandbox process tree"));
+                return Err(error);
             }
             if ResumeThread(process_info.hThread) == u32::MAX {
                 TerminateJobObject(job, 1);
@@ -684,14 +812,16 @@ mod platform {
         cpu_cores: f64,
         memory_gb: f64,
     ) -> Result<(), String> {
+        validate_resource_limits(cpu_cores, memory_gb)?;
         if process.job_handle == 0 {
             return Err("native sandbox process group is unavailable".into());
         }
         let job = process.job_handle as HANDLE;
         let mut extended = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         extended.BasicLimitInformation.LimitFlags =
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_JOB_MEMORY;
-        extended.JobMemoryLimit = (memory_gb.max(0.25) * 1_073_741_824.0) as usize;
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        extended.BasicLimitInformation.ActiveProcessLimit = 512;
+        extended.JobMemoryLimit = (memory_gb * 1_073_741_824.0).ceil().max(1.0) as usize;
         if unsafe {
             SetInformationJobObject(
                 job,
@@ -707,7 +837,7 @@ mod platform {
         let host_cpus = std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1) as f64;
-        let rate = ((cpu_cores.max(0.1) / host_cpus) * 10_000.0)
+        let rate = ((cpu_cores / host_cpus) * 10_000.0)
             .round()
             .clamp(1.0, 10_000.0) as u32;
         let mut cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
@@ -864,9 +994,10 @@ mod tests {
     fn normalizes_and_deduplicates_explicit_folder_access() {
         let temp = tempfile::tempdir().unwrap();
         let managed = temp.path().join("managed");
-        let application = temp.path().join("application.exe");
+        let application = temp.path().join("application/application.exe");
         let shared = temp.path().join("shared");
         fs::create_dir_all(&managed).unwrap();
+        fs::create_dir_all(application.parent().unwrap()).unwrap();
         fs::create_dir_all(&shared).unwrap();
         fs::write(&application, b"test executable placeholder").unwrap();
         let policy = SandboxPolicy {
@@ -895,8 +1026,9 @@ mod tests {
     fn rejects_access_to_managed_runtime_data() {
         let temp = tempfile::tempdir().unwrap();
         let managed = temp.path().join("managed");
-        let application = temp.path().join("application.exe");
+        let application = temp.path().join("application/application.exe");
         fs::create_dir_all(&managed).unwrap();
+        fs::create_dir_all(application.parent().unwrap()).unwrap();
         fs::write(&application, b"test executable placeholder").unwrap();
         let policy = SandboxPolicy {
             executable: application.to_string_lossy().into_owned(),
@@ -911,6 +1043,96 @@ mod tests {
         assert!(normalize_policy(&policy, &managed).is_err());
     }
 
+    #[test]
+    fn application_access_cannot_expose_managed_data_or_truncate_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let managed = temp.path().join("managed");
+        fs::create_dir_all(&managed).unwrap();
+        let application = temp.path().join("application.exe");
+        fs::write(&application, b"test").unwrap();
+        let mut policy = SandboxPolicy {
+            executable: application.to_string_lossy().into_owned(),
+            arguments: String::new(), shares: Vec::new(), network_access: false,
+        };
+        // Its parent contains managed data; an inheritable RX grant would expose it.
+        assert!(normalize_policy(&policy, &managed).is_err());
+        let directory = temp.path().join("app");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("app.exe"), b"test").unwrap();
+        policy.executable = directory.join("app.exe").to_string_lossy().into_owned();
+        assert!(normalize_policy(&policy, &managed).is_ok());
+        policy.arguments = "--safe\0 --other".into();
+        assert!(normalize_policy(&policy, &managed).is_err());
+        assert!(normalize_policy(&policy, &temp.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn resources_must_have_enforceable_finite_limits() {
+        assert!(validate_resource_limits(1.0, 0.5).is_ok());
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0] {
+            assert!(validate_resource_limits(invalid, 0.5).is_err());
+            assert!(validate_resource_limits(1.0, invalid).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_directories_reject_junctions_before_access_or_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let managed = temp.path().join("managed");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&managed).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let redirected = managed.join("redirected");
+        let status = Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(&redirected).arg(&outside).status().unwrap();
+        assert!(status.success());
+        assert!(validate_managed_directory(&managed, &redirected.join("workspace")).is_err());
+        // Remove only the junction itself, never its target.
+        fs::remove_dir(&redirected).unwrap();
+        assert!(outside.is_dir());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "child probe; run through launches_a_real_appcontainer_process"]
+    fn appcontainer_boundary_probe() {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            Security::{GetTokenInformation, TokenIsAppContainer, TOKEN_QUERY},
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        };
+        let workspace = std::env::current_dir().unwrap();
+        let fixture: serde_json::Value = serde_json::from_slice(&fs::read(workspace.join("probe.json")).unwrap()).unwrap();
+        let mut token = std::ptr::null_mut();
+        let mut appcontainer = 0_u32;
+        let mut length = 0_u32;
+        unsafe {
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token), 0);
+            let queried = GetTokenInformation(token, TokenIsAppContainer,
+                (&mut appcontainer as *mut u32).cast(), std::mem::size_of::<u32>() as u32, &mut length);
+            CloseHandle(token);
+            assert_ne!(queried, 0);
+        }
+        assert_eq!(appcontainer, 1);
+        assert_eq!(Path::new(&std::env::var_os("USERPROFILE").unwrap()), workspace.as_path());
+        // Windows may append the AppContainer package's AC/Temp path. Every
+        // temporary directory must still be inside this branch workspace.
+        assert!(path_is_within(Path::new(&std::env::var_os("TEMP").unwrap()), &workspace));
+        fs::write(Path::new(&std::env::var_os("TEMP").unwrap()).join("probe.tmp"), b"private temp").unwrap();
+        for name in ["OPENAI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "HTTP_PROXY"] {
+            assert!(std::env::var_os(name).is_none());
+        }
+        fs::write(workspace.join("output.txt"), b"permitted").unwrap();
+        assert!(fs::read(fixture["denied"].as_str().unwrap()).is_err());
+        let readonly = fixture["readonly"].as_str().unwrap();
+        assert_eq!(fs::read(readonly).unwrap(), b"read only");
+        assert!(fs::write(readonly, b"must fail").is_err());
+        let address = fixture["hostAddress"].as_str().unwrap().parse().unwrap();
+        assert!(std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(1)).is_err());
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test]
     #[ignore = "creates a real Windows AppContainer profile and launches a process"]
@@ -918,11 +1140,23 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
+        let readonly = temp.path().join("readonly");
+        fs::create_dir(&readonly).unwrap();
+        fs::write(readonly.join("input.txt"), b"read only").unwrap();
+        let denied = temp.path().join("host-secret.txt");
+        fs::write(&denied, b"private").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        fs::write(workspace.join("probe.json"), serde_json::to_vec(&serde_json::json!({
+            "denied": denied, "readonly": readonly.join("input.txt"),
+            "hostAddress": listener.local_addr().unwrap().to_string(),
+        })).unwrap()).unwrap();
         let executable = std::env::current_exe().unwrap();
         let policy = SandboxPolicy {
             executable: executable.to_string_lossy().into_owned(),
-            arguments: "--help".into(),
-            shares: Vec::new(),
+            arguments: "--ignored --exact runtime::native_sandbox::tests::appcontainer_boundary_probe --nocapture".into(),
+            shares: vec![SandboxShare {
+                path: readonly.to_string_lossy().into_owned(), access: SandboxFileAccess::ReadOnly,
+            }],
             network_access: false,
         };
         let resources = ResourcePolicy {
@@ -952,7 +1186,12 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        if platform::is_running(&process).unwrap() {
+        let running = platform::is_running(&process).unwrap();
+        let mut exit_code = u32::MAX;
+        unsafe {
+            windows_sys::Win32::System::Threading::GetExitCodeProcess(process.process_handle as _, &mut exit_code);
+        }
+        if running {
             platform::stop(&mut process).unwrap();
         } else {
             platform::close(&mut process);
@@ -960,5 +1199,9 @@ mod tests {
         platform::remove_profile_and_access(&id, Some(&policy))
             .await
             .unwrap();
+        assert!(!running, "AppContainer boundary probe timed out");
+        assert_eq!(exit_code, 0, "AppContainer boundary probe failed");
+        assert_eq!(fs::read(workspace.join("output.txt")).unwrap(), b"permitted");
+        assert_eq!(fs::read(readonly.join("input.txt")).unwrap(), b"read only");
     }
 }

@@ -209,6 +209,7 @@ impl RuntimeManager {
     }
     pub(super) async fn workload_folder_endpoint(&self, id: &str, cuda: bool, server: &HostFolderServer) -> Result<String, String> {
         if !cuda {
+            self.grant_qemu_host_service(id, server.port, server.network_access()).await?;
             return Ok(format!("http://10.0.2.2:{}", server.port));
         }
         let ep = self.cuda.current_endpoint().await?;
@@ -233,5 +234,17 @@ impl RuntimeManager {
         let url = format!("http://127.0.0.1:{port}");
         server.retain_relay(key, url.clone(), run(stream, server.port));
         Ok(url)
+    }
+    pub(super) async fn grant_qemu_host_service(&self, id: &str, port: u16, lifetime: std::sync::Weak<std::sync::atomic::AtomicBool>) -> Result<(), String> {
+        let processes = self.vms.lock().await;
+        if let Some(process) = processes.get(id) {
+            return process.internet.as_ref().ok_or("Restart the VM to enforce host service isolation")?.grant_host_service(port, lifetime);
+        }
+        drop(processes);
+        let appliance = self.appliance.lock().await;
+        if let Some(process) = appliance.as_ref() {
+            return process.internet.grant_host_service(port, lifetime);
+        }
+        Err("Start the environment before attaching a host service".into())
     }
 }

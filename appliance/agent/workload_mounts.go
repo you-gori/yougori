@@ -25,7 +25,7 @@ func (s *server) workloadMount(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &q) || !requireID(w, q.ID) {
 		return
 	}
-	if !workloadName.MatchString(q.Slot) || !strings.HasPrefix(q.Slot, q.ID+"-") {
+	if !validWorkloadSlot(q.ID, q.Slot) {
 		writeError(w, 400, "invalid workload mount slot")
 		return
 	}

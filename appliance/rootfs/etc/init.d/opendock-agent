@@ -9,6 +9,7 @@ output_log="/var/log/opendock-agent.log"
 error_log="/var/log/opendock-agent.log"
 
 start_pre() {
+  umask 077
   if [ -f "$output_log" ] && [ "$(wc -c < "$output_log")" -gt 1048576 ]; then
     tail -c 262144 "$output_log" > "$output_log.trimmed"
     mv -f "$output_log.trimmed" "$output_log"

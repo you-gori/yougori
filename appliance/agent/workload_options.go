@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -32,10 +33,11 @@ type workloadOptions struct {
 }
 
 var workloadName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$`)
+var workloadSlotName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,130}$`)
 var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,255}$`)
 
 func workloadPath(s string) bool {
-	if !strings.HasPrefix(s, "/") || s == "/" || len(s) > 4096 || strings.ContainsAny(s, "\x00\r\n\\,:") {
+	if !strings.HasPrefix(s, "/") || s == "/" || path.Clean(s) != s || len(s) > 4096 || strings.ContainsAny(s, "\x00\r\n\\,:") {
 		return false
 	}
 	for _, part := range strings.Split(s, "/") {
@@ -43,7 +45,7 @@ func workloadPath(s string) bool {
 			return false
 		}
 	}
-	for _, reserved := range []string{"/proc", "/sys", "/dev", "/opendock"} {
+	for _, reserved := range []string{"/proc", "/sys", "/dev", "/opendock", containerDisplayMount} {
 		if s == reserved || strings.HasPrefix(s, reserved+"/") {
 			return false
 		}
@@ -52,7 +54,7 @@ func workloadPath(s string) bool {
 }
 func (o workloadOptions) arguments() ([]string, error) {
 	args := []string{}
-	if len(o.Environment) > 512 || len(o.Volumes) > 64 {
+	if len(o.Environment) > 512 || len(o.Volumes)+len(o.Binds) > 64 {
 		return nil, fmt.Errorf("too many workload options")
 	}
 	names := make([]string, 0, len(o.Environment))
@@ -120,7 +122,7 @@ func (o workloadOptions) arguments() ([]string, error) {
 		args = append(args, "--volume", mount)
 	}
 	for _, v := range o.Binds {
-		if !workloadName.MatchString(v.Source) || !workloadPath(v.Target) || targets[v.Target] {
+		if !workloadSlotName.MatchString(v.Source) || !workloadPath(v.Target) || targets[v.Target] {
 			return nil, fmt.Errorf("invalid PC volume")
 		}
 		targets[v.Target] = true
@@ -156,6 +158,9 @@ func (o workloadOptions) arguments() ([]string, error) {
 	return args, nil
 }
 func appendWorkload(args []string, image, command string, o workloadOptions) ([]string, error) {
+	if !validWorkloadImage(image) {
+		return nil, fmt.Errorf("invalid OCI image reference")
+	}
 	options, err := o.arguments()
 	if err != nil {
 		return nil, err
@@ -178,6 +183,9 @@ func appendWorkload(args []string, image, command string, o workloadOptions) ([]
 // Explicit entrypoint overrides reset nerdctl's inherited CMD. Preserve the OCI
 // distinction between omitted and explicitly empty lists by resolving defaults.
 func appendResolvedWorkload(ctx context.Context, imageNamespace string, args []string, image, command string, o workloadOptions) ([]string, error) {
+	if !validWorkloadImage(image) {
+		return nil, fmt.Errorf("invalid OCI image reference")
+	}
 	if strings.TrimSpace(command) == "" && ((o.Entrypoint != nil && o.Args == nil) || (o.Entrypoint == nil && o.Args != nil && len(*o.Args) == 0)) {
 		inspect := func() (commandOutput, error) {
 			return run(ctx, "nerdctl", "--namespace", imageNamespace, "image", "inspect", "--format", "{{json .Config}}", image)

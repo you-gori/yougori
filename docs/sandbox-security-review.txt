@@ -1,0 +1,191 @@
+Sandbox security review and implementation
+Review date: 2026-10-10
+Input: Executive Summary.pdf, all 13 pages
+
+Assessment of the supplied paper
+
+The document is a useful survey of sandbox threats, not a reproducible research
+paper or a security specification. Its PDF metadata names ChatGPT Deep Research
+as its author. It provides no experiment, dataset, measurements, reproducible
+evaluation, publication venue, or usable bibliography. Its citation markers are
+unresolved export tokens. Pages 12-13 contain unrendered figure/Mermaid source.
+The assertion that all cited URLs are included is incorrect.
+
+Sections 1-2 correctly describe the broad threat classes: kernel/runtime flaws,
+hypervisor and device-emulation flaws, interpreter/native-binding escapes,
+hardware side channels, exposed management interfaces and unsafe permissions.
+Containers share a guest kernel; VM/microVM boundaries still trust their VMM,
+host kernel, firmware and hardware. No layer establishes absolute security.
+
+Sections 3 and 6 support useful layered controls, but their examples must not be
+copied literally:
+
+- apparmor:unconfined disables AppArmor confinement.
+- userns:host disables user-namespace remapping; it is not a remapping policy.
+- Kubernetes PodSecurityPolicy was removed in 1.25; use current Pod Security
+  Admission or a separately configured policy controller.
+- An exec/shell prohibition or a tiny read/write syscall list cannot support a
+  general coding sandbox, image entrypoints, package managers or GPU libraries.
+- A universally read-only root filesystem would break installations and normal
+  development. Controlled writable guest storage remains necessary.
+- The text confuses SMEP/SMAP and AMD SEV/Intel TDX. Its claims about default
+  container capabilities and execmem/PIE are imprecise.
+- An encrypted tmpfs does not conceal plaintext from its compromised kernel.
+  Guest memory encryption does not guarantee host protection after VMM escape.
+- A software-emulated TPM/Secure Boot configuration is not independent hardware
+  attestation of the trusted host. A checksum proves correspondence to a known
+  digest, not the identity or trustworthiness of an unsigned publisher.
+
+Sections 4-5 appropriately call for monitoring and incident response, but shell
+execution and writes to /home are routine development, not reliable indicators
+of compromise. Arbitrary heuristic kill switches would interrupt valid work.
+IOMMU, hardware-backed attestation, firmware mitigations, TEEs and secure GPU
+partitioning depend on the actual machine/vendor and cannot be enabled by a
+portable application setting. MIG alone is not a comprehensive security proof.
+
+Sections 7-8 correctly treat threat modeling, attack tests, fuzzing, formal
+verification and usability as ongoing engineering work. No formal isolation
+proof or independent penetration test is supplied by this PDF or by this change.
+Section 9 is a qualitative comparison, not measured benchmark evidence.
+
+Specific claims checked against primary sources
+
+Januscape (CVE-2026-53359) is a real KVM/x86 shadow-MMU use-after-free described
+by its discoverer. Its relevant attack prerequisites include guest privilege and
+nested virtualization. Fix the HOST kernel; updating only the guest or QEMU is
+insufficient. Yougori now masks guest VMX/SVM on its supported CPU profiles.
+The isolated-vm advisory is also real; this project does not use that dependency.
+Neither example proves that every sandbox technology has identical guarantees.
+
+QEMU explicitly excludes TCG emulation from its supported guest-isolation
+security guarantees. Yougori retains software emulation for compatibility and
+does not describe it as a hardware security boundary. QMP/HMP can exercise the
+host user's privileges: guest access to these interfaces must be denied.
+Loopback binding alone does not protect a QMP port from another local process
+running as the same user. The local host/user remain trusted in this design.
+
+Threat model and protected assets
+
+Assume arbitrary code, root within a VM, malicious images, malformed packets,
+untrusted filesystem names, and compromised development tools. Protect host
+management ports and credentials, other environments' mounted files, persistent
+guest disks, finite host resources and explicitly scoped sharing capabilities.
+The same-user host control API, VMM, kernel, installer provenance, firmware and
+administrator-selected hardware remain part of the trusted computing base.
+External network access, imported sign-in credentials and selected host folders
+are explicit grants; information inside such grants is available to the workload.
+
+Implemented controls
+
+1. The host enforces the control/Internet NIC policy for the internal OCI VM,
+   microVMs and full VMs. Internet permission never automatically grants access
+   to the SLIRP host gateway's arbitrary TCP/UDP ports, including QMP and VNC.
+   Only explicit service/share ports and tracked replies to host-initiated TCP
+   sessions are permitted. Guest-chosen source ports do not create reply grants.
+   Bounded flow tables, expiry, strict framing and fail-closed filter failures
+   limit abuse. Policy changes wait for in-flight forwarding to finish.
+
+2. Host folder grants follow the service lifetime, including stop, drop and
+   task completion. Private fabric listeners retain only their own grant.
+   Local service port lists are replaced when publication policy changes.
+   DNS is limited to the virtual resolver when Internet is allowed. Unsupported
+   IPv6, IPv4 options/fragments, spoofed source addresses, loopback aliases and
+   link-local/metadata targets cannot bypass this filter.
+
+3. Guest VMX/SVM are masked across supported CPU/accelerator profiles to reduce
+   nested-virtualization exposure. Linux QEMU uses its maintained seccomp sandbox
+   and no-new-privileges. Host secrets and loader overrides are removed from
+   QEMU's inherited environment. Windows guest job containment failures stop
+   startup instead of silently running an uncontained guest.
+
+4. Windows native AppContainer paths reject drive-wide and managed-data ancestor
+   grants, redirected managed paths and invalid resource limits. Child processes
+   receive a bounded environment rather than inherited host API credentials.
+   Job/process failures preserve the requirement that containment must succeed.
+
+5. OCI workloads explicitly enable no-new-privileges and the runtime's built-in
+   seccomp profile, drop all capabilities before adding the small compatibility
+   set, use private cgroup namespaces, cap process count at 4096, prohibit core
+   dumps and restrict swap to the allocated memory budget. Required image USER,
+   entrypoints, writable files, package managers and GPU/CDI access are preserved.
+   Saved OCI security specifications are tightened before the next task launch.
+   A missing/non-enforcing seccomp profile fails rather than silently bypassing
+   protection. It requires explicit workload reconfiguration through the engine.
+   Unprivileged datagram ICMP is enabled for iputils ping. BusyBox's raw-socket
+   ping requires the removed NET_RAW capability and is intentionally unavailable;
+   HTTP/TCP diagnostics and iputils ping remain available.
+
+6. Image names cannot inject nerdctl launch flags. Workload bind targets are
+   canonicalized before reserved-path checks, and PC-share slots must belong
+   to the exact environment. Bind-count limits bound policy work. The appliance
+   applies compatible kernel/sysctl hardening while retaining required CNI,
+   dynamic drivers, FUSE and GPU functions.
+
+Retained protections and compatibility decisions
+
+The application already verifies bundled runtime checksums and preserves exact
+archived backing images, private guest bearer credentials, bounded authenticated
+control transport, explicit shared-folder capabilities, capability-based file
+resolution, private fabric identities/rules, snapshots, backup/recovery, resource
+limits and vault approval boundaries. This change does not replace those layers.
+VM isolation is the outer boundary for rootful guest containers. Forcing rootless
+containers/user remapping, dropping every entrypoint capability, installing a
+generic MAC profile, disabling all modules, replacing the OS kernel, or denying
+every shell would change supported behavior and needs its own tested design.
+
+Host firewall, Secure Boot/HVCI, IOMMU, SMT/firmware settings and cloud-specific
+attestation require platform administration and hardware validation. They are
+not silently toggled by an application update. Kernel patching is still required.
+This review does not certify resistance to unknown VMM/kernel/hardware flaws,
+side channels, physical attack, malicious host administrators or credential
+exfiltration over explicitly granted Internet access. Protected local logs are
+not claimed to be immutable remote audit or an eBPF anomaly detection service.
+
+Verification and deployment evidence
+
+Meaningful regressions cover denied host control ports online/offline, spoofed
+TCP replies, malformed network frames, revoked file/service grants, malicious
+image flags, foreign bind slots, reserved mount path aliases, saved OCI policy
+upgrades, invalid native resources and redirected storage. Disposable real guest
+tests verify ordinary startup, tools, networking, file/fabric sharing and data
+preservation. Final per-platform package/source hashes and test results belong
+in the release evidence; historical test passes are not new validation.
+
+Existing persistent OCI disks retain their exact archived backing images.
+Installing a new app is not by itself proof that an old guest agent was migrated.
+Security migration must update trusted guest control components without rebasing
+or replacing data. Running tasks need a normal restart for their new OCI process
+security specification to take effect. No live-task patching is implied.
+The verified initramfs installs the current agent and trusted service/config
+files atomically before switching into an older preserved root filesystem. It
+rejects redirected ancestor paths and preserves user application data. Matching
+kernel modules still require release validation if a guest kernel version changes.
+
+Release packages are previews when a trusted signing key is unavailable. An
+unsigned preview must not be promoted by removing the production signing gate.
+Hardware/Linux/macOS acceptance is reported only where actually exercised.
+
+Primary references
+
+QEMU security model and management-interface trust:
+https://www.qemu.org/docs/master/system/security.html
+QEMU user networking, restrict, guest forwarding and seccomp sandbox options:
+https://www.qemu.org/docs/master/system/qemu-manpage.html
+QEMU SLIRP configuration (no selective public host-loopback-disable option):
+https://gitlab.com/qemu-project/qemu/-/raw/master/net/slirp.c
+Docker AppArmor confinement:
+https://docs.docker.com/engine/security/apparmor/
+Docker user-namespace remapping and userns=host:
+https://docs.docker.com/engine/security/userns-remap/
+Docker default seccomp profile:
+https://docs.docker.com/engine/security/seccomp/
+Kubernetes PodSecurityPolicy removal:
+https://kubernetes.io/docs/concepts/security/pod-security-policy/
+Januscape discoverer's technical description and host-kernel fix:
+https://github.com/V4bel/Januscape/blob/main/README.md
+isolated-vm upstream security advisory:
+https://github.com/laverdet/isolated-vm/security/advisories/GHSA-864f-rcv7-6rh4
+Firecracker host-hardening guidance:
+https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md
+NVIDIA MIG hardware scope:
+https://docs.nvidia.com/datacenter/tesla/mig-user-guide/introduction.html

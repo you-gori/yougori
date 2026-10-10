@@ -115,6 +115,7 @@ struct RuntimeLayout {
 }
 
 struct ApplianceProcess {
+    internet: microvm_network::MicroVmNetwork,
     _boot_token: boot_token::BootTokenFile,
     child: Child,
     endpoint: AgentEndpoint,
@@ -700,6 +701,11 @@ fn configure_background_process(command: &mut tokio::process::Command) {
     unsafe {
         let parent = libc::getpid();
         command.pre_exec(move || {
+            // Never gain new privilege from setuid binaries or file capabilities
+            // after a compromise of a native runtime helper.
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             // QEMU handles SIGTERM by closing disks. Do not leave disk holders
             // running after the app crashes; never terminate unrelated processes.
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
@@ -717,6 +723,32 @@ fn configure_background_process(command: &mut tokio::process::Command) {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     }
+}
+
+fn configure_qemu_sandbox(command: &mut tokio::process::Command) {
+    // A compromised VMM should not receive host API keys or bearer secrets.
+    // Preserve only OS paths, locale and the desktop display/runtime hints that
+    // QEMU needs. Explicit GPU variables are configured after this function.
+    let environment = std::env::vars_os().filter(|(name, _)| {
+        name.to_str().is_some_and(|name| qemu_environment_name_allowed(name))
+    }).collect::<Vec<_>>();
+    command.env_clear().envs(environment);
+    #[cfg(target_os = "linux")]
+    // QEMU's maintained seccomp policy permits vCPU/IO threads while denying
+    // obsolete syscalls, privilege changes, new programs and scheduler changes.
+    // An unsupported QEMU fails startup instead of silently dropping the filter.
+    command.args(["-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny"]);
+    #[cfg(not(target_os = "linux"))]
+    let _ = command;
+}
+
+fn qemu_environment_name_allowed(name: &str) -> bool {
+    matches!(name.to_ascii_uppercase().as_str(),
+        "SYSTEMROOT" | "WINDIR" | "SYSTEMDRIVE" | "PATH" | "TEMP" | "TMP"
+        | "PROGRAMFILES" | "PROGRAMFILES(X86)" | "PROGRAMW6432" | "PROGRAMDATA"
+        | "HOME" | "USERPROFILE" | "LANG" | "LANGUAGE" | "LC_ALL" | "LC_CTYPE"
+        | "DISPLAY" | "WAYLAND_DISPLAY" | "XAUTHORITY" | "XDG_RUNTIME_DIR"
+        | "DBUS_SESSION_BUS_ADDRESS" | "FONTCONFIG_PATH" | "FONTCONFIG_FILE")
 }
 
 async fn command_output(
@@ -776,6 +808,17 @@ mod tests {
     fn allocated_port_is_loopback_bindable() {
         let port = available_port().unwrap();
         assert!(port > 0);
+    }
+
+    #[test]
+    fn qemu_environment_excludes_host_secrets_and_loader_overrides() {
+        for name in ["OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "HTTP_PROXY",
+            "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "QEMU_AUDIO_DRV"] {
+            assert!(!qemu_environment_name_allowed(name));
+        }
+        for name in ["SystemRoot", "PATH", "LANG", "DISPLAY", "XDG_RUNTIME_DIR"] {
+            assert!(qemu_environment_name_allowed(name));
+        }
     }
 
     #[test]

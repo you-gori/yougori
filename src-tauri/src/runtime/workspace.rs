@@ -16,6 +16,19 @@ impl RuntimeManager {
             else { local = group; }
         }
         let ids = &local;
+        // The host filter is independent of the guest firewall. Explicit local
+        // publications may reach only these ports on the QEMU host gateway.
+        {
+            let processes = self.vms.lock().await;
+            for id in ids {
+                if let Some(network) = processes.get(id).and_then(|p| p.internet.as_ref()) {
+                    network.set_local_services(ports)?;
+                }
+            }
+        }
+        if let Some(process) = self.appliance.lock().await.as_ref() {
+            process.internet.set_local_services(ports)?;
+        }
         let mut qemu_ids = Vec::new();
         let mut cuda_ids = Vec::new();
         for id in ids {

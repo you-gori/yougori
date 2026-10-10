@@ -24,13 +24,13 @@ impl Drop for BootTokenFile {
 }
 
 #[cfg(unix)]
-fn create_private(path: &Path) -> std::io::Result<File> {
+pub(super) fn create_private(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
 }
 
 #[cfg(windows)]
-fn create_private(path: &Path) -> std::io::Result<File> {
+pub(super) fn create_private(path: &Path) -> std::io::Result<File> {
     use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
     use windows_sys::Win32::{
         Foundation::{LocalFree, INVALID_HANDLE_VALUE, GENERIC_WRITE},

@@ -56,6 +56,7 @@ struct State {
     rules: HashMap<String, Rule>,
 }
 struct Peer {
+    gateway_access: Option<Arc<std::sync::atomic::AtomicBool>>,
     file_context: Option<super::connection_files::SharedFiles>,
     files: Option<mpsc::Sender<Vec<u8>>>,
     identity: ([u8; 4], [u8; 6]),
@@ -183,6 +184,7 @@ impl Fabric {
         state.peers.insert(
             id.into(),
             Peer {
+                gateway_access: None,
                 file_context: None,
                 files: None,
                 identity: address(id),
@@ -655,6 +657,8 @@ impl RuntimeManager {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
+        let gateway_access = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        self.grant_qemu_host_service(id, port, Arc::downgrade(&gateway_access)).await?;
         self.workspace_request(environment,"/v1/fabric/attach",serde_json::json!({"id":id,"port":port,"token":token,"address":ip_text(id),"mac":mac_text(id)})).await?;
         let stream = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -671,6 +675,10 @@ impl RuntimeManager {
         })
         .await
         .map_err(|_| "Container private network did not connect")??;
-        self.fabric.attach(id, stream)
+        self.fabric.attach(id, stream)?;
+        if let Some(peer) = self.fabric.0.lock().map_err(|_| "Private network unavailable")?.peers.get_mut(id) {
+            peer.gateway_access = Some(gateway_access);
+        }
+        Ok(())
     }
 }

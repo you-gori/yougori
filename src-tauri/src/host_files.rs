@@ -19,17 +19,24 @@ pub struct HostFolderServer {
     pub port: u16,
     pub token: String,
     task: JoinHandle<()>,
+    network_access: Arc<std::sync::atomic::AtomicBool>,
     relays: std::sync::Mutex<std::collections::HashMap<String, (String, JoinHandle<()>)>>,
 }
 pub type FileForward = Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), String>> + Send>> + Send + Sync>;
+struct ServiceLifetime(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for ServiceLifetime {
+    fn drop(&mut self) { self.0.store(false, std::sync::atomic::Ordering::Release); }
+}
 impl Drop for HostFolderServer {
     fn drop(&mut self) {
+        self.network_access.store(false, std::sync::atomic::Ordering::Release);
         self.task.abort();
         for (_, task) in self.relays.get_mut().unwrap().values() { task.abort(); }
     }
 }
 impl HostFolderServer {
     pub fn stop(&self) {
+        self.network_access.store(false, std::sync::atomic::Ordering::Release);
         self.task.abort();
         let mut relays=self.relays.lock().unwrap();
         for (_,task) in relays.values(){task.abort();}
@@ -37,6 +44,9 @@ impl HostFolderServer {
     }
     pub fn relay_endpoint(&self, key: &str) -> Option<String> {
         self.relays.lock().unwrap().get(key).filter(|(_, task)| !task.is_finished()).map(|(url, _)|url.clone())
+    }
+    pub(crate) fn network_access(&self) -> std::sync::Weak<std::sync::atomic::AtomicBool> {
+        Arc::downgrade(&self.network_access)
     }
     pub fn retain_relay(&self, key: String, endpoint: String, task: JoinHandle<()>) {
         if let Some((_, old))=self.relays.lock().unwrap().insert(key,(endpoint,task)){old.abort();}
@@ -368,7 +378,10 @@ impl HostFolderServer {
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
         let secret = token.clone();
+        let network_access = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let service_lifetime = ServiceLifetime(network_access.clone());
         let task = tokio::spawn(async move {
+            let _service_lifetime = service_lifetime;
             let mut clients = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
@@ -398,7 +411,7 @@ impl HostFolderServer {
                 }
             }
         });
-        Ok(Self { port, token, task, relays: std::sync::Mutex::new(std::collections::HashMap::new()) })
+        Ok(Self { port, token, task, network_access, relays: std::sync::Mutex::new(std::collections::HashMap::new()) })
     }
     pub async fn start(root: PathBuf, read_only: bool) -> Result<Self, String> {
         if !root.is_dir() {
@@ -418,8 +431,11 @@ impl HostFolderServer {
             uuid::Uuid::new_v4().simple()
         );
         let secret = token.clone();
+        let network_access = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let service_lifetime = ServiceLifetime(network_access.clone());
         let operation_lock = Arc::new(std::sync::Mutex::new(()));
         let task = tokio::spawn(async move {
+            let _service_lifetime = service_lifetime;
             let mut clients = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
@@ -455,7 +471,7 @@ impl HostFolderServer {
                 }
             }
         });
-        Ok(Self { port, token, task, relays: Default::default() })
+        Ok(Self { port, token, task, network_access, relays: Default::default() })
     }
 }
 

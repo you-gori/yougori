@@ -5,6 +5,7 @@ fn peer(fabric: &Fabric, id: &str) -> mpsc::Receiver<Vec<u8>> {
     fabric.0.lock().unwrap().peers.insert(
         id.into(),
         Peer {
+            gateway_access: None,
             file_context: None,
             files: None,
             identity: address(id),

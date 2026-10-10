@@ -38,7 +38,7 @@ func TestResourceUpdatePersistsExplicitCPUQuota(t *testing.T) {
 		quota string
 	}{{0.15, "15000"}, {4, "400000"}, {8, "800000"}} {
 		args := resourceUpdateArguments(resourcesRequest{ID: "env-quota", CPUs: test.cpus, MemoryBytes: 4294967296})
-		want := []string{"--namespace", namespace, "update", "--cpu-period", "100000", "--cpu-quota", test.quota, "--memory", "4294967296", "env-quota"}
+		want := []string{"--namespace", namespace, "update", "--cpu-period", "100000", "--cpu-quota", test.quota, "--memory", "4294967296", "--memory-swap", "4294967296", "--pids-limit", "4096", "env-quota"}
 		if !reflect.DeepEqual(args, want) {
 			t.Fatalf("got %v, want %v", args, want)
 		}

@@ -87,3 +87,63 @@ esac
 		t.Fatal(err)
 	}
 }
+
+func TestInternetFirewallKeepsGuardOnFailureAndIsolatesIPv6(t *testing.T) {
+	directory := t.TempDir()
+	log := filepath.Join(directory, "commands")
+	script := `#!/bin/sh
+printf '%s %s\n' "${0##*/}" "$*" >> "$OD_TEST_COMMANDS"
+case "${0##*/}" in
+ nerdctl) printf '42\n' ;;
+ nsenter)
+  case "$*" in
+   *"iptables -w 5 -C "*) exit 1 ;;
+   *"-A ODINTERNET -d 169.254.0.0/16"*) if [ "$OD_TEST_FAIL" = 1 ]; then exit 1; fi ;;
+  esac ;;
+esac
+`
+	for _, name := range []string{"nerdctl", "nsenter", "modprobe"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(script), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", directory+":"+os.Getenv("PATH"))
+	t.Setenv("OD_TEST_COMMANDS", log)
+	t.Setenv("OD_TEST_FAIL", "1")
+	if err := installInternetFirewall(context.Background(), "env-test"); err == nil {
+		t.Fatal("ignored a failed private-network rule")
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := string(data)
+	guard := "-I OUTPUT 1 -o eth0 -j ODINETGUARD"
+	remove := "-D OUTPUT -o eth0 -j ODINTERNET"
+	if strings.Index(commands, guard) < 0 || strings.Index(commands, guard) > strings.Index(commands, remove) {
+		t.Fatal("removed the existing firewall before attaching the deny guard", commands)
+	}
+	if strings.Contains(commands, "-D OUTPUT -o eth0 -j ODINETGUARD") {
+		t.Fatal("failed update removed its deny guard")
+	}
+	if !strings.Contains(commands, "/proc/sys/net/ipv6/conf/default/disable_ipv6") || !strings.Contains(commands, `"$interface/disable_ipv6"`) || !strings.Contains(commands, "all|default|lo) continue") {
+		t.Fatal("IPv6 bypass remains available")
+	}
+	if err := os.WriteFile(log, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OD_TEST_FAIL", "0")
+	if err := installInternetFirewall(context.Background(), "env-test"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands = string(data)
+	activate := "-I OUTPUT 1 -o eth0 -j ODINTERNET"
+	unguard := "-D OUTPUT -o eth0 -j ODINETGUARD"
+	if strings.Index(commands, activate) < 0 || strings.Index(commands, unguard) < strings.Index(commands, activate) {
+		t.Fatal("unguarded the cable before activating all isolation rules", commands)
+	}
+}

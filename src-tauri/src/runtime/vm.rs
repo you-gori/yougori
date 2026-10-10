@@ -1303,7 +1303,7 @@ impl RuntimeManager {
             super::vm_memory::check_available(startup_memory, super::vm_memory::available_commit_bytes(), full_vm)?;
             let internet = match &profile {
                 VmLaunchProfile::Micro(_, enabled) => Some(super::microvm_network::MicroVmNetwork::new(*enabled, qmp_port).await?),
-                _ => None,
+                VmLaunchProfile::Full { network_access, .. } => Some(super::microvm_network::MicroVmNetwork::new(*network_access, qmp_port).await?),
             };
             let mut child = match &profile {
                 VmLaunchProfile::Full {
@@ -1325,6 +1325,7 @@ impl RuntimeManager {
                     gpu_launch.as_ref(),
                     branch_block_server.as_ref(),
                     private_port,
+                    internet.as_ref().map(|network| network.arguments()).unwrap_or(&[]),
                 ),
                 VmLaunchProfile::Micro(manifest, _) => self.spawn_micro_vm(
                     id,
@@ -1352,7 +1353,9 @@ impl RuntimeManager {
                 (!headless).then_some(websocket_port),
                 &error_path,
                 is_whpx,
-                match &profile { VmLaunchProfile::Full { network_access, .. } => Some(*network_access), _ => None },
+                // The host packet filter enforces Internet access. Keep the
+                // cable up for explicitly authorized local service connections.
+                match &profile { VmLaunchProfile::Full { .. } => Some(true), _ => None },
             )
             .await
             {
@@ -1366,8 +1369,12 @@ impl RuntimeManager {
                 last_error = error;
                 continue;
             }
-            if let (Some(network), VmLaunchProfile::Micro(_, enabled)) = (&internet, &profile) {
-                if let Err(error) = network.set_enabled(*enabled).await {
+            if let Some(network) = &internet {
+                let enabled = match &profile {
+                    VmLaunchProfile::Micro(_, enabled) => *enabled,
+                    VmLaunchProfile::Full { network_access, .. } => *network_access,
+                };
+                if let Err(error) = network.set_enabled(enabled).await {
                     let _ = child.kill().await;
                     let _ = child.wait().await;
                     return Err(error);
@@ -1547,18 +1554,14 @@ impl RuntimeManager {
         validate_runtime_identifier("virtual machine", id)?;
         let lock = self.vm_lifecycle_mutex(id).await;
         let _guard = lock.lock().await;
-        let port = {
+        {
             let mut processes = self.vms.lock().await;
             let process = processes.get_mut(id).ok_or("Virtual machine is not running")?;
             if process.child.try_wait().map_err(|e| e.to_string())?.is_some() {
                 return Err("Virtual machine is no longer running".into());
             }
-            if process.is_micro_vm {
-                return process.internet.as_ref().ok_or("Restart this MicroVM to enable independent Internet controls")?.set_enabled(enabled).await;
-            }
-            process.qmp_port
-        };
-        qmp_execute_bounded(port, "set_link", Some(json!({ "name": "net0", "up": enabled })), Duration::from_secs(5)).await
+            process.internet.as_ref().ok_or("Restart this VM to enable host network filtering")?.set_enabled(enabled).await
+        }
     }
 
     pub(super) async fn request_micro_vm_shutdown(
@@ -2568,6 +2571,7 @@ impl RuntimeManager {
         gpu_launch: Option<&super::gpu::GpuLaunch>,
         branch_block_server: Option<&super::BranchBlockServer>,
         private_port: u16,
+        network_arguments: &[String],
     ) -> Result<tokio::process::Child, String> {
         let environment_directory = self.data_root.join("environments").join(id);
         let secure_profile = super::vm_security::profile(&environment_directory)?;
@@ -2810,6 +2814,7 @@ impl RuntimeManager {
         #[cfg(test)]
         arguments.extend(["-serial".into(), format!("file:{}", environment_directory.join("firmware-serial.log").display())]);
         let mut command = tokio::process::Command::new(&executable);
+        arguments.extend_from_slice(network_arguments);
         arguments.extend(super::fabric::qemu_args(id, private_port, false));
         command
             .current_dir(executable.parent().unwrap_or(&self.layout.root))
@@ -2818,11 +2823,12 @@ impl RuntimeManager {
             .stdout(Stdio::null())
             .stderr(Stdio::from(error_log));
         configure_background_process(&mut command);
+        super::configure_qemu_sandbox(&mut command);
         if let Some(launch) = gpu_launch { launch.configure(&mut command)?; }
         let child = command
             .spawn()
             .map_err(|error| format!("start bundled virtual machine: {error}"))?;
-        super::guest_job::contain(&child);
+        super::guest_job::contain(&child)?;
         Ok(child)
     }
 
@@ -2950,9 +2956,7 @@ impl RuntimeManager {
         if let Some(initrd) = manifest.initrd.as_ref() {
             arguments.extend(["-initrd".into(), path_string(initrd)]);
         }
-        if cfg!(any(target_os = "linux", target_os = "macos")) {
-            arguments.extend(["-cpu".into(), full_vm_cpu_model(accelerator).into()]);
-        }
+        arguments.extend(["-cpu".into(), full_vm_cpu_model(accelerator).into()]);
         arguments.extend(["-L".into(), path_string(&self.layout.qemu_data())]);
         arguments.extend_from_slice(network_arguments);
         arguments.extend(super::fabric::qemu_args(id, private_port, true));
@@ -2969,10 +2973,11 @@ impl RuntimeManager {
             .stdout(Stdio::null())
             .stderr(Stdio::from(error_log));
         configure_background_process(&mut command);
+        super::configure_qemu_sandbox(&mut command);
         let child = command
             .spawn()
             .map_err(|error| format!("start bundled microVM: {error}"))?;
-        super::guest_job::contain(&child);
+        super::guest_job::contain(&child)?;
         Ok(child)
     }
 }
@@ -3356,14 +3361,16 @@ pub(super) fn full_vm_graphics_arguments(gpu_access: bool) -> Vec<&'static str> 
     }
 }
 
-fn full_vm_cpu_model(accelerator: &str) -> &'static str {
+pub(super) fn full_vm_cpu_model(accelerator: &str) -> &'static str {
     match accelerator {
-        "kvm" | "hvf" => "host",
+        // Nested virtualization expands the host kernel attack surface and is
+        // unnecessary for branch workloads. Mask it on every accelerator.
+        "kvm" | "hvf" => "host,vmx=off,svm=off",
         // WHPX cannot provide nested VMX/SVM to this guest. Exposing VMX with
         // `max` makes OVMF fault on IA32_FEATURE_CONTROL (MSR 0x3a). Keep the
         // remaining supported modern instructions and hardware acceleration.
         "whpx" => "max,vmx=off,svm=off",
-        _ => "max",
+        _ => "max,vmx=off,svm=off",
     }
 }
 
@@ -4183,9 +4190,9 @@ mod tests {
     #[test]
     fn full_vm_cpu_profile_does_not_advertise_nested_virtualization_on_whpx() {
         assert_eq!(super::full_vm_cpu_model("whpx"), "max,vmx=off,svm=off");
-        assert_eq!(super::full_vm_cpu_model("kvm"), "host");
-        assert_eq!(super::full_vm_cpu_model("hvf"), "host");
-        assert_eq!(super::full_vm_cpu_model("tcg,thread=multi"), "max");
+        assert_eq!(super::full_vm_cpu_model("kvm"), "host,vmx=off,svm=off");
+        assert_eq!(super::full_vm_cpu_model("hvf"), "host,vmx=off,svm=off");
+        assert_eq!(super::full_vm_cpu_model("tcg,thread=multi"), "max,vmx=off,svm=off");
     }
     use super::*;
 

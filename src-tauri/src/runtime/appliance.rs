@@ -861,7 +861,8 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         for gpu_enabled in if cfg!(target_os = "windows") { vec![true, false] } else { vec![false] } {
             if !gpu_enabled && gpu_launch.explicit() { break; }
             for accelerator in accelerators {
-                let (mut child, boot_token) = self.spawn_appliance(&endpoint, accelerator, gpu_enabled, &gpu_launch, capacity, max_memory_mib, qmp_port)?;
+                let internet = super::microvm_network::MicroVmNetwork::new(true, qmp_port).await?;
+                let (mut child, boot_token) = self.spawn_appliance(&endpoint, accelerator, gpu_enabled, &gpu_launch, capacity, max_memory_mib, qmp_port, internet.arguments())?;
                 let boot_timeout = super::host_platform::guest_boot_timeout();
                 let boot_started = Instant::now();
                 let storage_deadline = Instant::now() + Duration::from_secs(31 * 60);
@@ -879,6 +880,11 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                         break;
                     }
                     if self.health(&endpoint).await.is_ok() {
+                        if let Err(error) = internet.set_enabled(true).await {
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            return Err(error);
+                        }
                         let gpu = if gpu_enabled {
                             match gpu_launch.verify(child.id().ok_or("Graphics runtime has no process ID")?) {
                                 Ok(gpu) => gpu,
@@ -886,6 +892,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                             }
                         } else { None };
                         *process_guard = Some(ApplianceProcess {
+                            internet,
                             _boot_token: boot_token,
                             child,
                             endpoint: endpoint.clone(),
@@ -1057,6 +1064,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         capacity: super::appliance_capacity::ApplianceCapacity,
         max_memory_mib: usize,
         qmp_port: u16,
+        network_arguments: &[String],
     ) -> Result<(tokio::process::Child, super::boot_token::BootTokenFile), String> {
         let port = endpoint
             .base_url
@@ -1087,7 +1095,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                 // KVM/HVF can pass through the host; WHPX/TCG use QEMU's
                 // maximum supported feature set for the selected accelerator.
                 "-cpu",
-                if matches!(accelerator, "kvm" | "hvf") { "host" } else { "max" },
+                super::vm::full_vm_cpu_model(accelerator),
                 "-smp",
                 &appliance_cpus,
                 "-m",
@@ -1151,16 +1159,18 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         } else {
             command.args(["-display", "none"]);
         }
+        command.args(network_arguments);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(error_log));
         configure_background_process(&mut command);
+        super::configure_qemu_sandbox(&mut command);
         if gpu_enabled { gpu_launch.configure(&mut command)?; }
         let child = command
             .spawn()
             .map_err(|error| format!("start bundled Yougori appliance: {error}"))?;
-        super::guest_job::contain(&child);
+        super::guest_job::contain(&child)?;
         Ok((child, boot_token))
     }
 

@@ -30,7 +30,7 @@ func (s *server) microWorkload(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &q) {
 		return
 	}
-	if q.Image == "" || strings.HasPrefix(q.Image, "-") || strings.ContainsAny(q.Image, "\r\n\x00 \t") || len(q.Image) > 512 || len(q.Options.Binds) > 0 {
+	if !validWorkloadImage(q.Image) || len(q.Options.Binds) > 0 {
 		writeError(w, 400, "invalid OCI workload image or PC bind mount")
 		return
 	}
@@ -86,7 +86,8 @@ func (s *server) microWorkload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The OCI process shares only this dedicated VM's network, never the host PC.
-		args, e := appendResolvedWorkload(ctx, microWorkloadNamespace, []string{"--namespace", microWorkloadNamespace, "create", "--name", microWorkloadName, "--network", "host"}, q.Image, "", q.Options)
+		args := append([]string{"--namespace", microWorkloadNamespace, "create", "--name", microWorkloadName, "--network", "host"}, containerSecurityArguments()...)
+		args, e := appendResolvedWorkload(ctx, microWorkloadNamespace, args, q.Image, "", q.Options)
 		if e != nil {
 			writeError(w, 400, e.Error())
 			return
@@ -106,6 +107,10 @@ func (s *server) microWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(state.Stdout) != "true" {
+		if e = secureSavedContainer(ctx, microWorkloadNamespace, microWorkloadName); e != nil {
+			writeError(w, 409, e.Error())
+			return
+		}
 		if _, e = run(ctx, "nerdctl", "--namespace", microWorkloadNamespace, "start", microWorkloadName); e != nil {
 			writeCommandError(w, e)
 			return

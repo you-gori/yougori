@@ -10,3 +10,5 @@ disabled_plugins = [
 
 [grpc]
   address = "/run/containerd/containerd.sock"
+  uid = 0
+  gid = 0

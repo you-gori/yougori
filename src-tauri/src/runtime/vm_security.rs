@@ -35,12 +35,28 @@ pub(super) struct Backup {
 
 pub(super) fn read_regular(path: &Path, maximum: usize) -> Result<Vec<u8>, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| format!("Read VM security state: {e}"))?;
-    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > maximum as u64 {
+    if !meta.is_file() || redirected(&meta) || meta.len() > maximum as u64 {
+        return Err("VM security state is not a bounded regular file".into());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    // Inspect the opened descriptor as well as the path; do not follow a
+    // substituted link between metadata validation and the actual read.
+    let file = options.open(path).map_err(|e| format!("Read VM security state: {e}"))?;
+    let opened = file.metadata().map_err(|e| format!("Inspect VM security state: {e}"))?;
+    if !opened.is_file() || redirected(&opened) || opened.len() > maximum as u64 {
         return Err("VM security state is not a bounded regular file".into());
     }
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|f| f.take(maximum as u64 + 1).read_to_end(&mut bytes))
+    file.take(maximum as u64 + 1).read_to_end(&mut bytes)
         .map_err(|e| format!("Read VM security state: {e}"))?;
     if bytes.len() > maximum {
         return Err("VM security state exceeds its limit".into());
@@ -48,11 +64,18 @@ pub(super) fn read_regular(path: &Path, maximum: usize) -> Result<Vec<u8>, Strin
     Ok(bytes)
 }
 
+fn redirected(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() { return true; }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        return meta.file_attributes() & 0x400 != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 fn create_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    let mut file = super::boot_token::create_private(path)
         .map_err(|e| format!("Create VM security state: {e}"))?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
@@ -116,7 +139,7 @@ impl Profile {
         let meta = fs::symlink_metadata(&path)
             .map_err(|e| format!("Missing VM security identity: {e}"))?;
         if !meta.is_dir()
-            || meta.file_type().is_symlink()
+            || redirected(&meta)
             || fs::canonicalize(&path).map_err(|e| e.to_string())?.parent()
                 != Some(
                     fs::canonicalize(parent)

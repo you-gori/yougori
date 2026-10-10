@@ -523,11 +523,11 @@ func (s *server) provision(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &request) || !requireID(w, request.ID) {
 		return
 	}
-	if request.Image == "" || strings.ContainsAny(request.Image, "\r\n\x00") {
+	if !validWorkloadImage(strings.TrimSpace(request.Image)) {
 		writeError(w, http.StatusBadRequest, "an OCI image reference is required")
 		return
 	}
-	if request.CPUs <= 0 || request.MemoryBytes < 64*1024*1024 {
+	if !validContainerResources(request.CPUs, request.MemoryBytes) {
 		writeError(w, http.StatusBadRequest, "invalid CPU or memory allocation")
 		return
 	}
@@ -542,6 +542,10 @@ func (s *server) provision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := request.Options.arguments(); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if err := validateWorkloadOwner(request.ID, request.Options); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -573,7 +577,10 @@ func (s *server) provision(w http.ResponseWriter, r *http.Request) {
 		"--volume", displayDirectory + ":" + containerDisplayMount,
 		"--cpus", strconv.FormatFloat(request.CPUs, 'f', 2, 64),
 		"--memory", strconv.FormatInt(request.MemoryBytes, 10),
+		"--memory-swap", strconv.FormatInt(request.MemoryBytes, 10),
 	}
+	args = append(args, containerSecurityArguments()...)
+	args = append(args, containerNetworkSecurityArguments()...)
 	if _, known := s.knownImages.Load(image); known || request.OriginalID != "" {
 		// The first successful create proves that containerd has the image.
 		// Later creates in this appliance boot can skip registry resolution.
@@ -644,6 +651,12 @@ func (s *server) action(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Action == "start" || request.Action == "restart" {
+		if err := secureSavedContainer(ctx, namespace, request.ID); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
 	output, err := run(ctx, "nerdctl", append([]string{"--namespace", namespace}, args...)...)
 	if err != nil {
 		writeCommandError(w, err)
@@ -705,7 +718,7 @@ func (s *server) resources(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &request) || !requireID(w, request.ID) {
 		return
 	}
-	if math.IsNaN(request.CPUs) || math.IsInf(request.CPUs, 0) || request.CPUs <= 0 || request.CPUs > 255 || request.MemoryBytes < 64*1024*1024 {
+	if !validContainerResources(request.CPUs, request.MemoryBytes) {
 		writeError(w, http.StatusBadRequest, "invalid CPU or memory allocation")
 		return
 	}
@@ -726,7 +739,12 @@ func resourceUpdateArguments(request resourcesRequest) []string {
 	// versions whose --cpus update does not survive a stopped-container restart.
 	return []string{"--namespace", namespace, "update", "--cpu-period", "100000",
 		"--cpu-quota", strconv.FormatInt(int64(math.Round(request.CPUs*100000)), 10),
-		"--memory", strconv.FormatInt(request.MemoryBytes, 10), request.ID}
+		"--memory", strconv.FormatInt(request.MemoryBytes, 10),
+		"--memory-swap", strconv.FormatInt(request.MemoryBytes, 10), "--pids-limit", "4096", request.ID}
+}
+
+func validContainerResources(cpus float64, memoryBytes int64) bool {
+	return !math.IsNaN(cpus) && !math.IsInf(cpus, 0) && cpus >= 0.01 && cpus <= 255 && memoryBytes >= 64*1024*1024
 }
 
 func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
@@ -747,7 +765,7 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "stop the container before changing hardware or network access")
 		return
 	}
-	if request.CPUs <= 0 || request.MemoryBytes < 64*1024*1024 {
+	if !validContainerResources(request.CPUs, request.MemoryBytes) {
 		writeError(w, http.StatusBadRequest, "invalid CPU or memory allocation")
 		return
 	}
@@ -777,6 +795,10 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		options = *request.Options
+	}
+	if err := validateWorkloadOwner(request.ID, options); err != nil {
+		writeError(w, 400, err.Error())
+		return
 	}
 	previousImage := retainedContainerImage(ctx, request.ID)
 	temporaryTag := newRetainedImageTag(request.ID)
@@ -808,7 +830,10 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 			"--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount,
 			"--cpus", strconv.FormatFloat(request.CPUs, 'f', 2, 64),
 			"--memory", strconv.FormatInt(request.MemoryBytes, 10),
+			"--memory-swap", strconv.FormatInt(request.MemoryBytes, 10),
 		}
+		args = append(args, containerSecurityArguments()...)
+		args = append(args, containerNetworkSecurityArguments()...)
 		deviceArgs, deviceError := gpuContainerArguments(gpuAccess)
 		if deviceError != nil {
 			return commandOutput{}, deviceError
@@ -1000,6 +1025,8 @@ func (s *server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args := []string{"--namespace", namespace, "create", "--pull", "never", "--name", temporaryID, "--label", "opendock.managed=true", "--label", "opendock.retained-image=" + retainedTag, "--network", containerNetwork, "--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount}
+	args = append(args, containerSecurityArguments()...)
+	args = append(args, containerNetworkSecurityArguments()...)
 	args = append(args, gpuArgs...)
 	if snapshotLabels[snapshotStartupLabel] == "exact-v1" {
 		args = append(args, startup...)
@@ -1738,6 +1765,37 @@ func installInternetFirewall(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	// The managed fabric is IPv4. Disable IPv6 in this private network
+	// namespace before attaching the shared bridge, including future links;
+	// link-local IPv6 would otherwise bypass the IPv4 private-address rules.
+	_, _ = run(ctx, "modprobe", "ipv6")
+	const disableIPv6 = `set -eu
+if [ -d /proc/sys/net/ipv6 ]; then
+  printf 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6
+  for interface in /proc/sys/net/ipv6/conf/*; do
+    case "${interface##*/}" in all|default|lo) continue ;; esac
+    printf 1 > "$interface/disable_ipv6"
+  done
+fi`
+	if _, err := run(ctx, "nsenter", "-t", strconv.Itoa(pid), "-n", "--", "/bin/sh", "-c", disableIPv6); err != nil {
+		return fmt.Errorf("secure uplink IPv6 isolation: %w", err)
+	}
+	// Keep a fail-closed guard attached throughout rule replacement. Repeated
+	// enable requests must not briefly expose the host/private networks while
+	// the previous jump is removed and the chain rebuilt. DROP preserves TCP
+	// connections through retransmission during the short update window.
+	const guard = "ODINETGUARD"
+	_, _ = namespaceIptables(ctx, pid, "-N", guard)
+	if _, err := namespaceIptables(ctx, pid, "-C", guard, "-j", "DROP"); err != nil {
+		if _, err := namespaceIptables(ctx, pid, "-A", guard, "-j", "DROP"); err != nil {
+			return err
+		}
+	}
+	if _, err := namespaceIptables(ctx, pid, "-C", "OUTPUT", "-o", "eth0", "-j", guard); err != nil {
+		if _, err := namespaceIptables(ctx, pid, "-I", "OUTPUT", "1", "-o", "eth0", "-j", guard); err != nil {
+			return err
+		}
+	}
 	const chain = "ODINTERNET"
 	_, _ = namespaceIptables(ctx, pid, "-D", "OUTPUT", "-o", "eth0", "-j", chain)
 	_, _ = namespaceIptables(ctx, pid, "-N", chain)
@@ -1778,7 +1836,10 @@ func installInternetFirewall(ctx context.Context, id string) error {
 	if _, err := namespaceIptables(ctx, pid, "-A", chain, "-j", "ACCEPT"); err != nil {
 		return err
 	}
-	_, err = namespaceIptables(ctx, pid, "-I", "OUTPUT", "1", "-o", "eth0", "-j", chain)
+	if _, err = namespaceIptables(ctx, pid, "-I", "OUTPUT", "1", "-o", "eth0", "-j", chain); err != nil {
+		return err
+	}
+	_, err = namespaceIptables(ctx, pid, "-D", "OUTPUT", "-o", "eth0", "-j", guard)
 	return err
 }
 
@@ -1790,8 +1851,10 @@ func containerNameservers(pid int) []string {
 	var nameservers []string
 	for _, line := range strings.Split(string(contents), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[0] == "nameserver" && strings.Count(fields[1], ".") == 3 {
-			nameservers = append(nameservers, fields[1])
+		if len(fields) == 2 && fields[0] == "nameserver" {
+			if address := net.ParseIP(fields[1]); address != nil && address.To4() != nil {
+				nameservers = append(nameservers, address.To4().String())
+			}
 		}
 	}
 	return nameservers
@@ -1803,7 +1866,7 @@ func containerPID(ctx context.Context, id string) (int, error) {
 		return 0, err
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(output.Stdout))
-	if err != nil || pid <= 0 {
+	if err != nil || pid <= 1 {
 		return 0, errors.New("container is not running")
 	}
 	return pid, nil
