@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "08af683c4b176a61835dae237485bcdbc01e781e",
+  "sourceCommit": "1592636000ddb4a4c1b32dbe78e26f22c2336e65",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
@@ -2077,7 +2077,7 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "8ccd7dad291e33c2a40afeb1a1515fcf596cb34a0d6dc8c9bb5f7229b90733e4",
+      "sha256": "4119d854c273926c271adc9b16dcddc5badde3c96310c16bcb655e65f955db85",
       "normalization": "lf",
       "bytes": 235904
     },
@@ -3073,9 +3073,9 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "d69ff7cdb7e4a1d2ac1ea2c16916780e5ee48491211469bfa1f3a353e76991fc",
+      "sha256": "97f28c26035fbd44a6cfb90fb564f73e805a0a49924d7043be94bc92518fbab3",
       "normalization": "lf",
-      "bytes": 14666
+      "bytes": 14938
     },
     {
       "path": "scripts/release-local.test.mjs",
@@ -3169,9 +3169,9 @@
     },
     {
       "path": "scripts/test-production-runtime.ps1",
-      "sha256": "1ce0655fadc4102975205f588ab0de896cd808a41cbfe5ab11bbafdba368e9c6",
+      "sha256": "180e2750c9d5fd6d53bf819960e56be2f3f76300347728cf82ba5096e2e58610",
       "normalization": "lf",
-      "bytes": 8911
+      "bytes": 9017
     },
     {
       "path": "scripts/test-tpm-worker.py",
@@ -6871,13 +6871,13 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "9f1200eab0702d12c4afe28f341ae274fe4f6bb3928e2e79cece193053d3dd76",
-      "bytes": 14885276
+      "sha256": "a7052702a34468f10df63875cb08c09b2f6df0f2a9a7e864dc064e84dec7456c",
+      "bytes": 14888270
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "59f017fcbb028e692ad12719f6af8832d9b9c06cd7bb3b41c03722e0f5a2a562",
-      "bytes": 11210327
+      "sha256": "47b626c79fd9b92c6a0dc9a78b5dcfabdffca7ba225ead2b4f67566f27352d68",
+      "bytes": 11210421
     }
   ],
   "components": [
@@ -7125,17 +7125,17 @@
       "id": "local-build-material",
       "status": "collected",
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "59f017fcbb028e692ad12719f6af8832d9b9c06cd7bb3b41c03722e0f5a2a562",
-      "bytes": 11210327
+      "sha256": "47b626c79fd9b92c6a0dc9a78b5dcfabdffca7ba225ead2b4f67566f27352d68",
+      "bytes": 11210421
     },
     {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "9f1200eab0702d12c4afe28f341ae274fe4f6bb3928e2e79cece193053d3dd76",
-      "bytes": 14885276,
+      "sha256": "a7052702a34468f10df63875cb08c09b2f6df0f2a9a7e864dc064e84dec7456c",
+      "bytes": 14888270,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "8ccd7dad291e33c2a40afeb1a1515fcf596cb34a0d6dc8c9bb5f7229b90733e4",
+      "manifestSha256": "4119d854c273926c271adc9b16dcddc5badde3c96310c16bcb655e65f955db85",
       "fileCount": 1251
     },
     {
@@ -11470,7 +11470,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "62fece8cfdae81bb2c1075db0fb721572d9cf2fd30eac33a0cedd2b4020473d4",
+  "reviewFingerprint": "928e09678d48ab117f58cf17a5368743c1ba998af68774c9885389aeaa726b7d",
   "review": {
     "status": "pending",
     "pendingReason": "The September 29 repository audit repaired and refreshed source/notice evidence. Exact final desktop and engine artifacts, public matching-source delivery, guest-agent binary reproducibility and historical installer coverage still require release-specific verification.",

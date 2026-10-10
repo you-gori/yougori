@@ -925,8 +925,8 @@
     },
     {
       "path": "cli/src/launcher/project/cloud.rs",
-      "sha256": "f23fc834ccfa7d651971604a5f2bf65fc02ecb43dbadb12164323dcf80df9855",
-      "bytes": 20611,
+      "sha256": "77433dc1f68ab65d835bc4b5db9cd627bc96e18ea4df8515fc354b8322fc1112",
+      "bytes": 30861,
       "mode": 420
     },
     {
@@ -1579,8 +1579,8 @@
     },
     {
       "path": "docs/sandbox-security-review.txt",
-      "sha256": "0c5c7c4444eec33c4e238db0fd2b02455a943f79842d395ba9480cbb9c9cd09a",
-      "bytes": 13009,
+      "sha256": "78d5d2cfc7007424d2aa0276d49a1a0b8e4f57955b7b5d442dfd2f1b07ee754e",
+      "bytes": 13538,
       "mode": 420
     },
     {
@@ -2803,8 +2803,8 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "d69ff7cdb7e4a1d2ac1ea2c16916780e5ee48491211469bfa1f3a353e76991fc",
-      "bytes": 14666,
+      "sha256": "97f28c26035fbd44a6cfb90fb564f73e805a0a49924d7043be94bc92518fbab3",
+      "bytes": 14938,
       "mode": 420
     },
     {
@@ -2899,8 +2899,8 @@
     },
     {
       "path": "scripts/test-production-runtime.ps1",
-      "sha256": "1ce0655fadc4102975205f588ab0de896cd808a41cbfe5ab11bbafdba368e9c6",
-      "bytes": 8911,
+      "sha256": "180e2750c9d5fd6d53bf819960e56be2f3f76300347728cf82ba5096e2e58610",
+      "bytes": 9017,
       "mode": 420
     },
     {
