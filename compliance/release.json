@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "70bbff6165ec28123cc8a62a4edb6ba757a80fa4",
+  "sourceCommit": "5022ad228dc47ff12a798ad2c033457438e109c4",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
@@ -2055,9 +2055,9 @@
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "fa00c34346ff9c742e2e4a8255b07f9187a1994aaeca4a29e77d9424d6da307a",
+      "sha256": "09be9401c07a538ea2e0a538b2546220ab3339b1c5c3af6f09d18ec60e847738",
       "normalization": "lf",
-      "bytes": 7809
+      "bytes": 8060
     },
     {
       "path": "compliance/evidence/all-guest-go-modules.json",
@@ -2121,7 +2121,7 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "0ba2eb421332e989c8e08717357de6f684f2b410b399f5d2ba17d27aeea01b36",
+      "sha256": "6043f903ea41a149c089e998f38a0a5a1995eccb0090e6322a01abba0a8ff19f",
       "normalization": "lf",
       "bytes": 243393
     },
@@ -7568,8 +7568,8 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "d95be1e4348944a4e92af9045df4b1bcdd6fa1784c3e5370e234331416a05602",
-      "bytes": 15492847
+      "sha256": "0fe7ef495743aad1e719bc3a55f37f616085aa158a316e47994619dbdd44b6c3",
+      "bytes": 15495384
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
@@ -7829,10 +7829,10 @@
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "d95be1e4348944a4e92af9045df4b1bcdd6fa1784c3e5370e234331416a05602",
-      "bytes": 15492847,
+      "sha256": "0fe7ef495743aad1e719bc3a55f37f616085aa158a316e47994619dbdd44b6c3",
+      "bytes": 15495384,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "0ba2eb421332e989c8e08717357de6f684f2b410b399f5d2ba17d27aeea01b36",
+      "manifestSha256": "6043f903ea41a149c089e998f38a0a5a1995eccb0090e6322a01abba0a8ff19f",
       "fileCount": 1289
     },
     {
@@ -13369,7 +13369,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "8e4d24c45a1db3dc77a105e095341bf1e3153de9c4a7b383dd1d39f483668f89",
+  "reviewFingerprint": "bd2efbf9dc087107db2756261eee0361e4c56513094ed94d6ea8cbd6e567205d",
   "review": {
     "status": "pending",
     "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",
@@ -13415,7 +13415,7 @@
       "date": "2026-10-10",
       "status": "implementation-and-guest-media-reviewed-final-release-validation-pending",
       "evidence": "docs/sandbox-security-review.txt; scripts/vendor-oci-build; scripts/vendor-nvidia-build; compliance/evidence; exact per-platform release reports",
-      "scope": "All 13 supplied PDF pages reviewed, supported layered controls implemented, native host network inventory tested on Windows/Linux, Mac helper compile checked only, preserved 512 MiB guest migrated without replacing its backing image. All 15 actual Go executables audited; raw stripped OpenPGP notices retained with matching code and compiled-source proofs. This is an engineering scope record, not an absolute isolation or blanket legal certification.",
+      "scope": "All 13 supplied PDF pages reviewed, supported layered controls implemented, native host network inventory tested on Windows/Linux, Mac helper compile checked only, preserved 512 MiB guest migrated without replacing its backing image. A fresh 256 MiB boot regression was corrected with a verified built-in 512 MiB floor bounded by saved maximum, coherent admission/current allocation and unchanged custom-media behavior; the real guest reached authenticated readiness in 8.387 seconds. All 15 actual Go executables audited; raw stripped OpenPGP notices retained with matching code and compiled-source proofs. This is an engineering scope record, not an absolute isolation or blanket legal certification.",
       "requiredFinalEvidence": [
         "Fresh package/source hashes and full platform checks",
         "Exact packaged runtime verification",

@@ -1237,8 +1237,8 @@
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "fa00c34346ff9c742e2e4a8255b07f9187a1994aaeca4a29e77d9424d6da307a",
-      "bytes": 7809,
+      "sha256": "09be9401c07a538ea2e0a538b2546220ab3339b1c5c3af6f09d18ec60e847738",
+      "bytes": 8060,
       "mode": 420
     },
     {
@@ -1603,8 +1603,8 @@
     },
     {
       "path": "docs/sandbox-security-review.txt",
-      "sha256": "ffd3bbc97fa3349679ac1b8976fbc3e42462f9f8c302ff6581fbe6623339a5fc",
-      "bytes": 19960,
+      "sha256": "597d09987a0053ec611b97606920d63a87762aaba4a1d6562a5f9c2fdc4e1d13",
+      "bytes": 20742,
       "mode": 420
     },
     {
@@ -3745,8 +3745,8 @@
     },
     {
       "path": "src-tauri/src/commands.rs",
-      "sha256": "51710b95d29a8aa9f6ab28def659d059514963838915cbbd7e7818bba9bffa79",
-      "bytes": 195746,
+      "sha256": "038b69356bf966c37b9e57d0f960d9fd8cf79ca26393d9908c8bb5f0f89613f4",
+      "bytes": 196215,
       "mode": 420
     },
     {
@@ -3775,8 +3775,8 @@
     },
     {
       "path": "src-tauri/src/commands/resource_admission.rs",
-      "sha256": "0694ac95db04562fd11f27f56f14c2c073cb98684cf243a877819370a9f86f91",
-      "bytes": 11784,
+      "sha256": "34c46d9dfd8c5c8795ee82d0ac5e62ef0c8d2fc82fab8e8f8c08670a7be2a6e0",
+      "bytes": 14439,
       "mode": 420
     },
     {
@@ -4471,8 +4471,8 @@
     },
     {
       "path": "src-tauri/src/runtime/file_import/integration.rs",
-      "sha256": "0091aaee469f882a9da0621c2c093703e12e1aff75277b7343bc8d9f15ab3ab8",
-      "bytes": 21498,
+      "sha256": "fef5f36cdd4861e72bc331c7ec0bb7edc1bdff431e1ec0d15f2adcf32bfaa706",
+      "bytes": 21543,
       "mode": 420
     },
     {
@@ -4537,8 +4537,8 @@
     },
     {
       "path": "src-tauri/src/runtime/mod.rs",
-      "sha256": "2ca7d8ebdbfea4d247d4563f1920629f27f67ca9e2c36d59aba396e1f415c06f",
-      "bytes": 35775,
+      "sha256": "8a80a1f11a593fceca03b4fb8919138b6fe2ed35f04529758d74e725fd008521",
+      "bytes": 35901,
       "mode": 420
     },
     {
@@ -4603,14 +4603,14 @@
     },
     {
       "path": "src-tauri/src/runtime/vm.rs",
-      "sha256": "56573f6130a532898cffd7215ec5352974c76e50c26e9b8760b17b31db6225ee",
-      "bytes": 196798,
+      "sha256": "836497cbdea5465fec18f04af351c74be7a2b6914917c7295c26df35b83b7269",
+      "bytes": 200208,
       "mode": 420
     },
     {
       "path": "src-tauri/src/runtime/vm_memory.rs",
-      "sha256": "ada2d13050cbd3744c204a16a20b6826e159edefe40d4cabed48e15436be2943",
-      "bytes": 5554,
+      "sha256": "1d1f978b5c16fc72076dc2f1ec419b856e0893a155923b71e7cf8a281a914224",
+      "bytes": 8287,
       "mode": 420
     },
     {
