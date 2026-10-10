@@ -11,11 +11,33 @@ case "$yougori_root" in /*) ;; *) exit 1 ;; esac
 [ -d "$yougori_root" ] && [ ! -L "$yougori_root" ] || exit 1
 yougori_temp=
 yougori_module_temp=
+yougori_restore_read_only=0
 cleanup() {
   [ -z "$yougori_temp" ] || rm -f "$yougori_temp"
   [ -z "$yougori_module_temp" ] || rm -rf "$yougori_module_temp"
+  if [ "$yougori_restore_read_only" = 1 ]; then
+    sync
+    mount -t ext4 -o remount,ro none "$yougori_root" || true
+  fi
 }
 trap cleanup EXIT HUP INT TERM
+
+# Alpine mounts the persistent root read-only until OpenRC checks/remounts it.
+# /proc has already moved under sysroot at this hook. Use the trusted mount
+# table there and remount only this known ext4 root while installing updates.
+# The second argument is for the simulated-root test fixture, not a boot hook.
+if [ "$#" = 1 ]; then
+  [ -r "$yougori_root/proc/mounts" ] || exit 1
+  root_options=$(awk -v root="$yougori_root" '$2 == root && $3 == "ext4" { print $4; exit }' "$yougori_root/proc/mounts")
+  case ",$root_options," in
+    *,ro,*)
+      yougori_restore_read_only=1
+      mount -t ext4 -o remount,rw none "$yougori_root"
+      ;;
+    *,rw,*) ;;
+    *) exit 1 ;;
+  esac
+fi
 
 install_boot_file() {
   mode=$1
@@ -102,3 +124,7 @@ install_boot_file 0755 etc/init.d/containerd
 install_boot_file 0644 etc/containerd/config.toml
 install_boot_file 0644 etc/sysctl.d/90-yougori-security.conf
 sync
+if [ "$yougori_restore_read_only" = 1 ]; then
+  mount -t ext4 -o remount,ro none "$yougori_root"
+  yougori_restore_read_only=0
+fi
