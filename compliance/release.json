@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "1592636000ddb4a4c1b32dbe78e26f22c2336e65",
+  "sourceCommit": "70bbff6165ec28123cc8a62a4edb6ba757a80fa4",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
     {
       "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-      "sha256": "ee598ba085975cbb5d17dfea63598459ac17c2a2263cd91609e2942b730fdbcf",
-      "bytes": 137570816
+      "sha256": "13b01cf3466f838b53d753327dbbfc2275ea34601b6fc5c67b336f17cb8e9b60",
+      "bytes": 180811776
     },
     {
       "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-      "sha256": "384726838be551593fd8e0023d23fff981247e004d623dcaeb691938f8e351ea",
-      "bytes": 47340791
+      "sha256": "d560fd2d7ef9429a8f70f6f5733d93b415f84a19acf56d3608faa10ff87494d9",
+      "bytes": 94062900
     },
     {
       "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-      "sha256": "a141f7b2574a52f375f9b0e071bf909fd688be2099f8ac37fc09a90f468ab2b0",
+      "sha256": "ed1895184ea0a99861d277280b45fb6a780a82ca5ae03b509f0ffd31aa70a003",
       "bytes": 247
     },
     {
@@ -56,7 +56,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/cuda/opendock-agent",
-      "sha256": "340661e73c70dce9fe7794c8cce207dda2a2f3f0a23a63fd1236f6a6fe6d40a2",
+      "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90",
       "bytes": 15347836
     },
     {
@@ -66,13 +66,33 @@
     },
     {
       "path": "src-tauri/resources/runtime/cuda/opendock-mount-helper",
-      "sha256": "f663e53d110abce0db8f26a6d8b04deec6c85b53b6576b9f7a847008eeb3424f",
-      "bytes": 38328
+      "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1",
+      "bytes": 51120
     },
     {
       "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-      "sha256": "2fcbfb6d676b4517518589cd1576f31d99fee907697abc254d022d4cfad322c8",
-      "bytes": 255
+      "sha256": "312ae6178652df75b684809c12583989ea302262abe973089736e6fc53fba985",
+      "bytes": 687
+    },
+    {
+      "path": "src-tauri/resources/runtime/cuda/yougori-nvidia-cdi-linux-amd64.manifest.json",
+      "sha256": "fe4b6bc9618c23759be196a432df2aa51cb99f609fae2a1eb3d91a58fc1e9818",
+      "bytes": 5507
+    },
+    {
+      "path": "src-tauri/resources/runtime/cuda/yougori-nvidia-cdi-linux-amd64.tar.gz",
+      "sha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73",
+      "bytes": 7754791
+    },
+    {
+      "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.manifest.json",
+      "sha256": "fe3f79540154ef8b05d0093d7c1f869e3a69789b89089c2d9cb385882eba50e1",
+      "bytes": 25040
+    },
+    {
+      "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.tar.gz",
+      "sha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba",
+      "bytes": 46790081
     },
     {
       "path": "src-tauri/resources/runtime/qemu/ANGLE-NOTICES.txt",
@@ -1431,9 +1451,9 @@
     },
     {
       "path": ".gitattributes",
-      "sha256": "2f61d74e40634b9c12b822dd84c0e8a0e24b79e512842bc9281fcefa073cbb40",
+      "sha256": "a6511a92cebed961c623267bdf3c9457e858acfd6d6708bd5f50907ce3f0a5bd",
       "normalization": "lf",
-      "bytes": 1672
+      "bytes": 1832
     },
     {
       "path": "COMMERCIAL_LICENSE.txt",
@@ -1687,9 +1707,9 @@
     },
     {
       "path": "appliance/agent/host_shares.go",
-      "sha256": "e4f787eba3b97ad7420f4aab940ce71e18793266d6ee6fc1ae476187230bce9d",
+      "sha256": "1112fe1fb1c7b2c4f7dbe40e5689206ef7f47ac3268f5bf4428cef8529a330fe",
       "normalization": "lf",
-      "bytes": 11319
+      "bytes": 11158
     },
     {
       "path": "appliance/agent/internet.go",
@@ -1711,9 +1731,9 @@
     },
     {
       "path": "appliance/agent/main.go",
-      "sha256": "e14575876ad5d6309c35182250bad6cedf1f476e1d81d0266704258334742f80",
+      "sha256": "64d6c0e8a2623662210ead6cc655826d3c3d2a76c8a6aab028bc9d45cfa1b287",
       "normalization": "lf",
-      "bytes": 69739
+      "bytes": 67999
     },
     {
       "path": "appliance/agent/main_test.go",
@@ -1726,6 +1746,18 @@
       "sha256": "2ccfab5b83f75f7157a532154fd2ed5cbab5993f009b5da125d449f544850b1e",
       "normalization": "lf",
       "bytes": 3638
+    },
+    {
+      "path": "appliance/agent/namespace_files.go",
+      "sha256": "90ba6b0feed868823d00f578fe4eb1db7b859de7262e569ea264c3c4d5cc60bb",
+      "normalization": "lf",
+      "bytes": 3307
+    },
+    {
+      "path": "appliance/agent/namespace_files_test.go",
+      "sha256": "8590480182d9d257410a936f6e2bd9a5844db7ec283e3bc3340c6097635e6abe",
+      "normalization": "lf",
+      "bytes": 3902
     },
     {
       "path": "appliance/agent/project_files.go",
@@ -1951,27 +1983,27 @@
     },
     {
       "path": "appliance/boot/smoke_legacy_overlay.py",
-      "sha256": "2834169fbe428a9e939fc83cc3bdbe69c79451170e561e8861fafbeb281fa55b",
+      "sha256": "d6348564fb90dbf7abf4d9818553ce0630107dfaf3930fd3d7cdc552fa01d3bf",
       "normalization": "lf",
-      "bytes": 12986
+      "bytes": 19439
     },
     {
       "path": "appliance/boot/test_upgrade_root.py",
-      "sha256": "da955f140e49c4c229292a08ee58e7a6abc26004657828075a81f65f00d61620",
+      "sha256": "5bb20b7b6b728760fa77e7f3da99ca647b34072c6cb15e41f9109b02664c8c60",
       "normalization": "lf",
-      "bytes": 9274
+      "bytes": 21137
     },
     {
       "path": "appliance/boot/upgrade-root.sh",
-      "sha256": "8b3e42a98aa4075b49a7b3b1c88a12091ff2b889061d8a7656515e1e4c748d54",
+      "sha256": "599f1f144b4a75d2b58258f0be732bf58d480207ac6377351e1a123e4dbf748a",
       "normalization": "lf",
-      "bytes": 5377
+      "bytes": 9149
     },
     {
       "path": "appliance/mount-helper.c",
-      "sha256": "950c5235497567b9e7899efd81baa7a4a2c0a4204647978fda5209c3dc6bda22",
+      "sha256": "c0b2af407590ec564e69b5499ee0a71f58965dfbc89f548ea254dc86d19c367e",
       "normalization": "lf",
-      "bytes": 4947
+      "bytes": 7536
     },
     {
       "path": "appliance/rootfs/etc/containerd/config.toml",
@@ -1998,6 +2030,12 @@
       "bytes": 1012
     },
     {
+      "path": "appliance/test_mount_helper.py",
+      "sha256": "ded80e25ac6d9a079de58d7b233ab11344ddb68d2d08bbeac74cd9b1c45b107d",
+      "normalization": "lf",
+      "bytes": 13332
+    },
+    {
       "path": "assets/yougori-icon.svg",
       "sha256": "f3abcb5232aeaa2a39a4d3ae9a81b0394c4ae1cc28ef0745a66044bc282af01e",
       "normalization": "lf",
@@ -2017,15 +2055,15 @@
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "0ef9e957146e1e31d9bd31fed25e8157369eb89c37d9c717b3b263d1f551df32",
+      "sha256": "fa00c34346ff9c742e2e4a8255b07f9187a1994aaeca4a29e77d9424d6da307a",
       "normalization": "lf",
-      "bytes": 6653
+      "bytes": 7809
     },
     {
       "path": "compliance/evidence/all-guest-go-modules.json",
-      "sha256": "21ca3e57ee70bb261967150640f51318815f083c297efaa8a5e3635164d5b3cc",
+      "sha256": "16a959aa38f8189c4418c5e1d2f1669e5bd19f4d92887b0083ac82feeb89df83",
       "normalization": "lf",
-      "bytes": 55665
+      "bytes": 158621
     },
     {
       "path": "compliance/evidence/alpine-packages.json",
@@ -2070,6 +2108,12 @@
       "bytes": 142547
     },
     {
+      "path": "compliance/evidence/appliance-base-notice-refresh.json",
+      "sha256": "06565720433c620d17b1794330c7fb1d4392b12fc60098ed844722b9e7433eb2",
+      "normalization": "lf",
+      "bytes": 3462
+    },
+    {
       "path": "compliance/evidence/application-dependencies.json",
       "sha256": "caed2b9e01e867e00ac84db906b87df90cef8085f83dc33ec9a611a8f1a99596",
       "normalization": "lf",
@@ -2077,9 +2121,9 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "4119d854c273926c271adc9b16dcddc5badde3c96310c16bcb655e65f955db85",
+      "sha256": "0ba2eb421332e989c8e08717357de6f684f2b410b399f5d2ba17d27aeea01b36",
       "normalization": "lf",
-      "bytes": 235904
+      "bytes": 243393
     },
     {
       "path": "compliance/evidence/firmware-provenance.json",
@@ -2101,21 +2145,21 @@
     },
     {
       "path": "compliance/evidence/guest-main-modules.json",
-      "sha256": "e4a2094e01fce1b11e65e874f7f8e9b7622d6b50f10eec6e6cbca426a0a631c1",
+      "sha256": "c8d527b73fb9b6b47ec13fc5fb0b2fc3309d2b8aa959ffb9705c4491f9578f50",
       "normalization": "lf",
-      "bytes": 2279
+      "bytes": 5428
     },
     {
       "path": "compliance/evidence/initramfs-files.json",
-      "sha256": "14b0c7855394a00512973651062663cccc6e04aad80fa07bc77fb548247e4fd5",
+      "sha256": "100da6241f81a872ae0d60acbcd7af8c045931845c620c7650acf381d9c6f3a4",
       "normalization": "lf",
-      "bytes": 44399
+      "bytes": 45072
     },
     {
       "path": "compliance/evidence/oci-native-libraries.json",
-      "sha256": "182bc19e1b2d582595c285e0d0ac16eea291a2f6fa8a4b74c0d6a15b6bd1c39d",
+      "sha256": "088ed5343f5c57089da6514cf39a08e20a1da5c0c7b449c2664863bf735992b2",
       "normalization": "lf",
-      "bytes": 1396
+      "bytes": 18684
     },
     {
       "path": "compliance/evidence/qemu-modification-notices.json",
@@ -2125,15 +2169,15 @@
     },
     {
       "path": "compliance/evidence/runtime-files.json",
-      "sha256": "65d68f8c02190fddd98ffd991749415f3841ca157a83bcbddbb957542d7b7220",
+      "sha256": "98d9583ef4856849b60fc1ef774407b545fb259c9f3d8f06bffa1a4ffbcf47e0",
       "normalization": "lf",
-      "bytes": 52916
+      "bytes": 53720
     },
     {
       "path": "compliance/evidence/runtime-notices.json",
-      "sha256": "6d929ba2a54471d3bae037d481ded2429fda6d4f8eaaeaaa645c7874dec8f69d",
+      "sha256": "98787b8c099773a23c3c0ac06a2040e844db9f6471def7ef93833710306d3f2c",
       "normalization": "lf",
-      "bytes": 150893
+      "bytes": 197502
     },
     {
       "path": "compliance/evidence/runtime-validation.json",
@@ -2221,9 +2265,9 @@
     },
     {
       "path": "compliance/notices/oci-native-libraries.txt",
-      "sha256": "eeab0809652161c40ef131d9a6efeae0a189c924bd4f3055333bd38981ccf8be",
+      "sha256": "5cb56b92e34cfa01d3ff42a4fab4d4bced9d9e329a2861e4d3a98d38ba4c1f97",
       "normalization": "lf",
-      "bytes": 62643
+      "bytes": 723637
     },
     {
       "path": "compliance/source-cache.json",
@@ -2335,9 +2379,9 @@
     },
     {
       "path": "runtime/cuda/host/src/lib.rs",
-      "sha256": "a110c7dda20dd81d6ca93b0de1247e76bb8b44868b69d7fb85a771557c0f2045",
+      "sha256": "297f8f5970e004cc449e4d6234d4794159a3dab95bd39558750ace8df2f56c2b",
       "normalization": "lf",
-      "bytes": 50387
+      "bytes": 50457
     },
     {
       "path": "runtime/cuda/host/src/storage.rs",
@@ -2346,10 +2390,16 @@
       "bytes": 6087
     },
     {
-      "path": "runtime/cuda/install.ps1",
-      "sha256": "d4a51fc967b3f7c2c4b37a00191a77c0d42ad086fa8f986af99072da9da72e0f",
+      "path": "runtime/cuda/install-oci.py",
+      "sha256": "1a5b8aed27491588ab7122d7b69952de96dc8623d778318ba4cd7a5a25d91541",
       "normalization": "lf",
-      "bytes": 12495
+      "bytes": 8388
+    },
+    {
+      "path": "runtime/cuda/install.ps1",
+      "sha256": "ef63491fa1ab2e9b414806e2b09188b555a1470d63ddd7dc8cb4db4a344bacbf",
+      "normalization": "lf",
+      "bytes": 15525
     },
     {
       "path": "runtime/cuda/kernel-probe.c",
@@ -2371,21 +2421,27 @@
     },
     {
       "path": "runtime/cuda/setup.sh",
-      "sha256": "71406869473118d8a8fc7d94622852b78dd615a16083db5767205cc64e1429e3",
+      "sha256": "131a791c1021557b695bde984aa54f83fc2206a28413196afd581f463249a0bd",
       "normalization": "lf",
-      "bytes": 2394
+      "bytes": 2351
     },
     {
       "path": "runtime/cuda/start.sh",
-      "sha256": "bee835e66f8b0d5ac5726c907af7f1275fe7c3e280b1c90440420893b4652db0",
+      "sha256": "a8cb3c22884c6fd39114b7ac780649250d45f3509803f1ec56676ce33fc0389f",
       "normalization": "lf",
-      "bytes": 1090
+      "bytes": 1159
     },
     {
       "path": "runtime/cuda/test-runtime.ps1",
       "sha256": "b9a1fa74239c24dce33836fd96fd9220b45f740f83b21b3c85d4e5e63223101c",
       "normalization": "lf",
       "bytes": 8393
+    },
+    {
+      "path": "runtime/cuda/test_install_oci.py",
+      "sha256": "c25a232f3f4e124e9073f983acad7e43f5c86102f221b7cde2cc427b18c02a19",
+      "normalization": "lf",
+      "bytes": 19477
     },
     {
       "path": "runtime/cuda/verify-owned.ps1",
@@ -2551,9 +2607,9 @@
     },
     {
       "path": "scripts/build-appliance.sh",
-      "sha256": "6d759a9bb2ba5313aad95ad27fb43b19c74fae493295c2e3e8fb69d3d1664593",
+      "sha256": "a3fb98592d90adf040aa4913aa73c98f9c5431dae5f1fb845904dffb7d8b6a6a",
       "normalization": "lf",
-      "bytes": 8992
+      "bytes": 9122
     },
     {
       "path": "scripts/build-boot-helper.ps1",
@@ -2587,9 +2643,9 @@
     },
     {
       "path": "scripts/build-cuda.sh",
-      "sha256": "4c91bcd959e3bfcdf487bbdd1ab66d8ec4fba757d75c88d2e6564e060ed57184",
+      "sha256": "b7b8c151acca5acb5308e47c051b7268f515a8963c1cf9e3c3d9ff4d084c9f21",
       "normalization": "lf",
-      "bytes": 913
+      "bytes": 2369
     },
     {
       "path": "scripts/build-gpu-bridge.ps1",
@@ -2719,9 +2775,9 @@
     },
     {
       "path": "scripts/collect-compliance.py",
-      "sha256": "3657b110a1d0283434fd1bdb36cc97dca154e7c9899d9dd5c2e10c5db9489395",
+      "sha256": "f00399fa93e9d1f28df5aa336e59d6509810e475feb36d72609839a0e897e402",
       "normalization": "lf",
-      "bytes": 67473
+      "bytes": 87652
     },
     {
       "path": "scripts/compliance-angle.py",
@@ -2833,9 +2889,9 @@
     },
     {
       "path": "scripts/cuda-setup.test.mjs",
-      "sha256": "e42665fe334e8c4f2127caf3c565dbb05e205671c571f58fdab1f7200ae9a8c2",
+      "sha256": "9c5e1315aedd08b1c77a489710db6655a1a752bf135d52a3fc5a5dcfd403fa76",
       "normalization": "lf",
-      "bytes": 14777
+      "bytes": 16482
     },
     {
       "path": "scripts/desktop-dev.mjs",
@@ -3043,9 +3099,9 @@
     },
     {
       "path": "scripts/prepare-appliance-initramfs.py",
-      "sha256": "12366099e1881a5b9869d4d6a7097ff2f1db4667ca301467a09bba656d1e06d4",
+      "sha256": "1cc12d398e05846b0227e66d0160b300718e130044a00b0f92eeebcac19959ca",
       "normalization": "lf",
-      "bytes": 5143
+      "bytes": 9826
     },
     {
       "path": "scripts/prepare-dev.mjs",
@@ -3073,9 +3129,9 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "97f28c26035fbd44a6cfb90fb564f73e805a0a49924d7043be94bc92518fbab3",
+      "sha256": "d30587522b9712164b14a5a0715c5a4d40f457c69821d7a4d1a64c547c397a3e",
       "normalization": "lf",
-      "bytes": 14938
+      "bytes": 15186
     },
     {
       "path": "scripts/release-local.test.mjs",
@@ -3097,9 +3153,9 @@
     },
     {
       "path": "scripts/release-preflight.mjs",
-      "sha256": "1bfbee35b94f03a95cba6948e9ccea4866c7444d3797000aeb952ca3e4f93794",
+      "sha256": "2c36be302dbaf4498d3e880d9e25095e708cee4393e7b8e2b599426f85690858",
       "normalization": "lf",
-      "bytes": 11586
+      "bytes": 11766
     },
     {
       "path": "scripts/release-preflight.test.mjs",
@@ -3198,6 +3254,192 @@
       "bytes": 3570
     },
     {
+      "path": "scripts/vendor-nvidia-build/README.txt",
+      "sha256": "79c1bccbe0a5bc367095201c09576b47ee035184897cd02796a2c971f2e32cef",
+      "normalization": "lf",
+      "bytes": 2083
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/build.py",
+      "sha256": "685a64ac546644dcb3505777b39c800c056210a322245a67d37a4df5aea6c720",
+      "normalization": "lf",
+      "bytes": 15787
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/inputs.json",
+      "sha256": "efc15254096c2076603541c21aa9ccb7e32966c06e176a2740fd683b8cda66b3",
+      "normalization": "lf",
+      "bytes": 1628
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/go.mod",
+      "sha256": "c1c3ea62c51801a8d101650abf5574db7ce1a316165420c7267190430c06e843",
+      "normalization": "lf",
+      "bytes": 1930
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/go.sum",
+      "sha256": "c0c73f9564644a43d2b1b19942cce1fcaff5088c5f234d7c3b9da40b335a104e",
+      "normalization": "lf",
+      "bytes": 10878
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/lock.json",
+      "sha256": "5812692207835f3dc793b1253f9f806057c9df971716cff5bd0bd214f7a2d9fc",
+      "normalization": "lf",
+      "bytes": 250
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/modules.patch",
+      "sha256": "d576448755aa192012434ce6133d48881737ef91c0c932b7dd862c43f9c617b3",
+      "normalization": "lf",
+      "bytes": 2281
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/patches/logger-format.patch",
+      "sha256": "aff29aa343cc204f3f83074a8b700a88f6a2f8b08bf6057ab52ca17603cbaef4",
+      "normalization": "lf",
+      "bytes": 1171
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/test-no-driver.py",
+      "sha256": "af0ed4ff1ffbf4c16151958b3c1d4adebfaa1cb978785d04514f478f08e02be0",
+      "normalization": "lf",
+      "bytes": 1428
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/verify.py",
+      "sha256": "b307b37c3f65ee010a772e59a83c607dce3b11d58d78dee518258f91f26af2f4",
+      "normalization": "lf",
+      "bytes": 4359
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/verify.test.py",
+      "sha256": "aa779fd8ef15c2013ddf22f1b36f10a9de85de3154fe2134c48cd06b1438302e",
+      "normalization": "lf",
+      "bytes": 4199
+    },
+    {
+      "path": "scripts/vendor-oci-build/bootstrap-inputs.py",
+      "sha256": "b760deaa525e7f843d575557ed71dc29b2641fd9b14b0fe638e1c9fc401508d9",
+      "normalization": "lf",
+      "bytes": 6711
+    },
+    {
+      "path": "scripts/vendor-oci-build/build.py",
+      "sha256": "6473be6bf64ee21b09528685cfeaa9747a3d783f3d8511cadc021d95756c131e",
+      "normalization": "lf",
+      "bytes": 31918
+    },
+    {
+      "path": "scripts/vendor-oci-build/inputs.json",
+      "sha256": "1679bafc8de20d7b8a5894adc6726b747677e5b86e93f559533c1a55988538a9",
+      "normalization": "lf",
+      "bytes": 6663
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/cni/go.mod",
+      "sha256": "1be36b1d0a170612f10ee3b9aff82b3a354b0c3d198b4d9dc491c09a554f6fa3",
+      "normalization": "lf",
+      "bytes": 3002
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/cni/go.sum",
+      "sha256": "9de346bbdbdd90ef8dd6d023e2a9a44f8e07e6306bdd042ff0fef095c96f6dd1",
+      "normalization": "lf",
+      "bytes": 37806
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/cni/modules.patch",
+      "sha256": "a71649be4066591951a31a26c72af34bbac0b8ab919f342fcfca59cdabee914c",
+      "normalization": "lf",
+      "bytes": 41165
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/containerd/go.mod",
+      "sha256": "20aa8b259523a06cc05e57ad572470d6d7a00454029c6cd017064cfad334338d",
+      "normalization": "lf",
+      "bytes": 7550
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/containerd/go.sum",
+      "sha256": "b94a7958f9cbd498c7eb16534536d30047b6e324c7d79219390e28f257e58c9e",
+      "normalization": "lf",
+      "bytes": 68665
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/containerd/modules.patch",
+      "sha256": "74931905f21354d8084200bbdbdb2f14bc7bd7daf0f990502de05b3d9c18422e",
+      "normalization": "lf",
+      "bytes": 64652
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/nerdctl/go.mod",
+      "sha256": "5d9e11369522f82056cf3e98f3e52ef41629bdb73c9a2b3b582f9bcf1bd9e6d5",
+      "normalization": "lf",
+      "bytes": 8289
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/nerdctl/go.sum",
+      "sha256": "143d2547be9ce3b520f75f1b588f15099dc3e35bcd4d09e773a18a2781480e61",
+      "normalization": "lf",
+      "bytes": 80983
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/nerdctl/modules.patch",
+      "sha256": "a8adc1dba305cfd38fee82f42ee9fc26ef7817c93655d7ad0f6296006cbd46cc",
+      "normalization": "lf",
+      "bytes": 86768
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/runc/go.mod",
+      "sha256": "0d84a579ad2884d64e85080cf9493ef85ab3b2fcea7f762613fe4c146ec32445",
+      "normalization": "lf",
+      "bytes": 1246
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/runc/go.sum",
+      "sha256": "7c47c94e0b1fa6ee091eecaed81e70dc58c69cd8aa74c8e8ed9fdbd6f69b0e63",
+      "normalization": "lf",
+      "bytes": 11311
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/runc/modules.patch",
+      "sha256": "8c201f43db589b47677289c30b827922df91f0584b4737bbc2eea40121bfcdc5",
+      "normalization": "lf",
+      "bytes": 13662
+    },
+    {
+      "path": "scripts/vendor-oci-build/musl-static-pie.patch",
+      "sha256": "5fbc92f00d4edb8c1d128f6551136414e6c6a24c9d90638951343e949ef7f813",
+      "normalization": "lf",
+      "bytes": 626
+    },
+    {
+      "path": "scripts/vendor-oci-build/native-compiler.py",
+      "sha256": "cf41e77aeca29c79e9dfb5a86a3db89bddced6424245048359fde8f1832f1d80",
+      "normalization": "lf",
+      "bytes": 3637
+    },
+    {
+      "path": "scripts/vendor-oci-build/smoke-alpine.py",
+      "sha256": "5fce3d9fda71df165985fb121c2fe3d66a1c8ffb8a2c34aa3eefb525867e90b2",
+      "normalization": "lf",
+      "bytes": 4559
+    },
+    {
+      "path": "scripts/vendor-oci-build/verify.py",
+      "sha256": "3d273d179136d58fd43e9f8522d82471bf20fd61e5428f8f9d10b995cb5cc501",
+      "normalization": "lf",
+      "bytes": 6241
+    },
+    {
+      "path": "scripts/vendor-oci-build/verify.test.py",
+      "sha256": "2c3cc1f8415d0d8d4374a753fa5977f8d2bf6f53c7f59b33591abc79a69267b9",
+      "normalization": "lf",
+      "bytes": 5658
+    },
+    {
       "path": "scripts/verify-macos-bundle.mjs",
       "sha256": "a0a21ccad59e7227eb38f806dbadf36c9e55e72dd149bcf1fe76e4462e030ec6",
       "normalization": "lf",
@@ -3247,9 +3489,9 @@
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "97b7a4f218f14301cba9e915f5deb291927b7d44db2f6e82e80d8b4cd6a73801",
+      "sha256": "42b7d743f0aa8f5d7275406c806d0bdb7a0cee82140a05f7b08ec274cfe8199b",
       "normalization": "lf",
-      "bytes": 3153
+      "bytes": 3255
     },
     {
       "path": "src-tauri/icons/128x128.png",
@@ -3526,9 +3768,9 @@
     },
     {
       "path": "src-tauri/resources/RUNTIME_LICENSES.txt",
-      "sha256": "4b8a52b086ba4e625fa11c2b10631d5d60f97d0137b5531049be80cedb43b7d4",
+      "sha256": "a546b176ec3790355486314e3f5d073283553d62c7e84b506d563fca14ad8928",
       "normalization": "lf",
-      "bytes": 5371346
+      "bytes": 7337708
     },
     {
       "path": "src-tauri/resources/THIRD_PARTY_NOTICES.txt",
@@ -5860,6 +6102,16 @@
       "bytes": 2451533
     },
     {
+      "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
+      "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
+      "bytes": 4096717
+    },
+    {
+      "file": "containerd-v2.3.6-ee2735368117.tar.gz",
+      "sha256": "fa21eb211d0a9cb2ad32e6edb67808f7615252c8c56a63813ef1d0822bd2a90d",
+      "bytes": 11687648
+    },
+    {
       "file": "crate-cssparser-0.36.0.tar.gz",
       "sha256": "49f52e1f21e90b0fbbec6ca0ca0c79e4eab40b03444c3b8ca80693fea6bd71cc",
       "bytes": 56171
@@ -5898,21 +6150,6 @@
       "file": "crate-self_cell-1.3.0.tar.gz",
       "sha256": "bafbaa5252a4b11e46b34e60ff1e3f2f84f1aeab769f6482246fe77b87da0f99",
       "bytes": 23918
-    },
-    {
-      "file": "debian-btrfs-progs-6.14-1.tar.gz",
-      "sha256": "844fc11a0c2654252cfb0c8f46329455b48c8166e0dab8aa2fe30dafc89eeb81",
-      "bytes": 3236601
-    },
-    {
-      "file": "debian-glibc-2.41-12+deb13u3.tar.gz",
-      "sha256": "bdeab65a7bbc53c5568ddfc76f427fe22e561621457cd98b0638ba7af4252568",
-      "bytes": 20827925
-    },
-    {
-      "file": "debian-libseccomp-2.6.0-2.tar.gz",
-      "sha256": "52341360e82b1254d39f4fa5f49f31fa58183d690a1f1b3694a189603c3fc1ff",
-      "bytes": 706343
     },
     {
       "file": "edk2-secure-src-2970e5699ba6.tar.gz",
@@ -5955,9 +6192,54 @@
       "bytes": 2058649
     },
     {
+      "file": "go-dario.cat_mergo-v1.0.2.zip",
+      "sha256": "67d2e9d83ca57d3a8ce1a0e0e626a7c03753b3966b58b41b95e97ca4e7b2c640",
+      "bytes": 50059
+    },
+    {
       "file": "go-github.com_Masterminds_semver_v3-v3.5.0.zip",
       "sha256": "2cda916821eedb0e1d7ac45d80b6cb78320b035f0f77272ff18d082b7cd90713",
       "bytes": 39348
+    },
+    {
+      "file": "go-github.com_Microsoft_hcsshim-v0.15.0-rc.1.zip",
+      "sha256": "1f22b2c814bc4267df09975f4f41a9980ca45c86ac175ccadad1a189a1f7ddaf",
+      "bytes": 1640230
+    },
+    {
+      "file": "go-github.com_NVIDIA_go-nvlib-v0.12.0.zip",
+      "sha256": "f427913de7ce11ded6d786ef00a8ed45ec8c5210faeaa82a0ab7eb1a71294322",
+      "bytes": 441125
+    },
+    {
+      "file": "go-github.com_NVIDIA_go-nvml-v0.13.3-1.zip",
+      "sha256": "69c5e267d68dee7dfa718607e31f8ddaa4dda1f8258e88a2d51f631deb31ffd9",
+      "bytes": 529728
+    },
+    {
+      "file": "go-github.com_ProtonMail_go-crypto-v1.4.1.zip",
+      "sha256": "70bbdc0f9e926738193aed968f7901efab41493752277c4c94c9b751aa55c42a",
+      "bytes": 577893
+    },
+    {
+      "file": "go-github.com_alexflint_go-filemutex-v1.3.0.zip",
+      "sha256": "ed65d87b6614be009bb000847311cf6a0b89b010f93589d479c7f2f7d3a58a60",
+      "bytes": 6253
+    },
+    {
+      "file": "go-github.com_aperturerobotics_protobuf-go-lite-v0.14.0.zip",
+      "sha256": "3909fc26800d1375597b30807c0e8dae9d29ee44f29dad946d72e633a9555e6a",
+      "bytes": 429454
+    },
+    {
+      "file": "go-github.com_beorn7_perks-v1.0.1.zip",
+      "sha256": "25bd9e2d94aca770e6dbc1f53725f84f6af4432f631d35dd2c46f96ef0512f1a",
+      "bytes": 14678
+    },
+    {
+      "file": "go-github.com_cenkalti_backoff_v5-v5.0.3.zip",
+      "sha256": "58e4d9014277bc1c5c7ab64539137923964cc3920303a4f771d02a532939bedb",
+      "bytes": 15764
     },
     {
       "file": "go-github.com_cespare_xxhash_v2-v2.3.0.zip",
@@ -5965,9 +6247,29 @@
       "bytes": 17573
     },
     {
-      "file": "go-github.com_cilium_ebpf-v0.17.3.zip",
-      "sha256": "0f36a302eb9f8c176b98991d699cc2d5594a49c3ec77c3063ecdfd3530c7a0b1",
-      "bytes": 2302982
+      "file": "go-github.com_checkpoint-restore_checkpointctl-v1.5.0.zip",
+      "sha256": "e96936b6a96ea1897f6fe9135a1750d7060c54a78834d83765c31473f01386d8",
+      "bytes": 169011
+    },
+    {
+      "file": "go-github.com_checkpoint-restore_go-criu_v7-v7.2.0.zip",
+      "sha256": "6e88d29322c7665fdac2b5ed9c9a30b44fc2fb254e460241d9dee71d564c5ac3",
+      "bytes": 328028
+    },
+    {
+      "file": "go-github.com_checkpoint-restore_go-criu_v8-v8.3.0.zip",
+      "sha256": "35a84570486753fcea041a2418872937d4b6c56043e2747186935b7f32c93df1",
+      "bytes": 360903
+    },
+    {
+      "file": "go-github.com_cilium_ebpf-v0.22.0.zip",
+      "sha256": "6a8dcf130ef62f80312dfccd84e78e1318ba3c47599865c93fcd41787b000548",
+      "bytes": 2633132
+    },
+    {
+      "file": "go-github.com_cloudflare_circl-v1.6.3.zip",
+      "sha256": "9aed6385d52ccd66e0a3b8cc093b5f0e7744640485405dd08c8ef89ef6bbeb06",
+      "bytes": 48568798
     },
     {
       "file": "go-github.com_compose-spec_compose-go_v2-v2.12.1.zip",
@@ -5978,6 +6280,11 @@
       "file": "go-github.com_containerd_accelerated-container-image-v1.4.3.zip",
       "sha256": "56f2c4af5d60cc09a1f7f2eb904918c0b09f2ca291578caf1ba3a05cabf8dd49",
       "bytes": 687196
+    },
+    {
+      "file": "go-github.com_containerd_btrfs_v2-v2.0.0.zip",
+      "sha256": "29bd45529487ddb38142956546c231d05301c20bafd20d3db0b317676e2b81fc",
+      "bytes": 18060
     },
     {
       "file": "go-github.com_containerd_cgroups_v3-v3.1.3.zip",
@@ -5995,9 +6302,9 @@
       "bytes": 476295
     },
     {
-      "file": "go-github.com_containerd_containerd_v2-v2.3.2.zip",
-      "sha256": "3890c4887df74bf2882117ae6f96d7c8d1b9a4d14b213468c8e521a53aac5818",
-      "bytes": 3887145
+      "file": "go-github.com_containerd_containerd_v2-v2.3.6.zip",
+      "sha256": "091969505073bfbfe49d33e337cc03e4795761325207631d799ad165c7ef0125",
+      "bytes": 3972380
     },
     {
       "file": "go-github.com_containerd_continuity-v0.5.0.zip",
@@ -6025,6 +6332,11 @@
       "bytes": 30624
     },
     {
+      "file": "go-github.com_containerd_go-dmverity-v0.1.0.zip",
+      "sha256": "4b22870e5e033faa6b2cad742d1336b7061cf3a0c5465bfb4d339d1f6a9d5af7",
+      "bytes": 74711
+    },
+    {
       "file": "go-github.com_containerd_go-runc-v1.1.0.zip",
       "sha256": "2b096a08bc0a8c4fce5b57739cac528cc8fbfee993b0a4ddab82195c9aae3ef4",
       "bytes": 29054
@@ -6040,14 +6352,24 @@
       "bytes": 12939
     },
     {
+      "file": "go-github.com_containerd_nri-v0.12.0.zip",
+      "sha256": "4ac07845592bcc78d00d8a751a4fef8e2ded08bf1a488d60f94a4c216876575e",
+      "bytes": 489909
+    },
+    {
       "file": "go-github.com_containerd_nydus-snapshotter-v0.15.15.zip",
       "sha256": "d7cc4276f97a0fc0c2ffe5f91bad41a0d2e8b11c78ce68f1186a6fab8fe8aa3c",
       "bytes": 1400806
     },
     {
-      "file": "go-github.com_containerd_platforms-v1.0.0-rc.4.zip",
-      "sha256": "ca98ec9fae23a02c54653aff728e7ccec440d1866eb9bcb1d47c0e553b26d24d",
-      "bytes": 42627
+      "file": "go-github.com_containerd_otelttrpc-v0.1.0.zip",
+      "sha256": "9e4b5f0b05ab67bcc6e0cd9e47a9a5ddd49cc43e9b57ff5e7bd803313c900913",
+      "bytes": 26755
+    },
+    {
+      "file": "go-github.com_containerd_platforms-v1.0.0-rc.5.zip",
+      "sha256": "94a3ea9af1dc123c10a494884987e33cfac04b8ebc09d057a2aa90fc95654977",
+      "bytes": 43666
     },
     {
       "file": "go-github.com_containerd_plugin-v1.1.0.zip",
@@ -6080,9 +6402,19 @@
       "bytes": 85426
     },
     {
+      "file": "go-github.com_containerd_typeurl_v2-v2.2.3.zip",
+      "sha256": "aabdf9f00f4381f4bee966af8f7e2faed502b0571f701823d1c1ac0ca9a73189",
+      "bytes": 16068
+    },
+    {
       "file": "go-github.com_containerd_typeurl_v2-v2.3.0.zip",
       "sha256": "243aa4979ace10e7aff8300ccc32beb72460fb0afb1c9a51a72b79e0f4e1be22",
       "bytes": 13852
+    },
+    {
+      "file": "go-github.com_containerd_zfs_v2-v2.0.0.zip",
+      "sha256": "f9e6a71082554b9d9dd65d26050683f2594439a1d7c2e10b05e05df93e6670ff",
+      "bytes": 21355
     },
     {
       "file": "go-github.com_containernetworking_cni-v1.3.0.zip",
@@ -6095,9 +6427,9 @@
       "bytes": 375772
     },
     {
-      "file": "go-github.com_containers_ocicrypt-v1.2.1.zip",
-      "sha256": "9b36e2235a5009b5e2efcb1374a55ca156c5798d68d09dca25b238e233860183",
-      "bytes": 104954
+      "file": "go-github.com_containers_ocicrypt-v1.3.2.zip",
+      "sha256": "8dbc30e0bb161c8369a5b77deafd9b947819f8f10d29dc2722f43380d85b0640",
+      "bytes": 108550
     },
     {
       "file": "go-github.com_coreos_go-iptables-v0.8.0.zip",
@@ -6110,9 +6442,19 @@
       "bytes": 133635
     },
     {
+      "file": "go-github.com_cyphar_filepath-securejoin-v0.6.0.zip",
+      "sha256": "ea65899eb360982a060471c6213e7acbe0f9a0fd0b604bd24f6f0286a1cb6f00",
+      "bytes": 139352
+    },
+    {
       "file": "go-github.com_cyphar_filepath-securejoin-v0.7.0.zip",
       "sha256": "601684f1d3cfc8391cbaf7e5973b0485db6a5037426d9cccf47935ca0a4d65dd",
       "bytes": 141080
+    },
+    {
+      "file": "go-github.com_davecgh_go-spew-v1.1.2-0.20180830191138-d8f796af33cc.zip",
+      "sha256": "b4d0923b169b194f0016ec46f3df1ab0c68e27999743e43fe2de59ecb2484128",
+      "bytes": 61763
     },
     {
       "file": "go-github.com_distribution_reference-v0.6.0.zip",
@@ -6140,9 +6482,29 @@
       "bytes": 52680
     },
     {
+      "file": "go-github.com_docker_go-events-v0.0.0-20190806004212-e31b211e4f1c.zip",
+      "sha256": "0f654eb0e7e07c237a229935ea3488728ddb5b082af2918b64452a1129dccae3",
+      "bytes": 22827
+    },
+    {
+      "file": "go-github.com_docker_go-metrics-v0.0.1.zip",
+      "sha256": "4efab3706215f5b2d29ba823d3991fd6e2f81c02ce45ef0c73c019ebc90e020b",
+      "bytes": 24020
+    },
+    {
       "file": "go-github.com_docker_go-units-v0.5.0.zip",
       "sha256": "039d53ebe64af1aefa0be94ce42c621a17a3052c58ad15e5b3f357529beeaff6",
       "bytes": 14824
+    },
+    {
+      "file": "go-github.com_emicklei_go-restful_v3-v3.13.0.zip",
+      "sha256": "06bd60484b324de0b8e4366d4ed326db2e1dc730459b46e19a5306a108439c77",
+      "bytes": 90992
+    },
+    {
+      "file": "go-github.com_erofs_go-erofs-v0.3.0.zip",
+      "sha256": "8f1da8949be151cbc7a9051d3e88d0c3b2ce132f5656899378c2d77a5f73d5a0",
+      "bytes": 102546
     },
     {
       "file": "go-github.com_fahedouch_go-logrotate-v0.3.0.zip",
@@ -6165,9 +6527,19 @@
       "bytes": 31968
     },
     {
+      "file": "go-github.com_fsnotify_fsnotify-v1.7.0.zip",
+      "sha256": "f98f08a95224f2c7a77b62aa4840cefe4970f0ff00e0a027d7e457c3df752bb2",
+      "bytes": 90661
+    },
+    {
       "file": "go-github.com_fsnotify_fsnotify-v1.9.0.zip",
       "sha256": "94e64824b23591b7aa504e3321d5ec3f57de88f4d49882eaefbbf6820dab746e",
       "bytes": 116946
+    },
+    {
+      "file": "go-github.com_fxamacker_cbor_v2-v2.9.0.zip",
+      "sha256": "5b0ec6424bd522aeeeab30cbdcad6f40bf976a9a2ddf125ab27b97826140d97a",
+      "bytes": 203310
     },
     {
       "file": "go-github.com_go-jose_go-jose_v4-v4.1.4.zip",
@@ -6175,9 +6547,9 @@
       "bytes": 370134
     },
     {
-      "file": "go-github.com_go-logr_logr-v1.4.3.zip",
-      "sha256": "523d7a3587fe73f61ef41c8bc627f7d7f38de8104d46278154b307e60770ad70",
-      "bytes": 90797
+      "file": "go-github.com_go-logr_logr-v1.4.4.zip",
+      "sha256": "3ab107c1d280ce798eaa744efd595982fa709d4023f3f38d24189827483c1710",
+      "bytes": 91231
     },
     {
       "file": "go-github.com_go-logr_stdr-v1.2.2.zip",
@@ -6190,14 +6562,19 @@
       "bytes": 67553
     },
     {
+      "file": "go-github.com_godbus_dbus_v5-v5.1.0.zip",
+      "sha256": "03dfa8e71089a6f477310d15c4d3a036d82d028532881b50fee254358e782ad9",
+      "bytes": 105330
+    },
+    {
       "file": "go-github.com_godbus_dbus_v5-v5.2.2.zip",
       "sha256": "5c6f37c725a481fb0f1e7866ae273429525d8cc6a6cace87da28e53370f5596a",
       "bytes": 112993
     },
     {
-      "file": "go-github.com_golang_protobuf-v1.5.4.zip",
-      "sha256": "9a2f43d3eac8ceda506ebbeb4f229254b87235ce90346692a0e233614182190b",
-      "bytes": 208060
+      "file": "go-github.com_gogo_protobuf-v1.3.2.zip",
+      "sha256": "dd2b73f163c8183941626360196c8f844addd95423d341a0412e1b22d0104ff7",
+      "bytes": 2700673
     },
     {
       "file": "go-github.com_google_go-cmp-v0.7.0.zip",
@@ -6205,9 +6582,29 @@
       "bytes": 130179
     },
     {
+      "file": "go-github.com_google_uuid-v1.6.0.zip",
+      "sha256": "d0f02f377217f42702e259684e06441edbf5140dddcc34ba9bea56038b38a6ed",
+      "bytes": 31981
+    },
+    {
       "file": "go-github.com_gorilla_websocket-v1.5.3.zip",
       "sha256": "dbbd31dd0f08548c5dc43e4c2f12bbba66abff5252b224b1cd06afbb72783a76",
       "bytes": 78401
+    },
+    {
+      "file": "go-github.com_grpc-ecosystem_go-grpc-middleware_providers_prometheus-v1.1.0.zip",
+      "sha256": "8a0bfef1332e102be67d5599bd7c006bebf5f0823f2a9d11aa5cf22a74dbafb4",
+      "bytes": 38013
+    },
+    {
+      "file": "go-github.com_grpc-ecosystem_go-grpc-middleware_v2-v2.1.0.zip",
+      "sha256": "77e8fb88b8089ff917f6d409984c1d90f825d8e3dc996a0d68113493e32c96b8",
+      "bytes": 133269
+    },
+    {
+      "file": "go-github.com_grpc-ecosystem_grpc-gateway_v2-v2.29.0.zip",
+      "sha256": "92aa0dbc15037aeddca97ff7f8e4c61bdc3841a34a0df9bc27af30265e598f2d",
+      "bytes": 1242184
     },
     {
       "file": "go-github.com_hanwen_go-fuse_v2-v2.5.1.zip",
@@ -6215,19 +6612,29 @@
       "bytes": 308229
     },
     {
+      "file": "go-github.com_intel_goresctrl-v0.12.0.zip",
+      "sha256": "e1cfa280d989bfcd2a57f186b7369d1ebba28df785275a1b0f63003f698f5dde",
+      "bytes": 239935
+    },
+    {
       "file": "go-github.com_ipfs_go-cid-v0.6.1.zip",
       "sha256": "63136fe38dd01220794a7ae971d72886b3053a12d9924f6bd254db34ebbccabc",
       "bytes": 41109
     },
     {
-      "file": "go-github.com_klauspost_compress-v1.18.6.zip",
-      "sha256": "61b417d2d3b6b7f5b5f4179f311fb156bd5bcea040353150c41111dc1777f11a",
-      "bytes": 39201205
+      "file": "go-github.com_klauspost_compress-v1.18.7.zip",
+      "sha256": "4e5cef30576a158c16e824ebb9c1ded91d8331bf339655e95ebb19710050c39c",
+      "bytes": 39201868
     },
     {
       "file": "go-github.com_klauspost_cpuid_v2-v2.2.8.zip",
       "sha256": "df0a2644ba6487213a91a9525ab4fb6d55edfa31df60ddf439d49282041bc740",
       "bytes": 50723
+    },
+    {
+      "file": "go-github.com_knqyf263_go-plugin-v0.9.0.zip",
+      "sha256": "ef80e801ff7ed5fc5ebf0a78423a39b876fee0d3df6dc69056277eb1238475e0",
+      "bytes": 3174383
     },
     {
       "file": "go-github.com_mattn_go-colorable-v0.1.14.zip",
@@ -6240,9 +6647,34 @@
       "bytes": 9030
     },
     {
+      "file": "go-github.com_mattn_go-shellwords-v1.0.12.zip",
+      "sha256": "6d35c3edc92e47a06988788d683c1ad389719b55ef19d5a7f239ab4708b6da11",
+      "bytes": 9134
+    },
+    {
       "file": "go-github.com_mattn_go-shellwords-v1.0.13.zip",
       "sha256": "275bc80137082affa209b71f0e98aa78c3bf293af1d789d14b193245eac83ba2",
       "bytes": 10488
+    },
+    {
+      "file": "go-github.com_mdlayher_socket-v0.5.1.zip",
+      "sha256": "f0f07bdd9811f8571c7864cf5e0f06d85cfb3edbb254d6094a31e7f1d427e2a2",
+      "bytes": 28931
+    },
+    {
+      "file": "go-github.com_mdlayher_vsock-v1.2.1.zip",
+      "sha256": "cd25f9f33aa4fb945502351caeeed6994e1f34824cc826ca2daa1b21c45bc0d1",
+      "bytes": 25770
+    },
+    {
+      "file": "go-github.com_miekg_pkcs11-v1.1.2.zip",
+      "sha256": "fdd9780e272879ab80ce306d31c0bea3b72c5c39167b788ac93ee32d4842ce46",
+      "bytes": 74671
+    },
+    {
+      "file": "go-github.com_mistifyio_go-zfs_v3-v3.0.1.zip",
+      "sha256": "32ad6d8e2b2dbe8cb73a8be96e93eb4947cb23bbdf7328ed7533cbb87495e0f8",
+      "bytes": 32161
     },
     {
       "file": "go-github.com_mitchellh_go-homedir-v1.1.0.zip",
@@ -6275,6 +6707,11 @@
       "bytes": 5308426
     },
     {
+      "file": "go-github.com_moby_spdystream-v0.5.1.zip",
+      "sha256": "f4cdb9929a3327708b04dbbb4b6f15e1a21b7919e5c59e5b18bc049bb033d688",
+      "bytes": 46000
+    },
+    {
       "file": "go-github.com_moby_sys_capability-v0.4.0.zip",
       "sha256": "3502bba106a402fd440d1d4e8eb5ca741da4d70a674e8313725838ec8e22b44c",
       "bytes": 20378
@@ -6290,9 +6727,24 @@
       "bytes": 39790
     },
     {
+      "file": "go-github.com_moby_sys_reexec-v0.1.0.zip",
+      "sha256": "3d9e1e4628e61f0e86aab5a0f4f947396686e12102721590bd0966f3600bae22",
+      "bytes": 7144
+    },
+    {
       "file": "go-github.com_moby_sys_signal-v0.7.1.zip",
       "sha256": "8c3853bc4ba4f283f7fccde5c548e93c3613db46f5209394a60cdbbc3eaf4f42",
       "bytes": 11324
+    },
+    {
+      "file": "go-github.com_moby_sys_symlink-v0.3.0.zip",
+      "sha256": "c0036c97c9b7b7a246468165a968fedd974691161b083f1e7e99bafc58e57451",
+      "bytes": 16884
+    },
+    {
+      "file": "go-github.com_moby_sys_user-v0.4.0.zip",
+      "sha256": "4b96521752263905b26acd41c982be7bfb73d45243d070707e3cdd57f9fb3a91",
+      "bytes": 20379
     },
     {
       "file": "go-github.com_moby_sys_user-v0.4.1.zip",
@@ -6313,6 +6765,11 @@
       "file": "go-github.com_mr-tron_base58-v1.3.0.zip",
       "sha256": "6217df47ec8b53f52b86e951ac370f36fcd907c0447692f07f6dab2676c94cef",
       "bytes": 16727
+    },
+    {
+      "file": "go-github.com_mrunalp_fileutils-v0.5.1.zip",
+      "sha256": "a4b3770a9fa0a3d6e01338ea0b1a7233aea6204de463e741b478fd490a9e8b52",
+      "bytes": 8345
     },
     {
       "file": "go-github.com_muesli_cancelreader-v0.2.2.zip",
@@ -6350,6 +6807,26 @@
       "bytes": 10369
     },
     {
+      "file": "go-github.com_munnerz_goautoneg-v0.0.0-20191010083416-a7dc8b61c822.zip",
+      "sha256": "3d7ce17916779890be02ea6b3dd6345c3c30c1df502ad9d8b5b9b310e636afd9",
+      "bytes": 5674
+    },
+    {
+      "file": "go-github.com_networkplumbing_go-nft-v0.4.0.zip",
+      "sha256": "c59d9713cd66c5d24c799036fc624da1b63e41a3168f115f2f6311c1bba0c9b3",
+      "bytes": 51545
+    },
+    {
+      "file": "go-github.com_opencontainers_cgroups-v0.0.7.zip",
+      "sha256": "381d28e7db7d22e15f2deb82e32e65c31283520ee22e5da6f4c0d8040b4c955d",
+      "bytes": 176494
+    },
+    {
+      "file": "go-github.com_opencontainers_cgroups-v0.1.0.zip",
+      "sha256": "c1bc756293c3118fc4a3bb5de9d523f8b040327da212bbe6732a3d25991cabd4",
+      "bytes": 183820
+    },
+    {
       "file": "go-github.com_opencontainers_go-digest-v1.0.0.zip",
       "sha256": "615efb31ff6cd71035b8aa38c3659d8b4da46f3cd92ac807cb50449adfe37c86",
       "bytes": 34573
@@ -6358,6 +6835,11 @@
       "file": "go-github.com_opencontainers_image-spec-v1.1.1.zip",
       "sha256": "3a32eeb459719172947c20be78b5b7293c6ea84f4039184e846f6b676bc19574",
       "bytes": 196183
+    },
+    {
+      "file": "go-github.com_opencontainers_runc-v1.4.3.zip",
+      "sha256": "938452f98de3bdb68440bef67535147439058577a9ac23d2887efb0b2545e123",
+      "bytes": 788749
     },
     {
       "file": "go-github.com_opencontainers_runtime-spec-v1.3.0.zip",
@@ -6370,9 +6852,24 @@
       "bytes": 2356282
     },
     {
+      "file": "go-github.com_opencontainers_selinux-v1.13.1.zip",
+      "sha256": "780f0413d30de235169b0a65219bed2780c102feb94228b796d559b1ad4144ed",
+      "bytes": 48771
+    },
+    {
       "file": "go-github.com_opencontainers_selinux-v1.15.1.zip",
       "sha256": "250e54ef28635521fc3f9682a4f958c6b1e8323318ae3c9c888ce775d43756bd",
       "bytes": 52431
+    },
+    {
+      "file": "go-github.com_pelletier_go-toml-v1.9.5.zip",
+      "sha256": "de3dcda660cc800cd86d03273a25956d67f416e8fcbe4d2001a2cb4a01e6ac60",
+      "bytes": 127514
+    },
+    {
+      "file": "go-github.com_pelletier_go-toml_v2-v2.3.0.zip",
+      "sha256": "27ab9ac7f21fbe4c16c8b8252b27d10d4e86f29adea7dbca15fb920e07787f3d",
+      "bytes": 959480
     },
     {
       "file": "go-github.com_pelletier_go-toml_v2-v2.4.2.zip",
@@ -6390,6 +6887,31 @@
       "bytes": 17866
     },
     {
+      "file": "go-github.com_prometheus_client_golang-v1.23.2.zip",
+      "sha256": "dfcc6c52ad09e3d0dca2e9f41de7f8d1c0dde7baae4b867353d112918a1511de",
+      "bytes": 406600
+    },
+    {
+      "file": "go-github.com_prometheus_client_model-v0.6.2.zip",
+      "sha256": "67017b19f220c6ab91ecfdd10a93824e2a8b09fcb6390054dbdc49df3354a9ca",
+      "bytes": 21381
+    },
+    {
+      "file": "go-github.com_prometheus_common-v0.67.5.zip",
+      "sha256": "9baf08bc138d7097af80f61572b32eeac40727d91e29ea447cb059d0ce57e1a6",
+      "bytes": 233197
+    },
+    {
+      "file": "go-github.com_prometheus_procfs-v0.19.2.zip",
+      "sha256": "354e627c196c228369c9e97bca5ff59d8ce2b338756de249d8d343226424c76f",
+      "bytes": 447051
+    },
+    {
+      "file": "go-github.com_prometheus_procfs-v0.21.1.zip",
+      "sha256": "b417ab3081ad334ce4c6b367b2d5e74dea49e2eb3b5431c1dd5a65e1256736f9",
+      "bytes": 472764
+    },
+    {
       "file": "go-github.com_rootless-containers_bypass4netns-v0.4.2.zip",
       "sha256": "0576ead340d9cfa50a43f9305fe403b80893f5af596bc23a54796cc8e8951120",
       "bytes": 102527
@@ -6400,9 +6922,19 @@
       "bytes": 150418
     },
     {
+      "file": "go-github.com_safchain_ethtool-v0.6.2.zip",
+      "sha256": "eb4fa1f3360018d135d20c05f752886c9b54dca01f23207badeb0a8a6acfd53e",
+      "bytes": 34528
+    },
+    {
       "file": "go-github.com_santhosh-tekuri_jsonschema_v6-v6.0.1.zip",
       "sha256": "8652f1086fd29ca90f42aa367fd6020bc77a4eef14c1a6bb402f071084c0f745",
       "bytes": 87443
+    },
+    {
+      "file": "go-github.com_seccomp_libseccomp-golang-v0.11.1.zip",
+      "sha256": "f8ca6d7ed6b7955558f47158f984def67c59da8790cad64f463554944a65a69d",
+      "bytes": 38028
     },
     {
       "file": "go-github.com_sirupsen_logrus-v1.9.3.zip",
@@ -6415,9 +6947,9 @@
       "bytes": 70579
     },
     {
-      "file": "go-github.com_smallstep_pkcs7-v0.1.1.zip",
-      "sha256": "bc9cd16c7d8306edc4a7b0ca0d841236e6f9e7481ec6ccc5c460a86468cd7b42",
-      "bytes": 111290
+      "file": "go-github.com_smallstep_pkcs7-v0.2.1.zip",
+      "sha256": "300c4f1e05f962c86d0c1092b85af8d57a7560873a1b812184ba77e967b47b48",
+      "bytes": 115663
     },
     {
       "file": "go-github.com_spaolacci_murmur3-v1.1.0.zip",
@@ -6440,9 +6972,39 @@
       "bytes": 14722
     },
     {
+      "file": "go-github.com_tchap_go-patricia_v2-v2.3.3.zip",
+      "sha256": "37591393b0ea113849eacbc292886ea6978798a596164510c5834c2edc374067",
+      "bytes": 16378
+    },
+    {
+      "file": "go-github.com_tetratelabs_wazero-v1.11.0.zip",
+      "sha256": "bfcf9a13d6fc038ac121315f69159052a583132bc6354bb359d8794499efb07d",
+      "bytes": 7623716
+    },
+    {
       "file": "go-github.com_tinylib_msgp-v1.3.0.zip",
       "sha256": "f3a20529eb76279d52c77b0fa0a41f14ab8b8ac0fe2e41c4bac144ff6deeda62",
       "bytes": 163037
+    },
+    {
+      "file": "go-github.com_urfave_cli-altsrc_v3-v3.1.0.zip",
+      "sha256": "d2c18a92c16fbb2f9cb1568cac67d27a0d4eb781dbfec7a057561833a3fed024",
+      "bytes": 21566
+    },
+    {
+      "file": "go-github.com_urfave_cli-v1.22.17.zip",
+      "sha256": "eb2629ff4d93a527036f0ebb57cf67caa10e97fdd9181740f8877936528bf6a9",
+      "bytes": 111811
+    },
+    {
+      "file": "go-github.com_urfave_cli_v2-v2.27.7.zip",
+      "sha256": "a9a4175ab5d550f093f716e8971a5c8539aa738675a210f6321cfb5905f0488a",
+      "bytes": 3553436
+    },
+    {
+      "file": "go-github.com_urfave_cli_v3-v3.10.1.zip",
+      "sha256": "fa5d544a9922bf4aaa6b8e0d2bb25ffc966345360fc585f4c4770bab098d179b",
+      "bytes": 198036
     },
     {
       "file": "go-github.com_vbatts_tar-split-v0.12.3.zip",
@@ -6460,9 +7022,19 @@
       "bytes": 13843
     },
     {
+      "file": "go-github.com_x448_float16-v0.8.4.zip",
+      "sha256": "73b24a41037ea999ab66851e3798a0973dbb1f214925915b01f0820f7b2f1500",
+      "bytes": 14960
+    },
+    {
       "file": "go-github.com_xhit_go-str2duration_v2-v2.1.0.zip",
       "sha256": "907db1bdf362568191e659f82339c21a4031d433bc5ac52f36de23eeceb8cb26",
       "bytes": 7331
+    },
+    {
+      "file": "go-github.com_xrash_smetrics-v0.0.0-20240521201337-686a1a2994c1.zip",
+      "sha256": "6061d9a61e863c9b8a4ed3e34b00d6784dae4ca7ec64a0e6f0e5c4bb8574328d",
+      "bytes": 1826468
     },
     {
       "file": "go-github.com_yuchanns_srslog-v1.1.0.zip",
@@ -6470,9 +7042,24 @@
       "bytes": 24396
     },
     {
+      "file": "go-go.etcd.io_bbolt-v1.4.3.zip",
+      "sha256": "3110374ed5e6984200e6360b6488312803fb41516fff556b350d2a1abaa5ecb5",
+      "bytes": 223684
+    },
+    {
       "file": "go-go.opentelemetry.io_auto_sdk-v1.2.1.zip",
       "sha256": "a08a16fc0a7041cdb875f47a260a56000632212c85f65a302a043c76380c8335",
       "bytes": 46873
+    },
+    {
+      "file": "go-go.opentelemetry.io_contrib_instrumentation_google.golang.org_grpc_otelgrpc-v0.68.0.zip",
+      "sha256": "ddc8a80568f4d34ed938e8372295b3e7745af69b57f03475b449318d01d7fde7",
+      "bytes": 47631
+    },
+    {
+      "file": "go-go.opentelemetry.io_contrib_instrumentation_net_http_otelhttp-v0.68.0.zip",
+      "sha256": "84a5f546bebf91ebebe431b04f13230e0bd189a0eefcc6652f523e4c29ae12ba",
+      "bytes": 61049
     },
     {
       "file": "go-go.opentelemetry.io_contrib_instrumentation_net_http_otelhttp-v0.69.0.zip",
@@ -6480,19 +7067,49 @@
       "bytes": 63280
     },
     {
-      "file": "go-go.opentelemetry.io_otel-v1.44.0.zip",
-      "sha256": "4b7ef50caaf3dc6fc1a058f9ce2ccda6aad2ab3e8657acc4c8bb3102f79c53bc",
-      "bytes": 3561245
+      "file": "go-go.opentelemetry.io_otel-v1.45.0.zip",
+      "sha256": "65b5fc93c93f4eaef740b4bba81fd2543f248d5df85cf4d1ddf9ab459b30f7a2",
+      "bytes": 4274588
     },
     {
-      "file": "go-go.opentelemetry.io_otel_metric-v1.44.0.zip",
-      "sha256": "4442ba5f269f81251f549acb14ac16176f23967f4a0706163440b0df91592f96",
-      "bytes": 37850
+      "file": "go-go.opentelemetry.io_otel_exporters_otlp_otlptrace-v1.45.0.zip",
+      "sha256": "17e5b206e5ea76d8a1e4e8ef340d888894a0776fc1d66848530346347e0b47c3",
+      "bytes": 25093
     },
     {
-      "file": "go-go.opentelemetry.io_otel_trace-v1.44.0.zip",
-      "sha256": "cd1abf8dcec62fe9788fae9105760db1711e6e994d2e31cdda57ccb467e7ceec",
-      "bytes": 76671
+      "file": "go-go.opentelemetry.io_otel_exporters_otlp_otlptrace_otlptracegrpc-v1.45.0.zip",
+      "sha256": "0cacecb3afc00395bf88712ec047e32e39a7e69575ba313254314673c1f1087e",
+      "bytes": 72526
+    },
+    {
+      "file": "go-go.opentelemetry.io_otel_exporters_otlp_otlptrace_otlptracehttp-v1.45.0.zip",
+      "sha256": "8eea4ce8ed5af97d4c77d1b7c5800f17f24f47aebd7ef1a78ddd27cf9000fc13",
+      "bytes": 70349
+    },
+    {
+      "file": "go-go.opentelemetry.io_otel_metric-v1.45.0.zip",
+      "sha256": "8f30ef0039306bf3a4421b8c08e3fc8922d13503dce53b3438e860b3628faecd",
+      "bytes": 38554
+    },
+    {
+      "file": "go-go.opentelemetry.io_otel_sdk-v1.45.0.zip",
+      "sha256": "ad0e63fa1cfc01dffec2a90a8f2d2c1bc0f55d0462940176dc41b7ada0d03258",
+      "bytes": 174147
+    },
+    {
+      "file": "go-go.opentelemetry.io_otel_trace-v1.45.0.zip",
+      "sha256": "32d7d64ea5991378184b03a9ed7b7822b17691a239508a6905fdd73819cb6c6f",
+      "bytes": 77639
+    },
+    {
+      "file": "go-go.opentelemetry.io_proto_otlp-v1.11.0.zip",
+      "sha256": "790b98d472e7095511fa7feddd04e1d85bd844226e03ba482bd4105ef2217e09",
+      "bytes": 73562
+    },
+    {
+      "file": "go-go.yaml.in_yaml_v2-v2.4.3.zip",
+      "sha256": "bacc1ac9ed600be2df58f88b88d5c1b6f6473526fa4069f61549f64b81b09f41",
+      "bytes": 81393
     },
     {
       "file": "go-go.yaml.in_yaml_v2-v2.4.4.zip",
@@ -6510,9 +7127,9 @@
       "bytes": 313790
     },
     {
-      "file": "go-golang.org_x_crypto-v0.53.0.zip",
-      "sha256": "90ef99675e16b3e5105a80d93007faaf5de989c21fa5a47339b5062e72320c9e",
-      "bytes": 2265171
+      "file": "go-golang.org_x_crypto-v0.57.0.zip",
+      "sha256": "856c916b92f1fc5b53983c04f6249f632f56c47ebc003bbcdfc503500dfb58b8",
+      "bytes": 2312809
     },
     {
       "file": "go-golang.org_x_exp-v0.0.0-20250711185948-6ae5c78190dc.zip",
@@ -6520,14 +7137,14 @@
       "bytes": 622649
     },
     {
-      "file": "go-golang.org_x_mod-v0.37.0.zip",
-      "sha256": "91e8e4e9b74a8706dae808b66538d4ab22befd00c11f34134eb97ff572d52e85",
-      "bytes": 174531
+      "file": "go-golang.org_x_mod-v0.40.0.zip",
+      "sha256": "a191080b1494c194059ae71aa1d300741a8e24dfb6e28cd32580dbdcc52a0598",
+      "bytes": 180463
     },
     {
-      "file": "go-golang.org_x_net-v0.56.0.zip",
-      "sha256": "bbc975b3ec9cd86892cfc515badc125657e135c00162d0da5de33f6d07930464",
-      "bytes": 1868474
+      "file": "go-golang.org_x_mod-v0.41.0.zip",
+      "sha256": "201e678d0a35b18b246abe58d80017b75d60be21cbaf4cbb9e963b48872565a9",
+      "bytes": 180455
     },
     {
       "file": "go-golang.org_x_net-v0.60.0.zip",
@@ -6535,14 +7152,9 @@
       "bytes": 1871475
     },
     {
-      "file": "go-golang.org_x_sync-v0.21.0.zip",
-      "sha256": "ee65459023de7f24836f6e2123144b5329bd0a4d05a87c3c448509378e2e6be7",
-      "bytes": 25686
-    },
-    {
-      "file": "go-golang.org_x_sys-v0.46.0.zip",
-      "sha256": "36dc83b6bc5884d260cdbd9d09e597b1eed64d15dfdc374ca6e31aef99d533d7",
-      "bytes": 2022627
+      "file": "go-golang.org_x_sync-v0.23.0.zip",
+      "sha256": "c19a11baba5c1a093cb4fd2f6d0d8d79673c97a82cb0fe2d693c9b6ad84f0f82",
+      "bytes": 26276
     },
     {
       "file": "go-golang.org_x_sys-v0.47.0.zip",
@@ -6555,14 +7167,9 @@
       "bytes": 2094772
     },
     {
-      "file": "go-golang.org_x_term-v0.44.0.zip",
-      "sha256": "e420c6640012a697d806c2e865df26993c82a9ab1b16d286787cb77fc10062f7",
-      "bytes": 21694
-    },
-    {
-      "file": "go-golang.org_x_text-v0.38.0.zip",
-      "sha256": "be98266212ac63cdc78631ae0ff8f783e0f5e47d9b6094c11ffebe43fd0424b3",
-      "bytes": 7015060
+      "file": "go-golang.org_x_term-v0.46.0.zip",
+      "sha256": "9147fdd982f1aed1392183d5b48055f4f74c85d496604766c7f0b1d3bbd61c7c",
+      "bytes": 22601
     },
     {
       "file": "go-golang.org_x_text-v0.42.0.zip",
@@ -6570,14 +7177,24 @@
       "bytes": 7337550
     },
     {
+      "file": "go-golang.org_x_time-v0.15.0.zip",
+      "sha256": "8cfb20e915fa5d6c3fd264304233f8d71a3385e48a37819239c532ad9da27f84",
+      "bytes": 15014
+    },
+    {
+      "file": "go-google.golang.org_genproto_googleapis_api-v0.0.0-20260803160001-6ac0973c030d.zip",
+      "sha256": "81fb4ff242fb2e9ec4328eed36190bf5ba96307ff85a057e2327fbd171b47650",
+      "bytes": 241053
+    },
+    {
       "file": "go-google.golang.org_genproto_googleapis_rpc-v0.0.0-20260526163538-3dc84a4a5aaa.zip",
       "sha256": "55f932b106d6f4f8cb76ae869e44f5d6d8400965fa441ee3532d09c96d64aac1",
       "bytes": 39931
     },
     {
-      "file": "go-google.golang.org_grpc-v1.81.1.zip",
-      "sha256": "11273d01c080389b7079518aa23bd2e20faa91aafd12804d918bbbafaf2c7ffc",
-      "bytes": 2844206
+      "file": "go-google.golang.org_genproto_googleapis_rpc-v0.0.0-20260803160001-6ac0973c030d.zip",
+      "sha256": "a17ff826d2b2e39c2179f99cea77e36137af38f193a718c6445570d326784111",
+      "bytes": 40888
     },
     {
       "file": "go-google.golang.org_grpc-v1.83.2.zip",
@@ -6595,6 +7212,11 @@
       "bytes": 2331100
     },
     {
+      "file": "go-gopkg.in_inf.v0-v0.9.1.zip",
+      "sha256": "08abac18c95cc43b725d4925f63309398d618beab68b4669659b61255e5374a0",
+      "bytes": 15882
+    },
+    {
       "file": "go-gopkg.in_yaml.v3-v3.0.1.zip",
       "sha256": "aab8fbc4e6300ea08e6afe1caea18a21c90c79f489f52c53e2f20431f1a9a015",
       "bytes": 104623
@@ -6605,34 +7227,59 @@
       "bytes": 101104
     },
     {
+      "file": "go-k8s.io_apimachinery-v0.36.3.zip",
+      "sha256": "23ab7303b43f39c7275a56b44b3f4e38ed9f77db0296a711ab2324ef3cf81297",
+      "bytes": 1197281
+    },
+    {
+      "file": "go-k8s.io_client-go-v0.36.3.zip",
+      "sha256": "6747e6664289daae7f310b54e594b56e91edd252d607cfcd8cdccbb5a59f45b7",
+      "bytes": 4289981
+    },
+    {
+      "file": "go-k8s.io_cri-api-v0.36.3.zip",
+      "sha256": "fc5b9afc0d28d1297e5bc93fcff0898f5da0cbb2dab24914963cb04049d33659",
+      "bytes": 138680
+    },
+    {
+      "file": "go-k8s.io_cri-streaming-v0.36.3.zip",
+      "sha256": "7045af2cd3775b006d4ac9956d887a225f96860a838652a624765c179efdd88b",
+      "bytes": 50694
+    },
+    {
+      "file": "go-k8s.io_klog_v2-v2.140.0.zip",
+      "sha256": "46fab8686139b04c42f1b44e84c5a162667fbf22628216d5061d95206625a886",
+      "bytes": 152306
+    },
+    {
+      "file": "go-k8s.io_streaming-v0.36.3.zip",
+      "sha256": "8099be6a196031543a17bb8f4e9f6d73be786a80417059d10e44157b7a27edb5",
+      "bytes": 53357
+    },
+    {
+      "file": "go-k8s.io_utils-v0.0.0-20260319190234-28399d86e0b5.zip",
+      "sha256": "5d87a7ffd5c0ba5381c1af420a421938a4bff87badf2d002c17013feee978a54",
+      "bytes": 241160
+    },
+    {
       "file": "go-lukechampine.com_blake3-v1.3.0.zip",
       "sha256": "2fb0c0a64de6f558aadf0fc161caaf1d477adaed6b8ee60648e0fb44376de32b",
       "bytes": 53722
     },
     {
-      "file": "go-main-containerd_containerd-aad11006b869.tar.gz",
-      "sha256": "86793eec0b23ea8f7331ea61c5ef1e56ed6f8071de5ede9ce89b13310a1a072b",
-      "bytes": 11661926
-    },
-    {
-      "file": "go-main-containerd_nerdctl-347782c28efe.tar.gz",
-      "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
-      "bytes": 1558717
-    },
-    {
-      "file": "go-main-containernetworking_plugins-adc3e6b5b581.tar.gz",
-      "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
-      "bytes": 4096717
-    },
-    {
-      "file": "go-main-opencontainers_runc-8f2685a471d3.tar.gz",
-      "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
-      "bytes": 2808413
+      "file": "go-sigs.k8s.io_json-v0.0.0-20250730193827-2d320260d730.zip",
+      "sha256": "7cec6eae3e4e4c9c1e0a009eef200740990fafbcb9cab081eb18ce32f6e7a7b9",
+      "bytes": 227649
     },
     {
       "file": "go-sigs.k8s.io_knftables-v0.0.18.zip",
       "sha256": "74377e84d4759cf8263b6e79d8a30f1018ba45e2a039afd60c2e767ac4b03ec4",
       "bytes": 62196
+    },
+    {
+      "file": "go-sigs.k8s.io_yaml-v1.4.0.zip",
+      "sha256": "ef031ff78ff9b7036e174eef49dfbd77468dc4f0afb73a639b61f8ab3a1cc425",
+      "bytes": 222726
     },
     {
       "file": "go-sigs.k8s.io_yaml-v1.6.0.zip",
@@ -6785,14 +7432,39 @@
       "bytes": 2437200
     },
     {
+      "file": "nerdctl-v2.3.5-347782c28efe.tar.gz",
+      "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
+      "bytes": 1558717
+    },
+    {
       "file": "novnc-1.7.0-used-source.tar.gz",
       "sha256": "56bbf4ed4e49c37b13372b6b4271bb0ca0fe5da88ee7388e2e5744d3c0fdb4ab",
       "bytes": 151801
     },
     {
-      "file": "oci-build-provenance.tar.gz",
-      "sha256": "85e08dbe00ded06458d3a44789264cc9ce0738018b6d508ba6ca0171de8cfa4e",
-      "bytes": 1960454
+      "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+      "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+      "bytes": 7089693
+    },
+    {
+      "file": "oci-native-btrfs-6.14-1.tar.gz",
+      "sha256": "844fc11a0c2654252cfb0c8f46329455b48c8166e0dab8aa2fe30dafc89eeb81",
+      "bytes": 3236601
+    },
+    {
+      "file": "oci-native-libseccomp-2.6.1.tar.gz",
+      "sha256": "dfe6f401cc7318a0a32475187bc3c067698d3c5e8ef73fe6d1cebea60ca5234b",
+      "bytes": 653536
+    },
+    {
+      "file": "oci-native-musl-1.2.6-r2.tar.gz",
+      "sha256": "9532bd4b2779971bb2a50ee308a26840aa1e74ef0c7f26a6719ee80d9bd24c9a",
+      "bytes": 1085782
+    },
+    {
+      "file": "oci-patched-build-provenance.tar.gz",
+      "sha256": "e5becd97cfa67d9364fea82ecf6c666c613d97cc83ef087c1faf93ddcdced0c2",
+      "bytes": 228665
     },
     {
       "file": "qemu-dtc-b6910bec1161.tar.gz",
@@ -6865,19 +7537,44 @@
       "bytes": 610330
     },
     {
+      "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
+      "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
+      "bytes": 2808413
+    },
+    {
       "file": "secureboot-objects-9a2bbf82e86b.tar.gz",
       "sha256": "add2d1adf8694943a9ab32f2d9b6bd5b0ede5f077d389d9f6abcc262b4b4871c",
       "bytes": 166179195
     },
     {
+      "file": "ubuntu-binutils-2.38-4ubuntu2.12.tar.gz",
+      "sha256": "254ae53ca9b4c6c881b4c0c819768306fae66cfadca975da4ac2bb03d3622862",
+      "bytes": 23995417
+    },
+    {
+      "file": "ubuntu-gcc-11-11.4.0-1ubuntu1~22.04.3.tar.gz",
+      "sha256": "9c84ff1fb1d2946427b988e18394265c7c3cfb625eec5aa8cb3d8650f7fd4041",
+      "bytes": 87535726
+    },
+    {
+      "file": "ubuntu-glibc-2.35-0ubuntu3.15.tar.gz",
+      "sha256": "c66de2fb6ca5d5802c0be12ee63ffba8d6c0467022388d54ceaa98710865a90b",
+      "bytes": 19138636
+    },
+    {
+      "file": "ubuntu-linux-5.15.0-198.208.tar.gz",
+      "sha256": "a89847e49370899f8e33cafaf52acdc29ee7a14788ecd56203688f0d4f1a2c70",
+      "bytes": 206977909
+    },
+    {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "a7052702a34468f10df63875cb08c09b2f6df0f2a9a7e864dc064e84dec7456c",
-      "bytes": 14888270
+      "sha256": "d95be1e4348944a4e92af9045df4b1bcdd6fa1784c3e5370e234331416a05602",
+      "bytes": 15492847
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "47b626c79fd9b92c6a0dc9a78b5dcfabdffca7ba225ead2b4f67566f27352d68",
-      "bytes": 11210421
+      "sha256": "8a23b1275731e42757ca4dbc6801bdda6c55ec354e91ea3d0e7b7eca3053ca28",
+      "bytes": 11584503
     }
   ],
   "components": [
@@ -7125,18 +7822,18 @@
       "id": "local-build-material",
       "status": "collected",
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "47b626c79fd9b92c6a0dc9a78b5dcfabdffca7ba225ead2b4f67566f27352d68",
-      "bytes": 11210421
+      "sha256": "8a23b1275731e42757ca4dbc6801bdda6c55ec354e91ea3d0e7b7eca3053ca28",
+      "bytes": 11584503
     },
     {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "a7052702a34468f10df63875cb08c09b2f6df0f2a9a7e864dc064e84dec7456c",
-      "bytes": 14888270,
+      "sha256": "d95be1e4348944a4e92af9045df4b1bcdd6fa1784c3e5370e234331416a05602",
+      "bytes": 15492847,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "4119d854c273926c271adc9b16dcddc5badde3c96310c16bcb655e65f955db85",
-      "fileCount": 1251
+      "manifestSha256": "0ba2eb421332e989c8e08717357de6f684f2b410b399f5d2ba17d27aeea01b36",
+      "fileCount": 1289
     },
     {
       "id": "alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f",
@@ -9982,6 +10679,16 @@
       "bytes": 2437200
     },
     {
+      "id": "go/dario.cat/mergo@v1.0.2",
+      "module": "dario.cat/mergo",
+      "version": "v1.0.2",
+      "goSum": "h1:85+piFYR1tMbRrLcDwR18y4UKJ3aH1Tbzi24VRW1TK8=",
+      "status": "collected",
+      "file": "go-dario.cat_mergo-v1.0.2.zip",
+      "sha256": "67d2e9d83ca57d3a8ce1a0e0e626a7c03753b3966b58b41b95e97ca4e7b2c640",
+      "bytes": 50059
+    },
+    {
       "id": "go/github.com/Masterminds/semver/v3@v3.5.0",
       "module": "github.com/Masterminds/semver/v3",
       "version": "v3.5.0",
@@ -9990,6 +10697,86 @@
       "file": "go-github.com_Masterminds_semver_v3-v3.5.0.zip",
       "sha256": "2cda916821eedb0e1d7ac45d80b6cb78320b035f0f77272ff18d082b7cd90713",
       "bytes": 39348
+    },
+    {
+      "id": "go/github.com/Microsoft/hcsshim@v0.15.0-rc.1",
+      "module": "github.com/Microsoft/hcsshim",
+      "version": "v0.15.0-rc.1",
+      "goSum": "h1:FbbwtQmiD+BVHynGkx5S65JkLyhkEiiTP8nrpmg2SZw=",
+      "status": "collected",
+      "file": "go-github.com_Microsoft_hcsshim-v0.15.0-rc.1.zip",
+      "sha256": "1f22b2c814bc4267df09975f4f41a9980ca45c86ac175ccadad1a189a1f7ddaf",
+      "bytes": 1640230
+    },
+    {
+      "id": "go/github.com/NVIDIA/go-nvlib@v0.12.0",
+      "module": "github.com/NVIDIA/go-nvlib",
+      "version": "v0.12.0",
+      "goSum": "h1:LICVlUGlDnpbwQv64rOZQn11xQae1J+c+dvH9CCi7jc=",
+      "status": "collected",
+      "file": "go-github.com_NVIDIA_go-nvlib-v0.12.0.zip",
+      "sha256": "f427913de7ce11ded6d786ef00a8ed45ec8c5210faeaa82a0ab7eb1a71294322",
+      "bytes": 441125
+    },
+    {
+      "id": "go/github.com/NVIDIA/go-nvml@v0.13.3-1",
+      "module": "github.com/NVIDIA/go-nvml",
+      "version": "v0.13.3-1",
+      "goSum": "h1:P76U2h88OZSiMtdhRsJjSF5DXyXUqHIXKeDicVAaae0=",
+      "status": "collected",
+      "file": "go-github.com_NVIDIA_go-nvml-v0.13.3-1.zip",
+      "sha256": "69c5e267d68dee7dfa718607e31f8ddaa4dda1f8258e88a2d51f631deb31ffd9",
+      "bytes": 529728
+    },
+    {
+      "id": "go/github.com/ProtonMail/go-crypto@v1.4.1",
+      "module": "github.com/ProtonMail/go-crypto",
+      "version": "v1.4.1",
+      "goSum": "h1:9RfcZHqEQUvP8RzecWEUafnZVtEvrBVL9BiF67IQOfM=",
+      "status": "collected",
+      "file": "go-github.com_ProtonMail_go-crypto-v1.4.1.zip",
+      "sha256": "70bbdc0f9e926738193aed968f7901efab41493752277c4c94c9b751aa55c42a",
+      "bytes": 577893
+    },
+    {
+      "id": "go/github.com/alexflint/go-filemutex@v1.3.0",
+      "module": "github.com/alexflint/go-filemutex",
+      "version": "v1.3.0",
+      "goSum": "h1:LgE+nTUWnQCyRKbpoceKZsPQbs84LivvgwUymZXdOcM=",
+      "status": "collected",
+      "file": "go-github.com_alexflint_go-filemutex-v1.3.0.zip",
+      "sha256": "ed65d87b6614be009bb000847311cf6a0b89b010f93589d479c7f2f7d3a58a60",
+      "bytes": 6253
+    },
+    {
+      "id": "go/github.com/aperturerobotics/protobuf-go-lite@v0.14.0",
+      "module": "github.com/aperturerobotics/protobuf-go-lite",
+      "version": "v0.14.0",
+      "goSum": "h1:6YhovtoUZtXgXLHZ2VV2GCYUzFfi8UN6172Vl2flNlE=",
+      "status": "collected",
+      "file": "go-github.com_aperturerobotics_protobuf-go-lite-v0.14.0.zip",
+      "sha256": "3909fc26800d1375597b30807c0e8dae9d29ee44f29dad946d72e633a9555e6a",
+      "bytes": 429454
+    },
+    {
+      "id": "go/github.com/beorn7/perks@v1.0.1",
+      "module": "github.com/beorn7/perks",
+      "version": "v1.0.1",
+      "goSum": "h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=",
+      "status": "collected",
+      "file": "go-github.com_beorn7_perks-v1.0.1.zip",
+      "sha256": "25bd9e2d94aca770e6dbc1f53725f84f6af4432f631d35dd2c46f96ef0512f1a",
+      "bytes": 14678
+    },
+    {
+      "id": "go/github.com/cenkalti/backoff/v5@v5.0.3",
+      "module": "github.com/cenkalti/backoff/v5",
+      "version": "v5.0.3",
+      "goSum": "h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=",
+      "status": "collected",
+      "file": "go-github.com_cenkalti_backoff_v5-v5.0.3.zip",
+      "sha256": "58e4d9014277bc1c5c7ab64539137923964cc3920303a4f771d02a532939bedb",
+      "bytes": 15764
     },
     {
       "id": "go/github.com/cespare/xxhash/v2@v2.3.0",
@@ -10002,14 +10789,54 @@
       "bytes": 17573
     },
     {
-      "id": "go/github.com/cilium/ebpf@v0.17.3",
-      "module": "github.com/cilium/ebpf",
-      "version": "v0.17.3",
-      "goSum": "h1:FnP4r16PWYSE4ux6zN+//jMcW4nMVRvuTLVTvCjyyjg=",
+      "id": "go/github.com/checkpoint-restore/checkpointctl@v1.5.0",
+      "module": "github.com/checkpoint-restore/checkpointctl",
+      "version": "v1.5.0",
+      "goSum": "h1:Uu+D2cOf/GUyCMk23Y8L69P6YoATTe6pH+Au64O3y28=",
       "status": "collected",
-      "file": "go-github.com_cilium_ebpf-v0.17.3.zip",
-      "sha256": "0f36a302eb9f8c176b98991d699cc2d5594a49c3ec77c3063ecdfd3530c7a0b1",
-      "bytes": 2302982
+      "file": "go-github.com_checkpoint-restore_checkpointctl-v1.5.0.zip",
+      "sha256": "e96936b6a96ea1897f6fe9135a1750d7060c54a78834d83765c31473f01386d8",
+      "bytes": 169011
+    },
+    {
+      "id": "go/github.com/checkpoint-restore/go-criu/v7@v7.2.0",
+      "module": "github.com/checkpoint-restore/go-criu/v7",
+      "version": "v7.2.0",
+      "goSum": "h1:qGiWA4App1gGlEfIJ68WR9jbezV9J7yZdjzglezcqKo=",
+      "status": "collected",
+      "file": "go-github.com_checkpoint-restore_go-criu_v7-v7.2.0.zip",
+      "sha256": "6e88d29322c7665fdac2b5ed9c9a30b44fc2fb254e460241d9dee71d564c5ac3",
+      "bytes": 328028
+    },
+    {
+      "id": "go/github.com/checkpoint-restore/go-criu/v8@v8.3.0",
+      "module": "github.com/checkpoint-restore/go-criu/v8",
+      "version": "v8.3.0",
+      "goSum": "h1:UC3Ioay1OMN2Wg33U53enRoG2701vJ9Y2Ex4APmC52w=",
+      "status": "collected",
+      "file": "go-github.com_checkpoint-restore_go-criu_v8-v8.3.0.zip",
+      "sha256": "35a84570486753fcea041a2418872937d4b6c56043e2747186935b7f32c93df1",
+      "bytes": 360903
+    },
+    {
+      "id": "go/github.com/cilium/ebpf@v0.22.0",
+      "module": "github.com/cilium/ebpf",
+      "version": "v0.22.0",
+      "goSum": "h1:v2ktp0roffpMOj2MMf3idtCQZOsAoC4BJbAJN+ke2bY=",
+      "status": "collected",
+      "file": "go-github.com_cilium_ebpf-v0.22.0.zip",
+      "sha256": "6a8dcf130ef62f80312dfccd84e78e1318ba3c47599865c93fcd41787b000548",
+      "bytes": 2633132
+    },
+    {
+      "id": "go/github.com/cloudflare/circl@v1.6.3",
+      "module": "github.com/cloudflare/circl",
+      "version": "v1.6.3",
+      "goSum": "h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg8=",
+      "status": "collected",
+      "file": "go-github.com_cloudflare_circl-v1.6.3.zip",
+      "sha256": "9aed6385d52ccd66e0a3b8cc093b5f0e7744640485405dd08c8ef89ef6bbeb06",
+      "bytes": 48568798
     },
     {
       "id": "go/github.com/compose-spec/compose-go/v2@v2.12.1",
@@ -10030,6 +10857,16 @@
       "file": "go-github.com_containerd_accelerated-container-image-v1.4.3.zip",
       "sha256": "56f2c4af5d60cc09a1f7f2eb904918c0b09f2ca291578caf1ba3a05cabf8dd49",
       "bytes": 687196
+    },
+    {
+      "id": "go/github.com/containerd/btrfs/v2@v2.0.0",
+      "module": "github.com/containerd/btrfs/v2",
+      "version": "v2.0.0",
+      "goSum": "h1:FN4wsx7KQrYoLXN7uLP0vBV4oVWHOIKDRQ1G2Z0oL5M=",
+      "status": "collected",
+      "file": "go-github.com_containerd_btrfs_v2-v2.0.0.zip",
+      "sha256": "29bd45529487ddb38142956546c231d05301c20bafd20d3db0b317676e2b81fc",
+      "bytes": 18060
     },
     {
       "id": "go/github.com/containerd/cgroups/v3@v3.1.3",
@@ -10062,14 +10899,14 @@
       "bytes": 476295
     },
     {
-      "id": "go/github.com/containerd/containerd/v2@v2.3.2",
+      "id": "go/github.com/containerd/containerd/v2@v2.3.6",
       "module": "github.com/containerd/containerd/v2",
-      "version": "v2.3.2",
-      "goSum": "h1:eLven1YxRMkeiKu7IcMrPKE+gn8sGR1DqHbbshMEvWM=",
+      "version": "v2.3.6",
+      "goSum": "h1:huoqZXaDW1x1kgPvFC4rMwxv92vUJnqgq7I5b1rSddM=",
       "status": "collected",
-      "file": "go-github.com_containerd_containerd_v2-v2.3.2.zip",
-      "sha256": "3890c4887df74bf2882117ae6f96d7c8d1b9a4d14b213468c8e521a53aac5818",
-      "bytes": 3887145
+      "file": "go-github.com_containerd_containerd_v2-v2.3.6.zip",
+      "sha256": "091969505073bfbfe49d33e337cc03e4795761325207631d799ad165c7ef0125",
+      "bytes": 3972380
     },
     {
       "id": "go/github.com/containerd/continuity@v0.5.0",
@@ -10122,6 +10959,16 @@
       "bytes": 30624
     },
     {
+      "id": "go/github.com/containerd/go-dmverity@v0.1.0",
+      "module": "github.com/containerd/go-dmverity",
+      "version": "v0.1.0",
+      "goSum": "h1:aqnpBRI6mmscya/XqvknZ4wQNJnXzx6lKxPa7Q71hDo=",
+      "status": "collected",
+      "file": "go-github.com_containerd_go-dmverity-v0.1.0.zip",
+      "sha256": "4b22870e5e033faa6b2cad742d1336b7061cf3a0c5465bfb4d339d1f6a9d5af7",
+      "bytes": 74711
+    },
+    {
       "id": "go/github.com/containerd/go-runc@v1.1.0",
       "module": "github.com/containerd/go-runc",
       "version": "v1.1.0",
@@ -10152,6 +10999,16 @@
       "bytes": 12939
     },
     {
+      "id": "go/github.com/containerd/nri@v0.12.0",
+      "module": "github.com/containerd/nri",
+      "version": "v0.12.0",
+      "goSum": "h1:RvZtyCM64XOB1UmMAFOlfReTTwCd+hE2IEQ5XEpkKA0=",
+      "status": "collected",
+      "file": "go-github.com_containerd_nri-v0.12.0.zip",
+      "sha256": "4ac07845592bcc78d00d8a751a4fef8e2ded08bf1a488d60f94a4c216876575e",
+      "bytes": 489909
+    },
+    {
       "id": "go/github.com/containerd/nydus-snapshotter@v0.15.15",
       "module": "github.com/containerd/nydus-snapshotter",
       "version": "v0.15.15",
@@ -10162,14 +11019,24 @@
       "bytes": 1400806
     },
     {
-      "id": "go/github.com/containerd/platforms@v1.0.0-rc.4",
-      "module": "github.com/containerd/platforms",
-      "version": "v1.0.0-rc.4",
-      "goSum": "h1:M42JrUT4zfZTqtkUwkr0GzmUWbfyO5VO0Q5b3op97T4=",
+      "id": "go/github.com/containerd/otelttrpc@v0.1.0",
+      "module": "github.com/containerd/otelttrpc",
+      "version": "v0.1.0",
+      "goSum": "h1:UOX68eVTE8H/T45JveIg+I22Ev2aFj4qPITCmXsskjw=",
       "status": "collected",
-      "file": "go-github.com_containerd_platforms-v1.0.0-rc.4.zip",
-      "sha256": "ca98ec9fae23a02c54653aff728e7ccec440d1866eb9bcb1d47c0e553b26d24d",
-      "bytes": 42627
+      "file": "go-github.com_containerd_otelttrpc-v0.1.0.zip",
+      "sha256": "9e4b5f0b05ab67bcc6e0cd9e47a9a5ddd49cc43e9b57ff5e7bd803313c900913",
+      "bytes": 26755
+    },
+    {
+      "id": "go/github.com/containerd/platforms@v1.0.0-rc.5",
+      "module": "github.com/containerd/platforms",
+      "version": "v1.0.0-rc.5",
+      "goSum": "h1:vXd569rDrz8LeMXzAnBsy6LADV5YtsD8oyaRarxdmSU=",
+      "status": "collected",
+      "file": "go-github.com_containerd_platforms-v1.0.0-rc.5.zip",
+      "sha256": "94a3ea9af1dc123c10a494884987e33cfac04b8ebc09d057a2aa90fc95654977",
+      "bytes": 43666
     },
     {
       "id": "go/github.com/containerd/plugin@v1.1.0",
@@ -10232,6 +11099,16 @@
       "bytes": 85426
     },
     {
+      "id": "go/github.com/containerd/typeurl/v2@v2.2.3",
+      "module": "github.com/containerd/typeurl/v2",
+      "version": "v2.2.3",
+      "goSum": "h1:yNA/94zxWdvYACdYO8zofhrTVuQY73fFU1y++dYSw40=",
+      "status": "collected",
+      "file": "go-github.com_containerd_typeurl_v2-v2.2.3.zip",
+      "sha256": "aabdf9f00f4381f4bee966af8f7e2faed502b0571f701823d1c1ac0ca9a73189",
+      "bytes": 16068
+    },
+    {
       "id": "go/github.com/containerd/typeurl/v2@v2.3.0",
       "module": "github.com/containerd/typeurl/v2",
       "version": "v2.3.0",
@@ -10240,6 +11117,16 @@
       "file": "go-github.com_containerd_typeurl_v2-v2.3.0.zip",
       "sha256": "243aa4979ace10e7aff8300ccc32beb72460fb0afb1c9a51a72b79e0f4e1be22",
       "bytes": 13852
+    },
+    {
+      "id": "go/github.com/containerd/zfs/v2@v2.0.0",
+      "module": "github.com/containerd/zfs/v2",
+      "version": "v2.0.0",
+      "goSum": "h1:sI0wKwWNQXR9G4jnPPrXmMSetm6PGAwgqBRTQtFUY/o=",
+      "status": "collected",
+      "file": "go-github.com_containerd_zfs_v2-v2.0.0.zip",
+      "sha256": "f9e6a71082554b9d9dd65d26050683f2594439a1d7c2e10b05e05df93e6670ff",
+      "bytes": 21355
     },
     {
       "id": "go/github.com/containernetworking/cni@v1.3.0",
@@ -10262,14 +11149,14 @@
       "bytes": 375772
     },
     {
-      "id": "go/github.com/containers/ocicrypt@v1.2.1",
+      "id": "go/github.com/containers/ocicrypt@v1.3.2",
       "module": "github.com/containers/ocicrypt",
-      "version": "v1.2.1",
-      "goSum": "h1:0qIOTT9DoYwcKmxSt8QJt+VzMY18onl9jUXsxpVhSmM=",
+      "version": "v1.3.2",
+      "goSum": "h1:MuqHSfiPpGzoAQdgDSX85FgixSgIm9mSDXTLTgugY5E=",
       "status": "collected",
-      "file": "go-github.com_containers_ocicrypt-v1.2.1.zip",
-      "sha256": "9b36e2235a5009b5e2efcb1374a55ca156c5798d68d09dca25b238e233860183",
-      "bytes": 104954
+      "file": "go-github.com_containers_ocicrypt-v1.3.2.zip",
+      "sha256": "8dbc30e0bb161c8369a5b77deafd9b947819f8f10d29dc2722f43380d85b0640",
+      "bytes": 108550
     },
     {
       "id": "go/github.com/coreos/go-iptables@v0.8.0",
@@ -10292,6 +11179,16 @@
       "bytes": 133635
     },
     {
+      "id": "go/github.com/cyphar/filepath-securejoin@v0.6.0",
+      "module": "github.com/cyphar/filepath-securejoin",
+      "version": "v0.6.0",
+      "goSum": "h1:BtGB77njd6SVO6VztOHfPxKitJvd/VPT+OFBFMOi1Is=",
+      "status": "collected",
+      "file": "go-github.com_cyphar_filepath-securejoin-v0.6.0.zip",
+      "sha256": "ea65899eb360982a060471c6213e7acbe0f9a0fd0b604bd24f6f0286a1cb6f00",
+      "bytes": 139352
+    },
+    {
       "id": "go/github.com/cyphar/filepath-securejoin@v0.7.0",
       "module": "github.com/cyphar/filepath-securejoin",
       "version": "v0.7.0",
@@ -10300,6 +11197,16 @@
       "file": "go-github.com_cyphar_filepath-securejoin-v0.7.0.zip",
       "sha256": "601684f1d3cfc8391cbaf7e5973b0485db6a5037426d9cccf47935ca0a4d65dd",
       "bytes": 141080
+    },
+    {
+      "id": "go/github.com/davecgh/go-spew@v1.1.2-0.20180830191138-d8f796af33cc",
+      "module": "github.com/davecgh/go-spew",
+      "version": "v1.1.2-0.20180830191138-d8f796af33cc",
+      "goSum": "h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=",
+      "status": "collected",
+      "file": "go-github.com_davecgh_go-spew-v1.1.2-0.20180830191138-d8f796af33cc.zip",
+      "sha256": "b4d0923b169b194f0016ec46f3df1ab0c68e27999743e43fe2de59ecb2484128",
+      "bytes": 61763
     },
     {
       "id": "go/github.com/distribution/reference@v0.6.0",
@@ -10352,6 +11259,26 @@
       "bytes": 52680
     },
     {
+      "id": "go/github.com/docker/go-events@v0.0.0-20190806004212-e31b211e4f1c",
+      "module": "github.com/docker/go-events",
+      "version": "v0.0.0-20190806004212-e31b211e4f1c",
+      "goSum": "h1:+pKlWGMw7gf6bQ+oDZB4KHQFypsfjYlq/C4rfL7D3g8=",
+      "status": "collected",
+      "file": "go-github.com_docker_go-events-v0.0.0-20190806004212-e31b211e4f1c.zip",
+      "sha256": "0f654eb0e7e07c237a229935ea3488728ddb5b082af2918b64452a1129dccae3",
+      "bytes": 22827
+    },
+    {
+      "id": "go/github.com/docker/go-metrics@v0.0.1",
+      "module": "github.com/docker/go-metrics",
+      "version": "v0.0.1",
+      "goSum": "h1:AgB/0SvBxihN0X8OR4SjsblXkbMvalQ8cjmtKQ2rQV8=",
+      "status": "collected",
+      "file": "go-github.com_docker_go-metrics-v0.0.1.zip",
+      "sha256": "4efab3706215f5b2d29ba823d3991fd6e2f81c02ce45ef0c73c019ebc90e020b",
+      "bytes": 24020
+    },
+    {
       "id": "go/github.com/docker/go-units@v0.5.0",
       "module": "github.com/docker/go-units",
       "version": "v0.5.0",
@@ -10360,6 +11287,26 @@
       "file": "go-github.com_docker_go-units-v0.5.0.zip",
       "sha256": "039d53ebe64af1aefa0be94ce42c621a17a3052c58ad15e5b3f357529beeaff6",
       "bytes": 14824
+    },
+    {
+      "id": "go/github.com/emicklei/go-restful/v3@v3.13.0",
+      "module": "github.com/emicklei/go-restful/v3",
+      "version": "v3.13.0",
+      "goSum": "h1:C4Bl2xDndpU6nJ4bc1jXd+uTmYPVUwkD6bFY/oTyCes=",
+      "status": "collected",
+      "file": "go-github.com_emicklei_go-restful_v3-v3.13.0.zip",
+      "sha256": "06bd60484b324de0b8e4366d4ed326db2e1dc730459b46e19a5306a108439c77",
+      "bytes": 90992
+    },
+    {
+      "id": "go/github.com/erofs/go-erofs@v0.3.0",
+      "module": "github.com/erofs/go-erofs",
+      "version": "v0.3.0",
+      "goSum": "h1:o/W5ABAA3sHYl97WL93dacKEfeDpJhdFf3c2snAti7I=",
+      "status": "collected",
+      "file": "go-github.com_erofs_go-erofs-v0.3.0.zip",
+      "sha256": "8f1da8949be151cbc7a9051d3e88d0c3b2ce132f5656899378c2d77a5f73d5a0",
+      "bytes": 102546
     },
     {
       "id": "go/github.com/fahedouch/go-logrotate@v0.3.0",
@@ -10402,6 +11349,16 @@
       "bytes": 31968
     },
     {
+      "id": "go/github.com/fsnotify/fsnotify@v1.7.0",
+      "module": "github.com/fsnotify/fsnotify",
+      "version": "v1.7.0",
+      "goSum": "h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nosvA=",
+      "status": "collected",
+      "file": "go-github.com_fsnotify_fsnotify-v1.7.0.zip",
+      "sha256": "f98f08a95224f2c7a77b62aa4840cefe4970f0ff00e0a027d7e457c3df752bb2",
+      "bytes": 90661
+    },
+    {
       "id": "go/github.com/fsnotify/fsnotify@v1.9.0",
       "module": "github.com/fsnotify/fsnotify",
       "version": "v1.9.0",
@@ -10410,6 +11367,16 @@
       "file": "go-github.com_fsnotify_fsnotify-v1.9.0.zip",
       "sha256": "94e64824b23591b7aa504e3321d5ec3f57de88f4d49882eaefbbf6820dab746e",
       "bytes": 116946
+    },
+    {
+      "id": "go/github.com/fxamacker/cbor/v2@v2.9.0",
+      "module": "github.com/fxamacker/cbor/v2",
+      "version": "v2.9.0",
+      "goSum": "h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=",
+      "status": "collected",
+      "file": "go-github.com_fxamacker_cbor_v2-v2.9.0.zip",
+      "sha256": "5b0ec6424bd522aeeeab30cbdcad6f40bf976a9a2ddf125ab27b97826140d97a",
+      "bytes": 203310
     },
     {
       "id": "go/github.com/go-jose/go-jose/v4@v4.1.4",
@@ -10422,14 +11389,14 @@
       "bytes": 370134
     },
     {
-      "id": "go/github.com/go-logr/logr@v1.4.3",
+      "id": "go/github.com/go-logr/logr@v1.4.4",
       "module": "github.com/go-logr/logr",
-      "version": "v1.4.3",
-      "goSum": "h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=",
+      "version": "v1.4.4",
+      "goSum": "h1:tG4xh9yMsRCAiodLVTxyrkzSZ9+o0L1Kg/+cPVcbP/8=",
       "status": "collected",
-      "file": "go-github.com_go-logr_logr-v1.4.3.zip",
-      "sha256": "523d7a3587fe73f61ef41c8bc627f7d7f38de8104d46278154b307e60770ad70",
-      "bytes": 90797
+      "file": "go-github.com_go-logr_logr-v1.4.4.zip",
+      "sha256": "3ab107c1d280ce798eaa744efd595982fa709d4023f3f38d24189827483c1710",
+      "bytes": 91231
     },
     {
       "id": "go/github.com/go-logr/stdr@v1.2.2",
@@ -10452,6 +11419,16 @@
       "bytes": 67553
     },
     {
+      "id": "go/github.com/godbus/dbus/v5@v5.1.0",
+      "module": "github.com/godbus/dbus/v5",
+      "version": "v5.1.0",
+      "goSum": "h1:4KLkAxT3aOY8Li4FRJe/KvhoNFFxo0m6fNuFUO8QJUk=",
+      "status": "collected",
+      "file": "go-github.com_godbus_dbus_v5-v5.1.0.zip",
+      "sha256": "03dfa8e71089a6f477310d15c4d3a036d82d028532881b50fee254358e782ad9",
+      "bytes": 105330
+    },
+    {
       "id": "go/github.com/godbus/dbus/v5@v5.2.2",
       "module": "github.com/godbus/dbus/v5",
       "version": "v5.2.2",
@@ -10462,14 +11439,14 @@
       "bytes": 112993
     },
     {
-      "id": "go/github.com/golang/protobuf@v1.5.4",
-      "module": "github.com/golang/protobuf",
-      "version": "v1.5.4",
-      "goSum": "h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek=",
+      "id": "go/github.com/gogo/protobuf@v1.3.2",
+      "module": "github.com/gogo/protobuf",
+      "version": "v1.3.2",
+      "goSum": "h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=",
       "status": "collected",
-      "file": "go-github.com_golang_protobuf-v1.5.4.zip",
-      "sha256": "9a2f43d3eac8ceda506ebbeb4f229254b87235ce90346692a0e233614182190b",
-      "bytes": 208060
+      "file": "go-github.com_gogo_protobuf-v1.3.2.zip",
+      "sha256": "dd2b73f163c8183941626360196c8f844addd95423d341a0412e1b22d0104ff7",
+      "bytes": 2700673
     },
     {
       "id": "go/github.com/google/go-cmp@v0.7.0",
@@ -10482,6 +11459,16 @@
       "bytes": 130179
     },
     {
+      "id": "go/github.com/google/uuid@v1.6.0",
+      "module": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "goSum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=",
+      "status": "collected",
+      "file": "go-github.com_google_uuid-v1.6.0.zip",
+      "sha256": "d0f02f377217f42702e259684e06441edbf5140dddcc34ba9bea56038b38a6ed",
+      "bytes": 31981
+    },
+    {
       "id": "go/github.com/gorilla/websocket@v1.5.3",
       "module": "github.com/gorilla/websocket",
       "version": "v1.5.3",
@@ -10490,6 +11477,36 @@
       "file": "go-github.com_gorilla_websocket-v1.5.3.zip",
       "sha256": "dbbd31dd0f08548c5dc43e4c2f12bbba66abff5252b224b1cd06afbb72783a76",
       "bytes": 78401
+    },
+    {
+      "id": "go/github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus@v1.1.0",
+      "module": "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus",
+      "version": "v1.1.0",
+      "goSum": "h1:QGLs/O40yoNK9vmy4rhUGBVyMf1lISBGtXRpsu/Qu/o=",
+      "status": "collected",
+      "file": "go-github.com_grpc-ecosystem_go-grpc-middleware_providers_prometheus-v1.1.0.zip",
+      "sha256": "8a0bfef1332e102be67d5599bd7c006bebf5f0823f2a9d11aa5cf22a74dbafb4",
+      "bytes": 38013
+    },
+    {
+      "id": "go/github.com/grpc-ecosystem/go-grpc-middleware/v2@v2.1.0",
+      "module": "github.com/grpc-ecosystem/go-grpc-middleware/v2",
+      "version": "v2.1.0",
+      "goSum": "h1:pRhl55Yx1eC7BZ1N+BBWwnKaMyD8uC+34TLdndZMAKk=",
+      "status": "collected",
+      "file": "go-github.com_grpc-ecosystem_go-grpc-middleware_v2-v2.1.0.zip",
+      "sha256": "77e8fb88b8089ff917f6d409984c1d90f825d8e3dc996a0d68113493e32c96b8",
+      "bytes": 133269
+    },
+    {
+      "id": "go/github.com/grpc-ecosystem/grpc-gateway/v2@v2.29.0",
+      "module": "github.com/grpc-ecosystem/grpc-gateway/v2",
+      "version": "v2.29.0",
+      "goSum": "h1:5VipnvEpbqr2gA2VbM+nYVbkIF28c5ZQfqCBQ5g2xfk=",
+      "status": "collected",
+      "file": "go-github.com_grpc-ecosystem_grpc-gateway_v2-v2.29.0.zip",
+      "sha256": "92aa0dbc15037aeddca97ff7f8e4c61bdc3841a34a0df9bc27af30265e598f2d",
+      "bytes": 1242184
     },
     {
       "id": "go/github.com/hanwen/go-fuse/v2@v2.5.1",
@@ -10502,6 +11519,16 @@
       "bytes": 308229
     },
     {
+      "id": "go/github.com/intel/goresctrl@v0.12.0",
+      "module": "github.com/intel/goresctrl",
+      "version": "v0.12.0",
+      "goSum": "h1:F44m7jiVgOdqWfTTWaREF+5HTeX3i06qhvpuzpnrBko=",
+      "status": "collected",
+      "file": "go-github.com_intel_goresctrl-v0.12.0.zip",
+      "sha256": "e1cfa280d989bfcd2a57f186b7369d1ebba28df785275a1b0f63003f698f5dde",
+      "bytes": 239935
+    },
+    {
       "id": "go/github.com/ipfs/go-cid@v0.6.1",
       "module": "github.com/ipfs/go-cid",
       "version": "v0.6.1",
@@ -10512,14 +11539,14 @@
       "bytes": 41109
     },
     {
-      "id": "go/github.com/klauspost/compress@v1.18.6",
+      "id": "go/github.com/klauspost/compress@v1.18.7",
       "module": "github.com/klauspost/compress",
-      "version": "v1.18.6",
-      "goSum": "h1:2jupLlAwFm95+YDR+NwD2MEfFO9d4z4Prjl1XXDjuao=",
+      "version": "v1.18.7",
+      "goSum": "h1:aUyZsS4kH3QTKurYhAOwAHxllVPnOthb3vPfnF1Ehjw=",
       "status": "collected",
-      "file": "go-github.com_klauspost_compress-v1.18.6.zip",
-      "sha256": "61b417d2d3b6b7f5b5f4179f311fb156bd5bcea040353150c41111dc1777f11a",
-      "bytes": 39201205
+      "file": "go-github.com_klauspost_compress-v1.18.7.zip",
+      "sha256": "4e5cef30576a158c16e824ebb9c1ded91d8331bf339655e95ebb19710050c39c",
+      "bytes": 39201868
     },
     {
       "id": "go/github.com/klauspost/cpuid/v2@v2.2.8",
@@ -10530,6 +11557,16 @@
       "file": "go-github.com_klauspost_cpuid_v2-v2.2.8.zip",
       "sha256": "df0a2644ba6487213a91a9525ab4fb6d55edfa31df60ddf439d49282041bc740",
       "bytes": 50723
+    },
+    {
+      "id": "go/github.com/knqyf263/go-plugin@v0.9.0",
+      "module": "github.com/knqyf263/go-plugin",
+      "version": "v0.9.0",
+      "goSum": "h1:CQs2+lOPIlkZVtcb835ZYDEoyyWJWLbSTWeCs0EwTwI=",
+      "status": "collected",
+      "file": "go-github.com_knqyf263_go-plugin-v0.9.0.zip",
+      "sha256": "ef80e801ff7ed5fc5ebf0a78423a39b876fee0d3df6dc69056277eb1238475e0",
+      "bytes": 3174383
     },
     {
       "id": "go/github.com/mattn/go-colorable@v0.1.14",
@@ -10552,6 +11589,16 @@
       "bytes": 9030
     },
     {
+      "id": "go/github.com/mattn/go-shellwords@v1.0.12",
+      "module": "github.com/mattn/go-shellwords",
+      "version": "v1.0.12",
+      "goSum": "h1:M2zGm7EW6UQJvDeQxo4T51eKPurbeFbe8WtebGE2xrk=",
+      "status": "collected",
+      "file": "go-github.com_mattn_go-shellwords-v1.0.12.zip",
+      "sha256": "6d35c3edc92e47a06988788d683c1ad389719b55ef19d5a7f239ab4708b6da11",
+      "bytes": 9134
+    },
+    {
       "id": "go/github.com/mattn/go-shellwords@v1.0.13",
       "module": "github.com/mattn/go-shellwords",
       "version": "v1.0.13",
@@ -10560,6 +11607,46 @@
       "file": "go-github.com_mattn_go-shellwords-v1.0.13.zip",
       "sha256": "275bc80137082affa209b71f0e98aa78c3bf293af1d789d14b193245eac83ba2",
       "bytes": 10488
+    },
+    {
+      "id": "go/github.com/mdlayher/socket@v0.5.1",
+      "module": "github.com/mdlayher/socket",
+      "version": "v0.5.1",
+      "goSum": "h1:VZaqt6RkGkt2OE9l3GcC6nZkqD3xKeQLyfleW/uBcos=",
+      "status": "collected",
+      "file": "go-github.com_mdlayher_socket-v0.5.1.zip",
+      "sha256": "f0f07bdd9811f8571c7864cf5e0f06d85cfb3edbb254d6094a31e7f1d427e2a2",
+      "bytes": 28931
+    },
+    {
+      "id": "go/github.com/mdlayher/vsock@v1.2.1",
+      "module": "github.com/mdlayher/vsock",
+      "version": "v1.2.1",
+      "goSum": "h1:pC1mTJTvjo1r9n9fbm7S1j04rCgCzhCOS5DY0zqHlnQ=",
+      "status": "collected",
+      "file": "go-github.com_mdlayher_vsock-v1.2.1.zip",
+      "sha256": "cd25f9f33aa4fb945502351caeeed6994e1f34824cc826ca2daa1b21c45bc0d1",
+      "bytes": 25770
+    },
+    {
+      "id": "go/github.com/miekg/pkcs11@v1.1.2",
+      "module": "github.com/miekg/pkcs11",
+      "version": "v1.1.2",
+      "goSum": "h1:/VxmeAX5qU6Q3EwafypogwWbYryHFmF2RpkJmw3m4MQ=",
+      "status": "collected",
+      "file": "go-github.com_miekg_pkcs11-v1.1.2.zip",
+      "sha256": "fdd9780e272879ab80ce306d31c0bea3b72c5c39167b788ac93ee32d4842ce46",
+      "bytes": 74671
+    },
+    {
+      "id": "go/github.com/mistifyio/go-zfs/v3@v3.0.1",
+      "module": "github.com/mistifyio/go-zfs/v3",
+      "version": "v3.0.1",
+      "goSum": "h1:YaoXgBePoMA12+S1u/ddkv+QqxcfiZK4prI6HPnkFiU=",
+      "status": "collected",
+      "file": "go-github.com_mistifyio_go-zfs_v3-v3.0.1.zip",
+      "sha256": "32ad6d8e2b2dbe8cb73a8be96e93eb4947cb23bbdf7328ed7533cbb87495e0f8",
+      "bytes": 32161
     },
     {
       "id": "go/github.com/mitchellh/go-homedir@v1.1.0",
@@ -10622,6 +11709,16 @@
       "bytes": 5308426
     },
     {
+      "id": "go/github.com/moby/spdystream@v0.5.1",
+      "module": "github.com/moby/spdystream",
+      "version": "v0.5.1",
+      "goSum": "h1:9sNYeYZUcci9R6/w7KDaFWEWeV4LStVG78Mpyq/Zm/Y=",
+      "status": "collected",
+      "file": "go-github.com_moby_spdystream-v0.5.1.zip",
+      "sha256": "f4cdb9929a3327708b04dbbb4b6f15e1a21b7919e5c59e5b18bc049bb033d688",
+      "bytes": 46000
+    },
+    {
       "id": "go/github.com/moby/sys/capability@v0.4.0",
       "module": "github.com/moby/sys/capability",
       "version": "v0.4.0",
@@ -10652,6 +11749,16 @@
       "bytes": 39790
     },
     {
+      "id": "go/github.com/moby/sys/reexec@v0.1.0",
+      "module": "github.com/moby/sys/reexec",
+      "version": "v0.1.0",
+      "goSum": "h1:RrBi8e0EBTLEgfruBOFcxtElzRGTEUkeIFaVXgU7wok=",
+      "status": "collected",
+      "file": "go-github.com_moby_sys_reexec-v0.1.0.zip",
+      "sha256": "3d9e1e4628e61f0e86aab5a0f4f947396686e12102721590bd0966f3600bae22",
+      "bytes": 7144
+    },
+    {
       "id": "go/github.com/moby/sys/signal@v0.7.1",
       "module": "github.com/moby/sys/signal",
       "version": "v0.7.1",
@@ -10660,6 +11767,26 @@
       "file": "go-github.com_moby_sys_signal-v0.7.1.zip",
       "sha256": "8c3853bc4ba4f283f7fccde5c548e93c3613db46f5209394a60cdbbc3eaf4f42",
       "bytes": 11324
+    },
+    {
+      "id": "go/github.com/moby/sys/symlink@v0.3.0",
+      "module": "github.com/moby/sys/symlink",
+      "version": "v0.3.0",
+      "goSum": "h1:GZX89mEZ9u53f97npBy4Rc3vJKj7JBDj/PN2I22GrNU=",
+      "status": "collected",
+      "file": "go-github.com_moby_sys_symlink-v0.3.0.zip",
+      "sha256": "c0036c97c9b7b7a246468165a968fedd974691161b083f1e7e99bafc58e57451",
+      "bytes": 16884
+    },
+    {
+      "id": "go/github.com/moby/sys/user@v0.4.0",
+      "module": "github.com/moby/sys/user",
+      "version": "v0.4.0",
+      "goSum": "h1:jhcMKit7SA80hivmFJcbB1vqmw//wU61Zdui2eQXuMs=",
+      "status": "collected",
+      "file": "go-github.com_moby_sys_user-v0.4.0.zip",
+      "sha256": "4b96521752263905b26acd41c982be7bfb73d45243d070707e3cdd57f9fb3a91",
+      "bytes": 20379
     },
     {
       "id": "go/github.com/moby/sys/user@v0.4.1",
@@ -10700,6 +11827,16 @@
       "file": "go-github.com_mr-tron_base58-v1.3.0.zip",
       "sha256": "6217df47ec8b53f52b86e951ac370f36fcd907c0447692f07f6dab2676c94cef",
       "bytes": 16727
+    },
+    {
+      "id": "go/github.com/mrunalp/fileutils@v0.5.1",
+      "module": "github.com/mrunalp/fileutils",
+      "version": "v0.5.1",
+      "goSum": "h1:F+S7ZlNKnrwHfSwdlgNSkKo67ReVf8o9fel6C3dkm/Q=",
+      "status": "collected",
+      "file": "go-github.com_mrunalp_fileutils-v0.5.1.zip",
+      "sha256": "a4b3770a9fa0a3d6e01338ea0b1a7233aea6204de463e741b478fd490a9e8b52",
+      "bytes": 8345
     },
     {
       "id": "go/github.com/muesli/cancelreader@v0.2.2",
@@ -10772,6 +11909,46 @@
       "bytes": 10369
     },
     {
+      "id": "go/github.com/munnerz/goautoneg@v0.0.0-20191010083416-a7dc8b61c822",
+      "module": "github.com/munnerz/goautoneg",
+      "version": "v0.0.0-20191010083416-a7dc8b61c822",
+      "goSum": "h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=",
+      "status": "collected",
+      "file": "go-github.com_munnerz_goautoneg-v0.0.0-20191010083416-a7dc8b61c822.zip",
+      "sha256": "3d7ce17916779890be02ea6b3dd6345c3c30c1df502ad9d8b5b9b310e636afd9",
+      "bytes": 5674
+    },
+    {
+      "id": "go/github.com/networkplumbing/go-nft@v0.4.0",
+      "module": "github.com/networkplumbing/go-nft",
+      "version": "v0.4.0",
+      "goSum": "h1:kExVMwXW48DOAukkBwyI16h4uhE5lN9iMvQd52lpTyU=",
+      "status": "collected",
+      "file": "go-github.com_networkplumbing_go-nft-v0.4.0.zip",
+      "sha256": "c59d9713cd66c5d24c799036fc624da1b63e41a3168f115f2f6311c1bba0c9b3",
+      "bytes": 51545
+    },
+    {
+      "id": "go/github.com/opencontainers/cgroups@v0.0.7",
+      "module": "github.com/opencontainers/cgroups",
+      "version": "v0.0.7",
+      "goSum": "h1:FqhggFhigAMgKKwy39jweWX3h7Ha6VBF/qNR6Sso3oc=",
+      "status": "collected",
+      "file": "go-github.com_opencontainers_cgroups-v0.0.7.zip",
+      "sha256": "381d28e7db7d22e15f2deb82e32e65c31283520ee22e5da6f4c0d8040b4c955d",
+      "bytes": 176494
+    },
+    {
+      "id": "go/github.com/opencontainers/cgroups@v0.1.0",
+      "module": "github.com/opencontainers/cgroups",
+      "version": "v0.1.0",
+      "goSum": "h1:6W05KiDvgj1yi/6D13SJCvYx8TAESz67szvHPxhfcrs=",
+      "status": "collected",
+      "file": "go-github.com_opencontainers_cgroups-v0.1.0.zip",
+      "sha256": "c1bc756293c3118fc4a3bb5de9d523f8b040327da212bbe6732a3d25991cabd4",
+      "bytes": 183820
+    },
+    {
       "id": "go/github.com/opencontainers/go-digest@v1.0.0",
       "module": "github.com/opencontainers/go-digest",
       "version": "v1.0.0",
@@ -10790,6 +11967,16 @@
       "file": "go-github.com_opencontainers_image-spec-v1.1.1.zip",
       "sha256": "3a32eeb459719172947c20be78b5b7293c6ea84f4039184e846f6b676bc19574",
       "bytes": 196183
+    },
+    {
+      "id": "go/github.com/opencontainers/runc@v1.4.3",
+      "module": "github.com/opencontainers/runc",
+      "version": "v1.4.3",
+      "goSum": "h1:/bq84roxG30xEICkFodXzMEVQFs7kzo4lCiZME1uKxI=",
+      "status": "collected",
+      "file": "go-github.com_opencontainers_runc-v1.4.3.zip",
+      "sha256": "938452f98de3bdb68440bef67535147439058577a9ac23d2887efb0b2545e123",
+      "bytes": 788749
     },
     {
       "id": "go/github.com/opencontainers/runtime-spec@v1.3.0",
@@ -10812,6 +11999,16 @@
       "bytes": 2356282
     },
     {
+      "id": "go/github.com/opencontainers/selinux@v1.13.1",
+      "module": "github.com/opencontainers/selinux",
+      "version": "v1.13.1",
+      "goSum": "h1:A8nNeceYngH9Ow++M+VVEwJVpdFmrlxsN22F+ISDCJE=",
+      "status": "collected",
+      "file": "go-github.com_opencontainers_selinux-v1.13.1.zip",
+      "sha256": "780f0413d30de235169b0a65219bed2780c102feb94228b796d559b1ad4144ed",
+      "bytes": 48771
+    },
+    {
       "id": "go/github.com/opencontainers/selinux@v1.15.1",
       "module": "github.com/opencontainers/selinux",
       "version": "v1.15.1",
@@ -10820,6 +12017,26 @@
       "file": "go-github.com_opencontainers_selinux-v1.15.1.zip",
       "sha256": "250e54ef28635521fc3f9682a4f958c6b1e8323318ae3c9c888ce775d43756bd",
       "bytes": 52431
+    },
+    {
+      "id": "go/github.com/pelletier/go-toml@v1.9.5",
+      "module": "github.com/pelletier/go-toml",
+      "version": "v1.9.5",
+      "goSum": "h1:4yBQzkHv+7BHq2PQUZF3Mx0IYxG7LsP222s7Agd3ve8=",
+      "status": "collected",
+      "file": "go-github.com_pelletier_go-toml-v1.9.5.zip",
+      "sha256": "de3dcda660cc800cd86d03273a25956d67f416e8fcbe4d2001a2cb4a01e6ac60",
+      "bytes": 127514
+    },
+    {
+      "id": "go/github.com/pelletier/go-toml/v2@v2.3.0",
+      "module": "github.com/pelletier/go-toml/v2",
+      "version": "v2.3.0",
+      "goSum": "h1:k59bC/lIZREW0/iVaQR8nDHxVq8OVlIzYCOJf421CaM=",
+      "status": "collected",
+      "file": "go-github.com_pelletier_go-toml_v2-v2.3.0.zip",
+      "sha256": "27ab9ac7f21fbe4c16c8b8252b27d10d4e86f29adea7dbca15fb920e07787f3d",
+      "bytes": 959480
     },
     {
       "id": "go/github.com/pelletier/go-toml/v2@v2.4.2",
@@ -10852,6 +12069,56 @@
       "bytes": 17866
     },
     {
+      "id": "go/github.com/prometheus/client_golang@v1.23.2",
+      "module": "github.com/prometheus/client_golang",
+      "version": "v1.23.2",
+      "goSum": "h1:Je96obch5RDVy3FDMndoUsjAhG5Edi49h0RJWRi/o0o=",
+      "status": "collected",
+      "file": "go-github.com_prometheus_client_golang-v1.23.2.zip",
+      "sha256": "dfcc6c52ad09e3d0dca2e9f41de7f8d1c0dde7baae4b867353d112918a1511de",
+      "bytes": 406600
+    },
+    {
+      "id": "go/github.com/prometheus/client_model@v0.6.2",
+      "module": "github.com/prometheus/client_model",
+      "version": "v0.6.2",
+      "goSum": "h1:oBsgwpGs7iVziMvrGhE53c/GrLUsZdHnqNwqPLxwZyk=",
+      "status": "collected",
+      "file": "go-github.com_prometheus_client_model-v0.6.2.zip",
+      "sha256": "67017b19f220c6ab91ecfdd10a93824e2a8b09fcb6390054dbdc49df3354a9ca",
+      "bytes": 21381
+    },
+    {
+      "id": "go/github.com/prometheus/common@v0.67.5",
+      "module": "github.com/prometheus/common",
+      "version": "v0.67.5",
+      "goSum": "h1:pIgK94WWlQt1WLwAC5j2ynLaBRDiinoAb86HZHTUGI4=",
+      "status": "collected",
+      "file": "go-github.com_prometheus_common-v0.67.5.zip",
+      "sha256": "9baf08bc138d7097af80f61572b32eeac40727d91e29ea447cb059d0ce57e1a6",
+      "bytes": 233197
+    },
+    {
+      "id": "go/github.com/prometheus/procfs@v0.19.2",
+      "module": "github.com/prometheus/procfs",
+      "version": "v0.19.2",
+      "goSum": "h1:zUMhqEW66Ex7OXIiDkll3tl9a1ZdilUOd/F6ZXw4Vws=",
+      "status": "collected",
+      "file": "go-github.com_prometheus_procfs-v0.19.2.zip",
+      "sha256": "354e627c196c228369c9e97bca5ff59d8ce2b338756de249d8d343226424c76f",
+      "bytes": 447051
+    },
+    {
+      "id": "go/github.com/prometheus/procfs@v0.21.1",
+      "module": "github.com/prometheus/procfs",
+      "version": "v0.21.1",
+      "goSum": "h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+OJI=",
+      "status": "collected",
+      "file": "go-github.com_prometheus_procfs-v0.21.1.zip",
+      "sha256": "b417ab3081ad334ce4c6b367b2d5e74dea49e2eb3b5431c1dd5a65e1256736f9",
+      "bytes": 472764
+    },
+    {
       "id": "go/github.com/rootless-containers/bypass4netns@v0.4.2",
       "module": "github.com/rootless-containers/bypass4netns",
       "version": "v0.4.2",
@@ -10872,6 +12139,16 @@
       "bytes": 150418
     },
     {
+      "id": "go/github.com/safchain/ethtool@v0.6.2",
+      "module": "github.com/safchain/ethtool",
+      "version": "v0.6.2",
+      "goSum": "h1:O3ZPFAKEUEfbtE6J/feEe2Ft7dIJ2Sy8t4SdMRiIMHY=",
+      "status": "collected",
+      "file": "go-github.com_safchain_ethtool-v0.6.2.zip",
+      "sha256": "eb4fa1f3360018d135d20c05f752886c9b54dca01f23207badeb0a8a6acfd53e",
+      "bytes": 34528
+    },
+    {
       "id": "go/github.com/santhosh-tekuri/jsonschema/v6@v6.0.1",
       "module": "github.com/santhosh-tekuri/jsonschema/v6",
       "version": "v6.0.1",
@@ -10880,6 +12157,16 @@
       "file": "go-github.com_santhosh-tekuri_jsonschema_v6-v6.0.1.zip",
       "sha256": "8652f1086fd29ca90f42aa367fd6020bc77a4eef14c1a6bb402f071084c0f745",
       "bytes": 87443
+    },
+    {
+      "id": "go/github.com/seccomp/libseccomp-golang@v0.11.1",
+      "module": "github.com/seccomp/libseccomp-golang",
+      "version": "v0.11.1",
+      "goSum": "h1:wuk4ZjSx6kyQII4rj6G6fvVzRHQaSiPvccJazDagu4g=",
+      "status": "collected",
+      "file": "go-github.com_seccomp_libseccomp-golang-v0.11.1.zip",
+      "sha256": "f8ca6d7ed6b7955558f47158f984def67c59da8790cad64f463554944a65a69d",
+      "bytes": 38028
     },
     {
       "id": "go/github.com/sirupsen/logrus@v1.9.3",
@@ -10902,14 +12189,14 @@
       "bytes": 70579
     },
     {
-      "id": "go/github.com/smallstep/pkcs7@v0.1.1",
+      "id": "go/github.com/smallstep/pkcs7@v0.2.1",
       "module": "github.com/smallstep/pkcs7",
-      "version": "v0.1.1",
-      "goSum": "h1:x+rPdt2W088V9Vkjho4KtoggyktZJlMduZAtRHm68LU=",
+      "version": "v0.2.1",
+      "goSum": "h1:6Kfzr/QizdIuB6LSv8y1LJdZ3aPSfTNhTLqAx9CTLfA=",
       "status": "collected",
-      "file": "go-github.com_smallstep_pkcs7-v0.1.1.zip",
-      "sha256": "bc9cd16c7d8306edc4a7b0ca0d841236e6f9e7481ec6ccc5c460a86468cd7b42",
-      "bytes": 111290
+      "file": "go-github.com_smallstep_pkcs7-v0.2.1.zip",
+      "sha256": "300c4f1e05f962c86d0c1092b85af8d57a7560873a1b812184ba77e967b47b48",
+      "bytes": 115663
     },
     {
       "id": "go/github.com/spaolacci/murmur3@v1.1.0",
@@ -10952,6 +12239,26 @@
       "bytes": 14722
     },
     {
+      "id": "go/github.com/tchap/go-patricia/v2@v2.3.3",
+      "module": "github.com/tchap/go-patricia/v2",
+      "version": "v2.3.3",
+      "goSum": "h1:xfNEsODumaEcCcY3gI0hYPZ/PcpVv5ju6RMAhgwZDDc=",
+      "status": "collected",
+      "file": "go-github.com_tchap_go-patricia_v2-v2.3.3.zip",
+      "sha256": "37591393b0ea113849eacbc292886ea6978798a596164510c5834c2edc374067",
+      "bytes": 16378
+    },
+    {
+      "id": "go/github.com/tetratelabs/wazero@v1.11.0",
+      "module": "github.com/tetratelabs/wazero",
+      "version": "v1.11.0",
+      "goSum": "h1:+gKemEuKCTevU4d7ZTzlsvgd1uaToIDtlQlmNbwqYhA=",
+      "status": "collected",
+      "file": "go-github.com_tetratelabs_wazero-v1.11.0.zip",
+      "sha256": "bfcf9a13d6fc038ac121315f69159052a583132bc6354bb359d8794499efb07d",
+      "bytes": 7623716
+    },
+    {
       "id": "go/github.com/tinylib/msgp@v1.3.0",
       "module": "github.com/tinylib/msgp",
       "version": "v1.3.0",
@@ -10960,6 +12267,46 @@
       "file": "go-github.com_tinylib_msgp-v1.3.0.zip",
       "sha256": "f3a20529eb76279d52c77b0fa0a41f14ab8b8ac0fe2e41c4bac144ff6deeda62",
       "bytes": 163037
+    },
+    {
+      "id": "go/github.com/urfave/cli@v1.22.17",
+      "module": "github.com/urfave/cli",
+      "version": "v1.22.17",
+      "goSum": "h1:SYzXoiPfQjHBbkYxbew5prZHS1TOLT3ierW8SYLqtVQ=",
+      "status": "collected",
+      "file": "go-github.com_urfave_cli-v1.22.17.zip",
+      "sha256": "eb2629ff4d93a527036f0ebb57cf67caa10e97fdd9181740f8877936528bf6a9",
+      "bytes": 111811
+    },
+    {
+      "id": "go/github.com/urfave/cli-altsrc/v3@v3.1.0",
+      "module": "github.com/urfave/cli-altsrc/v3",
+      "version": "v3.1.0",
+      "goSum": "h1:6E5+kXeAWmRxXlPgdEVf9VqVoTJ2MJci0UMpUi/w/bA=",
+      "status": "collected",
+      "file": "go-github.com_urfave_cli-altsrc_v3-v3.1.0.zip",
+      "sha256": "d2c18a92c16fbb2f9cb1568cac67d27a0d4eb781dbfec7a057561833a3fed024",
+      "bytes": 21566
+    },
+    {
+      "id": "go/github.com/urfave/cli/v2@v2.27.7",
+      "module": "github.com/urfave/cli/v2",
+      "version": "v2.27.7",
+      "goSum": "h1:bH59vdhbjLv3LAvIu6gd0usJHgoTTPhCFib8qqOwXYU=",
+      "status": "collected",
+      "file": "go-github.com_urfave_cli_v2-v2.27.7.zip",
+      "sha256": "a9a4175ab5d550f093f716e8971a5c8539aa738675a210f6321cfb5905f0488a",
+      "bytes": 3553436
+    },
+    {
+      "id": "go/github.com/urfave/cli/v3@v3.10.1",
+      "module": "github.com/urfave/cli/v3",
+      "version": "v3.10.1",
+      "goSum": "h1:7Kx9H50hrHbRbyxgO1KP6/BcbiGRz0uYh5YyQ30JEEY=",
+      "status": "collected",
+      "file": "go-github.com_urfave_cli_v3-v3.10.1.zip",
+      "sha256": "fa5d544a9922bf4aaa6b8e0d2bb25ffc966345360fc585f4c4770bab098d179b",
+      "bytes": 198036
     },
     {
       "id": "go/github.com/vbatts/tar-split@v0.12.3",
@@ -10992,6 +12339,16 @@
       "bytes": 13843
     },
     {
+      "id": "go/github.com/x448/float16@v0.8.4",
+      "module": "github.com/x448/float16",
+      "version": "v0.8.4",
+      "goSum": "h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=",
+      "status": "collected",
+      "file": "go-github.com_x448_float16-v0.8.4.zip",
+      "sha256": "73b24a41037ea999ab66851e3798a0973dbb1f214925915b01f0820f7b2f1500",
+      "bytes": 14960
+    },
+    {
       "id": "go/github.com/xhit/go-str2duration/v2@v2.1.0",
       "module": "github.com/xhit/go-str2duration/v2",
       "version": "v2.1.0",
@@ -11000,6 +12357,16 @@
       "file": "go-github.com_xhit_go-str2duration_v2-v2.1.0.zip",
       "sha256": "907db1bdf362568191e659f82339c21a4031d433bc5ac52f36de23eeceb8cb26",
       "bytes": 7331
+    },
+    {
+      "id": "go/github.com/xrash/smetrics@v0.0.0-20240521201337-686a1a2994c1",
+      "module": "github.com/xrash/smetrics",
+      "version": "v0.0.0-20240521201337-686a1a2994c1",
+      "goSum": "h1:gEOO8jv9F4OT7lGCjxCBTO/36wtF6j2nSip77qHd4x4=",
+      "status": "collected",
+      "file": "go-github.com_xrash_smetrics-v0.0.0-20240521201337-686a1a2994c1.zip",
+      "sha256": "6061d9a61e863c9b8a4ed3e34b00d6784dae4ca7ec64a0e6f0e5c4bb8574328d",
+      "bytes": 1826468
     },
     {
       "id": "go/github.com/yuchanns/srslog@v1.1.0",
@@ -11012,6 +12379,16 @@
       "bytes": 24396
     },
     {
+      "id": "go/go.etcd.io/bbolt@v1.4.3",
+      "module": "go.etcd.io/bbolt",
+      "version": "v1.4.3",
+      "goSum": "h1:dEadXpI6G79deX5prL3QRNP6JB8UxVkqo4UPnHaNXJo=",
+      "status": "collected",
+      "file": "go-go.etcd.io_bbolt-v1.4.3.zip",
+      "sha256": "3110374ed5e6984200e6360b6488312803fb41516fff556b350d2a1abaa5ecb5",
+      "bytes": 223684
+    },
+    {
       "id": "go/go.opentelemetry.io/auto/sdk@v1.2.1",
       "module": "go.opentelemetry.io/auto/sdk",
       "version": "v1.2.1",
@@ -11020,6 +12397,26 @@
       "file": "go-go.opentelemetry.io_auto_sdk-v1.2.1.zip",
       "sha256": "a08a16fc0a7041cdb875f47a260a56000632212c85f65a302a043c76380c8335",
       "bytes": 46873
+    },
+    {
+      "id": "go/go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc@v0.68.0",
+      "module": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
+      "version": "v0.68.0",
+      "goSum": "h1:0Qx7VGBacMm9ZENQ7TnNObTYI4ShC+lHI16seduaxZo=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_contrib_instrumentation_google.golang.org_grpc_otelgrpc-v0.68.0.zip",
+      "sha256": "ddc8a80568f4d34ed938e8372295b3e7745af69b57f03475b449318d01d7fde7",
+      "bytes": 47631
+    },
+    {
+      "id": "go/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp@v0.68.0",
+      "module": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+      "version": "v0.68.0",
+      "goSum": "h1:CqXxU8VOmDefoh0+ztfGaymYbhdB/tT3zs79QaZTNGY=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_contrib_instrumentation_net_http_otelhttp-v0.68.0.zip",
+      "sha256": "84a5f546bebf91ebebe431b04f13230e0bd189a0eefcc6652f523e4c29ae12ba",
+      "bytes": 61049
     },
     {
       "id": "go/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp@v0.69.0",
@@ -11032,34 +12429,94 @@
       "bytes": 63280
     },
     {
-      "id": "go/go.opentelemetry.io/otel@v1.44.0",
+      "id": "go/go.opentelemetry.io/otel@v1.45.0",
       "module": "go.opentelemetry.io/otel",
-      "version": "v1.44.0",
-      "goSum": "h1:JjwHmHpA4iZ3wBxluu2fbbE7j4kqlE8jXyAyPXH7HqU=",
+      "version": "v1.45.0",
+      "goSum": "h1:pdrWmLHofpubmArBv1LgFSv1Z0Ie/ppdZzu+kUN5EeU=",
       "status": "collected",
-      "file": "go-go.opentelemetry.io_otel-v1.44.0.zip",
-      "sha256": "4b7ef50caaf3dc6fc1a058f9ce2ccda6aad2ab3e8657acc4c8bb3102f79c53bc",
-      "bytes": 3561245
+      "file": "go-go.opentelemetry.io_otel-v1.45.0.zip",
+      "sha256": "65b5fc93c93f4eaef740b4bba81fd2543f248d5df85cf4d1ddf9ab459b30f7a2",
+      "bytes": 4274588
     },
     {
-      "id": "go/go.opentelemetry.io/otel/metric@v1.44.0",
+      "id": "go/go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.45.0",
+      "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace",
+      "version": "v1.45.0",
+      "goSum": "h1:QRefszxJmfPdjXUUm3j6iDzY03mTPXMjqErFqQ67vUg=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_otel_exporters_otlp_otlptrace-v1.45.0.zip",
+      "sha256": "17e5b206e5ea76d8a1e4e8ef340d888894a0776fc1d66848530346347e0b47c3",
+      "bytes": 25093
+    },
+    {
+      "id": "go/go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc@v1.45.0",
+      "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc",
+      "version": "v1.45.0",
+      "goSum": "h1:fG5MCxGz8+2VtrN/WgqSpJFctVz24gpxj8CxkKmc8Ww=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_otel_exporters_otlp_otlptrace_otlptracegrpc-v1.45.0.zip",
+      "sha256": "0cacecb3afc00395bf88712ec047e32e39a7e69575ba313254314673c1f1087e",
+      "bytes": 72526
+    },
+    {
+      "id": "go/go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp@v1.45.0",
+      "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp",
+      "version": "v1.45.0",
+      "goSum": "h1:QBajQ2SrwQijzHyZbQlPsuIzpl/ll8DY6wPWsajeGcI=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_otel_exporters_otlp_otlptrace_otlptracehttp-v1.45.0.zip",
+      "sha256": "8eea4ce8ed5af97d4c77d1b7c5800f17f24f47aebd7ef1a78ddd27cf9000fc13",
+      "bytes": 70349
+    },
+    {
+      "id": "go/go.opentelemetry.io/otel/metric@v1.45.0",
       "module": "go.opentelemetry.io/otel/metric",
-      "version": "v1.44.0",
-      "goSum": "h1:1w0gILTcHdr3YI+ixLyjemwrVnsMURbTZFrSYCdDdmc=",
+      "version": "v1.45.0",
+      "goSum": "h1:7Eg1uH7CJ5cXv9is6tnBe1FI6rj1nwUdbFypRm3br/M=",
       "status": "collected",
-      "file": "go-go.opentelemetry.io_otel_metric-v1.44.0.zip",
-      "sha256": "4442ba5f269f81251f549acb14ac16176f23967f4a0706163440b0df91592f96",
-      "bytes": 37850
+      "file": "go-go.opentelemetry.io_otel_metric-v1.45.0.zip",
+      "sha256": "8f30ef0039306bf3a4421b8c08e3fc8922d13503dce53b3438e860b3628faecd",
+      "bytes": 38554
     },
     {
-      "id": "go/go.opentelemetry.io/otel/trace@v1.44.0",
-      "module": "go.opentelemetry.io/otel/trace",
-      "version": "v1.44.0",
-      "goSum": "h1:jxF5CsGYCe74MCRx2X4g7WsY/VBKRqqpNvXlX/6gtIk=",
+      "id": "go/go.opentelemetry.io/otel/sdk@v1.45.0",
+      "module": "go.opentelemetry.io/otel/sdk",
+      "version": "v1.45.0",
+      "goSum": "h1:4VVSMgQ83dUgW2aoX5f6JgLvHwIvzcuLnF9lUdCSpCw=",
       "status": "collected",
-      "file": "go-go.opentelemetry.io_otel_trace-v1.44.0.zip",
-      "sha256": "cd1abf8dcec62fe9788fae9105760db1711e6e994d2e31cdda57ccb467e7ceec",
-      "bytes": 76671
+      "file": "go-go.opentelemetry.io_otel_sdk-v1.45.0.zip",
+      "sha256": "ad0e63fa1cfc01dffec2a90a8f2d2c1bc0f55d0462940176dc41b7ada0d03258",
+      "bytes": 174147
+    },
+    {
+      "id": "go/go.opentelemetry.io/otel/trace@v1.45.0",
+      "module": "go.opentelemetry.io/otel/trace",
+      "version": "v1.45.0",
+      "goSum": "h1:l/mP6Uv7oNO7/TblbhpbgMidxhq1uO/rPsikOyVhxag=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_otel_trace-v1.45.0.zip",
+      "sha256": "32d7d64ea5991378184b03a9ed7b7822b17691a239508a6905fdd73819cb6c6f",
+      "bytes": 77639
+    },
+    {
+      "id": "go/go.opentelemetry.io/proto/otlp@v1.11.0",
+      "module": "go.opentelemetry.io/proto/otlp",
+      "version": "v1.11.0",
+      "goSum": "h1:5rrYs0Ykyj50sdU/JU0x8etU+LubXWb+gED6TbEdMIk=",
+      "status": "collected",
+      "file": "go-go.opentelemetry.io_proto_otlp-v1.11.0.zip",
+      "sha256": "790b98d472e7095511fa7feddd04e1d85bd844226e03ba482bd4105ef2217e09",
+      "bytes": 73562
+    },
+    {
+      "id": "go/go.yaml.in/yaml/v2@v2.4.3",
+      "module": "go.yaml.in/yaml/v2",
+      "version": "v2.4.3",
+      "goSum": "h1:6gvOSjQoTB3vt1l+CU+tSyi/HOjfOjRLJ4YwYZGwRO0=",
+      "status": "collected",
+      "file": "go-go.yaml.in_yaml_v2-v2.4.3.zip",
+      "sha256": "bacc1ac9ed600be2df58f88b88d5c1b6f6473526fa4069f61549f64b81b09f41",
+      "bytes": 81393
     },
     {
       "id": "go/go.yaml.in/yaml/v2@v2.4.4",
@@ -11092,14 +12549,14 @@
       "bytes": 313790
     },
     {
-      "id": "go/golang.org/x/crypto@v0.53.0",
+      "id": "go/golang.org/x/crypto@v0.57.0",
       "module": "golang.org/x/crypto",
-      "version": "v0.53.0",
-      "goSum": "h1:QZ4Muo8THX6CizN2vPPd5fBGHyogrdK9fG4wLPFUsto=",
+      "version": "v0.57.0",
+      "goSum": "h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=",
       "status": "collected",
-      "file": "go-golang.org_x_crypto-v0.53.0.zip",
-      "sha256": "90ef99675e16b3e5105a80d93007faaf5de989c21fa5a47339b5062e72320c9e",
-      "bytes": 2265171
+      "file": "go-golang.org_x_crypto-v0.57.0.zip",
+      "sha256": "856c916b92f1fc5b53983c04f6249f632f56c47ebc003bbcdfc503500dfb58b8",
+      "bytes": 2312809
     },
     {
       "id": "go/golang.org/x/exp@v0.0.0-20250711185948-6ae5c78190dc",
@@ -11112,24 +12569,24 @@
       "bytes": 622649
     },
     {
-      "id": "go/golang.org/x/mod@v0.37.0",
+      "id": "go/golang.org/x/mod@v0.40.0",
       "module": "golang.org/x/mod",
-      "version": "v0.37.0",
-      "goSum": "h1:vF1DjpVEshcIqoEaauuHebaLk1O1forxjxBaVn884JQ=",
+      "version": "v0.40.0",
+      "goSum": "h1:hUv+3cXcdRHz08UmSiOob7sadHig73uo5bkXxQ/tvUs=",
       "status": "collected",
-      "file": "go-golang.org_x_mod-v0.37.0.zip",
-      "sha256": "91e8e4e9b74a8706dae808b66538d4ab22befd00c11f34134eb97ff572d52e85",
-      "bytes": 174531
+      "file": "go-golang.org_x_mod-v0.40.0.zip",
+      "sha256": "a191080b1494c194059ae71aa1d300741a8e24dfb6e28cd32580dbdcc52a0598",
+      "bytes": 180463
     },
     {
-      "id": "go/golang.org/x/net@v0.56.0",
-      "module": "golang.org/x/net",
-      "version": "v0.56.0",
-      "goSum": "h1:Rw8j/hFzGvJUZwNBXnAtf5sVDVt+65SK2C7IxCxZt5o=",
+      "id": "go/golang.org/x/mod@v0.41.0",
+      "module": "golang.org/x/mod",
+      "version": "v0.41.0",
+      "goSum": "h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=",
       "status": "collected",
-      "file": "go-golang.org_x_net-v0.56.0.zip",
-      "sha256": "bbc975b3ec9cd86892cfc515badc125657e135c00162d0da5de33f6d07930464",
-      "bytes": 1868474
+      "file": "go-golang.org_x_mod-v0.41.0.zip",
+      "sha256": "201e678d0a35b18b246abe58d80017b75d60be21cbaf4cbb9e963b48872565a9",
+      "bytes": 180455
     },
     {
       "id": "go/golang.org/x/net@v0.60.0",
@@ -11142,24 +12599,14 @@
       "bytes": 1871475
     },
     {
-      "id": "go/golang.org/x/sync@v0.21.0",
+      "id": "go/golang.org/x/sync@v0.23.0",
       "module": "golang.org/x/sync",
-      "version": "v0.21.0",
-      "goSum": "h1:HLII4xRRTtCRkxYp4HNFF0Js/Og6q2i++KXbg0gHCwM=",
+      "version": "v0.23.0",
+      "goSum": "h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=",
       "status": "collected",
-      "file": "go-golang.org_x_sync-v0.21.0.zip",
-      "sha256": "ee65459023de7f24836f6e2123144b5329bd0a4d05a87c3c448509378e2e6be7",
-      "bytes": 25686
-    },
-    {
-      "id": "go/golang.org/x/sys@v0.46.0",
-      "module": "golang.org/x/sys",
-      "version": "v0.46.0",
-      "goSum": "h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=",
-      "status": "collected",
-      "file": "go-golang.org_x_sys-v0.46.0.zip",
-      "sha256": "36dc83b6bc5884d260cdbd9d09e597b1eed64d15dfdc374ca6e31aef99d533d7",
-      "bytes": 2022627
+      "file": "go-golang.org_x_sync-v0.23.0.zip",
+      "sha256": "c19a11baba5c1a093cb4fd2f6d0d8d79673c97a82cb0fe2d693c9b6ad84f0f82",
+      "bytes": 26276
     },
     {
       "id": "go/golang.org/x/sys@v0.47.0",
@@ -11182,24 +12629,14 @@
       "bytes": 2094772
     },
     {
-      "id": "go/golang.org/x/term@v0.44.0",
+      "id": "go/golang.org/x/term@v0.46.0",
       "module": "golang.org/x/term",
-      "version": "v0.44.0",
-      "goSum": "h1:0rLvDRCtNj0gZkyIXhCyOb2OAzEhLVqc4B+hrsBhrmc=",
+      "version": "v0.46.0",
+      "goSum": "h1:3+OXuTbaKDgwk8jTi3aSLHRlmWqHEUDUtxnbFigO4YE=",
       "status": "collected",
-      "file": "go-golang.org_x_term-v0.44.0.zip",
-      "sha256": "e420c6640012a697d806c2e865df26993c82a9ab1b16d286787cb77fc10062f7",
-      "bytes": 21694
-    },
-    {
-      "id": "go/golang.org/x/text@v0.38.0",
-      "module": "golang.org/x/text",
-      "version": "v0.38.0",
-      "goSum": "h1:sXmwo9DwP3OK9EZ7PqAdaooSGozfl/3a6/xJcbzPRhE=",
-      "status": "collected",
-      "file": "go-golang.org_x_text-v0.38.0.zip",
-      "sha256": "be98266212ac63cdc78631ae0ff8f783e0f5e47d9b6094c11ffebe43fd0424b3",
-      "bytes": 7015060
+      "file": "go-golang.org_x_term-v0.46.0.zip",
+      "sha256": "9147fdd982f1aed1392183d5b48055f4f74c85d496604766c7f0b1d3bbd61c7c",
+      "bytes": 22601
     },
     {
       "id": "go/golang.org/x/text@v0.42.0",
@@ -11212,6 +12649,26 @@
       "bytes": 7337550
     },
     {
+      "id": "go/golang.org/x/time@v0.15.0",
+      "module": "golang.org/x/time",
+      "version": "v0.15.0",
+      "goSum": "h1:bbrp8t3bGUeFOx08pvsMYRTCVSMk89u4tKbNOZbp88U=",
+      "status": "collected",
+      "file": "go-golang.org_x_time-v0.15.0.zip",
+      "sha256": "8cfb20e915fa5d6c3fd264304233f8d71a3385e48a37819239c532ad9da27f84",
+      "bytes": 15014
+    },
+    {
+      "id": "go/google.golang.org/genproto/googleapis/api@v0.0.0-20260803160001-6ac0973c030d",
+      "module": "google.golang.org/genproto/googleapis/api",
+      "version": "v0.0.0-20260803160001-6ac0973c030d",
+      "goSum": "h1:FarXi840EJWSHYTN3ERkADbPWjl307+FGrA22KAVjjc=",
+      "status": "collected",
+      "file": "go-google.golang.org_genproto_googleapis_api-v0.0.0-20260803160001-6ac0973c030d.zip",
+      "sha256": "81fb4ff242fb2e9ec4328eed36190bf5ba96307ff85a057e2327fbd171b47650",
+      "bytes": 241053
+    },
+    {
       "id": "go/google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa",
       "module": "google.golang.org/genproto/googleapis/rpc",
       "version": "v0.0.0-20260526163538-3dc84a4a5aaa",
@@ -11222,14 +12679,14 @@
       "bytes": 39931
     },
     {
-      "id": "go/google.golang.org/grpc@v1.81.1",
-      "module": "google.golang.org/grpc",
-      "version": "v1.81.1",
-      "goSum": "h1:VnnIIZ88UzOOKLukQi+ImGz8O1Wdp8nAGGnvOfEIWQQ=",
+      "id": "go/google.golang.org/genproto/googleapis/rpc@v0.0.0-20260803160001-6ac0973c030d",
+      "module": "google.golang.org/genproto/googleapis/rpc",
+      "version": "v0.0.0-20260803160001-6ac0973c030d",
+      "goSum": "h1:IL4hdHzcUv2l/gcg98/Rj3FbtE6axwqslOW8SW0C+S0=",
       "status": "collected",
-      "file": "go-google.golang.org_grpc-v1.81.1.zip",
-      "sha256": "11273d01c080389b7079518aa23bd2e20faa91aafd12804d918bbbafaf2c7ffc",
-      "bytes": 2844206
+      "file": "go-google.golang.org_genproto_googleapis_rpc-v0.0.0-20260803160001-6ac0973c030d.zip",
+      "sha256": "a17ff826d2b2e39c2179f99cea77e36137af38f193a718c6445570d326784111",
+      "bytes": 40888
     },
     {
       "id": "go/google.golang.org/grpc@v1.83.2",
@@ -11262,6 +12719,16 @@
       "bytes": 2331100
     },
     {
+      "id": "go/gopkg.in/inf.v0@v0.9.1",
+      "module": "gopkg.in/inf.v0",
+      "version": "v0.9.1",
+      "goSum": "h1:73M5CoZyi3ZLMOyDlQh031Cx6N9NDJ2Vvfl76EDAgDc=",
+      "status": "collected",
+      "file": "go-gopkg.in_inf.v0-v0.9.1.zip",
+      "sha256": "08abac18c95cc43b725d4925f63309398d618beab68b4669659b61255e5374a0",
+      "bytes": 15882
+    },
+    {
       "id": "go/gopkg.in/yaml.v3@v3.0.1",
       "module": "gopkg.in/yaml.v3",
       "version": "v3.0.1",
@@ -11282,6 +12749,76 @@
       "bytes": 101104
     },
     {
+      "id": "go/k8s.io/apimachinery@v0.36.3",
+      "module": "k8s.io/apimachinery",
+      "version": "v0.36.3",
+      "goSum": "h1:PkzMRBRG8joFD8EhCuQAtNPvJlxb82FwplP26HIzvAM=",
+      "status": "collected",
+      "file": "go-k8s.io_apimachinery-v0.36.3.zip",
+      "sha256": "23ab7303b43f39c7275a56b44b3f4e38ed9f77db0296a711ab2324ef3cf81297",
+      "bytes": 1197281
+    },
+    {
+      "id": "go/k8s.io/client-go@v0.36.3",
+      "module": "k8s.io/client-go",
+      "version": "v0.36.3",
+      "goSum": "h1:M4JdVzXxYcZk4fGpfDdYnxSwhLKWCFoQsHW6t+z8Hfg=",
+      "status": "collected",
+      "file": "go-k8s.io_client-go-v0.36.3.zip",
+      "sha256": "6747e6664289daae7f310b54e594b56e91edd252d607cfcd8cdccbb5a59f45b7",
+      "bytes": 4289981
+    },
+    {
+      "id": "go/k8s.io/cri-api@v0.36.3",
+      "module": "k8s.io/cri-api",
+      "version": "v0.36.3",
+      "goSum": "h1:QFEMKGim6DSdlaW3JwpjVCjUQgTnkKG7i3McAaBW6Fo=",
+      "status": "collected",
+      "file": "go-k8s.io_cri-api-v0.36.3.zip",
+      "sha256": "fc5b9afc0d28d1297e5bc93fcff0898f5da0cbb2dab24914963cb04049d33659",
+      "bytes": 138680
+    },
+    {
+      "id": "go/k8s.io/cri-streaming@v0.36.3",
+      "module": "k8s.io/cri-streaming",
+      "version": "v0.36.3",
+      "goSum": "h1:9K5Is7E9rwhwrOOiRWoWNX2xQ/5haD6G6DMl6pvfn9M=",
+      "status": "collected",
+      "file": "go-k8s.io_cri-streaming-v0.36.3.zip",
+      "sha256": "7045af2cd3775b006d4ac9956d887a225f96860a838652a624765c179efdd88b",
+      "bytes": 50694
+    },
+    {
+      "id": "go/k8s.io/klog/v2@v2.140.0",
+      "module": "k8s.io/klog/v2",
+      "version": "v2.140.0",
+      "goSum": "h1:Tf+J3AH7xnUzZyVVXhTgGhEKnFqye14aadWv7bzXdzc=",
+      "status": "collected",
+      "file": "go-k8s.io_klog_v2-v2.140.0.zip",
+      "sha256": "46fab8686139b04c42f1b44e84c5a162667fbf22628216d5061d95206625a886",
+      "bytes": 152306
+    },
+    {
+      "id": "go/k8s.io/streaming@v0.36.3",
+      "module": "k8s.io/streaming",
+      "version": "v0.36.3",
+      "goSum": "h1:9rAaqBk0C0Pc7+/fqGekj07NV+/Xrew58p647A0JT8w=",
+      "status": "collected",
+      "file": "go-k8s.io_streaming-v0.36.3.zip",
+      "sha256": "8099be6a196031543a17bb8f4e9f6d73be786a80417059d10e44157b7a27edb5",
+      "bytes": 53357
+    },
+    {
+      "id": "go/k8s.io/utils@v0.0.0-20260319190234-28399d86e0b5",
+      "module": "k8s.io/utils",
+      "version": "v0.0.0-20260319190234-28399d86e0b5",
+      "goSum": "h1:kBawHLSnx/mYHmRnNUf9d4CpjREbeZuxoSGOX/J+aYM=",
+      "status": "collected",
+      "file": "go-k8s.io_utils-v0.0.0-20260319190234-28399d86e0b5.zip",
+      "sha256": "5d87a7ffd5c0ba5381c1af420a421938a4bff87badf2d002c17013feee978a54",
+      "bytes": 241160
+    },
+    {
       "id": "go/lukechampine.com/blake3@v1.3.0",
       "module": "lukechampine.com/blake3",
       "version": "v1.3.0",
@@ -11292,6 +12829,16 @@
       "bytes": 53722
     },
     {
+      "id": "go/sigs.k8s.io/json@v0.0.0-20250730193827-2d320260d730",
+      "module": "sigs.k8s.io/json",
+      "version": "v0.0.0-20250730193827-2d320260d730",
+      "goSum": "h1:IpInykpT6ceI+QxKBbEflcR5EXP7sU1kvOlxwZh5txg=",
+      "status": "collected",
+      "file": "go-sigs.k8s.io_json-v0.0.0-20250730193827-2d320260d730.zip",
+      "sha256": "7cec6eae3e4e4c9c1e0a009eef200740990fafbcb9cab081eb18ce32f6e7a7b9",
+      "bytes": 227649
+    },
+    {
       "id": "go/sigs.k8s.io/knftables@v0.0.18",
       "module": "sigs.k8s.io/knftables",
       "version": "v0.0.18",
@@ -11300,6 +12847,16 @@
       "file": "go-sigs.k8s.io_knftables-v0.0.18.zip",
       "sha256": "74377e84d4759cf8263b6e79d8a30f1018ba45e2a039afd60c2e767ac4b03ec4",
       "bytes": 62196
+    },
+    {
+      "id": "go/sigs.k8s.io/yaml@v1.4.0",
+      "module": "sigs.k8s.io/yaml",
+      "version": "v1.4.0",
+      "goSum": "h1:Mk1wCc2gy/F0THH0TAp1QYyJNzRm2KCLy3o5ASXVI5E=",
+      "status": "collected",
+      "file": "go-sigs.k8s.io_yaml-v1.4.0.zip",
+      "sha256": "ef031ff78ff9b7036e174eef49dfbd77468dc4f0afb73a639b61f8ab3a1cc425",
+      "bytes": 222726
     },
     {
       "id": "go/sigs.k8s.io/yaml@v1.6.0",
@@ -11333,147 +12890,489 @@
     },
     {
       "id": "go-main/github.com/containerd/containerd/v2",
-      "binary": "bin/containerd-shim-runc-v2",
+      "binary": "oci/bin/containerd-shim-runc-v2",
       "module": "github.com/containerd/containerd/v2",
-      "version": "v2.3.3",
-      "revision": "aad11006b869517fcd3009450b6f82da282e1a9b",
+      "version": "v2.3.6+dirty",
+      "revision": "ee2735368117d2eb259779949d5e75cdafec9761",
+      "sourceRevision": "ee2735368117d2eb259779949d5e75cdafec9761",
+      "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+      "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba",
       "status": "collected",
-      "file": "go-main-containerd_containerd-aad11006b869.tar.gz",
-      "sha256": "86793eec0b23ea8f7331ea61c5ef1e56ed6f8071de5ede9ce89b13310a1a072b",
-      "bytes": 11661926
+      "sourceInput": {
+        "file": "containerd-v2.3.6-ee2735368117.tar.gz",
+        "url": "https://codeload.github.com/containerd/containerd/tar.gz/ee2735368117d2eb259779949d5e75cdafec9761",
+        "sha256": "fa21eb211d0a9cb2ad32e6edb67808f7615252c8c56a63813ef1d0822bd2a90d",
+        "bytes": 11687648
+      },
+      "upstream": {
+        "repository": "containerd/containerd",
+        "version": "v2.3.6",
+        "revision": "ee2735368117d2eb259779949d5e75cdafec9761",
+        "source": {
+          "file": "containerd-v2.3.6-ee2735368117.tar.gz",
+          "url": "https://codeload.github.com/containerd/containerd/tar.gz/ee2735368117d2eb259779949d5e75cdafec9761",
+          "sha256": "fa21eb211d0a9cb2ad32e6edb67808f7615252c8c56a63813ef1d0822bd2a90d",
+          "bytes": 11687648
+        }
+      },
+      "localModifications": "Frozen module/source patches and build recipes in local-build-material and oci-patched-build-provenance",
+      "file": "containerd-v2.3.6-ee2735368117.tar.gz",
+      "sha256": "fa21eb211d0a9cb2ad32e6edb67808f7615252c8c56a63813ef1d0822bd2a90d",
+      "bytes": 11687648
     },
     {
       "id": "go-main/github.com/containerd/nerdctl/v2",
-      "binary": "bin/nerdctl",
+      "binary": "oci/bin/nerdctl",
       "module": "github.com/containerd/nerdctl/v2",
-      "version": "v2.3.5",
+      "version": "v2.3.5+dirty",
       "revision": "347782c28efe1753d5cc9652f6304752ed431221",
+      "sourceRevision": "347782c28efe1753d5cc9652f6304752ed431221",
+      "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+      "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba",
       "status": "collected",
-      "file": "go-main-containerd_nerdctl-347782c28efe.tar.gz",
+      "sourceInput": {
+        "file": "nerdctl-v2.3.5-347782c28efe.tar.gz",
+        "url": "https://codeload.github.com/containerd/nerdctl/tar.gz/347782c28efe1753d5cc9652f6304752ed431221",
+        "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
+        "bytes": 1558717
+      },
+      "upstream": {
+        "repository": "containerd/nerdctl",
+        "version": "v2.3.5",
+        "revision": "347782c28efe1753d5cc9652f6304752ed431221",
+        "source": {
+          "file": "nerdctl-v2.3.5-347782c28efe.tar.gz",
+          "url": "https://codeload.github.com/containerd/nerdctl/tar.gz/347782c28efe1753d5cc9652f6304752ed431221",
+          "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
+          "bytes": 1558717
+        }
+      },
+      "localModifications": "Frozen module/source patches and build recipes in local-build-material and oci-patched-build-provenance",
+      "file": "nerdctl-v2.3.5-347782c28efe.tar.gz",
       "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
       "bytes": 1558717
     },
     {
       "id": "go-main/github.com/opencontainers/runc",
-      "binary": "bin/runc",
+      "binary": "oci/bin/runc",
       "module": "github.com/opencontainers/runc",
-      "version": "v1.5.1",
+      "version": "v1.5.1+dirty",
       "revision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+      "sourceRevision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+      "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+      "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba",
       "status": "collected",
-      "file": "go-main-opencontainers_runc-8f2685a471d3.tar.gz",
+      "sourceInput": {
+        "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
+        "url": "https://codeload.github.com/opencontainers/runc/tar.gz/8f2685a471d3347a686ad3909783d8aafc6bb208",
+        "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
+        "bytes": 2808413
+      },
+      "upstream": {
+        "repository": "opencontainers/runc",
+        "version": "v1.5.1",
+        "revision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+        "source": {
+          "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
+          "url": "https://codeload.github.com/opencontainers/runc/tar.gz/8f2685a471d3347a686ad3909783d8aafc6bb208",
+          "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
+          "bytes": 2808413
+        },
+        "compatibilityFloors": {
+          "github.com/opencontainers/cgroups": "v0.1.0"
+        }
+      },
+      "localModifications": "Frozen module/source patches and build recipes in local-build-material and oci-patched-build-provenance",
+      "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
       "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
       "bytes": 2808413
     },
     {
       "id": "go-main/github.com/containernetworking/plugins",
-      "binary": "libexec/cni/tuning",
+      "binary": "oci/libexec/cni/tuning",
       "module": "github.com/containernetworking/plugins",
-      "version": "v1.9.1",
+      "version": "v1.9.1+dirty",
       "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+      "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+      "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+      "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba",
       "status": "collected",
-      "file": "go-main-containernetworking_plugins-adc3e6b5b581.tar.gz",
+      "sourceInput": {
+        "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
+        "url": "https://codeload.github.com/containernetworking/plugins/tar.gz/adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+        "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
+        "bytes": 4096717
+      },
+      "upstream": {
+        "repository": "containernetworking/plugins",
+        "version": "v1.9.1",
+        "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+        "source": {
+          "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
+          "url": "https://codeload.github.com/containernetworking/plugins/tar.gz/adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+          "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
+          "bytes": 4096717
+        }
+      },
+      "localModifications": "Frozen module/source patches and build recipes in local-build-material and oci-patched-build-provenance",
+      "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
       "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
       "bytes": 4096717
     },
     {
-      "id": "debian/glibc/2.41-12+deb13u3",
-      "version": "2.41-12+deb13u3",
-      "license": "LGPL-2.1-or-later and per-file notices",
-      "inputs": [
-        {
-          "file": "glibc_2.41-12+deb13u3.dsc",
-          "sha256": "aa1ab10010fcf169454a5c6a123094a3997392922593d86a3a5adc180a07ca40",
-          "origin": "https://deb.debian.org/debian/pool/main/g/glibc/glibc_2.41-12+deb13u3.dsc"
-        },
-        {
-          "file": "glibc_2.41.orig.tar.xz",
-          "sha256": "f24aa441021121a79266f0d75242706cab8843a47901fefe74527491807f1998",
-          "origin": "https://deb.debian.org/debian/pool/main/g/glibc/glibc_2.41.orig.tar.xz"
-        },
-        {
-          "file": "glibc_2.41-12+deb13u3.debian.tar.xz",
-          "sha256": "de7d715bf7e559b78baebac4115122641842f65faf0a5080a55954877a55cebe",
-          "origin": "https://deb.debian.org/debian/pool/main/g/glibc/glibc_2.41-12+deb13u3.debian.tar.xz"
-        }
-      ],
-      "provenance": "compliance/evidence/oci-native-libraries.json",
+      "id": "go-main/github.com/NVIDIA/nvidia-container-toolkit",
+      "binary": "nvidia-cdi/bin/nvidia-ctk",
+      "module": "github.com/NVIDIA/nvidia-container-toolkit",
+      "version": "(devel)",
+      "revision": null,
+      "sourceRevision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+      "sourceMapping": "verified-inline-build-provenance-and-frozen-patch-inputs",
+      "runtimeArchiveSha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73",
       "status": "collected",
-      "file": "debian-glibc-2.41-12+deb13u3.tar.gz",
-      "sha256": "bdeab65a7bbc53c5568ddfc76f427fe22e561621457cd98b0638ba7af4252568",
-      "bytes": 20827925
+      "sourceInput": {
+        "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+        "url": "https://codeload.github.com/NVIDIA/nvidia-container-toolkit/tar.gz/5505e2f94d9aaa08561490db974ba3cd676af209",
+        "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+        "bytes": 7089693
+      },
+      "upstream": {
+        "repository": "NVIDIA/nvidia-container-toolkit",
+        "version": "v1.20.0",
+        "revision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+        "source": {
+          "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+          "url": "https://codeload.github.com/NVIDIA/nvidia-container-toolkit/tar.gz/5505e2f94d9aaa08561490db974ba3cd676af209",
+          "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+          "bytes": 7089693
+        }
+      },
+      "localModifications": "Frozen module/source patches and build recipes in local-build-material and oci-patched-build-provenance",
+      "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+      "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+      "bytes": 7089693
     },
     {
-      "id": "debian/libseccomp/2.6.0-2",
-      "version": "2.6.0-2",
-      "license": "LGPL-2.1-only",
+      "id": "oci-native/musl/1.2.6-r2",
+      "status": "collected",
+      "version": "1.2.6-r2",
       "inputs": [
         {
-          "file": "libseccomp_2.6.0-2.dsc",
-          "sha256": "d05f94536558d34fa339326c6f958a3357b51efac8234470b5d97b69472db765",
-          "origin": "https://deb.debian.org/debian/pool/main/libs/libseccomp/libseccomp_2.6.0-2.dsc"
+          "file": "musl-1.2.6.tar.gz",
+          "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+          "bytes": 1082499,
+          "origin": "https://distfiles.alpinelinux.org/distfiles/v3.24/musl-1.2.6.tar.gz"
         },
         {
-          "file": "libseccomp_2.6.0.orig.tar.gz",
-          "sha256": "83b6085232d1588c379dc9b9cae47bb37407cf262e6e74993c61ba72d2a784dc",
-          "origin": "https://deb.debian.org/debian/pool/main/libs/libseccomp/libseccomp_2.6.0.orig.tar.gz"
+          "file": "handle-aux-at_base.patch",
+          "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+          "bytes": 1214,
+          "origin": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/handle-aux-at_base.patch"
         },
         {
-          "file": "libseccomp_2.6.0.orig.tar.gz.asc",
-          "sha256": "52e338fa958128293cbd25d2be189e34da41c4f4abbb1b641cf58f373c001f94",
-          "origin": "https://deb.debian.org/debian/pool/main/libs/libseccomp/libseccomp_2.6.0.orig.tar.gz.asc"
+          "file": "0001-add-stub-for-pthread_mutexattr_setprioceiling.patch",
+          "sha256": "b2067680c66af9eb9f4fdc1fa5d9337a9fd62bdab2c437b416aa97d79eb884ee",
+          "bytes": 896,
+          "origin": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/0001-add-stub-for-pthread_mutexattr_setprioceiling.patch"
         },
         {
-          "file": "libseccomp_2.6.0-2.debian.tar.xz",
-          "sha256": "ed705ec85719403e77d004c99c0b06b795f090c66fcae265c4bcf37ffea9cc27",
-          "origin": "https://deb.debian.org/debian/pool/main/libs/libseccomp/libseccomp_2.6.0-2.debian.tar.xz"
+          "file": "fix-loongarch64-zero-len-extcontext.patch",
+          "sha256": "92c8e965798ed516c15cb2a4e7c4ac45ec1eb68b6abff16c73adff2a3bae1b14",
+          "bytes": 738,
+          "origin": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/fix-loongarch64-zero-len-extcontext.patch"
+        },
+        {
+          "file": "CVE-2026-6042.patch",
+          "sha256": "1d0be2e72b9d5bd16546b923aa8af861d271322f01644716a81823bec4065c99",
+          "bytes": 7506,
+          "origin": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-6042.patch"
+        },
+        {
+          "file": "CVE-2026-40200.patch",
+          "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb",
+          "bytes": 5594,
+          "origin": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-40200.patch"
         }
       ],
+      "license": "See checksum-verified upstream notices",
+      "buildInputs": {
+        "version": "1.2.6-r2",
+        "aportsRevision": "f5640d3a10f664c9119720c60515265d3d6f6d01",
+        "source": {
+          "file": "musl-1.2.6.tar.gz",
+          "url": "https://distfiles.alpinelinux.org/distfiles/v3.24/musl-1.2.6.tar.gz",
+          "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+          "bytes": 1082499
+        },
+        "patches": [
+          {
+            "file": "handle-aux-at_base.patch",
+            "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+            "bytes": 1214,
+            "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/handle-aux-at_base.patch"
+          },
+          {
+            "file": "0001-add-stub-for-pthread_mutexattr_setprioceiling.patch",
+            "sha256": "b2067680c66af9eb9f4fdc1fa5d9337a9fd62bdab2c437b416aa97d79eb884ee",
+            "bytes": 896,
+            "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/0001-add-stub-for-pthread_mutexattr_setprioceiling.patch"
+          },
+          {
+            "file": "fix-loongarch64-zero-len-extcontext.patch",
+            "sha256": "92c8e965798ed516c15cb2a4e7c4ac45ec1eb68b6abff16c73adff2a3bae1b14",
+            "bytes": 738,
+            "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/fix-loongarch64-zero-len-extcontext.patch"
+          },
+          {
+            "file": "CVE-2026-6042.patch",
+            "sha256": "1d0be2e72b9d5bd16546b923aa8af861d271322f01644716a81823bec4065c99",
+            "bytes": 7506,
+            "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-6042.patch"
+          },
+          {
+            "file": "CVE-2026-40200.patch",
+            "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb",
+            "bytes": 5594,
+            "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-40200.patch"
+          }
+        ]
+      },
       "provenance": "compliance/evidence/oci-native-libraries.json",
-      "status": "collected",
-      "file": "debian-libseccomp-2.6.0-2.tar.gz",
-      "sha256": "52341360e82b1254d39f4fa5f49f31fa58183d690a1f1b3694a189603c3fc1ff",
-      "bytes": 706343
+      "file": "oci-native-musl-1.2.6-r2.tar.gz",
+      "sha256": "9532bd4b2779971bb2a50ee308a26840aa1e74ef0c7f26a6719ee80d9bd24c9a",
+      "bytes": 1085782
     },
     {
-      "id": "debian/btrfs-progs/6.14-1",
+      "id": "oci-native/libseccomp/2.6.1",
+      "status": "collected",
+      "version": "2.6.1",
+      "inputs": [
+        {
+          "file": "libseccomp-2.6.1.tar.gz",
+          "sha256": "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be",
+          "bytes": 656231,
+          "origin": "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz"
+        }
+      ],
+      "license": "See checksum-verified upstream notices",
+      "buildInputs": {
+        "version": "2.6.1",
+        "source": {
+          "file": "libseccomp-2.6.1.tar.gz",
+          "url": "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz",
+          "sha256": "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be",
+          "bytes": 656231
+        }
+      },
+      "provenance": "compliance/evidence/oci-native-libraries.json",
+      "file": "oci-native-libseccomp-2.6.1.tar.gz",
+      "sha256": "dfe6f401cc7318a0a32475187bc3c067698d3c5e8ef73fe6d1cebea60ca5234b",
+      "bytes": 653536
+    },
+    {
+      "id": "oci-native/btrfs/6.14-1",
+      "status": "collected",
       "version": "6.14-1",
-      "license": "libbtrfs: LGPL-2.1-or-later; tools and other files retain their terms",
       "inputs": [
-        {
-          "file": "btrfs-progs_6.14-1.dsc",
-          "sha256": "eccdbf28fbb3414fe012d89a996fe1288807431d07f6cba0302db209714f6a8d",
-          "origin": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.dsc"
-        },
         {
           "file": "btrfs-progs_6.14.orig.tar.gz",
           "sha256": "5a85b791f0f32a4994e864ac4cb7abccce08e56db3010a1855ad0edeebc70b4c",
+          "bytes": 3234940,
           "origin": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14.orig.tar.gz"
         },
         {
           "file": "btrfs-progs_6.14-1.debian.tar.xz",
           "sha256": "0701b7d38fc7b1568f1f48bf8665b6a8ac503c8056e06ff4e3f7536656c0590c",
+          "bytes": 20136,
           "origin": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.debian.tar.xz"
+        },
+        {
+          "file": "btrfs-progs_6.14-1.dsc",
+          "sha256": "eccdbf28fbb3414fe012d89a996fe1288807431d07f6cba0302db209714f6a8d",
+          "bytes": 2557,
+          "origin": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.dsc"
         }
       ],
+      "license": "See checksum-verified upstream notices",
+      "buildInputs": {
+        "version": "6.14-1",
+        "sources": [
+          {
+            "file": "btrfs-progs_6.14.orig.tar.gz",
+            "sha256": "5a85b791f0f32a4994e864ac4cb7abccce08e56db3010a1855ad0edeebc70b4c",
+            "bytes": 3234940,
+            "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14.orig.tar.gz"
+          },
+          {
+            "file": "btrfs-progs_6.14-1.debian.tar.xz",
+            "sha256": "0701b7d38fc7b1568f1f48bf8665b6a8ac503c8056e06ff4e3f7536656c0590c",
+            "bytes": 20136,
+            "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.debian.tar.xz"
+          },
+          {
+            "file": "btrfs-progs_6.14-1.dsc",
+            "sha256": "eccdbf28fbb3414fe012d89a996fe1288807431d07f6cba0302db209714f6a8d",
+            "bytes": 2557,
+            "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.dsc"
+          }
+        ]
+      },
       "provenance": "compliance/evidence/oci-native-libraries.json",
-      "status": "collected",
-      "file": "debian-btrfs-progs-6.14-1.tar.gz",
+      "file": "oci-native-btrfs-6.14-1.tar.gz",
       "sha256": "844fc11a0c2654252cfb0c8f46329455b48c8166e0dab8aa2fe30dafc89eeb81",
       "bytes": 3236601
     },
     {
-      "id": "oci-build-provenance",
+      "id": "ubuntu/binutils/2.38-4ubuntu2.12",
       "status": "collected",
-      "file": "oci-build-provenance.tar.gz",
-      "sha256": "85e08dbe00ded06458d3a44789264cc9ce0738018b6d508ba6ca0171de8cfa4e",
-      "bytes": 1960454
+      "version": "2.38-4ubuntu2.12",
+      "license": "See exact upstream and Ubuntu copyright/license notices",
+      "inputs": [
+        {
+          "file": "binutils_2.38-4ubuntu2.12.dsc",
+          "sha256": "677a893b113648a45605f6847c6c7da7d2dcf6f550f6f35bf3d768a966a8f3f9",
+          "bytes": 8865,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/b/binutils/binutils_2.38-4ubuntu2.12.dsc"
+        },
+        {
+          "file": "binutils_2.38.orig.tar.xz",
+          "sha256": "e316477a914f567eccc34d5d29785b8b0f5a10208d36bbacedcc39048ecfe024",
+          "bytes": 23651408,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/b/binutils/binutils_2.38.orig.tar.xz"
+        },
+        {
+          "file": "binutils_2.38-4ubuntu2.12.debian.tar.xz",
+          "sha256": "236544ea9c0792e548e25ca3c36a564714bd5fc8b4c86069d81832e47616f0d9",
+          "bytes": 333584,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/b/binutils/binutils_2.38-4ubuntu2.12.debian.tar.xz"
+        }
+      ],
+      "provenance": "compliance/evidence/oci-native-libraries.json",
+      "file": "ubuntu-binutils-2.38-4ubuntu2.12.tar.gz",
+      "sha256": "254ae53ca9b4c6c881b4c0c819768306fae66cfadca975da4ac2bb03d3622862",
+      "bytes": 23995417
+    },
+    {
+      "id": "ubuntu/gcc-11/11.4.0-1ubuntu1~22.04.3",
+      "status": "collected",
+      "version": "11.4.0-1ubuntu1~22.04.3",
+      "license": "See exact upstream and Ubuntu copyright/license notices",
+      "inputs": [
+        {
+          "file": "gcc-11_11.4.0-1ubuntu1~22.04.3.dsc",
+          "sha256": "5b42ce66a7ec64f94a73ff07c79a2db387e7104b7eb07113f15d2cb49b681917",
+          "bytes": 22819,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-11/gcc-11_11.4.0-1ubuntu1~22.04.3.dsc"
+        },
+        {
+          "file": "gcc-11_11.4.0.orig.tar.gz",
+          "sha256": "b05e5fb310748c2836a60fccbfdf0f924f4dcaecb78d3b6f177e0d9270a0b8f8",
+          "bytes": 86949353,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-11/gcc-11_11.4.0.orig.tar.gz"
+        },
+        {
+          "file": "gcc-11_11.4.0-1ubuntu1~22.04.3.debian.tar.xz",
+          "sha256": "c56b15ffe85a584e88adca971c94fb68ef7bde016258cac942a81b4c74e4a6a3",
+          "bytes": 554748,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-11/gcc-11_11.4.0-1ubuntu1~22.04.3.debian.tar.xz"
+        }
+      ],
+      "provenance": "compliance/evidence/oci-native-libraries.json",
+      "file": "ubuntu-gcc-11-11.4.0-1ubuntu1~22.04.3.tar.gz",
+      "sha256": "9c84ff1fb1d2946427b988e18394265c7c3cfb625eec5aa8cb3d8650f7fd4041",
+      "bytes": 87535726
+    },
+    {
+      "id": "ubuntu/glibc/2.35-0ubuntu3.15",
+      "status": "collected",
+      "version": "2.35-0ubuntu3.15",
+      "license": "See exact upstream and Ubuntu copyright/license notices",
+      "inputs": [
+        {
+          "file": "glibc_2.35-0ubuntu3.15.dsc",
+          "sha256": "7b3e318ea5ac8b039a0fb5ef2e78b1812346bb753365d6d09622f698427cee56",
+          "bytes": 8888,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.35-0ubuntu3.15.dsc"
+        },
+        {
+          "file": "glibc_2.35.orig.tar.xz",
+          "sha256": "5123732f6b67ccd319305efd399971d58592122bcc2a6518a1bd2510dd0cf52e",
+          "bytes": 18165952,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.35.orig.tar.xz"
+        },
+        {
+          "file": "glibc_2.35.orig.tar.xz.asc",
+          "sha256": "853aaaf17d7366817e814057a467625ee7c0b26240e8b878db0f33c389c7bcb6",
+          "bytes": 833,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.35.orig.tar.xz.asc"
+        },
+        {
+          "file": "glibc_2.35-0ubuntu3.15.debian.tar.xz",
+          "sha256": "ea3f016b1987d995addb1c2b093a8f2679179d9bb3ebb9e2ea086469d56498c5",
+          "bytes": 962196,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/g/glibc/glibc_2.35-0ubuntu3.15.debian.tar.xz"
+        }
+      ],
+      "provenance": "compliance/evidence/oci-native-libraries.json",
+      "file": "ubuntu-glibc-2.35-0ubuntu3.15.tar.gz",
+      "sha256": "c66de2fb6ca5d5802c0be12ee63ffba8d6c0467022388d54ceaa98710865a90b",
+      "bytes": 19138636
+    },
+    {
+      "id": "ubuntu/linux/5.15.0-198.208",
+      "status": "collected",
+      "version": "5.15.0-198.208",
+      "license": "See exact upstream and Ubuntu copyright/license notices",
+      "inputs": [
+        {
+          "file": "linux_5.15.0-198.208.dsc",
+          "sha256": "f1fbbd187efb656a297e8f5fe93b7e70cbf43becab6f81a98b596d98dea690f4",
+          "bytes": 7655,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_5.15.0-198.208.dsc"
+        },
+        {
+          "file": "linux_5.15.0.orig.tar.gz",
+          "sha256": "4d7908da75ad50a70a0141721e259c2589b7bdcc317f7bd885b80c2ffa689211",
+          "bytes": 194969557,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_5.15.0.orig.tar.gz"
+        },
+        {
+          "file": "linux_5.15.0-198.208.diff.gz",
+          "sha256": "b7e43fd2cc38c08bdea8f6a3a7931f1738c3e1907ff6293ee22b5c5f7be391a6",
+          "bytes": 13846562,
+          "origin": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux/linux_5.15.0-198.208.diff.gz"
+        }
+      ],
+      "provenance": "compliance/evidence/oci-native-libraries.json",
+      "file": "ubuntu-linux-5.15.0-198.208.tar.gz",
+      "sha256": "a89847e49370899f8e33cafaf52acdc29ee7a14788ecd56203688f0d4f1a2c70",
+      "bytes": 206977909
+    },
+    {
+      "id": "oci-patched-build-provenance",
+      "status": "collected",
+      "runtimeArchives": {
+        "oci": {
+          "bytes": 46790081,
+          "file": "yougori-oci-runtime-linux-amd64.tar.gz",
+          "sha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
+        },
+        "nvidia-cdi": {
+          "bytes": 7754791,
+          "file": "yougori-nvidia-cdi-linux-amd64.tar.gz",
+          "sha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73"
+        }
+      },
+      "scope": "Pinned recipes, module/source patches and actual inline manifests; raw logs included when retained",
+      "file": "oci-patched-build-provenance.tar.gz",
+      "sha256": "e5becd97cfa67d9364fea82ecf6c666c613d97cc83ef087c1faf93ddcdced0c2",
+      "bytes": 228665
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "928e09678d48ab117f58cf17a5368743c1ba998af68774c9885389aeaa726b7d",
+  "reviewFingerprint": "8e4d24c45a1db3dc77a105e095341bf1e3153de9c4a7b383dd1d39f483668f89",
   "review": {
     "status": "pending",
-    "pendingReason": "The September 29 repository audit repaired and refreshed source/notice evidence. Exact final desktop and engine artifacts, public matching-source delivery, guest-agent binary reproducibility and historical installer coverage still require release-specific verification.",
+    "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",
     "reviewer": "Codex engineering review",
     "date": "2026-09-14",
     "evidence": "docs/compliance-status.md; compliance/evidence; docs/rebuilding-third-party.txt",
@@ -11511,6 +13410,19 @@
       "dependencyRecords": 907,
       "sourceArchives": 239,
       "basis": "All initial 1377 tracked paths inventoried; notices and source archives refreshed; native evidence rechecked. This does not approve any final installer or waive third-party obligations."
+    },
+    "securityReview": {
+      "date": "2026-10-10",
+      "status": "implementation-and-guest-media-reviewed-final-release-validation-pending",
+      "evidence": "docs/sandbox-security-review.txt; scripts/vendor-oci-build; scripts/vendor-nvidia-build; compliance/evidence; exact per-platform release reports",
+      "scope": "All 13 supplied PDF pages reviewed, supported layered controls implemented, native host network inventory tested on Windows/Linux, Mac helper compile checked only, preserved 512 MiB guest migrated without replacing its backing image. All 15 actual Go executables audited; raw stripped OpenPGP notices retained with matching code and compiled-source proofs. This is an engineering scope record, not an absolute isolation or blanket legal certification.",
+      "requiredFinalEvidence": [
+        "Fresh package/source hashes and full platform checks",
+        "Exact packaged runtime verification",
+        "Retained environment/resource settings and live CPU/GPU acceptance",
+        "Public corresponding sources before package publication",
+        "Website health and public asset hash verification"
+      ]
     }
   },
   "publication": {

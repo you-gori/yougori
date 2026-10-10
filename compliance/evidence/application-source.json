@@ -25,8 +25,8 @@
     },
     {
       "path": ".gitattributes",
-      "sha256": "2f61d74e40634b9c12b822dd84c0e8a0e24b79e512842bc9281fcefa073cbb40",
-      "bytes": 1672,
+      "sha256": "a6511a92cebed961c623267bdf3c9457e858acfd6d6708bd5f50907ce3f0a5bd",
+      "bytes": 1832,
       "mode": 420
     },
     {
@@ -37,8 +37,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "d905e8f104e4a1327f675baf13f30a7d163393f6c60385a39c3c50c500da95bc",
-      "bytes": 1689,
+      "sha256": "3793e04c0ad5291429802519a11f6f9b50f2781aa2dd5a1df14f450ab6d5ab75",
+      "bytes": 1734,
       "mode": 420
     },
     {
@@ -307,8 +307,8 @@
     },
     {
       "path": "appliance/agent/host_shares.go",
-      "sha256": "e4f787eba3b97ad7420f4aab940ce71e18793266d6ee6fc1ae476187230bce9d",
-      "bytes": 11319,
+      "sha256": "1112fe1fb1c7b2c4f7dbe40e5689206ef7f47ac3268f5bf4428cef8529a330fe",
+      "bytes": 11158,
       "mode": 420
     },
     {
@@ -331,8 +331,8 @@
     },
     {
       "path": "appliance/agent/main.go",
-      "sha256": "e14575876ad5d6309c35182250bad6cedf1f476e1d81d0266704258334742f80",
-      "bytes": 69739,
+      "sha256": "64d6c0e8a2623662210ead6cc655826d3c3d2a76c8a6aab028bc9d45cfa1b287",
+      "bytes": 67999,
       "mode": 420
     },
     {
@@ -345,6 +345,18 @@
       "path": "appliance/agent/microvm_workload.go",
       "sha256": "2ccfab5b83f75f7157a532154fd2ed5cbab5993f009b5da125d449f544850b1e",
       "bytes": 3638,
+      "mode": 420
+    },
+    {
+      "path": "appliance/agent/namespace_files.go",
+      "sha256": "90ba6b0feed868823d00f578fe4eb1db7b859de7262e569ea264c3c4d5cc60bb",
+      "bytes": 3307,
+      "mode": 420
+    },
+    {
+      "path": "appliance/agent/namespace_files_test.go",
+      "sha256": "8590480182d9d257410a936f6e2bd9a5844db7ec283e3bc3340c6097635e6abe",
+      "bytes": 3902,
       "mode": 420
     },
     {
@@ -571,26 +583,26 @@
     },
     {
       "path": "appliance/boot/smoke_legacy_overlay.py",
-      "sha256": "2834169fbe428a9e939fc83cc3bdbe69c79451170e561e8861fafbeb281fa55b",
-      "bytes": 12986,
+      "sha256": "d6348564fb90dbf7abf4d9818553ce0630107dfaf3930fd3d7cdc552fa01d3bf",
+      "bytes": 19439,
       "mode": 420
     },
     {
       "path": "appliance/boot/test_upgrade_root.py",
-      "sha256": "da955f140e49c4c229292a08ee58e7a6abc26004657828075a81f65f00d61620",
-      "bytes": 9274,
+      "sha256": "5bb20b7b6b728760fa77e7f3da99ca647b34072c6cb15e41f9109b02664c8c60",
+      "bytes": 21137,
       "mode": 420
     },
     {
       "path": "appliance/boot/upgrade-root.sh",
-      "sha256": "8b3e42a98aa4075b49a7b3b1c88a12091ff2b889061d8a7656515e1e4c748d54",
-      "bytes": 5377,
+      "sha256": "599f1f144b4a75d2b58258f0be732bf58d480207ac6377351e1a123e4dbf748a",
+      "bytes": 9149,
       "mode": 420
     },
     {
       "path": "appliance/mount-helper.c",
-      "sha256": "950c5235497567b9e7899efd81baa7a4a2c0a4204647978fda5209c3dc6bda22",
-      "bytes": 4947,
+      "sha256": "c0b2af407590ec564e69b5499ee0a71f58965dfbc89f548ea254dc86d19c367e",
+      "bytes": 7536,
       "mode": 420
     },
     {
@@ -615,6 +627,12 @@
       "path": "appliance/rootfs/etc/sysctl.d/90-yougori-security.conf",
       "sha256": "3c40fbad229b82a74580169fdd843af77198e70407e1479140aee5854b47636a",
       "bytes": 1012,
+      "mode": 420
+    },
+    {
+      "path": "appliance/test_mount_helper.py",
+      "sha256": "ded80e25ac6d9a079de58d7b233ab11344ddb68d2d08bbeac74cd9b1c45b107d",
+      "bytes": 13332,
       "mode": 420
     },
     {
@@ -1219,14 +1237,14 @@
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "0ef9e957146e1e31d9bd31fed25e8157369eb89c37d9c717b3b263d1f551df32",
-      "bytes": 6653,
+      "sha256": "fa00c34346ff9c742e2e4a8255b07f9187a1994aaeca4a29e77d9424d6da307a",
+      "bytes": 7809,
       "mode": 420
     },
     {
       "path": "compliance/evidence/all-guest-go-modules.json",
-      "sha256": "21ca3e57ee70bb261967150640f51318815f083c297efaa8a5e3635164d5b3cc",
-      "bytes": 55665,
+      "sha256": "16a959aa38f8189c4418c5e1d2f1669e5bd19f4d92887b0083ac82feeb89df83",
+      "bytes": 158621,
       "mode": 420
     },
     {
@@ -1272,6 +1290,12 @@
       "mode": 420
     },
     {
+      "path": "compliance/evidence/appliance-base-notice-refresh.json",
+      "sha256": "06565720433c620d17b1794330c7fb1d4392b12fc60098ed844722b9e7433eb2",
+      "bytes": 3462,
+      "mode": 420
+    },
+    {
       "path": "compliance/evidence/application-dependencies.json",
       "sha256": "caed2b9e01e867e00ac84db906b87df90cef8085f83dc33ec9a611a8f1a99596",
       "bytes": 645659,
@@ -1297,20 +1321,20 @@
     },
     {
       "path": "compliance/evidence/guest-main-modules.json",
-      "sha256": "e4a2094e01fce1b11e65e874f7f8e9b7622d6b50f10eec6e6cbca426a0a631c1",
-      "bytes": 2279,
+      "sha256": "c8d527b73fb9b6b47ec13fc5fb0b2fc3309d2b8aa959ffb9705c4491f9578f50",
+      "bytes": 5428,
       "mode": 420
     },
     {
       "path": "compliance/evidence/initramfs-files.json",
-      "sha256": "14b0c7855394a00512973651062663cccc6e04aad80fa07bc77fb548247e4fd5",
-      "bytes": 44399,
+      "sha256": "100da6241f81a872ae0d60acbcd7af8c045931845c620c7650acf381d9c6f3a4",
+      "bytes": 45072,
       "mode": 420
     },
     {
       "path": "compliance/evidence/oci-native-libraries.json",
-      "sha256": "182bc19e1b2d582595c285e0d0ac16eea291a2f6fa8a4b74c0d6a15b6bd1c39d",
-      "bytes": 1396,
+      "sha256": "088ed5343f5c57089da6514cf39a08e20a1da5c0c7b449c2664863bf735992b2",
+      "bytes": 18684,
       "mode": 420
     },
     {
@@ -1321,14 +1345,14 @@
     },
     {
       "path": "compliance/evidence/runtime-files.json",
-      "sha256": "65d68f8c02190fddd98ffd991749415f3841ca157a83bcbddbb957542d7b7220",
-      "bytes": 52916,
+      "sha256": "98d9583ef4856849b60fc1ef774407b545fb259c9f3d8f06bffa1a4ffbcf47e0",
+      "bytes": 53720,
       "mode": 420
     },
     {
       "path": "compliance/evidence/runtime-notices.json",
-      "sha256": "6d929ba2a54471d3bae037d481ded2429fda6d4f8eaaeaaa645c7874dec8f69d",
-      "bytes": 150893,
+      "sha256": "98787b8c099773a23c3c0ac06a2040e844db9f6471def7ef93833710306d3f2c",
+      "bytes": 197502,
       "mode": 420
     },
     {
@@ -1441,8 +1465,8 @@
     },
     {
       "path": "compliance/notices/oci-native-libraries.txt",
-      "sha256": "eeab0809652161c40ef131d9a6efeae0a189c924bd4f3055333bd38981ccf8be",
-      "bytes": 62643,
+      "sha256": "5cb56b92e34cfa01d3ff42a4fab4d4bced9d9e329a2861e4d3a98d38ba4c1f97",
+      "bytes": 723637,
       "mode": 420
     },
     {
@@ -1579,8 +1603,8 @@
     },
     {
       "path": "docs/sandbox-security-review.txt",
-      "sha256": "78d5d2cfc7007424d2aa0276d49a1a0b8e4f57955b7b5d442dfd2f1b07ee754e",
-      "bytes": 13538,
+      "sha256": "ffd3bbc97fa3349679ac1b8976fbc3e42462f9f8c302ff6581fbe6623339a5fc",
+      "bytes": 19960,
       "mode": 420
     },
     {
@@ -2065,8 +2089,8 @@
     },
     {
       "path": "runtime/cuda/host/src/lib.rs",
-      "sha256": "a110c7dda20dd81d6ca93b0de1247e76bb8b44868b69d7fb85a771557c0f2045",
-      "bytes": 50387,
+      "sha256": "297f8f5970e004cc449e4d6234d4794159a3dab95bd39558750ace8df2f56c2b",
+      "bytes": 50457,
       "mode": 420
     },
     {
@@ -2076,9 +2100,15 @@
       "mode": 420
     },
     {
+      "path": "runtime/cuda/install-oci.py",
+      "sha256": "1a5b8aed27491588ab7122d7b69952de96dc8623d778318ba4cd7a5a25d91541",
+      "bytes": 8388,
+      "mode": 420
+    },
+    {
       "path": "runtime/cuda/install.ps1",
-      "sha256": "d4a51fc967b3f7c2c4b37a00191a77c0d42ad086fa8f986af99072da9da72e0f",
-      "bytes": 12495,
+      "sha256": "ef63491fa1ab2e9b414806e2b09188b555a1470d63ddd7dc8cb4db4a344bacbf",
+      "bytes": 15525,
       "mode": 420
     },
     {
@@ -2101,20 +2131,26 @@
     },
     {
       "path": "runtime/cuda/setup.sh",
-      "sha256": "71406869473118d8a8fc7d94622852b78dd615a16083db5767205cc64e1429e3",
-      "bytes": 2394,
+      "sha256": "131a791c1021557b695bde984aa54f83fc2206a28413196afd581f463249a0bd",
+      "bytes": 2351,
       "mode": 420
     },
     {
       "path": "runtime/cuda/start.sh",
-      "sha256": "bee835e66f8b0d5ac5726c907af7f1275fe7c3e280b1c90440420893b4652db0",
-      "bytes": 1090,
+      "sha256": "a8cb3c22884c6fd39114b7ac780649250d45f3509803f1ec56676ce33fc0389f",
+      "bytes": 1159,
       "mode": 420
     },
     {
       "path": "runtime/cuda/test-runtime.ps1",
       "sha256": "b9a1fa74239c24dce33836fd96fd9220b45f740f83b21b3c85d4e5e63223101c",
       "bytes": 8393,
+      "mode": 420
+    },
+    {
+      "path": "runtime/cuda/test_install_oci.py",
+      "sha256": "c25a232f3f4e124e9073f983acad7e43f5c86102f221b7cde2cc427b18c02a19",
+      "bytes": 19477,
       "mode": 420
     },
     {
@@ -2281,8 +2317,8 @@
     },
     {
       "path": "scripts/build-appliance.sh",
-      "sha256": "6d759a9bb2ba5313aad95ad27fb43b19c74fae493295c2e3e8fb69d3d1664593",
-      "bytes": 8992,
+      "sha256": "a3fb98592d90adf040aa4913aa73c98f9c5431dae5f1fb845904dffb7d8b6a6a",
+      "bytes": 9122,
       "mode": 420
     },
     {
@@ -2317,8 +2353,8 @@
     },
     {
       "path": "scripts/build-cuda.sh",
-      "sha256": "4c91bcd959e3bfcdf487bbdd1ab66d8ec4fba757d75c88d2e6564e060ed57184",
-      "bytes": 913,
+      "sha256": "b7b8c151acca5acb5308e47c051b7268f515a8963c1cf9e3c3d9ff4d084c9f21",
+      "bytes": 2369,
       "mode": 420
     },
     {
@@ -2449,8 +2485,8 @@
     },
     {
       "path": "scripts/collect-compliance.py",
-      "sha256": "3657b110a1d0283434fd1bdb36cc97dca154e7c9899d9dd5c2e10c5db9489395",
-      "bytes": 67473,
+      "sha256": "f00399fa93e9d1f28df5aa336e59d6509810e475feb36d72609839a0e897e402",
+      "bytes": 87652,
       "mode": 420
     },
     {
@@ -2563,8 +2599,8 @@
     },
     {
       "path": "scripts/cuda-setup.test.mjs",
-      "sha256": "e42665fe334e8c4f2127caf3c565dbb05e205671c571f58fdab1f7200ae9a8c2",
-      "bytes": 14777,
+      "sha256": "9c5e1315aedd08b1c77a489710db6655a1a752bf135d52a3fc5a5dcfd403fa76",
+      "bytes": 16482,
       "mode": 420
     },
     {
@@ -2773,8 +2809,8 @@
     },
     {
       "path": "scripts/prepare-appliance-initramfs.py",
-      "sha256": "12366099e1881a5b9869d4d6a7097ff2f1db4667ca301467a09bba656d1e06d4",
-      "bytes": 5143,
+      "sha256": "1cc12d398e05846b0227e66d0160b300718e130044a00b0f92eeebcac19959ca",
+      "bytes": 9826,
       "mode": 420
     },
     {
@@ -2803,8 +2839,8 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "97f28c26035fbd44a6cfb90fb564f73e805a0a49924d7043be94bc92518fbab3",
-      "bytes": 14938,
+      "sha256": "d30587522b9712164b14a5a0715c5a4d40f457c69821d7a4d1a64c547c397a3e",
+      "bytes": 15186,
       "mode": 420
     },
     {
@@ -2827,8 +2863,8 @@
     },
     {
       "path": "scripts/release-preflight.mjs",
-      "sha256": "1bfbee35b94f03a95cba6948e9ccea4866c7444d3797000aeb952ca3e4f93794",
-      "bytes": 11586,
+      "sha256": "2c36be302dbaf4498d3e880d9e25095e708cee4393e7b8e2b599426f85690858",
+      "bytes": 11766,
       "mode": 420
     },
     {
@@ -2928,6 +2964,192 @@
       "mode": 420
     },
     {
+      "path": "scripts/vendor-nvidia-build/README.txt",
+      "sha256": "79c1bccbe0a5bc367095201c09576b47ee035184897cd02796a2c971f2e32cef",
+      "bytes": 2083,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/build.py",
+      "sha256": "685a64ac546644dcb3505777b39c800c056210a322245a67d37a4df5aea6c720",
+      "bytes": 15787,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/inputs.json",
+      "sha256": "efc15254096c2076603541c21aa9ccb7e32966c06e176a2740fd683b8cda66b3",
+      "bytes": 1628,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/go.mod",
+      "sha256": "c1c3ea62c51801a8d101650abf5574db7ce1a316165420c7267190430c06e843",
+      "bytes": 1930,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/go.sum",
+      "sha256": "c0c73f9564644a43d2b1b19942cce1fcaff5088c5f234d7c3b9da40b335a104e",
+      "bytes": 10878,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/lock.json",
+      "sha256": "5812692207835f3dc793b1253f9f806057c9df971716cff5bd0bd214f7a2d9fc",
+      "bytes": 250,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/modules/modules.patch",
+      "sha256": "d576448755aa192012434ce6133d48881737ef91c0c932b7dd862c43f9c617b3",
+      "bytes": 2281,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/patches/logger-format.patch",
+      "sha256": "aff29aa343cc204f3f83074a8b700a88f6a2f8b08bf6057ab52ca17603cbaef4",
+      "bytes": 1171,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/test-no-driver.py",
+      "sha256": "af0ed4ff1ffbf4c16151958b3c1d4adebfaa1cb978785d04514f478f08e02be0",
+      "bytes": 1428,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/verify.py",
+      "sha256": "b307b37c3f65ee010a772e59a83c607dce3b11d58d78dee518258f91f26af2f4",
+      "bytes": 4359,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-nvidia-build/verify.test.py",
+      "sha256": "aa779fd8ef15c2013ddf22f1b36f10a9de85de3154fe2134c48cd06b1438302e",
+      "bytes": 4199,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/bootstrap-inputs.py",
+      "sha256": "b760deaa525e7f843d575557ed71dc29b2641fd9b14b0fe638e1c9fc401508d9",
+      "bytes": 6711,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/build.py",
+      "sha256": "6473be6bf64ee21b09528685cfeaa9747a3d783f3d8511cadc021d95756c131e",
+      "bytes": 31918,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/inputs.json",
+      "sha256": "1679bafc8de20d7b8a5894adc6726b747677e5b86e93f559533c1a55988538a9",
+      "bytes": 6663,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/cni/go.mod",
+      "sha256": "1be36b1d0a170612f10ee3b9aff82b3a354b0c3d198b4d9dc491c09a554f6fa3",
+      "bytes": 3002,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/cni/go.sum",
+      "sha256": "9de346bbdbdd90ef8dd6d023e2a9a44f8e07e6306bdd042ff0fef095c96f6dd1",
+      "bytes": 37806,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/cni/modules.patch",
+      "sha256": "a71649be4066591951a31a26c72af34bbac0b8ab919f342fcfca59cdabee914c",
+      "bytes": 41165,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/containerd/go.mod",
+      "sha256": "20aa8b259523a06cc05e57ad572470d6d7a00454029c6cd017064cfad334338d",
+      "bytes": 7550,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/containerd/go.sum",
+      "sha256": "b94a7958f9cbd498c7eb16534536d30047b6e324c7d79219390e28f257e58c9e",
+      "bytes": 68665,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/containerd/modules.patch",
+      "sha256": "74931905f21354d8084200bbdbdb2f14bc7bd7daf0f990502de05b3d9c18422e",
+      "bytes": 64652,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/nerdctl/go.mod",
+      "sha256": "5d9e11369522f82056cf3e98f3e52ef41629bdb73c9a2b3b582f9bcf1bd9e6d5",
+      "bytes": 8289,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/nerdctl/go.sum",
+      "sha256": "143d2547be9ce3b520f75f1b588f15099dc3e35bcd4d09e773a18a2781480e61",
+      "bytes": 80983,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/nerdctl/modules.patch",
+      "sha256": "a8adc1dba305cfd38fee82f42ee9fc26ef7817c93655d7ad0f6296006cbd46cc",
+      "bytes": 86768,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/runc/go.mod",
+      "sha256": "0d84a579ad2884d64e85080cf9493ef85ab3b2fcea7f762613fe4c146ec32445",
+      "bytes": 1246,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/runc/go.sum",
+      "sha256": "7c47c94e0b1fa6ee091eecaed81e70dc58c69cd8aa74c8e8ed9fdbd6f69b0e63",
+      "bytes": 11311,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/modules/runc/modules.patch",
+      "sha256": "8c201f43db589b47677289c30b827922df91f0584b4737bbc2eea40121bfcdc5",
+      "bytes": 13662,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/musl-static-pie.patch",
+      "sha256": "5fbc92f00d4edb8c1d128f6551136414e6c6a24c9d90638951343e949ef7f813",
+      "bytes": 626,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/native-compiler.py",
+      "sha256": "cf41e77aeca29c79e9dfb5a86a3db89bddced6424245048359fde8f1832f1d80",
+      "bytes": 3637,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/smoke-alpine.py",
+      "sha256": "5fce3d9fda71df165985fb121c2fe3d66a1c8ffb8a2c34aa3eefb525867e90b2",
+      "bytes": 4559,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/verify.py",
+      "sha256": "3d273d179136d58fd43e9f8522d82471bf20fd61e5428f8f9d10b995cb5cc501",
+      "bytes": 6241,
+      "mode": 420
+    },
+    {
+      "path": "scripts/vendor-oci-build/verify.test.py",
+      "sha256": "2c3cc1f8415d0d8d4374a753fa5977f8d2bf6f53c7f59b33591abc79a69267b9",
+      "bytes": 5658,
+      "mode": 420
+    },
+    {
       "path": "scripts/verify-macos-bundle.mjs",
       "sha256": "a0a21ccad59e7227eb38f806dbadf36c9e55e72dd149bcf1fe76e4462e030ec6",
       "bytes": 1500,
@@ -2995,8 +3217,8 @@
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "97b7a4f218f14301cba9e915f5deb291927b7d44db2f6e82e80d8b4cd6a73801",
-      "bytes": 3153,
+      "sha256": "42b7d743f0aa8f5d7275406c806d0bdb7a0cee82140a05f7b08ec274cfe8199b",
+      "bytes": 3255,
       "mode": 420
     },
     {
@@ -3433,8 +3655,8 @@
     },
     {
       "path": "src-tauri/resources/RUNTIME_LICENSES.txt",
-      "sha256": "4b8a52b086ba4e625fa11c2b10631d5d60f97d0137b5531049be80cedb43b7d4",
-      "bytes": 5371346,
+      "sha256": "a546b176ec3790355486314e3f5d073283553d62c7e84b506d563fca14ad8928",
+      "bytes": 7337708,
       "mode": 420
     },
     {
@@ -4195,8 +4417,8 @@
     },
     {
       "path": "src-tauri/src/runtime/cuda.rs",
-      "sha256": "9aede1fb2774cd01190b771db3b7214d1352b5345c4c380180696bf07aaee7ba",
-      "bytes": 19556,
+      "sha256": "cf8f8a718fd996c2eb9dc6e34af008778b86a982e0c1acf18939d45b9ce7e930",
+      "bytes": 19784,
       "mode": 420
     },
     {
@@ -4278,6 +4500,12 @@
       "mode": 420
     },
     {
+      "path": "src-tauri/src/runtime/host_addresses.rs",
+      "sha256": "cfb6b206c5c28ce8038c454e7cf5e15ebc4d4e5e7fb0646b7c9e6eb0857c366f",
+      "bytes": 16206,
+      "mode": 420
+    },
+    {
       "path": "src-tauri/src/runtime/host_platform.rs",
       "sha256": "047ea8830a4bac9c6bbbcd4f43aab669b6aa25d8ed074e1e1ab4c76fbf9dad5b",
       "bytes": 4116,
@@ -4303,14 +4531,14 @@
     },
     {
       "path": "src-tauri/src/runtime/microvm_network.rs",
-      "sha256": "29b9d04906b43671ab4e7ea24ec060a9e1224ff2359a7b8776e77ca3421f8d19",
-      "bytes": 27557,
+      "sha256": "571dceaeae3b7014018a28a0c3189544663af2e94b861b74d848a22cc2e295dc",
+      "bytes": 46280,
       "mode": 420
     },
     {
       "path": "src-tauri/src/runtime/mod.rs",
-      "sha256": "ae9bea330604735b780d1d32869893fbe476a157f8b4c369c1a14a6163a83c22",
-      "bytes": 35548,
+      "sha256": "2ca7d8ebdbfea4d247d4563f1920629f27f67ca9e2c36d59aba396e1f415c06f",
+      "bytes": 35775,
       "mode": 420
     },
     {
