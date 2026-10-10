@@ -14,19 +14,49 @@ fn bootstrap(container: &str, owner: &str, project: &package::Project, setup: &S
     let image = shell(&project.image());
     let label = shell(owner);
     let port = live::proxy_port(setup.guest_port);
+    // Match the guest's development-tool capabilities, retaining package
+    // installation without raw networking, device creation or administration.
+    let capabilities = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "NET_BIND_SERVICE",
+        "SETGID", "SETUID", "SETFCAP", "SYS_CHROOT", "AUDIT_WRITE"];
+    let cap_arguments = capabilities.iter().map(|cap| format!("--cap-add {cap}")).collect::<Vec<_>>().join(" ");
+    let cap_check = capabilities.iter().flat_map(|cap| [format!(r#"(eq . "{cap}")"#), format!(r#"(eq . "CAP_{cap}")"#)])
+        .collect::<Vec<_>>().join(" ");
+    // Docker uses its daemon's built-in seccomp profile when no container
+    // override is specified. Verify that default instead of relying on the
+    // newer seccomp=builtin CLI syntax, which older supported clients lack.
+    let daemon_security = shell("{{range .SecurityOptions}}{{println .}}{{end}}");
+    let daemon_pids = shell("{{.PidsLimit}}");
+    let security_template = r#"{{ $safe := true }}{{ $nnp := false }}{{ $drop := false }}{{ $core := false }}
+{{range .HostConfig.SecurityOpt}}{{if or (eq . "no-new-privileges") (eq . "no-new-privileges=true") (eq . "no-new-privileges:true")}}{{ $nnp = true }}{{else}}{{ $safe = false }}{{end}}{{end}}
+{{range .HostConfig.CapDrop}}{{if or (eq . "ALL") (eq . "CAP_ALL")}}{{ $drop = true }}{{end}}{{end}}
+{{range .HostConfig.CapAdd}}{{if not (or __CAP_CHECK__)}}{{ $safe = false }}{{end}}{{end}}
+{{range .HostConfig.Ulimits}}{{if and (eq .Name "core") (eq .Soft 0) (eq .Hard 0)}}{{ $core = true }}{{end}}{{end}}
+{{range .Mounts}}{{if eq .Type "bind"}}{{ $safe = false }}{{end}}{{end}}
+{{if or .HostConfig.Privileged (eq .HostConfig.UsernsMode "host") (ne .HostConfig.PidMode "") (ne .HostConfig.UTSMode "")}}{{ $safe = false }}{{end}}
+{{if not (or (eq .HostConfig.IpcMode "private") (eq .HostConfig.IpcMode "") (eq .HostConfig.IpcMode "shareable"))}}{{ $safe = false }}{{end}}
+{{if not (or (eq .HostConfig.NetworkMode "bridge") (eq .HostConfig.NetworkMode "default") (eq .HostConfig.NetworkMode ""))}}{{ $safe = false }}{{end}}
+{{if or (gt (len .HostConfig.Devices) 0) (gt (len .HostConfig.DeviceRequests) 0) (gt (len .HostConfig.DeviceCgroupRules) 0)}}{{ $safe = false }}{{end}}
+{{if and $safe $nnp $drop $core}}safe{{else}}unsafe{{end}}"#.replace("__CAP_CHECK__", &cap_check);
+    let security_check = shell(&security_template);
+    let recovery = shell(&format!("This stopped project container does not enforce the current sandbox policy. Its files were kept. Security options cannot be added with docker update. Back up needed files using docker cp {container}:/workspace <backup-folder>, deliberately remove only this stopped container, then run npm run yougori-cloud again."));
     format!(r#"set -eu
 command -v docker >/dev/null 2>&1 || {{ echo 'This server needs Docker Engine to run project containers. Install Docker and allow this SSH account to use it, then retry.' >&2; exit 1; }}
 docker info >/dev/null
+docker info -f {daemon_security} | grep -Eq '^name=seccomp,profile=(builtin|default)$' || {{ echo 'Enable Docker Engine built-in seccomp on this server before launching; no container was started.' >&2; exit 1; }}
+test "$(docker info -f {daemon_pids})" = true || {{ echo 'Enable the Docker pids cgroup controller on this server before launching; no container was started.' >&2; exit 1; }}
 if docker container inspect {name} >/dev/null 2>&1; then
   test "$(docker inspect -f '{{{{index .Config.Labels "com.yougori.project"}}}}' {name})" = {label} || {{ echo 'Container name belongs to another workload' >&2; exit 1; }}
   test "$(docker inspect -f '{{{{.State.Running}}}}' {name})" = false || {{ echo 'This project is already running on the server. Quit its other launcher before retrying.' >&2; exit 1; }}
   test "$(docker inspect -f '{{{{.Config.Image}}}}' {name})" = {image} || {{ echo 'Project runtime changed. Remove this stopped project container when ready, then retry; its data has been kept.' >&2; exit 1; }}
   test "$(docker inspect -f '{{{{index .Config.Labels "com.yougori.proxy-port"}}}}' {name})" = '{port}' || {{ echo 'Project proxy port changed. Remove this stopped project container when ready, then retry.' >&2; exit 1; }}
-  docker update --cpus {cpu} --memory {memory}g --memory-swap {memory}g {name} >/dev/null
+  test "$(docker inspect -f {security_check} {name} | tr -d '\n')" = safe || {{ echo {recovery} >&2; exit 1; }}
+  docker update --cpus {cpu} --memory {memory}g --memory-swap {memory}g --pids-limit 4096 {name} >/dev/null
 else
   docker pull {image}
-  docker create --name {name} --label com.yougori.project={label} --label com.yougori.proxy-port={port} --cpus {cpu} --memory {memory}g --memory-swap {memory}g --log-opt max-size=10m --log-opt max-file=2 -p 127.0.0.1::{port} --entrypoint sh {image} -c {boot} >/dev/null
+  docker create --name {name} --label com.yougori.project={label} --label com.yougori.proxy-port={port} --security-opt no-new-privileges=true --cap-drop ALL {cap_arguments} --pids-limit 4096 --ulimit core=0:0 --sysctl net.ipv4.ping_group_range='0 2147483647' --cpus {cpu} --memory {memory}g --memory-swap {memory}g --log-opt max-size=10m --log-opt max-file=2 -p 127.0.0.1::{port} --entrypoint sh {image} -c {boot} >/dev/null
 fi
+test "$(docker inspect -f {security_check} {name} | tr -d '\n')" = safe || {{ echo {recovery} >&2; exit 1; }}
+test "$(docker inspect -f '{{{{.HostConfig.PidsLimit}}}}' {name})" = 4096 || {{ echo 'Docker did not enforce the project process limit; no container was started.' >&2; exit 1; }}
 "#, cpu=setup.allocation[0], memory=setup.allocation[1], boot=shell(BOOT))
 }
 
@@ -261,12 +291,20 @@ mod tests {
         let setup: Setup = serde_json::from_value(json!({"version":1,"directory":folder.path(),"environment":"env-cloud","gpu":false,"allocation":[2,4,0],"guest_port":3000,"local_port":3000,"network":"computer","domain":null})).unwrap();
         let script = bootstrap("yougori-project-test", "owner", &project, &setup);
         let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "bash" };
-        for mode in ["new", "stopped", "running", "foreign", "wrong-image"] {
+        for mode in ["new", "stopped", "running", "foreign", "wrong-image", "legacy-security", "seccomp-disabled", "pids-disabled", "pids-unenforced"] {
             let fixture = format!(r#"
 docker() {{
   printf '%s\n' "$*" >&2
   case "$1" in
-    info|update|pull|create) return 0 ;;
+    info)
+      if [ "${{2:-}}" = -f ]; then
+        case "$3" in
+          *SecurityOptions*) if [ "$MODE" = seccomp-disabled ]; then echo name=apparmor; else echo name=seccomp,profile=builtin; fi ;;
+          *PidsLimit*) if [ "$MODE" = pids-disabled ]; then echo false; else echo true; fi ;;
+          *) return 1 ;;
+        esac
+      fi ;;
+    update|pull|create) return 0 ;;
     container) [ "$MODE" != new ]; return $? ;;
     inspect)
       case "$3" in
@@ -274,6 +312,8 @@ docker() {{
         *State.Running*) if [ "$MODE" = running ]; then echo true; else echo false; fi ;;
         *Config.Image*) if [ "$MODE" = wrong-image ]; then echo old-image; else echo {}; fi ;;
         *com.yougori.proxy-port*) echo 43119 ;;
+        *'$safe := true'*) if [ "$MODE" = legacy-security ]; then echo unsafe; else echo safe; fi ;;
+        *HostConfig.PidsLimit*) if [ "$MODE" = pids-unenforced ]; then echo 0; else echo 4096; fi ;;
         *) return 1 ;;
       esac ;;
     *) echo 'Unexpected mutating Docker action' >&2; return 1 ;;
@@ -288,14 +328,94 @@ docker() {{
                 assert!(log.contains("create --name yougori-project-test"));
                 assert!(log.contains("-p 127.0.0.1::43119"));
                 assert!(log.contains("--cpus 2 --memory 4g"));
+                assert!(log.contains("--security-opt no-new-privileges=true --cap-drop ALL"));
+                assert!(log.contains("--pids-limit 4096 --ulimit core=0:0"));
+                assert!(!log.contains("--security-opt seccomp=unconfined"));
             } else if mode == "stopped" {
                 assert!(log.contains("update --cpus 2"));
                 assert!(!log.contains("create --name"));
+            } else if mode == "pids-unenforced" {
+                assert!(log.contains("update --cpus 2"));
+                assert!(log.contains("did not enforce the project process limit"));
             } else {
                 assert!(!log.contains("update --cpus"));
                 assert!(!log.contains("create --name"));
             }
             assert!(!log.lines().any(|line| line.starts_with("stop ") || line.starts_with("rm ") || line.starts_with("start ")));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Docker CLI; uses only a fake read-only loopback API, never a Docker daemon"]
+    fn cloud_security_policy_evaluates_actual_docker_inspection_templates() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let project = package::Project::load(folder.path()).unwrap();
+        let setup: Setup = serde_json::from_value(json!({"version":1,"directory":folder.path(),"environment":"env-cloud","gpu":false,"allocation":[2,4,0],"guest_port":3000,"local_port":3000,"network":"computer","domain":null})).unwrap();
+        let script = bootstrap("yougori-project-test", "owner", &project, &setup);
+        let beginning = script.find("'{{ $safe := true }}").unwrap() + 1;
+        let end = beginning + script[beginning..].find('\'').unwrap();
+        let template = &script[beginning..end];
+        let baseline = json!({"Id":"a".repeat(64),"Name":"/yougori-project-test","Mounts":[],"HostConfig":{
+            "SecurityOpt":["no-new-privileges:true"],"CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","FSETID","KILL","NET_BIND_SERVICE","SETGID","SETUID","SETFCAP","SYS_CHROOT","AUDIT_WRITE"],
+            "Ulimits":[{"Name":"core","Soft":0,"Hard":0}],"Privileged":false,"UsernsMode":"","PidMode":"","UTSMode":"","IpcMode":"private","NetworkMode":"bridge","Devices":[],"DeviceRequests":[],"DeviceCgroupRules":[]}});
+        let mut cases = vec![("enforced", baseline.clone(), true)];
+        for (field, value) in [("SecurityOpt", json!([])), ("SecurityOpt", json!(["no-new-privileges:true","seccomp=unconfined"])),
+            ("SecurityOpt", json!(["no-new-privileges:true","apparmor=unconfined"])), ("CapDrop", json!([])),
+            ("CapAdd", json!(["SYS_ADMIN"])), ("CapAdd", json!(["NET_RAW"])), ("Privileged", json!(true)),
+            ("PidMode", json!("host")), ("PidMode", json!("container:other")), ("IpcMode", json!("host")),
+            ("NetworkMode", json!("host")), ("UTSMode", json!("host")), ("UsernsMode", json!("host")),
+            ("DeviceCgroupRules", json!(["a *:* rwm"])), ("Ulimits", json!([{"Name":"core","Soft":-1,"Hard":-1}]))] {
+            let mut unsafe_case = baseline.clone();
+            unsafe_case["HostConfig"][field] = value;
+            cases.push((field, unsafe_case, false));
+        }
+        let mut bind = baseline.clone();
+        bind["Mounts"] = json!([{"Type":"bind","Source":"/","Destination":"/host"}]);
+        cases.push(("host bind", bind, false));
+        for (name, inspection, expected) in cases {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while Instant::now() < deadline {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                            let mut header = Vec::new();
+                            while !header.ends_with(b"\r\n\r\n") && header.len() < 8192 {
+                                let mut byte = [0];
+                                if socket.read(&mut byte).unwrap_or(0) != 1 { break; }
+                                header.push(byte[0]);
+                            }
+                            let request = String::from_utf8_lossy(&header);
+                            if request.contains("/containers/") && request.contains("/json") {
+                                let body = serde_json::to_vec(&inspection).unwrap();
+                                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                                socket.write_all(&body).unwrap();
+                                return;
+                            }
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nAPI-Version: 1.47\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK").unwrap();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+                panic!("Docker CLI did not inspect the fake endpoint");
+            });
+            let output = std::process::Command::new(if cfg!(windows) { "docker.exe" } else { "docker" })
+                .args(["inspect", "--format", template, "yougori-project-test"])
+                .env("DOCKER_HOST", format!("tcp://{address}"))
+                .env("DOCKER_API_VERSION", "1.47").env("DOCKER_CONFIG", folder.path())
+                .env_remove("DOCKER_CONTEXT").env_remove("DOCKER_TLS_VERIFY").env_remove("DOCKER_CERT_PATH")
+                .output().expect("Docker CLI required; no Docker daemon is used");
+            server.join().unwrap();
+            assert!(output.status.success(), "{name}: {}", String::from_utf8_lossy(&output.stderr));
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), if expected { "safe" } else { "unsafe" }, "{name}");
         }
     }
 }
