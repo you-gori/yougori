@@ -2,6 +2,8 @@ module opendock.local/appliance-agent
 
 go 1.25.0
 
+toolchain go1.27.2
+
 require github.com/hanwen/go-fuse/v2 v2.5.1
 
 require github.com/gorilla/websocket v1.5.3
