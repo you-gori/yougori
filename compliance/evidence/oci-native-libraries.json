@@ -1,28 +1,423 @@
 {
-  "releaseArtifact": "nerdctl-full-2.3.5-linux-amd64.tar.gz",
-  "releaseSha256": "b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa",
-  "sourceRevision": "347782c28efe1753d5cc9652f6304752ed431221",
-  "releaseBuild": "https://github.com/containerd/nerdctl/actions/runs/29726258843/attempts/1",
-  "buildBaseIndexDigest": "sha256:4ee9ffa999b4583ce281939cdff828763083610292f252279a0cee77473bd9a7",
-  "buildBaseAmd64Digest": "sha256:dbb10bd1b3400ba0858e2f7c354fd4556b782c187feeff52789d4ee156a84db8",
-  "baseSpdxSha256": "6d28ab468d525935702d64b715f89371bbed349839ff266dc862f74ad523aeeb",
-  "libraries": [
+  "schemaVersion": 2,
+  "scope": "Actual rebuilt OCI/NVIDIA inputs; historical nerdctl-full Docker attribution retired",
+  "vendors": [
     {
-      "source": "glibc",
-      "version": "2.41-12+deb13u3",
-      "evidence": "Digest-checked amd64 build-base SPDX records libc6 and libc6-dev with this version"
+      "kind": "oci",
+      "archive": {
+        "bytes": 46790081,
+        "file": "yougori-oci-runtime-linux-amd64.tar.gz",
+        "sha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
+      },
+      "nativeBuild": {
+        "btrfs": {
+          "sources": [
+            {
+              "bytes": 3234940,
+              "file": "btrfs-progs_6.14.orig.tar.gz",
+              "sha256": "5a85b791f0f32a4994e864ac4cb7abccce08e56db3010a1855ad0edeebc70b4c",
+              "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14.orig.tar.gz"
+            },
+            {
+              "bytes": 20136,
+              "file": "btrfs-progs_6.14-1.debian.tar.xz",
+              "sha256": "0701b7d38fc7b1568f1f48bf8665b6a8ac503c8056e06ff4e3f7536656c0590c",
+              "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.debian.tar.xz"
+            },
+            {
+              "bytes": 2557,
+              "file": "btrfs-progs_6.14-1.dsc",
+              "sha256": "eccdbf28fbb3414fe012d89a996fe1288807431d07f6cba0302db209714f6a8d",
+              "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.dsc"
+            }
+          ],
+          "version": "6.14-1"
+        },
+        "btrfsPrefix": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix",
+        "compilerInputs": [
+          {
+            "bytes": 928584,
+            "path": "/usr/bin/x86_64-linux-gnu-gcc-11",
+            "sha256": "821af3c74506283c179ca413bb33e6b528805a4dd8a5c09df125e5ad560a9e89"
+          },
+          {
+            "bytes": 144,
+            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/bin/musl-gcc",
+            "sha256": "425f4f8c724bf95bb55a51d52d0e9b028cf390b15882985a704204e09a5f289b"
+          },
+          {
+            "bytes": 1182,
+            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/musl-gcc.specs",
+            "sha256": "be8e622ba20c15974fd43a1db325743e18577cc78f11a6095471b5cb7ef0d8b9"
+          }
+        ],
+        "flags": "-O2 -ffile-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci -fdebug-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci",
+        "gcc": "gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+        "initialPreparationInputsSha256": "4fe62545d76336b85f118dc2b3f6217b9e6611149b8d590ddff0872b5fac8e4d",
+        "inputsSha256": "1679bafc8de20d7b8a5894adc6726b747677e5b86e93f559533c1a55988538a9",
+        "libcStrategy": {
+          "containerd": "static Ubuntu glibc; netgo/osusergo/static_build; original btrfs 6.14",
+          "runc": "static PIE patched Alpine musl 1.2.6-r2 and libseccomp 2.6.1; seccomp retained"
+        },
+        "libraries": [
+          {
+            "bytes": 2815492,
+            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libc.a",
+            "sha256": "eef5dec13a0b47c68745901ca27763abe3091a77b183b32ff3a5d26ac63b8772"
+          },
+          {
+            "bytes": 334780,
+            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libseccomp.a",
+            "sha256": "d65351ae5bc328ed1a366cfae0b7578d91f3160519ed4247b4215deb0670c642"
+          },
+          {
+            "bytes": 31442,
+            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix/lib/libbtrfs.a",
+            "sha256": "5f0a6c25f7c3b57bd73100d6905decd3675cadda7d28abe5eaf4203c8d4c8aee"
+          },
+          {
+            "bytes": 6029306,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libc.a",
+            "path": "/usr/lib/x86_64-linux-gnu/libc.a",
+            "sha256": "7ceefe6c6ea90ba8323f3f24e225274eca2edc1f6b4c98bef90c9ec0dc53f294"
+          },
+          {
+            "bytes": 132,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libm.a",
+            "path": "/usr/lib/x86_64-linux-gnu/libm.a",
+            "sha256": "864c2e3e6c9b86dd0b3dc303a30f2db8a73719f211c336175176a7dd45045842"
+          },
+          {
+            "bytes": 8,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libpthread.a",
+            "path": "/usr/lib/x86_64-linux-gnu/libpthread.a",
+            "sha256": "f0a17a43c74d2fe5474fa2fd29c8f14799e777d7d75a2cc4d11c20a6e7b161c5"
+          },
+          {
+            "bytes": 8,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libdl.a",
+            "path": "/usr/lib/x86_64-linux-gnu/libdl.a",
+            "sha256": "f0a17a43c74d2fe5474fa2fd29c8f14799e777d7d75a2cc4d11c20a6e7b161c5"
+          },
+          {
+            "bytes": 86052,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libresolv.a",
+            "path": "/usr/lib/x86_64-linux-gnu/libresolv.a",
+            "sha256": "b64d6f024a38aa29cb7954b26b3da3ed0841f42747592481b586f273fe1b0ccd"
+          },
+          {
+            "bytes": 3001414,
+            "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/libgcc.a",
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/11/libgcc.a",
+            "sha256": "881a1422df348396646d3cbee3d8edf2cd8909f51295ff821ce16cb949029883"
+          },
+          {
+            "bytes": 57140,
+            "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/libgcc_eh.a",
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/11/libgcc_eh.a",
+            "sha256": "ecb9dca0513f07d84e65bf5713dd2e069db87abdbcdc0363ad448568370a9cb3"
+          },
+          {
+            "bytes": 1792,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/crt1.o",
+            "path": "/usr/lib/x86_64-linux-gnu/crt1.o",
+            "sha256": "5cfb30db1d2c92a9a818f6c015ad7fcd6519afaa1b88148e831504fe6e299479"
+          },
+          {
+            "bytes": 1192,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/crti.o",
+            "path": "/usr/lib/x86_64-linux-gnu/crti.o",
+            "sha256": "077ccb6c68db1794da3ee262c4a16a3c6f8e902845dd0829110ad4b7065e5aa3"
+          },
+          {
+            "bytes": 760,
+            "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/crtn.o",
+            "path": "/usr/lib/x86_64-linux-gnu/crtn.o",
+            "sha256": "a2266079f95b84ccc2162ebbf279bcd78858a748aa1882e0bdb912316c76a58f"
+          },
+          {
+            "bytes": 2968,
+            "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtbeginT.o",
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtbeginT.o",
+            "sha256": "26cdcaf355ea1e931d99da73b5f2cc825f4189d5f7755d8b9d05c33746aad07d"
+          },
+          {
+            "bytes": 2752,
+            "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtbeginS.o",
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtbeginS.o",
+            "sha256": "98ebe44533aa4fabd0acf2404d8872c70f972642166bb0c88be53f33540222c5"
+          },
+          {
+            "bytes": 1168,
+            "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtend.o",
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtend.o",
+            "sha256": "98ac1d1fbb060865f24d2968437a9ccc34349f933c549158f624cbddf1b3d890"
+          },
+          {
+            "bytes": 1168,
+            "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtendS.o",
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtendS.o",
+            "sha256": "98ac1d1fbb060865f24d2968437a9ccc34349f933c549158f624cbddf1b3d890"
+          }
+        ],
+        "libseccomp": {
+          "source": {
+            "bytes": 656231,
+            "file": "libseccomp-2.6.1.tar.gz",
+            "sha256": "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be",
+            "url": "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz"
+          },
+          "version": "2.6.1"
+        },
+        "musl": {
+          "aportsRevision": "f5640d3a10f664c9119720c60515265d3d6f6d01",
+          "patches": [
+            {
+              "bytes": 1214,
+              "file": "handle-aux-at_base.patch",
+              "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+              "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/handle-aux-at_base.patch"
+            },
+            {
+              "bytes": 896,
+              "file": "0001-add-stub-for-pthread_mutexattr_setprioceiling.patch",
+              "sha256": "b2067680c66af9eb9f4fdc1fa5d9337a9fd62bdab2c437b416aa97d79eb884ee",
+              "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/0001-add-stub-for-pthread_mutexattr_setprioceiling.patch"
+            },
+            {
+              "bytes": 738,
+              "file": "fix-loongarch64-zero-len-extcontext.patch",
+              "sha256": "92c8e965798ed516c15cb2a4e7c4ac45ec1eb68b6abff16c73adff2a3bae1b14",
+              "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/fix-loongarch64-zero-len-extcontext.patch"
+            },
+            {
+              "bytes": 7506,
+              "file": "CVE-2026-6042.patch",
+              "sha256": "1d0be2e72b9d5bd16546b923aa8af861d271322f01644716a81823bec4065c99",
+              "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-6042.patch"
+            },
+            {
+              "bytes": 5594,
+              "file": "CVE-2026-40200.patch",
+              "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb",
+              "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-40200.patch"
+            }
+          ],
+          "source": {
+            "bytes": 1082499,
+            "file": "musl-1.2.6.tar.gz",
+            "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+            "url": "https://distfiles.alpinelinux.org/distfiles/v3.24/musl-1.2.6.tar.gz"
+          },
+          "version": "1.2.6-r2"
+        },
+        "muslPrefix": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix",
+        "nativeInputsSha256": "6831a3dcdd609fcbb908bc2850b6923774161f4e78549dda8a2b0035a9d3f725",
+        "packages": "gcc-11\t11.4.0-1ubuntu1~22.04.3\tgcc-11\t11.4.0-1ubuntu1~22.04.3\nlibc6\t2.35-0ubuntu3.15\tglibc\t2.35-0ubuntu3.15\nlibc6-dev\t2.35-0ubuntu3.15\tglibc\t2.35-0ubuntu3.15\nlibgcc-11-dev\t11.4.0-1ubuntu1~22.04.3\tgcc-11\t11.4.0-1ubuntu1~22.04.3\nlinux-libc-dev\t5.15.0-198.208\tlinux\t5.15.0-198.208\n",
+        "wrapperPatch": {
+          "file": "scripts/vendor-oci-build/musl-static-pie.patch",
+          "reference": "https://www.openwall.com/lists/musl/2021/04/15/1",
+          "sha256": "5fbc92f00d4edb8c1d128f6551136414e6c6a24c9d90638951343e949ef7f813"
+        }
+      },
+      "nativePackages": [
+        {
+          "package": "gcc-11",
+          "version": "11.4.0-1ubuntu1~22.04.3",
+          "sourcePackage": "gcc-11",
+          "sourceVersion": "11.4.0-1ubuntu1~22.04.3"
+        },
+        {
+          "package": "libc6",
+          "version": "2.35-0ubuntu3.15",
+          "sourcePackage": "glibc",
+          "sourceVersion": "2.35-0ubuntu3.15"
+        },
+        {
+          "package": "libc6-dev",
+          "version": "2.35-0ubuntu3.15",
+          "sourcePackage": "glibc",
+          "sourceVersion": "2.35-0ubuntu3.15"
+        },
+        {
+          "package": "libgcc-11-dev",
+          "version": "11.4.0-1ubuntu1~22.04.3",
+          "sourcePackage": "gcc-11",
+          "sourceVersion": "11.4.0-1ubuntu1~22.04.3"
+        },
+        {
+          "package": "linux-libc-dev",
+          "version": "5.15.0-198.208",
+          "sourcePackage": "linux",
+          "sourceVersion": "5.15.0-198.208"
+        }
+      ]
     },
     {
-      "source": "libseccomp",
-      "version": "2.6.0-2",
-      "evidence": "Release log installs libseccomp-dev_2.6.0-2_amd64.deb; bundled runc --version reports 2.6.0"
-    },
-    {
-      "source": "btrfs-progs",
-      "version": "6.14-1",
-      "evidence": "Release log installs libbtrfs-dev_6.14-1_amd64.deb for the static containerd stage"
+      "kind": "nvidia-cdi",
+      "archive": {
+        "bytes": 7754791,
+        "file": "yougori-nvidia-cdi-linux-amd64.tar.gz",
+        "sha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73"
+      },
+      "nativeBuild": {
+        "buildInputs": {
+          "build.py": "685a64ac546644dcb3505777b39c800c056210a322245a67d37a4df5aea6c720",
+          "test-no-driver.py": "af0ed4ff1ffbf4c16151958b3c1d4adebfaa1cb978785d04514f478f08e02be0",
+          "verify.py": "b307b37c3f65ee010a772e59a83c607dce3b11d58d78dee518258f91f26af2f4"
+        },
+        "independentBuildsMatch": true,
+        "inputs": {
+          "goArchiveSha256": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+          "goVersion": "go1.27.2",
+          "hardening": {
+            "cFlags": [
+              "-O2",
+              "-fPIE",
+              "-fstack-protector-strong"
+            ],
+            "goBuildMode": "pie",
+            "lazyBindingReason": "Preserve upstream NVML/dxcore dynamic driver-library resolution",
+            "linkerFlags": [
+              "--export-dynamic",
+              "--unresolved-symbols=ignore-in-object-files",
+              "-z,lazy",
+              "-z,relro",
+              "-z,noexecstack",
+              "--build-id=none"
+            ]
+          },
+          "kind": "nvidia-cdi",
+          "moduleFloors": {
+            "golang.org/x/mod": "v0.40.0"
+          },
+          "nativePackages": {
+            "binutils": "2.38-4ubuntu2.12",
+            "gcc-11": "11.4.0-1ubuntu1~22.04.3",
+            "libc6": "2.35-0ubuntu3.15",
+            "libc6-dev": "2.35-0ubuntu3.15",
+            "linux-libc-dev": "5.15.0-198.208"
+          },
+          "patches": [
+            {
+              "bytes": 1171,
+              "file": "patches/logger-format.patch",
+              "reason": "Replace three logging-only %w directives with %v for Go1.27 fmt-vet compatibility; no CDI/API behavior change",
+              "sha256": "aff29aa343cc204f3f83074a8b700a88f6a2f8b08bf6057ab52ca17603cbaef4"
+            }
+          ],
+          "schemaVersion": 1,
+          "sourceDateEpoch": 0,
+          "target": "linux/amd64",
+          "upstream": {
+            "repository": "NVIDIA/nvidia-container-toolkit",
+            "revision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+            "source": {
+              "bytes": 7089693,
+              "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+              "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+              "url": "https://codeload.github.com/NVIDIA/nvidia-container-toolkit/tar.gz/5505e2f94d9aaa08561490db974ba3cd676af209"
+            },
+            "version": "v1.20.0"
+          }
+        },
+        "inputsSha256": "efc15254096c2076603541c21aa9ccb7e32966c06e176a2740fd683b8cda66b3",
+        "moduleInputs": {
+          "go.mod": "c1c3ea62c51801a8d101650abf5574db7ce1a316165420c7267190430c06e843",
+          "go.sum": "c0c73f9564644a43d2b1b19942cce1fcaff5088c5f234d7c3b9da40b335a104e",
+          "modules.patch": "d576448755aa192012434ce6133d48881737ef91c0c932b7dd862c43f9c617b3"
+        },
+        "nativeBuildPackages": [
+          {
+            "package": "libc6",
+            "sourcePackage": "glibc",
+            "sourceVersion": "2.35-0ubuntu3.15",
+            "version": "2.35-0ubuntu3.15"
+          },
+          {
+            "package": "libc6-dev",
+            "sourcePackage": "glibc",
+            "sourceVersion": "2.35-0ubuntu3.15",
+            "version": "2.35-0ubuntu3.15"
+          },
+          {
+            "package": "gcc-11",
+            "sourcePackage": "gcc-11",
+            "sourceVersion": "11.4.0-1ubuntu1~22.04.3",
+            "version": "11.4.0-1ubuntu1~22.04.3"
+          },
+          {
+            "package": "binutils",
+            "sourcePackage": "binutils",
+            "sourceVersion": "2.38-4ubuntu2.12",
+            "version": "2.38-4ubuntu2.12"
+          },
+          {
+            "package": "linux-libc-dev",
+            "sourcePackage": "linux",
+            "sourceVersion": "5.15.0-198.208",
+            "version": "5.15.0-198.208"
+          }
+        ],
+        "nativeLinkage": "Dynamic libc.so.6; preserves NVML dlopen and WSL GPU bridge; no NVIDIA driver bundled",
+        "patchedSourceFiles": {
+          "cmd/nvidia-cdi-hook/cudacompat/cudacompat.go": "22a150430f9b0fa2025cbbc54ea0d9ca503626a828f32942cd16fa16032f53e7",
+          "go.mod": "c1c3ea62c51801a8d101650abf5574db7ce1a316165420c7267190430c06e843",
+          "go.sum": "c0c73f9564644a43d2b1b19942cce1fcaff5088c5f234d7c3b9da40b335a104e",
+          "pkg/nvcdi/driver-wsl.go": "f5eb4c7c19686fe157ff6f3eabf93104d26b59bdcec2a1e6aeac5ffa13aa5a9d"
+        },
+        "secondSourceScan": {
+          "findings": 0,
+          "record": "second-source-govulncheck.json",
+          "scanner": "golang.org/x/vuln/cmd/govulncheck@v1.8.0"
+        },
+        "sourceScan": {
+          "findings": 0,
+          "record": "first-source-govulncheck.json",
+          "scanner": "golang.org/x/vuln/cmd/govulncheck@v1.8.0"
+        }
+      },
+      "nativePackages": [
+        {
+          "package": "libc6",
+          "sourcePackage": "glibc",
+          "sourceVersion": "2.35-0ubuntu3.15",
+          "version": "2.35-0ubuntu3.15"
+        },
+        {
+          "package": "libc6-dev",
+          "sourcePackage": "glibc",
+          "sourceVersion": "2.35-0ubuntu3.15",
+          "version": "2.35-0ubuntu3.15"
+        },
+        {
+          "package": "gcc-11",
+          "sourcePackage": "gcc-11",
+          "sourceVersion": "11.4.0-1ubuntu1~22.04.3",
+          "version": "11.4.0-1ubuntu1~22.04.3"
+        },
+        {
+          "package": "binutils",
+          "sourcePackage": "binutils",
+          "sourceVersion": "2.38-4ubuntu2.12",
+          "version": "2.38-4ubuntu2.12"
+        },
+        {
+          "package": "linux-libc-dev",
+          "sourcePackage": "linux",
+          "sourceVersion": "5.15.0-198.208",
+          "version": "5.15.0-198.208"
+        }
+      ]
     }
   ],
-  "libpathrs": "Explicitly disabled by nerdctl Dockerfile; absent from the runc embedded build tags",
-  "scope": "Sources for native-library build inputs; includes the complete application sources and original build scripts for relinking"
+  "sourceComponents": [
+    "oci-native/btrfs/6.14-1",
+    "oci-native/libseccomp/2.6.1",
+    "oci-native/musl/1.2.6-r2",
+    "ubuntu/binutils/2.38-4ubuntu2.12",
+    "ubuntu/gcc-11/11.4.0-1ubuntu1~22.04.3",
+    "ubuntu/glibc/2.35-0ubuntu3.15",
+    "ubuntu/linux/5.15.0-198.208"
+  ]
 }

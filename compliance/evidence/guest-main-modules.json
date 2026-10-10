@@ -18,63 +18,111 @@
     "revision": null
   },
   {
-    "binary": "bin/containerd",
+    "binary": "oci/bin/containerd",
     "module": "github.com/containerd/containerd/v2",
-    "version": "v2.3.3",
-    "revision": "aad11006b869517fcd3009450b6f82da282e1a9b"
+    "version": "v2.3.6+dirty",
+    "revision": "ee2735368117d2eb259779949d5e75cdafec9761",
+    "sourceRevision": "ee2735368117d2eb259779949d5e75cdafec9761",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "bin/containerd-shim-runc-v2",
+    "binary": "oci/bin/containerd-shim-runc-v2",
     "module": "github.com/containerd/containerd/v2",
-    "version": "v2.3.3",
-    "revision": "aad11006b869517fcd3009450b6f82da282e1a9b"
+    "version": "v2.3.6+dirty",
+    "revision": "ee2735368117d2eb259779949d5e75cdafec9761",
+    "sourceRevision": "ee2735368117d2eb259779949d5e75cdafec9761",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "bin/nerdctl",
+    "binary": "oci/bin/nerdctl",
     "module": "github.com/containerd/nerdctl/v2",
-    "version": "v2.3.5",
-    "revision": "347782c28efe1753d5cc9652f6304752ed431221"
+    "version": "v2.3.5+dirty",
+    "revision": "347782c28efe1753d5cc9652f6304752ed431221",
+    "sourceRevision": "347782c28efe1753d5cc9652f6304752ed431221",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "bin/runc",
+    "binary": "oci/bin/runc",
     "module": "github.com/opencontainers/runc",
-    "version": "v1.5.1",
-    "revision": "8f2685a471d3347a686ad3909783d8aafc6bb208"
+    "version": "v1.5.1+dirty",
+    "revision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+    "sourceRevision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "libexec/cni/bridge",
+    "binary": "oci/libexec/cni/bridge",
     "module": "github.com/containernetworking/plugins",
-    "version": "v1.9.1",
-    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+    "version": "v1.9.1+dirty",
+    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "libexec/cni/firewall",
+    "binary": "oci/libexec/cni/firewall",
     "module": "github.com/containernetworking/plugins",
-    "version": "v1.9.1",
-    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+    "version": "v1.9.1+dirty",
+    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "libexec/cni/host-local",
+    "binary": "oci/libexec/cni/host-local",
     "module": "github.com/containernetworking/plugins",
-    "version": "v1.9.1",
-    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+    "version": "v1.9.1+dirty",
+    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "libexec/cni/loopback",
+    "binary": "oci/libexec/cni/loopback",
     "module": "github.com/containernetworking/plugins",
-    "version": "v1.9.1",
-    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+    "version": "v1.9.1+dirty",
+    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "libexec/cni/portmap",
+    "binary": "oci/libexec/cni/portmap",
     "module": "github.com/containernetworking/plugins",
-    "version": "v1.9.1",
-    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+    "version": "v1.9.1+dirty",
+    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
   },
   {
-    "binary": "libexec/cni/tuning",
+    "binary": "oci/libexec/cni/tuning",
     "module": "github.com/containernetworking/plugins",
-    "version": "v1.9.1",
-    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+    "version": "v1.9.1+dirty",
+    "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceRevision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+    "sourceMapping": "embedded-vcs-and-frozen-module-hashes",
+    "runtimeArchiveSha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
+  },
+  {
+    "binary": "nvidia-cdi/bin/nvidia-cdi-hook",
+    "module": "github.com/NVIDIA/nvidia-container-toolkit",
+    "version": "(devel)",
+    "revision": null,
+    "sourceRevision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+    "sourceMapping": "verified-inline-build-provenance-and-frozen-patch-inputs",
+    "runtimeArchiveSha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73"
+  },
+  {
+    "binary": "nvidia-cdi/bin/nvidia-ctk",
+    "module": "github.com/NVIDIA/nvidia-container-toolkit",
+    "version": "(devel)",
+    "revision": null,
+    "sourceRevision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+    "sourceMapping": "verified-inline-build-provenance-and-frozen-patch-inputs",
+    "runtimeArchiveSha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73"
   }
 ]
