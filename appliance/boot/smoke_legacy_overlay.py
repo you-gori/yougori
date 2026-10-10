@@ -7,6 +7,7 @@ inspection. It never changes or rebases the supplied immutable backing image.
 
 import argparse
 import base64
+import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 import secrets
 import shlex
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -24,6 +26,61 @@ ENVIRONMENT = "migration-fixture"
 MARKER = "legacy-data-preserved-after-kernel-upgrade"
 PROJECT = b"real FUSE share survived the security migration\n"
 MICRO_OPTIONS = {"entrypoint": [], "args": ["sleep", "2147483647"]}
+VENDOR_FILES = (
+    "usr/local/bin/containerd", "usr/local/bin/containerd-shim-runc-v2",
+    "usr/local/bin/nerdctl", "usr/local/bin/runc",
+    "usr/local/libexec/cni/bridge", "usr/local/libexec/cni/firewall",
+    "usr/local/libexec/cni/host-local", "usr/local/libexec/cni/loopback",
+    "usr/local/libexec/cni/portmap", "usr/local/libexec/cni/tuning",
+)
+
+
+def trusted_vendor_manifest(initramfs):
+    # Read only the small manifest from gzip/newc without unpacking the archive
+    # or allocating the complete initramfs on the test host.
+    with gzip.open(initramfs, "rb") as source:
+        while True:
+            header = source.read(110)
+            if len(header) != 110 or header[:6] not in (b"070701", b"070702"):
+                raise RuntimeError("Unsupported candidate initramfs cpio format")
+            size, namesize = int(header[54:62], 16), int(header[94:102], 16)
+            if not 0 < namesize <= 4096:
+                raise RuntimeError("Invalid candidate initramfs filename")
+            name = source.read(namesize).rstrip(b"\x00").decode()
+            source.read(-(110 + namesize) % 4)
+            if name == "TRAILER!!!":
+                raise RuntimeError("Candidate initramfs has no trusted OCI migration manifest")
+            if name.removeprefix("./") == "usr/local/lib/yougori-boot/oci-runtime.files":
+                if not stat.S_ISREG(int(header[14:22], 16)) or not 0 < size <= 4096:
+                    raise RuntimeError("Invalid trusted OCI migration manifest")
+                entries = {}
+                for line in source.read(size).decode().splitlines():
+                    digest, length, path = line.split()
+                    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+                        raise RuntimeError("Invalid trusted OCI file digest")
+                    if path in entries or not 0 < int(length) <= 96 * 1024 * 1024:
+                        raise RuntimeError("Invalid trusted OCI file size/path")
+                    entries[path] = {"sha256": digest, "bytes": int(length)}
+                if set(entries) != set(VENDOR_FILES):
+                    raise RuntimeError("Trusted OCI manifest does not contain the complete runtime set")
+                return entries
+            remaining = size
+            while remaining:
+                chunk = source.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise RuntimeError("Truncated candidate initramfs")
+                remaining -= len(chunk)
+            source.read(-size % 4)
+
+
+def vendor_hashes(vm):
+    output = vm.execute("sha256sum " + " ".join("/" + name for name in VENDOR_FILES))
+    values = {}
+    for line in output.splitlines():
+        digest, name = line.split()
+        values[name.lstrip("/")] = digest
+    assert set(values) == set(VENDOR_FILES), output
+    return values
 
 
 def unused_port():
@@ -153,6 +210,7 @@ def legacy_stage(args, server, report):
     try:
         vm.wait()
         report["legacyKernel"] = vm.execute("uname -r").strip()
+        report["legacyVendorSHA256"] = vendor_hashes(vm)
         vm.execute(f"mkdir -p /var/lib/opendock/migration-fixture-data; printf '%s' '{MARKER}' > /var/lib/opendock/migration-fixture-data/marker")
         start_runtime(vm)
         mount_project(vm, server)
@@ -175,6 +233,14 @@ def candidate_stage(args, server, report):
         kernel = vm.execute("uname -r").strip()
         report["candidateKernel"] = kernel
         assert kernel != report["legacyKernel"], "Fixture must exercise a real kernel/module version upgrade"
+        trusted = trusted_vendor_manifest(args.candidate / "initramfs-virt")
+        actual = vendor_hashes(vm)
+        assert actual == {name: entry["sha256"] for name, entry in trusted.items()}, "Preserved disk retained an old or untrusted OCI executable"
+        assert all(actual[name] != report["legacyVendorSHA256"][name] for name in VENDOR_FILES), "Fixture must replace every old OCI/CNI executable"
+        for name, entry in trusted.items():
+            assert vm.execute(f"stat -c '%s %a' /{name}").strip() == f"{entry['bytes']} 755", name
+        report["trustedVendorManifest"] = trusted
+        report["candidateVendorSHA256"] = actual
         assert vm.execute("cat /var/lib/opendock/migration-fixture-data/marker") == MARKER
         modules = vm.execute("test -d /lib/modules/$(uname -r); modprobe fuse; modprobe br_netfilter; modprobe nf_conntrack; grep -E '^(fuse|br_netfilter|nf_conntrack) ' /proc/modules")
         report["moduleLoadEvidence"] = modules
@@ -202,6 +268,7 @@ def candidate_stage(args, server, report):
         vm.execute(command + f"\"if wget -q -T 2 -O /tmp/private-host http://10.0.2.2:{server.server_port}/; then exit 1; fi\"")
         report.update({"status": "passed", "memoryMiB": 512, "sameOverlay": True, "filesPreserved": True, "fuseRead": True,
                        "internetCNI": True, "privateHostBlocked": True, "securityStatus": status,
+                       "vendorExecutablesUpdated": True,
                        "candidateInitramfsBytes": (args.candidate / "initramfs-virt").stat().st_size})
         vm.execute(f"nerdctl --namespace opendock stop --time 10 {ENVIRONMENT}; nerdctl --namespace yougori-workload stop --time 10 app")
         vm.execute("sync")
@@ -225,6 +292,7 @@ def main():
     args.workdir.mkdir(parents=True, exist_ok=True)
     report_path = args.workdir / "migration-report.json"
     report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    report["status"] = "running"
     base = args.legacy / "appliance-base.qcow2"
     before = hashlib.sha256(base.read_bytes()).hexdigest()
     ProjectFiles.token = secrets.token_hex(32)
@@ -236,6 +304,10 @@ def main():
             legacy_stage(args, server, report)
         if args.phase in ("candidate", "both"):
             candidate_stage(args, server, report)
+    except Exception as error:
+        report["status"] = "failed"
+        report["error"] = str(error)
+        raise
     finally:
         server.shutdown()
         server.server_close()
