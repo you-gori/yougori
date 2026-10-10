@@ -217,6 +217,17 @@ containers/user remapping, dropping every entrypoint capability, installing a
 generic MAC profile, disabling all modules, replacing the OS kernel, or denying
 every shell would change supported behavior and needs its own tested design.
 
+The verified built-in Alpine boot payload requires at least 512 MiB of RAM.
+A fresh real 256 MiB boot exposed an initramfs memory exhaustion regression.
+Startup now uses the greater of the saved preference and 512 MiB, within the
+saved maximum and whole-MiB QEMU bounds. A maximum below 512 MiB fails before
+launch with an actionable error. Admission and current allocation use the same
+actual boot RAM; saved minimum/preferred/maximum values and disks are preserved.
+Custom boot media retains its previous allocation behavior. The real regression
+test retained preferred 256 MiB / maximum 512 MiB, verified QMP allocation of
+512 MiB, and reached authenticated guest readiness in 8.387 seconds. It also
+verified capped-launch refusal, accurate live allocation and normal shutdown.
+
 Host firewall, Secure Boot/HVCI, IOMMU, SMT/firmware settings and cloud-specific
 attestation require platform administration and hardware validation. They are
 not silently toggled by an application update. Kernel patching is still required.

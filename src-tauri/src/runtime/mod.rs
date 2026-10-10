@@ -147,6 +147,8 @@ struct VmProcess {
     micro_endpoint: Option<AgentEndpoint>,
     process_id: u32,
     allocated_cpus: usize,
+    // Direct-kernel guests have fixed boot RAM; full VMs retain balloon control.
+    allocated_micro_memory_gb: Option<f64>,
     qmp_port: u16,
     websocket_port: u16,
     console_password: String,

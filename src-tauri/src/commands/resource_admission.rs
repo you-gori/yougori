@@ -75,10 +75,13 @@ impl HostResourceAdmission {
 
 /// The planned pool is the only pool whose allocations this operation changes.
 /// Other pools and pending boots remain real consumers of the shared host budget.
-pub(super) fn reserve_start(store: &PlatformStore, target: &Environment, runtime: &RuntimeManager) -> Result<ResourceReservation, String> {
+pub(super) async fn reserve_start(store: &PlatformStore, target: &Environment, runtime: &RuntimeManager) -> Result<ResourceReservation, String> {
     let host = collect_host_metrics(&store.snapshot()?.host, runtime.storage_root());
     let target_provider = provider(target);
     let root = runtime.environment_storage_root(runtime_id(target))?;
+    let planned_memory = if target.kind == EnvironmentKind::MicroVm && target_provider == RuntimeProviderKind::Qemu {
+        runtime.micro_vm_startup_memory_gb(runtime_id(target), &micro_vm_manifest(target)?, &target.resource_policy).await?
+    } else { target.resource_policy.memory_gb.preferred };
     store.resource_admission.reserve(store, |state, pending| {
         state.host = host;
         let mut candidate = state.clone();
@@ -93,7 +96,7 @@ pub(super) fn reserve_start(store: &PlatformStore, target: &Environment, runtime
         environment.resource_policy = target.resource_policy.clone();
         environment.status = EnvironmentStatus::Running;
         environment.resource_policy.cpu.current = target.resource_policy.cpu.preferred;
-        environment.resource_policy.memory_gb.current = target.resource_policy.memory_gb.preferred;
+        environment.resource_policy.memory_gb.current = planned_memory;
         if target_provider.is_container() {
             scheduler::schedule(&mut candidate);
             Ok(candidate.environments.iter().filter(|environment|
@@ -101,7 +104,7 @@ pub(super) fn reserve_start(store: &PlatformStore, target: &Environment, runtime
                 && runtime.environment_storage_root(runtime_id(environment)).is_ok_and(|other| other == root))
                 .map(|environment| Demand { id: environment.id.clone(), cpu: environment.resource_policy.cpu.current, memory_gb: environment.resource_policy.memory_gb.current }).collect())
         } else {
-            Ok(vec![Demand { id: target.id.clone(), cpu: target.resource_policy.cpu.preferred.round().max(1.0), memory_gb: if target.kind == EnvironmentKind::MicroVm && target.status == EnvironmentStatus::Running { target.resource_policy.memory_gb.current } else { target.resource_policy.memory_gb.preferred } }])
+            Ok(vec![Demand { id: target.id.clone(), cpu: target.resource_policy.cpu.preferred.round().max(1.0), memory_gb: planned_memory }])
         }
     })
 }
@@ -118,6 +121,40 @@ pub(super) fn reserve_update(store: &PlatformStore, environment: &Environment) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn microvm_admission_matches_verified_builtin_boot_and_preserves_custom_media() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")), temporary.path()).unwrap();
+        let provisioned = runtime.provision_micro_vm("memory-admission", "builtin:alpine").await.unwrap();
+        let store = PlatformStore::load(temporary.path().join("state.json")).unwrap();
+        let mut environment: Environment = serde_json::from_value(serde_json::json!({
+            "id":"memory-admission","name":"Memory admission","kind":"microVm","provider":"qemu","status":"stopped",
+            "runtime":"builtin:alpine","runtimePath":provisioned.disk_path,"description":"","createdAt":"test",
+            "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+            "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":0.125,"preferred":0.25,"max":0.5,"current":0},"priority":"normal","dynamic":true}
+        })).unwrap();
+        store.mutate(|state| {state.environments.push(environment.clone());Ok(())}).unwrap();
+        let reservation = reserve_start(&store, &environment, &runtime).await.unwrap();
+        assert_eq!(reservation.demands[0].memory_gb, 0.5);
+        drop(reservation);
+        let saved = store.environment(&environment.id).unwrap().resource_policy.memory_gb;
+        assert_eq!((saved.min,saved.preferred,saved.max,saved.current),(0.125,0.25,0.5,0.0));
+        environment.resource_policy.memory_gb.max = 0.25;
+        assert!(reserve_start(&store, &environment, &runtime).await.err().unwrap().contains("512 MiB"));
+        assert!(store.resource_admission.claims.lock().unwrap().is_empty());
+        assert!(!runtime.vm_is_running(&environment.id).await.unwrap());
+        let kernel = temporary.path().join("custom-kernel");
+        std::fs::write(&kernel,b"custom kernel fixture").unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&provisioned.source_path).unwrap()).unwrap();
+        manifest["builtin"] = serde_json::json!(false);
+        manifest["kernel"] = serde_json::json!(kernel);
+        manifest["initrd"] = serde_json::Value::Null;
+        std::fs::write(&provisioned.source_path,serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let custom = reserve_start(&store, &environment, &runtime).await.unwrap();
+        assert_eq!(custom.demands[0].memory_gb,0.25);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn parallel_provider_pools_cannot_double_allocate_and_cancelled_boot_releases_its_claim() {

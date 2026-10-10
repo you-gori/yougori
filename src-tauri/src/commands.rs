@@ -1489,7 +1489,7 @@ pub async fn set_environment_status(
     let mut container_rollback = Vec::new();
     let mut planned_container_start = None;
     let resource_reservation = if status == EnvironmentStatus::Running && environment.status != EnvironmentStatus::Running && provider(&environment) != RuntimeProviderKind::CloudSsh {
-        Some(resource_admission::reserve_start(&store, &environment, &runtime)?)
+        Some(resource_admission::reserve_start(&store, &environment, &runtime).await?)
     } else { None };
     let mut started_console: Option<(Option<String>, Option<String>)> = None;
     let operation = match provider(&environment) {
@@ -1623,6 +1623,9 @@ pub async fn set_environment_status(
     }
     let preserve_vm_allocation = scheduler::fixed_vm_resources(&environment)
         && matches!(environment.status, EnvironmentStatus::Running | EnvironmentStatus::Paused);
+    let actual_micro_memory = if environment.kind == EnvironmentKind::MicroVm && provider(&environment) == RuntimeProviderKind::Qemu && status == EnvironmentStatus::Running {
+        Some(runtime.micro_vm_startup_memory_gb(runtime_id(&environment), &micro_vm_manifest(&environment)?, &environment.resource_policy).await?)
+    } else { None };
     let persisted = store.mutate(|state| {
         let environment = state
             .environments
@@ -1644,6 +1647,7 @@ pub async fn set_environment_status(
                 }
                 environment.resource_policy.memory_gb.current = environment.resource_policy.memory_gb.preferred;
             }
+            if let Some(memory) = actual_micro_memory { environment.resource_policy.memory_gb.current = memory; }
         } else if status == EnvironmentStatus::Stopped {
             environment.cpu_usage = 0.0;
             environment.memory_usage_gb = 0.0;
@@ -1974,7 +1978,7 @@ pub async fn update_resource_policy(
     let resource_reservation = if environment.status == EnvironmentStatus::Running && !scheduler::fixed_vm_resources(&environment) {
         let mut proposed = environment.clone();
         proposed.resource_policy = resource_policy.clone();
-        Some(resource_admission::reserve_start(&store, &proposed, &runtime)?)
+        Some(resource_admission::reserve_start(&store, &proposed, &runtime).await?)
     } else { None };
     if provider(&environment).is_container() {
         validate_container_policy_capacity(&resource_policy, &host)?;

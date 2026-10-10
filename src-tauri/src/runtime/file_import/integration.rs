@@ -173,6 +173,7 @@ async fn pc_guest(
             }),
             process_id,
             allocated_cpus: 1,
+            allocated_micro_memory_gb: None,
             qmp_port: qmp,
             websocket_port: 0,
             console_password: String::new(),

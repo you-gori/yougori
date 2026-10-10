@@ -1132,6 +1132,28 @@ impl RuntimeManager {
         .await
     }
 
+    /// Admission and state reporting use the same allocation as QEMU. A live
+    /// microVM retains its fixed RAM even when preferences change for next boot.
+    pub async fn micro_vm_startup_memory_gb(
+        &self, id: &str, manifest_path: &Path, policy: &ResourcePolicy,
+    ) -> Result<f64, String> {
+        if let Some(engine) = self.storage_runtime(id)? {
+            return Box::pin(engine.micro_vm_startup_memory_gb(id, manifest_path, policy)).await;
+        }
+        validate_runtime_identifier("microVM", id)?;
+        {
+            let mut processes = self.vms.lock().await;
+            if let Some(process) = processes.get_mut(id) {
+                if process.child.try_wait().map_err(|error| format!("inspect microVM allocation: {error}"))?.is_none() {
+                    return process.allocated_micro_memory_gb.ok_or_else(|| "The running environment is not a direct-kernel microVM".into());
+                }
+            }
+        }
+        verify_environment_artifact(&self.data_root, id, manifest_path, "managed microVM manifest")?;
+        let manifest = read_managed_micro_vm_manifest(manifest_path).await?;
+        super::vm_memory::microvm_startup_gb(policy.memory_gb.preferred, policy.memory_gb.max, manifest.builtin)
+    }
+
     /// Starts a provisioned direct-kernel microVM. The `manifest_path` must be the
     /// managed manifest returned by [`RuntimeManager::provision_micro_vm`].
     #[cfg(test)]
@@ -1189,7 +1211,6 @@ impl RuntimeManager {
         let min_cpus = resource_policy.cpu.min;
         let cpus = resource_policy.cpu.preferred;
         let max_cpus = resource_policy.cpu.max;
-        let memory_gb = resource_policy.memory_gb.preferred;
         let max_memory_gb = resource_policy.memory_gb.max;
         let full_source_path = match &profile {
             VmLaunchProfile::Full { source_path, .. } => Some(source_path.as_path()),
@@ -1229,6 +1250,12 @@ impl RuntimeManager {
             }
         }
         self.check_external_vm(id, false).await?;
+        let memory_gb = match &profile {
+            VmLaunchProfile::Micro(manifest, _) => super::vm_memory::microvm_startup_gb(
+                resource_policy.memory_gb.preferred, resource_policy.memory_gb.max, manifest.builtin,
+            )?,
+            VmLaunchProfile::Full { .. } => resource_policy.memory_gb.preferred,
+        };
         // macOS has no equivalent of our Windows/Linux hard CPU affinity.
         // Start at the requested footprint; never boot at the policy maximum
         // and pretend that a host CPU limiter later reduced it.
@@ -1408,6 +1435,7 @@ impl RuntimeManager {
                     micro_endpoint: micro_endpoint.clone(),
                     process_id,
                     allocated_cpus: cpus.round().max(1.0) as usize,
+                    allocated_micro_memory_gb: headless.then_some(memory_gb),
                     qmp_port,
                     websocket_port,
                     console_password: console_password.clone(),
@@ -4681,39 +4709,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(restored_manifest, provisioned.source_path);
+        let policy = crate::models::ResourcePolicy {
+            cpu: crate::models::ResourceRange { min: 1.0, preferred: 1.0, max: 1.0, current: 0.0 },
+            memory_gb: crate::models::ResourceRange { min: 0.125, preferred: 0.25, max: 0.5, current: 0.0 },
+            priority: crate::models::Priority::Normal,
+            dynamic: true,
+        };
+        assert_eq!(manager.micro_vm_startup_memory_gb("micro-runtime-test", &restored_manifest, &policy).await.unwrap(), 0.5);
+        let mut capped = policy.clone();
+        capped.memory_gb.max = 0.25;
+        assert!(manager.start_micro_vm("micro-runtime-test", &provisioned.disk_path, &restored_manifest, &capped).await.unwrap_err().contains("512 MiB"));
+        assert!(!manager.vm_is_running("micro-runtime-test").await.unwrap());
         let console = manager
             .start_micro_vm(
                 "micro-runtime-test",
                 &provisioned.disk_path,
                 &restored_manifest,
-                &crate::models::ResourcePolicy {
-                    cpu: crate::models::ResourceRange {
-                        min: 1.0,
-                        preferred: 1.0,
-                        max: 1.0,
-                        current: 0.0,
-                    },
-                    memory_gb: crate::models::ResourceRange {
-                        min: 0.125,
-                        preferred: 0.25,
-                        max: 0.5,
-                        current: 0.0,
-                    },
-                    priority: crate::models::Priority::Normal,
-                    dynamic: true,
-                },
+                &policy,
             )
             .await
             .unwrap();
         assert!(console.headless);
         assert!(console.websocket_url.is_empty());
         assert!(console.guest_control_available);
+        let qmp_port = manager.vms.lock().await.get("micro-runtime-test").unwrap().qmp_port;
+        let memory = qmp_request(qmp_port, "query-memory-size-summary", None).await.unwrap();
+        assert_eq!(memory["base-memory"].as_u64(), Some(512 * 1024 * 1024));
+        assert_eq!(manager.micro_vm_startup_memory_gb("micro-runtime-test", &restored_manifest, &policy).await.unwrap(), 0.5);
         let serial_path = console.serial_log_path.as_ref().unwrap();
         assert!(serial_path.is_file());
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // QMP readiness precedes kernel/initramfs/userspace startup. Use the
+        // maintained host boot budget, and fail immediately on a kernel panic.
+        let userspace_started = Instant::now();
+        let deadline = userspace_started + super::super::host_platform::guest_boot_timeout();
         let serial_output = loop {
             let output = fs::read_to_string(serial_path).unwrap_or_default();
-            if output.contains("OpenRC") || Instant::now() >= deadline {
+            assert!(!output.contains("Kernel panic"), "microVM kernel panicked before userspace:\n{output}");
+            if output.contains("OpenRC") || Instant::now() >= deadline || !manager.vm_is_running("micro-runtime-test").await.unwrap() {
                 break output;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -4728,22 +4760,27 @@ mod tests {
             )
             .unwrap_or_default()
         );
-        let command_deadline = Instant::now() + Duration::from_secs(15);
+        eprintln!("microVM OpenRC ready after {:.3}s following QMP; actual boot RAM512MiB", userspace_started.elapsed().as_secs_f64());
         let command_output = loop {
-            match manager
-                .execute_micro_vm_command("micro-runtime-test", "printf opendock-agent-ready")
-                .await
-            {
-                Ok(output) => break output,
-                Err(error) if Instant::now() >= command_deadline => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let response = tokio::time::timeout(remaining, manager.execute_micro_vm_command("micro-runtime-test", "printf opendock-agent-ready")).await;
+            match response {
+                Ok(Ok(output)) => break output,
+                Ok(Err(error)) if Instant::now() >= deadline => {
                     panic!("microVM guest agent did not become ready: {error}\n{serial_output}")
                 }
-                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                Err(_) => panic!("microVM guest agent exceeded its maintained boot budget:\n{serial_output}"),
+                Ok(Err(_)) => tokio::time::sleep(Duration::from_millis(100)).await,
             }
         };
         assert_eq!(command_output.exit_code, 0);
         assert_eq!(command_output.stdout, "opendock-agent-ready");
         assert!(command_output.stderr.is_empty());
+        eprintln!("microVM authenticated command ready after {:.3}s following QMP", userspace_started.elapsed().as_secs_f64());
+        // Saving a smaller next-boot policy cannot make the live allocation
+        // disappear from admission/reporting or start a second guest.
+        manager.start_micro_vm("micro-runtime-test", &provisioned.disk_path, &restored_manifest, &capped).await.unwrap();
+        assert_eq!(manager.micro_vm_startup_memory_gb("micro-runtime-test", &restored_manifest, &capped).await.unwrap(), 0.5);
         let shutdown_started = Instant::now();
         manager
             .vm_action("micro-runtime-test", "stop")
