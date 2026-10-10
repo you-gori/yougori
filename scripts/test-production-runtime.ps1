@@ -29,6 +29,7 @@ try {
             'runtime::recovery::windows::tests::vm_recovery_stops_only_an_orphan_with_the_exact_disk',
             'runtime::vm::tests::bundled_qemu_exposes_qmp_and_vnc_websocket',
             'runtime::vm::tests::bundled_alpine_micro_vm_exposes_qmp_without_a_display',
+            'runtime::microvm_network::tests::microvm_internet_toggle_preserves_control_and_host_access',
             'runtime::boot_media::tests::installer_boot_generic_iso_and_installed_disk_priority',
             'runtime::boot_media::tests::installer_guest_restarts_keep_process_console_and_installed_disk',
             'runtime::boot_media::tests::installer_guest_restarts_with_secure_boot',

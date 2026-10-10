@@ -370,11 +370,11 @@
   },
   {
     "name": "linux-virt",
-    "version": "6.18.52-r0",
+    "version": "6.18.55-r0",
     "architecture": "x86_64",
     "license": "GPL-2.0-only",
     "origin": "linux-lts",
-    "revision": "09a165f4c951edf370eddde03b2d1d5fd71805ed",
+    "revision": "52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
     "url": "https://www.kernel.org"
   },
   {

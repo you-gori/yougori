@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "e912b9f868c4123a5b01621ea500a15b3979af14",
+  "sourceCommit": "08af683c4b176a61835dae237485bcdbc01e781e",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
     {
       "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-      "sha256": "84521eccdc44c449365b73c419d91ac942419827aba07804ef6e3cc4a370c109",
-      "bytes": 106391040
+      "sha256": "ee598ba085975cbb5d17dfea63598459ac17c2a2263cd91609e2942b730fdbcf",
+      "bytes": 137570816
     },
     {
       "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-      "sha256": "fddfbe28f5cc757c325d69b5cd930b96b7fa60f83909287dd14dadec09bfe7c6",
-      "bytes": 17153097
+      "sha256": "384726838be551593fd8e0023d23fff981247e004d623dcaeb691938f8e351ea",
+      "bytes": 47340791
     },
     {
       "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-      "sha256": "2c8c3af3522e63125183b318bb12f592cc46db571aa4fecd0a681e7e391e5d61",
+      "sha256": "a141f7b2574a52f375f9b0e071bf909fd688be2099f8ac37fc09a90f468ab2b0",
       "bytes": 247
     },
     {
@@ -41,23 +41,23 @@
     },
     {
       "path": "src-tauri/resources/runtime/appliance/vmlinuz-virt",
-      "sha256": "40f620bc8c93d952e57dd8dfc0f94fca1759d192a4fc4a260705d50ca378559c",
-      "bytes": 12608512
+      "sha256": "fcee60bd42bdcc5f165278e092de0bb00d969843be326f7bd9a9602c2f52de9e",
+      "bytes": 12637184
     },
     {
       "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-amd64",
-      "sha256": "418afd929784fe41dbd02d31214034641b0780a761f26cce8cdf32f1ab7b6a63",
-      "bytes": 5115904
+      "sha256": "39115657eae61e356a6c6cd629b899cfb775b0a358057383539a57b70ec1f23a",
+      "bytes": 7131260
     },
     {
       "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-arm64",
-      "sha256": "557bd4277ee932be0e75d63b7f3ba6d76eb78fc9c7e5b8f3967d94a7a71492b1",
-      "bytes": 4849664
+      "sha256": "303af9dc4706521cfae68de0d60199f8f714931baa3ccdc66b659d7b30f09157",
+      "bytes": 6553724
     },
     {
       "path": "src-tauri/resources/runtime/cuda/opendock-agent",
-      "sha256": "5a9809b7c9659e8504521bd36a362d6be179ed85ab360b0332315da8948c38fe",
-      "bytes": 15290492
+      "sha256": "340661e73c70dce9fe7794c8cce207dda2a2f3f0a23a63fd1236f6a6fe6d40a2",
+      "bytes": 15347836
     },
     {
       "path": "src-tauri/resources/runtime/cuda/opendock-cuda-probe",
@@ -71,7 +71,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-      "sha256": "7bb73aa36dff5d513f7a275c4d69bd9274f1a6c89b6ba8a874bdaad48f4c2c48",
+      "sha256": "2fcbfb6d676b4517518589cd1576f31d99fee907697abc254d022d4cfad322c8",
       "bytes": 255
     },
     {
@@ -1436,12 +1436,6 @@
       "bytes": 1672
     },
     {
-      "path": ".github/workflows/linux.yml",
-      "sha256": "883f76907f0f7b0670de8e03835b74129469b0cd8134c4443db92427ad7265aa",
-      "normalization": "lf",
-      "bytes": 4159
-    },
-    {
       "path": "COMMERCIAL_LICENSE.txt",
       "sha256": "1f8c443f8898a42685a236fbd7a4def5e476212850998f68ed95ebc797aa19d3",
       "normalization": "lf",
@@ -1469,6 +1463,11 @@
       "path": "Yoo-app.png",
       "sha256": "ec3633b3cc0a24bb654f4a92bf1acd990648bb9ae16f6adceb4e798506a38eed",
       "bytes": 1124305
+    },
+    {
+      "path": "YougoriLife.png",
+      "sha256": "c5d948eac474d4a38123525f4e984734ae1be53df2469c340cc1c73519866b46",
+      "bytes": 1646653
     },
     {
       "path": "appliance/agent/apps.go",
@@ -1567,6 +1566,18 @@
       "bytes": 649
     },
     {
+      "path": "appliance/agent/container_security.go",
+      "sha256": "bf72d4c166d145aa8a13a6bc4f8202b2d685cd1efab84c67d94a03c8b1edc81f",
+      "normalization": "lf",
+      "bytes": 9140
+    },
+    {
+      "path": "appliance/agent/container_security_test.go",
+      "sha256": "d5ec7dd6ecd4ffe7f3e4969d67f664548ee598ed28184c4357db2ab52c8ae441",
+      "normalization": "lf",
+      "bytes": 6577
+    },
+    {
       "path": "appliance/agent/container_store.go",
       "sha256": "bb9e99eb94ee40dec10982178f0ec6d20a1c40bc5cb62b87418bfc3a825b650f",
       "normalization": "lf",
@@ -1640,15 +1651,15 @@
     },
     {
       "path": "appliance/agent/go.mod",
-      "sha256": "450e5377eb96279c8ce9e737628fa195067e66302b67f5cc1e487dd591233c21",
+      "sha256": "b6eb30edbe41a9ea4a733d61a42fffd06128659db12b8113ce3a034839fad98c",
       "normalization": "lf",
-      "bytes": 727
+      "bytes": 747
     },
     {
       "path": "appliance/agent/go.sum",
-      "sha256": "cdd9f884bf7c856db1333fb755f154534211482c9f2689a8911f2ac12ebe09da",
+      "sha256": "5c4cdf46bec3d51b18b658ab90bb1c390299e0d7944e8a18af56e1ee8d9ed407",
       "normalization": "lf",
-      "bytes": 6793
+      "bytes": 7254
     },
     {
       "path": "appliance/agent/gpu.go",
@@ -1688,9 +1699,9 @@
     },
     {
       "path": "appliance/agent/internet_test.go",
-      "sha256": "a80235193b7c6d8c649fa6c6c8193ce027a8231353296b7556ce1bb5253400b7",
+      "sha256": "8d02e4f4e9f393497c42bb4a52116bdb3bfeefc9473838ba64ac5f9239db7339",
       "normalization": "lf",
-      "bytes": 2858
+      "bytes": 5074
     },
     {
       "path": "appliance/agent/isolated_cli.go",
@@ -1700,21 +1711,21 @@
     },
     {
       "path": "appliance/agent/main.go",
-      "sha256": "fc4a1e7191a4a236f569d210457b25ff16165bc4b0e57d1b26de878718d7f242",
+      "sha256": "e14575876ad5d6309c35182250bad6cedf1f476e1d81d0266704258334742f80",
       "normalization": "lf",
-      "bytes": 66949
+      "bytes": 69739
     },
     {
       "path": "appliance/agent/main_test.go",
-      "sha256": "bc0b22c5deb08a088d196ddaa766eb375d486cfaf6a2b5a8085c7eeb88383928",
+      "sha256": "80daa6da702d0deea281f2a04a37d9fe3542dcf0c5c3868a9d3765b774460c92",
       "normalization": "lf",
-      "bytes": 11124
+      "bytes": 11179
     },
     {
       "path": "appliance/agent/microvm_workload.go",
-      "sha256": "21bf96a19a06f708b846dfa9e622f1502478ba20cfcae47cc1db765fa1b472b3",
+      "sha256": "2ccfab5b83f75f7157a532154fd2ed5cbab5993f009b5da125d449f544850b1e",
       "normalization": "lf",
-      "bytes": 3534
+      "bytes": 3638
     },
     {
       "path": "appliance/agent/project_files.go",
@@ -1867,6 +1878,24 @@
       "bytes": 2399
     },
     {
+      "path": "appliance/agent/terminal_stream.go",
+      "sha256": "fc341f839fcf3a962c735fccc5f708d833e3c68015baa0f400687cb28ff52a43",
+      "normalization": "lf",
+      "bytes": 5217
+    },
+    {
+      "path": "appliance/agent/terminal_stream_latency_test.go",
+      "sha256": "d1ae357955ab11300f7913db8a52a25ae7f0e8c1ec4471f4cc33587f46c22032",
+      "normalization": "lf",
+      "bytes": 4314
+    },
+    {
+      "path": "appliance/agent/terminal_stream_test.go",
+      "sha256": "097c55063bd55ddfbca1acdfc5f084c9771a1cd531e6b9862904db276e1fb56b",
+      "normalization": "lf",
+      "bytes": 8110
+    },
+    {
       "path": "appliance/agent/testdata/gpu-render-probe.c",
       "sha256": "ea2a35fcf6ce88714b1274d1b5b8f49f25146812f80456b0206d98f140cdbfce",
       "normalization": "lf",
@@ -1892,15 +1921,15 @@
     },
     {
       "path": "appliance/agent/workload_mounts.go",
-      "sha256": "04cacac1d4b544e0dcc1b3fdac7757e4eb96ada5f49e6dc37a40b64796e6aa29",
+      "sha256": "07b3340185bfc898247cb5355ac67c0793eb8797ef1bc53daff830e2daa393ce",
       "normalization": "lf",
-      "bytes": 3056
+      "bytes": 3015
     },
     {
       "path": "appliance/agent/workload_options.go",
-      "sha256": "1ab82718e24f73949b35a2fcb57c16dd50a6b27b25fca4cdf3af350c5bc119f9",
+      "sha256": "48505e386c18f3e7ce3d5be277ac0ffa1c39bd3ed78ceb98dc1e3f2eb1271533",
       "normalization": "lf",
-      "bytes": 9060
+      "bytes": 9394
     },
     {
       "path": "appliance/agent/workload_options_test.go",
@@ -1910,15 +1939,33 @@
     },
     {
       "path": "appliance/agent/workspace.go",
-      "sha256": "622dc6adc1f43573da54af9d75027d9ee8e8a4c00e9a80b5aa8d49740619abb8",
+      "sha256": "f7c6449624a3f1c6d96b3c3bde5efd31bb1af0055de54bebbbd0996651b72392",
       "normalization": "lf",
-      "bytes": 15565
+      "bytes": 15462
     },
     {
       "path": "appliance/agent/workspace_test.go",
       "sha256": "25766ffe9bc2fa9e6e0a600dd8cd41913fda26b9d24190a6029a20e7d7b6291c",
       "normalization": "lf",
       "bytes": 3926
+    },
+    {
+      "path": "appliance/boot/smoke_legacy_overlay.py",
+      "sha256": "2834169fbe428a9e939fc83cc3bdbe69c79451170e561e8861fafbeb281fa55b",
+      "normalization": "lf",
+      "bytes": 12986
+    },
+    {
+      "path": "appliance/boot/test_upgrade_root.py",
+      "sha256": "da955f140e49c4c229292a08ee58e7a6abc26004657828075a81f65f00d61620",
+      "normalization": "lf",
+      "bytes": 9274
+    },
+    {
+      "path": "appliance/boot/upgrade-root.sh",
+      "sha256": "8b3e42a98aa4075b49a7b3b1c88a12091ff2b889061d8a7656515e1e4c748d54",
+      "normalization": "lf",
+      "bytes": 5377
     },
     {
       "path": "appliance/mount-helper.c",
@@ -1928,9 +1975,9 @@
     },
     {
       "path": "appliance/rootfs/etc/containerd/config.toml",
-      "sha256": "53ae1943c8f30b30aa2d7e06079c6da4894877406739950929293810f3010fcd",
+      "sha256": "93bebbd07035a76d967276b44c62472ed1ad6b41012958856a00614f0696b944",
       "normalization": "lf",
-      "bytes": 272
+      "bytes": 292
     },
     {
       "path": "appliance/rootfs/etc/init.d/containerd",
@@ -1940,9 +1987,15 @@
     },
     {
       "path": "appliance/rootfs/etc/init.d/opendock-agent",
-      "sha256": "b9a9c537ff878930dbf2bb8a8cbbbdb5300560769a6f9705f6c7011b012faa34",
+      "sha256": "98c326f90869dd16dddfa1dc1b90e1b592de39813e9fa0bb2827d48435e1a5a7",
       "normalization": "lf",
-      "bytes": 637
+      "bytes": 649
+    },
+    {
+      "path": "appliance/rootfs/etc/sysctl.d/90-yougori-security.conf",
+      "sha256": "3c40fbad229b82a74580169fdd843af77198e70407e1479140aee5854b47636a",
+      "normalization": "lf",
+      "bytes": 1012
     },
     {
       "path": "assets/yougori-icon.svg",
@@ -1952,15 +2005,15 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "23ddcdc353a86c0f0529dfbef195a309af340829037026f1da9e44e57a7a396c",
+      "sha256": "d6eb35ad50ec26d30a8ca91b792dd507fde790ed0be0c884ffaae8f05010a1e2",
       "normalization": "lf",
-      "bytes": 89724
+      "bytes": 89764
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "d7f7c319836be05d029e1787fec9a24cc3dde7f3a884077ffc44fb433e98a182",
+      "sha256": "9fb1dd0687d7f3d5bcb6afba6958009a586c583e43c976178649ba59b1bd8489",
       "normalization": "lf",
-      "bytes": 1073
+      "bytes": 1229
     },
     {
       "path": "compliance/engineering-review.json",
@@ -1970,13 +2023,13 @@
     },
     {
       "path": "compliance/evidence/all-guest-go-modules.json",
-      "sha256": "e7569b33d20260bbe6f3ba3e77be79f27b45d603dc9bec203fa9658e1ac05b03",
+      "sha256": "21ca3e57ee70bb261967150640f51318815f083c297efaa8a5e3635164d5b3cc",
       "normalization": "lf",
-      "bytes": 53949
+      "bytes": 55665
     },
     {
       "path": "compliance/evidence/alpine-packages.json",
-      "sha256": "94dc2326ccd90b7a0e7c5feeaa58f0a78fdfa25811e2f1d4350cf1b788e7cb32",
+      "sha256": "13257d88515c0d863f6272157126b81f1b9e3748084d3bc4a762542c0f05652e",
       "normalization": "lf",
       "bytes": 17038
     },
@@ -2012,21 +2065,21 @@
     },
     {
       "path": "compliance/evidence/appliance-apk-installed.txt",
-      "sha256": "c90ecb042136562297988123a3c0c70bd3f497b91c76bd58152b2e647da5bdd0",
+      "sha256": "c1ef249c58e36ad2d8abd43c6e78d854288d7f7484d6c8be0ecf0c7aace72ff3",
       "normalization": "lf",
       "bytes": 142547
     },
     {
       "path": "compliance/evidence/application-dependencies.json",
-      "sha256": "52f47d694ebe8466685bb84949d3ba39e3136cc31d8581fb10330cffa9521e46",
+      "sha256": "caed2b9e01e867e00ac84db906b87df90cef8085f83dc33ec9a611a8f1a99596",
       "normalization": "lf",
-      "bytes": 646378
+      "bytes": 645659
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "a8ac4aee61ab4087aaf4fb50074e422cba3e31bc662e43932b0ad599e286531e",
+      "sha256": "8ccd7dad291e33c2a40afeb1a1515fcf596cb34a0d6dc8c9bb5f7229b90733e4",
       "normalization": "lf",
-      "bytes": 221169
+      "bytes": 235904
     },
     {
       "path": "compliance/evidence/firmware-provenance.json",
@@ -2036,27 +2089,27 @@
     },
     {
       "path": "compliance/evidence/frontend-dependencies.json",
-      "sha256": "e0a8cc7950436c0b04e48e1006950a3795439727a7661525a8cd3272efee2013",
+      "sha256": "fba6a855214611593e571c40cc82e7508301ac7356c6eea4bc54a0a3a85ed423",
       "normalization": "lf",
-      "bytes": 34380
+      "bytes": 35314
     },
     {
       "path": "compliance/evidence/guest-go-modules.json",
-      "sha256": "762cdbbcee7299864221c6e9515bb2b5fcd807094326f4221452720c30c4da6f",
+      "sha256": "3e6642c4960ead1dba58e338f88ca4fbcb56a1678a911deb689b0471d14fd49e",
       "normalization": "lf",
-      "bytes": 5143
+      "bytes": 5367
     },
     {
       "path": "compliance/evidence/guest-main-modules.json",
-      "sha256": "e54de941ecad0329ea9325941e6102dda855ea43255b382f0c6d8b741f956eec",
+      "sha256": "e4a2094e01fce1b11e65e874f7f8e9b7622d6b50f10eec6e6cbca426a0a631c1",
       "normalization": "lf",
-      "bytes": 1971
+      "bytes": 2279
     },
     {
       "path": "compliance/evidence/initramfs-files.json",
-      "sha256": "43365e6d62da8fbb17c5be46777a234d22551200a06d575514819d0a975623b9",
+      "sha256": "14b0c7855394a00512973651062663cccc6e04aad80fa07bc77fb548247e4fd5",
       "normalization": "lf",
-      "bytes": 44238
+      "bytes": 44399
     },
     {
       "path": "compliance/evidence/oci-native-libraries.json",
@@ -2072,7 +2125,7 @@
     },
     {
       "path": "compliance/evidence/runtime-files.json",
-      "sha256": "a082193af8bcc6bf32daf2a96e5389660bdfa795410b589d755bcafdfd120b10",
+      "sha256": "65d68f8c02190fddd98ffd991749415f3841ca157a83bcbddbb957542d7b7220",
       "normalization": "lf",
       "bytes": 52916
     },
@@ -2218,15 +2271,15 @@
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "69a75296a09bd98823068c2a48a0cd491c4052984bafbed740f417b89f32dfbc",
+      "sha256": "c8e9f08a203b010c48fcad094ad40216f2025590f56012f9c0a0c72c3ca5cb7c",
       "normalization": "lf",
-      "bytes": 194630
+      "bytes": 194672
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "85642c620fe8c65efcf998af41c8fd2cc4e883ad16aefbf965e5a56ffeee0234",
+      "sha256": "c684ccd46edc933aee07570e75fed4563b816452c7fb3c505fba8be2c02c4957",
       "normalization": "lf",
-      "bytes": 690
+      "bytes": 691
     },
     {
       "path": "image.png",
@@ -2246,15 +2299,15 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "e01d3067839488fe03e49917f5290d2af0ea2e4fdd091413d16983bd539546d9",
+      "sha256": "6b56cc03211b8cab3357a939c1b9cd2703ef72f0b90162cbadf4434d2a946381",
       "normalization": "lf",
-      "bytes": 201085
+      "bytes": 201307
     },
     {
       "path": "package.json",
-      "sha256": "d37ab5045bfd9f3bdaf17d778f79bb9669d7fe9063bd37277adcc867a6ec2b39",
+      "sha256": "4d4d0fcefd2592ac954e5b739a97df494d525eebe6a524c84894faf4085fc0c5",
       "normalization": "lf",
-      "bytes": 7160
+      "bytes": 7161
     },
     {
       "path": "runtime/cuda/cleanup.sh",
@@ -2498,9 +2551,9 @@
     },
     {
       "path": "scripts/build-appliance.sh",
-      "sha256": "af64dccdba835ad2d33aaacf163de2ea3307c8ecd3f47b14d13751695abc2a5b",
+      "sha256": "6d759a9bb2ba5313aad95ad27fb43b19c74fae493295c2e3e8fb69d3d1664593",
       "normalization": "lf",
-      "bytes": 8036
+      "bytes": 8992
     },
     {
       "path": "scripts/build-boot-helper.ps1",
@@ -2528,9 +2581,9 @@
     },
     {
       "path": "scripts/build-cloud-share.sh",
-      "sha256": "e179dba89273a67e9f5acc28cf8de5d8e167fcf377a945eeb9180bd40d44d7d5",
+      "sha256": "7ad208ce15d64a80174f0051ade2b237e749a9b8ff71495546eacbf0296f1307",
       "normalization": "lf",
-      "bytes": 478
+      "bytes": 522
     },
     {
       "path": "scripts/build-cuda.sh",
@@ -2618,9 +2671,15 @@
     },
     {
       "path": "scripts/check-agent-go.sh",
-      "sha256": "5c0a18280007e09f94ea37756656d80ad40bd2f69d7c3b37265c69ce1fc17285",
+      "sha256": "dd232f8ab3bfcdab19f918fa256944a798322e6b88ca01fcadc5c7f7cf148bf3",
       "normalization": "lf",
-      "bytes": 774
+      "bytes": 1055
+    },
+    {
+      "path": "scripts/check-agent-go.test.py",
+      "sha256": "cbb83edf66a26868d0b966273b2e4ffdd932ab1847fa141b637eacd7370654bb",
+      "normalization": "lf",
+      "bytes": 1216
     },
     {
       "path": "scripts/check-angle-build.ps1",
@@ -2660,9 +2719,9 @@
     },
     {
       "path": "scripts/collect-compliance.py",
-      "sha256": "981c3e126ddd44ca5268f3623acdaef1b4ff166fbf9fd62181091529f1a5f885",
+      "sha256": "3657b110a1d0283434fd1bdb36cc97dca154e7c9899d9dd5c2e10c5db9489395",
       "normalization": "lf",
-      "bytes": 67173
+      "bytes": 67473
     },
     {
       "path": "scripts/compliance-angle.py",
@@ -2759,6 +2818,18 @@
       "sha256": "15db8aaa329cc6f53cea4536ac184cb9f78236b640047df21c59c234597645fd",
       "normalization": "lf",
       "bytes": 9688
+    },
+    {
+      "path": "scripts/confidential-collector.test.py",
+      "sha256": "0a851a4dbc94787a69ea07efaeda11b58cd172452c09eaef5f494384f1b5f7c2",
+      "normalization": "lf",
+      "bytes": 2396
+    },
+    {
+      "path": "scripts/confidential-fixtures.mjs",
+      "sha256": "183289fd193aa13c053949bc980c89340bccec02851aedcd33a2d8fe8d38a4da",
+      "normalization": "lf",
+      "bytes": 4821
     },
     {
       "path": "scripts/cuda-setup.test.mjs",
@@ -2936,9 +3007,9 @@
     },
     {
       "path": "scripts/model-server.test.py",
-      "sha256": "7a378ac26502241b911f9128bca3193abacf83862705716e7e15200a6205600e",
+      "sha256": "aeb674caab5accd04733124e5bc05546017931478a6d94822916083d32e9270d",
       "normalization": "lf",
-      "bytes": 29208
+      "bytes": 53375
     },
     {
       "path": "scripts/novnc-viewport.test.mjs",
@@ -2969,6 +3040,12 @@
       "sha256": "aa47df0afcab637a6e9008a198f06475d1d8e8dbd79c3fc2370173ed29fb46d3",
       "normalization": "lf",
       "bytes": 2747
+    },
+    {
+      "path": "scripts/prepare-appliance-initramfs.py",
+      "sha256": "12366099e1881a5b9869d4d6a7097ff2f1db4667ca301467a09bba656d1e06d4",
+      "normalization": "lf",
+      "bytes": 5143
     },
     {
       "path": "scripts/prepare-dev.mjs",
@@ -3035,6 +3112,12 @@
       "sha256": "34c499e82e58b3a054baf6de142b7bf2614928e5c62c18b18f44bf4f01d5cbbf",
       "normalization": "lf",
       "bytes": 3556
+    },
+    {
+      "path": "scripts/serve-native-test-frontend.mjs",
+      "sha256": "c1e5de808d16dcfc2b8d98991502ee06b49653dcb2fe62d6a35596d60394e844",
+      "normalization": "lf",
+      "bytes": 1804
     },
     {
       "path": "scripts/sign-windows-release.ps1",
@@ -3158,15 +3241,15 @@
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "645964e0ea634956ce034aab484fdf9aec5231381346fd1e4d63509805d0bf03",
+      "sha256": "16e29351e35c9ab1b8a59bc554118ead4a802d015bbd8eec9bf2a47f7f02a8d6",
       "normalization": "lf",
-      "bytes": 197066
+      "bytes": 197107
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "71c5cf07c91e7656d6ef646cdd6859328be181868f441d5e7f045b833f081c63",
+      "sha256": "97b7a4f218f14301cba9e915f5deb291927b7d44db2f6e82e80d8b4cd6a73801",
       "normalization": "lf",
-      "bytes": 3152
+      "bytes": 3153
     },
     {
       "path": "src-tauri/icons/128x128.png",
@@ -3437,9 +3520,9 @@
     },
     {
       "path": "src-tauri/resources/APPLICATION_LICENSES.txt",
-      "sha256": "b5937935fe61fe07bf13b94252307892b19e69c03780fe9dddaedc843031b160",
+      "sha256": "199dab45893eabe60d169da3b7c4f81447f79f5f31dd25a2430ebddbb6078c2e",
       "normalization": "lf",
-      "bytes": 8244408
+      "bytes": 8242469
     },
     {
       "path": "src-tauri/resources/RUNTIME_LICENSES.txt",
@@ -3461,9 +3544,9 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "dca32befb8904efdfbed251b9566fc41d8465bc35334b554eee2a0bb358cda03",
+      "sha256": "a3fad0a3c2b98e64fbde83a6c4bdf0f86366d4f2a6af443b0d58140dd0572554",
       "normalization": "lf",
-      "bytes": 1683
+      "bytes": 1700
     },
     {
       "path": "src-tauri/tauri.linux.conf.json",
@@ -3491,9 +3574,9 @@
     },
     {
       "path": "src/api/cloud-api.ts",
-      "sha256": "3dcaf37eab81a767d022d768b09290b03b302d8d1ed3fc9c601e77baf4a6c0fd",
+      "sha256": "c710779a224979cd73aa7268edcfe78483c6a95fa460c8cf9f155433842fce87",
       "normalization": "lf",
-      "bytes": 4063
+      "bytes": 4284
     },
     {
       "path": "src/api/duplication-api.ts",
@@ -3563,9 +3646,15 @@
     },
     {
       "path": "src/api/market-api.ts",
-      "sha256": "5fef536b2c55d5d79b1a6610b84e0892e24e7ca3c0398f1ac995cd4a7db12f6b",
+      "sha256": "ceefbaf973bdb2a13e5cf0260a46884a2f7d2f1a226638dab5c22c47a71a41b1",
       "normalization": "lf",
-      "bytes": 1918
+      "bytes": 2273
+    },
+    {
+      "path": "src/api/model-registry-api.ts",
+      "sha256": "2ce9e7ca71cb6e5b59d76e4ad3ae197199c8987e36c0cd67e5c2f79d39d5b46c",
+      "normalization": "lf",
+      "bytes": 1611
     },
     {
       "path": "src/api/neocloud-api.ts",
@@ -3575,15 +3664,15 @@
     },
     {
       "path": "src/api/platform-api.test.ts",
-      "sha256": "8d2d07a7bea498c8df6619a3706e1a9a99ca889fc479af87dead08a514c9aa1d",
+      "sha256": "4e11d073bea91c7ba19373795eec60f442d21a76a6adca61223aa50ead71f70e",
       "normalization": "lf",
-      "bytes": 26490
+      "bytes": 26824
     },
     {
       "path": "src/api/platform-api.ts",
-      "sha256": "5e5cc3ef4ec10226cb8f867e6fb46f1d31b5befa7a89509dd41d32c43ff2bc2f",
+      "sha256": "f7e7fc42e0c2b70b93d93538048aaf23b84b4e7b54547eb09ac8538855b7c05c",
       "normalization": "lf",
-      "bytes": 45530
+      "bytes": 45531
     },
     {
       "path": "src/api/production-adapter.test.ts",
@@ -3593,9 +3682,9 @@
     },
     {
       "path": "src/api/projects-api.ts",
-      "sha256": "0a1dc5546aa37288bb1e03c75c758bbfa70bd680726ae30b5198a89b00448b6f",
+      "sha256": "a0603d291d644838733bf633decff045935a50168e06265f579bfca931c9809c",
       "normalization": "lf",
-      "bytes": 8157
+      "bytes": 9822
     },
     {
       "path": "src/api/release-api.test.ts",
@@ -3677,7 +3766,7 @@
     },
     {
       "path": "src/components/app-close-dialog.tsx",
-      "sha256": "11c8b89e274160c1f4db9f9da304ddbc12d063a26adfbf0a24c22f7c7312a89c",
+      "sha256": "308b94a65f6b4ddedc1fbbba03910bd19f22eb10d3e9ce4d8626367b94b31be4",
       "normalization": "lf",
       "bytes": 4285
     },
@@ -3730,6 +3819,18 @@
       "bytes": 10901
     },
     {
+      "path": "src/components/confidential-network-chat.test.tsx",
+      "sha256": "6f0ad24c46d1e8beddc003cfec58fbac34616976c36d049303a9e9bf190c1b26",
+      "normalization": "lf",
+      "bytes": 2495
+    },
+    {
+      "path": "src/components/confidential-network-chat.tsx",
+      "sha256": "c8af2893f783e060e6656cdf08f680f166fc72f4d96509f17007608a208ddf81",
+      "normalization": "lf",
+      "bytes": 3566
+    },
+    {
       "path": "src/components/configuration-help.tsx",
       "sha256": "7dc51a75bfa59374fcffe3ef7dac4c6a8c82934c59dcf16dbce038b4f1b05c04",
       "normalization": "lf",
@@ -3755,7 +3856,7 @@
     },
     {
       "path": "src/components/connection-skills-dialog.tsx",
-      "sha256": "9924597f58f05cb453582dcd52fb06fac402042486f4f786c8a0988b50c8eb8d",
+      "sha256": "4c5685260be4f0ea63a3cecac77c056e6ff2d068c4ef0397b12760590208d39c",
       "normalization": "lf",
       "bytes": 11504
     },
@@ -3770,6 +3871,18 @@
       "sha256": "e011a03e93b6365af5776bed91bc27c17f9f09388153a9b1a236fd4352796a24",
       "normalization": "lf",
       "bytes": 1791
+    },
+    {
+      "path": "src/components/cuda-update-action.test.tsx",
+      "sha256": "c1ac69cd025ec1c3cebb9d3f308596c6195d25254b526142a9b1290af76b4497",
+      "normalization": "lf",
+      "bytes": 5130
+    },
+    {
+      "path": "src/components/cuda-update-action.tsx",
+      "sha256": "b73a28f2062b2b4669cf3d9186c5caa6059d3101b2325497ede26a4bde37a69a",
+      "normalization": "lf",
+      "bytes": 3249
     },
     {
       "path": "src/components/cuda-verification.test.tsx",
@@ -3797,7 +3910,7 @@
     },
     {
       "path": "src/components/dialogs/add-service-port-dialog.tsx",
-      "sha256": "7ad069c5f10b10e9261b36d8ea564fe6a2fdd6c7ccc02f8798329fed31128c49",
+      "sha256": "5b3ba3b0ce24acef05cca29a2a4019b8214f244285a6544a5d30d97fc0c9af26",
       "normalization": "lf",
       "bytes": 6408
     },
@@ -3809,25 +3922,25 @@
     },
     {
       "path": "src/components/dialogs/cloud-deployment-dialog.tsx",
-      "sha256": "2fa0823604cc0e8f37052eeafeec3ed644215a8f2ad9131d5f386bbf872fedeb",
+      "sha256": "796b463643c41ecb7d1ab389b0cfe1d48cf8e09fef2863f8ae4ba3123f9e60d5",
       "normalization": "lf",
       "bytes": 10027
     },
     {
       "path": "src/components/dialogs/cloud-duplicate-dialog.tsx",
-      "sha256": "cb8e6259dfb8001ec91e88080d07f0c85f6f6f15ae74d8bfa44c9f9bc2c7915c",
+      "sha256": "c9b1adb1f93eeaf488157284ded193a0057cea3ed413f1b3c9200afb209951dc",
       "normalization": "lf",
       "bytes": 13853
     },
     {
       "path": "src/components/dialogs/cloud-environment-dialog.tsx",
-      "sha256": "ae9623f03808a8d43f51a33c8d0a28bca8d0abc6c2788e225a70e2308795bf1a",
+      "sha256": "0cdb31d37bd1afa3ae284f13d3ac22f859b01979ad1fa578024c8119e92e629a",
       "normalization": "lf",
-      "bytes": 6408
+      "bytes": 9726
     },
     {
       "path": "src/components/dialogs/cloud-files-dialog.tsx",
-      "sha256": "35ac1ba2f8ec81f8f38c1649fa177bba0eb1dbf44c7f282b0a7706c27a0e069f",
+      "sha256": "0308586ced51af06e4601de5df4374dac912fe8c0b1fc0139dbb3709cb820ad7",
       "normalization": "lf",
       "bytes": 7489
     },
@@ -3851,21 +3964,21 @@
     },
     {
       "path": "src/components/dialogs/create-environment-dialog.css",
-      "sha256": "9245193c8b2604f3cd0483c5c23112569968592364ab7066abb102bb7095f0df",
+      "sha256": "82b1de174bd67583e3590232f25d8a9084b9a8587ae8559a8b6f9b1d63a03cc7",
       "normalization": "lf",
-      "bytes": 12565
+      "bytes": 13398
     },
     {
       "path": "src/components/dialogs/create-environment-dialog.test.tsx",
-      "sha256": "3b591d33a5cbabf28dbb3dd9ba5b5affb0c591054fcb071ff4b4da773f8f6f38",
+      "sha256": "58e4a52fc8427712b8a013497c1ab7b5c3a7c6ef769f05df3401f6a55b0b08f6",
       "normalization": "lf",
-      "bytes": 6388
+      "bytes": 7322
     },
     {
       "path": "src/components/dialogs/create-environment-dialog.tsx",
-      "sha256": "592f205f7bea3a870609c4bb225d410dc284205b38ec8db28176bdd60c967279",
+      "sha256": "73326294231a7abf1e7b77ba69ff8c5826d1b2aea554e0a68f0a0f918a9a868d",
       "normalization": "lf",
-      "bytes": 25838
+      "bytes": 26498
     },
     {
       "path": "src/components/dialogs/creation-resource-sliders.css",
@@ -3989,9 +4102,9 @@
     },
     {
       "path": "src/components/dialogs/preferences-dialog.css",
-      "sha256": "2d0d5ea5dda6dc4981605721a0675688498b7643738816c3f6f3efd2528a89e6",
+      "sha256": "fc61ec26af5c79b3223635342d40728a5b776ffa1e74ad441efe7ea2188c876f",
       "normalization": "lf",
-      "bytes": 7243
+      "bytes": 7563
     },
     {
       "path": "src/components/dialogs/preferences-dialog.tsx",
@@ -4025,15 +4138,15 @@
     },
     {
       "path": "src/components/dialogs/snapshot-dialog.tsx",
-      "sha256": "529f79af2b85b6d4044138a590227c5191e2ea131798e46275b44f852df22b46",
+      "sha256": "c171fa4db3ea14d6cb7e012b2164a5a5e0705fb5b6791e31dafe789fee9d0bc5",
       "normalization": "lf",
       "bytes": 2611
     },
     {
       "path": "src/components/duplication-activity.tsx",
-      "sha256": "4e93ce87cfa12b3817e07e355a0e853725c37d582e967b7dcd19b1d549bf8436",
+      "sha256": "87e4e53a2c8686cbedd1070b7fc5d4d14a4a8dd618e3b0c736315a0fd97d276f",
       "normalization": "lf",
-      "bytes": 4345
+      "bytes": 4311
     },
     {
       "path": "src/components/environment-access.css",
@@ -4043,7 +4156,7 @@
     },
     {
       "path": "src/components/environment-changes.tsx",
-      "sha256": "dfc266ec9e92cbc029cf941d47ef194bfe2fcf5f268faab9b56d80196fa6d6ed",
+      "sha256": "70f3d70bc5e1b796e31559224c37a33999124ed016e0023ba12459df76b60f7a",
       "normalization": "lf",
       "bytes": 6291
     },
@@ -4055,9 +4168,9 @@
     },
     {
       "path": "src/components/environment-detail-sheet.tsx",
-      "sha256": "e6bbc5079696c4569765fdce19e4dc20a1cf457d9515bd27c0bec96db8b7c993",
+      "sha256": "5513ceb78fb7eb51068c3579a6d6ebbf1636dfd4a26606c3ec1a37189f866ebe",
       "normalization": "lf",
-      "bytes": 24408
+      "bytes": 24634
     },
     {
       "path": "src/components/environment-download-status.test.tsx",
@@ -4079,21 +4192,27 @@
     },
     {
       "path": "src/components/environment-graph.tsx",
-      "sha256": "ad889e9e39c1f2b28bf368b7230906f362d0b11ecdd78aa9bde50ed8125154a8",
+      "sha256": "5131ff13b34a6c99254bd18348faafa12b26ae5c3db10c3d6c9d1f1c00558bd6",
       "normalization": "lf",
-      "bytes": 50973
+      "bytes": 27449
     },
     {
       "path": "src/components/environment-list.css",
-      "sha256": "dba2bf7d4de658abd36fa719310b4978b66be6b1e03c11040e554b6b1b6eac96",
+      "sha256": "8710b83cf3bf23abaea0036f4b208e83c70631a9bffedeb1883c2d4aee223bdd",
       "normalization": "lf",
-      "bytes": 15167
+      "bytes": 15258
+    },
+    {
+      "path": "src/components/environment-list.test.tsx",
+      "sha256": "051e07c0a6b46b8116a23e4d549ed42f65b7f737b634dcf366e607efaec323fe",
+      "normalization": "lf",
+      "bytes": 4742
     },
     {
       "path": "src/components/environment-list.tsx",
-      "sha256": "6068b0feba87bc0e9918ce6645965359586feaba1b5fd85eeb3a867824614830",
+      "sha256": "d090adeab4904d48b26696dcdfe03f17a03daf63d3bc60106ced2da541f6ae88",
       "normalization": "lf",
-      "bytes": 31814
+      "bytes": 33950
     },
     {
       "path": "src/components/environment-name-editor.test.tsx",
@@ -4145,9 +4264,9 @@
     },
     {
       "path": "src/components/graph-workspace-dialogs.tsx",
-      "sha256": "12495931b0eedfab7f77bdc4d3966a31900cbbd6c2a335951f7f7f49998d5f6b",
+      "sha256": "004132c0d33a01e21b8d523b51d7e48c44944671de8bd821bf4e98332ca0147a",
       "normalization": "lf",
-      "bytes": 19202
+      "bytes": 20450
     },
     {
       "path": "src/components/guest-app-launcher.test.tsx",
@@ -4157,9 +4276,9 @@
     },
     {
       "path": "src/components/guest-app-launcher.tsx",
-      "sha256": "93b0e4fd8db3d3b55569d351e88ff0388fe4485b5fe81b83d5d3f8457f7dccce",
+      "sha256": "43927753433833c8247b31e519524f51643cdeb9438b2bdab5d213aac5f2b537",
       "normalization": "lf",
-      "bytes": 9605
+      "bytes": 9606
     },
     {
       "path": "src/components/guest-app-view.tsx",
@@ -4223,9 +4342,9 @@
     },
     {
       "path": "src/components/host-cli-view.tsx",
-      "sha256": "6320271a0f1a5e6175fe30d6a34fcdcc4362141fe060a99a66258ab7db2c7b3d",
+      "sha256": "33b341a5c1ca374de3c336388b251bfce44731b7e25f3b0e4eb6611a1d0717a3",
       "normalization": "lf",
-      "bytes": 16692
+      "bytes": 16694
     },
     {
       "path": "src/components/host-terminal-canvas.test.tsx",
@@ -4283,9 +4402,9 @@
     },
     {
       "path": "src/components/instructions-tour-content.ts",
-      "sha256": "42416d2ecbd90b18e99ea99837517b0203a739f0042e2345949c0e8511b35c9f",
+      "sha256": "ec751aaa453084ea12c4ea73b65eadb5a1b08ed90ad69b9850d50ed5472e267e",
       "normalization": "lf",
-      "bytes": 18709
+      "bytes": 18806
     },
     {
       "path": "src/components/instructions-tour.css",
@@ -4295,9 +4414,9 @@
     },
     {
       "path": "src/components/instructions-tour.tsx",
-      "sha256": "62687b637fa647027e0c3b59af3e35effaab673e4826bef0dbeba2529c007d57",
+      "sha256": "6581ac35af1645e6f43662263302a54345b01e32b860c4ece8d7dc44e152916f",
       "normalization": "lf",
-      "bytes": 17642
+      "bytes": 17665
     },
     {
       "path": "src/components/isolated-cli-view.test.tsx",
@@ -4307,9 +4426,9 @@
     },
     {
       "path": "src/components/isolated-cli-view.tsx",
-      "sha256": "4a006a866ded4039c41c8fc4b7af4bbc580caaeaafcfb52eafee8e2ab3c495f5",
+      "sha256": "635fe0e73f0ebf18af0f9d092d6271d4d9d18b7d9b972c2e1d3d9a447655ea11",
       "normalization": "lf",
-      "bytes": 9445
+      "bytes": 9446
     },
     {
       "path": "src/components/modal-section.test.tsx",
@@ -4319,33 +4438,45 @@
     },
     {
       "path": "src/components/model-api-panel.test.tsx",
-      "sha256": "a8fb7c4a72fd293b88ba5c660b86b57e5b5d2418570b3a57612cc4fa33952b7a",
+      "sha256": "3ed91728586b3b638abaf742bb1053cb47b257a5a7722a32637a50b6e3acb95a",
       "normalization": "lf",
-      "bytes": 7531
+      "bytes": 8036
     },
     {
       "path": "src/components/model-api-panel.tsx",
-      "sha256": "4faf33c97acb610f19976f2d9443a0be992f4f65c9ee9e2199070e037f9da5ca",
+      "sha256": "a8cda6e52c33f06429d0c8217ad5be802b04b74486acb9c2d248a5208d34ce00",
       "normalization": "lf",
-      "bytes": 17274
+      "bytes": 17740
+    },
+    {
+      "path": "src/components/model-architecture-support.test.tsx",
+      "sha256": "d891e1d628f00108a7e52193f317d7a36ebc56cd64224ab494d01864f5b1da02",
+      "normalization": "lf",
+      "bytes": 2781
+    },
+    {
+      "path": "src/components/model-architecture-support.tsx",
+      "sha256": "b4f2d30307ba3af06fc09f319e4cfcdf7f47afe32b7edc202e5b4ba1c4239f23",
+      "normalization": "lf",
+      "bytes": 4783
     },
     {
       "path": "src/components/model-chat.tsx",
-      "sha256": "bed0d5bf3f08d9a196b4ea47dd2f9f10e159a0723993827bf5a4951c871f1135",
+      "sha256": "51e89cfadb4023f66838ab319ccf957a14ede2c1ec65711679983cbf0d006e00",
       "normalization": "lf",
-      "bytes": 24446
+      "bytes": 25287
     },
     {
       "path": "src/components/model-decisions.test.tsx",
-      "sha256": "2ac4a8c2ebdf16c2cabf994e2b070e7a32858a5e56844ce8e177fd8dce078e8f",
+      "sha256": "13985c1c52227b3c955028834d014f8ad4e239c12851172edd66cea1e1cd6674",
       "normalization": "lf",
-      "bytes": 1916
+      "bytes": 3557
     },
     {
       "path": "src/components/model-decisions.tsx",
-      "sha256": "13b35afbfbd5df41724fc49c889ff3b3d4c26b744174e8e749292981b0cb5311",
+      "sha256": "b0c9c5a1c4104082457b6478292b78295d2b926efdd1e0f891167e71cc32a701",
       "normalization": "lf",
-      "bytes": 3449
+      "bytes": 6082
     },
     {
       "path": "src/components/model-environment-actions.test.tsx",
@@ -4355,9 +4486,33 @@
     },
     {
       "path": "src/components/model-environment-actions.tsx",
-      "sha256": "318cf63504e6e51ec0bd6ba21fd5e223f825774ad754cdfdd7bcde93aa57a0ad",
+      "sha256": "a09f749dc001fcefb90c0dd5c23e93fa2427f230484b6a3fbdd75d7896a3148e",
       "normalization": "lf",
       "bytes": 6272
+    },
+    {
+      "path": "src/components/model-gpu-optimizer.test.tsx",
+      "sha256": "62fb2bbbf10f06c9c812cc24f5770e6f235863c68c4eff6361bcb480774a21db",
+      "normalization": "lf",
+      "bytes": 2484
+    },
+    {
+      "path": "src/components/model-gpu-optimizer.tsx",
+      "sha256": "6a7e47dd65046da103dd2f1a11be646b1b831a1604a12c2628d9482b36cb6883",
+      "normalization": "lf",
+      "bytes": 3136
+    },
+    {
+      "path": "src/components/model-library.test.tsx",
+      "sha256": "2b2bb8be856a2180ea133d1c5c5f85ca8f18cfee42416f5a3bc6f1de173dc80f",
+      "normalization": "lf",
+      "bytes": 3495
+    },
+    {
+      "path": "src/components/model-library.tsx",
+      "sha256": "ec774a4245b4da9938c1c11e0b97b6b94a828865aba9f372fe8ccbde95b1eea7",
+      "normalization": "lf",
+      "bytes": 4799
     },
     {
       "path": "src/components/model-node-progress.test.tsx",
@@ -4373,33 +4528,33 @@
     },
     {
       "path": "src/components/model-usage-panel.test.tsx",
-      "sha256": "9caa3b12fae971608ffbd9ff5a4080c4201596504a133340f99751f8078993bd",
+      "sha256": "9d796d0e48c95fe03f8b1bff6423ecdc2760141239f075891f96e58c6ebd70b2",
       "normalization": "lf",
-      "bytes": 2607
+      "bytes": 3167
     },
     {
       "path": "src/components/model-usage-panel.tsx",
-      "sha256": "3e4b5fff99d69f1cf231192b9fef204363ff45d191447ef98fa2fcd03c8bef55",
+      "sha256": "7fc7c1d34ba41833acfaa1521cf9914f02bc8e7eea363ec1b41275e777decdff",
       "normalization": "lf",
-      "bytes": 7164
+      "bytes": 7538
     },
     {
       "path": "src/components/model-workspace.css",
-      "sha256": "3e1fe80be04daaed9ea38c91103f06a8dc7d01b521c9e6b0c64bc1b6ca50176d",
+      "sha256": "cbe494ae0015d592c53159c0340457b424f7e5e291a1e0ee19f28b6cbce4e509",
       "normalization": "lf",
-      "bytes": 21490
+      "bytes": 24090
     },
     {
       "path": "src/components/model-workspace.test.tsx",
-      "sha256": "96668884ee347c6c4e9ea39ff5a7dd020b49b0bed81c0c4e06ce4e2273bbcda1",
+      "sha256": "c20edc03b8e4ae292ec99f0eaa00f474c9b72bd3cc2df80d205b2b2fbcc048c3",
       "normalization": "lf",
-      "bytes": 15543
+      "bytes": 18024
     },
     {
       "path": "src/components/model-workspace.tsx",
-      "sha256": "c611122742cea56dea472d50fc3652f3340a8d851742c7e6e40e300c6c8aa614",
+      "sha256": "a7b9a773c1e0939ceb38edc82b6d5c1c6f1fda1c6775753277fbc468a1ae929e",
       "normalization": "lf",
-      "bytes": 11027
+      "bytes": 16989
     },
     {
       "path": "src/components/neocloud-deployment-card.test.tsx",
@@ -4427,21 +4582,21 @@
     },
     {
       "path": "src/components/network-panel.css",
-      "sha256": "0e6a7ec91a825d36e36908b3f67328d829656ef2a8fe71b5bb0d4e9c60051199",
+      "sha256": "f4778fdcd54de832c37ab70df46606774af76844d280946207458c9b1b77902a",
       "normalization": "lf",
-      "bytes": 819
+      "bytes": 5037
     },
     {
       "path": "src/components/network-panel.test.tsx",
-      "sha256": "477d69c06a2a674e99bf53630713ed00bbc650affdb2b4864dd08c8bc9998731",
+      "sha256": "007ced56bd73e08d83d170473431ef00cc2a26c695dbcaec9dbbcdafdc36280c",
       "normalization": "lf",
-      "bytes": 4484
+      "bytes": 4522
     },
     {
       "path": "src/components/network-panel.tsx",
-      "sha256": "56b6003a482a489dba1c52c4c7bc983581bf922c572147fd7399edf4af87e715",
+      "sha256": "def16bf5183f3538bc85d049c287fa295afca089a4067e781b00c92a67b58857",
       "normalization": "lf",
-      "bytes": 6581
+      "bytes": 9756
     },
     {
       "path": "src/components/node-file-copy-status.tsx",
@@ -4469,7 +4624,7 @@
     },
     {
       "path": "src/components/project-manager.tsx",
-      "sha256": "2c16433416da818b91ee42f1805b0a273ed0b20bf7f90f87d5fbf4c6b30ccd92",
+      "sha256": "f18d498d43eac7eaf420ea4dede8b0336fc2e3d919d83e15c22e99ab3f587de8",
       "normalization": "lf",
       "bytes": 8272
     },
@@ -4487,9 +4642,9 @@
     },
     {
       "path": "src/components/public-access-presets.tsx",
-      "sha256": "950fd470fb4727bffe71f33f32289f0ead5a6ef503732a31d1fd9ab6dbfe38c7",
+      "sha256": "9cb6b32266e36ed6343f7257ca26af8b09a5dcf1b0452760b1e1a4ea05d97f7a",
       "normalization": "lf",
-      "bytes": 20842
+      "bytes": 20859
     },
     {
       "path": "src/components/release-update.test.tsx",
@@ -4631,7 +4786,7 @@
     },
     {
       "path": "src/components/sharing-panel.tsx",
-      "sha256": "21656bfa928fee969e3b9bfc6ebf40c14ce870da1e66708fba807abf7ee8b442",
+      "sha256": "11a48cc01a35f6090ca96f7d9948156817f921b7206779356ee0157a28bf6b44",
       "normalization": "lf",
       "bytes": 19690
     },
@@ -4643,9 +4798,9 @@
     },
     {
       "path": "src/components/storage-allocation-editor.tsx",
-      "sha256": "9478cb74ba4f961197997625e47af9f0348663608107442aa3fceb82f6599ba4",
+      "sha256": "ae3020ad35e5c12d4ea91740d04a28f65397977a4b6894b4adbff2e5cf74e7b9",
       "normalization": "lf",
-      "bytes": 4967
+      "bytes": 5266
     },
     {
       "path": "src/components/storage-capacity-slider.tsx",
@@ -4673,7 +4828,7 @@
     },
     {
       "path": "src/components/theme-picker.tsx",
-      "sha256": "1fc3a0ee9d90599b429af2b77e6e1bf3d1fa28a01a675277596bc549b5615216",
+      "sha256": "8bc4ba55130808ede72af65dd3fee6e73496f492f2d826d647acc86c1405466a",
       "normalization": "lf",
       "bytes": 5435
     },
@@ -4691,7 +4846,7 @@
     },
     {
       "path": "src/components/ui/alert-dialog.tsx",
-      "sha256": "033fb0252ea59452ad884cf694c88d067971686589c9aca28b063a35ca0c80b5",
+      "sha256": "de02e58a072eb68f759722db177d931438d8c70928995fb958b2cad1e9c41372",
       "normalization": "lf",
       "bytes": 4998
     },
@@ -4715,9 +4870,9 @@
     },
     {
       "path": "src/components/ui/dialog.tsx",
-      "sha256": "dc2b11563834f99a6e7f9baaa4d44b14e299d2fece64fa217aabd3e104e18c0d",
+      "sha256": "60f65079ffcaeaa7572210afbf11bdd5c7ca4f6931c6304a167207bd20145ca3",
       "normalization": "lf",
-      "bytes": 6101
+      "bytes": 6102
     },
     {
       "path": "src/components/ui/field.tsx",
@@ -4877,9 +5032,9 @@
     },
     {
       "path": "src/components/workspace-design.css",
-      "sha256": "7a9646d24cf9da044945c8717d8db64610f9810f0e4e564423def4e531a1c248",
+      "sha256": "21c0dc61f9c12f00192623a6b1f363677f2fa5015666811443885441a0d5a435",
       "normalization": "lf",
-      "bytes": 16335
+      "bytes": 16823
     },
     {
       "path": "src/context/platform-context.test.tsx",
@@ -4949,9 +5104,9 @@
     },
     {
       "path": "src/lib/cloud-profile-draft.ts",
-      "sha256": "ca08396375c8ba579641ef6cbb2e75b29cc9992386ee71579c972743887b936a",
+      "sha256": "bf5ba2a10300861af29bb62d6555e9e425e5e738ebd6349e9eaefcf09be0d3d9",
       "normalization": "lf",
-      "bytes": 1061
+      "bytes": 1063
     },
     {
       "path": "src/lib/cloudflare-account.test.ts",
@@ -4994,6 +5149,12 @@
       "sha256": "0bb898914867dc98c191e8136a29182ac8d4f1046560524b07e7aface141a07a",
       "normalization": "lf",
       "bytes": 12616
+    },
+    {
+      "path": "src/lib/cuda-update.ts",
+      "sha256": "b12a9ca36337f14baef2ae23d91a56aecbffda20942160cc9a2c599de26ad265",
+      "normalization": "lf",
+      "bytes": 313
     },
     {
       "path": "src/lib/domain.test.ts",
@@ -5141,9 +5302,9 @@
     },
     {
       "path": "src/lib/instruction-guides.ts",
-      "sha256": "28649d093278dc68792e50de6df08905fc8755924b207c514e19b79c33f159b8",
+      "sha256": "2fbb99baf115a82d771f9ed24611025451e10f43bdbcd66de029e28c2939639d",
       "normalization": "lf",
-      "bytes": 9437
+      "bytes": 9453
     },
     {
       "path": "src/lib/instructions-first-launch.test.ts",
@@ -5177,15 +5338,15 @@
     },
     {
       "path": "src/lib/model-chat.ts",
-      "sha256": "9eb094e20558895462e7e9c4ad36e2b36bddf6ffd7c9df7d39feb94c4f780c8c",
+      "sha256": "1ca3c65ffc5ee87fede67dd08d8af44d0b3ebc57409fa292c65fcb5fe631d459",
       "normalization": "lf",
-      "bytes": 7473
+      "bytes": 7495
     },
     {
       "path": "src/lib/model-progress.ts",
-      "sha256": "cf922211f327ff1b683d190908a0577d2b13092e9bec25d48a90c078f9e44cb9",
+      "sha256": "7503765c3efb51c916658aacd4c14855726436b137d7654445abe6aa5f75bc37",
       "normalization": "lf",
-      "bytes": 953
+      "bytes": 1096
     },
     {
       "path": "src/lib/model-terminal-chat.py",
@@ -5207,9 +5368,9 @@
     },
     {
       "path": "src/lib/model-usage.ts",
-      "sha256": "a7971132fc4cc8c287711659723dde3bbf7688c56895f055331c93cef482be16",
+      "sha256": "198ba8bef726a1b9d591dfc42827a393ebd1a9a1e9827e66a9032a5d54f5249f",
       "normalization": "lf",
-      "bytes": 1856
+      "bytes": 1901
     },
     {
       "path": "src/lib/model_terminal_chat_test.py",
@@ -5296,6 +5457,18 @@
       "bytes": 572
     },
     {
+      "path": "src/lib/ssh-command.test.ts",
+      "sha256": "bb87ffcc48a2c026cdadd40b7a33e1f9fd886bb78fe79d51af5782235cc634c7",
+      "normalization": "lf",
+      "bytes": 903
+    },
+    {
+      "path": "src/lib/ssh-command.ts",
+      "sha256": "387fa17250e1afd35bc60834abcfa856d0c1f13dfe3de83d748fe84382074dc8",
+      "normalization": "lf",
+      "bytes": 1166
+    },
+    {
       "path": "src/lib/storage-cleanup.test.ts",
       "sha256": "375830e825b098c7d923d2ba449763398794480f19fad94b0ef92ef87e3f582f",
       "normalization": "lf",
@@ -5375,9 +5548,9 @@
     },
     {
       "path": "src/lib/topic-walkthrough.ts",
-      "sha256": "7fc0b4e1fc74746031c0fc4795dd7232b7bd5190181f3686ba0bea4d238b0bea",
+      "sha256": "113ca0ee110c27f52e13907344b1f0c0c11ffe8504fd3f8df73fd40bf02411b7",
       "normalization": "lf",
-      "bytes": 3342
+      "bytes": 3350
     },
     {
       "path": "src/lib/tour-position.test.ts",
@@ -5441,9 +5614,9 @@
     },
     {
       "path": "src/pages/overview-page.tsx",
-      "sha256": "10d73add30402c99026fd4257c03401dbe3b7695076d001c528dc4828625702f",
+      "sha256": "9c7859c6bf0c225e4124cf74374670be210aa68cd1237a746432c1761d6c061b",
       "normalization": "lf",
-      "bytes": 6379
+      "bytes": 6696
     },
     {
       "path": "src/startup.css",
@@ -5471,15 +5644,15 @@
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "98d4a6a23e9362f12a1930ee8da8c18ce6b30875352429fb3a1bece9c5e5fab0",
+      "sha256": "1c60c58575f0bf4b54cdb2b66deaf1d7b6eb6fefdc9a38600dc3b58ec0b5a1b8",
       "normalization": "lf",
-      "bytes": 80514
+      "bytes": 80515
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "7a0cced2f83b6fc9dbdfbcedc4d6209e69432a4c88a666c806c89e1af609430e",
+      "sha256": "f15b3adf0e85763e847a85dba24ef79f66ba981e7ed3b043bc1bb2b3c826c4fa",
       "normalization": "lf",
-      "bytes": 1749
+      "bytes": 1750
     },
     {
       "path": "vendor/glib/Cargo.lock",
@@ -5501,49 +5674,44 @@
     },
     {
       "path": "yougori1.png",
-      "sha256": "27d81b0de3854fb68a681f5bd97131340af711c888b26f5d8c337697b367f2b7",
-      "bytes": 240484
-    },
-    {
-      "path": "yougori2.png",
-      "sha256": "e323eaad5577f6aee2112fd6a2f85bafa44224d5ed5b05fbd0049c8728381c4d",
-      "bytes": 268833
+      "sha256": "a3c977b12b94f7b57d6d0ee9d9706a2ed49f8e97b02f0cfcf60b9c02065fefc8",
+      "bytes": 455576
     }
   ],
   "archives": [
     {
       "file": "alpine-alpine-base-0934530484bb.tar.gz",
-      "sha256": "6fef8b86ad7a043f7ebd1f6e2754664492c20227463b551b027b0041af440028",
-      "bytes": 890
+      "sha256": "17695ae48a6d1699dc1cbcf534d9ff456b1d6fe9e571ec9edc2ec05b0a165248",
+      "bytes": 884
     },
     {
       "file": "alpine-alpine-baselayout-60a7585bbab2.tar.gz",
-      "sha256": "e22b7abbda99f8e0c850af8116165dc89f64836eb6456d8e801a58e9118fc368",
-      "bytes": 17430
+      "sha256": "d5ce7d981242bd1eb5b182538cff34f3aefd1d1bbb6c06329e54b5e29f9f9ae4",
+      "bytes": 17423
     },
     {
       "file": "alpine-alpine-keys-b9f23becced4.tar.gz",
-      "sha256": "a4ec815dc5ee0bd93133f67c4f7eee2ecede51ad57ba83e4f0c3a7ea76cdc693",
-      "bytes": 10480
+      "sha256": "45b04581063cf7f0ed68a0b5bfce19bf4851d721708de859fff4d163ee483a0d",
+      "bytes": 10474
     },
     {
       "file": "alpine-apk-tools-1403ea7a8ae3.tar.gz",
-      "sha256": "51375dad3ce5fedca8c71d55d4b24ce676c636633119994879e2edb5fc1eddb2",
-      "bytes": 393534
+      "sha256": "e18cbc4d552f775746ccb1ad47197fffdb230546d69dabd67a3f3c457580166b",
+      "bytes": 393527
     },
     {
       "file": "alpine-bridge-8bac74716d06.tar.gz",
-      "sha256": "41c67d430c111a9f5d08be8b51c536124e2e6a948468b1770a18275a6ccf5913",
-      "bytes": 1740
+      "sha256": "85d6cbf287a40d1bd4eca73567811c9fb1247118173ef0255187b87fb61e201b",
+      "bytes": 1736
     },
     {
       "file": "alpine-busybox-c3ef5d10e6ef.tar.gz",
-      "sha256": "fa8cfe63e41ee6ed7cd29134b9c8f5f060585a763a89ad2f3078b1b1306ed542",
-      "bytes": 2605862
+      "sha256": "94754b5163d5cbff21ed60d873f413c5209cbe46da552a37422d8a0f5f9719e5",
+      "bytes": 2605849
     },
     {
       "file": "alpine-ca-certificates-e41cbd2ae991.tar.gz",
-      "sha256": "aa4c6e127d9c7dffb2d2f37a75f2a062c1396181f8c8cc95a0dcda0dcd280b33",
+      "sha256": "1d97a2accb603d238308ad9f927d530ee853b6e85583fa7332a1cc3850801cbd",
       "bytes": 226977
     },
     {
@@ -5553,83 +5721,83 @@
     },
     {
       "file": "alpine-cryptsetup-d2f0440960e6.tar.gz",
-      "sha256": "8c39bfb5435be9c2cef99eb072a0f5645f08bed5fbdddc6edceea302a55e56e0",
-      "bytes": 13368240
+      "sha256": "3e99aa6dc0dcb2ee8f0481d789215fa94597cc32bbee0b06e4e53543dc745af6",
+      "bytes": 13368232
     },
     {
       "file": "alpine-device-mapper-a9f462dee63c.tar.gz",
-      "sha256": "8038b68def68e6e2d53a7881c31eaf2f6efbba1700a27aea0e61617b7afb3db9",
-      "bytes": 2943432
+      "sha256": "983f5a52634c32bfcad048e0c587448ae8cc8ae18645a41a52bf5f27e87b0a33",
+      "bytes": 2943427
     },
     {
       "file": "alpine-e2fsprogs-8683a6972cb2.tar.gz",
-      "sha256": "1c78693d0e02e1c11b2aec13741153bc8bfe70c24ab68ca5adc584b39cec571e",
-      "bytes": 10133477
+      "sha256": "81e6f8478bfa2dca71e148c409a53978f891c6023770e9ac5a3b94afd43c740a",
+      "bytes": 10133475
     },
     {
       "file": "alpine-elfutils-8f1329420688.tar.gz",
-      "sha256": "133f26641aaaa2a18b09484fe92ec2b1570868d90eded9add0084ec8853388c9",
-      "bytes": 12029780
+      "sha256": "c31fdfc3a5414e5064092edc497fd13cdbab769a2e540fd8226bf34ef7d8660e",
+      "bytes": 12029777
     },
     {
       "file": "alpine-ifupdown-ng-2c26ffc5e83f.tar.gz",
-      "sha256": "ae9eebee5b295817ffe231190272e288f188b9014a7f23da2dd982749577c65d",
-      "bytes": 87396
+      "sha256": "f7e35e9d45e6be62284a6b948a65af118bdf4f7fe5dda5bdd713a57b8aa3236d",
+      "bytes": 87397
     },
     {
       "file": "alpine-iproute2-3ee752ad0c84.tar.gz",
-      "sha256": "e6c3ec5219fa2807d640ba1f170f7ba5e475a573abf4720be59000a337edd3f8",
-      "bytes": 964074
+      "sha256": "3f7075d2b38e553f3dc9b0e02205b169963a223409c5e9f0887b95e019537370",
+      "bytes": 964072
     },
     {
       "file": "alpine-iptables-8848fb97f5ec.tar.gz",
-      "sha256": "90bcf12ab37484ba575710807e03dfefa9ae801d4357d94445c5d90502ac3652",
-      "bytes": 658661
+      "sha256": "84e1f3dca9dc43a5f737c25ed5e8f58f4a2f3bfae1e9f8ff4cc1c1a0adb64e28",
+      "bytes": 658657
     },
     {
       "file": "alpine-json-c-8e0faa63c91a.tar.gz",
-      "sha256": "0aaed7af1903279b17f3394a74f0a9d6c0ea3d4894ec32749a9cf43fabe3ceaa",
-      "bytes": 402190
+      "sha256": "5c56607fd7072f6da2cafa05616b17695a1fa6bc6b4d2d242222440f99b0396a",
+      "bytes": 402187
     },
     {
       "file": "alpine-kmod-206e7b39f788.tar.gz",
-      "sha256": "78a48fa54f7a0dc0b299c52e7be635ca6f78332cf827f1fdf364ea6e1a245f60",
-      "bytes": 445317
+      "sha256": "f0da27d658dc41764149be6c38fca4aeca2a911c02ab3dfb82855695181b43a9",
+      "bytes": 445312
     },
     {
       "file": "alpine-lddtree-007305e7880a.tar.gz",
-      "sha256": "e6265bd90e8f0cefb4a6d227323a08e1aa2aa68d0192d1c58a20cfc690023119",
-      "bytes": 2174155
+      "sha256": "803b69c376d236ebd9847da155b414e9c489e8084bb2a09456deb75b5092d477",
+      "bytes": 2174148
     },
     {
       "file": "alpine-libcap-0c35848136c4.tar.gz",
-      "sha256": "41fc0daa8c9c56dfb5f3a8326ab5a6082873ec41b4a02431c6bcf1e5811c0456",
-      "bytes": 202619
+      "sha256": "5bf752695a0d331b871aa9c43b219f07dfad3d06baa2f2b89f7e17d7565a2702",
+      "bytes": 202615
     },
     {
       "file": "alpine-libeconf-62db33049768.tar.gz",
-      "sha256": "8dea899a5c9e4ad96f3a9d82d0f8ba594c1291a843c9dd30c86a4a53341d3bdd",
-      "bytes": 269722
+      "sha256": "072b6c6744226b047ba7ae0f665121a6d494e744e7dc65dd155de6761c91250e",
+      "bytes": 269720
     },
     {
       "file": "alpine-libmnl-fc95c5999828.tar.gz",
-      "sha256": "bd474a1818a40f17151f6c91ea50713392e9a45e8e8097415b70504c6dfefa59",
-      "bytes": 316064
+      "sha256": "91395a0de761c69b34b1765ff4e9870a69665fb1d057c81c434b0bc55552d374",
+      "bytes": 316061
     },
     {
       "file": "alpine-libnftnl-80fae26950fd.tar.gz",
-      "sha256": "4eec68c436bc405d5e00162c2e8ceb9eac0951a49e3e15a54d25b2ff1564bb7a",
-      "bytes": 350416
+      "sha256": "44e2752978044ca0f0af7e8b50cf4ddf291aebd222b2e1329a5ea2c030679b4c",
+      "bytes": 350413
     },
     {
-      "file": "alpine-linux-lts-09a165f4c951.tar.gz",
-      "sha256": "986042f27e73c45bea0d9af3cc6464d5cb6c28acc2a802b1899253a97b2e21e5",
-      "bytes": 158456904
+      "file": "alpine-linux-lts-52fae6d7d56f.tar.gz",
+      "sha256": "a70e9aa0218548371f7554843207f121ad36a4bed4ea872975831def2e0fbdbd",
+      "bytes": 158992903
     },
     {
       "file": "alpine-mdev-conf-203310a84fe3.tar.gz",
-      "sha256": "117859e39e6881ce2d8a527ff5b873252cd6826e5f851de8564b403c773c4933",
-      "bytes": 8310
+      "sha256": "6ffed08e8805b8c7cfbed71dc271c5595ddece576daeddf4f6489242c47138aa",
+      "bytes": 8309
     },
     {
       "file": "alpine-mkinitfs-0baaf041a1e4.tar.gz",
@@ -5638,43 +5806,43 @@
     },
     {
       "file": "alpine-musl-f5640d3a10f6.tar.gz",
-      "sha256": "30a5ae8fa5eac8298686f38dcefdc55e7609cef578e8b6691be6a56733668605",
-      "bytes": 1096673
+      "sha256": "19cefa8a5dbe5595c90489c4bf583836ea916a97043b1c70359a56aa85b994f1",
+      "bytes": 1096666
     },
     {
       "file": "alpine-ncurses-2cee8a7328d0.tar.gz",
-      "sha256": "7009c775e0296baf6c396a5fe80b31d3535684ceb21b697ab5c549d3d1598a31",
-      "bytes": 3796036
+      "sha256": "6e981024569dfb86d8743b8c59b8153988c8d5cc038d160cd27821e80e559c18",
+      "bytes": 3796031
     },
     {
       "file": "alpine-openrc-30c61338b7a0.tar.gz",
-      "sha256": "899921b42c65c2356e3009dcf8e923121dbcc0aa94d3e53130a0addd78f8bc0e",
-      "bytes": 287323
+      "sha256": "8a82a2d7e6780aea946528ad489927d3f53f42047ce5b8215664e6dcfe0de5c0",
+      "bytes": 287314
     },
     {
       "file": "alpine-openssl-4a4352d83ab0.tar.gz",
-      "sha256": "4cd6d9890826d3b56e8b3b07614202fb212664c7a2fb9ffe7cbb438ddd62f8c4",
-      "bytes": 53135644
+      "sha256": "9811106a18806b39d550c058de1698f059c78e6281e7fdc05b0eed9d3c9edad9",
+      "bytes": 53135640
     },
     {
       "file": "alpine-pax-utils-c61801eeacb3.tar.gz",
-      "sha256": "3ed364f411ef5c06d7a49cf8b07974178732df9838761658e116ede4d9c26227",
-      "bytes": 125088
+      "sha256": "9fe0f657f8312953cfa57e4ecc9baf5625fb0715688da62122af59364e72eba4",
+      "bytes": 125085
     },
     {
       "file": "alpine-skalibs-f148233038fa.tar.gz",
-      "sha256": "d095b37b7b982d18ca88f688ee805b762ac315b180543d8ee9c4d1cc94bc54a6",
-      "bytes": 268118
+      "sha256": "d3409c3ed55bc4f91fe8ee766c432101a5a3ce4f20a5de003c5ab0aa05ffa3bc",
+      "bytes": 268114
     },
     {
       "file": "alpine-util-linux-d98c55af5905.tar.gz",
-      "sha256": "c01333d8149fa7198d7e1128352e55a2c88538055f3fc9e58d1305688571484d",
-      "bytes": 10730855
+      "sha256": "3e8a1945e125f31b0b4965d3c045bbc1f397a57e6938bdaa759a3a6ebce1f7d3",
+      "bytes": 10730848
     },
     {
       "file": "alpine-utmps-900a4ecef77a.tar.gz",
-      "sha256": "47a38fd800ccdaf4c81fa6d82db312262ade729326a9a68546ef3731e8f09425",
-      "bytes": 39446
+      "sha256": "87afe05770592e0fe05d36cc8e2da287388c9622ebadfa498948a29c54f5063d",
+      "bytes": 39438
     },
     {
       "file": "alpine-xz-0c088d609f9f.tar.gz",
@@ -5683,13 +5851,13 @@
     },
     {
       "file": "alpine-zlib-f248b33b5943.tar.gz",
-      "sha256": "4cd1c8c1a86f153a82f0ff6ea01149f53382cfd2038a01353cdb8f664c7152eb",
-      "bytes": 1504187
+      "sha256": "e3c9c14f1b7d163e6829d60b8ba0e3b4e261823aeee191da2b04af4e22c78b59",
+      "bytes": 1504184
     },
     {
       "file": "alpine-zstd-3c6e2ee2b16f.tar.gz",
-      "sha256": "c76d81bea7813b7f30cb5f05ae936ff15927be97bd75152127fb52bb0304b503",
-      "bytes": 2451540
+      "sha256": "ebcaf55ddd8bacce538c3bbef22682dd42baa54bf59941d462c45e1286751e66",
+      "bytes": 2451533
     },
     {
       "file": "crate-cssparser-0.36.0.tar.gz",
@@ -6362,9 +6530,9 @@
       "bytes": 1868474
     },
     {
-      "file": "go-golang.org_x_net-v0.58.0.zip",
-      "sha256": "aa78bbf8d55db3e6995630165e2bcd7dce6d0b8831c166fa03b80ac94fb650e7",
-      "bytes": 1927911
+      "file": "go-golang.org_x_net-v0.60.0.zip",
+      "sha256": "052e0453db47a96ae9567503e7c95ea925ab52682cb1cec31250541f7160107e",
+      "bytes": 1871475
     },
     {
       "file": "go-golang.org_x_sync-v0.21.0.zip",
@@ -6382,6 +6550,11 @@
       "bytes": 2022425
     },
     {
+      "file": "go-golang.org_x_sys-v0.48.0.zip",
+      "sha256": "3a47e06431ba1e24d5b2aca3a7ce31fd13faff34df3e5d8e63f105ff9d0c1786",
+      "bytes": 2094772
+    },
+    {
       "file": "go-golang.org_x_term-v0.44.0.zip",
       "sha256": "e420c6640012a697d806c2e865df26993c82a9ab1b16d286787cb77fc10062f7",
       "bytes": 21694
@@ -6392,9 +6565,9 @@
       "bytes": 7015060
     },
     {
-      "file": "go-golang.org_x_text-v0.41.0.zip",
-      "sha256": "e63f35daaae749d0ffff97a295ad8f4837a662938a46b7a87f18a88e85a5cbf9",
-      "bytes": 7336337
+      "file": "go-golang.org_x_text-v0.42.0.zip",
+      "sha256": "a7b64e003056b6470303f408202098d8f3714a115f23091b8cac85edeb265476",
+      "bytes": 7337550
     },
     {
       "file": "go-google.golang.org_genproto_googleapis_rpc-v0.0.0-20260526163538-3dc84a4a5aaa.zip",
@@ -6698,13 +6871,13 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "a66ce67d45bdb185ed826258a8a2a16841fbfe790e03e7a4675c287c22d525b0",
-      "bytes": 13242992
+      "sha256": "9f1200eab0702d12c4afe28f341ae274fe4f6bb3928e2e79cece193053d3dd76",
+      "bytes": 14885276
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "d1b60ce2940b852038a46427247058b0cbf6799f33e6375a3dae487d45603038",
-      "bytes": 9736644
+      "sha256": "59f017fcbb028e692ad12719f6af8832d9b9c06cd7bb3b41c03722e0f5a2a562",
+      "bytes": 11210327
     }
   ],
   "components": [
@@ -6952,18 +7125,18 @@
       "id": "local-build-material",
       "status": "collected",
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "d1b60ce2940b852038a46427247058b0cbf6799f33e6375a3dae487d45603038",
-      "bytes": 9736644
+      "sha256": "59f017fcbb028e692ad12719f6af8832d9b9c06cd7bb3b41c03722e0f5a2a562",
+      "bytes": 11210327
     },
     {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "a66ce67d45bdb185ed826258a8a2a16841fbfe790e03e7a4675c287c22d525b0",
-      "bytes": 13242992,
+      "sha256": "9f1200eab0702d12c4afe28f341ae274fe4f6bb3928e2e79cece193053d3dd76",
+      "bytes": 14885276,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "a8ac4aee61ab4087aaf4fb50074e422cba3e31bc662e43932b0ad599e286531e",
-      "fileCount": 1173
+      "manifestSha256": "8ccd7dad291e33c2a40afeb1a1515fcf596cb34a0d6dc8c9bb5f7229b90733e4",
+      "fileCount": 1251
     },
     {
       "id": "alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f",
@@ -7048,8 +7221,8 @@
       "recipeRevision": "60a7585bbab2fa0f762504eb617dbca90216e31f",
       "status": "collected",
       "file": "alpine-alpine-baselayout-60a7585bbab2.tar.gz",
-      "sha256": "e22b7abbda99f8e0c850af8116165dc89f64836eb6456d8e801a58e9118fc368",
-      "bytes": 17430
+      "sha256": "d5ce7d981242bd1eb5b182538cff34f3aefd1d1bbb6c06329e54b5e29f9f9ae4",
+      "bytes": 17423
     },
     {
       "id": "alpine/alpine-keys/b9f23becced4d7b3ccc0fa0f28530243ccd314a0",
@@ -7141,8 +7314,8 @@
       "recipeRevision": "b9f23becced4d7b3ccc0fa0f28530243ccd314a0",
       "status": "collected",
       "file": "alpine-alpine-keys-b9f23becced4.tar.gz",
-      "sha256": "a4ec815dc5ee0bd93133f67c4f7eee2ecede51ad57ba83e4f0c3a7ea76cdc693",
-      "bytes": 10480
+      "sha256": "45b04581063cf7f0ed68a0b5bfce19bf4851d721708de859fff4d163ee483a0d",
+      "bytes": 10474
     },
     {
       "id": "alpine/alpine-base/0934530484bbcde7498e2c694c710a49616a450e",
@@ -7161,8 +7334,8 @@
       "recipeRevision": "0934530484bbcde7498e2c694c710a49616a450e",
       "status": "collected",
       "file": "alpine-alpine-base-0934530484bb.tar.gz",
-      "sha256": "6fef8b86ad7a043f7ebd1f6e2754664492c20227463b551b027b0041af440028",
-      "bytes": 890
+      "sha256": "17695ae48a6d1699dc1cbcf534d9ff456b1d6fe9e571ec9edc2ec05b0a165248",
+      "bytes": 884
     },
     {
       "id": "alpine/apk-tools/1403ea7a8ae3fb8e5a11207ddb1ff536eb8de912",
@@ -7203,8 +7376,8 @@
       "recipeRevision": "1403ea7a8ae3fb8e5a11207ddb1ff536eb8de912",
       "status": "collected",
       "file": "alpine-apk-tools-1403ea7a8ae3.tar.gz",
-      "sha256": "51375dad3ce5fedca8c71d55d4b24ce676c636633119994879e2edb5fc1eddb2",
-      "bytes": 393534
+      "sha256": "e18cbc4d552f775746ccb1ad47197fffdb230546d69dabd67a3f3c457580166b",
+      "bytes": 393527
     },
     {
       "id": "alpine/bridge/8bac74716d06c84627ab02d101fd9d2bafd0a34c",
@@ -7228,8 +7401,8 @@
       "recipeRevision": "8bac74716d06c84627ab02d101fd9d2bafd0a34c",
       "status": "collected",
       "file": "alpine-bridge-8bac74716d06.tar.gz",
-      "sha256": "41c67d430c111a9f5d08be8b51c536124e2e6a948468b1770a18275a6ccf5913",
-      "bytes": 1740
+      "sha256": "85d6cbf287a40d1bd4eca73567811c9fb1247118173ef0255187b87fb61e201b",
+      "bytes": 1736
     },
     {
       "id": "alpine/busybox/c3ef5d10e6ef6528852c51f0564963e2f8c1be19",
@@ -7576,8 +7749,8 @@
       "recipeRevision": "c3ef5d10e6ef6528852c51f0564963e2f8c1be19",
       "status": "collected",
       "file": "alpine-busybox-c3ef5d10e6ef.tar.gz",
-      "sha256": "fa8cfe63e41ee6ed7cd29134b9c8f5f060585a763a89ad2f3078b1b1306ed542",
-      "bytes": 2605862
+      "sha256": "94754b5163d5cbff21ed60d873f413c5209cbe46da552a37422d8a0f5f9719e5",
+      "bytes": 2605849
     },
     {
       "id": "alpine/ca-certificates/eb7078df3a16d666e8f7723f94bb92e00d4b9236",
@@ -7626,7 +7799,7 @@
       "recipeRevision": "e41cbd2ae991adfe8df298ba8e8e777e90bd0e03",
       "status": "collected",
       "file": "alpine-ca-certificates-e41cbd2ae991.tar.gz",
-      "sha256": "aa4c6e127d9c7dffb2d2f37a75f2a062c1396181f8c8cc95a0dcda0dcd280b33",
+      "sha256": "1d97a2accb603d238308ad9f927d530ee853b6e85583fa7332a1cc3850801cbd",
       "bytes": 226977
     },
     {
@@ -7659,8 +7832,8 @@
       "recipeRevision": "d2f0440960e65952ee22c6b840faecb14d9f0173",
       "status": "collected",
       "file": "alpine-cryptsetup-d2f0440960e6.tar.gz",
-      "sha256": "8c39bfb5435be9c2cef99eb072a0f5645f08bed5fbdddc6edceea302a55e56e0",
-      "bytes": 13368240
+      "sha256": "3e99aa6dc0dcb2ee8f0481d789215fa94597cc32bbee0b06e4e53543dc745af6",
+      "bytes": 13368232
     },
     {
       "id": "alpine/device-mapper/a9f462dee63c7d522585e53f5c04b71eab563ec7",
@@ -7688,8 +7861,8 @@
       "recipeRevision": "a9f462dee63c7d522585e53f5c04b71eab563ec7",
       "status": "collected",
       "file": "alpine-device-mapper-a9f462dee63c.tar.gz",
-      "sha256": "8038b68def68e6e2d53a7881c31eaf2f6efbba1700a27aea0e61617b7afb3db9",
-      "bytes": 2943432
+      "sha256": "983f5a52634c32bfcad048e0c587448ae8cc8ae18645a41a52bf5f27e87b0a33",
+      "bytes": 2943427
     },
     {
       "id": "alpine/e2fsprogs/8683a6972cb245fbbdb535dad6435a9930bb9374",
@@ -7740,8 +7913,8 @@
       "recipeRevision": "8683a6972cb245fbbdb535dad6435a9930bb9374",
       "status": "collected",
       "file": "alpine-e2fsprogs-8683a6972cb2.tar.gz",
-      "sha256": "1c78693d0e02e1c11b2aec13741153bc8bfe70c24ab68ca5adc584b39cec571e",
-      "bytes": 10133477
+      "sha256": "81e6f8478bfa2dca71e148c409a53978f891c6023770e9ac5a3b94afd43c740a",
+      "bytes": 10133475
     },
     {
       "id": "alpine/ifupdown-ng/2c26ffc5e83fc3bc626f2516235b465e67606bf9",
@@ -7774,8 +7947,8 @@
       "recipeRevision": "2c26ffc5e83fc3bc626f2516235b465e67606bf9",
       "status": "collected",
       "file": "alpine-ifupdown-ng-2c26ffc5e83f.tar.gz",
-      "sha256": "ae9eebee5b295817ffe231190272e288f188b9014a7f23da2dd982749577c65d",
-      "bytes": 87396
+      "sha256": "f7e35e9d45e6be62284a6b948a65af118bdf4f7fe5dda5bdd713a57b8aa3236d",
+      "bytes": 87397
     },
     {
       "id": "alpine/iproute2/3ee752ad0c8445c8105177cd5cebdd730789bcd8",
@@ -7799,8 +7972,8 @@
       "recipeRevision": "3ee752ad0c8445c8105177cd5cebdd730789bcd8",
       "status": "collected",
       "file": "alpine-iproute2-3ee752ad0c84.tar.gz",
-      "sha256": "e6c3ec5219fa2807d640ba1f170f7ba5e475a573abf4720be59000a337edd3f8",
-      "bytes": 964074
+      "sha256": "3f7075d2b38e553f3dc9b0e02205b169963a223409c5e9f0887b95e019537370",
+      "bytes": 964072
     },
     {
       "id": "alpine/iptables/8848fb97f5ec1aa887b836cf412d88eaabe312b6",
@@ -7866,8 +8039,8 @@
       "recipeRevision": "8848fb97f5ec1aa887b836cf412d88eaabe312b6",
       "status": "collected",
       "file": "alpine-iptables-8848fb97f5ec.tar.gz",
-      "sha256": "90bcf12ab37484ba575710807e03dfefa9ae801d4357d94445c5d90502ac3652",
-      "bytes": 658661
+      "sha256": "84e1f3dca9dc43a5f737c25ed5e8f58f4a2f3bfae1e9f8ff4cc1c1a0adb64e28",
+      "bytes": 658657
     },
     {
       "id": "alpine/json-c/8e0faa63c91abd41feb359ce5fe4299a88a57ef1",
@@ -7895,8 +8068,8 @@
       "recipeRevision": "8e0faa63c91abd41feb359ce5fe4299a88a57ef1",
       "status": "collected",
       "file": "alpine-json-c-8e0faa63c91a.tar.gz",
-      "sha256": "0aaed7af1903279b17f3394a74f0a9d6c0ea3d4894ec32749a9cf43fabe3ceaa",
-      "bytes": 402190
+      "sha256": "5c56607fd7072f6da2cafa05616b17695a1fa6bc6b4d2d242222440f99b0396a",
+      "bytes": 402187
     },
     {
       "id": "alpine/kmod/206e7b39f7884d62a174aba4d33a42454518c1c2",
@@ -7929,8 +8102,8 @@
       "recipeRevision": "206e7b39f7884d62a174aba4d33a42454518c1c2",
       "status": "collected",
       "file": "alpine-kmod-206e7b39f788.tar.gz",
-      "sha256": "78a48fa54f7a0dc0b299c52e7be635ca6f78332cf827f1fdf364ea6e1a245f60",
-      "bytes": 445317
+      "sha256": "f0da27d658dc41764149be6c38fca4aeca2a911c02ab3dfb82855695181b43a9",
+      "bytes": 445312
     },
     {
       "id": "alpine/lddtree/007305e7880a70d5c804019aa3da115da732776b",
@@ -7954,8 +8127,8 @@
       "recipeRevision": "007305e7880a70d5c804019aa3da115da732776b",
       "status": "collected",
       "file": "alpine-lddtree-007305e7880a.tar.gz",
-      "sha256": "e6265bd90e8f0cefb4a6d227323a08e1aa2aa68d0192d1c58a20cfc690023119",
-      "bytes": 2174155
+      "sha256": "803b69c376d236ebd9847da155b414e9c489e8084bb2a09456deb75b5092d477",
+      "bytes": 2174148
     },
     {
       "id": "alpine/util-linux/d98c55af59055e6ca60fbe36e171546918709965",
@@ -8095,8 +8268,8 @@
       "recipeRevision": "d98c55af59055e6ca60fbe36e171546918709965",
       "status": "collected",
       "file": "alpine-util-linux-d98c55af5905.tar.gz",
-      "sha256": "c01333d8149fa7198d7e1128352e55a2c88538055f3fc9e58d1305688571484d",
-      "bytes": 10730855
+      "sha256": "3e8a1945e125f31b0b4965d3c045bbc1f397a57e6938bdaa759a3a6ebce1f7d3",
+      "bytes": 10730848
     },
     {
       "id": "alpine/libcap/0c35848136c4c16a1b1672cb812efa88fffef1c2",
@@ -8120,8 +8293,8 @@
       "recipeRevision": "0c35848136c4c16a1b1672cb812efa88fffef1c2",
       "status": "collected",
       "file": "alpine-libcap-0c35848136c4.tar.gz",
-      "sha256": "41fc0daa8c9c56dfb5f3a8326ab5a6082873ec41b4a02431c6bcf1e5811c0456",
-      "bytes": 202619
+      "sha256": "5bf752695a0d331b871aa9c43b219f07dfad3d06baa2f2b89f7e17d7565a2702",
+      "bytes": 202615
     },
     {
       "id": "alpine/openssl/4a4352d83ab03720965454a8c7b30b1b6a996c84",
@@ -8158,8 +8331,8 @@
       "recipeRevision": "4a4352d83ab03720965454a8c7b30b1b6a996c84",
       "status": "collected",
       "file": "alpine-openssl-4a4352d83ab0.tar.gz",
-      "sha256": "4cd6d9890826d3b56e8b3b07614202fb212664c7a2fb9ffe7cbb438ddd62f8c4",
-      "bytes": 53135644
+      "sha256": "9811106a18806b39d550c058de1698f059c78e6281e7fdc05b0eed9d3c9edad9",
+      "bytes": 53135640
     },
     {
       "id": "alpine/libeconf/62db33049768522f381410614d59c7d732f72c3a",
@@ -8187,8 +8360,8 @@
       "recipeRevision": "62db33049768522f381410614d59c7d732f72c3a",
       "status": "collected",
       "file": "alpine-libeconf-62db33049768.tar.gz",
-      "sha256": "8dea899a5c9e4ad96f3a9d82d0f8ba594c1291a843c9dd30c86a4a53341d3bdd",
-      "bytes": 269722
+      "sha256": "072b6c6744226b047ba7ae0f665121a6d494e744e7dc65dd155de6761c91250e",
+      "bytes": 269720
     },
     {
       "id": "alpine/elfutils/8f13294206888f3dd44ed74a8eb3dd9934499e81",
@@ -8228,8 +8401,8 @@
       "recipeRevision": "8f13294206888f3dd44ed74a8eb3dd9934499e81",
       "status": "collected",
       "file": "alpine-elfutils-8f1329420688.tar.gz",
-      "sha256": "133f26641aaaa2a18b09484fe92ec2b1570868d90eded9add0084ec8853388c9",
-      "bytes": 12029780
+      "sha256": "c31fdfc3a5414e5064092edc497fd13cdbab769a2e540fd8226bf34ef7d8660e",
+      "bytes": 12029777
     },
     {
       "id": "alpine/libmnl/fc95c59998285564fbcb0bfb2443898c62e10171",
@@ -8257,8 +8430,8 @@
       "recipeRevision": "fc95c59998285564fbcb0bfb2443898c62e10171",
       "status": "collected",
       "file": "alpine-libmnl-fc95c5999828.tar.gz",
-      "sha256": "bd474a1818a40f17151f6c91ea50713392e9a45e8e8097415b70504c6dfefa59",
-      "bytes": 316064
+      "sha256": "91395a0de761c69b34b1765ff4e9870a69665fb1d057c81c434b0bc55552d374",
+      "bytes": 316061
     },
     {
       "id": "alpine/ncurses/2cee8a7328d061418336ad327b512d96bcd7bc5e",
@@ -8295,8 +8468,8 @@
       "recipeRevision": "2cee8a7328d061418336ad327b512d96bcd7bc5e",
       "status": "collected",
       "file": "alpine-ncurses-2cee8a7328d0.tar.gz",
-      "sha256": "7009c775e0296baf6c396a5fe80b31d3535684ceb21b697ab5c549d3d1598a31",
-      "bytes": 3796036
+      "sha256": "6e981024569dfb86d8743b8c59b8153988c8d5cc038d160cd27821e80e559c18",
+      "bytes": 3796031
     },
     {
       "id": "alpine/libnftnl/80fae26950fd406b1645cfa15aa6eba0b850ecef",
@@ -8320,26 +8493,26 @@
       "recipeRevision": "80fae26950fd406b1645cfa15aa6eba0b850ecef",
       "status": "collected",
       "file": "alpine-libnftnl-80fae26950fd.tar.gz",
-      "sha256": "4eec68c436bc405d5e00162c2e8ceb9eac0951a49e3e15a54d25b2ff1564bb7a",
-      "bytes": 350416
+      "sha256": "44e2752978044ca0f0af7e8b50cf4ddf291aebd222b2e1329a5ea2c030679b4c",
+      "bytes": 350413
     },
     {
-      "id": "alpine/linux-lts/09a165f4c951edf370eddde03b2d1d5fd71805ed",
+      "id": "alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
       "packages": [
         {
           "name": "linux-virt",
-          "version": "6.18.52-r0",
+          "version": "6.18.55-r0",
           "architecture": "x86_64",
           "license": "GPL-2.0-only",
           "origin": "linux-lts",
-          "revision": "09a165f4c951edf370eddde03b2d1d5fd71805ed",
+          "revision": "52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
           "url": "https://www.kernel.org"
         }
       ],
       "inputs": [
         {
-          "file": "distfiles/patch-6.18.52.patch.xz",
-          "sha512": "f1c32303a8eb7f20c7f5c8d592a23140ff880075d0e4151bf96d5b0365ff64b35324753894d8ba822ad797e673b2a878f18d6a2f557dd6d3aca1fcc8d4e5764d"
+          "file": "distfiles/patch-6.18.55.patch.xz",
+          "sha512": "274d804a47fc28a8260907ac27f2efc95a4668f67d31a036e88c82cdaf16e8a2ba33dce18f7b344595d2cbd60d310e7b6b0ccae6d1f4dab2eb65badb61e8ef66"
         },
         {
           "file": "distfiles/linux-6.18.tar.xz",
@@ -8375,7 +8548,7 @@
         },
         {
           "file": "recipe/lts.aarch64.config",
-          "sha512": "fc69158d31d9d3c951d057aee01397f46c5a72462334f14b79aa538294c1900338bc6af154c9bda051fb29eff11541d8c1893d735a12b7bafb86cdb0f98a5485"
+          "sha512": "2a80c98aeac63bab061b799440a575524d128679d56fa819659952e703d4693c0a7f82b79e5d6edf4dd0f7b6c0c5b8465e3a05aa73b99bfcb07d75b466f44a8f"
         },
         {
           "file": "recipe/lts.armv7.config",
@@ -8399,11 +8572,11 @@
         },
         {
           "file": "recipe/lts.x86.config",
-          "sha512": "33903e3a877734ab5f3fd2b03589817dc996f5114e66a34abe30ae137b61de6960478fd4d33174da319939bf4b77d7aba809ccf5566acf46946fca476f03e35f"
+          "sha512": "78e9a97f4cb142df13215b64ede189a546642066648ebd87eb7c4e6c5e96e5921993d73193731950b639941d7f7a4222c9e6533fe5ab9fabc5e620d0c07909d2"
         },
         {
           "file": "recipe/lts.x86_64.config",
-          "sha512": "32db10060987654c515342eabad99ff68471aca739159a6dcbf79b2157e0dbe15138be67bd25acf326eae13e1790f07c77f179e3f21f9ba9ffd340a91006d5cd"
+          "sha512": "85ff8229b3ba540defe93406b472d5d34c158727e6c01dbd964c0bafe413dacbd807b0c030beac0addcd19d0575607c391a95b10826ec909d033ef62f0289825"
         },
         {
           "file": "recipe/virt.aarch64.config",
@@ -8426,11 +8599,11 @@
           "sha512": "0da34fd867f797004369e75157e764604093d1ae957fc686fe2343ecb30a271bc5c0ad876526fe5954cf5bf6e3affb71dba3a802f9089271cd51e1c2fa411201"
         }
       ],
-      "recipeRevision": "09a165f4c951edf370eddde03b2d1d5fd71805ed",
+      "recipeRevision": "52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
       "status": "collected",
-      "file": "alpine-linux-lts-09a165f4c951.tar.gz",
-      "sha256": "986042f27e73c45bea0d9af3cc6464d5cb6c28acc2a802b1899253a97b2e21e5",
-      "bytes": 158456904
+      "file": "alpine-linux-lts-52fae6d7d56f.tar.gz",
+      "sha256": "a70e9aa0218548371f7554843207f121ad36a4bed4ea872975831def2e0fbdbd",
+      "bytes": 158992903
     },
     {
       "id": "alpine/mdev-conf/203310a84fe34bc9b8dad2c97cba2f5189303415",
@@ -8454,8 +8627,8 @@
       "recipeRevision": "203310a84fe34bc9b8dad2c97cba2f5189303415",
       "status": "collected",
       "file": "alpine-mdev-conf-203310a84fe3.tar.gz",
-      "sha256": "117859e39e6881ce2d8a527ff5b873252cd6826e5f851de8564b403c773c4933",
-      "bytes": 8310
+      "sha256": "6ffed08e8805b8c7cfbed71dc271c5595ddece576daeddf4f6489242c47138aa",
+      "bytes": 8309
     },
     {
       "id": "alpine/mkinitfs/0baaf041a1e43e98a7381cfcaf0895a9204ab3d9",
@@ -8553,8 +8726,8 @@
       "recipeRevision": "f5640d3a10f664c9119720c60515265d3d6f6d01",
       "status": "collected",
       "file": "alpine-musl-f5640d3a10f6.tar.gz",
-      "sha256": "30a5ae8fa5eac8298686f38dcefdc55e7609cef578e8b6691be6a56733668605",
-      "bytes": 1096673
+      "sha256": "19cefa8a5dbe5595c90489c4bf583836ea916a97043b1c70359a56aa85b994f1",
+      "bytes": 1096666
     },
     {
       "id": "alpine/openrc/30c61338b7a04d3c94509eabba5210b7bf81151a",
@@ -8687,8 +8860,8 @@
       "recipeRevision": "30c61338b7a04d3c94509eabba5210b7bf81151a",
       "status": "collected",
       "file": "alpine-openrc-30c61338b7a0.tar.gz",
-      "sha256": "899921b42c65c2356e3009dcf8e923121dbcc0aa94d3e53130a0addd78f8bc0e",
-      "bytes": 287323
+      "sha256": "8a82a2d7e6780aea946528ad489927d3f53f42047ce5b8215664e6dcfe0de5c0",
+      "bytes": 287314
     },
     {
       "id": "alpine/pax-utils/c61801eeacb3ffcd9c2025b09e402153bb93fb39",
@@ -8712,8 +8885,8 @@
       "recipeRevision": "c61801eeacb3ffcd9c2025b09e402153bb93fb39",
       "status": "collected",
       "file": "alpine-pax-utils-c61801eeacb3.tar.gz",
-      "sha256": "3ed364f411ef5c06d7a49cf8b07974178732df9838761658e116ede4d9c26227",
-      "bytes": 125088
+      "sha256": "9fe0f657f8312953cfa57e4ecc9baf5625fb0715688da62122af59364e72eba4",
+      "bytes": 125085
     },
     {
       "id": "alpine/skalibs/f148233038fa9b35932a7996df29f110b32c2160",
@@ -8737,8 +8910,8 @@
       "recipeRevision": "f148233038fa9b35932a7996df29f110b32c2160",
       "status": "collected",
       "file": "alpine-skalibs-f148233038fa.tar.gz",
-      "sha256": "d095b37b7b982d18ca88f688ee805b762ac315b180543d8ee9c4d1cc94bc54a6",
-      "bytes": 268118
+      "sha256": "d3409c3ed55bc4f91fe8ee766c432101a5a3ce4f20a5de003c5ab0aa05ffa3bc",
+      "bytes": 268114
     },
     {
       "id": "alpine/utmps/900a4ecef77ae677eab8243b99f2c40cbf8ea35b",
@@ -8794,8 +8967,8 @@
       "recipeRevision": "900a4ecef77ae677eab8243b99f2c40cbf8ea35b",
       "status": "collected",
       "file": "alpine-utmps-900a4ecef77a.tar.gz",
-      "sha256": "47a38fd800ccdaf4c81fa6d82db312262ade729326a9a68546ef3731e8f09425",
-      "bytes": 39446
+      "sha256": "87afe05770592e0fe05d36cc8e2da287388c9622ebadfa498948a29c54f5063d",
+      "bytes": 39438
     },
     {
       "id": "alpine/xz/0c088d609f9fe69eedd6b4c7f4b99cdad847c20a",
@@ -8844,8 +9017,8 @@
       "recipeRevision": "f248b33b5943c7dc69bf691031d7612ab2e8ed93",
       "status": "collected",
       "file": "alpine-zlib-f248b33b5943.tar.gz",
-      "sha256": "4cd1c8c1a86f153a82f0ff6ea01149f53382cfd2038a01353cdb8f664c7152eb",
-      "bytes": 1504187
+      "sha256": "e3c9c14f1b7d163e6829d60b8ba0e3b4e261823aeee191da2b04af4e22c78b59",
+      "bytes": 1504184
     },
     {
       "id": "alpine/zstd/3c6e2ee2b16f403d53eab39c4426eb61f003c322",
@@ -8869,8 +9042,8 @@
       "recipeRevision": "3c6e2ee2b16f403d53eab39c4426eb61f003c322",
       "status": "collected",
       "file": "alpine-zstd-3c6e2ee2b16f.tar.gz",
-      "sha256": "c76d81bea7813b7f30cb5f05ae936ff15927be97bd75152127fb52bb0304b503",
-      "bytes": 2451540
+      "sha256": "ebcaf55ddd8bacce538c3bbef22682dd42baa54bf59941d462c45e1286751e66",
+      "bytes": 2451533
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-angleproject/2.1.r25748.890b5d8f-6",
@@ -10959,14 +11132,14 @@
       "bytes": 1868474
     },
     {
-      "id": "go/golang.org/x/net@v0.58.0",
+      "id": "go/golang.org/x/net@v0.60.0",
       "module": "golang.org/x/net",
-      "version": "v0.58.0",
-      "goSum": "h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=",
+      "version": "v0.60.0",
+      "goSum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=",
       "status": "collected",
-      "file": "go-golang.org_x_net-v0.58.0.zip",
-      "sha256": "aa78bbf8d55db3e6995630165e2bcd7dce6d0b8831c166fa03b80ac94fb650e7",
-      "bytes": 1927911
+      "file": "go-golang.org_x_net-v0.60.0.zip",
+      "sha256": "052e0453db47a96ae9567503e7c95ea925ab52682cb1cec31250541f7160107e",
+      "bytes": 1871475
     },
     {
       "id": "go/golang.org/x/sync@v0.21.0",
@@ -10999,6 +11172,16 @@
       "bytes": 2022425
     },
     {
+      "id": "go/golang.org/x/sys@v0.48.0",
+      "module": "golang.org/x/sys",
+      "version": "v0.48.0",
+      "goSum": "h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=",
+      "status": "collected",
+      "file": "go-golang.org_x_sys-v0.48.0.zip",
+      "sha256": "3a47e06431ba1e24d5b2aca3a7ce31fd13faff34df3e5d8e63f105ff9d0c1786",
+      "bytes": 2094772
+    },
+    {
       "id": "go/golang.org/x/term@v0.44.0",
       "module": "golang.org/x/term",
       "version": "v0.44.0",
@@ -11019,14 +11202,14 @@
       "bytes": 7015060
     },
     {
-      "id": "go/golang.org/x/text@v0.41.0",
+      "id": "go/golang.org/x/text@v0.42.0",
       "module": "golang.org/x/text",
-      "version": "v0.41.0",
-      "goSum": "h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=",
+      "version": "v0.42.0",
+      "goSum": "h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=",
       "status": "collected",
-      "file": "go-golang.org_x_text-v0.41.0.zip",
-      "sha256": "e63f35daaae749d0ffff97a295ad8f4837a662938a46b7a87f18a88e85a5cbf9",
-      "bytes": 7336337
+      "file": "go-golang.org_x_text-v0.42.0.zip",
+      "sha256": "a7b64e003056b6470303f408202098d8f3714a115f23091b8cac85edeb265476",
+      "bytes": 7337550
     },
     {
       "id": "go/google.golang.org/genproto/googleapis/rpc@v0.0.0-20260526163538-3dc84a4a5aaa",
@@ -11287,7 +11470,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "5b2e47363a769a0a2b00ea5ff360460099c1b8f58b9562551bc7c4d8b0125e69",
+  "reviewFingerprint": "62fece8cfdae81bb2c1075db0fb721572d9cf2fd30eac33a0cedd2b4020473d4",
   "review": {
     "status": "pending",
     "pendingReason": "The September 29 repository audit repaired and refreshed source/notice evidence. Exact final desktop and engine artifacts, public matching-source delivery, guest-agent binary reproducibility and historical installer coverage still require release-specific verification.",

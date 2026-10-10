@@ -1,168 +1,168 @@
 [
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/containerd/containerd/api",
     "version": "v1.11.1",
     "goSum": "h1:h8nfoDW9+fNsC/9TwiAHj8B1GzXKtR4eFtkhi/X5RLU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/containerd/log",
     "version": "v0.1.0",
     "goSum": "h1:TCJt7ioM2cr/tfR8GPbGf9/VRAX8D2B4PjzCpfX540I="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/containerd/ttrpc",
     "version": "v1.2.5",
     "goSum": "h1:IFckT1EFQoFBMG4c3sMdT8EP3/aKfumK1msY+Ze4oLU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/gorilla/websocket",
     "version": "v1.5.3",
     "goSum": "h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/hanwen/go-fuse/v2",
     "version": "v2.5.1",
     "goSum": "h1:OQBE8zVemSocRxA4OaFJbjJ5hlpCmIWbGr7r0M4uoQQ="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/opencontainers/go-digest",
     "version": "v1.0.0",
     "goSum": "h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/opencontainers/image-spec",
     "version": "v1.1.1",
     "goSum": "h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/sirupsen/logrus",
     "version": "v1.9.3",
     "goSum": "h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "golang.org/x/net",
-    "version": "v0.58.0",
-    "goSum": "h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To="
+    "version": "v0.60.0",
+    "goSum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "golang.org/x/sys",
-    "version": "v0.47.0",
-    "goSum": "h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs="
+    "version": "v0.48.0",
+    "goSum": "h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "golang.org/x/text",
-    "version": "v0.41.0",
-    "goSum": "h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8="
+    "version": "v0.42.0",
+    "goSum": "h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "google.golang.org/genproto/googleapis/rpc",
     "version": "v0.0.0-20260526163538-3dc84a4a5aaa",
     "goSum": "h1:mZHHdPZl0dbGHCflZgAq/Q468DWVFcU2whhB2KAo8fk="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "google.golang.org/grpc",
     "version": "v1.83.2",
     "goSum": "h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "google.golang.org/protobuf",
     "version": "v1.36.11",
     "goSum": "h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/containerd/containerd/api",
     "version": "v1.11.1",
     "goSum": "h1:h8nfoDW9+fNsC/9TwiAHj8B1GzXKtR4eFtkhi/X5RLU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/containerd/log",
     "version": "v0.1.0",
     "goSum": "h1:TCJt7ioM2cr/tfR8GPbGf9/VRAX8D2B4PjzCpfX540I="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/containerd/ttrpc",
     "version": "v1.2.5",
     "goSum": "h1:IFckT1EFQoFBMG4c3sMdT8EP3/aKfumK1msY+Ze4oLU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/gorilla/websocket",
     "version": "v1.5.3",
     "goSum": "h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/hanwen/go-fuse/v2",
     "version": "v2.5.1",
     "goSum": "h1:OQBE8zVemSocRxA4OaFJbjJ5hlpCmIWbGr7r0M4uoQQ="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/opencontainers/go-digest",
     "version": "v1.0.0",
     "goSum": "h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/opencontainers/image-spec",
     "version": "v1.1.1",
     "goSum": "h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "github.com/sirupsen/logrus",
     "version": "v1.9.3",
     "goSum": "h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "golang.org/x/net",
-    "version": "v0.58.0",
-    "goSum": "h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To="
+    "version": "v0.60.0",
+    "goSum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "golang.org/x/sys",
-    "version": "v0.47.0",
-    "goSum": "h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs="
+    "version": "v0.48.0",
+    "goSum": "h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "golang.org/x/text",
-    "version": "v0.41.0",
-    "goSum": "h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8="
+    "version": "v0.42.0",
+    "goSum": "h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "google.golang.org/genproto/googleapis/rpc",
     "version": "v0.0.0-20260526163538-3dc84a4a5aaa",
     "goSum": "h1:mZHHdPZl0dbGHCflZgAq/Q468DWVFcU2whhB2KAo8fk="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "google.golang.org/grpc",
     "version": "v1.83.2",
     "goSum": "h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU="
   },
   {
-    "binary": "opendock-agent-update",
+    "binary": "usr/local/sbin/opendock-agent",
     "module": "google.golang.org/protobuf",
     "version": "v1.36.11",
     "goSum": "h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE="

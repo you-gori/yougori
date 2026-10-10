@@ -153,6 +153,9 @@ async function main() {
     }
     await npm("locked-dependencies", ["ci"])
     await step("frontend-inventory", python, ["-c", 'import runpy; g=runpy.run_path("scripts/collect-compliance.py",run_name="library"); g["write_json"](g["EVIDENCE"] / "frontend-dependencies.json", g["frontend_inventory"]())'], candidate, candidateEnv)
+    // Generated dependency notices are application source inputs. Refresh them
+    // before archiving the exact source, then record the completed archive set.
+    await step("source-notices", python, ["scripts/collect-compliance.py", "report"], candidate, candidateEnv)
     await step("source-material", python, ["scripts/collect-compliance.py", "material"], candidate, candidateEnv)
     await step("source-report", python, ["scripts/collect-compliance.py", "report"], candidate, candidateEnv)
     report.source.applicationManifestSha256 = await checksum(join(candidate, "compliance/evidence/application-source.json"))

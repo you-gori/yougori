@@ -128,6 +128,14 @@ Implemented controls
    The website release uses verified Node 24.21.0, replacing its older bundled
    runtime; this does not replace the host's system Node installation.
 
+8. The separate SSH/Docker project launcher applies no-new-privileges, reduced
+   capabilities, bounded processes and disabled core dumps. It requires the
+   server's built-in seccomp and PID controller before starting a project.
+   Previously saved Docker containers with immutable weaker settings are not
+   silently started or deleted: their files remain available for backup and
+   deliberate recreation. This differs from the managed guest's in-place OCI
+   specification migration and is a documented compatibility limit.
+
 Retained protections and compatibility decisions
 
 The application already verifies bundled runtime checksums and preserves exact

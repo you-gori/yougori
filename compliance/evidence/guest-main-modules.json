@@ -6,6 +6,18 @@
     "revision": null
   },
   {
+    "binary": "cloud/yougori-share-linux-amd64",
+    "module": "yougori.local/cloud-share-mount",
+    "version": "(devel)",
+    "revision": null
+  },
+  {
+    "binary": "cloud/yougori-share-linux-arm64",
+    "module": "yougori.local/cloud-share-mount",
+    "version": "(devel)",
+    "revision": null
+  },
+  {
     "binary": "bin/containerd",
     "module": "github.com/containerd/containerd/v2",
     "version": "v2.3.3",

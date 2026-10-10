@@ -5906,28 +5906,6 @@
   },
   {
     "ecosystem": "cargo",
-    "name": "glib",
-    "version": "0.18.5",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5",
-    "license": "MIT",
-    "texts": [
-      {
-        "path": "COPYRIGHT",
-        "sha256": "dae402989de65164815b7e2b6bc2b9576285434c3785934c8b6ece0fa055960d"
-      },
-      {
-        "path": "LICENSE",
-        "sha256": "8cf56d10131ce201cf69ab74b111d3ebac1acca3833d7efb39ae357224b70edb"
-      }
-    ],
-    "noticeSectionSha256": [
-      "3870e23c6067083469866c4c8997a3773598dcbd114ca33312f743d78962dbd9",
-      "70486bc92a586ac38431a83510540707883edf151f575976509dfc5a902fcc7f"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
     "name": "glib-macros",
     "version": "0.18.5",
     "scope": "lockfile-includes-build-and-other-target-dependencies",
