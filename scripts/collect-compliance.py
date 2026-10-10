@@ -117,7 +117,7 @@ def write_json(path, value, canonical=False):
 
 
 def safe_name(name):
-    if not re.fullmatch(r"[a-zA-Z0-9_.+@-]+", name) or name in (".", ".."):
+    if not re.fullmatch(r"[a-zA-Z0-9_.+@~-]+", name) or name in (".", ".."):
         raise ValueError(f"Unsafe component filename: {name!r}")
     return name
 
@@ -610,7 +610,279 @@ def go_zip_hash(path):
     return "h1:" + base64.b64encode(hashlib.sha256("".join(lines).encode()).digest()).decode()
 
 
+VENDOR_SPECS = (
+    ("oci", "vendor-oci-build", "yougori-oci-runtime-linux-amd64", {
+        "bin/containerd", "bin/containerd-shim-runc-v2", "bin/nerdctl", "bin/runc",
+        *("libexec/cni/" + name for name in ("bridge", "firewall", "host-local", "loopback", "portmap", "tuning")),
+    }),
+    ("nvidia-cdi", "vendor-nvidia-build", "yougori-nvidia-cdi-linux-amd64", {"bin/nvidia-ctk", "bin/nvidia-cdi-hook"}),
+)
+
+
+def native_package_rows(record):
+    if "nativeBuild" in record:
+        rows = []
+        for line in record["nativeBuild"]["packages"].splitlines():
+            fields = line.split("\t")
+            if len(fields) != 4:
+                raise ValueError("Malformed actual OCI native package provenance")
+            rows.append(dict(zip(("package", "version", "sourcePackage", "sourceVersion"), fields)))
+    else:
+        rows = record["provenance"]["nativeBuildPackages"]
+    if not rows:
+        raise ValueError("Missing actual native build package provenance")
+    for row in rows:
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", row["sourcePackage"])
+                or not re.fullmatch(r"[0-9][a-zA-Z0-9.+:~_-]*", row["sourceVersion"])):
+            raise ValueError("Unpinned native source package/version")
+    return rows
+
+
+def vendor_provenance():
+    """Bind sources to the rebuilt bytes that ship, never an unused full tar."""
+    results = []
+    for kind, directory, filename, names in VENDOR_SPECS:
+        inputs_path = ROOT / "scripts" / directory / "inputs.json"
+        inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
+        manifest_path = RUNTIME / "cuda" / (filename + ".manifest.json")
+        archive_path = RUNTIME / "cuda" / (filename + ".tar.gz")
+        for path in (manifest_path, archive_path):
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("Missing or linked rebuilt vendor input: " + str(path))
+        if manifest_path.stat().st_size > 1024 * 1024:
+            raise ValueError("Vendor manifest exceeds source inspection budget")
+        record = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if (type(record.get("schemaVersion")) is not int or record["schemaVersion"] != 1
+                or record.get("target") != "linux/amd64" or record.get("compiler") != "go1.27.2"):
+            raise ValueError("Unsupported rebuilt vendor provenance")
+        archive = record["archive"]
+        if (archive["file"] != archive_path.name or type(archive["bytes"]) is not int
+                or not 0 < archive["bytes"] <= 96 * 1024 * 1024
+                or archive_path.stat().st_size != archive["bytes"] or digest(archive_path) != archive["sha256"]):
+            raise ValueError("Rebuilt vendor archive differs from its manifest")
+        expected = {}
+        if type(record["files"]) is not list or len(record["files"]) != len(names):
+            raise ValueError("Incomplete rebuilt vendor file set")
+        for item in record["files"]:
+            if (item["path"] not in names or item["path"] in expected or type(item["bytes"]) is not int
+                    or not 0 < item["bytes"] <= 96 * 1024 * 1024 or item["mode"] != 0o755
+                    or not re.fullmatch(r"[a-f0-9]{64}", item["sha256"])):
+                raise ValueError("Invalid rebuilt vendor file metadata")
+            expected[item["path"]] = item
+        if sum(item["bytes"] for item in expected.values()) > 256 * 1024 * 1024:
+            raise ValueError("Rebuilt vendor expanded size exceeds inspection budget")
+        if kind == "oci":
+            if (record["components"] != inputs["components"]
+                    or record["nativeBuild"]["inputsSha256"] != digest(inputs_path)):
+                raise ValueError("OCI source/native pins differ from the reviewed build inputs")
+            for name in ("musl", "libseccomp", "btrfs"):
+                if record["nativeBuild"][name] != inputs["native"][name]:
+                    raise ValueError("OCI native source pins differ from the actual build")
+            frozen = {name: {file: digest(ROOT / "scripts" / directory / "modules" / name / file)
+                             for file in ("go.mod", "go.sum", "modules.patch")}
+                      for name in inputs["components"]}
+            if record["moduleFiles"] != frozen:
+                raise ValueError("Patched OCI module inputs differ from the actual build")
+            wrapper = record["nativeBuild"]["wrapperPatch"]
+            if digest(APPLICATION["safe_file"](ROOT, wrapper["file"])) != wrapper["sha256"]:
+                raise ValueError("OCI native wrapper patch differs from the actual build")
+            components = inputs["components"]
+        else:
+            provenance = record["provenance"]
+            if (record.get("kind") != kind or record["upstream"] != inputs["upstream"]
+                    or provenance["inputs"] != inputs or provenance["inputsSha256"] != digest(inputs_path)):
+                raise ValueError("NVIDIA source pins differ from the actual build")
+            frozen = {file: digest(ROOT / "scripts" / directory / "modules" / file)
+                      for file in ("go.mod", "go.sum", "modules.patch")}
+            if provenance["moduleInputs"] != frozen:
+                raise ValueError("Patched NVIDIA module inputs differ from the actual build")
+            if provenance["buildInputs"] != {name: digest(ROOT / "scripts" / directory / name)
+                                             for name in ("build.py", "verify.py", "test-no-driver.py")}:
+                raise ValueError("NVIDIA build recipes differ from the actual build")
+            for patch in inputs.get("patches", []):
+                path = APPLICATION["safe_file"](ROOT, "scripts/" + directory + "/" + patch["file"])
+                if path.stat().st_size != patch["bytes"] or digest(path) != patch["sha256"]:
+                    raise ValueError("NVIDIA source patch differs from its reviewed pin")
+            components = {"nvidia": inputs["upstream"]}
+        rows = native_package_rows(record)
+        if kind == "nvidia-cdi" and {row["package"]: row["version"] for row in rows} != inputs["nativePackages"]:
+            raise ValueError("NVIDIA actual native packages differ from their reviewed pins")
+        results.append({"kind": kind, "directory": directory, "record": record, "inputs": inputs,
+                        "components": components, "manifest": manifest_path, "archive": archive_path,
+                        "names": names, "files": expected, "nativePackages": rows})
+    return results
+
+
+def inspect_vendor_binaries(vendor, inspect):
+    seen = set()
+    with tarfile.open(vendor["archive"], "r|gz") as archive:
+        for member in archive:
+            if (member.name not in vendor["files"] or member.name in seen or not member.isfile()
+                    or member.sparse or member.pax_headers):
+                raise ValueError("Unsafe or duplicate rebuilt vendor archive member")
+            item = vendor["files"][member.name]
+            if member.size != item["bytes"] or member.mode != 0o755:
+                raise ValueError("Rebuilt vendor archive member metadata differs")
+            contents = archive.extractfile(member).read()
+            if (len(contents) != item["bytes"] or hashlib.sha256(contents).hexdigest() != item["sha256"]
+                    or len(contents) < 64 or contents[:7] != b"\x7fELF\x02\x01\x01"
+                    or contents[18:20] != b"\x3e\x00" or int.from_bytes(contents[16:18], "little") not in (2, 3)):
+                raise ValueError("Rebuilt vendor binary integrity/ELF mismatch")
+            inspect(vendor["kind"] + "/" + member.name, contents)
+            seen.add(member.name)
+    if seen != vendor["names"]:
+        raise ValueError("Rebuilt vendor archive omits required executables")
+
+
+def native_source_ids(vendors):
+    ids = {f"ubuntu/{row['sourcePackage']}/{row['sourceVersion']}"
+           for vendor in vendors for row in vendor["nativePackages"]}
+    for vendor in vendors:
+        if vendor["kind"] == "oci":
+            ids.update(f"oci-native/{name}/{entry['version']}" for name, entry in vendor["inputs"]["native"].items())
+    return ids
+
+
+def pinned_source_input(record, directory):
+    target = directory / safe_name(record["file"])
+    download(record["url"], target, record["sha256"])
+    if target.is_symlink() or target.stat().st_size != record["bytes"] or digest(target) != record["sha256"]:
+        raise ValueError("Pinned vendor source input differs: " + record["file"])
+    return {"file": target.name, "sha256": record["sha256"], "bytes": record["bytes"], "origin": record["url"]}
+
+
+def native_notice_entries(path):
+    if not tarfile.is_tarfile(path):
+        return []
+    texts = []
+    with tarfile.open(path, "r:*") as archive:
+        for member in archive:
+            name = Path(member.name).name
+            if (member.isfile() and member.size <= 1024 * 1024
+                    and (re.match(r"^(?:LICEN[CS]E|COPYING|COPYRIGHT|NOTICE)(?:$|[._-])", name, re.I)
+                         or member.name.endswith("debian/copyright"))):
+                texts.append((member.name, archive.extractfile(member).read().decode("utf-8", errors="replace")))
+    return texts
+
+
+def collect_ubuntu_native_source(name, version):
+    """Use actual dpkg source versions, not the retired upstream Docker image."""
+    filename_version = version.split(":", 1)[-1]
+    directory = WORK / "ubuntu" / safe_name(name + "-" + filename_version)
+    directory.mkdir(parents=True, exist_ok=True)
+    pool = (name[:4] if name.startswith("lib") else name[0]) + "/" + name
+    descriptor = directory / safe_name(name + "_" + filename_version + ".dsc")
+    locations = ["https://archive.ubuntu.com/ubuntu/pool/main/" + pool + "/",
+                 "https://security.ubuntu.com/ubuntu/pool/main/" + pool + "/"]
+    selected = None
+    for base in locations:
+        try:
+            download(base + descriptor.name, descriptor)
+            selected = base
+            break
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+    if selected is None:
+        raise ValueError("Exact Ubuntu native source descriptor unavailable: " + name + " " + version)
+    text = descriptor.read_text(encoding="utf-8")
+    if (not re.search(r"^Source: " + re.escape(name) + r"\s*$", text, re.M)
+            or not re.search(r"^Version: " + re.escape(version) + r"\s*$", text, re.M)):
+        raise ValueError("Ubuntu native source descriptor package/version differs")
+    section = re.search(r"^Checksums-Sha256:\n((?: .+\n)+)", text, re.M)
+    if section is None:
+        raise ValueError("Ubuntu native source descriptor lacks SHA256 inputs")
+    inputs = [{"file": descriptor.name, "sha256": digest(descriptor), "bytes": descriptor.stat().st_size,
+               "origin": selected + descriptor.name}]
+    notices = []
+    for line in section[1].splitlines():
+        checksum, size, filename = line.split()
+        if not re.fullmatch(r"[a-f0-9]{64}", checksum) or not size.isdecimal():
+            raise ValueError("Invalid Ubuntu native source checksum row")
+        target = directory / safe_name(filename)
+        download(selected + urllib.parse.quote(filename), target, checksum)
+        if target.stat().st_size != int(size):
+            raise ValueError("Ubuntu native source length differs")
+        inputs.append({"file": filename, "sha256": checksum, "bytes": int(size), "origin": selected + filename})
+        notices += native_notice_entries(target)
+    output = BUNDLE / safe_name("ubuntu-" + name + "-" + filename_version + ".tar.gz")
+    archive_directory(directory, output)
+    record = archive_record(output, id=f"ubuntu/{name}/{version}", status="collected", version=version,
+                            license="See exact upstream and Ubuntu copyright/license notices", inputs=inputs,
+                            provenance="compliance/evidence/oci-native-libraries.json")
+    return record, notices
+
+
+def collect_vendor_native(vendors):
+    results, sections = [], []
+    for vendor in vendors:
+        if vendor["kind"] != "oci":
+            continue
+        for name, source in vendor["inputs"]["native"].items():
+            directory = WORK / "oci-native" / safe_name(name + "-" + source["version"])
+            directory.mkdir(parents=True, exist_ok=True)
+            records = [source["source"]] if "source" in source else source["sources"]
+            records += source.get("patches", [])
+            inputs = [pinned_source_input(record, directory) for record in records]
+            notices = [entry for record in inputs for entry in native_notice_entries(directory / record["file"])]
+            output = BUNDLE / safe_name("oci-native-" + name + "-" + source["version"] + ".tar.gz")
+            archive_directory(directory, output)
+            results.append(archive_record(output, id=f"oci-native/{name}/{source['version']}", status="collected",
+                                          version=source["version"], inputs=inputs,
+                                          license="See checksum-verified upstream notices", buildInputs=source,
+                                          provenance="compliance/evidence/oci-native-libraries.json"))
+            sections += [f"OCI native {name} {source['version']}\nSource: {path}\n\n{text}\n" for path, text in notices]
+    packages = {(row["sourcePackage"], row["sourceVersion"]) for vendor in vendors for row in vendor["nativePackages"]}
+    for name, version in sorted(packages):
+        print(f"Actual native source: Ubuntu {name} {version}", flush=True)
+        record, notices = collect_ubuntu_native_source(name, version)
+        results.append(record)
+        sections += [f"Ubuntu native/build input {name} {version}\nSource: {path}\n\n{text}\n" for path, text in notices]
+    # Preserve the complete pinned recipes/module patches and manifests as
+    # source material. Raw logs are included only from named build evidence
+    # directories, never from a whole private build/workspace directory.
+    with tempfile.TemporaryDirectory(prefix="vendor-provenance-", dir=WORK) as temporary:
+        staged = Path(temporary)
+        for vendor in vendors:
+            directory = ROOT / "scripts" / vendor["directory"]
+            for path in sorted(directory.rglob("*")):
+                if (not path.is_file() or "__pycache__" in path.parts
+                        or not (path.suffix in (".py", ".json", ".patch") or path.name in ("go.mod", "go.sum"))):
+                    continue
+                if path.is_symlink():
+                    raise ValueError("Linked vendor source material")
+                destination = staged / vendor["directory"] / path.relative_to(directory)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, destination)
+            shutil.copyfile(vendor["manifest"], staged / (vendor["kind"] + "-build-manifest.json"))
+            evidence = ROOT / "build" / ("oci-runtime" if vendor["kind"] == "oci" else "nvidia-cdi-runtime") / "records"
+            if evidence.exists():
+                for path in sorted(evidence.iterdir()):
+                    if path.is_symlink():
+                        raise ValueError("Linked vendor build evidence")
+                    if path.is_file() and path.suffix in (".json", ".txt", ".log"):
+                        destination = staged / vendor["kind"] / "records" / path.name
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(path, destination)
+        output = BUNDLE / "oci-patched-build-provenance.tar.gz"
+        archive_directory(staged, output)
+        results.append(archive_record(output, id="oci-patched-build-provenance", status="collected",
+                                      runtimeArchives={vendor["kind"]: vendor["record"]["archive"] for vendor in vendors},
+                                      scope="Pinned recipes, module/source patches and actual inline manifests; raw logs included when retained"))
+    write_json(WORK / "debian-sources.json", results)
+    write_json(EVIDENCE / "oci-native-libraries.json", {
+        "schemaVersion": 2, "scope": "Actual rebuilt OCI/NVIDIA inputs; historical nerdctl-full Docker attribution retired",
+        "vendors": [{"kind": vendor["kind"], "archive": vendor["record"]["archive"],
+                     "nativeBuild": vendor["record"].get("nativeBuild", vendor["record"].get("provenance", {})),
+                     "nativePackages": vendor["nativePackages"]} for vendor in vendors],
+        "sourceComponents": sorted(native_source_ids(vendors)),
+    })
+    (ROOT / "compliance/notices/oci-native-libraries.txt").write_text("\n\n".join(sections), encoding="utf-8")
+    return results
+
+
 def collect_go():
+    vendors = vendor_provenance()
     modules = json.loads((EVIDENCE / "guest-go-modules.json").read_text(encoding="utf-8"))
     main_modules = []
     def inspect(binary, contents):
@@ -625,16 +897,32 @@ def collect_go():
                    *(RUNTIME / "cloud").glob("yougori-share-linux-*")]:
         if binary.is_file():
             inspect(binary.relative_to(RUNTIME).as_posix(), binary.read_bytes())
-    distribution = ROOT / "build/appliance-cache/nerdctl-full-2.3.5-linux-amd64.tar.gz"
-    expected = "b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa"
-    if digest(distribution) != expected:
-        raise ValueError("OCI distribution differs from the build script's pinned input")
-    names = {"bin/containerd", "bin/containerd-shim-runc-v2", "bin/nerdctl", "bin/runc"}
-    names.update(f"libexec/cni/{plugin}" for plugin in ("bridge", "firewall", "host-local", "loopback", "portmap", "tuning"))
-    with tarfile.open(distribution, "r|gz") as archive:
-        for member in archive:
-            if member.name.removeprefix("./") in names:
-                inspect(member.name, archive.extractfile(member).read())
+    pinned_mains = {}
+    for vendor in vendors:
+        for name, component in vendor["components"].items():
+            frozen = ROOT / "scripts" / vendor["directory"] / "modules"
+            if vendor["kind"] == "oci":
+                frozen /= name
+            match = re.search(r"^module\s+(\S+)\s*$", (frozen / "go.mod").read_text(encoding="utf-8"), re.M)
+            if not match:
+                raise ValueError("Frozen vendor module lacks its main module path")
+            pinned_mains[match[1]] = {"component": component, "vendor": vendor}
+        before = len(main_modules)
+        inspect_vendor_binaries(vendor, inspect)
+        if len(main_modules) - before != len(vendor["names"]):
+            raise ValueError("Missing Go main-module provenance for a rebuilt vendor executable")
+        for item in main_modules[before:]:
+            pinned = pinned_mains.get(item["module"])
+            if pinned is None or pinned["vendor"]["kind"] != vendor["kind"]:
+                raise ValueError("Rebuilt binary main module differs from the frozen source")
+            revision = pinned["component"]["revision"]
+            if vendor["kind"] == "oci" and item["revision"] != revision:
+                raise ValueError("Rebuilt OCI binary VCS revision differs from its pinned source")
+            item["sourceRevision"] = revision
+            item["sourceMapping"] = ("embedded-vcs-and-frozen-module-hashes" if vendor["kind"] == "oci"
+                                     else "verified-inline-build-provenance-and-frozen-patch-inputs")
+            item["runtimeArchiveSha256"] = vendor["record"]["archive"]["sha256"]
+    collect_vendor_native(vendors)
     write_json(EVIDENCE / "all-guest-go-modules.json", modules)
     write_json(EVIDENCE / "guest-main-modules.json", main_modules)
     mains = []
@@ -645,6 +933,17 @@ def collect_go():
             continue
         record = {"id": "go-main/" + item["module"], **item}
         try:
+            if item["module"] in pinned_mains:
+                pinned = pinned_mains[item["module"]]
+                source = pinned["component"]["source"]
+                path = BUNDLE / safe_name(source["file"])
+                download(source["url"], path, source["sha256"])
+                if path.is_symlink() or path.stat().st_size != source["bytes"] or digest(path) != source["sha256"]:
+                    raise ValueError("Pinned vendor main source archive differs")
+                record.update(archive_record(path, status="collected", sourceInput=source,
+                    upstream=pinned["component"], localModifications="Frozen module/source patches and build recipes in local-build-material and oci-patched-build-provenance"))
+                mains.append(record)
+                continue
             if not item["module"].startswith("github.com/") or not re.fullmatch(r"[a-f0-9]{40}", item["revision"] or ""):
                 raise ValueError("Main Go module lacks an exact upstream revision")
             repository = "/".join(item["module"].split("/")[1:3])
@@ -1089,9 +1388,31 @@ def report():
         for name in ("libdb-6.2.dll", "libjack64.dll", "brlapi-0.8.dll", "libssp-0.dll"):
             if (RUNTIME / part / name).exists():
                 blockers.append({"id": part + "/" + name, "reason": "The retired stock dependency has returned; review is required."})
-    for required in ("debian/glibc/2.41-12+deb13u3", "debian/libseccomp/2.6.0-2", "debian/btrfs-progs/6.14-1"):
-        if required not in component_ids:
-            blockers.append({"id": required, "reason": "Missing source for an OCI native-library input."})
+    try:
+        vendors = vendor_provenance()
+        for vendor in vendors:
+            inspect_vendor_binaries(vendor, lambda *_: None)
+        for required in sorted(native_source_ids(vendors)):
+            if required not in component_ids:
+                blockers.append({"id": required, "reason": "Missing source for an actual rebuilt native/library/toolchain input."})
+        provenance = next((item for item in components if item.get("id") == "oci-patched-build-provenance"
+                           and item.get("status") == "collected"), {})
+        if provenance.get("runtimeArchives") != {vendor["kind"]: vendor["record"]["archive"] for vendor in vendors}:
+            blockers.append({"id": "oci-patched-build-provenance", "reason": "Retained source/build provenance does not match the actual rebuilt runtime archives."})
+        for vendor in vendors:
+            for name, upstream in vendor["components"].items():
+                frozen = ROOT / "scripts" / vendor["directory"] / "modules"
+                if vendor["kind"] == "oci":
+                    frozen /= name
+                match = re.search(r"^module\s+(\S+)\s*$", (frozen / "go.mod").read_text(encoding="utf-8"), re.M)
+                if not match:
+                    raise ValueError("Missing main module source pin")
+                component = next((item for item in components if item.get("id") == "go-main/" + match[1]
+                                  and item.get("status") == "collected"), {})
+                if component.get("sourceInput") != upstream["source"]:
+                    blockers.append({"id": "go-main/" + match[1], "reason": "Main source archive lacks the actual rebuilt vendor's checksum-pinned source mapping."})
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        blockers.append({"id": "rebuilt-vendor-provenance", "reason": str(error)})
     missing = [item for item in dependencies if not item["texts"]]
     if missing:
         blockers.append({"id": "application-notices", "reason": f"{len(missing)} lockfile dependencies still need notice review (includes build-only/other-target entries). See evidence/application-dependencies.json."})

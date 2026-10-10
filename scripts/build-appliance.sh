@@ -11,11 +11,10 @@ bash "$repo_root/scripts/check-agent-go.sh"
 output_directory="$(realpath -m "$2")"
 cache_directory="$repo_root/build/appliance-cache"
 alpine_version="3.24.1"
-nerdctl_version="2.3.5"
 alpine_archive="alpine-minirootfs-${alpine_version}-x86_64.tar.gz"
-nerdctl_archive="nerdctl-full-${nerdctl_version}-linux-amd64.tar.gz"
 alpine_url="https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/${alpine_archive}"
-nerdctl_url="https://github.com/containerd/nerdctl/releases/download/v${nerdctl_version}/${nerdctl_archive}"
+oci_archive="$repo_root/src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.tar.gz"
+oci_manifest="$repo_root/src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.manifest.json"
 
 work_directory="$(mktemp -d /tmp/yougori-appliance.XXXXXX)"
 rootfs="$work_directory/rootfs"
@@ -64,21 +63,15 @@ download_verified \
   sha256 \
   "$alpine_url.sha256"
 
-if [[ ! -f "$cache_directory/$nerdctl_archive" ]]; then
-  curl --fail --location --proto '=https' --tlsv1.2 --retry 4 \
-    --output "$cache_directory/$nerdctl_archive.part" "$nerdctl_url"
-  mv "$cache_directory/$nerdctl_archive.part" "$cache_directory/$nerdctl_archive"
-fi
-nerdctl_expected="b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa"
-nerdctl_actual="$(sha256sum "$cache_directory/$nerdctl_archive" | awk '{print $1}')"
-if [[ "$nerdctl_actual" != "$nerdctl_expected" ]]; then
-  echo "checksum mismatch for $nerdctl_archive" >&2
-  exit 1
-fi
+# Vendor executables are rebuilt from pinned upstream commits with fixed module
+# and native dependencies. Never fall back to the vulnerable full release tar.
+python3 "$repo_root/scripts/vendor-oci-build/verify.py" \
+  --archive "$oci_archive" --manifest "$oci_manifest" \
+  --destination "$nerdctl_root"
 
-if ! command -v qemu-img >/dev/null 2>&1 || ! command -v musl-gcc >/dev/null 2>&1; then
+if ! command -v qemu-img >/dev/null 2>&1; then
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends musl-tools qemu-utils
+  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends qemu-utils
 fi
 
 echo "Building Yougori appliance agent"
@@ -90,7 +83,13 @@ echo "Building Yougori appliance agent"
     -ldflags='-s -w -buildid=' \
     -o "$work_directory/opendock-agent" .
 )
-musl-gcc -static -Os -s -Wall -Wextra -Werror \
+: "${YOUGORI_MUSL_TOOLCHAIN_MANIFEST:?Set the verified private musl native build manifest; no system compiler fallback is permitted.}"
+python3 "$repo_root/scripts/vendor-oci-build/native-compiler.py" \
+  --manifest "$YOUGORI_MUSL_TOOLCHAIN_MANIFEST" \
+  --record "$repo_root/build/oci-runtime/records/mount-helper-appliance.build.json" \
+  --source "$repo_root/appliance/mount-helper.c" -- \
+  -static-pie -Os -s -fstack-protector-strong -Wl,-z,relro,-z,now,-z,noexecstack \
+  -Wall -Wextra -Werror \
   -o "$work_directory/opendock-mount-helper" \
   "$repo_root/appliance/mount-helper.c"
 
@@ -98,7 +97,6 @@ echo "Assembling Alpine root filesystem"
 tar -xzf "$cache_directory/$alpine_archive" -C "$rootfs"
 cp /etc/resolv.conf "$rootfs/etc/resolv.conf"
 mkdir -p "$rootfs/usr/local/sbin" "$rootfs/etc/containerd" "$rootfs/etc/network" "$rootfs/sys/fs/cgroup" "$rootfs/var/lib/opendock/exports" "$rootfs/var/lib/opendock/shares" "$rootfs/var/lib/opendock/secrets"
-tar -xzf "$cache_directory/$nerdctl_archive" -C "$nerdctl_root"
 install -m 0755 \
   "$nerdctl_root/bin/containerd" \
   "$nerdctl_root/bin/containerd-shim-runc-v2" \
@@ -114,7 +112,8 @@ for plugin in bridge firewall host-local loopback portmap tuning; do
     "$nerdctl_root/libexec/cni/$plugin" \
     "$rootfs/usr/local/libexec/cni/$plugin"
 done
-install -m 0644 "$nerdctl_root/libexec/cni/LICENSE" "$rootfs/usr/local/libexec/cni/LICENSE"
+install -D -m 0644 "$repo_root/src-tauri/resources/RUNTIME_LICENSES.txt" \
+  "$rootfs/usr/share/licenses/yougori-runtime/RUNTIME_LICENSES.txt"
 
 chroot "$rootfs" /bin/sh -euxc '
   printf "%s\n" \

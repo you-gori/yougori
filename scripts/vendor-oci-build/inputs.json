@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "target": "linux/amd64",
+  "goVersion": "go1.27.2",
+  "goArchiveSha256": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+  "sourceDateEpoch": 0,
+  "components": {
+    "containerd": {
+      "repository": "containerd/containerd",
+      "version": "v2.3.6",
+      "revision": "ee2735368117d2eb259779949d5e75cdafec9761",
+      "source": {
+        "file": "containerd-v2.3.6-ee2735368117.tar.gz",
+        "url": "https://codeload.github.com/containerd/containerd/tar.gz/ee2735368117d2eb259779949d5e75cdafec9761",
+        "sha256": "fa21eb211d0a9cb2ad32e6edb67808f7615252c8c56a63813ef1d0822bd2a90d",
+        "bytes": 11687648
+      }
+    },
+    "nerdctl": {
+      "repository": "containerd/nerdctl",
+      "version": "v2.3.5",
+      "revision": "347782c28efe1753d5cc9652f6304752ed431221",
+      "source": {
+        "file": "nerdctl-v2.3.5-347782c28efe.tar.gz",
+        "url": "https://codeload.github.com/containerd/nerdctl/tar.gz/347782c28efe1753d5cc9652f6304752ed431221",
+        "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
+        "bytes": 1558717
+      }
+    },
+    "runc": {
+      "repository": "opencontainers/runc",
+      "version": "v1.5.1",
+      "revision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+      "source": {
+        "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
+        "url": "https://codeload.github.com/opencontainers/runc/tar.gz/8f2685a471d3347a686ad3909783d8aafc6bb208",
+        "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
+        "bytes": 2808413
+      },
+      "compatibilityFloors": {
+        "github.com/opencontainers/cgroups": "v0.1.0"
+      }
+    },
+    "cni": {
+      "repository": "containernetworking/plugins",
+      "version": "v1.9.1",
+      "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+      "source": {
+        "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
+        "url": "https://codeload.github.com/containernetworking/plugins/tar.gz/adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+        "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
+        "bytes": 4096717
+      }
+    }
+  },
+  "moduleFloors": {
+    "github.com/cilium/ebpf": "v0.22.0",
+    "github.com/containerd/containerd/v2": "v2.3.6",
+    "github.com/klauspost/compress": "v1.18.7",
+    "go.opentelemetry.io/otel": "v1.45.0",
+    "go.opentelemetry.io/otel/sdk": "v1.45.0",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace": "v1.45.0",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc": "v1.45.0",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp": "v1.45.0",
+    "golang.org/x/crypto": "v0.57.0",
+    "golang.org/x/mod": "v0.41.0",
+    "golang.org/x/net": "v0.60.0",
+    "golang.org/x/text": "v0.42.0",
+    "google.golang.org/grpc": "v1.83.2",
+    "github.com/containers/ocicrypt": "v1.3.2",
+    "github.com/cloudflare/circl": "v1.6.3"
+  },
+  "native": {
+    "musl": {
+      "version": "1.2.6-r2",
+      "aportsRevision": "f5640d3a10f664c9119720c60515265d3d6f6d01",
+      "source": {
+        "file": "musl-1.2.6.tar.gz",
+        "url": "https://distfiles.alpinelinux.org/distfiles/v3.24/musl-1.2.6.tar.gz",
+        "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+        "bytes": 1082499
+      },
+      "patches": [
+        {
+          "file": "handle-aux-at_base.patch",
+          "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+          "bytes": 1214,
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/handle-aux-at_base.patch"
+        },
+        {
+          "file": "0001-add-stub-for-pthread_mutexattr_setprioceiling.patch",
+          "sha256": "b2067680c66af9eb9f4fdc1fa5d9337a9fd62bdab2c437b416aa97d79eb884ee",
+          "bytes": 896,
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/0001-add-stub-for-pthread_mutexattr_setprioceiling.patch"
+        },
+        {
+          "file": "fix-loongarch64-zero-len-extcontext.patch",
+          "sha256": "92c8e965798ed516c15cb2a4e7c4ac45ec1eb68b6abff16c73adff2a3bae1b14",
+          "bytes": 738,
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/fix-loongarch64-zero-len-extcontext.patch"
+        },
+        {
+          "file": "CVE-2026-6042.patch",
+          "sha256": "1d0be2e72b9d5bd16546b923aa8af861d271322f01644716a81823bec4065c99",
+          "bytes": 7506,
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-6042.patch"
+        },
+        {
+          "file": "CVE-2026-40200.patch",
+          "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb",
+          "bytes": 5594,
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-40200.patch"
+        }
+      ]
+    },
+    "libseccomp": {
+      "version": "2.6.1",
+      "source": {
+        "file": "libseccomp-2.6.1.tar.gz",
+        "url": "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz",
+        "sha256": "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be",
+        "bytes": 656231
+      }
+    },
+    "btrfs": {
+      "version": "6.14-1",
+      "sources": [
+        {
+          "file": "btrfs-progs_6.14.orig.tar.gz",
+          "sha256": "5a85b791f0f32a4994e864ac4cb7abccce08e56db3010a1855ad0edeebc70b4c",
+          "bytes": 3234940,
+          "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14.orig.tar.gz"
+        },
+        {
+          "file": "btrfs-progs_6.14-1.debian.tar.xz",
+          "sha256": "0701b7d38fc7b1568f1f48bf8665b6a8ac503c8056e06ff4e3f7536656c0590c",
+          "bytes": 20136,
+          "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.debian.tar.xz"
+        },
+        {
+          "file": "btrfs-progs_6.14-1.dsc",
+          "sha256": "eccdbf28fbb3414fe012d89a996fe1288807431d07f6cba0302db209714f6a8d",
+          "bytes": 2557,
+          "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.dsc"
+        }
+      ]
+    }
+  },
+  "dependencyFixes": {
+    "github.com/containers/ocicrypt": {
+      "version": "v1.3.2",
+      "revision": "6a2a20bcf291d891da0e987e53d1ac7c133268a6",
+      "advisory": "https://pkg.go.dev/vuln/GO-2026-5932",
+      "fix": "https://github.com/containers/ocicrypt/commit/6a2a20bcf291d891da0e987e53d1ac7c133268a6"
+    }
+  }
+}

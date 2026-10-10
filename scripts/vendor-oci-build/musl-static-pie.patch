@@ -1,0 +1,18 @@
+--- a/tools/musl-gcc.specs.sh
++++ b/tools/musl-gcc.specs.sh
+@@ -17,13 +17,13 @@
+ libgcc.a%s %:if-exists(libgcc_eh.a%s)
+ 
+ *startfile:
+-%{!shared: $libdir/Scrt1.o} $libdir/crti.o crtbeginS.o%s
++%{static-pie: $libdir/rcrt1.o; !shared: $libdir/Scrt1.o} $libdir/crti.o crtbeginS.o%s
+ 
+ *endfile:
+ crtendS.o%s $libdir/crtn.o
+ 
+ *link:
+--dynamic-linker $ldso -nostdlib %{shared:-shared} %{static:-static} %{rdynamic:-export-dynamic}
++%{static-pie: -no-dynamic-linker -pie; !static: -dynamic-linker $ldso} -nostdlib -z text %{shared} %{static-pie|static:-static} %{rdynamic:-export-dynamic} %{!static: -eh-frame-hdr}
+ 
+ *esp_link:
+ 

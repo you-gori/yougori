@@ -1,0 +1,153 @@
+{
+  "archive": {
+    "bytes": 7754791,
+    "file": "yougori-nvidia-cdi-linux-amd64.tar.gz",
+    "sha256": "8d31a8905c210833a1e331432b3fee3af80ddaa5cbf81fd660888cad33ee4d73"
+  },
+  "compiler": "go1.27.2",
+  "files": [
+    {
+      "bytes": 8181088,
+      "mode": 493,
+      "path": "bin/nvidia-cdi-hook",
+      "sha256": "0475221bc27bf2547a09bd44ee70104ebbb39fbdd29b6d646c4db770ca780f1f"
+    },
+    {
+      "bytes": 14733152,
+      "mode": 493,
+      "path": "bin/nvidia-ctk",
+      "sha256": "faae02c0284ad13a2bdfff3f00f4956e7dad1d379d8401cc5a3f2064c4f9524d"
+    }
+  ],
+  "kind": "nvidia-cdi",
+  "provenance": {
+    "buildInputs": {
+      "build.py": "685a64ac546644dcb3505777b39c800c056210a322245a67d37a4df5aea6c720",
+      "test-no-driver.py": "af0ed4ff1ffbf4c16151958b3c1d4adebfaa1cb978785d04514f478f08e02be0",
+      "verify.py": "b307b37c3f65ee010a772e59a83c607dce3b11d58d78dee518258f91f26af2f4"
+    },
+    "independentBuildsMatch": true,
+    "inputs": {
+      "goArchiveSha256": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+      "goVersion": "go1.27.2",
+      "hardening": {
+        "cFlags": [
+          "-O2",
+          "-fPIE",
+          "-fstack-protector-strong"
+        ],
+        "goBuildMode": "pie",
+        "lazyBindingReason": "Preserve upstream NVML/dxcore dynamic driver-library resolution",
+        "linkerFlags": [
+          "--export-dynamic",
+          "--unresolved-symbols=ignore-in-object-files",
+          "-z,lazy",
+          "-z,relro",
+          "-z,noexecstack",
+          "--build-id=none"
+        ]
+      },
+      "kind": "nvidia-cdi",
+      "moduleFloors": {
+        "golang.org/x/mod": "v0.40.0"
+      },
+      "nativePackages": {
+        "binutils": "2.38-4ubuntu2.12",
+        "gcc-11": "11.4.0-1ubuntu1~22.04.3",
+        "libc6": "2.35-0ubuntu3.15",
+        "libc6-dev": "2.35-0ubuntu3.15",
+        "linux-libc-dev": "5.15.0-198.208"
+      },
+      "patches": [
+        {
+          "bytes": 1171,
+          "file": "patches/logger-format.patch",
+          "reason": "Replace three logging-only %w directives with %v for Go1.27 fmt-vet compatibility; no CDI/API behavior change",
+          "sha256": "aff29aa343cc204f3f83074a8b700a88f6a2f8b08bf6057ab52ca17603cbaef4"
+        }
+      ],
+      "schemaVersion": 1,
+      "sourceDateEpoch": 0,
+      "target": "linux/amd64",
+      "upstream": {
+        "repository": "NVIDIA/nvidia-container-toolkit",
+        "revision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+        "source": {
+          "bytes": 7089693,
+          "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+          "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+          "url": "https://codeload.github.com/NVIDIA/nvidia-container-toolkit/tar.gz/5505e2f94d9aaa08561490db974ba3cd676af209"
+        },
+        "version": "v1.20.0"
+      }
+    },
+    "inputsSha256": "efc15254096c2076603541c21aa9ccb7e32966c06e176a2740fd683b8cda66b3",
+    "moduleInputs": {
+      "go.mod": "c1c3ea62c51801a8d101650abf5574db7ce1a316165420c7267190430c06e843",
+      "go.sum": "c0c73f9564644a43d2b1b19942cce1fcaff5088c5f234d7c3b9da40b335a104e",
+      "modules.patch": "d576448755aa192012434ce6133d48881737ef91c0c932b7dd862c43f9c617b3"
+    },
+    "nativeBuildPackages": [
+      {
+        "package": "libc6",
+        "sourcePackage": "glibc",
+        "sourceVersion": "2.35-0ubuntu3.15",
+        "version": "2.35-0ubuntu3.15"
+      },
+      {
+        "package": "libc6-dev",
+        "sourcePackage": "glibc",
+        "sourceVersion": "2.35-0ubuntu3.15",
+        "version": "2.35-0ubuntu3.15"
+      },
+      {
+        "package": "gcc-11",
+        "sourcePackage": "gcc-11",
+        "sourceVersion": "11.4.0-1ubuntu1~22.04.3",
+        "version": "11.4.0-1ubuntu1~22.04.3"
+      },
+      {
+        "package": "binutils",
+        "sourcePackage": "binutils",
+        "sourceVersion": "2.38-4ubuntu2.12",
+        "version": "2.38-4ubuntu2.12"
+      },
+      {
+        "package": "linux-libc-dev",
+        "sourcePackage": "linux",
+        "sourceVersion": "5.15.0-198.208",
+        "version": "5.15.0-198.208"
+      }
+    ],
+    "nativeLinkage": "Dynamic libc.so.6; preserves NVML dlopen and WSL GPU bridge; no NVIDIA driver bundled",
+    "patchedSourceFiles": {
+      "cmd/nvidia-cdi-hook/cudacompat/cudacompat.go": "22a150430f9b0fa2025cbbc54ea0d9ca503626a828f32942cd16fa16032f53e7",
+      "go.mod": "c1c3ea62c51801a8d101650abf5574db7ce1a316165420c7267190430c06e843",
+      "go.sum": "c0c73f9564644a43d2b1b19942cce1fcaff5088c5f234d7c3b9da40b335a104e",
+      "pkg/nvcdi/driver-wsl.go": "f5eb4c7c19686fe157ff6f3eabf93104d26b59bdcec2a1e6aeac5ffa13aa5a9d"
+    },
+    "secondSourceScan": {
+      "findings": 0,
+      "record": "second-source-govulncheck.json",
+      "scanner": "golang.org/x/vuln/cmd/govulncheck@v1.8.0"
+    },
+    "sourceScan": {
+      "findings": 0,
+      "record": "first-source-govulncheck.json",
+      "scanner": "golang.org/x/vuln/cmd/govulncheck@v1.8.0"
+    }
+  },
+  "schemaVersion": 1,
+  "target": "linux/amd64",
+  "upstream": {
+    "repository": "NVIDIA/nvidia-container-toolkit",
+    "revision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+    "source": {
+      "bytes": 7089693,
+      "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+      "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+      "url": "https://codeload.github.com/NVIDIA/nvidia-container-toolkit/tar.gz/5505e2f94d9aaa08561490db974ba3cd676af209"
+    },
+    "version": "v1.20.0"
+  }
+}

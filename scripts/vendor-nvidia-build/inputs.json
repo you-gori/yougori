@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "target": "linux/amd64",
+  "kind": "nvidia-cdi",
+  "goVersion": "go1.27.2",
+  "goArchiveSha256": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+  "sourceDateEpoch": 0,
+  "upstream": {
+    "repository": "NVIDIA/nvidia-container-toolkit",
+    "version": "v1.20.0",
+    "revision": "5505e2f94d9aaa08561490db974ba3cd676af209",
+    "source": {
+      "file": "nvidia-container-toolkit-v1.20.0-5505e2f94d9a.tar.gz",
+      "url": "https://codeload.github.com/NVIDIA/nvidia-container-toolkit/tar.gz/5505e2f94d9aaa08561490db974ba3cd676af209",
+      "sha256": "5c76e1ba325b240e2b56dc12cc78b62e52e79a77fcdd7787695ba034af9de031",
+      "bytes": 7089693
+    }
+  },
+  "moduleFloors": {
+    "golang.org/x/mod": "v0.40.0"
+  },
+  "hardening": {
+    "goBuildMode": "pie",
+    "cFlags": ["-O2", "-fPIE", "-fstack-protector-strong"],
+    "linkerFlags": ["--export-dynamic", "--unresolved-symbols=ignore-in-object-files", "-z,lazy", "-z,relro", "-z,noexecstack", "--build-id=none"],
+    "lazyBindingReason": "Preserve upstream NVML/dxcore dynamic driver-library resolution"
+  },
+  "patches": [
+    {
+      "file": "patches/logger-format.patch",
+      "sha256": "aff29aa343cc204f3f83074a8b700a88f6a2f8b08bf6057ab52ca17603cbaef4",
+      "bytes": 1171,
+      "reason": "Replace three logging-only %w directives with %v for Go1.27 fmt-vet compatibility; no CDI/API behavior change"
+    }
+  ],
+  "nativePackages": {
+    "libc6": "2.35-0ubuntu3.15",
+    "libc6-dev": "2.35-0ubuntu3.15",
+    "gcc-11": "11.4.0-1ubuntu1~22.04.3",
+    "binutils": "2.38-4ubuntu2.12",
+    "linux-libc-dev": "5.15.0-198.208"
+  }
+}

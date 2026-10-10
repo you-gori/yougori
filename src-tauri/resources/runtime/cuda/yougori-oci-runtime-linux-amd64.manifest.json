@@ -1,0 +1,584 @@
+{
+  "archive": {
+    "bytes": 46790081,
+    "file": "yougori-oci-runtime-linux-amd64.tar.gz",
+    "sha256": "81c1128960e72c521d94ac9773c8705a36840712de0268f62b8e4d38be8e3dba"
+  },
+  "compiler": "go1.27.2",
+  "components": {
+    "cni": {
+      "repository": "containernetworking/plugins",
+      "revision": "adc3e6b5b581638afbd194cf2e9319ecbb0151a1",
+      "source": {
+        "bytes": 4096717,
+        "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
+        "sha256": "3b723ab805f716f03820dfeee4289181d9ade76a34d628f9bb36120e44fe767e",
+        "url": "https://codeload.github.com/containernetworking/plugins/tar.gz/adc3e6b5b581638afbd194cf2e9319ecbb0151a1"
+      },
+      "version": "v1.9.1"
+    },
+    "containerd": {
+      "repository": "containerd/containerd",
+      "revision": "ee2735368117d2eb259779949d5e75cdafec9761",
+      "source": {
+        "bytes": 11687648,
+        "file": "containerd-v2.3.6-ee2735368117.tar.gz",
+        "sha256": "fa21eb211d0a9cb2ad32e6edb67808f7615252c8c56a63813ef1d0822bd2a90d",
+        "url": "https://codeload.github.com/containerd/containerd/tar.gz/ee2735368117d2eb259779949d5e75cdafec9761"
+      },
+      "version": "v2.3.6"
+    },
+    "nerdctl": {
+      "repository": "containerd/nerdctl",
+      "revision": "347782c28efe1753d5cc9652f6304752ed431221",
+      "source": {
+        "bytes": 1558717,
+        "file": "nerdctl-v2.3.5-347782c28efe.tar.gz",
+        "sha256": "4108dc7630eaf440357c0a32e281bb539dc513a98e613126bc91061e385a7550",
+        "url": "https://codeload.github.com/containerd/nerdctl/tar.gz/347782c28efe1753d5cc9652f6304752ed431221"
+      },
+      "version": "v2.3.5"
+    },
+    "runc": {
+      "compatibilityFloors": {
+        "github.com/opencontainers/cgroups": "v0.1.0"
+      },
+      "repository": "opencontainers/runc",
+      "revision": "8f2685a471d3347a686ad3909783d8aafc6bb208",
+      "source": {
+        "bytes": 2808413,
+        "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
+        "sha256": "d05b6dfe90f33a382c9dcb1940ca6f1bcb782c752c4d798731324d38b13e621c",
+        "url": "https://codeload.github.com/opencontainers/runc/tar.gz/8f2685a471d3347a686ad3909783d8aafc6bb208"
+      },
+      "version": "v1.5.1"
+    }
+  },
+  "dependencyFixes": {
+    "github.com/containers/ocicrypt": {
+      "advisory": "https://pkg.go.dev/vuln/GO-2026-5932",
+      "fix": "https://github.com/containers/ocicrypt/commit/6a2a20bcf291d891da0e987e53d1ac7c133268a6",
+      "revision": "6a2a20bcf291d891da0e987e53d1ac7c133268a6",
+      "version": "v1.3.2"
+    }
+  },
+  "files": [
+    {
+      "bytes": 41114176,
+      "mode": 493,
+      "path": "bin/containerd",
+      "sha256": "28d35f307982b38171cd71f96c144f023c2d82ede80929051220e7e5cdcaad60"
+    },
+    {
+      "bytes": 16319264,
+      "mode": 493,
+      "path": "bin/containerd-shim-runc-v2",
+      "sha256": "21c710881d07df2d30f488f134d5d6a65049e85cde45c22443c6635931acbbe2"
+    },
+    {
+      "bytes": 32424060,
+      "mode": 493,
+      "path": "bin/nerdctl",
+      "sha256": "1405bb5adc4b7e998eba663aa4751050455d3d46d12992024f44cecc4d46654d"
+    },
+    {
+      "bytes": 9945552,
+      "mode": 493,
+      "path": "bin/runc",
+      "sha256": "5b52fa88cabc718b395b03e7c46b04d51462245d789b74381f4e23ce788a0bb4"
+    },
+    {
+      "bytes": 4456572,
+      "mode": 493,
+      "path": "libexec/cni/bridge",
+      "sha256": "14730583d4d3ef4b5d52951cc196460e6d8b4802f65025d3c99af88c58020631"
+    },
+    {
+      "bytes": 4358268,
+      "mode": 493,
+      "path": "libexec/cni/firewall",
+      "sha256": "af665c8a7925686c17a1ee6cdb2d0cd223172de9eedef966c02648e1f528e9e0"
+    },
+    {
+      "bytes": 3514492,
+      "mode": 493,
+      "path": "libexec/cni/host-local",
+      "sha256": "a1ccad7e6795ccc42162f93a8442ddef63c8633b7034580e1c849d84fc9c5b8c"
+    },
+    {
+      "bytes": 3477628,
+      "mode": 493,
+      "path": "libexec/cni/loopback",
+      "sha256": "b35752ee20ac4d6adcb1c7cf7172d210abbd738d7eb027b10e2c5760950454e1"
+    },
+    {
+      "bytes": 4014204,
+      "mode": 493,
+      "path": "libexec/cni/portmap",
+      "sha256": "fcbf3a1bac70a79f906cb04c283b9aad50d91b6a60701d57f1d04a19b5b7e515"
+    },
+    {
+      "bytes": 3534972,
+      "mode": 493,
+      "path": "libexec/cni/tuning",
+      "sha256": "45c765cf64ef7ff629d5d5ef349c5350fd0e22892c47f414130f837c6cef73e9"
+    }
+  ],
+  "moduleFiles": {
+    "cni": {
+      "go.mod": "1be36b1d0a170612f10ee3b9aff82b3a354b0c3d198b4d9dc491c09a554f6fa3",
+      "go.sum": "9de346bbdbdd90ef8dd6d023e2a9a44f8e07e6306bdd042ff0fef095c96f6dd1",
+      "modules.patch": "a71649be4066591951a31a26c72af34bbac0b8ab919f342fcfca59cdabee914c"
+    },
+    "containerd": {
+      "go.mod": "20aa8b259523a06cc05e57ad572470d6d7a00454029c6cd017064cfad334338d",
+      "go.sum": "b94a7958f9cbd498c7eb16534536d30047b6e324c7d79219390e28f257e58c9e",
+      "modules.patch": "74931905f21354d8084200bbdbdb2f14bc7bd7daf0f990502de05b3d9c18422e"
+    },
+    "nerdctl": {
+      "go.mod": "5d9e11369522f82056cf3e98f3e52ef41629bdb73c9a2b3b582f9bcf1bd9e6d5",
+      "go.sum": "143d2547be9ce3b520f75f1b588f15099dc3e35bcd4d09e773a18a2781480e61",
+      "modules.patch": "a8adc1dba305cfd38fee82f42ee9fc26ef7817c93655d7ad0f6296006cbd46cc"
+    },
+    "runc": {
+      "go.mod": "0d84a579ad2884d64e85080cf9493ef85ab3b2fcea7f762613fe4c146ec32445",
+      "go.sum": "7c47c94e0b1fa6ee091eecaed81e70dc58c69cd8aa74c8e8ed9fdbd6f69b0e63",
+      "modules.patch": "8c201f43db589b47677289c30b827922df91f0584b4737bbc2eea40121bfcdc5"
+    }
+  },
+  "nativeBuild": {
+    "btrfs": {
+      "sources": [
+        {
+          "bytes": 3234940,
+          "file": "btrfs-progs_6.14.orig.tar.gz",
+          "sha256": "5a85b791f0f32a4994e864ac4cb7abccce08e56db3010a1855ad0edeebc70b4c",
+          "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14.orig.tar.gz"
+        },
+        {
+          "bytes": 20136,
+          "file": "btrfs-progs_6.14-1.debian.tar.xz",
+          "sha256": "0701b7d38fc7b1568f1f48bf8665b6a8ac503c8056e06ff4e3f7536656c0590c",
+          "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.debian.tar.xz"
+        },
+        {
+          "bytes": 2557,
+          "file": "btrfs-progs_6.14-1.dsc",
+          "sha256": "eccdbf28fbb3414fe012d89a996fe1288807431d07f6cba0302db209714f6a8d",
+          "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1.dsc"
+        }
+      ],
+      "version": "6.14-1"
+    },
+    "btrfsPrefix": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix",
+    "compilerInputs": [
+      {
+        "bytes": 928584,
+        "path": "/usr/bin/x86_64-linux-gnu-gcc-11",
+        "sha256": "821af3c74506283c179ca413bb33e6b528805a4dd8a5c09df125e5ad560a9e89"
+      },
+      {
+        "bytes": 144,
+        "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/bin/musl-gcc",
+        "sha256": "425f4f8c724bf95bb55a51d52d0e9b028cf390b15882985a704204e09a5f289b"
+      },
+      {
+        "bytes": 1182,
+        "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/musl-gcc.specs",
+        "sha256": "be8e622ba20c15974fd43a1db325743e18577cc78f11a6095471b5cb7ef0d8b9"
+      }
+    ],
+    "flags": "-O2 -ffile-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci -fdebug-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci",
+    "gcc": "gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+    "initialPreparationInputsSha256": "4fe62545d76336b85f118dc2b3f6217b9e6611149b8d590ddff0872b5fac8e4d",
+    "inputsSha256": "2a0a4fa08d0755b120daa49664acd1a9149201748d723ee5c00833c96dd4de21",
+    "libcStrategy": {
+      "containerd": "static Ubuntu glibc; netgo/osusergo/static_build; original btrfs 6.14",
+      "runc": "static PIE patched Alpine musl 1.2.6-r2 and libseccomp 2.6.1; seccomp retained"
+    },
+    "libraries": [
+      {
+        "bytes": 2815492,
+        "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libc.a",
+        "sha256": "eef5dec13a0b47c68745901ca27763abe3091a77b183b32ff3a5d26ac63b8772"
+      },
+      {
+        "bytes": 334780,
+        "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libseccomp.a",
+        "sha256": "d65351ae5bc328ed1a366cfae0b7578d91f3160519ed4247b4215deb0670c642"
+      },
+      {
+        "bytes": 31442,
+        "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix/lib/libbtrfs.a",
+        "sha256": "5f0a6c25f7c3b57bd73100d6905decd3675cadda7d28abe5eaf4203c8d4c8aee"
+      },
+      {
+        "bytes": 6029306,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libc.a",
+        "path": "/usr/lib/x86_64-linux-gnu/libc.a",
+        "sha256": "7ceefe6c6ea90ba8323f3f24e225274eca2edc1f6b4c98bef90c9ec0dc53f294"
+      },
+      {
+        "bytes": 132,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libm.a",
+        "path": "/usr/lib/x86_64-linux-gnu/libm.a",
+        "sha256": "864c2e3e6c9b86dd0b3dc303a30f2db8a73719f211c336175176a7dd45045842"
+      },
+      {
+        "bytes": 8,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libpthread.a",
+        "path": "/usr/lib/x86_64-linux-gnu/libpthread.a",
+        "sha256": "f0a17a43c74d2fe5474fa2fd29c8f14799e777d7d75a2cc4d11c20a6e7b161c5"
+      },
+      {
+        "bytes": 8,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libdl.a",
+        "path": "/usr/lib/x86_64-linux-gnu/libdl.a",
+        "sha256": "f0a17a43c74d2fe5474fa2fd29c8f14799e777d7d75a2cc4d11c20a6e7b161c5"
+      },
+      {
+        "bytes": 86052,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/libresolv.a",
+        "path": "/usr/lib/x86_64-linux-gnu/libresolv.a",
+        "sha256": "b64d6f024a38aa29cb7954b26b3da3ed0841f42747592481b586f273fe1b0ccd"
+      },
+      {
+        "bytes": 3001414,
+        "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/libgcc.a",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/11/libgcc.a",
+        "sha256": "881a1422df348396646d3cbee3d8edf2cd8909f51295ff821ce16cb949029883"
+      },
+      {
+        "bytes": 57140,
+        "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/libgcc_eh.a",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/11/libgcc_eh.a",
+        "sha256": "ecb9dca0513f07d84e65bf5713dd2e069db87abdbcdc0363ad448568370a9cb3"
+      },
+      {
+        "bytes": 1792,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/crt1.o",
+        "path": "/usr/lib/x86_64-linux-gnu/crt1.o",
+        "sha256": "5cfb30db1d2c92a9a818f6c015ad7fcd6519afaa1b88148e831504fe6e299479"
+      },
+      {
+        "bytes": 1192,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/crti.o",
+        "path": "/usr/lib/x86_64-linux-gnu/crti.o",
+        "sha256": "077ccb6c68db1794da3ee262c4a16a3c6f8e902845dd0829110ad4b7065e5aa3"
+      },
+      {
+        "bytes": 760,
+        "package": "libc6-dev:amd64: /usr/lib/x86_64-linux-gnu/crtn.o",
+        "path": "/usr/lib/x86_64-linux-gnu/crtn.o",
+        "sha256": "a2266079f95b84ccc2162ebbf279bcd78858a748aa1882e0bdb912316c76a58f"
+      },
+      {
+        "bytes": 2968,
+        "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtbeginT.o",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtbeginT.o",
+        "sha256": "26cdcaf355ea1e931d99da73b5f2cc825f4189d5f7755d8b9d05c33746aad07d"
+      },
+      {
+        "bytes": 2752,
+        "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtbeginS.o",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtbeginS.o",
+        "sha256": "98ebe44533aa4fabd0acf2404d8872c70f972642166bb0c88be53f33540222c5"
+      },
+      {
+        "bytes": 1168,
+        "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtend.o",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtend.o",
+        "sha256": "98ac1d1fbb060865f24d2968437a9ccc34349f933c549158f624cbddf1b3d890"
+      },
+      {
+        "bytes": 1168,
+        "package": "libgcc-11-dev:amd64: /usr/lib/gcc/x86_64-linux-gnu/11/crtendS.o",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/11/crtendS.o",
+        "sha256": "98ac1d1fbb060865f24d2968437a9ccc34349f933c549158f624cbddf1b3d890"
+      }
+    ],
+    "libseccomp": {
+      "source": {
+        "bytes": 656231,
+        "file": "libseccomp-2.6.1.tar.gz",
+        "sha256": "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be",
+        "url": "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz"
+      },
+      "version": "2.6.1"
+    },
+    "musl": {
+      "aportsRevision": "f5640d3a10f664c9119720c60515265d3d6f6d01",
+      "patches": [
+        {
+          "bytes": 1214,
+          "file": "handle-aux-at_base.patch",
+          "sha256": "2a65e03b94217063d72fe998e5fb2e25cd01716078a3ba1b0ab574ab205111e6",
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/handle-aux-at_base.patch"
+        },
+        {
+          "bytes": 896,
+          "file": "0001-add-stub-for-pthread_mutexattr_setprioceiling.patch",
+          "sha256": "b2067680c66af9eb9f4fdc1fa5d9337a9fd62bdab2c437b416aa97d79eb884ee",
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/0001-add-stub-for-pthread_mutexattr_setprioceiling.patch"
+        },
+        {
+          "bytes": 738,
+          "file": "fix-loongarch64-zero-len-extcontext.patch",
+          "sha256": "92c8e965798ed516c15cb2a4e7c4ac45ec1eb68b6abff16c73adff2a3bae1b14",
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/fix-loongarch64-zero-len-extcontext.patch"
+        },
+        {
+          "bytes": 7506,
+          "file": "CVE-2026-6042.patch",
+          "sha256": "1d0be2e72b9d5bd16546b923aa8af861d271322f01644716a81823bec4065c99",
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-6042.patch"
+        },
+        {
+          "bytes": 5594,
+          "file": "CVE-2026-40200.patch",
+          "sha256": "1ee29f64f9ca8e8ad7c349779d661ff6b52126a27575d3586981357a52c406fb",
+          "url": "https://raw.githubusercontent.com/alpinelinux/aports/f5640d3a10f664c9119720c60515265d3d6f6d01/main/musl/CVE-2026-40200.patch"
+        }
+      ],
+      "source": {
+        "bytes": 1082499,
+        "file": "musl-1.2.6.tar.gz",
+        "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+        "url": "https://distfiles.alpinelinux.org/distfiles/v3.24/musl-1.2.6.tar.gz"
+      },
+      "version": "1.2.6-r2"
+    },
+    "muslPrefix": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix",
+    "nativeInputsSha256": "6831a3dcdd609fcbb908bc2850b6923774161f4e78549dda8a2b0035a9d3f725",
+    "packages": "gcc-11\t11.4.0-1ubuntu1~22.04.3\tgcc-11\t11.4.0-1ubuntu1~22.04.3\nlibc6\t2.35-0ubuntu3.15\tglibc\t2.35-0ubuntu3.15\nlibc6-dev\t2.35-0ubuntu3.15\tglibc\t2.35-0ubuntu3.15\nlibgcc-11-dev\t11.4.0-1ubuntu1~22.04.3\tgcc-11\t11.4.0-1ubuntu1~22.04.3\nlinux-libc-dev\t5.15.0-198.208\tlinux\t5.15.0-198.208\n",
+    "wrapperPatch": {
+      "file": "scripts/vendor-oci-build/musl-static-pie.patch",
+      "reference": "https://www.openwall.com/lists/musl/2021/04/15/1",
+      "sha256": "5fbc92f00d4edb8c1d128f6551136414e6c6a24c9d90638951343e949ef7f813"
+    }
+  },
+  "provenanceRefresh": {
+    "reason": "Bind current frozen Go input lock after strictly verifying unchanged reused native C sources, patches, compiler and link inputs",
+    "sourceAndLinkInputsUnchanged": true
+  },
+  "reproducibility": {
+    "builds": 2,
+    "identicalExecutables": 10
+  },
+  "schemaVersion": 1,
+  "target": "linux/amd64",
+  "vulnerabilityScans": [
+    {
+      "moduleOnlyAssessments": [
+        {
+          "advisory": "GO-2026-5932",
+          "assessment": "Govulncheck's stripped-symbol fallback creates wildcard entries; same-code unstripped reference and source package graph prove absence. Raw report retained."
+        }
+      ],
+      "packageFindings": 0,
+      "packagesSha256": "a194f5f534b9583c36b420b6138ceead3e5ef209ce8120922ef8fdc05fc9fcee",
+      "path": "bin/containerd",
+      "rawBinaryFindings": 15,
+      "reportSha256": "c64a0e4ed04506b658d3fae55d0b6c72fcf4fad8d7a73b8aff0b496ffc5f4bbe",
+      "sourceModuleOnlyAssessments": [
+        {
+          "advisory": "GO-2026-5932",
+          "assessment": "No deprecated OpenPGP package in the compiled dependency graph; maintained ocicrypt replacement retained.",
+          "level": "module"
+        }
+      ],
+      "sourceReportSha256": "1dc1266abbf3715f3f8b61240546a739aa1b42c38e2b5b47de80878b36f30ca8",
+      "status": "passed",
+      "strippedFallbackReference": {
+        "bytes": 58065200,
+        "deprecatedOpenPgpSymbols": 0,
+        "difference": "Only Go linker -s -w flags omitted; same source, compiler, native inputs and build flags",
+        "file": "references/bin__containerd",
+        "moduleOnlyAssessments": [
+          {
+            "advisory": "GO-2026-5932",
+            "assessment": "No deprecated OpenPGP package in the compiled dependency graph; maintained ocicrypt replacement retained.",
+            "level": "module"
+          }
+        ],
+        "referenceExtractSha256": "dfa8ccb19677e99a4c2f8607cfe1cc29768bb063674bfff681c1dcf011a957bf",
+        "referenceExtractedSymbols": 50276,
+        "referencePackageFindings": 0,
+        "referenceReportSha256": "6e4a0501c560f1df341b2d3e2f1fad98b4d566a78e95914ae8ff3b964f47fb66",
+        "referenceSymbolFindings": 0,
+        "schemaVersion": 1,
+        "sections": {
+          ".gopclntab": {
+            "bytes": 14944120,
+            "sha256": "8f2b50656069598a96fd2a5cf62facba836549ed53920da900e1bc88d021d8d4"
+          },
+          ".text": {
+            "bytes": 19485736,
+            "sha256": "cb6691e06dc699617182297424a5b92e8f70fe35c33be313d0f0fe9d4226369d"
+          }
+        },
+        "sha256": "054714a9db0ee5b933170edbbe1451579b70d7749b3274e3a1e8d63d92d7242c",
+        "shippedExtractSha256": "3adbf1ca6090c920f8805aaa74f80ccf793fecb8a209a8fe4fde92f4df473a8d"
+      },
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "2a219bade2ad3280280092fca9dd461a632de2c289a93b95cbaa27aa24450a99",
+      "path": "bin/containerd-shim-runc-v2",
+      "rawBinaryFindings": 0,
+      "reportSha256": "b5f3c9b0713f2223905fd81afcc1241164c7a2a7d2f918d645fb0f09fd7dddfb",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "1770957b82ca397119b62aeee9cbd2b6cdab42956fbe0e4322d90fc023c2b4cc",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [
+        {
+          "advisory": "GO-2026-5932",
+          "assessment": "Govulncheck's stripped-symbol fallback creates wildcard entries; same-code unstripped reference and source package graph prove absence. Raw report retained."
+        }
+      ],
+      "packageFindings": 0,
+      "packagesSha256": "f9da10b015f615ef6d0d170be67cbe2a046f28d4bf007d0d19cbf7a40a2a9938",
+      "path": "bin/nerdctl",
+      "rawBinaryFindings": 15,
+      "reportSha256": "afe68b386f7b012c95fb9a9f5a56bd13b3e0836fc7ce3e73e434aafe049363d7",
+      "sourceModuleOnlyAssessments": [
+        {
+          "advisory": "GO-2026-5932",
+          "assessment": "No deprecated OpenPGP package in the compiled dependency graph; maintained ocicrypt replacement retained.",
+          "level": "module"
+        }
+      ],
+      "sourceReportSha256": "61c36dccd3702c585a8876890239570ad4c0af5ead44a23b1e558c20558f2e04",
+      "status": "passed",
+      "strippedFallbackReference": {
+        "bytes": 47169442,
+        "deprecatedOpenPgpSymbols": 0,
+        "difference": "Only Go linker -s -w flags omitted; same source, compiler, native inputs and build flags",
+        "file": "references/bin__nerdctl",
+        "moduleOnlyAssessments": [
+          {
+            "advisory": "GO-2026-5932",
+            "assessment": "No deprecated OpenPGP package in the compiled dependency graph; maintained ocicrypt replacement retained.",
+            "level": "module"
+          }
+        ],
+        "referenceExtractSha256": "866df556042609304b744f4e72d69a3302837cfffb53870e7202e97c158c62cc",
+        "referenceExtractedSymbols": 38670,
+        "referencePackageFindings": 0,
+        "referenceReportSha256": "4b233fa5d3e27aaa792a497c15399db8bb34e07458478180f437d9082abc86da",
+        "referenceSymbolFindings": 0,
+        "schemaVersion": 1,
+        "sections": {
+          ".gopclntab": {
+            "bytes": 11653907,
+            "sha256": "e72d6235c599009bfd5ce447898a6a1fc58f11698883bee497b51f48697b9f95"
+          },
+          ".text": {
+            "bytes": 15415857,
+            "sha256": "c06524a94ffb94ea53067bb09706b73b22c397e65a3697cbab16627699dc55e3"
+          }
+        },
+        "sha256": "2b0cc0699203de67eed79584fbfe4a4affc82ddd9ff964afa94bb7390f32fa35",
+        "shippedExtractSha256": "4b66adf4e2665d132d3185e25eb17e6c13cc4f3750ff8c71bf587e9872cc0d07"
+      },
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "0bfbc292add4bd4221a0ce7fbb0aaf77632b485e35e777806b3acf55334c7d6b",
+      "path": "bin/runc",
+      "rawBinaryFindings": 0,
+      "reportSha256": "6daf2d6ede675aad41f0e39ef4edda80790cf32b033b0990ebb13e41207c8f3c",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "60cd10f986235743f22f6141555620806ea3aa8c6398783d346d1d44c5114ea4",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "100c3c377bcae2d0ecdd462732e91c47df4b217493ee3f4ee77c81bb21c9dd32",
+      "path": "libexec/cni/bridge",
+      "rawBinaryFindings": 0,
+      "reportSha256": "7de005892f01181eb50150e6eb12c6102b5c31d5e8a77506dcc321eb2c5c3e14",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "c445e65d2b843f039679b45a6f9d28e8718b5535cf865e91ab1273fc3152db5a",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "b1816174c752416a08cd45592b4848d82741f12442c05f8009dbbeda86e45d02",
+      "path": "libexec/cni/firewall",
+      "rawBinaryFindings": 0,
+      "reportSha256": "a77b3e174351d3d97a447f3ecc7c0657c2d5374adba42146864c68eabe84c40d",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "2460b2de39543f844f23d96f8cb03447aa8ece47d98bc7596e3a0725477aaf6a",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "ea0305eb31952ffb69b26ee7ea745b6297342e8deb9d9715932507653e732f95",
+      "path": "libexec/cni/host-local",
+      "rawBinaryFindings": 0,
+      "reportSha256": "32fd13ec75fe1ae405c903aeaca4b282b31defdc5c50bafe498481a35c46e138",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "f88b2cb314ce1f963305f085fbdca9688274ec07c97f08754c8d523c88d89249",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "41e975f716605a4b6742c4d59a899313535e2e75d5925c7f78d649128f76507c",
+      "path": "libexec/cni/loopback",
+      "rawBinaryFindings": 0,
+      "reportSha256": "c4c6c38c4aa7b4764c424d8a3af109a6169db8f15e1896a942c3093263b1e516",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "e395bde9bec8d405e0dc29d327349d3ac779ed257681bb9c37cb42de909cfed1",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "3a4a8d70ff360290b2d0df927e457272e8a3e985c245c1feef42887d02f43109",
+      "path": "libexec/cni/portmap",
+      "rawBinaryFindings": 0,
+      "reportSha256": "bd680ef00ce5478145fa27099576cf96b4e11eba5aed546e995808378c02168f",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "591877963e02b3c5965b4173fb630d1a8c11fed1baf92c79900df06b8934cf92",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    },
+    {
+      "moduleOnlyAssessments": [],
+      "packageFindings": 0,
+      "packagesSha256": "f3b533712a87c4462529e4c121d9915647e8e0cb3303d3c3f77bd50e5420d207",
+      "path": "libexec/cni/tuning",
+      "rawBinaryFindings": 0,
+      "reportSha256": "c4c6c38c4aa7b4764c424d8a3af109a6169db8f15e1896a942c3093263b1e516",
+      "sourceModuleOnlyAssessments": [],
+      "sourceReportSha256": "16e79b4f3715cc10dee305cb387f3da8edd74a7e460286827259e2cc5a78091e",
+      "status": "passed",
+      "strippedFallbackReference": null,
+      "symbolFindings": 0
+    }
+  ]
+}

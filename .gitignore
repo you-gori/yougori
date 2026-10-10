@@ -17,6 +17,8 @@ build/angle-runtime/
 build/secure-runtime/
 build/runtime-cache/
 build/cuda/
+build/oci-runtime/
+build/nvidia-cdi-runtime/
 build/linux/
 runtime/cuda/host/target/
 cli/target/
