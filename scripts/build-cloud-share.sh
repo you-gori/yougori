@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+bash "$repo_root/scripts/check-agent-go.sh"
 source_dir="$repo_root/cloud-share-mount"
 output_dir="$repo_root/src-tauri/resources/runtime/cloud"
 mkdir -p "$output_dir"
