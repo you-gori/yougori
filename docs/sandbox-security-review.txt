@@ -155,8 +155,11 @@ Implemented controls
     application data are preserved. The minimum-memory preserved-disk migration
     and actual GPU acceptance must pass for the final packaged release bytes.
 
-Binary vulnerability scans identify retained symbols, which are not proof of an
-exploitable application path. The official NVIDIA 1.20.0 package already exceeds
+Binary scan findings are not proof of an exploitable application path. For
+stripped executables, govulncheck 1.8.0 can synthesize wildcard function findings
+from module metadata when it cannot recover package symbols. Those counts must
+not be described as confirmed retained vulnerable symbols. The official NVIDIA
+1.20.0 package already exceeds
 the 1.19.1 fix for CVE-2026-24260, but its older Go compiler still warrants a
 source rebuild of the two consumed CDI tools. The source and binary scan records
 state their exact scope and retain any platform-only or unreachable findings.
@@ -172,6 +175,14 @@ unexamined third-party commands.
     nonregular files and files larger than 1 MiB. Hosts edits keep one inode open
     for the entire read/write operation and serialize concurrent edits per PID.
     Preserved-disk boot migration includes this helper along with the agent.
+
+Containerd's image-encryption dependency uses maintained ocicrypt 1.3.2 and
+ProtonMail OpenPGP instead of the unmaintained golang.org/x/crypto/openpgp
+package, which has no fixed version. The reviewed PGP wrapping and decryption
+tests preserve encrypted-image support. Other maintained x/crypto packages
+remain dependencies; their module inventory can still mention the unrelated
+OpenPGP advisory. Final evidence must distinguish these module-only notices from
+actual compiled vulnerable packages and preserve the raw scan findings.
 
 Retained protections and compatibility decisions
 
@@ -263,3 +274,8 @@ Libseccomp 2.6.1 fixes and supported release:
 https://github.com/seccomp/libseccomp/releases/tag/v2.6.1
 NVIDIA June 2026 Container Toolkit security bulletin:
 https://nvidia.custhelp.com/app/answers/detail/a_id/5850
+Unmaintained Go OpenPGP package advisory and maintained alternative:
+https://pkg.go.dev/vuln/GO-2026-5932
+Govulncheck binary analysis and limitations:
+https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck
+https://raw.githubusercontent.com/golang/vuln/v1.8.0/internal/vulncheck/binary.go
