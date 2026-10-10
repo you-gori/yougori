@@ -228,6 +228,21 @@ test retained preferred 256 MiB / maximum 512 MiB, verified QMP allocation of
 512 MiB, and reached authenticated guest readiness in 8.387 seconds. It also
 verified capped-launch refusal, accurate live allocation and normal shutdown.
 
+Fresh Linux acceptance also exposed a QEMU 6.2 software-emulation compatibility
+failure with five-level paging enabled. Raw kernel procfs tables rendered mount
+paths as x characters; the strict boot updater correctly refused to authenticate
+the root. A private comparison changed only the CPU's LA57 setting and verified
+the complete unchanged updater, all ten executables and read-only restoration.
+Software emulation now uses a 48-bit addressing profile with LA57 disabled.
+Hardware KVM, HVF and WHPX profiles retain their existing supported features.
+The kernel, initramfs, image and updater guards remain unchanged. This is tested
+compatibility behavior; software emulation remains outside the claimed hardware
+isolation boundary. Linux's nofault pathname-copy fallback explains the observed
+x characters; the tests do not establish that QEMU misreported its CPUID width.
+Focused real Linux TCG checks passed for normal OCI and 512 MiB microVM
+workspaces, authenticated control, Internet policy and host-port isolation.
+Live QEMU arguments independently confirmed the tested CPU profile and RAM.
+
 Host firewall, Secure Boot/HVCI, IOMMU, SMT/firmware settings and cloud-specific
 attestation require platform administration and hardware validation. They are
 not silently toggled by an application update. Kernel patching is still required.
@@ -324,3 +339,7 @@ https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck
 https://raw.githubusercontent.com/golang/vuln/v1.8.0/internal/vulncheck/binary.go
 RustSec glib VariantIter advisory:
 https://rustsec.org/advisories/RUSTSEC-2024-0429.html
+Linux kernel pathname nofault-copy failure handling:
+https://raw.githubusercontent.com/torvalds/linux/v6.18/fs/d_path.c
+Linux x86 canonical-address validation for nofault copies:
+https://raw.githubusercontent.com/torvalds/linux/v6.18/arch/x86/mm/maccess.c

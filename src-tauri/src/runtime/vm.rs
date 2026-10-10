@@ -3401,7 +3401,10 @@ pub(super) fn full_vm_cpu_model(accelerator: &str) -> &'static str {
         // `max` makes OVMF fault on IA32_FEATURE_CONTROL (MSR 0x3a). Keep the
         // remaining supported modern instructions and hardware acceleration.
         "whpx" => "max,vmx=off,svm=off",
-        _ => "max,vmx=off,svm=off",
+        // Keep software emulation on the verified 48-bit paging profile.
+        // The bundled Linux 6.18 kernel and older QEMU TCG can corrupt procfs
+        // paths with LA57.
+        _ => "max,vmx=off,svm=off,la57=off",
     }
 }
 
@@ -4244,7 +4247,8 @@ mod tests {
         assert_eq!(super::full_vm_cpu_model("whpx"), "max,vmx=off,svm=off");
         assert_eq!(super::full_vm_cpu_model("kvm"), "host,vmx=off,svm=off");
         assert_eq!(super::full_vm_cpu_model("hvf"), "host,vmx=off,svm=off");
-        assert_eq!(super::full_vm_cpu_model("tcg,thread=multi"), "max,vmx=off,svm=off");
+        assert_eq!(super::full_vm_cpu_model("tcg,thread=multi"), "max,vmx=off,svm=off,la57=off");
+        assert_eq!(super::full_vm_cpu_model("tcg"), "max,vmx=off,svm=off,la57=off");
     }
     use super::*;
 

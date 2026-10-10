@@ -171,7 +171,8 @@ class VM:
         # retained panic log before QEMU opens/truncates its serial output.
         self.serial.unlink(missing_ok=True)
         self.log = (args.workdir / (stage + "-qemu.log")).open("wb")
-        command = [args.qemu, "-machine", "q35", "-accel", args.accel, "-cpu", "max" if args.accel == "tcg" else "host",
+        cpu_profile = "max,vmx=off,svm=off,la57=off" if args.accel == "tcg" else "host,vmx=off,svm=off"
+        command = [args.qemu, "-machine", "q35", "-accel", args.accel, "-cpu", cpu_profile,
                    "-m", "512", "-smp", "2", "-nodefaults", "-display", "none", "-monitor", "none",
                    "-serial", "file:" + str(self.serial), "-no-reboot", "-kernel", str(media / "vmlinuz-virt"),
                    "-initrd", str(media / "initramfs-virt"), "-append",
@@ -270,6 +271,12 @@ def candidate_stage(args, server, report):
         kernel = vm.execute("uname -r").strip()
         report["candidateKernel"] = kernel
         assert kernel != report["legacyKernel"], "Fixture must exercise a real kernel/module version upgrade"
+        cpu_flags = vm.execute("grep -E '^flags[[:space:]]*:' /proc/cpuinfo")
+        advertised_flags = [line.split(":", 1)[1].split() for line in cpu_flags.splitlines()]
+        assert advertised_flags and all(flags for flags in advertised_flags), "Missing guest CPU feature evidence"
+        assert all(not {"vmx", "svm"}.intersection(flags) for flags in advertised_flags), "Nested virtualization advertised to the migrated guest"
+        report["candidateCPUFlags"] = advertised_flags
+        report["nestedVirtualizationAdvertised"] = False
         trusted = trusted_vendor_manifest(args.candidate / "initramfs-virt")
         actual = vendor_hashes(vm)
         assert actual == {name: entry["sha256"] for name, entry in trusted.items()}, "Preserved disk retained an old or untrusted OCI executable"
@@ -339,6 +346,8 @@ def main():
     report_path = args.workdir / "migration-report.json"
     report = json.loads(report_path.read_text()) if report_path.exists() else {}
     report["status"] = "running"
+    report["testSourceSHA256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    report["qemuCPUProfile"] = "max,vmx=off,svm=off,la57=off" if args.accel == "tcg" else "host,vmx=off,svm=off"
     base = args.legacy / "appliance-base.qcow2"
     before = hashlib.sha256(base.read_bytes()).hexdigest()
     ProjectFiles.token = secrets.token_hex(32)
