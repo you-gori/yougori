@@ -1,0 +1,31 @@
+name: Native Mac model acceptance
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/macos-native-validation-*']
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build pinned native inference and supervisor
+        run: bash scripts/build-macos-model-runtime.sh
+      - name: Verify authentication, inference and owner-loss shutdown
+        run: python3 scripts/test-macos-model-runtime.py
+      - name: Save hardware-specific evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-model-${{ matrix.runner }}
+          path: artifacts/macos-native-acceptance.json
+          if-no-files-found: warn
+          retention-days: 7
