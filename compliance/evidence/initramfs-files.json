@@ -1217,7 +1217,7 @@
   {
     "path": "usr/local/sbin/yougori-agent",
     "bytes": 15392892,
-    "sha256": "2f2447c7d9b564b41152bedc504171c6cf4f0a1724d9d596520c7284ef596090"
+    "sha256": "91718e8c3481c11f0e3d26381b247237c80dbdf56e68617e9f1c368d7d84bcee"
   },
   {
     "path": "usr/local/sbin/yougori-mount-helper",

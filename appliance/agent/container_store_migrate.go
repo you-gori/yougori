@@ -50,6 +50,12 @@ func prepareContainerStoreContext(ctx context.Context) error {
 		connection.Close()
 		return errors.New("containerd is running; its storage was not changed")
 	}
+	// GPU runtimes are not upgraded through upgrade-root.sh, so their root still has the
+	// data tree under its earlier name. Keep the old path as a link: existing containers
+	// record bind-mount sources under it, and containerd cannot rewrite them.
+	if err := moveLegacyTree("/var/lib", legacyDataTree, filepath.Base(dataRoot), true); err != nil {
+		return err
+	}
 	state, err := readContainerStoreState()
 	if os.IsNotExist(err) {
 		if _, diskErr := os.Lstat(containerStoreImage); !os.IsNotExist(diskErr) {
@@ -79,6 +85,14 @@ func prepareContainerStoreContext(ctx context.Context) error {
 		return err
 	}
 	if _, err := ownedContainerStoreDevice(state); err != nil {
+		return err
+	}
+	// Storage prepared by earlier releases holds the data tree, and an interrupted
+	// migration's recovery copy, under the earlier name.
+	if err := moveLegacyTree(containerStoreMount, legacyDataTree, filepath.Base(dataRoot), false); err != nil {
+		return err
+	}
+	if err := moveLegacyTree(containerStoreRoot, "legacy-"+legacyDataTree, "legacy-"+filepath.Base(dataRoot), false); err != nil {
 		return err
 	}
 	for _, name := range containerStoreTrees {
@@ -148,6 +162,57 @@ func prepareContainerStoreContext(ctx context.Context) error {
 		log.Printf("container storage is ready; unused migration blocks can be reclaimed later: %v", err)
 	}
 	return nil
+}
+
+// moveLegacyTree renames parent/legacy to parent/current. It runs only when the old tree
+// is an unmounted directory and the new path is missing or an empty directory, so
+// repeating it is harmless. With link set, the old path stays as a link to the new one.
+func moveLegacyTree(parent, legacy, current string, link bool) error {
+	old, next := filepath.Join(parent, legacy), filepath.Join(parent, current)
+	info, err := os.Lstat(old)
+	if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if mounted, err := isMountPoint(old); err != nil || mounted {
+		// A tree still attached from before the upgrade moves on the next start.
+		return err
+	}
+	if existing, err := os.Lstat(next); err == nil {
+		if !existing.IsDir() || existing.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is not a directory; %s was kept", next, old)
+		}
+		// rmdir refuses data and mount points, so a populated new tree is never replaced.
+		if err := unix.Rmdir(next); err != nil {
+			return fmt.Errorf("%s and %s both hold data; both were kept: %w", next, old, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(old, next); err != nil {
+		return err
+	}
+	if link {
+		return os.Symlink(current, old)
+	}
+	return nil
+}
+
+func isMountPoint(path string) (bool, error) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if fields := strings.Fields(line); len(fields) >= 5 && fields[4] == path {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func requireEmptyStorageDirectory(path string) error {

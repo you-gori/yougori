@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "scope": "Guest agent hotfix: only usr/local/sbin/yougori-agent changed in the appliance base, its verified initramfs and the CUDA payload; no user disk, package or other executable changed",
+  "reason": "Agents from 1.0.16 bind the data tree under its Yougori name; storage prepared by earlier releases kept it under the earlier name, so attaching it failed. The fixed agent moves it first.",
+  "agent": {
+    "old": {
+      "sha256": "2f2447c7d9b564b41152bedc504171c6cf4f0a1724d9d596520c7284ef596090",
+      "bytes": 15392892
+    },
+    "new": {
+      "sha256": "91718e8c3481c11f0e3d26381b247237c80dbdf56e68617e9f1c368d7d84bcee",
+      "bytes": 15392892
+    },
+    "build": "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' (go1.27.2), as in scripts/build-appliance.sh and build-cuda.sh",
+    "reproducibility": "The previous source rebuilt with the same command reproduced the old agent byte for byte"
+  },
+  "oldBase": {
+    "sha256": "970db0178d5593670f07ec1cb208ff5b529fa977571297062e18ad6ad40d1fb8",
+    "bytes": 179387392
+  },
+  "newBase": {
+    "sha256": "e7115d9adbfa04722329256890bf26e15abe4da3ca5f42fe0fb66d3cde1f5043",
+    "bytes": 185809920
+  },
+  "oldInitramfs": {
+    "sha256": "748d47eff5ed05671a18ca4f3d827bd61880e5f4a7308d7ae995a0d7125c44e6",
+    "bytes": 94082023
+  },
+  "newInitramfs": {
+    "sha256": "7899164772409fa456abfdcc0b15bd9d7c919b3f36dab77aee4d3a2cd5b0d23a",
+    "bytes": 94082641
+  },
+  "filesystemEntries": 2744,
+  "initramfsEntries": 343,
+  "onlyChangedPaths": [
+    "usr/local/sbin/yougori-agent"
+  ],
+  "unchangedFilesystemFingerprint": "1a1ac43cad5792237fa9cde1bbc457d953b6a4c54ec06e176bd95c94d64970a8",
+  "unchangedAPKDatabase": "c1ef249c58e36ad2d8abd43c6e78d854288d7f7484d6c8be0ecf0c7aace72ff3"
+}

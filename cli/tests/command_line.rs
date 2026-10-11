@@ -84,16 +84,18 @@ fn listening_is_free_only_and_validated_before_engine_or_login() {
 }
 #[test]
 fn closed_weights_is_explicit_and_legacy_model_commands_keep_their_privacy() {
+    // --folder is made absolute, so the fixture must already be absolute on this platform.
+    let folder = if cfg!(windows) { "D:/Private Models/checkpoint" } else { "/srv/Private Models/checkpoint" };
     for mode in ["--now", "--nowfree"] {
         for flag in ["--closed-weights", "--publish"] {
-            let mut args=vec!["model","run","owner/model",mode,flag,"--folder","D:/Private Models/checkpoint","--dry-run"];
+            let mut args=vec!["model","run","owner/model",mode,flag,"--folder",folder,"--dry-run"];
             if mode=="--nowfree" { args.push("--listen"); }
             let output=cli(&args);
             assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
             let result=response(&output)["result"].clone();
             assert_eq!(result["closedWeights"],true);
             assert_eq!(result["listen"],mode=="--nowfree");
-            assert_eq!(result["resources"]["modelFolder"],"D:/Private Models/checkpoint");
+            assert_eq!(result["resources"]["modelFolder"],folder);
             assert_eq!(result["shareMode"],if mode=="--now" {"paid"} else {"free"});
         }
         let open=cli(&["model","run","owner/model",mode,"--dry-run"]);

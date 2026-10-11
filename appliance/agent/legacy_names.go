@@ -25,6 +25,10 @@ const (
 // Mount root inside containers created by earlier releases; workloads may not mount over it.
 const legacyContainerMountRoot = "/opendock"
 
+// Agent data directory under /var/lib, and its tree in private container storage, used by
+// earlier releases. Storage preparation moves both to the Yougori name.
+const legacyDataTree = "opendock"
+
 // Comment prefix earlier agents put on the /etc/hosts entries they managed. Such an
 // entry is removed whenever this agent updates or removes the entry for the same ID.
 const legacyHostsMarkerPrefix = "# opendock:"
