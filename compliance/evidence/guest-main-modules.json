@@ -1,7 +1,7 @@
 [
   {
-    "binary": "cuda/opendock-agent",
-    "module": "opendock.local/appliance-agent",
+    "binary": "cuda/yougori-agent",
+    "module": "yougori.local/appliance-agent",
     "version": "(devel)",
     "revision": null
   },

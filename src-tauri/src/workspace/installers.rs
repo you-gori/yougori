@@ -16,7 +16,9 @@ async fn execute(
     command: &str,
 ) -> Result<InstallerCommandOutput, String> {
     if env.kind == EnvironmentKind::MicroVm {
-        let output = runtime.execute_micro_vm_command(runtime_id(env), command).await?;
+        // Stage where the terminal runs: inside the OCI workload when the microVM
+        // has one, otherwise in its built-in guest.
+        let output = runtime.execute_micro_workload_command(runtime_id(env), command).await?;
         return Ok(InstallerCommandOutput { stdout: output.stdout, stderr: output.stderr, exit_code: output.exit_code });
     }
     // Preparing or cleaning up a terminal must never restart a stopped runtime.
@@ -325,7 +327,15 @@ mod tests {
         exercise_installer_staging("builtin:alpine").await;
     }
 
+    #[tokio::test]
+    #[ignore = "boots a disposable microVM whose terminal runs inside the default tool image (digest-pinned Ubuntu, pulled from Docker Hub) to verify staging reaches that terminal; no coding tools are downloaded"]
+    async fn workspace_installer_microvm_workload_staging() {
+        exercise_installer_staging(&format!("builtin:alpine+{}", yougori_cli::container_tools::DEFAULT_IMAGE)).await;
+    }
+
     async fn exercise_installer_staging(image: &str) {
+        // builtin:alpine+IMAGE is a microVM whose terminal runs inside an OCI workload.
+        let (image, workload) = image.split_once('+').map_or((image, None), |(guest, workload)| (guest, Some(workload)));
         let data = tempfile::tempdir().unwrap();
         let runtime =
             RuntimeManager::new(&PathBuf::from(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
@@ -341,7 +351,12 @@ mod tests {
             assert!(execute(&runtime, &env, "true").await.is_err());
             if env.kind == EnvironmentKind::MicroVm {
                 let vm = runtime.provision_micro_vm(&env.id, &env.runtime).await?;
-                runtime.start_micro_vm_with_network(&env.id, &vm.disk_path, &vm.source_path, &env.resource_policy, false).await?;
+                // As run_workload does: provision, save the workload, then start.
+                if let Some(workload) = workload {
+                    runtime.save_micro_workload(&env.id, &json!({"image":workload,"options":{"args":["/bin/sh","-c","while :; do sleep 3600; done"],"entrypoint":[]}}))?;
+                }
+                // Only a workload image needs the Internet, to pull itself.
+                runtime.start_micro_vm_with_network(&env.id, &vm.disk_path, &vm.source_path, &env.resource_policy, workload.is_some()).await?;
             } else {
             runtime.provision_container(&env.id, &env.runtime, "sleep 2147483647", &env.resource_policy, true, false).await?;
                 runtime.container_action(&env.id, "start", true).await?;

@@ -32,7 +32,7 @@ def hidden(command, **kwargs):
 
 class Worker:
     def __init__(self):
-        self.process = hidden([str(RUNTIME / "opendock-tpm-worker.exe")])
+        self.process = hidden([str(RUNTIME / "yougori-tpm-worker.exe")])
         self.responses = queue.Queue()
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -155,7 +155,7 @@ class TpmWorkerTests(unittest.TestCase):
             try:
                 found = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
                 while found:
-                    if entry.parent == parent and entry.name == "opendock-tpm-worker.exe":
+                    if entry.parent == parent and entry.name == "yougori-tpm-worker.exe":
                         return kernel.OpenProcess(0x100000, False, entry.pid)
                     found = kernel.Process32NextW(snapshot, ctypes.byref(entry))
             finally:
@@ -171,7 +171,7 @@ class TpmWorkerTests(unittest.TestCase):
                 process = hidden([str(RUNTIME / "qemu-system-x86_64.exe"), "-machine", "q35,accel=tcg",
                     "-S", "-m", "128", "-nodefaults", "-display", "none", "-monitor", "none",
                     "-bios", str(ROOT / "src-tauri/resources/runtime/qemu/share/bios-256k.bin"),
-                    "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off", "-tpmdev", f"opendock,id=tpm0,state={path},create=on", "-device", "tpm-tis,tpmdev=tpm0"])
+                    "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off", "-tpmdev", f"yougori,id=tpm0,state={path},create=on", "-device", "tpm-tis,tpmdev=tpm0"])
                 handle = None
                 try:
                     deadline = time.monotonic() + 15

@@ -190,90 +190,6 @@
   },
   {
     "ecosystem": "npm",
-    "name": "@types/d3-color",
-    "version": "3.1.3",
-    "license": "MIT",
-    "integrity": "sha512-iO90scth9WAbmgv7ogoq57O9YpKmFBbmoEoCHDB2xMBY0+/KVrqAaCDyCE16dUspeOvIxFFRI+0sEtqDqy2b4A==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
-        "installedPath": "node_modules/@types/d3-color/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "@types/d3-drag",
-    "version": "3.0.7",
-    "license": "MIT",
-    "integrity": "sha512-HE3jVKlzU9AaMazNufooRJ5ZpWmLIoc90A37WU2JMmeq28w1FQqCZswHZ3xR+SuxYftzHq6WU6KJHvqxKzTxxQ==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
-        "installedPath": "node_modules/@types/d3-drag/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "@types/d3-interpolate",
-    "version": "3.0.4",
-    "license": "MIT",
-    "integrity": "sha512-mgLPETlrpVV1YRJIglr4Ez47g7Yxjl1lj7YKsiMCb27VJH9W8NVM6Bb9d8kkpG/uAQS5AmbA48q2IAolKKo1MA==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
-        "installedPath": "node_modules/@types/d3-interpolate/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "@types/d3-selection",
-    "version": "3.0.11",
-    "license": "MIT",
-    "integrity": "sha512-bhAXu23DJWsrI45xafYpkQ4NtcKMwWnAC/vKrd2l+nxMFuvOT3XMYTIj2opv8vq8AO5Yh7Qac/nSeP/3zjTK0w==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
-        "installedPath": "node_modules/@types/d3-selection/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "@types/d3-transition",
-    "version": "3.0.9",
-    "license": "MIT",
-    "integrity": "sha512-uZS5shfxzO3rGlu0cC3bjmMFKsXv+SmZZcgp0KD22ts4uGXp5EVYGzu/0YdwZeKmddhcAccYtREJKkPfXkZuCg==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
-        "installedPath": "node_modules/@types/d3-transition/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "@types/d3-zoom",
-    "version": "3.0.8",
-    "license": "MIT",
-    "integrity": "sha512-iqMC4/YlFCSlO8+2Ii1GGGliCAY4XdeG748w5vQUbevlbDu0zSjH/+jojorQVBK/se0j6DUFNPBGSqD3YWYnDw==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
-        "installedPath": "node_modules/@types/d3-zoom/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
     "name": "@types/react",
     "version": "19.2.18",
     "license": "MIT",
@@ -332,35 +248,6 @@
   },
   {
     "ecosystem": "npm",
-    "name": "@xyflow/react",
-    "version": "12.11.6",
-    "license": "MIT",
-    "integrity": "sha512-9XsEJNHjatKYndszKTF/bsU7FOP9dJ6V/EQwzy3oMdtqgBuUq7BjKSwkEo+C7s4qHstHQfwwoHA3E8QfpPxZZQ==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "023119ac20fb1c8c9930abe0bcd196989a1960388529a96fc43cebf96f07c9ff",
-        "installedPath": "node_modules/@xyflow/react/LICENSE"
-      }
-    ],
-    "shippedFrontend": true
-  },
-  {
-    "ecosystem": "npm",
-    "name": "@xyflow/system",
-    "version": "0.0.82",
-    "license": "MIT",
-    "integrity": "sha512-4DKnL3CGtCGLRSmgDqaajRVgeksMXq/Yw4wPfdMfm7JvdIiWHGzVYOfFUztiATwdBXZqUU6HhehwUdbV9G23PQ==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "023119ac20fb1c8c9930abe0bcd196989a1960388529a96fc43cebf96f07c9ff",
-        "installedPath": "node_modules/@xyflow/system/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
     "name": "class-variance-authority",
     "version": "0.7.1",
     "license": "Apache-2.0",
@@ -373,20 +260,6 @@
       }
     ],
     "shippedFrontend": true
-  },
-  {
-    "ecosystem": "npm",
-    "name": "classcat",
-    "version": "5.0.5",
-    "license": "MIT",
-    "integrity": "sha512-JhZUT7JFcQy/EzW605k/ktHtncoo9vnyW/2GspNYwFlN1C/WmjuV/xtS04e9SOkL2sTdw0VAZ2UGCcQ9lR6p6w==",
-    "texts": [
-      {
-        "path": "LICENSE.md",
-        "sha256": "f101c761d255d0dddc77dd8a9327733b03d381798ec54a1bb718367207b48a8e",
-        "installedPath": "node_modules/classcat/LICENSE.md"
-      }
-    ]
   },
   {
     "ecosystem": "npm",
@@ -414,132 +287,6 @@
         "path": "LICENSE",
         "sha256": "11d55bd4541c75ee7879547ac49089c489163dae49551389713c3d026cab383e",
         "installedPath": "node_modules/csstype/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-color",
-    "version": "3.1.0",
-    "license": "ISC",
-    "integrity": "sha512-zg/chbXyeBtMQ1LbD/WSoW2DpC3I0mpmPdW+ynRTj/x2DAWYrIY7qeZIHidozwV24m4iavr15lNwIwLxRmOxhA==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884",
-        "installedPath": "node_modules/d3-color/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-dispatch",
-    "version": "3.0.1",
-    "license": "ISC",
-    "integrity": "sha512-rzUyPU/S7rwUflMyLc1ETDeBj0NRuHKKAcvukozwhshr6g6c5d8zh4c2gQjY2bZ0dXeGLWc1PF174P2tVvKhfg==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-dispatch/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-drag",
-    "version": "3.0.0",
-    "license": "ISC",
-    "integrity": "sha512-pWbUJLdETVA8lQNJecMxoXfH6x+mO2UQo8rSmZ+QqxcbyA3hfeprFgIT//HW2nlHChWeIIMwS2Fq+gEARkhTkg==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-drag/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-ease",
-    "version": "3.0.1",
-    "license": "BSD-3-Clause",
-    "integrity": "sha512-wR/XK3D3XcLIZwpbvQwQ5fK+8Ykds1ip7A2Txe0yxncXSdq1L9skcG7blcedkOX+ZcgxGAmLX1FrRGbADwzi0w==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "b989d9085148d21ff64a75e14462aefa06b2589a55553b07b1460c70081c7d08",
-        "installedPath": "node_modules/d3-ease/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-interpolate",
-    "version": "3.0.1",
-    "license": "ISC",
-    "integrity": "sha512-3bYs1rOD33uo8aqJfKP3JWPAibgw8Zm2+L9vBKEHJ2Rg+viTR7o5Mmv5mZcieN+FRYaAOWX5SJATX6k1PWz72g==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-interpolate/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-selection",
-    "version": "3.0.0",
-    "license": "ISC",
-    "integrity": "sha512-fmTRWbNMmsmWq6xJV8D19U/gw/bwrHfNXxrIN+HfZgnzqTHp9jOmKMhsTUjXOJnZOdZY9Q28y4yebKzqDKlxlQ==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-selection/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-timer",
-    "version": "3.0.1",
-    "license": "ISC",
-    "integrity": "sha512-ndfJ/JxxMd3nw31uyKoY2naivF+r29V+Lc0svZxe1JvvIRmi8hUsrMvdOwgS1o6uBHmiz91geQ0ylPP0aj1VUA==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-timer/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-transition",
-    "version": "3.0.1",
-    "license": "ISC",
-    "integrity": "sha512-ApKvfjsSR6tg06xrL434C0WydLr7JewBB3V+/39RMHsaXTOG0zmt/OAXeng5M5LBm0ojmxJrpomQVZ1aPvBL4w==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-transition/LICENSE"
-      }
-    ]
-  },
-  {
-    "ecosystem": "npm",
-    "name": "d3-zoom",
-    "version": "3.0.0",
-    "license": "ISC",
-    "integrity": "sha512-b8AmV3kfQaqWAuacbPuNbL6vahnOJflOhexLzMMNLga62+/nh0JzvJ0aO/5a5MVgUFGS7Hu1P9P03o3fJkDCyw==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-        "installedPath": "node_modules/d3-zoom/LICENSE"
       }
     ]
   },
@@ -676,20 +423,6 @@
     ]
   },
   {
-    "ecosystem": "npm",
-    "name": "zustand",
-    "version": "4.5.7",
-    "license": "MIT",
-    "integrity": "sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c1e6e266563517467b1bf874817d23e426f3149252bd7d42758cd697514b8417",
-        "installedPath": "node_modules/zustand/LICENSE"
-      }
-    ]
-  },
-  {
     "ecosystem": "vendored",
     "name": "coss-ui",
     "version": "e937becd2d5ffb5c621eed6f8b1f223cbb6051e7",
@@ -722,7 +455,7 @@
     "texts": [
       {
         "path": "src/components/ui/LICENSE.txt",
-        "sha256": "c7c93f45c0a1ca73efc98b252007e707d679956b34519551890d956994c8794b",
+        "sha256": "504df99ec4baefbce51d47aafbaa4f80016f9a84975f96f460ebcc5f710056b1",
         "normalization": "lf"
       },
       {

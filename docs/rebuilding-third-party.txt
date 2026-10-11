@@ -37,7 +37,7 @@ cd build/runtime-cache/qemu-secure-src
 for patch_file in qemu-windows-tpm.patch qemu-whpx-tpm-ppi.patch qemu-whpx-reboot.patch qemu-license-notices.patch; do
   patch -p1 < "$repo/runtime/security/$patch_file"
 done
-cp "$repo/runtime/security/shipped/tpm-qemu.c" "$repo/runtime/security/tpm-api.h" backends/tpm/
+cp "$repo/runtime/security/tpm-qemu.c" "$repo/runtime/security/tpm-api.h" backends/tpm/
 cd "$repo/build/runtime-cache/ms-tpm-20-ref"
 patch -p1 < "$repo/runtime/security/ms-tpm-openssl3.patch"
 cd "$repo/build/runtime-cache/edk2-secure-src"
@@ -48,16 +48,17 @@ YOUGORI_QEMU_BUILD_TOOLS=1 bash scripts/build-secure-qemu.sh
 ```
 
 These low-level build scripts accept exported source trees without `.git`.
-The retained `runtime/security/shipped/tpm-qemu.c` matches the currently bundled
-QEMU binaries. The adjacent development file has newer display strings. The
-verification script checks the retained copy against the original build hashes;
-new builds using the development file need new build records.
+The bundled secure QEMU (rebuilt 2026-10-11) was compiled from
+`runtime/security/tpm-qemu.c` and `tpm-api.h` with the four patches above; its
+`SOURCE_BUILD.json` records each input's SHA-256. `runtime/security/shipped/tpm-qemu.c`
+is kept as the source of the binaries in earlier releases.
 The final QEMU patch adds dated modification notices to the ten changed upstream
-files. It changes comments only. The earlier functional patch bytes and the
-existing binaries' `SOURCE_BUILD.json` records are retained as original build
-evidence; `compliance/evidence/qemu-modification-notices.json` records the
-supplementary source annotation and verifies equivalence after removing only
-those notices. New builds also record the notice patch in their build inputs.
+files. It changes comments only. `compliance/evidence/source-restoration.json`
+records the compiled source files, and `scripts/compliance-qemu-notices.py` checks
+that the recorded inputs reproduce them and that removing only the notices leaves
+the functional sources (`compliance/evidence/qemu-modification-notices.json`).
+After a rebuild, record the compiled tree with
+`python scripts/compliance-qemu-notices.py --record-build build/runtime-cache/qemu-secure-src`.
 The PowerShell source-fetching wrapper is for normal Git development checkouts.
 QEMU uses the recorded WHPX/TCG, VNC, OpenGL and GnuTLS profile; JACK and the
 unused remote-disk/UI backends are disabled. The TPM worker is a separate

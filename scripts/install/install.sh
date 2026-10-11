@@ -1,12 +1,19 @@
 #!/bin/sh
 # Yougori CLI and engine installer for macOS and Linux. Download the desktop app separately.
 #   curl -fsSL https://yougori.com/install.sh | bash
-# Downloads the current release, checks its SHA-256 (and the Apple signature on macOS), installs it
-# for this user by default, or through apt for an explicit Debian/Ubuntu desktop install. Links
-# `yougori` into ~/.local/bin, saves PATH for future shells and starts the engine.
+# Downloads the current release, checks its SHA-256 (and on macOS the Apple signature of the
+# release's Developer ID team), installs it for this user by default, or through apt for an
+# explicit Debian/Ubuntu desktop install. Links `yougori` into ~/.local/bin, saves PATH for future
+# shells and starts the engine. Linux packages have no publisher signature beyond the HTTPS
+# manifest's SHA-256.
 # Environment overrides: YOUGORI_ENGINE_ONLY=0 (opt into the desktop bundle),
-# YOUGORI_RELEASES_URL (HTTPS manifest), YOUGORI_AUTOSTART=1, YOUGORI_START_ENGINE=0.
+# YOUGORI_RELEASES_URL (HTTPS manifest), YOUGORI_AUTOSTART=1, YOUGORI_START_ENGINE=0,
+# YOUGORI_ALLOW_UNSIGNED=1 (macOS test builds only).
 set -eu
+
+# Developer ID team of the macOS release signer. scripts/release-manifest.mjs fills this in when
+# it prepares the copy served by yougori.com.
+apple_team='__YOUGORI_APPLE_TEAM_ID__'
 
 fail() { printf 'Yougori install failed: %s\n' "$1" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "this installer needs '$1'"; }
@@ -32,6 +39,16 @@ arch=$(uname -m)
 case "$arch" in x86_64|amd64) arch=x86_64 ;; arm64|aarch64) arch=aarch64 ;; *) fail "unsupported processor $arch" ;; esac
 case "$os" in Darwin) platform="macos-$arch" ;; Linux) platform="linux-$arch" ;; *) fail "unsupported system $os (on Windows use: irm https://yougori.com/install.ps1 | iex)" ;; esac
 [ "$engine_only" = "1" ] && platform="$platform-engine"
+
+# Verifies an Apple signature from the pinned release team (extra arguments such as --deep come first).
+mac_verify() {
+  if [ "$apple_team" = "__YOUGORI_APPLE_""TEAM_ID__" ]; then
+    [ "${YOUGORI_ALLOW_UNSIGNED:-}" = "1" ] || fail "this copy of the installer was not prepared for a macOS release (no Developer ID team pin). Use the one from https://yougori.com/install.sh."
+    codesign --verify --strict "$@" 2>/dev/null
+    return
+  fi
+  codesign --verify --strict -R="anchor apple generic and certificate leaf[subject.OU] = \"$apple_team\"" "$@" 2>/dev/null
+}
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -77,7 +94,8 @@ case "$platform" in
     tar -xzf "$file" -C "$staged" || fail "cannot unpack the engine archive. Nothing was installed."
     [ -f "$staged/yougori-engine" ] && [ -f "$staged/cli/yougori" ] || fail "the engine archive is incomplete. Nothing was installed."
     if [ "$os" = "Darwin" ]; then
-      codesign --verify --strict "$staged/yougori-engine" 2>/dev/null || fail "the engine signature is not valid. Nothing was installed."
+      mac_verify "$staged/yougori-engine" || fail "the engine signature is not valid. Nothing was installed."
+      mac_verify "$staged/cli/yougori" || fail "the CLI signature is not valid. Nothing was installed."
     fi
     target="$HOME/.local/opt/yougori-engine"
     if [ -x "$target/cli/yougori" ] && "$target/cli/yougori" app status >/dev/null 2>&1; then
@@ -108,7 +126,7 @@ case "$platform" in
     hdiutil attach -nobrowse -quiet -mountpoint "$mount" "$file" || fail "cannot open the disk image"
     app=$(find "$mount" -maxdepth 1 -name '*.app' | head -n 1)
     [ -n "$app" ] || { hdiutil detach -quiet "$mount"; fail "no app in the disk image"; }
-    codesign --verify --deep --strict "$app" 2>/dev/null || { hdiutil detach -quiet "$mount"; fail "the app signature is not valid. Nothing was installed."; }
+    mac_verify --deep "$app" || { hdiutil detach -quiet "$mount"; fail "the app signature is not valid. Nothing was installed."; }
     mkdir -p "$HOME/Applications"
     rm -rf "$HOME/Applications/Yougori.app"
     cp -R "$app" "$HOME/Applications/Yougori.app"

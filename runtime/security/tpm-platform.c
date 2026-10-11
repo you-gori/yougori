@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-2-Clause
- * OpenDock platform for Microsoft's BSD-licensed TPM 2.0 reference core.
+ * Yougori platform for Microsoft's BSD-licensed TPM 2.0 reference core.
  * Unlike the upstream testing simulator: OS CSPRNG, exclusive per-VM state,
  * bounded I/O, checked durable commits, no debug RPCs or network listeners.
  * Two checksummed slots preserve the previous commit through a torn write.

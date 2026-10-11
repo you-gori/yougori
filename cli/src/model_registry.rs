@@ -2,7 +2,7 @@
 use crate::{client, public::call};
 use serde_json::{json, Value};
 use std::{io::Read, path::PathBuf};
-pub const HELP:&str="yougori model library [--mine] | publish --file METADATA.json | upload yg/PUBLISHER/MODEL --folder PATH --version v1 [--quant PRECISION] [--resume UPLOAD_ID] | download yg/PUBLISHER/MODEL --output PATH | permissions yg/PUBLISHER/MODEL --wallet 0x... --role caller|downloader|host|remove";
+pub const HELP:&str="yougori model library [--mine] | publish --file METADATA.json | upload yg/PUBLISHER/MODEL --folder PATH --version v1 [--quant PRECISION] [--resume UPLOAD_ID] | download yg/PUBLISHER/MODEL --output PATH | connect yg/PUBLISHER/MODEL --file endpoint.json|- | permissions yg/PUBLISHER/MODEL --wallet 0x... --role caller|downloader|host|remove | versions yg/PUBLISHER/MODEL";
 async fn request(path:String,body:Option<Value>)->Result<Value,String>{call("model_registry_request",json!({"path":path,"body":body})).await}
 fn option(args:&[String],name:&str)->Result<Option<String>,String>{
     let mut found=None;let mut i=0;

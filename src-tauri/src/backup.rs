@@ -18,7 +18,7 @@ use crate::models::{
 };
 
 const CREDENTIAL_SERVICE: &str = "com.yougori.desktop.backup";
-const PREVIOUS_CREDENTIAL_SERVICE: &str = "com.opendock.desktop.backup";
+const PREVIOUS_CREDENTIAL_SERVICE: &str = yougori_cli::legacy_names::BACKUP_CREDENTIAL_SERVICE;
 const MASTER_KEY_ACCOUNT: &str = "device-encryption-key";
 const CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
@@ -240,6 +240,7 @@ impl BackupManager {
         let mut deduplicated_bytes = 0_u64;
         let mut artifact_size = 0_u64;
         let mut rate_limiter = UploadRateLimiter::new(bandwidth_limit_mbps);
+        let chunk_names = chunk_name_key(&identity);
         loop {
             let mut chunk = vec![0_u8; CHUNK_SIZE];
             let mut filled = 0;
@@ -259,11 +260,7 @@ impl BackupManager {
             chunk.truncate(filled);
             artifact_size = artifact_size.saturating_add(filled as u64);
             let plaintext_sha256 = hex::encode(Sha256::digest(&chunk));
-            let object = format!(
-                "chunks/{}/{}.zst.age",
-                &plaintext_sha256[..2],
-                plaintext_sha256
-            );
+            let object = chunk_object(&chunk_names, &plaintext_sha256);
             let object_path = join_object_path(&remote.prefix, &object)?;
             match remote.store.head(&object_path).await {
                 Ok(_) => {
@@ -568,6 +565,38 @@ fn device_identity() -> Result<age::x25519::Identity, String> {
     }
 }
 
+/// Deduplication names are keyed by the device encryption key. A reinstalled
+/// device key can never reuse chunks it cannot decrypt, and anyone else with
+/// bucket access can neither predict names to plant data nor learn plaintext
+/// hashes. Older manifests keep their recorded unkeyed chunk names.
+fn chunk_name_key(identity: &age::x25519::Identity) -> [u8; 32] {
+    let mut key = Sha256::new();
+    key.update(b"yougori-backup-chunk-names-v1\0");
+    key.update(identity.to_string().expose_secret().as_bytes());
+    key.finalize().into()
+}
+
+fn chunk_object(key: &[u8; 32], plaintext_sha256: &str) -> String {
+    let name = hex::encode(hmac_sha256(key, plaintext_sha256.as_bytes()));
+    format!("chunks/k1/{}/{name}.zst.age", &name[..2])
+}
+
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut block = [0_u8; 64];
+    if key.len() > block.len() {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Sha256::new();
+    inner.update(block.map(|byte| byte ^ 0x36));
+    inner.update(message);
+    let mut outer = Sha256::new();
+    outer.update(block.map(|byte| byte ^ 0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
 fn encrypt(identity: &age::x25519::Identity, plaintext: &[u8]) -> Result<Vec<u8>, String> {
     age::encrypt(&identity.to_public(), plaintext)
         .map_err(|error| format!("encrypt backup data locally: {error}"))
@@ -682,13 +711,30 @@ mod tests {
     }
 
     #[test]
+    fn chunk_names_are_scoped_to_the_device_key_and_hide_plaintext_hashes() {
+        // RFC 4231 test case 2.
+        assert_eq!(
+            hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        let plaintext_sha256 = hex::encode(Sha256::digest(b"identical chunk"));
+        let first = age::x25519::Identity::generate();
+        let reinstalled = age::x25519::Identity::generate();
+        let name = chunk_object(&chunk_name_key(&first), &plaintext_sha256);
+        assert_eq!(name, chunk_object(&chunk_name_key(&first), &plaintext_sha256));
+        assert_ne!(name, chunk_object(&chunk_name_key(&reinstalled), &plaintext_sha256));
+        assert!(name.starts_with("chunks/k1/") && name.ends_with(".zst.age"));
+        assert!(!name.contains(&plaintext_sha256));
+    }
+
+    #[test]
     fn joins_remote_prefixes_without_absolute_paths() {
-        let prefix = ObjectPath::parse("team/opendock").unwrap();
+        let prefix = ObjectPath::parse("team/yougori").unwrap();
         assert_eq!(
             join_object_path(&prefix, "chunks/ab/value.age")
                 .unwrap()
                 .as_ref(),
-            "team/opendock/chunks/ab/value.age"
+            "team/yougori/chunks/ab/value.age"
         );
     }
 

@@ -22,6 +22,9 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
   const [disconnected, setDisconnected] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [links, setLinks] = useState<string[]>([])
+  // A guest program may ask to copy (OSC 52). The user decides per terminal; until then each request waits here.
+  const [pendingCopy, setPendingCopy] = useState<string | null>(null)
+  const copyConsent = useRef<"ask" | "allow" | "deny">("ask")
 
   useEffect(() => {
     activeRef.current = active
@@ -97,14 +100,17 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
         completedLinks = mergeTerminalLinks(completedLinks, extractTerminalLinks(completedText))
         setLinks(mergeTerminalLinks(completedLinks, extractTerminalLinks(currentText)))
       }
-      // Guest OSC 52 copies are accepted only right after a click or key press here.
+      // Guest OSC 52 copies are considered only right after a click or key press here,
+      // and reach the clipboard only after the user allows copies from this terminal.
       let lastGesture = -Infinity
       const gesture = () => { lastGesture = performance.now() }
       target.addEventListener("pointerup", gesture, true)
       target.addEventListener("keydown", gesture, true)
       const guestCopy = terminal.parser.registerOscHandler(52, data => {
         const text = osc52CopyText(data, performance.now() - lastGesture, !disposed && activeRef.current && document.hasFocus() && target.contains(document.activeElement))
-        if (text !== null) void terminalClipboard.writeText(text).catch(() => { if (!disposed) setError("Couldn't copy to the clipboard. Please try again.") })
+        if (text === null || disposed || copyConsent.current === "deny") return true
+        if (copyConsent.current === "allow") void terminalClipboard.writeText(text).catch(() => { if (!disposed) setError("Couldn't copy to the clipboard. Please try again.") })
+        else setPendingCopy(text)
         return true
       })
       // OSC 8 links can hide their URL behind a label. Observe them, but do not
@@ -183,7 +189,14 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
     return () => { cancelAnimationFrame(frame); release?.() }
   }, [environmentId, sessionId, onReady, installer, modelChat, attempt])
 
-  const reconnect = () => { setError(""); setDisconnected(false); setLinks([]); setAttempt(value => value + 1) }
+  const reconnect = () => { setError(""); setDisconnected(false); setLinks([]); setPendingCopy(null); copyConsent.current = "ask"; setAttempt(value => value + 1) }
+  const answerCopy = (choice: "once" | "always" | "block") => {
+    const text = pendingCopy
+    setPendingCopy(null)
+    if (choice === "block") { copyConsent.current = "deny"; return }
+    if (choice === "always") copyConsent.current = "allow"
+    if (text !== null) void terminalClipboard.writeText(text).catch(() => setError("Couldn't copy to the clipboard. Please try again."))
+  }
   return <div data-tour="guest-terminal" className="flex size-full min-h-0 min-w-0 flex-col bg-[#0c0c0c]">
     <div className="relative min-h-0 flex-1 p-3">
       <div aria-label="Terminal" className="size-full" ref={targetRef} />
@@ -192,6 +205,12 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
         <Button size="icon-xs" variant="ghost" aria-label="Dismiss terminal error" onClick={() => setError("")}><XIcon aria-hidden="true" /></Button>
       </div> : null}
     </div>
+    {pendingCopy !== null ? <div role="group" aria-label="Clipboard request" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/10 px-4 py-2 text-xs text-white/70">
+      <span className="min-w-0 flex-1">A program in this terminal wants to copy {pendingCopy.length.toLocaleString()} characters to your clipboard.</span>
+      <Button size="xs" variant="outline" onClick={() => answerCopy("once")}>Copy</Button>
+      <Button size="xs" variant="ghost" onClick={() => answerCopy("always")}>Always allow here</Button>
+      <Button size="xs" variant="ghost" onClick={() => answerCopy("block")}>Block</Button>
+    </div> : null}
     {disconnected ? <div className="flex shrink-0 items-center justify-between gap-3 border-t border-white/10 px-4 py-2 text-xs text-white/60">
       <span>Session disconnected</span><Button size="xs" variant="outline" onClick={reconnect} title="Opens a fresh shell. Previous commands and installers are not replayed."><RefreshCwIcon aria-hidden="true" />Reconnect</Button>
     </div> : null}

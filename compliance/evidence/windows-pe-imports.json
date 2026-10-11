@@ -59,7 +59,7 @@
   },
   {
     "file": "src-tauri/resources/runtime/qemu/libEGL.dll",
-    "sha256": "43076136e5df61281273865d364ddc4f18f4493c51515e75e1e489ed7d1bcfa0",
+    "sha256": "0133723ec308416dbea37b3a15ae4a17991a1b97c9e19dcbdf71da1e4e4fd501",
     "imports": [
       "KERNEL32.dll"
     ]
@@ -593,16 +593,8 @@
     ]
   },
   {
-    "file": "src-tauri/resources/runtime/qemu/opendock-gpu-probe.exe",
-    "sha256": "579f884cfbc32bd627c43ef672a18be147116fcbc0a553499e7338435f8f6cc0",
-    "imports": [
-      "dxgi.dll",
-      "KERNEL32.dll"
-    ]
-  },
-  {
     "file": "src-tauri/resources/runtime/qemu/qemu-img.exe",
-    "sha256": "179f6fbc6c4fb5fb95f770d2ab802b3d7557a53372fc950dcdd6c17ad34383df",
+    "sha256": "0175cea0d90c4bb6504393e9d8c9a0d7862d3bdcd5a9e764c994e44b47d45d98",
     "imports": [
       "libbz2-1.dll",
       "KERNEL32.dll",
@@ -630,7 +622,7 @@
   },
   {
     "file": "src-tauri/resources/runtime/qemu/qemu-system-x86_64.exe",
-    "sha256": "91c97f488ad768e11ef302362c25348fb4babf60da7c9b047905c3b7d23963fb",
+    "sha256": "5c533727c1859497c427037e606b9689be50e3b2fd371c04491c7251eca17893",
     "imports": [
       "ADVAPI32.dll",
       "libbz2-1.dll",
@@ -668,6 +660,14 @@
       "libvirglrenderer-1.dll",
       "zlib1.dll",
       "libzstd.dll"
+    ]
+  },
+  {
+    "file": "src-tauri/resources/runtime/qemu/yougori-gpu-probe.exe",
+    "sha256": "fa15e16a09ff0f84a8ecec35110d9b95c9f3c180985a04dc383cee4cf99f66de",
+    "imports": [
+      "dxgi.dll",
+      "KERNEL32.dll"
     ]
   },
   {
@@ -767,7 +767,7 @@
   },
   {
     "file": "src-tauri/resources/runtime/qemu-secure/libEGL.dll",
-    "sha256": "a0655d055da73d0273a7708bfc31d673a114429e59a47eb9efee6a10671e5962",
+    "sha256": "ac2eb76abe92e91ee51e90c25460f0357338f41aa90b4dcf0d90b17a85a3c3da",
     "imports": [
       "KERNEL32.dll"
     ]
@@ -1301,62 +1301,8 @@
     ]
   },
   {
-    "file": "src-tauri/resources/runtime/qemu-secure/opendock-gpu-probe.exe",
-    "sha256": "f04850ec4032573e4d55d1ce82e8d96fdb1ecfd1bcea66c2c7ea5e16dfcd86e0",
-    "imports": [
-      "dxgi.dll",
-      "KERNEL32.dll"
-    ]
-  },
-  {
-    "file": "src-tauri/resources/runtime/qemu-secure/opendock-tpm-init.exe",
-    "sha256": "ebee62274b6394d69895d146b64f47ff31c3bdc67a4c00b233dc2cef6fa1ca90",
-    "imports": [
-      "KERNEL32.dll",
-      "api-ms-win-crt-environment-l1-1-0.dll",
-      "api-ms-win-crt-heap-l1-1-0.dll",
-      "api-ms-win-crt-locale-l1-1-0.dll",
-      "api-ms-win-crt-math-l1-1-0.dll",
-      "api-ms-win-crt-private-l1-1-0.dll",
-      "api-ms-win-crt-runtime-l1-1-0.dll",
-      "api-ms-win-crt-stdio-l1-1-0.dll",
-      "api-ms-win-crt-string-l1-1-0.dll"
-    ]
-  },
-  {
-    "file": "src-tauri/resources/runtime/qemu-secure/opendock-tpm-worker.exe",
-    "sha256": "e6ad54bad62429edbacc8bc40f0105bf0c1aa0d00c368a47e3ae23b7ae32086d",
-    "imports": [
-      "KERNEL32.dll",
-      "api-ms-win-crt-environment-l1-1-0.dll",
-      "api-ms-win-crt-heap-l1-1-0.dll",
-      "api-ms-win-crt-locale-l1-1-0.dll",
-      "api-ms-win-crt-math-l1-1-0.dll",
-      "api-ms-win-crt-private-l1-1-0.dll",
-      "api-ms-win-crt-runtime-l1-1-0.dll",
-      "api-ms-win-crt-stdio-l1-1-0.dll",
-      "api-ms-win-crt-string-l1-1-0.dll"
-    ]
-  },
-  {
-    "file": "src-tauri/resources/runtime/qemu-secure/opendock-tpm.dll",
-    "sha256": "2dc77f3d9207cac3398d8bde8b6c2bafc6253fa0d658e632d5f8af1c946db121",
-    "imports": [
-      "bcrypt.dll",
-      "libcrypto-3-x64.dll",
-      "KERNEL32.dll",
-      "api-ms-win-crt-heap-l1-1-0.dll",
-      "api-ms-win-crt-private-l1-1-0.dll",
-      "api-ms-win-crt-runtime-l1-1-0.dll",
-      "api-ms-win-crt-stdio-l1-1-0.dll",
-      "api-ms-win-crt-string-l1-1-0.dll",
-      "api-ms-win-crt-time-l1-1-0.dll",
-      "libwinpthread-1.dll"
-    ]
-  },
-  {
     "file": "src-tauri/resources/runtime/qemu-secure/qemu-system-x86_64.exe",
-    "sha256": "16cc67411ed6d644a1d1c7787c51df77c1a1d50607229a80e503b4ca289de6e1",
+    "sha256": "16cd6270a3784d0c21415499d25faf75e1585a1fc81990e13ece6b9bee7f8dac",
     "imports": [
       "ADVAPI32.dll",
       "libbz2-1.dll",
@@ -1394,6 +1340,60 @@
       "libvirglrenderer-1.dll",
       "zlib1.dll",
       "libzstd.dll"
+    ]
+  },
+  {
+    "file": "src-tauri/resources/runtime/qemu-secure/yougori-gpu-probe.exe",
+    "sha256": "63cf507885c8d48c92a31dd70b387963139f259af28f4df857b6a2318f854d8b",
+    "imports": [
+      "dxgi.dll",
+      "KERNEL32.dll"
+    ]
+  },
+  {
+    "file": "src-tauri/resources/runtime/qemu-secure/yougori-tpm-init.exe",
+    "sha256": "0b28f3e831bb7c4654f5f2cc2560f23ea63dda4b35c1113c6c7359a112b18597",
+    "imports": [
+      "KERNEL32.dll",
+      "api-ms-win-crt-environment-l1-1-0.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-locale-l1-1-0.dll",
+      "api-ms-win-crt-math-l1-1-0.dll",
+      "api-ms-win-crt-private-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll"
+    ]
+  },
+  {
+    "file": "src-tauri/resources/runtime/qemu-secure/yougori-tpm-worker.exe",
+    "sha256": "160d1bd94dce2481e0d904ddc1daf758d318cbf75f18d74c235de7fceb734064",
+    "imports": [
+      "KERNEL32.dll",
+      "api-ms-win-crt-environment-l1-1-0.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-locale-l1-1-0.dll",
+      "api-ms-win-crt-math-l1-1-0.dll",
+      "api-ms-win-crt-private-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll"
+    ]
+  },
+  {
+    "file": "src-tauri/resources/runtime/qemu-secure/yougori-tpm.dll",
+    "sha256": "42d2eec8180fdbbf81de6c6e7228839acab02f58794e656f454266b83fd60fb9",
+    "imports": [
+      "bcrypt.dll",
+      "libcrypto-3-x64.dll",
+      "KERNEL32.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-private-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll",
+      "api-ms-win-crt-time-l1-1-0.dll",
+      "libwinpthread-1.dll"
     ]
   },
   {

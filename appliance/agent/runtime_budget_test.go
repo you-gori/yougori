@@ -7,18 +7,18 @@ import (
 )
 
 func TestEmulationMarkerIsExplicitAndStopRetainsItsDeadline(t *testing.T) {
-	base := "opendock.token=" + strings.Repeat("a", 64)
+	base := "yougori.token=" + strings.Repeat("a", 64)
 	for _, suffix := range []string{"", " unrelated.emulated=1"} {
 		cfg, err := parseBootConfiguration(base + suffix)
 		if err != nil || cfg.emulated {
 			t.Fatalf("native boot was reclassified: %+v %v", cfg, err)
 		}
 	}
-	cfg, err := parseBootConfiguration(base + " opendock.emulated=1")
+	cfg, err := parseBootConfiguration(base + " yougori.emulated=1")
 	if err != nil || !cfg.emulated {
 		t.Fatalf("trusted emulation marker lost: %+v %v", cfg, err)
 	}
-	for _, suffix := range []string{" opendock.emulated=0", " opendock.emulated=true", " opendock.emulated="} {
+	for _, suffix := range []string{" yougori.emulated=0", " yougori.emulated=true", " yougori.emulated="} {
 		if _, err := parseBootConfiguration(base + suffix); err == nil {
 			t.Fatal("accepted malformed emulation marker")
 		}

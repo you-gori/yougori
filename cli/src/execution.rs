@@ -1,5 +1,7 @@
 //! Public execution options are parsed before contacting the engine. Guest
 //! argv remains literal, including options after the first command or `--`.
+pub const USAGE: &str = "Usage: yougori exec ENV [--no-wait] [--timeout WAIT_SECONDS] [--guest-timeout SECONDS] -- COMMAND [ARG...]";
+
 #[derive(Debug)]
 pub struct Options { pub command: String, pub no_wait: bool, pub timeout: u64, pub guest_timeout: u64, pub guest_timeout_requested: bool }
 
@@ -49,11 +51,11 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
                 i+=1;
             },
             "--" => { i += 1; break; },
-            option if option.starts_with("--") => return Err("Usage: exec ENV [--no-wait] [--timeout SECONDS] -- COMMAND [ARG...]".into()),
+            option if option.starts_with("--") => return Err(USAGE.into()),
             _ => break,
         }
     }
-    if i == args.len() { return Err("Usage: exec ENV [--no-wait] [--timeout SECONDS] -- COMMAND [ARG...]".into()); }
+    if i == args.len() { return Err(USAGE.into()); }
     Ok(Options { command: shell_words::join(&args[i..]), no_wait, timeout, guest_timeout, guest_timeout_requested: guest_timeout_seen })
 }
 

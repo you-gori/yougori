@@ -5,7 +5,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tokio::io::AsyncBufRead;
 
 const VAULT_SERVICE: &str = "Yougori.CloudflareTunnel.v1";
-const PREVIOUS_VAULT_SERVICE: &str = "OpenDock.CloudflareTunnel.v1";
+const PREVIOUS_VAULT_SERVICE: &str = yougori_cli::legacy_names::CLOUDFLARE_CREDENTIAL_SERVICE;
 const PUBLIC_PRESET_SCOPE: &str = "public-presets";
 
 const QUICK_RATE_LIMIT: &str = "Cloudflare temporarily rate-limited Quick Tunnel creation (1015/429)";

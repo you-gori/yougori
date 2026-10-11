@@ -1,61 +1,122 @@
-//! Persistent tool containers, attached to the invoking terminal without desktop windows.
+//! Persistent tool sandboxes, attached to the invoking terminal without desktop windows.
+//! New sandboxes are microVMs unless the person explicitly chooses a container.
 use crate::public::{call, parse_run};
 use serde_json::{json, Value};
-use std::io::{self, IsTerminal};
+use std::{
+    cmp::Reverse,
+    io::{self, IsTerminal},
+};
 
 pub const TOOLS: &[&str] = &[
     "codex", "claude", "gemini", "ollama", "opencode", "kilo", "openclaw",
 ];
-pub const HELP: &str = r#"Yougori tool containers
+/// Ubuntu 24.04 locked to one multi-architecture image index (the 2026-09-17 build).
+/// A moving tag can change what a new sandbox runs; a digest cannot.
+pub const DEFAULT_IMAGE: &str =
+    "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55";
+pub const HELP: &str = r#"Yougori tool sandboxes
 
   yougori codex | claude | gemini | ollama | opencode | kilo | openclaw
-  yougori TOOL [--new] [--name NAME] [--image IMAGE] [--cpu CORES]
-               [--memory GB] [--storage GB] [--storage-drive PATH]
-               [--gpu nvidia] [--mount PC_FOLDER:/guest/path[:ro]]
-               [--share] [--dry-run] [-- TOOL_ARGUMENTS...]
+  yougori TOOL [--new] [--name NAME] [--isolation microvm|container]
+               [--image IMAGE] [--cpu CORES] [--memory GB] [--storage GB]
+               [--storage-drive PATH] [--gpu nvidia]
+               [--mount PC_FOLDER:/guest/path[:ro]] [--share]
+               [--no-credentials] [--no-public] [--dry-run]
+               [-- TOOL_ARGUMENTS...]
   yougori TOOL --environment ENV [-- TOOL_ARGUMENTS...]
 
-The first run creates a local Ubuntu container and installs the tool. Later runs
-reuse its container, files and sign-in. --new creates a fresh container. Creation
-options apply only to a new container. --environment explicitly uses an existing
-local container. No PC folder is shared unless --mount is supplied.
+The first run creates a sandbox and installs the tool. New sandboxes are microVMs:
+each has its own kernel and minimal virtual hardware, and runs Ubuntu 24.04
+pinned by digest. --isolation container opts out and creates a container in
+Yougori's shared VM, which shares that VM's kernel with your other containers.
+--gpu nvidia and --mount need --isolation container: microVMs cannot use the GPU
+or mount PC folders. Later runs reuse the newest sandbox with the same isolation,
+its files and sign-in; existing sandboxes keep their isolation. --new creates a
+fresh sandbox. Creation options apply only to a new sandbox. --environment
+explicitly uses an existing local container or microVM. No PC folder is shared
+unless --mount is supplied.
 Before creating any tool sandbox, choose CPU cores and memory with arrow keys or
 type a number, then press Enter. Defaults are 2 CPU and 4 GB RAM, capped by this
 computer's capacity. --cpu and --memory skip their respective choices. Reconnecting
 keeps existing resources; use --new to create a sandbox with different settings.
 
 Installation and the tool run right in this terminal. Ctrl+] disconnects the
-session; the container and installed files remain. Tool authentication and account
-setup happen inside the container. Every launch asks whether to copy this tool's
-supported credential files from this computer. Nothing is copied unless you choose
-Yes. Matching sandbox credentials are replaced; other settings stay unchanged.
-OS keychains, extension logins and environment-only keys require sign-in inside
-the tool. Anyone controlling the sandbox can read or use imported credentials.
+session; the sandbox and installed files remain. Tool authentication and account
+setup happen inside the sandbox. In container sandboxes, every launch asks whether
+to copy this tool's supported credential files from this computer. Nothing is
+copied unless you choose Yes. Matching sandbox credentials are replaced; other
+settings stay unchanged. MicroVM sandboxes cannot receive copied credentials yet:
+sign in inside the tool. OS keychains, extension logins and environment-only keys
+always require sign-in inside the tool. Anyone controlling the sandbox can read or
+use imported credentials. --no-credentials skips this question and copies nothing.
 Ctrl+C opens Cancel / Stop sandbox / Stop and delete, with Cancel selected.
 Cancel resumes without interrupting the tool. Only Enter confirms a stop/delete.
 
 Ollama starts its model server quietly, then opens a ready menu to run a model or
 open a sandbox shell. OpenClaw opens `openclaw onboard`.
-`yougori ollama` asks whether to use an NVIDIA GPU or CPU container. Matching
-containers are reused; choosing another mode creates/reuses that mode's sandbox.
-An explicit --gpu or --environment keeps your selected configuration.
+`yougori ollama` asks whether to use an NVIDIA GPU. GPUs need container isolation,
+so that answer uses a GPU container; the CPU answer uses a microVM, or a container
+with --isolation container. Matching sandboxes are reused; choosing another mode
+creates/reuses that mode's sandbox. --isolation microvm, --gpu or --environment
+skips the question.
 Every tool asks whether to give your project public access, which app port to use,
 and whether to use a quick HTTPS link or a saved domain. Copy the displayed link
 before opening the tool. Your project becomes available when it listens on that
 port inside the sandbox. Skipping this step leaves existing access unchanged.
+--no-public skips this question and leaves existing access unchanged.
 Pass arguments after -- to select another action, for example:
   yougori codex -- --help
   yougori ollama -- run MODEL
   yougori openclaw -- gateway run
   yougori claude --new --memory 8GB
+  yougori codex --isolation container
 
 --share asks how many teammates to add and collects a separate username/password
 for each. It prints password-inclusive `yougori connect LINK USERNAME PASSWORD`
 commands before opening the tool. Recipients get control of this sandbox, its
-files and tool sign-in. Keep the owner computer, container and gateway running.
+files and tool sign-in. Keep the owner computer, sandbox and gateway running.
 "#;
 
-#[derive(Debug)]
+/// How a sandbox is separated from the computer and from other sandboxes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Isolation {
+    /// Its own kernel and minimal virtual hardware.
+    MicroVm,
+    /// A container in Yougori's shared VM, sharing that VM's kernel.
+    Container,
+}
+
+impl Isolation {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "microvm" => Ok(Self::MicroVm),
+            "container" => Ok(Self::Container),
+            _ => Err("Use --isolation microvm or --isolation container".into()),
+        }
+    }
+    /// The `--isolation` value, also reported by `--dry-run`.
+    fn name(self) -> &'static str {
+        match self {
+            Self::MicroVm => "microvm",
+            Self::Container => "container",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::MicroVm => "microVM",
+            Self::Container => "container",
+        }
+    }
+    fn of(environment: &Value) -> Option<Self> {
+        match environment["kind"].as_str() {
+            Some("microVm") => Some(Self::MicroVm),
+            Some("container") => Some(Self::Container),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct Options {
     tool: String,
     name: Option<String>,
@@ -63,10 +124,14 @@ struct Options {
     fresh: bool,
     creation: Vec<String>,
     image: String,
+    /// Only an explicit --isolation; see `isolation()` for the effective choice.
+    isolation: Option<Isolation>,
     arguments: Vec<String>,
     dry: bool,
     share: bool,
     desired_gpu: Option<bool>,
+    ask_credentials: bool,
+    ask_public: bool,
 }
 
 impl Options {
@@ -82,11 +147,14 @@ impl Options {
             environment: None,
             fresh: false,
             creation: vec![],
-            image: "ubuntu:24.04".into(),
+            image: DEFAULT_IMAGE.into(),
+            isolation: None,
             arguments: vec![],
             dry: false,
             share: false,
             desired_gpu: None,
+            ask_credentials: true,
+            ask_public: true,
         };
         let mut seen = std::collections::HashSet::new();
         let mut i = 1;
@@ -103,13 +171,16 @@ impl Options {
                 "--new" => options.fresh = true,
                 "--dry-run" => options.dry = true,
                 "--share" => options.share = true,
-                "--name" | "--environment" | "--image" | "--cpu" | "--memory" | "--storage" | "--storage-drive" | "--gpu" | "--mount" => {
+                "--no-credentials" => options.ask_credentials = false,
+                "--no-public" => options.ask_public = false,
+                "--name" | "--environment" | "--image" | "--isolation" | "--cpu" | "--memory" | "--storage" | "--storage-drive" | "--gpu" | "--mount" => {
                     i += 1;
                     let value = args.get(i).filter(|value| !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_control)).ok_or_else(|| format!("{flag} requires a value"))?.clone();
                     match flag.as_str() {
                         "--name" => options.name = Some(value),
                         "--environment" => options.environment = Some(value),
                         "--image" => options.image = value,
+                        "--isolation" => options.isolation = Some(Isolation::parse(&value)?),
                         _ => options.creation.extend([flag.clone(), value]),
                     }
                 }
@@ -133,12 +204,42 @@ impl Options {
         {
             return Err("--environment cannot be combined with creation options".into());
         }
+        if options.environment.is_some() && options.isolation.is_some() {
+            return Err("--environment keeps that sandbox's isolation; remove --isolation".into());
+        }
+        // Never weaken isolation implicitly: a container must be chosen explicitly.
+        if options.isolation != Some(Isolation::Container) {
+            for (flag, reason) in [
+                ("--gpu", "GPUs work only in containers; microVM sandboxes cannot use the GPU"),
+                ("--mount", "microVM sandboxes cannot mount PC folders yet"),
+            ] {
+                if options.creation.iter().any(|value| value == flag) {
+                    return Err(format!("{flag} needs --isolation container: {reason}. A container shares Yougori's VM kernel with your other containers."));
+                }
+            }
+        }
         options.request(options.name.as_deref().unwrap_or(&options.tool))?;
         Ok(options)
     }
 
+    /// MicroVM unless a container was chosen explicitly: --isolation container,
+    /// or the GPU answer to Ollama's question, which only containers can use.
+    fn isolation(&self) -> Isolation {
+        self.isolation.unwrap_or(if self.desired_gpu == Some(true) {
+            Isolation::Container
+        } else {
+            Isolation::MicroVm
+        })
+    }
     fn custom_creation(&self) -> bool {
-        !self.creation.is_empty() || self.image != "ubuntu:24.04"
+        !self.creation.is_empty() || self.image != DEFAULT_IMAGE
+    }
+    fn image_label(&self) -> &str {
+        if self.image == DEFAULT_IMAGE {
+            "Ubuntu 24.04"
+        } else {
+            &self.image
+        }
     }
     fn resource_choices(&self) -> [bool; 2] {
         ["--cpu", "--memory"].map(|flag| {
@@ -166,13 +267,16 @@ impl Options {
         Ok(())
     }
     fn asks_gpu(&self) -> bool {
-        self.tool == "ollama" && self.environment.is_none() && !self.creation.iter().any(|flag|flag=="--gpu")
+        self.tool == "ollama" && self.environment.is_none() && self.isolation != Some(Isolation::MicroVm) && !self.creation.iter().any(|flag|flag=="--gpu")
     }
     fn description(&self) -> String {
         format!("Yougori tool · {}", self.tool)
     }
     fn request(&self, name: &str) -> Result<Value, String> {
         let mut args = vec!["-it".into(), "--name".into(), name.into()];
+        if self.isolation() == Isolation::MicroVm {
+            args.extend(["--isolation".into(), "microvm".into()]);
+        }
         if !self.creation.iter().any(|flag| flag == "--memory") {
             args.extend(["--memory".into(), "4GB".into()]);
         }
@@ -184,6 +288,13 @@ impl Options {
         let mut request = parse_run(&args, false)?.request;
         request["description"] = json!(self.description());
         Ok(request)
+    }
+    /// What would happen, without a terminal, an engine or any change.
+    fn plan(&self) -> Result<Value, String> {
+        // An explicit --environment keeps whatever isolation that sandbox has.
+        let isolation = self.environment.is_none().then(|| self.isolation());
+        let [cpu, memory] = self.resource_choices();
+        Ok(json!({"dryRun":true,"tool":self.tool,"isolation":isolation.map(Isolation::name),"request":if self.environment.is_none(){self.request(self.name.as_deref().unwrap_or(&self.tool))?}else{Value::Null},"environment":self.environment,"reuse":!self.fresh,"arguments":launch_arguments(&self.tool,&self.arguments),"terminal":"current","share":self.share,"gpuChoiceRequired":self.asks_gpu(),"resourceChoicesRequired":{"cpu":cpu,"memory":memory},"publicAccessPrompt":self.ask_public,"credentialImportPrompt":self.ask_credentials&&isolation!=Some(Isolation::MicroVm)}))
     }
 
     fn existing<'a>(&self, environments: &'a [Value]) -> Result<Option<&'a Value>, String> {
@@ -208,10 +319,13 @@ impl Options {
         if self.fresh {
             return Ok(None);
         }
+        // Existing sandboxes keep their isolation. Reuse only the requested one.
+        let isolation = self.isolation();
         let env = environments
             .iter()
             .filter(|env| {
                 env["description"] == self.description()
+                    && Isolation::of(env) == Some(isolation)
                     && self.desired_gpu.is_none_or(|gpu| environment_gpu(env) == gpu)
                     && self.name.as_deref().is_none_or(|name| {
                         env["name"]
@@ -219,19 +333,25 @@ impl Options {
                             .is_some_and(|n| n.eq_ignore_ascii_case(name))
                     })
             })
-            .min_by_key(|env| {
-                (
-                    env["status"] != "running",
-                    std::cmp::Reverse(env["createdAt"].as_str().unwrap_or("")),
-                )
-            });
+            .min_by_key(|&env| reuse_order(env));
         if env.is_some() && self.custom_creation() {
-            return Err("Creation options require --new or an unused --name. Omit them to reuse this tool's container.".into());
+            return Err("Creation options require --new or an unused --name. Omit them to reuse this tool's sandbox.".into());
         }
         if let Some(environment) = env {
             validate_environment(environment)?;
         }
         Ok(env)
+    }
+
+    /// This tool's container sandbox, which the microVM default no longer reuses.
+    fn kept_container<'a>(&self, environments: &'a [Value]) -> Option<&'a Value> {
+        if self.isolation.is_some() || self.isolation() != Isolation::MicroVm || self.fresh || self.name.is_some() || self.environment.is_some() {
+            return None;
+        }
+        environments
+            .iter()
+            .filter(|env| env["description"] == self.description() && Isolation::of(env) == Some(Isolation::Container))
+            .min_by_key(|&env| reuse_order(env))
     }
 
     fn available_name(&self, environments: &[Value]) -> Result<String, String> {
@@ -259,6 +379,14 @@ impl Options {
             .find(|name| !taken(name))
             .unwrap())
     }
+}
+
+/// Running sandboxes first, then the newest.
+fn reuse_order(environment: &Value) -> (bool, Reverse<&str>) {
+    (
+        environment["status"] != "running",
+        Reverse(environment["createdAt"].as_str().unwrap_or("")),
+    )
 }
 
 fn environment_gpu(environment: &Value) -> bool {
@@ -302,14 +430,34 @@ fn choose_resources(options: &mut Options, host: &Value) -> Result<bool, String>
     }
 }
 
+/// The GPU answer is always a container; the question says so before anyone chooses.
+fn gpu_question(options: &Options) -> (Vec<String>, [crate::cli_ui::Choice; 2]) {
+    use crate::cli_ui::Choice;
+    let cpu = if options.isolation == Some(Isolation::Container) {
+        Choice::new("Use a CPU container", "run models without a GPU")
+    } else {
+        Choice::new("Use a CPU microVM", "its own kernel; models run without a GPU")
+    };
+    (
+        vec![
+            "GPUs need container isolation: a GPU sandbox is a container that shares Yougori's VM kernel with your other containers.".into(),
+            "Yougori reuses a matching sandbox, or creates one for the mode you choose.".into(),
+        ],
+        [Choice::new("Yes, give Ollama a GPU", "NVIDIA GPU in a container"), cpu],
+    )
+}
+
 async fn choose_ollama_gpu(options: &mut Options,environments: &[Value]) -> Result<bool,String> {
-    use crate::cli_ui::{self as ui,Choice};
+    use crate::cli_ui as ui;
     if !options.asks_gpu() { return Ok(true); }
-    let existing = options.existing(environments)?;
-    let initial = if existing.is_some_and(|env|!environment_gpu(env)) {1}else{0};
-    let choices = [Choice::new("Yes, give Ollama a GPU", "use your NVIDIA GPU for models"),Choice::new("Use a CPU container", "run models without a GPU")];
-    let prompt = || ui::select("Want a GPU container for Ollama?",&["Yougori reuses a matching sandbox, or creates one for the mode you choose.".into()],&choices,initial);
-    let selected = if let Some(id) = existing.and_then(|env|env["id"].as_str()) {
+    // Each answer reuses its own sandbox. Preselect the one that would be reused.
+    let reusable = |gpu: bool| { let mut answer = options.clone(); answer.desired_gpu = Some(gpu); answer.existing(environments) };
+    let current = [reusable(true)?.map(|env| (env, 0_usize)), reusable(false)?.map(|env| (env, 1))]
+        .into_iter().flatten().min_by_key(|&(env, _)| reuse_order(env));
+    let initial = current.map_or(0, |(_, index)| index);
+    let (notes, choices) = gpu_question(options);
+    let prompt = || ui::select("Want a GPU container for Ollama?",&notes,&choices,initial);
+    let selected = if let Some(id) = current.and_then(|(env,_)|env["id"].as_str()) {
         crate::tool_sharing::share_prompt(id,prompt).await?
     } else {
         match prompt() {Ok(value)=>Some(value),Err(error) if error==ui::CANCELLED=>None,Err(error)=>return Err(error)}
@@ -320,20 +468,27 @@ async fn choose_ollama_gpu(options: &mut Options,environments: &[Value]) -> Resu
 }
 
 fn validate_environment(environment: &Value) -> Result<(), String> {
-    if environment["kind"] != "container"
-        || environment["runtime"].as_str().is_some_and(|runtime| {
-            runtime.starts_with("shared://") || runtime.starts_with("cloud://")
-        })
-    {
-        return Err("Tool shortcuts require a local container".into());
+    let remote = environment["runtime"].as_str().is_some_and(|runtime| {
+        runtime.starts_with("shared://") || runtime.starts_with("cloud://")
+    });
+    let supported = match Isolation::of(environment) {
+        Some(Isolation::Container) => !remote,
+        // Yougori installs tools only in microVMs that boot its built-in guest.
+        Some(Isolation::MicroVm) => {
+            environment["provider"] == "qemu" && environment["runtime"] == "builtin:alpine"
+        }
+        None => false,
+    };
+    if !supported {
+        return Err("Tool shortcuts require a local container or a microVM with Yougori's built-in guest".into());
     }
     if !matches!(environment["status"].as_str(), Some("running" | "stopped")) {
         return Err(
-            "Wait for this container's current operation to finish before launching a tool".into(),
+            "Wait for this sandbox's current operation to finish before launching a tool".into(),
         );
     }
     if environment["networkAccess"] == false {
-        return Err("Enable this container's Internet access before launching a tool".into());
+        return Err("Enable this sandbox's Internet access before launching a tool".into());
     }
     Ok(())
 }
@@ -352,12 +507,10 @@ pub fn launch_arguments(tool: &str, arguments: &[String]) -> Vec<String> {
 pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     let mut options = Options::parse(args)?;
     if options.dry {
-        return Ok(Some(
-            json!({"dryRun":true,"tool":options.tool,"request":if options.environment.is_none(){options.request(options.name.as_deref().unwrap_or(&options.tool))?}else{Value::Null},"environment":options.environment,"reuse":!options.fresh,"arguments":launch_arguments(&options.tool,&options.arguments),"terminal":"current","share":options.share,"gpuChoiceRequired":options.asks_gpu(),"resourceChoicesRequired":{"cpu":options.resource_choices()[0],"memory":options.resource_choices()[1]},"publicAccessPrompt":true,"credentialImportPrompt":true}),
-        ));
+        return options.plan().map(Some);
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err("Tool shortcuts require an interactive terminal. Use --dry-run to inspect without creating a container.".into());
+        return Err("Tool shortcuts require an interactive terminal. Use --dry-run to inspect without creating a sandbox.".into());
     }
     use crate::cli_ui as ui;
     let _raw = ui::Raw::on()?;
@@ -369,11 +522,12 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
         .as_array()
         .ok_or("No environment state")?;
     if !choose_ollama_gpu(&mut options,environments).await? {return Ok(None);}
-    let (id, name) = if let Some(environment) = options.existing(environments)? {
+    let (id, name, isolation) = if let Some(environment) = options.existing(environments)? {
         let id = environment["id"]
             .as_str()
             .ok_or("Missing environment ID")?
             .to_owned();
+        let isolation = Isolation::of(environment).ok_or("Unsupported sandbox isolation")?;
         if environment["status"] != "running" {
             call(
                 "set_environment_status",
@@ -387,11 +541,17 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
                 .as_str()
                 .unwrap_or(&options.tool)
                 .to_owned(),
+            isolation,
         )
     } else {
         let name = options.available_name(environments)?;
+        if let Some(kept) = options.kept_container(environments) {
+            let kept: String = kept["name"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+            ui::info(&format!("Your container sandbox {kept} is kept. Reconnect to it with: yougori {} --isolation container", options.tool));
+        }
         if !choose_resources(&mut options, &state["host"])? { return Ok(None); }
-        let task = ui::task(&format!("Creating {name} · {}", options.image));
+        let isolation = options.isolation();
+        let task = ui::task(&format!("Creating {name} · {} · {}", isolation.label(), options.image_label()));
         let result = call(
             "run_workload",
             json!({"request":options.request(&name)?,"start":true}),
@@ -404,16 +564,24 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
                 .ok_or("Missing created environment ID")?
                 .to_owned(),
             name,
+            isolation,
         )
     };
-    ui::step(&format!("Using {name}"));
+    ui::step(&format!("Using {name} · {}", isolation.label()));
     ui::info("Ctrl+C opens Cancel / Stop sandbox / Stop and delete. Ctrl+] disconnects and keeps the sandbox running.");
     // Finish quiet setup before either sharing prompts or the interactive tool.
     if crate::terminal::setup_tool(&id, &options.tool).await? != crate::terminal::SessionExit::Completed {
         return Ok(None);
     }
-    if !crate::tool_credentials::configure(&id, &options.tool, options.share).await? {return Ok(None);}
-    if !crate::tool_public_access::configure(&id,&options.tool).await? {return Ok(None);}
+    if options.ask_credentials {
+        // Copied files would land outside a microVM's workload, so none are offered.
+        if isolation == Isolation::MicroVm {
+            ui::info("Copying this computer's sign-in into a microVM sandbox is not supported yet. Sign in inside the tool, or use --isolation container to copy it.");
+        } else if !crate::tool_credentials::configure(&id, &options.tool, options.share).await? {
+            return Ok(None);
+        }
+    }
+    if options.ask_public && !crate::tool_public_access::configure(&id,&options.tool).await? {return Ok(None);}
     if options.share {
         if !crate::tool_sharing::share(&id, &name).await? {
             return Ok(None);
@@ -439,6 +607,12 @@ mod tests {
     fn words(value: &str) -> Vec<String> {
         shell_words::split(value).unwrap()
     }
+    fn microvm(id: &str, name: &str, description: &str, status: &str) -> Value {
+        json!({"id":id,"name":name,"kind":"microVm","provider":"qemu","runtime":"builtin:alpine","description":description,"status":status})
+    }
+    fn container(id: &str, name: &str, description: &str, status: &str) -> Value {
+        json!({"id":id,"name":name,"kind":"container","provider":"yougoriOci","runtime":DEFAULT_IMAGE,"description":description,"status":status})
+    }
     #[test]
     fn all_installer_tools_have_isolated_persistent_requests() {
         let ui = include_str!("../../src/lib/terminal-installers.ts");
@@ -452,12 +626,89 @@ mod tests {
             let options = Options::parse(&words(tool)).unwrap();
             let request = options.request(tool).unwrap();
             assert_eq!(request["description"], format!("Yougori tool · {tool}"));
-            assert_eq!(request["runtime"], "ubuntu:24.04");
-            assert_eq!(request["kind"], "container");
+            assert_eq!(request["kind"], "microVm");
             assert_eq!(request["resourcePolicy"]["memoryGb"]["preferred"].as_f64(), Some(4.0));
             assert_eq!(request["pcAccess"].as_array().map_or(0, Vec::len), 0);
-            assert_eq!(request["workload"]["binds"], json!([]));
+            assert_eq!(request["microvmWorkload"]["image"], DEFAULT_IMAGE);
+            assert_eq!(request["microvmWorkload"]["options"]["binds"], json!([]));
+            let container = Options::parse(&words(&format!("{tool} --isolation container"))).unwrap().request(tool).unwrap();
+            assert_eq!(container["kind"], "container");
+            assert_eq!(container["runtime"], DEFAULT_IMAGE);
+            assert_eq!(container["workload"]["binds"], json!([]));
         }
+    }
+    #[test]
+    fn new_sandboxes_are_microvms_with_a_digest_pinned_image() {
+        let (name, digest) = DEFAULT_IMAGE.split_once("@sha256:").unwrap();
+        assert_eq!(name, "ubuntu:24.04");
+        assert!(digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        for command in ["codex", "claude --new", "gemini --name writing", "codex --isolation microvm"] {
+            let options = Options::parse(&words(command)).unwrap();
+            assert_eq!(options.isolation(), Isolation::MicroVm, "{command}");
+            let request = options.request("sandbox").unwrap();
+            assert_eq!((request["kind"].as_str(), request["provider"].as_str()), (Some("microVm"), Some("qemu")), "{command}");
+            assert_eq!(request["runtime"], "builtin:alpine");
+            assert_eq!(request["gpuAccess"], false);
+            assert_eq!(request["networkAccess"], true);
+            assert!(request["workload"].is_null());
+        }
+        let custom = Options::parse(&words("codex --new --image debian:13")).unwrap().request("codex").unwrap();
+        assert_eq!(custom["microvmWorkload"]["image"], "debian:13");
+    }
+    #[test]
+    fn container_isolation_is_an_explicit_opt_out() {
+        let options = Options::parse(&words("codex --isolation container")).unwrap();
+        assert_eq!(options.isolation(), Isolation::Container);
+        let request = options.request("codex").unwrap();
+        assert_eq!((request["kind"].as_str(), request["provider"].as_str()), (Some("container"), Some("yougoriOci")));
+        assert!(request.get("microvmWorkload").is_none());
+        for input in [
+            "codex --isolation vm",
+            "codex --isolation MicroVM",
+            "codex --isolation",
+            "codex --isolation container --isolation microvm",
+            "codex --environment env --isolation container",
+            "codex --environment env --isolation microvm",
+        ] {
+            assert!(Options::parse(&words(input)).is_err(), "{input}");
+        }
+    }
+    #[test]
+    fn gpu_and_pc_folders_require_explicitly_choosing_a_container() {
+        for input in [
+            "codex --gpu nvidia",
+            "ollama --gpu nvidia",
+            "codex --isolation microvm --gpu nvidia",
+            "kilo --mount ./site:/workspace/site",
+            "kilo --isolation microvm --mount ./site:/workspace/site",
+        ] {
+            let error = Options::parse(&words(input)).unwrap_err();
+            assert!(error.contains("needs --isolation container"), "{input}: {error}");
+            assert!(error.contains("shares Yougori's VM kernel"), "{input}: {error}");
+        }
+        let gpu = Options::parse(&words("ollama --isolation container --gpu nvidia")).unwrap().request("ollama").unwrap();
+        assert_eq!((gpu["kind"].as_str(), gpu["provider"].as_str(), gpu["gpuAccess"].as_bool()), (Some("container"), Some("yougoriCuda"), Some(true)));
+        let mounted = Options::parse(&words("kilo --isolation container --mount ./site:/workspace/site")).unwrap().request("kilo").unwrap();
+        assert_eq!(mounted["workload"]["binds"].as_array().map(Vec::len), Some(1));
+    }
+    #[test]
+    fn dry_run_reports_isolation_and_only_offers_credential_import_where_it_works() {
+        let plan = |command: &str| Options::parse(&words(command)).unwrap().plan().unwrap();
+        let default = plan("codex --dry-run");
+        assert_eq!(default["isolation"], "microvm");
+        assert_eq!(default["request"]["kind"], "microVm");
+        assert_eq!(default["credentialImportPrompt"], false);
+        assert_eq!(default["publicAccessPrompt"], true);
+        let opted_out = plan("codex --isolation container --dry-run");
+        assert_eq!(opted_out["isolation"], "container");
+        assert_eq!(opted_out["request"]["kind"], "container");
+        assert_eq!(opted_out["credentialImportPrompt"], true);
+        assert_eq!(plan("codex --isolation container --no-credentials --dry-run")["credentialImportPrompt"], false);
+        // An explicit target keeps its own isolation, which the offline plan cannot know.
+        let target = plan("codex --environment saved --dry-run");
+        assert!(target["isolation"].is_null() && target["request"].is_null());
+        assert_eq!(plan("ollama --dry-run")["gpuChoiceRequired"], true);
+        assert_eq!(plan("ollama --isolation microvm --dry-run")["gpuChoiceRequired"], false);
     }
     #[test]
     fn tool_arguments_are_separate_from_creation_flags() {
@@ -477,9 +728,11 @@ mod tests {
             "codex --memory bad",
             "codex --name 'a;bad'",
             "gemini --prompt bad",
+            "codex --storage 4",
         ] {
             assert!(Options::parse(&words(input)).is_err(), "{input}");
         }
+        assert_eq!(Options::parse(&words("codex -- --isolation container")).unwrap().isolation(), Isolation::MicroVm);
     }
     #[test]
     fn sharing_is_available_on_every_tool_and_never_forwarded_as_a_tool_argument() {
@@ -499,18 +752,36 @@ mod tests {
         assert_eq!(options.arguments, words("--share"));
     }
     #[test]
-    fn only_matching_managed_containers_are_reused() {
+    fn launch_questions_can_be_skipped_but_tool_arguments_stay_literal() {
+        let options = Options::parse(&words("claude --no-credentials --no-public --share")).unwrap();
+        assert!(!options.ask_credentials && !options.ask_public && options.share);
+        let defaults = Options::parse(&words("claude -- --no-credentials --no-public")).unwrap();
+        assert!(defaults.ask_credentials && defaults.ask_public);
+        assert_eq!(defaults.arguments, words("--no-credentials --no-public"));
+        assert!(Options::parse(&words("claude --no-public --no-public")).is_err());
+    }
+    #[test]
+    fn reuse_matches_isolation_and_existing_sandboxes_keep_theirs() {
         let options = Options::parse(&words("codex")).unwrap();
+        let managed = options.description();
         let environments = vec![
             json!({"id":"foreign","kind":"container","name":"codex","status":"running"}),
-            json!({"id":"stopped","kind":"container","description":options.description(),"status":"stopped"}),
-            json!({"id":"running","kind":"container","description":options.description(),"status":"running"}),
+            container("old-container", "codex-2", &managed, "running"),
+            microvm("stopped-vm", "codex-3", &managed, "stopped"),
+            microvm("running-vm", "codex-4", &managed, "running"),
         ];
-        assert_eq!(
-            options.existing(&environments).unwrap().unwrap()["id"],
-            "running"
-        );
-        assert_eq!(options.available_name(&environments).unwrap(), "codex-2");
+        // The default reuses a microVM, never the container sandbox.
+        assert_eq!(options.existing(&environments).unwrap().unwrap()["id"], "running-vm");
+        assert_eq!(Options::parse(&words("codex --isolation microvm")).unwrap().existing(&environments).unwrap().unwrap()["id"], "running-vm");
+        // Opting out reuses the existing container; it is never converted.
+        let opted_out = Options::parse(&words("codex --isolation container")).unwrap();
+        assert_eq!(opted_out.existing(&environments).unwrap().unwrap()["id"], "old-container");
+        assert!(opted_out.kept_container(&environments).is_none());
+        // With only a container sandbox, the default creates a microVM and names the kept one.
+        let only_container = &environments[..2];
+        assert!(options.existing(only_container).unwrap().is_none());
+        assert_eq!(options.kept_container(only_container).unwrap()["id"], "old-container");
+        assert_eq!(options.available_name(only_container).unwrap(), "codex-3");
         assert!(Options::parse(&words("codex --memory 8GB"))
             .unwrap()
             .existing(&environments)
@@ -520,9 +791,7 @@ mod tests {
             .existing(&environments)
             .unwrap()
             .is_none());
-        let unavailable = vec![
-            json!({"kind":"container","description":options.description(),"status":"starting"}),
-        ];
+        let unavailable = vec![microvm("busy", "codex", &managed, "starting")];
         assert!(options.existing(&unavailable).is_err());
     }
     #[test]
@@ -530,11 +799,20 @@ mod tests {
         let options = Options::parse(&words("claude --environment target")).unwrap();
         for environment in [
             json!({"id":"target","kind":"vm","status":"running"}),
+            json!({"id":"target","kind":"fullVm","provider":"qemu","runtime":"C:/disk.qcow2","status":"running"}),
+            json!({"id":"target","kind":"microVm","provider":"qemu","runtime":"C:/custom-manifest.json","status":"running"}),
             json!({"id":"target","kind":"container","runtime":"shared://tunnel/a","status":"running"}),
             json!({"id":"target","kind":"container","status":"starting"}),
             json!({"id":"target","kind":"container","status":"running","networkAccess":false}),
+            json!({"id":"target","kind":"microVm","provider":"qemu","runtime":"builtin:alpine","status":"running","networkAccess":false}),
         ] {
             assert!(options.existing(&[environment]).is_err());
+        }
+        for environment in [
+            json!({"id":"target","kind":"container","provider":"yougoriOci","runtime":"ubuntu","status":"stopped"}),
+            json!({"id":"target","kind":"microVm","provider":"qemu","runtime":"builtin:alpine","status":"running"}),
+        ] {
+            assert!(options.existing(std::slice::from_ref(&environment)).unwrap().is_some());
         }
         assert_eq!(launch_arguments("ollama", &[]), ["serve"]);
         assert_eq!(launch_arguments("openclaw", &[]), ["onboard"]);
@@ -546,12 +824,21 @@ mod tests {
 
     #[test]
     fn ollama_gpu_question_respects_explicit_configuration() {
-        for command in ["ollama","ollama --new","ollama --name models"] {
-            assert!(Options::parse(&words(command)).unwrap().asks_gpu());
+        for command in ["ollama","ollama --new","ollama --name models","ollama --isolation container"] {
+            assert!(Options::parse(&words(command)).unwrap().asks_gpu(), "{command}");
         }
-        for command in ["codex","claude","ollama --new --gpu nvidia","ollama --environment existing"] {
-            assert!(!Options::parse(&words(command)).unwrap().asks_gpu());
+        for command in ["codex","claude","ollama --isolation microvm","ollama --new --isolation container --gpu nvidia","ollama --environment existing"] {
+            assert!(!Options::parse(&words(command)).unwrap().asks_gpu(), "{command}");
         }
+    }
+    #[test]
+    fn the_gpu_question_says_gpus_need_a_container() {
+        let (notes, choices) = gpu_question(&Options::parse(&words("ollama")).unwrap());
+        assert!(notes[0].contains("container isolation") && notes[0].contains("kernel"));
+        assert!(choices[0].hint.contains("container"));
+        assert!(choices[1].label.contains("microVM"));
+        let (_, choices) = gpu_question(&Options::parse(&words("ollama --isolation container")).unwrap());
+        assert!(choices[1].label.contains("container"));
     }
     #[test]
     fn every_tool_offers_only_unspecified_resources_for_new_sandboxes() {
@@ -591,7 +878,9 @@ mod tests {
     #[test]
     fn inspecting_resource_choices_does_not_change_reconnect_settings() {
         let options = Options::parse(&words("codex")).unwrap();
-        let environments = vec![json!({"id":"saved","kind":"container","description":options.description(),"status":"running","resourcePolicy":{"cpu":{"preferred":6},"memoryGb":{"preferred":12}}})];
+        let mut saved = microvm("saved", "codex", &options.description(), "running");
+        saved["resourcePolicy"] = json!({"cpu":{"preferred":6},"memoryGb":{"preferred":12}});
+        let environments = vec![saved];
         assert_eq!(options.existing(&environments).unwrap().unwrap()["id"], "saved");
         resource_sliders(&options, &json!({"totalCpu":16,"totalMemoryGb":32})).unwrap();
         assert_eq!(options.existing(&environments).unwrap().unwrap()["resourcePolicy"]["memoryGb"]["preferred"], 12);
@@ -601,18 +890,20 @@ mod tests {
     fn selected_resources_reach_the_creation_request_without_overriding_explicit_values() {
         let host = json!({"totalCpu":16,"totalMemoryGb":32});
         for tool in TOOLS {
-            let mut options = Options::parse(&words(&format!("{tool} --new"))).unwrap();
-            let mut sliders = resource_sliders(&options, &host).unwrap();
-            sliders[0].value = 5;
-            sliders[1].value = 7;
-            options.apply_resources(&sliders).unwrap();
-            let request = options.request(tool).unwrap();
-            assert_eq!(request["resourcePolicy"]["cpu"]["preferred"], 5.0);
-            assert_eq!(request["resourcePolicy"]["memoryGb"]["preferred"], 7.0);
-            assert_eq!(request["resourcePolicy"]["cpu"]["max"], 5.0);
-            assert_eq!(request["resourcePolicy"]["memoryGb"]["max"], 7.0);
-            assert_eq!(request["storageGb"], 20.0);
-            assert!(options.apply_resources(&sliders).is_err());
+            for isolation in ["microvm", "container"] {
+                let mut options = Options::parse(&words(&format!("{tool} --new --isolation {isolation}"))).unwrap();
+                let mut sliders = resource_sliders(&options, &host).unwrap();
+                sliders[0].value = 5;
+                sliders[1].value = 7;
+                options.apply_resources(&sliders).unwrap();
+                let request = options.request(tool).unwrap();
+                assert_eq!(request["resourcePolicy"]["cpu"]["preferred"], 5.0);
+                assert_eq!(request["resourcePolicy"]["memoryGb"]["preferred"], 7.0);
+                assert_eq!(request["resourcePolicy"]["cpu"]["max"], 5.0);
+                assert_eq!(request["resourcePolicy"]["memoryGb"]["max"], 7.0);
+                assert_eq!(request["storageGb"], 20.0);
+                assert!(options.apply_resources(&sliders).is_err());
+            }
         }
         let mut options = Options::parse(&words("codex --new --cpu 3.5")).unwrap();
         let mut sliders = resource_sliders(&options, &host).unwrap();
@@ -622,22 +913,34 @@ mod tests {
         assert_eq!(options.request("codex").unwrap()["resourcePolicy"]["memoryGb"]["preferred"], 12.0);
     }
     #[test]
-    fn ollama_gpu_choice_creates_a_cuda_request_and_reuses_only_matching_containers() {
+    fn ollama_gpu_answer_uses_a_container_and_the_cpu_answer_a_microvm() {
         let mut options=Options::parse(&words("ollama")).unwrap();
-        let environments=vec![
-            json!({"id":"cpu","name":"ollama","kind":"container","description":options.description(),"status":"running","gpuAccess":false}),
-            json!({"id":"gpu","name":"ollama-2","kind":"container","description":options.description(),"status":"stopped","provider":"yougoriCuda","gpuAccess":true}),
-        ];
+        let managed = options.description();
+        let mut cpu_container = container("cpu-container", "ollama", &managed, "running");
+        cpu_container["gpuAccess"] = json!(false);
+        let mut gpu = container("gpu", "ollama-2", &managed, "stopped");
+        gpu["provider"] = json!("yougoriCuda");
+        gpu["gpuAccess"] = json!(true);
+        let cpu_vm = microvm("cpu-vm", "ollama-3", &managed, "running");
+        let environments = vec![cpu_container, gpu, cpu_vm];
         options.desired_gpu=Some(true);
-        let request=options.request("ollama-3").unwrap();
+        assert_eq!(options.isolation(), Isolation::Container, "the GPU answer always uses a container");
+        let request=options.request("ollama-4").unwrap();
+        assert_eq!(request["kind"],"container");
         assert_eq!(request["gpuAccess"],true);
         assert_eq!(request["provider"],"yougoriCuda");
         assert_eq!(options.existing(&environments).unwrap().unwrap()["id"],"gpu");
         assert!(options.existing(&environments[..1]).unwrap().is_none());
         assert_eq!(options.available_name(&environments[..1]).unwrap(),"ollama-2");
         options.desired_gpu=Some(false);
-        assert_eq!(options.request("ollama").unwrap()["gpuAccess"],false);
-        assert_eq!(options.existing(&environments).unwrap().unwrap()["id"],"cpu");
+        assert_eq!(options.isolation(), Isolation::MicroVm);
+        assert_eq!(options.request("ollama").unwrap()["kind"],"microVm");
+        assert_eq!(options.existing(&environments).unwrap().unwrap()["id"],"cpu-vm");
+        assert!(options.existing(&environments[..2]).unwrap().is_none(), "a CPU container is not reused by default");
+        let mut opted_out = Options::parse(&words("ollama --isolation container")).unwrap();
+        opted_out.desired_gpu = Some(false);
+        assert_eq!(opted_out.request("ollama").unwrap()["kind"], "container");
+        assert_eq!(opted_out.existing(&environments).unwrap().unwrap()["id"], "cpu-container");
         assert_eq!(environments[0]["gpuAccess"],false,"CPU sandbox was not changed");
     }
 }

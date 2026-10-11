@@ -76,7 +76,7 @@ func TestSnapshotIncludesPrivateVolumeDataHiddenFilesPermissionsAndLinks(t *test
 }
 
 func TestSnapshotDoesNotIncludeExternalMounts(t *testing.T) {
-	volumes, err := privateSnapshotVolumes([]snapshotVolume{{Source: "/var/lib/opendock/shares/host", Destination: "/host"}, {Source: "/proc", Destination: "/proc"}})
+	volumes, err := privateSnapshotVolumes([]snapshotVolume{{Source: "/var/lib/yougori/shares/host", Destination: "/host"}, {Source: "/proc", Destination: "/proc"}})
 	if err != nil || len(volumes) != 0 {
 		t.Fatalf("external files were included: %v / %v", volumes, err)
 	}

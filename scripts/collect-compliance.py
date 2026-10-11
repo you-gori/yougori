@@ -339,7 +339,7 @@ def inventory():
                               "provenance": "matched-local-package-by-sha256"})
             elif dll.name == "libEGL.dll":
                 entry.update({"provenance": "local-gpu-bridge", "source": "runtime/gpu/egl-bridge.c"})
-            elif dll.name == "opendock-tpm.dll":
+            elif dll.name == "yougori-tpm.dll":
                 entry.update({"provenance": "local-tpm-build", "source": "runtime/security/SOURCES.txt"})
             elif dll.name == "libEGL_angle.dll":
                 candidate = toolchain / "ucrt64/bin/libEGL.dll"
@@ -482,6 +482,19 @@ def collect_msys(retry_blocked=False):
     dlls = json.loads((EVIDENCE / "windows-dlls.json").read_text(encoding="utf-8"))
     packages = {(item["package"], item["version"]): item for item in dlls if "package" in item}
     cache = ROOT / "build/secure-runtime/toolchain/msys64/var/cache/pacman/pkg"
+    # DLLs rebuilt locally (ANGLE) name the MSYS source package they were built from; its
+    # base and license come from that package's own .PKGINFO.
+    for item in dlls:
+        component = item.get("sourceComponent", "")
+        if item.get("provenance") == "local-angle-d3d11-build" and component.startswith("msys/"):
+            name, version = component.split("/", 2)[1:]
+            if (name, version) in packages:
+                continue
+            found = [path for path in cache.glob(f"{name}-{version}-any.pkg.tar.*") if not path.name.endswith(".sig")]
+            if len(found) != 1:
+                raise ValueError("Binary package for the recorded ANGLE source is unavailable: " + component)
+            info = dict(re.findall(r"^([^= ]+) = (.+)$", run("tar", "-xOf", found[0], ".PKGINFO").decode(), re.M))
+            packages[(name, version)] = {"package": name, "version": version, "base": info["pkgbase"], "license": info["license"]}
     prior_path = WORK / "msys-sources.json"
     prior = {item["id"]: item for item in json.loads(prior_path.read_text(encoding="utf-8"))} if retry_blocked and prior_path.exists() else {}
     results = []
@@ -893,7 +906,7 @@ def collect_go():
                                  "revision": revision[1].decode() if revision else None})
         for module, version, checksum in re.findall(rb"dep\t([^\t\n]+)\t([^\t\n]+)\t(h1:[a-zA-Z0-9+/=]+)", contents):
             modules.append({"binary": binary, "module": module.decode(), "version": version.decode(), "goSum": checksum.decode()})
-    for binary in [*(RUNTIME / "cuda").glob("opendock-*"),
+    for binary in [*(RUNTIME / "cuda").glob("yougori-*"),
                    *(RUNTIME / "cloud").glob("yougori-share-linux-*")]:
         if binary.is_file():
             inspect(binary.relative_to(RUNTIME).as_posix(), binary.read_bytes())
@@ -927,7 +940,7 @@ def collect_go():
     write_json(EVIDENCE / "guest-main-modules.json", main_modules)
     mains = []
     for item in {entry["module"]: entry for entry in main_modules}.values():
-        if item["module"] in ("opendock.local/appliance-agent", "yougori.local/cloud-share-mount"):
+        if item["module"] in ("yougori.local/appliance-agent", "yougori.local/cloud-share-mount"):
             # These exact local modules are covered by the complete application
             # archive and build-material archive, rather than a GitHub upstream.
             continue

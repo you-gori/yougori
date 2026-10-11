@@ -16,7 +16,7 @@ pub(super) fn validate_guest_root(root: &str) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) fn validate_pc_root(root: &str, app_root: &Path) -> Result<(), String> {
+pub(super) fn validate_pc_root(root: &str, yougori_roots: &[PathBuf]) -> Result<(), String> {
     if !Path::new(root).is_absolute() {
         return Err("Choose an absolute PC folder path".into());
     }
@@ -26,20 +26,13 @@ pub(super) fn validate_pc_root(root: &str, app_root: &Path) -> Result<(), String
     if !path.is_dir() {
         return Err("Choose a folder".into());
     }
-    let mut protected = vec![app_root.to_path_buf()];
-    for variable in ["APPDATA", "LOCALAPPDATA", "WINDIR", "PROGRAMFILES"] {
-        if let Some(path) = std::env::var_os(variable) {
-            protected.push(PathBuf::from(path));
-        }
-    }
-    for item in protected {
-        if let Ok(item) = item.canonicalize() {
-            if path.starts_with(&item) || item.starts_with(&path) {
-                return Err("Choose a project or documents folder outside application, system and vault storage".into());
-            }
-        }
-    }
-    Ok(())
+    crate::host_files::ensure_shareable_folder(&path, yougori_roots, true)
+}
+/// Yougori's app data, environment storage and every storage-drive runtime.
+pub(super) fn yougori_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = vec![app.state::<RemoteAccess>().root.clone(), app.state::<WorkspaceManager>().storage_directory().to_owned()];
+    roots.extend(app.state::<RuntimeManager>().storage_pool_roots());
+    roots
 }
 fn relative(value: &str) -> Result<&Path, String> {
     let path = Path::new(if value.is_empty() { "." } else { value });
@@ -247,7 +240,7 @@ pub(super) async fn dispatch(
         .ok_or("No folder is shared with this recipient")?;
     relative(p["path"].as_str().unwrap_or(""))?;
     if grant.target_id == "my-pc" {
-        validate_pc_root(folder, &app.state::<RemoteAccess>().root)?;
+        validate_pc_root(folder, &yougori_roots(app))?;
         let folder = folder.clone();
         let permission = grant.permission.clone();
         return tokio::task::spawn_blocking(move || pc_operation(&folder, &permission, p))

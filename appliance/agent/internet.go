@@ -15,7 +15,7 @@ import (
 // Containers start with network=none. The bundled CNI bridge plugin adds the
 // uplink on demand, independently of nerdctl's immutable network configuration.
 // No package or command inside the container is required.
-const internetCNI = `{"cniVersion":"0.4.0","name":"opendock-internet","type":"bridge","bridge":"odinet0","isGateway":true,"ipMasq":true,"ipam":{"type":"host-local","subnet":"10.90.0.0/16","routes":[{"dst":"0.0.0.0/0"}]}}`
+const internetCNI = `{"cniVersion":"0.4.0","name":"` + internetNetworkName + `","type":"bridge","bridge":"odinet0","isGateway":true,"ipMasq":true,"ipam":{"type":"host-local","subnet":"10.90.0.0/16","routes":[{"dst":"0.0.0.0/0"}]}}`
 
 func internetPlugin(ctx context.Context, action, id string, pid int) error {
 	if !safeID.MatchString(id) || (action != "ADD" && action != "DEL") || (action == "ADD" && pid <= 1) {
@@ -26,7 +26,7 @@ func internetPlugin(ctx context.Context, action, id string, pid int) error {
 		netns = "/proc/" + strconv.Itoa(pid) + "/ns/net"
 	}
 	cmd := exec.CommandContext(ctx, "/usr/local/libexec/cni/bridge")
-	cmd.Env = append(os.Environ(), "CNI_COMMAND="+action, "CNI_CONTAINERID=opendock-internet-"+id,
+	cmd.Env = append(os.Environ(), "CNI_COMMAND="+action, "CNI_CONTAINERID="+internetNetworkName+"-"+id,
 		"CNI_NETNS="+netns, "CNI_IFNAME=eth0", "CNI_PATH=/usr/local/libexec/cni", "CNI_ARGS=")
 	cmd.Stdin = strings.NewReader(internetCNI)
 	output, err := cmd.CombinedOutput()
@@ -79,6 +79,7 @@ func internetPeer(ctx context.Context, pid int) (string, error) {
 }
 
 func setContainerInternet(ctx context.Context, id string, enabled bool) error {
+	recordInternetChoice(ctx, id, enabled)
 	pid, err := containerPID(ctx, id)
 	if err != nil {
 		return err

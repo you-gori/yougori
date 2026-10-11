@@ -514,7 +514,7 @@ pub(super) fn render(
             "sharedFilesApi":if shares && (!container_pair || !connection.selected_folders.is_empty()) {if environment.kind==EnvironmentKind::Cloud {environment.console_endpoint.as_ref().map(|u|format!("{u}/api"))}else{Some(format!("{}/api",runtime::connection_files::GUEST_URL))}} else {None},
             "sharedDirectoryWriteAllowed":shares && can_initiate,"sharedDirectoryWritable":usable && shares && can_initiate,
             "sharedFilesReadableNow":usable && shares,"sharedFilesWritableNow":usable && shares && can_initiate,
-            "secretDirectory":if container_pair && connection.permissions.contains(&PermissionKind::Secrets) {Some(format!("/opendock/secrets/{}",connection.id))} else {None},
+            "secretDirectory":if container_pair && connection.permissions.contains(&PermissionKind::Secrets) {Some(format!("/yougori/secrets/{}",connection.id))} else {None},
             "enforcementStatus":connection.enforcement_status,
         }));
     }

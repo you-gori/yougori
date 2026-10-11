@@ -31,7 +31,7 @@ async fn micro_vm_graphical_apps_end_to_end() {
             if tokio::time::Instant::now()>deadline {return Err("App installation timed out".into());}
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
-        for (id,name,command) in [("app-xterm","Terminal","xterm -title OpenDockAppSmoke"),("app-firefox","Firefox","firefox --no-remote --new-window about:blank")] {
+        for (id,name,command) in [("app-xterm","Terminal","xterm -title YougoriAppSmoke"),("app-firefox","Firefox","firefox --no-remote --new-window about:blank")] {
             runtime.workspace_request(&env,"/v1/apps/launch",json!({"id":env.id,"sessionId":id,"name":name,"command":command})).await?;
         }
         eprintln!("Waiting for two independent app displays");
@@ -70,7 +70,7 @@ async fn micro_vm_graphical_apps_end_to_end() {
         }
         eprintln!("Checking real X11 windows, user isolation and private display sockets");
         let inspection=runtime.execute_micro_vm_command(&env.id,"apk add --no-cache xwininfo >/dev/null 2>&1 && DISPLAY=:20 xwininfo -root -tree && DISPLAY=:21 xwininfo -root -tree; ps -o user,pid,args | grep -E 'firefox|Xvnc|xterm'; ss -lnt").await?;
-        if !inspection.stdout.contains("OpenDockAppSmoke") || !inspection.stdout.contains("Mozilla Firefox") {return Err(format!("Graphical app windows missing: {} {}",inspection.stdout,inspection.stderr));}
+        if !inspection.stdout.contains("YougoriAppSmoke") || !inspection.stdout.contains("Mozilla Firefox") {return Err(format!("Graphical app windows missing: {} {}",inspection.stdout,inspection.stderr));}
         if inspection.stdout.contains(":5920") || inspection.stdout.contains(":5921") {return Err("Private VNC display exposed a TCP listener".into());}
         eprintln!("Stopping one app leaves the other running");
         runtime.workspace_request(&env,"/v1/apps/stop",json!({"id":env.id,"sessionId":"app-xterm"})).await?;

@@ -1,13 +1,16 @@
 use super::*;
 
 #[test]
-fn automatic_storage_cleanup_waits_for_idle_containers_and_finished_startup() {
-    use crate::models::EnvironmentStatus;
+fn automatic_storage_cleanup_waits_only_for_its_own_pool_and_finished_startup() {
+    use crate::models::{EnvironmentStatus, RuntimeProviderKind};
     let data = tempfile::tempdir().unwrap();
     let store = PlatformStore::load(data.path().join("state.json")).unwrap();
     let mut state = store.snapshot().unwrap();
     state.environments.clear();
-    assert!(storage_maintenance_idle(&state));
+    let standard = |pool: &RuntimeProviderKind| *pool == RuntimeProviderKind::YougoriOci;
+    let gpu = |pool: &RuntimeProviderKind| *pool == RuntimeProviderKind::YougoriCuda;
+    assert!(storage_maintenance_due(&state, standard));
+    assert!(!storage_maintenance_due(&state, |_| false), "nothing pending");
     state.environments.push(serde_json::from_value(json!({
         "id":"env-maintenance", "name":"test", "kind":"container", "provider":"yougoriCuda", "status":"stopped",
         "runtime":"ubuntu", "description":"fixture", "createdAt":"test", "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
@@ -15,15 +18,16 @@ fn automatic_storage_cleanup_waits_for_idle_containers_and_finished_startup() {
     })).unwrap());
     for status in [EnvironmentStatus::Running, EnvironmentStatus::Paused, EnvironmentStatus::Provisioning] {
         state.environments[0].status = status;
-        assert!(!storage_maintenance_idle(&state));
+        assert!(!storage_maintenance_due(&state, gpu), "a busy GPU pool waits");
+        assert!(storage_maintenance_due(&state, standard), "a running model does not block standard-container cleanup");
     }
     state.environments[0].status = EnvironmentStatus::Stopped;
-    assert!(storage_maintenance_idle(&state));
+    assert!(storage_maintenance_due(&state, gpu));
     state.startup_report = Some(crate::lifecycle::StartupReport {
         started_at:"test".into(), completed_at:None, status:"running".into(), trigger:"engineLaunch".into(),
         starts_before_sign_in:false, service_registration:None, environments:vec![],
     });
-    assert!(!storage_maintenance_idle(&state));
+    assert!(!storage_maintenance_due(&state, standard));
 }
 
 #[cfg(all(windows, not(feature = "engine-only")))]
@@ -301,7 +305,7 @@ fn automation_real_cli_lifecycle_and_connections() {
     let workspace = WorkspaceManager::new(data.path());
     let mut context = tauri::generate_context!();
     context.config_mut().identifier =
-        format!("com.opendock.cli-test-{}", uuid::Uuid::new_v4().simple());
+        format!("com.yougori.cli-test-{}", uuid::Uuid::new_v4().simple());
     context.config_mut().app.windows.clear();
     let app = tauri::Builder::default()
         .any_thread()
@@ -810,4 +814,12 @@ async fn exercise_async_reliability(app:AppHandle,endpoint:String,source:std::pa
     let journal=app.state::<PlatformStore>().data_folder("operations").join("operations.json");assert!(!std::fs::read_to_string(journal).map_err(|e|e.to_string())?.contains("ONLY-A-DISPOSABLE"));
     for id in &ids{call(&endpoint,"delete_environment",json!({"environmentId":id})).await?;}
     eprintln!("Isolated OCI reliability passed: import, cursors, redaction, real exit codes, cancellation, independent settings/Stop and untouched originals");Ok(())
+}
+
+#[test]
+fn cli_listener_retries_with_bounded_backoff_instead_of_stopping() {
+    assert_eq!(listener_backoff(1), Duration::from_millis(200));
+    assert!(listener_backoff(2) > listener_backoff(1));
+    assert_eq!(listener_backoff(64), Duration::from_secs(5));
+    assert_eq!(listener_backoff(u32::MAX), Duration::from_secs(5));
 }

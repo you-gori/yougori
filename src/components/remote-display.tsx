@@ -16,7 +16,9 @@ export function RemoteDisplay({ environmentId, appSessionId }: { environmentId: 
       const display = await remoteAccessApi.desktop<{ displayId: string; password: string }>(environmentId, { action: "create", appSessionId })
       channel = new RemoteDisplayChannel(environmentId, display.displayId, error => { if (!disposed) { setError(String(error)); setReady(false) } })
       if (disposed || !target.current) { channel.close(); return }
-      client = new Rfb(target.current, channel, { shared: true, credentials: { password: display.password } })
+      // The remote display session exists now; close it if the viewer cannot start.
+      try { client = new Rfb(target.current, channel, { shared: true, credentials: { password: display.password } }) }
+      catch (error) { channel.close(); throw error }
       client.scaleViewport = true
       client.addEventListener("connect", () => { if (!disposed) setReady(true) })
       client.addEventListener("disconnect", () => { if (!disposed) setReady(false) })

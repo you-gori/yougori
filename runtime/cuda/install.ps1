@@ -10,7 +10,7 @@ $DataDirectory = Get-CudaWindowsPath $DataDirectory
 $AgentPath = Get-CudaWindowsPath $AgentPath
 $AssetsDirectory = Get-CudaWindowsPath $AssetsDirectory
 $payloadDirectory = [IO.Path]::GetDirectoryName($AgentPath)
-$payloadNames = @('opendock-agent', 'opendock-mount-helper', 'opendock-cuda-probe', 'yougori-oci-runtime-linux-amd64.tar.gz', 'yougori-oci-runtime-linux-amd64.manifest.json', 'yougori-nvidia-cdi-linux-amd64.tar.gz', 'yougori-nvidia-cdi-linux-amd64.manifest.json')
+$payloadNames = @('yougori-agent', 'yougori-mount-helper', 'yougori-cuda-probe', 'yougori-oci-runtime-linux-amd64.tar.gz', 'yougori-oci-runtime-linux-amd64.manifest.json', 'yougori-nvidia-cdi-linux-amd64.tar.gz', 'yougori-nvidia-cdi-linux-amd64.manifest.json')
 # Validate the complete payload before importing or starting a distribution.
 foreach ($file in @($payloadNames | ForEach-Object { Join-Path $payloadDirectory $_ }) + @((Join-Path $payloadDirectory 'SHA256SUMS'), (Join-Path $AssetsDirectory 'wsl.conf'), (Join-Path $AssetsDirectory 'setup.sh'), (Join-Path $AssetsDirectory 'start.sh'), (Join-Path $AssetsDirectory 'install-oci.py'))) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "CUDA setup file is missing: $file. Reinstall Yougori and retry." }
@@ -22,7 +22,7 @@ $dataPath = [IO.Path]::GetFullPath($DataDirectory).TrimEnd('\')
 if ([IO.Path]::GetPathRoot($dataPath).TrimEnd('\') -eq $dataPath) { throw 'A dedicated CUDA data directory is required.' }
 $sha = [Security.Cryptography.SHA256]::Create()
 $digest = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($dataPath.ToLowerInvariant()))).Replace('-', '').ToLowerInvariant()
-$distro = 'OpenDock-CUDA-' + $digest.Substring(0, 12)
+$distro = 'Yougori-CUDA-' + $digest.Substring(0, 12)
 $distributionPath = Join-Path $dataPath 'distribution'
 New-Item -ItemType Directory -Force -Path $dataPath | Out-Null
 $installLock = [IO.File]::Open((Join-Path $dataPath 'setup.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -160,18 +160,18 @@ $staging = Join-Path $dataPath ('setup-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path (Join-Path $staging 'etc'), (Join-Path $staging 'usr/local/sbin'), (Join-Path $staging 'usr/local/share/yougori-oci-runtime') -Force | Out-Null
 try {
     Copy-Item -LiteralPath (Join-Path $AssetsDirectory 'wsl.conf') -Destination (Join-Path $staging 'etc/wsl.conf')
-    [IO.File]::WriteAllText((Join-Path $staging 'etc/opendock-cuda-runtime'), $digest, [Text.Encoding]::ASCII)
-    Copy-Item -LiteralPath $AgentPath -Destination (Join-Path $staging 'usr/local/sbin/opendock-agent')
-    Copy-Item -LiteralPath (Join-Path $payloadDirectory 'opendock-mount-helper') -Destination (Join-Path $staging 'usr/local/sbin/opendock-mount-helper')
-    Copy-Item -LiteralPath (Join-Path $payloadDirectory 'opendock-cuda-probe') -Destination (Join-Path $staging 'usr/local/sbin/opendock-cuda-probe')
+    [IO.File]::WriteAllText((Join-Path $staging 'etc/yougori-cuda-runtime'), $digest, [Text.Encoding]::ASCII)
+    Copy-Item -LiteralPath $AgentPath -Destination (Join-Path $staging 'usr/local/sbin/yougori-agent')
+    Copy-Item -LiteralPath (Join-Path $payloadDirectory 'yougori-mount-helper') -Destination (Join-Path $staging 'usr/local/sbin/yougori-mount-helper')
+    Copy-Item -LiteralPath (Join-Path $payloadDirectory 'yougori-cuda-probe') -Destination (Join-Path $staging 'usr/local/sbin/yougori-cuda-probe')
     foreach ($vendorFile in @('yougori-oci-runtime-linux-amd64.tar.gz', 'yougori-oci-runtime-linux-amd64.manifest.json', 'yougori-nvidia-cdi-linux-amd64.tar.gz', 'yougori-nvidia-cdi-linux-amd64.manifest.json')) {
         Copy-Item -LiteralPath (Join-Path $payloadDirectory $vendorFile) -Destination (Join-Path $staging 'usr/local/share/yougori-oci-runtime')
     }
     $installer = [IO.File]::ReadAllText((Join-Path $AssetsDirectory 'install-oci.py')).Replace("`r`n", "`n")
-    [IO.File]::WriteAllText((Join-Path $staging 'usr/local/sbin/opendock-cuda-install-oci.py'), $installer, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $staging 'usr/local/sbin/yougori-cuda-install-oci.py'), $installer, [Text.UTF8Encoding]::new($false))
     foreach ($script in @('setup', 'start')) {
         $contents = [IO.File]::ReadAllText((Join-Path $AssetsDirectory "$script.sh")).Replace("`r`n", "`n")
-        [IO.File]::WriteAllText((Join-Path $staging "usr/local/sbin/opendock-cuda-$script"), $contents, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $staging "usr/local/sbin/yougori-cuda-$script"), $contents, [Text.UTF8Encoding]::new($false))
     }
     $bundle = Join-Path $staging 'payload.tar'
     & tar.exe -cf $bundle -C $staging etc usr
@@ -185,23 +185,23 @@ for directory in /etc /usr /usr/local /usr/local/sbin /usr/local/share /usr/loca
   test ! -L "$directory" || { echo 'Redirected CUDA payload directory; files were kept.' >&2; exit 1; }
   test ! -e "$directory" || test -d "$directory" || exit 1
 done
-for file in /etc/wsl.conf /etc/opendock-cuda-runtime /usr/local/sbin/opendock-agent /usr/local/sbin/opendock-mount-helper /usr/local/sbin/opendock-cuda-probe /usr/local/sbin/opendock-cuda-setup /usr/local/sbin/opendock-cuda-start /usr/local/sbin/opendock-cuda-install-oci.py /usr/local/share/yougori-oci-runtime/yougori-oci-runtime-linux-amd64.tar.gz /usr/local/share/yougori-oci-runtime/yougori-oci-runtime-linux-amd64.manifest.json /usr/local/share/yougori-oci-runtime/yougori-nvidia-cdi-linux-amd64.tar.gz /usr/local/share/yougori-oci-runtime/yougori-nvidia-cdi-linux-amd64.manifest.json; do
+for file in /etc/wsl.conf /etc/yougori-cuda-runtime /usr/local/sbin/yougori-agent /usr/local/sbin/yougori-mount-helper /usr/local/sbin/yougori-cuda-probe /usr/local/sbin/yougori-cuda-setup /usr/local/sbin/yougori-cuda-start /usr/local/sbin/yougori-cuda-install-oci.py /usr/local/share/yougori-oci-runtime/yougori-oci-runtime-linux-amd64.tar.gz /usr/local/share/yougori-oci-runtime/yougori-oci-runtime-linux-amd64.manifest.json /usr/local/share/yougori-oci-runtime/yougori-nvidia-cdi-linux-amd64.tar.gz /usr/local/share/yougori-oci-runtime/yougori-nvidia-cdi-linux-amd64.manifest.json; do
   test ! -L "$file" || { echo 'Redirected CUDA payload file; files were kept.' >&2; exit 1; }
   if test -e "$file"; then test -f "$file" && test "$(stat -c %h "$file")" = 1 || { echo 'Aliased CUDA payload file; files were kept.' >&2; exit 1; }; fi
 done
 '@
     # Windows PowerShell 5 rewrites embedded quotes in native argv. Keep shell
     # source out of argv and use the existing binary/BOM-safe stdin sender.
-    if ($distro -cnotmatch '^OpenDock-CUDA-[a-f0-9]{12}$') { throw 'Invalid owned CUDA distribution name. Setup stopped.' }
+    if ($distro -cnotmatch '^Yougori-CUDA-[a-f0-9]{12}$') { throw 'Invalid owned CUDA distribution name. Setup stopped.' }
     $preflightPath = Join-Path $staging 'preflight.sh'
     [IO.File]::WriteAllText($preflightPath, ($preflight.Replace("`r`n", "`n") + "`n"), [Text.UTF8Encoding]::new($false))
     Send-CudaPayload ([Diagnostics.ProcessStartInfo]::new('wsl.exe', "--distribution $distro --user root --exec /bin/sh -s")) $preflightPath
     Send-CudaPayload ([Diagnostics.ProcessStartInfo]::new('wsl.exe', "--distribution $distro --user root --exec tar -xf - -C /")) $bundle
-    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', 'chmod', '0755', '/usr/local/sbin/opendock-agent', '/usr/local/sbin/opendock-mount-helper', '/usr/local/sbin/opendock-cuda-probe', '/usr/local/sbin/opendock-cuda-start', '/usr/local/sbin/opendock-cuda-setup')
+    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', 'chmod', '0755', '/usr/local/sbin/yougori-agent', '/usr/local/sbin/yougori-mount-helper', '/usr/local/sbin/yougori-cuda-probe', '/usr/local/sbin/yougori-cuda-start', '/usr/local/sbin/yougori-cuda-setup')
     # Apply only this owned distribution's no-automount/no-interop configuration.
     Invoke-Wsl @('--terminate', $distro)
-    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', '/bin/bash', '/usr/local/sbin/opendock-cuda-setup')
-    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', '/usr/local/sbin/opendock-agent', '--prepare-container-storage')
+    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', '/bin/bash', '/usr/local/sbin/yougori-cuda-setup')
+    Invoke-Wsl @('-d', $distro, '-u', 'root', '--exec', '/usr/local/sbin/yougori-agent', '--prepare-container-storage')
     Invoke-Wsl @('--terminate', $distro)
     $payloadChecksum = Get-CudaSha256 (Join-Path $payloadDirectory 'SHA256SUMS')
     [IO.File]::WriteAllText((Join-Path $dataPath 'installed.json'), (ConvertTo-Json @{ version = 1; distribution = $distro; identity = $digest; payloadChecksum = $payloadChecksum }), [Text.UTF8Encoding]::new($false))

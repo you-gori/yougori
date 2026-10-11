@@ -3,8 +3,12 @@
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub const IGNORE_TEMPLATE: &str = "# Files Yougori leaves behind when this folder is copied into an environment.
+pub const IGNORE_TEMPLATE: &str = "# Files Yougori leaves behind when this folder is copied into an environment
+# with yougori cp, the app's copy actions or yougori up.
 # Same syntax as .gitignore. Delete a line to include those files again.
+# Project launch (yougori launch, npm run yougori) does not use this file: it
+# copies the whole project except .env files you keep on this PC, and two-way
+# sync never brings .git, node_modules or virtual environments back.
 .git/
 node_modules/
 .venv/

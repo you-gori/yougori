@@ -41,9 +41,36 @@ pub fn guest_path(path: &str) -> bool {
         && !path.chars().any(char::is_control)
         && !path.contains([',', ':', '\\'])
         && !path.split('/').any(|v| v == ".." || v == ".")
-        && !["/proc", "/sys", "/dev", "/opendock"]
-            .iter()
-            .any(|p| path == *p || path.starts_with(&format!("{p}/")))
+        // The agent's own mounts, matching appliance/agent/workload_options.go. The
+        // user's imported project area under /yougori stays usable.
+        && path != "/yougori"
+        && ![
+            "/proc",
+            "/sys",
+            "/dev",
+            "/yougori/bin",
+            "/yougori/secrets",
+            "/yougori/shared",
+            crate::legacy_names::CONTAINER_MOUNT_ROOT,
+        ]
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{p}/")))
+}
+
+#[cfg(test)]
+mod guest_path_tests {
+    use super::guest_path;
+
+    #[test]
+    fn agent_mounts_are_reserved_and_the_project_area_is_not() {
+        for reserved in ["/proc", "/sys/kernel", "/dev", "/yougori", "/yougori/shared/my-pc",
+            "/yougori/secrets/token", "/yougori/bin", crate::legacy_names::CONTAINER_MOUNT_ROOT] {
+            assert!(!guest_path(reserved), "{reserved}");
+        }
+        for allowed in ["/yougori/project-files", "/yougori/project-files/app", "/data", "/app"] {
+            assert!(guest_path(allowed), "{allowed}");
+        }
+    }
 }
 pub fn identifier(name: &str) -> bool {
     !name.is_empty()

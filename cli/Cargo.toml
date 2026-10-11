@@ -1,6 +1,6 @@
 [package]
 name = "yougori-cli"
-version = "1.0.15"
+version = "1.0.16"
 edition = "2021"
 description = "Local, same-user command line control for Yougori"
 license = "AGPL-3.0-only"
@@ -39,7 +39,7 @@ notify = "8"
 tokio = { version = "1", features = ["io-util", "net", "rt", "time", "signal", "macros", "sync", "process"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Console", "Win32_Globalization"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

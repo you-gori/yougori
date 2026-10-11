@@ -204,6 +204,8 @@ export interface AppSettings {
 
 export interface PlatformState {
   settingsRevision?: number
+  /** Increases with every committed engine change; older replies and events are stale. */
+  stateRevision?: number
   startupReport?: {
     startedAt: string
     completedAt: string | null

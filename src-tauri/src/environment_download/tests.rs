@@ -102,9 +102,10 @@ async fn off_cancels_queued_and_preparing_links_without_blocking_a_new_request()
     let directory = tempfile::tempdir().unwrap(); let downloads = Downloads::new(directory.path());
     let request = StartRequest { environment_id: "env-one".into(), owner_id: uuid::Uuid::new_v4().to_string(), domain: None, process_id: None };
     let queued = downloads.queued_generation("env-one").unwrap();
-    downloads.stop("env-one").await;
+    // Nothing was live or preparing yet, so Off reports false but still cancels the queued start.
+    assert!(!downloads.stop("env-one").await);
     assert!(downloads.prepare(&request, Some(queued)).unwrap_err().contains("cancelled"));
     let pending = downloads.prepare(&request, None).unwrap();
-    downloads.stop("env-one").await;
+    assert!(downloads.stop("env-one").await);
     assert!(pending.is_cancelled());
 }

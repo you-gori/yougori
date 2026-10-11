@@ -25,7 +25,7 @@ def main():
             shutil.copytree(ROOT / "src-tauri/resources/runtime" / part, runtime)
             shutil.copyfile(args.angle / "libEGL.dll", runtime / "libEGL_angle.dll")
             shutil.copyfile(args.angle / "libGLESv2.dll", runtime / "libGLESv2.dll")
-            adapters = json.loads(subprocess.check_output([str(runtime / "opendock-gpu-probe.exe")], creationflags=subprocess.CREATE_NO_WINDOW))
+            adapters = json.loads(subprocess.check_output([str(runtime / "yougori-gpu-probe.exe")], creationflags=subprocess.CREATE_NO_WINDOW))
             if not adapters:
                 raise RuntimeError("No physical GPU available for validation")
             for selected in [None, *adapters, {"luid": "7fffffff:ffffffff", "name": "intentionally missing GPU"}]:
@@ -33,10 +33,10 @@ def main():
                 report = base / "gpu.json"
                 report.unlink(missing_ok=True)
                 env = os.environ.copy()
-                env.pop("OPENDOCK_GPU_LUID", None)
+                env.pop("YOUGORI_GPU_LUID", None)
                 if selected:
-                    env["OPENDOCK_GPU_LUID"] = selected["luid"]
-                env["OPENDOCK_GPU_REPORT"] = str(report)
+                    env["YOUGORI_GPU_LUID"] = selected["luid"]
+                env["YOUGORI_GPU_REPORT"] = str(report)
                 command = [str(runtime / "qemu-system-x86_64.exe"), "-L", str(base / "qemu/share"),
                            "-machine", "q35", "-accel", "tcg,thread=multi", "-m", "128", "-nodefaults", "-S",
                            "-device", "virtio-vga-gl,max_outputs=1" if part == "qemu-secure" else "virtio-gpu-gl-pci,max_outputs=1",

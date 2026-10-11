@@ -23,7 +23,13 @@ fn tool_shortcuts_validate_offline_and_do_not_create_from_pipes() {
         let value = response(&dry);
         assert_eq!(value["result"]["tool"], tool);
         assert_eq!(value["result"]["terminal"], "current");
-        assert_eq!(value["result"]["credentialImportPrompt"], true);
+        // New sandboxes are microVMs, which cannot receive copied credentials yet.
+        assert_eq!(value["result"]["isolation"], "microvm");
+        assert_eq!(value["result"]["request"]["kind"], "microVm");
+        assert_eq!(value["result"]["credentialImportPrompt"], false);
+        let container = response(&cli(&[tool, "--isolation", "container", "--dry-run"]));
+        assert_eq!(container["result"]["isolation"], "container");
+        assert_eq!(container["result"]["credentialImportPrompt"], true);
         let rejected = cli(&[tool]);
         assert!(!rejected.status.success());
         assert!(response(&rejected)["error"].as_str().unwrap().contains("interactive terminal"));
@@ -285,7 +291,7 @@ fn offline_help_and_catalog_expose_all_features() {
     let help = cli(&["env", "create", "--help"]);
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("Yougori CLI"));
-    assert!(!String::from_utf8_lossy(&help.stdout).contains("OpenDock"));
+    assert!(!String::from_utf8_lossy(&help.stdout).contains(yougori_cli::legacy_names::PRODUCT));
     assert!(String::from_utf8_lossy(&help.stdout).contains("--startup image"));
     let version = cli(&["--version"]);
     assert!(version.status.success());
@@ -404,7 +410,7 @@ fn file_and_stdin_json_accept_bom_and_reject_oversized_input() {
 #[test]
 fn skill_install_is_idempotent_and_never_overwrites_personal_edits() {
     let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("opendock");
+    let path = temp.path().join("yougori");
     let output = cli(&["skills", "install", "--path", path.to_str().unwrap()]);
     assert!(
         output.status.success(),
@@ -455,4 +461,12 @@ fn huggingface_login_never_accepts_a_secret_as_a_command_argument() {
     let output=cli(&["model","decide","model-1"]);
     assert!(!output.status.success());
     assert!(response(&output)["error"].as_str().unwrap().contains("--file"));
+}
+#[test]
+fn help_flags_after_the_separator_belong_to_the_guest_command() {
+    // `--help` after `--` is a guest argument; this exec stops at usage before any engine call.
+    let output = cli(&["exec", "--", "--help"]);
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Public commands"));
+    assert!(cli(&["exec", "--help"]).status.success());
 }

@@ -15,6 +15,36 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// One rule for every PC folder offered to a guest or a remote recipient, in any
+/// permission mode. `folder` is canonical. It may not be a whole drive, lie inside
+/// or contain Yougori's own data (`yougori_roots`: app state, sharing grants,
+/// tunnel and vault credentials, environment storage with VM disks) or its
+/// installed program, whose bundled components are trusted for updates. Remote
+/// recipients are also kept out of system and program folders.
+pub(crate) fn ensure_shareable_folder(folder: &Path, yougori_roots: &[PathBuf], system_folders: bool) -> Result<(), String> {
+    if folder.parent().is_none() {
+        return Err("Choose a folder, not a whole drive".into());
+    }
+    let mut protected = yougori_roots.to_vec();
+    if let Some(installed) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+        protected.push(installed);
+    }
+    if system_folders {
+        for variable in ["APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "WINDIR", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
+            if let Some(path) = std::env::var_os(variable) {
+                protected.push(PathBuf::from(path));
+            }
+        }
+    }
+    for item in protected {
+        let item = item.canonicalize().unwrap_or(item);
+        if folder.starts_with(&item) || item.starts_with(folder) {
+            return Err("Choose a project or documents folder outside Yougori data, environment storage and system folders".into());
+        }
+    }
+    Ok(())
+}
+
 pub struct HostFolderServer {
     pub port: u16,
     pub token: String,
@@ -70,6 +100,17 @@ struct FileRequest {
     expected_data: Option<String>,
 }
 
+/// A shared file never grows past this size through the share.
+const MAX_SHARED_FILE_BYTES: u64 = 256 * 1024 * 1024 * 1024;
+/// One request may extend a file by at most this much beyond its current end, so a
+/// single write offset or truncate length cannot allocate a whole host drive at once.
+const MAX_EXTENSION_BYTES: u64 = 64 * 1024 * 1024;
+fn bounded_size(current: u64, end: u64) -> Result<(), String> {
+    if end > MAX_SHARED_FILE_BYTES || end.saturating_sub(current) > MAX_EXTENSION_BYTES {
+        return Err("Shared files grow at most 64 MiB beyond their end per request, up to 256 GiB".into());
+    }
+    Ok(())
+}
 fn relative_path(relative: &str) -> Result<&Path, String> {
     if relative.len() > 4096 || relative.contains(['\\', ':', '\0'])
         || Path::new(relative)
@@ -195,6 +236,8 @@ fn operation(root: &Dir, read_only: bool, request: FileRequest) -> Result<Value,
                 return Err("Write is too large".into());
             }
             let mut file = open_file(root, path, true)?;
+            let end = request.offset.checked_add(bytes.len() as u64).ok_or("Invalid write offset")?;
+            bounded_size(file.metadata().map_err(file_error)?.len(), end)?;
             file.seek(std::io::SeekFrom::Start(request.offset))
                 .map_err(|e| e.to_string())?;
             file.write_all(&bytes).map_err(|e| e.to_string())?;
@@ -209,7 +252,9 @@ fn operation(root: &Dir, read_only: bool, request: FileRequest) -> Result<Value,
             Ok(json!({"info":info(root, path)?}))
         }
         "truncate" => {
-            open_file(root, path, true)?.set_len(request.length).map_err(file_error)?;
+            let file = open_file(root, path, true)?;
+            bounded_size(file.metadata().map_err(file_error)?.len(), request.length)?;
+            file.set_len(request.length).map_err(file_error)?;
             Ok(json!({}))
         }
         "remove" => {
@@ -504,6 +549,45 @@ mod tests {
             assert!(client.post(&endpoint).bearer_auth(&server.token).json(&json!({"operation":"remove","path":path})).send().await.unwrap().status().is_success());
         }
         assert!(!folder.path().join("project").exists());
+    }
+    #[test]
+    fn one_request_cannot_allocate_a_host_drive() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("data.bin"), b"1234").unwrap();
+        let root = Dir::open_ambient_dir(folder.path(), cap_std::ambient_authority()).unwrap();
+        let request = |value: Value| serde_json::from_value::<FileRequest>(value).unwrap();
+        let data = STANDARD.encode(b"x");
+        for value in [
+            json!({"operation":"write","path":"data.bin","offset":1u64 << 40,"data":data}),
+            json!({"operation":"write","path":"data.bin","offset":u64::MAX,"data":data}),
+            json!({"operation":"truncate","path":"data.bin","length":1u64 << 40}),
+            json!({"operation":"truncate","path":"data.bin","length":4 + MAX_EXTENSION_BYTES + 1}),
+        ] {
+            assert!(operation(&root, false, request(value.clone())).is_err(), "{value}");
+        }
+        assert_eq!(std::fs::metadata(folder.path().join("data.bin")).unwrap().len(), 4);
+        operation(&root, false, request(json!({"operation":"write","path":"data.bin","offset":8,"data":data}))).unwrap();
+        operation(&root, false, request(json!({"operation":"truncate","path":"data.bin","length":1024}))).unwrap();
+        operation(&root, false, request(json!({"operation":"truncate","path":"data.bin","length":2}))).unwrap();
+        assert_eq!(std::fs::metadata(folder.path().join("data.bin")).unwrap().len(), 2);
+    }
+    #[test]
+    fn yougori_data_installs_and_drives_are_never_shareable() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let app_data = base.join("app data");
+        let project = base.join("projects").join("site");
+        std::fs::create_dir_all(app_data.join("runtime")).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let roots = [app_data.clone()];
+        assert!(ensure_shareable_folder(&project, &roots, false).is_ok());
+        for blocked in [app_data.clone(), app_data.join("runtime"), base.clone()] {
+            assert!(ensure_shareable_folder(&blocked, &roots, false).is_err(), "{}", blocked.display());
+        }
+        let drive = base.ancestors().last().unwrap();
+        assert!(ensure_shareable_folder(drive, &roots, false).is_err());
+        let installed = std::env::current_exe().unwrap().parent().unwrap().canonicalize().unwrap();
+        assert!(ensure_shareable_folder(&installed, &roots, false).is_err());
     }
     #[cfg(unix)]
     #[tokio::test]

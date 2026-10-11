@@ -6,7 +6,7 @@ if ($resolvedTestPath -ine $expectedTestPath) { throw 'This test only accepts bu
 $runtimeOwner = [IO.File]::Open((Join-Path $resolvedTestPath 'runtime-owner.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 $installed = Get-Content -LiteralPath (Join-Path $DataDirectory 'installed.json') -Raw | ConvertFrom-Json
 $distro = $installed.distribution
-if ($distro -notmatch '^OpenDock-CUDA-[a-f0-9]{12}$') { throw 'Invalid test distribution.' }
+if ($distro -notmatch '^Yougori-CUDA-[a-f0-9]{12}$') { throw 'Invalid test distribution.' }
 & (Join-Path $PSScriptRoot 'verify-owned.ps1') -DataDirectory $resolvedTestPath -Distribution $distro
 $token = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -14,7 +14,7 @@ $listener.Start()
 $port = $listener.LocalEndpoint.Port
 $listener.Stop()
 $process = [Diagnostics.Process]::new()
-$process.StartInfo = [Diagnostics.ProcessStartInfo]::new('wsl.exe', "-d $distro -u root --exec /bin/bash /usr/local/sbin/opendock-cuda-start")
+$process.StartInfo = [Diagnostics.ProcessStartInfo]::new('wsl.exe', "-d $distro -u root --exec /bin/bash /usr/local/sbin/yougori-cuda-start")
 $process.StartInfo.UseShellExecute = $false
 $process.StartInfo.CreateNoWindow = $true
 $process.StartInfo.RedirectStandardInput = $true
@@ -56,20 +56,20 @@ try {
     $result = Request '/v1/containers/exec' @{ id=$id; command="printf '%s' '$encoded' | base64 -d | python3 -" }
     if ($result.exitCode -ne 0) { throw (ConvertTo-Json $result) }
     Write-Output 'CUDA kernel passed again after stop/start.'
-    $result = Request '/v1/containers/exec' @{id=$id; command='printf persistent-data > /root/opendock-persistence'}
+    $result = Request '/v1/containers/exec' @{id=$id; command='printf persistent-data > /root/yougori-persistence'}
     if ($result.exitCode -ne 0) { throw 'Could not create persistence fixture.' }
     $saved = Request '/v1/snapshots/create' @{id=$id; snapshotId=$snapshot; image='docker.io/library/python:3.12-slim'; command='sleep 2147483647'; networkAccess=$false; gpuAccess=$true}
     if ($saved.sizeBytes -le 0 -or $saved.checksumSha256.Length -ne 64) { throw 'Invalid CUDA snapshot artifact.' }
     Request '/v1/containers/action' @{id=$id; action='stop'; networkAccess=$false} | Out-Null
     Request '/v1/containers/configuration' @{id=$id; command='sleep 2147483647'; networkAccess=$false; gpuAccess=$false; previousNetworkAccess=$false; previousGpuAccess=$true; cpus=1; memoryBytes=536870912} | Out-Null
     Request '/v1/containers/action' @{id=$id; action='start'; networkAccess=$false} | Out-Null
-    $result = Request '/v1/containers/exec' @{id=$id; command='test ! -e /dev/dxg && test -f /root/opendock-persistence'}
+    $result = Request '/v1/containers/exec' @{id=$id; command='test ! -e /dev/dxg && test -f /root/yougori-persistence'}
     if ($result.exitCode -ne 0) { throw 'GPU disconnect or persistence failed.' }
     Request '/v1/containers/action' @{id=$id; action='stop'; networkAccess=$false} | Out-Null
     Request '/v1/snapshots/restore' @{id=$id; snapshotId=$snapshot; image='docker.io/library/python:3.12-slim'; command='sleep 2147483647'; networkAccess=$false; gpuAccess=$true} | Out-Null
     Request '/v1/containers/resources' @{id=$id; cpus=1; memoryBytes=536870912} | Out-Null
     Request '/v1/containers/action' @{id=$id; action='start'; networkAccess=$false} | Out-Null
-    $result = Request '/v1/containers/exec' @{id=$id; command="test -f /root/opendock-persistence && printf '%s' '$encoded' | base64 -d | python3 -"}
+    $result = Request '/v1/containers/exec' @{id=$id; command="test -f /root/yougori-persistence && printf '%s' '$encoded' | base64 -d | python3 -"}
     if ($result.exitCode -ne 0) { throw (ConvertTo-Json $result) }
     Write-Output 'Snapshot restore preserved files and restored working CUDA.'
     $result = Request '/v1/containers/exec' @{id=$id; command='test "$(cat /sys/fs/cgroup/memory.max)" = 536870912 && test "$(cut -d " " -f 1 /sys/fs/cgroup/cpu.max)" = 100000'}

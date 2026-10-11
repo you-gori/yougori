@@ -178,12 +178,12 @@ dispatch_group! { dispatch_group_0(app, method, p, progress, store, runtime, bac
         "get_settings_snapshot" => crate::lifecycle::get_settings_snapshot(store).await,
         "get_startup_report" => encoded(crate::lifecycle::get_startup_report(store)?),
         "recover_environment_runtime_report" => encoded(crate::lifecycle::recover_environment_runtime_report(arg(p, "environmentId")?,arg(p, "confirmed")?,store,runtime).await?),
-        "model_preflight" => crate::model_runner::model_preflight(arg(p, "model")?,arg(p, "quant")?,arg(p, "folder")?).await,
+        "model_preflight" => crate::model_runner::preflight::preflight_model(arg(p, "model")?,arg(p, "quant")?,arg(p, "folder")?).await,
         "model_support_task" => crate::model_runner::preflight::model_support_task(arg(p,"model")?,arg(p,"agent")?,arg(p,"quant")?).await,
         "model_huggingface_status" => encoded(crate::model_runner::huggingface::model_huggingface_status()),
         "set_deployment_secret" => crate::projects::secrets::set_secret(&arg::<String>(p,"name")?,&arg::<String>(p,"value")?),
         "delete_deployment_secret" => crate::projects::secrets::delete_secret(&arg::<String>(p,"name")?),
-        "deployment_status" => crate::projects::deployment_status(arg(p, "path")?,app.clone()).await,
+        "deployment_status" => crate::projects::project_deployment_status(arg(p, "path")?,app.clone()).await,
         "get_environment_health_check" => encoded(crate::projects::get_environment_health_check(arg(p, "environmentId")?,runtime)?),
         "set_environment_health_check" => crate::projects::set_environment_health_check(arg(p, "environmentId")?,arg(p, "health")?,app.clone()),
         "publication_preflight" => workspace::publication_preflight(arg(p, "environmentId")?,arg(p, "port")?,arg(p, "kind")?,arg(p, "hostPort")?,arg(p, "cloudflare")?,arg(p, "domain")?,store,manager).await,
@@ -198,7 +198,11 @@ dispatch_group! { dispatch_group_1(app, method, p, progress, store, runtime, bac
         "start_environment_download" => encoded(app.state::<crate::environment_download::Downloads>().start_generated(arg(p, "request")?, p["_downloadGeneration"].as_u64(), app).await?),
         "list_environment_downloads" => encoded(crate::environment_download::list_environment_downloads(app.state(), store).await?),
         "keep_environment_downloads_alive" => encoded(crate::environment_download::keep_environment_downloads_alive(arg(p, "ownerId")?, app.state(), store).await?),
-        "stop_environment_download" => { crate::environment_download::stop_environment_download(arg(p, "environmentId")?, app.state()).await?; Ok(Value::Null) },
+        "stop_environment_download" => {
+            let id: String = arg(p, "environmentId")?;
+            let stopped = crate::environment_download::stop_environment_download(id.clone(), app.state()).await?;
+            Ok(if stopped { json!({"environmentId":id,"stopped":true}) } else { json!({"environmentId":id,"stopped":false,"note":"No download link was active for this environment ID. Use an ID from yougori download list."}) })
+        },
         "runpod_status" => crate::neocloud::runpod::runpod_status().await,
         "runpod_connect" => crate::neocloud::runpod::runpod_connect(arg(p, "apiKey")?).await,
         "runpod_catalog" => crate::neocloud::runpod::runpod_catalog().await,
@@ -264,10 +268,10 @@ dispatch_group! { dispatch_group_4(app, method, p, progress, store, runtime, bac
         "model_chat_begin" => crate::model_runner::model_chat_begin(arg(p, "environmentId")?,arg(p, "messages")?,arg(p, "maxTokens")?,arg(p, "temperature")?,app.clone()).await,
         "model_chat_read" => crate::model_runner::model_chat_read(arg(p, "requestId")?,arg(p, "offset")?,arg(p, "stop")?),
         "environment_changes" => crate::changes::environment_changes(arg(p, "environmentId")?,arg(p, "baseline")?,arg(p, "offset")?,app.clone()).await,
-        "inspect_project" => crate::projects::inspect_project(arg(p, "path")?,app.clone()).await,
+        "inspect_project" => crate::projects::inspect_project_file(arg(p, "path")?,app.clone()).await,
         "discover_projects" => crate::projects::discover_projects(app.clone()).await,
-        "import_compose" => crate::projects::import_compose(arg(p, "path")?,arg(p, "write")?,arg(p, "project")?,app.clone()).await,
-        "project_action" => crate::projects::project_action(arg(p, "path")?,arg(p, "action")?,app.clone()).await,
+        "import_compose" => crate::projects::import_compose_file(arg(p, "path")?,arg(p, "write")?,arg(p, "project")?,app.clone()).await,
+        "project_action" => crate::projects::run_project_action(arg(p, "path")?,arg(p, "action")?,app.clone()).await,
         "run_workload" => crate::projects::run_workload(arg(p, "request")?,arg(p, "start")?,app.clone()).await,
         "cloud_authenticate" => crate::cloud_deployment::cloud_authenticate(arg(p, "provider")?,arg(p, "account")?,arg(p, "sso")?).await,
         "deploy_cloud_environment" => encoded(crate::cloud_deployment::deploy_cloud_environment(arg(p, "request")?,arg(p, "riskAcknowledged")?,store).await?),
@@ -314,7 +318,7 @@ dispatch_group! { dispatch_group_6(app, method, p, progress, store, runtime, bac
     match method {
         "import_environment_share" => encoded(crate::peer_sharing::import_environment_share(arg(p, "invitation")?,store).await?),
         "get_storage_location" => encoded(commands::storage::get_storage_location(runtime)),
-        "set_storage_location" => encoded(commands::storage::set_storage_location(arg(p, "path")?, app.clone(), store, runtime).await?),
+        "set_storage_location" => encoded(commands::storage::change_storage_location(arg(p, "path")?, app.clone(), store, runtime).await?),
         "scan_cloud_host" => encoded(commands::cloud::scan_cloud_host(arg(p, "host")?,arg(p, "port")?).await?),
         "add_cloud_environment" => encoded(commands::cloud::add_cloud_environment(arg(p, "request")?,store,runtime)?),
         "get_cloud_connection" => encoded(commands::cloud::get_cloud_connection(arg(p, "environmentId")?,store,runtime).await?),
@@ -464,13 +468,13 @@ dispatch_group! { dispatch_group_7(app, method, p, progress, store, runtime, bac
 dispatch_group! { dispatch_group_8(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
         "attach_host_folder" => encoded(
-            workspace::attach_host_folder(
+            workspace::attach_folder(
                 arg(p, "environmentId")?,
                 arg(p, "path")?,
                 arg(p, "readOnly")?,
-                store,
-                runtime,
-                manager,
+                &store,
+                &runtime,
+                &manager,
             )
             .await?,
         ),
@@ -604,16 +608,16 @@ dispatch_group! { dispatch_group_9(app, method, p, progress, store, runtime, bac
 dispatch_group! { dispatch_group_10(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
         "export_local_backup" => encoded(
-            local_backup::export_local_backup(arg(p, "environmentId")?, arg(p, "folder")?, store, runtime)
+            local_backup::export_backup(arg(p, "environmentId")?, arg(p, "folder")?, &store, &runtime)
                 .await?,
         ),
         "import_local_backup" => encoded(
-            local_backup::import_local_backup(
+            local_backup::import_backup_with_provider(
                 arg(p, "path")?,
                 arg(p, "targetProvider")?,
-                store,
-                runtime,
-                backup,
+                &store,
+                &runtime,
+                &backup,
             )
             .await?,
         ),
@@ -858,10 +862,10 @@ dispatch_group! { dispatch_group_13(app, method, p, progress, store, runtime, ba
     match method {
         "model_registry_request" => crate::model_registry::model_registry_request(arg(p, "path")?, arg(p, "body")?).await,
         "model_registry_connect" => crate::model_registry::model_registry_connect(arg(p, "model")?, arg(p, "endpoint")?, arg(p, "apiKey")?).await,
-        "model_registry_upload" => crate::model_registry::model_registry_upload(arg(p, "modelId")?, arg(p, "folder")?, arg(p, "label")?, arg(p, "quant")?, arg(p, "resume")?, app.clone()).await,
+        "model_registry_upload" => crate::model_registry::upload_model_folder(arg(p, "modelId")?, arg(p, "folder")?, arg(p, "label")?, arg(p, "quant")?, arg(p, "resume")?, app.clone()).await,
         "model_registry_download" => crate::model_registry::model_registry_download(arg(p, "model")?, arg(p, "output")?, app.clone()).await,
         "model_registry_pause" => { crate::model_registry::model_registry_pause(); Ok(json!({"paused":true})) },
-        "confidential_network_chat" => crate::market::confidential_network_chat(arg(p, "apiKey")?, arg(p, "nodeId")?, arg(p, "model")?, arg(p, "prompt")?, arg(p, "policyPath")?).await,
+        "confidential_network_chat" => crate::market::network_chat(arg(p, "apiKey")?, arg(p, "nodeId")?, arg(p, "model")?, arg(p, "prompt")?, arg(p, "policyPath")?).await,
         "market_status" => crate::market::market_status(app.clone()).await,
         "market_sign_in" => crate::market::market_sign_in(app.clone()).await,
         "market_sign_out" => crate::market::market_sign_out(app.clone()).await,
@@ -929,5 +933,46 @@ mod tests {
             validate(method.name, &method.example)
                 .unwrap_or_else(|e| panic!("{}: {e}", method.name));
         }
+    }
+    /// A renamed backend parameter must also change the CLI contract: every
+    /// `arg(p, "name")` a dispatch arm reads is declared by its catalog methods.
+    #[test]
+    fn dispatch_reads_only_parameters_the_cli_contract_declares() {
+        let source = include_str!("dispatch.rs");
+        let source = &source[..source.find("\nmod tests {").unwrap()];
+        let declared = |name: &str| -> Option<Vec<String>> {
+            let method = yougori_cli::catalog::find(name).ok()?;
+            Some(method.parameters.split_whitespace().map(|p| p.split(':').next().unwrap_or("").trim_end_matches('?').to_owned()).collect())
+        };
+        let mut arms: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim_start();
+            if let Some((head, _)) = trimmed.split_once("=>") {
+                let names = head.trim().split('|').map(|n| n.trim()).collect::<Vec<_>>();
+                if trimmed.starts_with('"') && names.iter().all(|n| n.len() > 2 && n.starts_with('"') && n.ends_with('"')) {
+                    arms.push((names.iter().map(|n| n.trim_matches('"').to_owned()).collect(), Vec::new()));
+                }
+            }
+            if let Some((_, read)) = arms.last_mut() {
+                let mut rest = line;
+                while let Some(start) = rest.find("arg(p, \"").map(|i| i + 8).or_else(|| rest.find("(p,\"").map(|i| i + 4)) {
+                    let tail = &rest[start..];
+                    let Some(end) = tail.find('"') else { break };
+                    read.push(tail[..end].to_owned());
+                    rest = &tail[end..];
+                }
+            }
+        }
+        let mut checked = 0;
+        for (names, read) in &arms {
+            for name in names {
+                let Some(parameters) = declared(name) else { continue };
+                checked += 1;
+                for parameter in read {
+                    assert!(parameters.contains(parameter), "{name} reads `{parameter}`, which its CLI contract does not declare");
+                }
+            }
+        }
+        assert!(checked > 150, "dispatch arms were not recognised");
     }
 }

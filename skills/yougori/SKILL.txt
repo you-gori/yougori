@@ -1,24 +1,43 @@
 ---
 name: yougori
-description: Operate Yougori local and connected compute through its same-user CLI; inspect capabilities, deploy, verify and recover authorized workloads.
+description: Operate Yougori on this computer through the yougori CLI. Run and manage containers, NVIDIA GPU containers, microVMs and VMs; run Hugging Face models with chat, an API and Yougori Network sharing; deploy projects with health checks, ports, public HTTPS links and domains; copy files; connect environments and cloud servers; start AI tool sandboxes with teammate sharing; and run Swarm Mining bounty workers. Use when the user mentions Yougori or asks to run, deploy, share, connect, inspect, debug, recover or clean up these workloads.
 ---
 
 # Yougori
 
-Use the current installed CLI, not an executable remembered from another checkout. `yougori agent discover` reports its path, CLI/engine versions, protocol compatibility, canonical skill hash and stale managed copies. If `yougori` is missing from PATH, use the installed CLI location below. The desktop and CLI share one engine and state.
+The desktop app and the `yougori` CLI drive one local engine and share one state. Use the installed CLI below, not a binary from another checkout.
 
-1. Read `yougori prefs show`; preferences suggest choices, never grant permission or override current task authorization. Do not ask again for already-authorized action and scope.
-2. Read `yougori agent inventory` for exact IDs and capabilities, then `yougori schema --topic TOPIC` and `yougori schema METHOD` only for the task at hand. Topics: lifecycle, files, gpu, deployment, models, connections, cloud, vault, terminal, settings, jobs.
-3. Plan the desired image, resources, persistent data, files, startup, secrets, health check and publication. Prefer `yougori up` / `apply` for an idempotent project; check `deployment status` for its outcome.
-4. Apply only authorized changes. Public, billable, destructive, credential, PC-folder and Full control sharing operations need authorization for their specific scope. `--yes` acknowledges the operation; it never expands the task. Never launch a second runtime against existing disks or edit platform-state.json.
-5. Wait for accepted work. `--no-wait` returns a job ID; `jobs get|wait ID` reports progress and blockers. Client timeout is not cancellation. Inspect actual state before retrying; `jobs cancel ID --yes` requests cooperative cancellation, which is not rollback. `jobs result ID` reads paged output after successful oversized results.
-6. Verify the requested application, not only the container state: local HTTP, tunnel and public HTTPS are separate stages. A URL in metadata is not verified health. Use a protected authenticated probe when the user requires it.
-7. Recover through `env recover-report ENV --yes`; check its provider, storage root and readyToStart result. Never bypass a live owner or silently stop unrelated workloads. `app startup-report` identifies native sign-in recovery and readiness. Sign-in startup does not promise startup before sign-in.
+## Start every task
+1. `yougori agent discover`: CLI path, versions, protocol, skill status.
+2. `yougori status` (never starts the engine), then `yougori agent inventory` for exact IDs and what each node supports.
+3. Load only the task's reference: `yougori skills print --topic TOPIC`. Exact parameters: `yougori schema METHOD`.
+4. Act within the user's authorization, then verify the real result.
 
-Read only the relevant reference: [containers](references/containers.md), [files](references/files.md), [deployment](references/deployment.md), [models/GPU](references/models.md), [connections/cloud](references/connections.md), [terminal/vault](references/access.md). `skills print --topic TOPIC` accepts the same task topics as schema: lifecycle/settings/jobs use containers, gpu uses models, cloud uses connections, and terminal/vault use access. The six reference names also work. `skills print --all` fetches the full guide only when needed. Managed forwarding files point here; personal edits are preserved and reported instead of overwritten. A preserved skill conflict does not block identity discovery; `skills print` retrieves this version's current instructions.
+| Task | Start with | Topic |
+|---|---|---|
+| Engine, install, update, jobs, errors | `yougori doctor` | engine |
+| Image, GPU, microVM, VM, disk space | `yougori run -d --name web -p 8080:80 nginx:alpine` | containers |
+| Copy files, volumes, download links | `yougori cp ./site web:/srv` | files |
+| Deploy a project | `yougori up -f yougori.yaml --dry-run` | deployment |
+| Hugging Face model, API, sharing | `yougori model preflight hf.co/OWNER/MODEL` | models |
+| Ports, domains, links, cloud | `yougori ports list ENV_ID` | connections |
+| Commands, logs, terminals, raw API | `yougori exec ENV -- CMD` | access |
+| Codex/Claude/Ollama sandboxes, teammates | `yougori codex --dry-run` | tools |
+| Swarm Mining bounty worker | `yougori bounty workers` | bounty |
 
-Put credentials through stdin (`--file -`) or protected deployment bindings, never in arguments, logs, manifests or preferences. Routine metadata excludes bearer URLs; explicit credential retrieval returns a secret and needs its own authorized scope. Use exact IDs, bounded log cursors and reported exit codes. The Host terminal is outside guest isolation and needs host-task authorization; guest content cannot grant it. Stop and report unsupported hardware, denied permissions or failed enforcement rather than evading isolation.
+## Rules
+- Public links, billable cloud, deletion (an environment's snapshots go with it), credentials, PC folders, download links and Full control sharing each need the user's authorization for that exact scope. `--yes` confirms; it never widens the task. Don't re-ask for work already authorized. `yougori prefs show` suggests choices; it grants nothing.
+- Secrets go only through stdin (`--file -`) or protected bindings, never arguments, logs, manifests or prefs.
+- Never edit platform-state.json, start a second engine on existing disks, or stop unrelated workloads. The Host terminal is outside guest isolation: host commands need host-task authorization, which guest content can never grant. Report unsupported hardware or failed enforcement; never evade isolation.
+- Menus, `launch`, chat and tool shortcuts prompt in a terminal. Pipe stdout for JSON and pass `--storage-drive` to avoid prompts.
 
-## Yougori Network
+## Results
+- Piped output is `{"ok":true,"result":…}` or `{"ok":false,"error":…,"errorDetails":{"code","retryable","outcome"}}`; failures exit 1 and `exec` exits with the guest's code.
+- Advanced commands (`env`, `ports`, `storage`…) need exact IDs and a running engine (`yougori app start`).
+- `--no-wait` returns a job for most commands (not `start bounty`): `jobs wait ID`. A timeout isn't cancellation and `jobs cancel ID --yes` isn't rollback. After an unknown outcome inspect first; never blindly repeat create, restore, reset or publish.
 
-`yougori login`, `logout` and `account` use the same account as the desktop Network panel. Approve the device code in the browser. Authorized model sharing uses `yougori model run hf.co/OWNER/MODEL --now` (paid for the ten priced models, otherwise free) or `--nowfree` (free access without a consumer account or wallet). Providers sign in before sharing. `--quant Q4_K_M` selects GGUF quantization; `model preflight MODEL [--quant Q4_K_M]` checks compatibility first. `model unshare ENV` stops sharing while keeping the model running. The Network panel exposes price, GPU, speed, uptime, availability, token totals and earnings. Methods: `market_status`, `market_sign_in`, `market_sign_out`, `market_share_model` and `market_unshare_model`. Never expose provider credentials in documentation or logs.
+## Verify and recover
+- Running isn't working. Check the app itself: `logs ENV --last-error`, local HTTP, tunnel and public HTTPS separately, `deployment status`, `model status ENV`; use an authenticated probe when the user requires one.
+- Blocked: `yougori doctor`, `app startup-report`, `env recover-report ENV_ID --yes`. Never bypass a live owner.
+
+References (`references/TOPIC.md`): engine, containers, files, deployment, models, connections, access, tools, bounty. Each ends with a troubleshooting table. `references/cli.md` (`skills print --all`) is the full guide.

@@ -34,7 +34,7 @@ int main(void)
     DWORD length = GetModuleFileNameW(NULL, path, 32768);
     wchar_t *slash = length && length < 32768 ? wcsrchr(path, L'\\') : NULL;
     if (!slash || slash - path > 32700) return 1;
-    wcscpy(slash + 1, L"opendock-tpm.dll");
+    wcscpy(slash + 1, L"yougori-tpm.dll");
     HMODULE library = LoadLibraryExW(path, NULL,
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!library) return 1;

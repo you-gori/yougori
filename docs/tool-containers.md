@@ -10,10 +10,10 @@ yougori ollama
 yougori openclaw
 ```
 
-The first command creates a local Ubuntu 24.04 container, installs the selected
-tool, and starts it in the terminal where you ran the command. Later calls reuse
-the tool's container and installed binary. Files in `/workspace` and tool sign-in
-stay in that container. The desktop terminal view does not open.
+The first command creates a sandbox, installs the selected tool, and starts it in
+the terminal where you ran the command. Later calls reuse the tool's sandbox and
+installed binary. Files in `/workspace` and tool sign-in stay in that sandbox. The
+desktop terminal view does not open.
 Before creating a sandbox for any tool, Yougori asks you to choose CPU cores and
 RAM using the same arrow-key sliders as the main CLI. You can also type a number
 and press Enter to confirm. Defaults are 2 CPU cores and 4 GB RAM, capped by the
@@ -23,6 +23,40 @@ both skips the resource prompt. Reconnecting reuses the saved resources without
 prompting or resizing. Use `--new` to choose resources for a fresh sandbox.
 Cancelling this prompt creates nothing, and `--dry-run` never prompts.
 
+## One microVM per sandbox
+
+Each new sandbox is its own microVM: it boots its own kernel with minimal virtual
+hardware, and the tool runs there in a hardened container from Ubuntu 24.04
+pinned by digest (`ubuntu:24.04@sha256:534baea6…30eb55`, the 2026-09-17 build),
+not a moving tag. Sandboxes therefore never share a kernel with each other: code
+that escapes one tool's container still has to break out of its microVM before it
+can reach another sandbox, its PC folders or its imported sign-ins. The
+hypervisor, host kernel and computer remain trusted, so this is a stronger
+boundary, not an absolute one. The first start boots the microVM and downloads the
+pinned image inside it, so it takes longer than a container.
+
+`--isolation container` opts out. The sandbox is then a container in Yougori's
+shared VM, which shares that VM's kernel with your other containers.
+`--isolation microvm` is accepted and is the default.
+
+| | microVM (default) | container (`--isolation container`) |
+|---|---|---|
+| Kernel | its own | shared with your other containers |
+| GPU (`--gpu nvidia`, Ollama's GPU answer) | not available | available |
+| PC folders (`--mount`) | not available yet | available |
+| Copy this computer's sign-in | not available yet; sign in inside the tool | asked on every launch |
+| Public project link, `--share`, Ctrl+C stop menu | available | available |
+
+Options that need a container fail with a message that names
+`--isolation container`; Yougori never switches to a container on its own. Reuse
+matches isolation: `yougori codex` reuses a microVM sandbox and
+`yougori codex --isolation container` reuses a container sandbox. Existing
+sandboxes keep their isolation and are never converted. If the tool already has a
+container sandbox, the first microVM launch creates a new sandbox and prints how to
+reconnect to the container. `yougori cp` copies files into a microVM's outer
+guest, not into the tool's sandbox, so move project files with git or the tool
+itself for now.
+
 Tool setup shows an animated loading bar and elapsed time. Package-manager and
 download logs stay offscreen. Yougori verifies success and closes the separate
 setup terminal before showing sharing prompts or opening the tool; no Enter is
@@ -30,10 +64,14 @@ needed to advance after setup. Keys typed while setup is running do not answer
 later prompts. If setup fails, a bounded error summary appears. Ctrl+C still
 opens the sandbox stop menu during setup.
 
-`yougori ollama` asks "Want a GPU container for Ollama?" Choose an NVIDIA GPU
-container or CPU container. Yougori reuses only a matching managed Ollama sandbox;
-switching modes creates/reuses another sandbox and preserves the previous one.
-Explicit `--gpu nvidia` or `--environment` skips the question and keeps that choice.
+`yougori ollama` asks "Want a GPU container for Ollama?" GPUs need container
+isolation, and the question says so: "Yes, give Ollama a GPU" creates or reuses
+an NVIDIA GPU container, which shares Yougori's VM kernel with your other
+containers. "Use a CPU microVM" runs models on the CPU in a microVM (with
+`--isolation container`, a CPU container). Yougori reuses only a matching managed
+Ollama sandbox; switching modes creates/reuses another sandbox and preserves the
+previous one. `--isolation microvm`, `--isolation container --gpu nvidia` or
+`--environment` skips the question and keeps that choice.
 
 Ollama starts its model API on port 11434 in a separate quiet terminal. Startup
 uses an animated loading bar, then verifies the API and opens an "Ollama ready"
@@ -47,13 +85,15 @@ OpenClaw starts interactive `onboard`; complete its
 own account setup and permissions there. Other shortcuts start the tool's usual
 interactive interface.
 
-Every interactive launch, including reconnects and `--share`, asks:
-"Do you want to use credentials from this computer?" No is selected by default.
-Choosing No keeps the sandbox's current sign-in. Choosing Yes copies only the
-selected tool's supported credential files and replaces matching files in the
-sandbox. Credentials are transferred as files, never printed or put in shell
-arguments, and installed with owner-only file permissions. Host originals stay
-unchanged; this is a copy, not ongoing synchronization.
+In container sandboxes, every interactive launch, including reconnects and
+`--share`, asks: "Do you want to use credentials from this computer?" No is
+selected by default. Choosing No keeps the sandbox's current sign-in. Choosing Yes
+copies only the selected tool's supported credential files and replaces matching
+files in the sandbox. Credentials are transferred as files, never printed or put
+in shell arguments, and installed with owner-only file permissions. Host originals
+stay unchanged; this is a copy, not ongoing synchronization. MicroVM sandboxes
+skip the question and say that copying is not supported yet: Yougori's file copy
+would place the files outside the tool's sandbox. Sign in inside the tool instead.
 
 File imports support Codex, Claude Code, Gemini CLI, OpenCode, Kilo CLI, and
 Ollama's cloud identity. OS keychains, VS Code extension storage, environment-only
@@ -68,7 +108,9 @@ credits. The credential prompt explains this before anything is copied.
 ```powershell
 yougori codex --new --memory 8GB
 yougori claude --name writing
-yougori gemini --environment EXISTING_CONTAINER
+yougori codex --isolation container
+yougori kilo --isolation container --mount ./site:/workspace/site
+yougori gemini --environment EXISTING_SANDBOX
 yougori codex -- --help
 yougori ollama -- run MODEL
 yougori openclaw -- gateway run
@@ -76,22 +118,26 @@ yougori kilo --dry-run
 ```
 
 Creation options (`--image`, `--cpu`, `--memory`, `--storage`, `--storage-drive`,
-`--gpu nvidia`, and `--mount`) need a new container. Other tools default to CPU
-containers; Ollama uses the GPU choice above. PC folders are not shared by default.
-`--environment` explicitly installs/runs the
-tool in a chosen local container instead. Put tool arguments after `--`.
+`--gpu nvidia`, and `--mount`) need a new sandbox; `--gpu nvidia` and `--mount`
+also need `--isolation container`. MicroVM sandboxes need at least 6 GB of storage.
+`--image` changes the image the tool runs in for either isolation. Tools default to
+CPU microVMs; Ollama uses the GPU choice above. PC folders are not shared by
+default. `--environment` explicitly installs/runs the tool in a chosen local
+container or microVM with Yougori's built-in guest instead. Put tool arguments
+after `--`. `--dry-run` reports the `isolation` it would use (`null` with
+`--environment`, which keeps that sandbox's isolation).
 
 Ctrl+] closes this terminal session and returns to your host terminal. The
-container, files and sign-in remain; the attached program can stop when its
+sandbox, files and sign-in remain; the attached program can stop when its
 terminal closes. Exiting the tool also returns to the host terminal. Run the
-shortcut again to reconnect, or `yougori stop ENV` to stop its container.
+shortcut again to reconnect, or `yougori stop ENV` to stop its sandbox.
 Ctrl+C opens Yougori's arrow-key menu with Cancel selected by default. Cancel
 returns to the same session without sending Ctrl+C to the tool. Stop sandbox
 disconnects everyone and keeps the sandbox and its data. Stop and delete first
 stops the sandbox, then permanently removes it and its managed data. Each action
 requires Enter; repeated Ctrl+C or Escape presses cannot confirm it. The menu
-also works during installation and sharing prompts. Remote/SSH shells keep
-their usual guest interrupt behavior.
+works the same for microVM and container sandboxes, including during installation
+and sharing prompts. Remote/SSH shells keep their usual guest interrupt behavior.
 Noninteractive calls require `--dry-run`, which validates without creating,
 installing or starting anything. `yougori TOOL --help` lists all options.
 
@@ -141,10 +187,12 @@ its files and any tool sign-in or connections available inside it.
 
 Before opening the tool, Yougori prints connection commands for PowerShell 7 and
 macOS/Linux, including each teammate's password. Copy the appropriate command
-and choose Open tool to launch it. Passwords are hidden while entered, remain
-in memory only during invite creation on the owner side, and are stored as salted
-verifiers by the gateway. Printed commands can remain in terminal scrollback;
-commands used by recipients can also appear in shell history and process arguments.
+and choose Open tool to launch it. Passwords are hidden while entered and are
+not saved by the CLI, although copies made while creating invites can remain in
+its memory until it exits. The gateway stores only salted verifiers. Printed
+commands can remain in terminal scrollback; commands used by recipients can also
+appear in shell history and process arguments. Recipients can leave the password
+out of the command (`yougori connect LINK USERNAME`) and type it privately.
 
 ```powershell
 yougori connect 'https://example.com/share/share-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'alice' 'your-share-password'
@@ -153,8 +201,8 @@ yougori connect 'https://example.com/share/share-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 The recipient connects directly to a shell in the same sandbox in their current
 terminal and runs `codex` (or the other installed tool) there. Each connection has
 its own terminal session; everyone uses the same sandbox files and tool sign-in.
-Use three separate quoted arguments; credentials are not part of the HTTPS URL.
-The owner must keep their computer, Yougori, container and gateway running.
+Use separate quoted arguments; credentials are not part of the HTTPS URL.
+The owner must keep their computer, Yougori, sandbox and gateway running.
 
 Updated clients and engines carry terminal input and output through a persistent
 binary stream, including the sandbox agent when it supports streaming. Keyboard

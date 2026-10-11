@@ -25,7 +25,7 @@ class MountHelperTests(unittest.TestCase):
         cls.build = tempfile.TemporaryDirectory(prefix="yougori-mount-helper-build-")
         cls.addClassCleanup(cls.build.cleanup)
         build = Path(cls.build.name)
-        cls.helper = build / "opendock-mount-helper"
+        cls.helper = build / "yougori-mount-helper"
         cls.harness = build / "directory-harness"
         flags = [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"]
         result = subprocess.run([*flags, str(SOURCE), "-o", str(cls.helper)],
@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
   if (root < 0) return 1;
   int result;
   if (strcmp(argv[1], "alias") == 0 && argc == 3) {
-    result = make_shared_alias(root);
+    result = make_shared_directory(root);
   } else {
     const char *relative;
     bool create;
@@ -106,25 +106,25 @@ int main(int argc, char **argv) {
                          b"outside remains untouched\n")
 
     def test_creates_nested_destination_and_opens_existing_source_inode(self):
-        result = self.run_harness("mkdir", "opendock/shared/slot/nested")
+        result = self.run_harness("mkdir", "yougori/shared/slot/nested")
         self.assertEqual(result.returncode, 0, result.stderr)
-        target = self.root / "opendock/shared/slot/nested"
+        target = self.root / "yougori/shared/slot/nested"
         status = target.stat()
         self.assertEqual(tuple(map(int, result.stdout.split())),
                          (status.st_dev, status.st_ino))
-        source = self.run_harness("open", "opendock/shared/slot/nested")
+        source = self.run_harness("open", "yougori/shared/slot/nested")
         self.assertEqual(source.returncode, 0, source.stderr)
         self.assertEqual(source.stdout, result.stdout)
         self.assert_outside_unchanged()
 
     def test_source_lookup_does_not_create_missing_directories(self):
-        result = self.run_harness("open", "var/lib/opendock/shares/missing")
+        result = self.run_harness("open", "var/lib/yougori/shares/missing")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(list(self.root.iterdir()), [])
         self.assert_outside_unchanged()
 
     def test_every_ancestor_and_leaf_symlink_is_refused_for_source_and_target(self):
-        components = ["opendock", "shared", "slot"]
+        components = ["yougori", "shared", "slot"]
         for mode in ("mkdir", "open"):
             for position in range(len(components)):
                 with self.subTest(mode=mode, symlink=components[position]):
@@ -141,14 +141,14 @@ int main(int argc, char **argv) {
                     self.assert_outside_unchanged()
 
     def test_regular_file_at_an_intermediate_or_leaf_component_is_refused(self):
-        for relative in ("opendock", "opendock/shared/slot"):
+        for relative in ("yougori", "yougori/shared/slot"):
             with self.subTest(relative=relative):
                 root = self.base / relative.replace("/", "-")
                 root.mkdir()
                 leaf = root / relative
                 leaf.parent.mkdir(parents=True, exist_ok=True)
                 leaf.write_bytes(b"owned file")
-                result = self.run_harness("mkdir", "opendock/shared/slot", root=root)
+                result = self.run_harness("mkdir", "yougori/shared/slot", root=root)
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(leaf.read_bytes(), b"owned file")
                 self.assert_outside_unchanged()
@@ -164,26 +164,26 @@ int main(int argc, char **argv) {
 
     def test_pinned_root_survives_rename_and_path_replacement(self):
         renamed = self.base / "renamed-guest"
-        result = self.run_harness("rename", renamed, "opendock/shared/slot")
+        result = self.run_harness("rename", renamed, "yougori/shared/slot")
         self.assertEqual(result.returncode, 0, result.stderr)
-        target = renamed / "opendock/shared/slot"
+        target = renamed / "yougori/shared/slot"
         self.assertTrue(target.is_dir())
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertEqual(tuple(map(int, result.stdout.split())),
                          (target.stat().st_dev, target.stat().st_ino))
         self.assert_outside_unchanged()
 
-    def test_shared_alias_is_created_and_idempotent_without_guest_programs(self):
+    def test_shared_directory_is_created_and_idempotent_without_guest_programs(self):
         self.assertEqual(self.run_harness("alias").returncode, 0)
-        alias = self.root / "yougori/shared"
-        self.assertEqual(os.readlink(alias), "/opendock/shared")
-        inode = alias.lstat().st_ino
+        shared = self.root / "yougori/shared"
+        self.assertTrue(shared.is_dir() and not shared.is_symlink())
+        inode = shared.lstat().st_ino
         self.assertEqual(self.run_harness("alias").returncode, 0)
-        self.assertEqual(alias.lstat().st_ino, inode)
+        self.assertEqual(shared.lstat().st_ino, inode)
         self.assertFalse((self.root / "bin").exists())
         self.assert_outside_unchanged()
 
-    def test_alias_refuses_redirected_ancestor_and_preserves_foreign_leaf(self):
+    def test_shared_directory_refuses_redirected_ancestor_and_file_and_replaces_link(self):
         for kind in ("ancestor", "file", "directory", "link", "long-link"):
             with self.subTest(kind=kind):
                 root = self.base / f"alias-{kind}"
@@ -196,25 +196,31 @@ int main(int argc, char **argv) {
                     parent.mkdir()
                     leaf = parent / "shared"
                     if kind == "file":
-                        leaf.write_bytes(b"user-owned alias name")
+                        leaf.write_bytes(b"user-owned shared name")
                     elif kind == "directory":
                         leaf.mkdir()
                         (leaf / "marker").write_bytes(b"preserved")
                     else:
+                        # Earlier releases left a link here; its target is never touched.
                         leaf.symlink_to(str(self.outside) if kind == "link" else "x" * 256)
                 inode = leaf.lstat().st_ino
                 result = self.run_harness("alias", root=root)
-                self.assertEqual(result.returncode, 1)
-                self.assertEqual(leaf.lstat().st_ino, inode)
+                if kind in ("ancestor", "file"):
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(leaf.lstat().st_ino, inode)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(leaf.is_dir() and not leaf.is_symlink())
                 if kind == "file":
-                    self.assertEqual(leaf.read_bytes(), b"user-owned alias name")
+                    self.assertEqual(leaf.read_bytes(), b"user-owned shared name")
                 elif kind == "directory":
+                    self.assertEqual(leaf.lstat().st_ino, inode)
                     self.assertEqual((leaf / "marker").read_bytes(), b"preserved")
                 self.assert_outside_unchanged()
 
     def test_cli_rejects_invalid_arguments_before_process_lookup(self):
-        source = "/var/lib/opendock/shares/slot"
-        destination = "/opendock/shared/slot"
+        source = "/var/lib/yougori/shares/slot"
+        destination = "/yougori/shared/slot"
         cases = [[], ["2"], ["2", "--shared-alias", "extra"]]
         for pid in ("", "0", "1", "-1", "abc", "2junk", "2147483648", "9" * 100):
             cases.append([pid, source, destination, "false"])
@@ -239,7 +245,7 @@ int main(int argc, char **argv) {
     def test_cli_unmount_of_missing_process_is_idempotent(self):
         self.assertFalse(Path("/proc/2147483647").exists())
         result = subprocess.run([str(self.helper), "2147483647", "--unmount",
-                                 "/opendock/shared/slot"], capture_output=True,
+                                 "/yougori/shared/slot"], capture_output=True,
                                 text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list(self.root.iterdir()), [])
@@ -263,10 +269,10 @@ int main(int argc, char **argv) {
             for _ in range(2):
                 result = subprocess.run(command, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
-            alias = self.root / "yougori/shared"
-            self.assertEqual(os.readlink(alias), "/opendock/shared")
-            alias.unlink()
-            alias.parent.rmdir()
+            shared = self.root / "yougori/shared"
+            self.assertTrue(shared.is_dir() and not shared.is_symlink())
+            shared.rmdir()
+            shared.parent.rmdir()
             (self.root / "yougori").symlink_to(self.outside, target_is_directory=True)
             result = subprocess.run(command, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 1, result.stderr)

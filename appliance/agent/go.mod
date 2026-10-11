@@ -1,4 +1,4 @@
-module opendock.local/appliance-agent
+module yougori.local/appliance-agent
 
 go 1.26.0
 

@@ -36,16 +36,16 @@ impl RuntimeManager {
         }
         let mut batches = Vec::new();
         let endpoint = {
-            let mut appliance = self.appliance.lock().await;
+            let mut appliance = self.appliance_peek().await.ok_or("The container runtime is busy; service ports will be updated shortly")?;
             match appliance.as_mut() {
-                Some(process) => if process.child.try_wait().map_err(|e| e.to_string())?.is_none() { Some(process.endpoint.clone()) } else { None },
+                Some(process) => if process.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                    process.internet.set_local_services(if qemu_ids.is_empty() { &[] } else { ports })?;
+                    Some(process.endpoint.clone())
+                } else { None },
                 _ => None,
             }
         };
         if let Some(endpoint) = endpoint {
-            if let Some(process) = self.appliance.lock().await.as_ref() {
-                process.internet.set_local_services(if qemu_ids.is_empty() { &[] } else { ports })?;
-            }
             if !qemu_ids.is_empty() {
                 batches.push((qemu_ids, endpoint, false));
             }
@@ -89,7 +89,7 @@ impl RuntimeManager {
                 return Ok((endpoint.base_url, endpoint.token));
             }
             // Workspace polling/cleanup must never boot or restart the utility VM.
-            let mut appliance = self.appliance.lock().await;
+            let mut appliance = self.appliance_peek().await.ok_or("The container runtime is busy starting or recovering. Retry shortly.")?;
             let process = appliance
                 .as_mut()
                 .ok_or("The container runtime is stopped")?;
@@ -126,30 +126,18 @@ impl RuntimeManager {
         if environment.kind == EnvironmentKind::Cloud {
             return self.cloud.session(&environment.id).await?.request(path, body).await;
         }
-        let (endpoint, token) = self.workspace_endpoint(environment).await?;
+        let (mut endpoint, mut token) = self.workspace_endpoint(environment).await?;
         if environment.kind == EnvironmentKind::MicroVm
             && (matches!(path, "/v1/terminal/create" | "/v1/shares/attach" | "/v1/cli/context") || path.starts_with("/v1/apps/"))
         {
-            // QMP is ready before Alpine finishes booting. Probe with a read-only
-            // request; never blindly retry terminal creation or other mutations.
-            let deadline = tokio::time::Instant::now() + super::host_platform::guest_boot_timeout();
-            loop {
-                if self
-                    .client
-                    .get(format!("{endpoint}/v1/health"))
-                    .bearer_auth(&token)
-                    .timeout(Duration::from_secs(2))
-                    .send()
-                    .await
-                    .is_ok_and(|r| r.status().is_success())
-                {
-                    break;
-                }
-                if tokio::time::Instant::now() >= deadline {
-                    return Err("The microVM guest agent is still booting or unavailable. Try opening a new tab in a moment.".into());
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
+            // QMP is ready before Alpine finishes booting. Wait with read-only
+            // probes, never by retrying terminal creation or other mutations, and
+            // retire the boot credential before anything runs in the guest.
+            let id = environment.runtime_id.as_deref().unwrap_or(&environment.id);
+            let ready = self
+                .ready_micro_vm_agent(id, "The microVM guest agent is still booting or unavailable. Try opening a new tab in a moment.")
+                .await?;
+            (endpoint, token) = (ready.base_url, ready.token);
         }
         let response = self
             .client

@@ -72,6 +72,38 @@ mod tests {
         assert!(terminal.contains("SHA-256: abc123"));
         assert!(terminal.contains("cannot approve operations"));
     }
+
+    #[tokio::test]
+    async fn piped_requests_get_every_reply_and_bad_lines_get_json_rpc_errors() {
+        use yougori_vault::protocol;
+        let (client, mut vault) = tokio::io::duplex(1 << 20);
+        // A slow vault: replies arrive after the client has already closed its input.
+        let broker = tokio::spawn(async move {
+            let mut seen = vec![];
+            while let Ok(frame) = protocol::read(&mut vault).await {
+                let request: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+                let message = request["message"].clone();
+                seen.push(message.clone());
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let reply = if message.get("id").is_some() {
+                    serde_json::json!({"jsonrpc":"2.0","id":message["id"],"result":{"echo":message["method"]}})
+                } else {
+                    serde_json::Value::Null
+                };
+                protocol::write(&mut vault, &reply).await.unwrap();
+            }
+            seen
+        });
+        let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\nnot json\n\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
+        let mut output = Vec::new();
+        assert_eq!(relay(client, std::io::Cursor::new(input.to_owned()), &mut output).await.unwrap(), 0);
+        let lines: Vec<serde_json::Value> = String::from_utf8(output).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[0]["error"]["code"], -32700);
+        assert_eq!(lines[1]["id"], 1);
+        assert_eq!(lines[2]["result"]["echo"], "tools/list");
+        drop(broker);
+    }
 }
 #[cfg(not(windows))]
 async fn local() -> Result<i32, String> {
@@ -85,34 +117,49 @@ async fn local() -> Result<i32, String> {
 async fn bridge<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
     stream: S,
 ) -> Result<i32, String> {
-    use std::io::{BufRead, Read, Write};
+    relay(stream, std::io::stdin(), std::io::stdout()).await
+}
+
+enum Line {
+    Message(Vec<u8>),
+    TooLarge,
+    Failed(String),
+}
+
+/// Relays newline-delimited MCP messages between a client and the vault. When the
+/// client closes its input, replies still owed to it are delivered before exiting.
+async fn relay<S, I, O>(stream: S, input: I, mut output: O) -> Result<i32, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    I: std::io::Read + Send + 'static,
+    O: std::io::Write,
+{
+    use std::io::{BufRead, Read};
     use yougori_vault::protocol;
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let (input, mut incoming) = tokio::sync::mpsc::channel::<Result<Vec<u8>, String>>(2);
-    let (closed, mut ended) = tokio::sync::watch::channel(false);
+    let (lines, mut incoming) = tokio::sync::mpsc::channel::<Line>(2);
     std::thread::spawn(move || {
-        let stdin = std::io::stdin();
-        let mut stdin = stdin.lock();
+        let mut input = std::io::BufReader::new(input);
         loop {
             let mut bytes = vec![];
-            match (&mut stdin)
+            let line = match (&mut input)
                 .take(protocol::MAX_FRAME as u64 + 1)
                 .read_until(b'\n', &mut bytes)
             {
                 Ok(0) => break,
-                Ok(_) if bytes.len() <= protocol::MAX_FRAME => {
-                    if input.blocking_send(Ok(bytes)).is_err() {
-                        break;
-                    }
-                }
-                _ => {
-                    let _ = input
-                        .blocking_send(Err("MCP input exceeds 256 KB or could not be read".into()));
-                    break;
-                }
+                Ok(_) if bytes.len() <= protocol::MAX_FRAME => Line::Message(bytes),
+                // Skip the rest of an oversized line; the next one is still served.
+                Ok(_) => match input.skip_until(b'\n') {
+                    Ok(_) => Line::TooLarge,
+                    Err(error) => Line::Failed(error.to_string()),
+                },
+                Err(error) => Line::Failed(error.to_string()),
+            };
+            let failed = matches!(line, Line::Failed(_));
+            if lines.blocking_send(line).is_err() || failed {
+                break;
             }
         }
-        let _ = closed.send(true);
     });
     // A dedicated reader preserves framing when input arrives halfway through
     // a reply; read_exact is not cancellation-safe inside tokio::select!.
@@ -126,25 +173,52 @@ async fn bridge<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send +
             }
         }
     });
-    let result=async { loop {
-        tokio::select! {
-            _ = ended.changed() => return Ok(0),
-            Some(bytes) = incoming.recv() => {
-                let bytes = bytes?;
-                if bytes.iter().all(|b|b.is_ascii_whitespace()) { continue; }
-                let message:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid MCP JSON input")?;
-                protocol::write(&mut writer,&serde_json::json!({"method":"mcp","message":message})).await?;
+    let mut emit = |message: &serde_json::Value| -> Result<(), String> {
+        serde_json::to_writer(&mut output, message).map_err(|_| "MCP output closed")?;
+        output.write_all(b"\n").and_then(|_| output.flush()).map_err(|_| "MCP output closed".into())
+    };
+    let error = |code: i32, message: &str| serde_json::json!({"jsonrpc":"2.0","id":null,"error":{"code":code,"message":message}});
+    let mut open = true;
+    // The vault answers every forwarded message exactly once, with null for a
+    // notification. Cancellation ends its session and is never answered.
+    let mut owed = 0usize;
+    let result = async {
+        loop {
+            if !open && owed == 0 {
+                return Ok(0);
             }
-            bytes = replies.recv() => {
-                let message:serde_json::Value=serde_json::from_slice(&bytes.ok_or("Vault connection closed")??).map_err(|_|"Invalid vault reply")?;
-                if message.is_null() { continue; }
-                if message.get("jsonrpc").is_none() { return Err(message["error"].as_str().unwrap_or("Vault rejected the request").into()); }
-                let mut stdout=std::io::stdout().lock();
-                serde_json::to_writer(&mut stdout,&message).map_err(|_|"MCP output closed")?;
-                stdout.write_all(b"\n").and_then(|_|stdout.flush()).map_err(|_|"MCP output closed")?;
+            tokio::select! {
+                line = incoming.recv(), if open => match line {
+                    None => open = false,
+                    Some(Line::Failed(failure)) => {
+                        eprintln!("MCP input could not be read: {failure}");
+                        open = false;
+                    }
+                    Some(Line::TooLarge) => emit(&error(-32600, "MCP message exceeds 256 KB"))?,
+                    Some(Line::Message(bytes)) => {
+                        if bytes.iter().all(|b| b.is_ascii_whitespace()) { continue; }
+                        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                            Err(_) => emit(&error(-32700, "Parse error"))?,
+                            Ok(message) => {
+                                protocol::write(&mut writer, &serde_json::json!({"method":"mcp","message":message})).await?;
+                                if message["method"] != "notifications/cancelled" {
+                                    owed += 1;
+                                }
+                            }
+                        }
+                    }
+                },
+                reply = replies.recv() => {
+                    let message: serde_json::Value = serde_json::from_slice(&reply.ok_or("Vault connection closed")??).map_err(|_| "Invalid vault reply")?;
+                    owed = owed.saturating_sub(1);
+                    if message.is_null() { continue; }
+                    if message.get("jsonrpc").is_none() { return Err(message["error"].as_str().unwrap_or("Vault rejected the request").into()); }
+                    emit(&message)?;
+                }
             }
         }
-    } }.await;
+    }
+    .await;
     reading.abort();
     result
 }

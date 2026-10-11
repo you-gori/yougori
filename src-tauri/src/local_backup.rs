@@ -141,10 +141,11 @@ fn retag_container(
                 }
                 let mut json: serde_json::Value =
                     serde_json::from_reader(&mut entry).map_err(|e| e.to_string())?;
+                let prefix = yougori_cli::legacy_names::SNAPSHOT_TAG_PREFIX;
                 found |= replace(
                     &mut json,
-                    &format!("opendock.local/snapshots:{}", old_id.to_lowercase()),
-                    &format!("opendock.local/snapshots:{}", new_id.to_lowercase()),
+                    &format!("{prefix}{}", old_id.to_lowercase()),
+                    &format!("{prefix}{}", new_id.to_lowercase()),
                     old_id,
                     new_id,
                 );
@@ -453,13 +454,17 @@ fn read_backup_manifest(path: &Path, staging: &Path) -> Result<BackupRestore, St
     })
 }
 
+// Raw host folders come only from the dashboard or the same-user CLI, never an
+// environment window that renders guest-controlled content.
 #[tauri::command]
 pub async fn export_local_backup(
     environment_id: String,
     folder: String,
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
+    window: crate::WebviewWindow,
 ) -> Result<String, String> {
+    crate::host_terminal::require_dashboard(window.label())?;
     export_backup(environment_id, folder, &store, &runtime).await
 }
 
@@ -561,7 +566,9 @@ pub async fn import_local_backup(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
     backup: State<'_, BackupManager>,
+    window: crate::WebviewWindow,
 ) -> Result<PlatformState, String> {
+    crate::host_terminal::require_dashboard(window.label())?;
     import_backup_with_provider(path, target_provider, &store, &runtime, &backup).await
 }
 
@@ -603,6 +610,10 @@ async fn import_backup_options(
     let mut restored = tokio::task::spawn_blocking(move || read_backup(Path::new(&path), &staging))
         .await
         .map_err(|e| e.to_string())??;
+    if copy.is_none() {
+        // Duplicates come from this app's own environment; an opened file does not.
+        sanitize_imported(&mut restored.environment);
+    }
     if let Some((name, drive)) = copy {
         restored.environment.name = name;
         restored.environment.storage_drive = drive.clone();
@@ -672,6 +683,43 @@ async fn import_backup_options(
         return Err(errors.join("; "));
     }
     result
+}
+
+/// Placeholder boot media for an imported VM whose recorded media cannot be trusted.
+/// It has no `.iso` extension, so starting the VM never looks it up on disk.
+const IMPORTED_VM_SOURCE: &str = "imported-backup";
+
+/// A `.yougori` file may come from anyone. It restores the disk and settings,
+/// never grants of network or GPU access, and its VM media path may name only
+/// a local drive path: not a network share, device namespace or the
+/// live-computer branch source.
+fn sanitize_imported(environment: &mut Environment) {
+    environment.network_access = false;
+    environment.gpu_access = false;
+    if environment.kind == EnvironmentKind::FullVm && !local_media_path(&environment.runtime) {
+        environment.runtime = IMPORTED_VM_SOURCE.into();
+    }
+}
+
+fn local_media_path(source: &str) -> bool {
+    use std::path::Component;
+    let path = Path::new(source);
+    if source.is_empty() || source.contains('\0') || !path.is_absolute() {
+        return false;
+    }
+    let mut components = path.components();
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        if !matches!(components.next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))) {
+            return false;
+        }
+    }
+    #[cfg(not(windows))]
+    if source.starts_with("//") {
+        return false;
+    }
+    components.all(|component| !matches!(component, Component::ParentDir))
 }
 
 fn validate_copy_name(name: &str, state: &PlatformState) -> Result<(), String> {
@@ -759,6 +807,36 @@ mod tests {
         }
     }
     #[test]
+    fn opened_backups_grant_no_network_gpu_or_remote_media() {
+        let mut container = fixture().environment;
+        container.network_access = true;
+        container.gpu_access = true;
+        sanitize_imported(&mut container);
+        assert!(!container.network_access && !container.gpu_access);
+        assert_eq!(container.runtime, "alpine:latest");
+        let local = if cfg!(windows) { "C:\\Media\\linux.iso" } else { "/media/linux.iso" };
+        let mut unsafe_sources = vec!["current-computer", "relative.iso", "C:\\Media\\..\\..\\x.iso"];
+        if cfg!(windows) {
+            unsafe_sources.extend(["\\\\attacker\\share\\win11.iso", "\\\\?\\UNC\\attacker\\share\\x.iso", "\\\\.\\PhysicalDrive0"]);
+        } else {
+            unsafe_sources.extend(["//attacker/share/x.iso", "/media/../etc/x.iso"]);
+        }
+        for source in unsafe_sources {
+            let mut vm = fixture().environment;
+            vm.kind = EnvironmentKind::FullVm;
+            vm.provider = Some(RuntimeProviderKind::Qemu);
+            vm.runtime = source.into();
+            sanitize_imported(&mut vm);
+            assert_eq!(vm.runtime, IMPORTED_VM_SOURCE, "{source}");
+        }
+        let mut vm = fixture().environment;
+        vm.kind = EnvironmentKind::FullVm;
+        vm.runtime = local.into();
+        sanitize_imported(&mut vm);
+        assert_eq!(vm.runtime, local);
+    }
+
+    #[test]
     fn duplication_rejects_invalid_and_existing_names() {
         let temp = tempfile::tempdir().unwrap();
         let store = PlatformStore::load(temp.path().join("state.json")).unwrap();
@@ -776,9 +854,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let mut archive = tar::Builder::new(File::create(&source).unwrap());
-        let json = br#"{"manifests":[{"annotations":{"io.containerd.image.name":"opendock.local/snapshots:old-snapshot"}}]}"#;
+        let json = format!(
+            r#"{{"manifests":[{{"annotations":{{"io.containerd.image.name":"{}old-snapshot"}}}}]}}"#,
+            yougori_cli::legacy_names::SNAPSHOT_TAG_PREFIX
+        );
         for (name, bytes) in [
-            ("index.json", json.as_slice()),
+            ("index.json", json.as_bytes()),
             ("blobs/sha256/test", b"disk".as_slice()),
         ] {
             let mut header = tar::Header::new_gnu();
@@ -796,7 +877,10 @@ mod tests {
         let path = write_backup(temp.path(), &manifest, &source).unwrap();
         assert_eq!(path.file_name().unwrap(), "backup.yougori");
         // A backup made before the product rename is still a valid import.
-        let legacy = path.with_file_name("backup.opendock");
+        let legacy = path.with_file_name(format!(
+            "backup.{}",
+            yougori_cli::legacy_names::BACKUP_FILE_EXTENSION
+        ));
         fs::copy(&path, &legacy).unwrap();
         let legacy_restored = read_backup(&legacy, temp.path()).unwrap();
         assert_eq!(legacy_restored.environment.runtime, manifest.environment.runtime);
@@ -831,6 +915,11 @@ mod tests {
             .unwrap();
         assert!(metadata.contains(&restored.snapshot.id));
         assert!(!metadata.contains("old-snapshot"));
+        assert!(metadata.contains(&format!(
+            "{}{}",
+            yougori_cli::legacy_names::SNAPSHOT_TAG_PREFIX,
+            restored.snapshot.id.to_lowercase()
+        )));
         let mut layer = String::new();
         entries
             .next()

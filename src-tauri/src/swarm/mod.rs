@@ -93,10 +93,27 @@ pub(crate) struct Worker {
     pending_replies: BTreeMap<String, Value>,
     #[serde(default)]
     tool_results: BTreeMap<String, Value>,
+    /// Report drafts of the accepted bounty that wait for the participant's review. Only
+    /// `update` changes this list, so an older progress copy cannot restore a submitted draft.
+    #[serde(default)]
+    review_reports: Vec<String>,
 }
+/// The stage of a worker that the engine paused while starting; its view reports `restored`.
+const RESTORED: &str =
+    "Paused when the Yougori engine restarted. Resume to recheck authorization and continue.";
 impl Worker {
     fn view(&self) -> Value {
-        json!({"id":self.id,"serverId":self.server_id,"name":self.name,"model":self.model,"state":self.state,"stage":self.stage,"environmentId":self.environment_id,"modelEnvironmentId":self.model_environment_id,"testEnvironmentId":self.test_environment_id,"gpu":self.gpu,"resources":self.resources,"workspaceQuotaGb":self.quota_gb,"keepResident":self.keep_resident,"error":self.error,"summary":self.summary,"completedAttempts":self.attempt_count,"bountyId":self.policy["bountyId"],"policyVersion":self.policy["termsVersion"],"cursor":self.cursor})
+        // The agent keeps working while a private draft waits for the participant.
+        let state = if self.state == "running" && !self.review_reports.is_empty() {
+            "awaiting_review"
+        } else {
+            &self.state
+        };
+        json!({"id":self.id,"serverId":self.server_id,"name":self.name,"model":self.model,"state":state,"stage":self.stage,"restored":self.restored(),"reviewReports":self.review_reports,"environmentId":self.environment_id,"modelEnvironmentId":self.model_environment_id,"testEnvironmentId":self.test_environment_id,"gpu":self.gpu,"resources":self.resources,"workspaceQuotaGb":self.quota_gb,"keepResident":self.keep_resident,"error":self.error,"summary":self.summary,"completedAttempts":self.attempt_count,"bountyId":self.policy["bountyId"],"policyVersion":self.policy["termsVersion"],"cursor":self.cursor})
+    }
+    /// Paused by an engine restart rather than by the participant, the bounty or an error.
+    fn restored(&self) -> bool {
+        self.state == "paused" && self.stage == RESTORED
     }
     fn remote_id(&self) -> Result<&str, String> {
         self.server_id
@@ -104,8 +121,20 @@ impl Worker {
             .ok_or("Worker registration has not completed".into())
     }
 }
+/// What the participant reviewed for this version besides the digests checked below. A live
+/// policy that changes any recorded one is not the accepted one, even under the same version.
+/// Fields the accepted record does not carry are adopted from the first live policy.
+const CONSENT_FIELDS: [&str; 15] = [
+    "objective", "setupCommand", "testCommand", "agentChannelVisibility", "serviceRules", "rulesVersion", "rulesDigest",
+    "scope", "inScope", "outOfScope", "exclusions", "prohibitedActions", "qualifyingCriteria", "confidentiality",
+    "confidentialityTerms",
+];
+pub(crate) fn consent_changed(state: &Value, worker: &Worker) -> bool {
+    CONSENT_FIELDS.iter().any(|key| !worker.policy[*key].is_null() && state["policy"][*key] != worker.policy[*key])
+}
 pub(crate) fn execution_authorized(state: &Value, worker: &Worker) -> bool {
-    state["executionAllowed"] == true
+    !consent_changed(state, worker)
+        && state["executionAllowed"] == true
         && direct_source_policy(&worker.policy).is_ok()
         && direct_source_policy(&state["policy"]).is_ok()
         && state["policy"]["authorizationDigest"] == worker.policy["authorizationDigest"]
@@ -241,6 +270,17 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
             return Err("Choose an NVIDIA GPU or CPU worker".into());
         }
         let r = &request["resources"];
+        // Workers always download their reviewed Hugging Face revision; a local model folder or
+        // other model-runner options would bypass that preflight.
+        match r.as_object() {
+            Some(map) => {
+                if let Some(key) = map.keys().find(|key| !matches!(key.as_str(), "cpu" | "memoryGb" | "storageGb" | "storageDrive")) {
+                    return Err(format!("Unsupported worker resource setting: {key}"));
+                }
+            }
+            None if !r.is_null() => return Err("Worker resources must be an object".into()),
+            None => {}
+        }
         for (name, min, max) in [("cpu", 4., 255.), ("memoryGb", 8., 1024.)] {
             let n = r[name].as_f64().unwrap_or(min);
             if !n.is_finite() || n < min || n > max {
@@ -342,7 +382,20 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
     {
         return Err("Send a message of 1–8192 characters".into());
     }
+    if action == "submitReport" && !request["reportId"].as_str().is_some_and(identifier) {
+        return Err("Choose the reviewed draft by its report ID".into());
+    }
     Ok(())
+}
+/// Nothing continues by itself after an engine restart: resuming rechecks authorization.
+/// Workers that were already paused keep the reason they were paused for.
+fn restore(rows: &mut BTreeMap<String, Worker>) {
+    for worker in rows.values_mut() {
+        if !matches!(worker.state.as_str(), "stopped" | "failed" | "paused") {
+            worker.state = "paused".into();
+            worker.stage = RESTORED.into();
+        }
+    }
 }
 async fn load(app: &AppHandle) -> Result<(), String> {
     let manager = app.state::<Swarm>();
@@ -361,12 +414,7 @@ async fn load(app: &AppHandle) -> Result<(), String> {
             }
             inner.rows = serde_json::from_slice(&bytes)
                 .map_err(|_| "Cannot read worker journal; no workers were started")?;
-            for worker in inner.rows.values_mut() {
-                if !matches!(worker.state.as_str(), "stopped" | "failed") {
-                    worker.state = "paused".into();
-                    worker.stage = "Worker restored. Resume to recheck authorization.".into();
-                }
-            }
+            restore(&mut inner.rows);
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
@@ -409,6 +457,7 @@ fn apply_progress(inner: &mut Workers, mut worker: Worker) -> Result<(), String>
         worker.credential_reference = old.credential_reference.clone();
         worker.credential_expires_at = old.credential_expires_at;
     }
+    worker.review_reports = old.review_reports.clone();
     inner.rows.insert(worker.id.clone(), worker);
     Ok(())
 }
@@ -720,7 +769,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             .map_err(|e| e.to_string())?;
         let preflight = if request["preflightModel"] == true {
             Some(
-                crate::model_runner::model_preflight(
+                crate::model_runner::preflight::preflight_model(
                     string(&request, "model")?.into(),
                     request["quant"].as_str().map(str::to_owned),
                     None,
@@ -782,6 +831,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             skipped_offers: Vec::new(),
             pending_replies: BTreeMap::new(),
             tool_results: BTreeMap::new(),
+            review_reports: Vec::new(),
         };
         {
             let manager = app.state::<Swarm>();
@@ -870,6 +920,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         worker = update(&app, id, |w| {
             w.generation += 1;
             w.state = "preparing".into();
+            w.stage = "Resuming preparation; verified downloads are reused".into();
             w.error = None;
         })
         .await?;
@@ -980,10 +1031,21 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             Some(&body),
         )
         .await?;
+        let previous = worker.credential_reference.clone();
         store_credential(&mut worker, &result)?;
+        let issued = worker.credential_reference.clone();
+        // The worker record keeps the previous credential until the receipt is verified and saved.
+        let discard_issued = || {
+            if let Some(issued) = issued.as_deref().filter(|issued| Some(*issued) != previous.as_deref()) {
+                let _ = secrets::delete_secret(issued);
+            }
+        };
         let policy = result["policy"].clone();
         let membership = result["membership"].clone();
-        direct_source_policy(&policy)?;
+        if let Err(error) = direct_source_policy(&policy) {
+            discard_issued();
+            return Err(error);
+        }
         if policy["authorizationDigest"] != request["authorizationDigest"]
             || policy["termsVersion"] != request["termsVersion"]
             || policy["termsDigest"] != request["termsDigest"]
@@ -994,11 +1056,12 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             || membership["authorization_digest"] != request["authorizationDigest"]
             || membership["payment_mode"] != "publisher_direct_external"
         {
+            discard_issued();
             return Err("The accepted source authorization or direct-payment consent receipt does not match this request; no work was launched".into());
         }
         let reference = worker.credential_reference.clone();
         let expiry = worker.credential_expires_at;
-        worker = update_if_current(&app, id, worker.generation, |w| {
+        let updated = update_if_current(&app, id, worker.generation, |w| {
             w.generation += 1;
             w.credential_reference = reference;
             w.credential_expires_at = expiry;
@@ -1013,8 +1076,19 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             w.guidance.clear();
             w.session_id = None;
             w.lease = Value::Null;
+            w.review_reports.clear();
         })
-        .await?;
+        .await;
+        worker = match updated {
+            Ok(worker) => worker,
+            Err(error) => {
+                discard_issued();
+                return Err(error);
+            }
+        };
+        if let Some(old) = previous.filter(|old| Some(old) != worker.credential_reference.as_ref()) {
+            let _ = secrets::delete_secret(&old);
+        }
         launch(&app, id.into(), false);
         return Ok(json!({"worker":worker.view(),"background":true}));
     }
@@ -1048,15 +1122,15 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
     }
     if action == "submitReport" {
         let report = string(&request, "reportId")?;
-        if !identifier(report) {
-            return Err("Invalid report ID".into());
-        }
-        return crate::market::swarm_account_request(
+        let result = crate::market::swarm_account_request(
             reqwest::Method::POST,
             &format!("/api/swarm/reports/{report}/submit"),
             Some(&json!({"confirm":true,"idempotencyKey":format!("submit-{report}")})),
         )
-        .await;
+        .await?;
+        // The participant reviewed and sent this draft; the worker no longer waits for it.
+        worker = update(&app, id, |w| w.review_reports.retain(|draft| draft != report)).await?;
+        return Ok(json!({"report":result["report"],"worker":worker.view()}));
     }
     if matches!(action, "pause" | "stop" | "leave" | "delete") {
         if let Some(c) = app.state::<Swarm>().operations.lock().await.get(id) {
@@ -1088,6 +1162,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
                 w.policy = Value::Null;
                 w.membership = Value::Null;
                 w.session_id = None;
+                w.review_reports.clear();
             }
         })
         .await?;
@@ -1124,10 +1199,12 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         .await?;
         worker = update_if_current(&app, id, worker.generation, |w| {
             w.generation += 1;
-            w.state = if w.policy.is_null() {
-                "ready_waiting"
+            let waiting = w.policy.is_null();
+            w.state = if waiting { "ready_waiting" } else { "running" }.into();
+            w.stage = if waiting {
+                "Waiting for bounty offers. No investigation is running."
             } else {
-                "running"
+                "Resumed; rechecking authorization before the next task"
             }
             .into();
             w.error = None;
@@ -1173,7 +1250,7 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
                 .into(),
         );
     }
-    let preflight = tokio::select! {_=cancel.cancelled()=>return Ok(()),result=crate::model_runner::model_preflight(worker.model.clone(),worker.quant.clone(),None)=>result?};
+    let preflight = tokio::select! {_=cancel.cancelled()=>return Ok(()),result=crate::model_runner::preflight::preflight_model(worker.model.clone(),worker.quant.clone(),None)=>result?};
     if preflight["runner"] != "yougori-llama-cpp" {
         return Err("Swarm workers currently require a supported GGUF model with agent tool calling. Paste its Hugging Face GGUF repository.".into());
     }
@@ -1209,6 +1286,7 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
         resources.memory_gb = Some(resources.memory_gb.unwrap_or(8.) - 4.);
         resources.cpu_only = worker.gpu == "cpu";
         resources.agent_api = true;
+        resources.model_folder = None;
         let result = crate::model_runner::run_model_with_resources(
             worker.model.clone(),
             None,

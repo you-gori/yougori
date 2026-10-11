@@ -38,14 +38,14 @@ int main(void) {
     CALL(cuDevicePrimaryCtxRetain, &context, device);
     CALL(cuCtxSetCurrent, context);
     const char *ptx = ".version 6.0\n.target sm_50\n.address_size 64\n"
-        ".visible .entry opendock_probe(.param .u64 output) {\n"
+        ".visible .entry yougori_probe(.param .u64 output) {\n"
         ".reg .b64 %rd, %offset, %addr; .reg .b32 %r, %idx;\n"
         "ld.param.u64 %rd, [output]; mov.u32 %idx, %tid.x;\n"
         "mul.lo.u32 %r, %idx, 7; add.u32 %r, %r, 5;\n"
         "mul.wide.u32 %offset, %idx, 4; add.u64 %addr, %rd, %offset;\n"
         "st.global.u32 [%addr], %r; ret; }\n";
     CALL(cuModuleLoadData, &module, ptx);
-    CALL(cuModuleGetFunction, &kernel, module, "opendock_probe");
+    CALL(cuModuleGetFunction, &kernel, module, "yougori_probe");
     uint64_t memory = 0;
     CALL(cuMemAlloc_v2, &memory, 256 * sizeof(uint32_t));
     void *arguments[] = {&memory};

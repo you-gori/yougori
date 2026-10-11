@@ -12,6 +12,9 @@ import type { EnvironmentKind } from "@/types/platform"
 import { prepareTourWindow, tourWindowFailed, useInstructionsTour } from "@/lib/instructions-tour"
 import { resolveAppearance } from "@/lib/appearance"
 
+// Startup keeps waiting after this; it only offers to open the app without the CLI.
+const CLI_STARTUP_NOTICE_MS = 20_000
+
 const loadCreateEnvironmentDialog = () => import("@/components/dialogs/create-environment-dialog")
 const loadEnvironmentDetailSheet = () => import("@/components/environment-detail-sheet")
 const loadGuestDesktop = () => import("@/components/guest-desktop")
@@ -73,20 +76,31 @@ function Workspace() {
 
   const [cliReady, setCliReady] = useState(false)
   const [cliError, setCliError] = useState<string | null>(null)
+  const [cliSkipped, setCliSkipped] = useState(false)
+  const [cliAttempt, setCliAttempt] = useState(0)
   const cliStartup = useRef<Promise<void> | null>(null)
   const platformReady = !loading && Boolean(state)
   const vaultStartup = useVaultStartup(platformReady)
   useEffect(() => {
     if (!platformReady) return
     let active = true
+    // startHostCli shares one pending start and forgets failures, so a retry never duplicates it.
     cliStartup.current ??= startHostCli()
+    const slow = setTimeout(() => {
+      if (active) setCliError(current => current ?? "The CLI is taking longer than expected to start.")
+    }, CLI_STARTUP_NOTICE_MS)
     void cliStartup.current.then(() => {
-      if (active) setCliReady(true)
+      if (active) { setCliError(null); setCliReady(true) }
     }).catch(reason => {
       if (active) setCliError(`Could not start the CLI: ${reason instanceof Error ? reason.message : String(reason)}`)
-    })
-    return () => { active = false }
-  }, [platformReady])
+    }).finally(() => clearTimeout(slow))
+    return () => { active = false; clearTimeout(slow) }
+  }, [platformReady, cliAttempt])
+  const retryCli = useCallback(() => { cliStartup.current = null; setCliError(null); setCliAttempt(value => value + 1) }, [])
+  const continueWithoutCli = useCallback(() => {
+    if (cliError) toastManager.add({ title: "The CLI didn’t start", description: `${cliError} Open the CLI view to try again.`, type: "error" })
+    setCliSkipped(true)
+  }, [cliError])
 
   const openEnvironment = useCallback((environmentId: string) => {
     const selected = state?.environments.find((item) => item.id === environmentId)
@@ -127,7 +141,7 @@ function Workspace() {
   }, [])
 
   if (loading || !state) return <LoadingScreen error={error} onRetry={() => window.location.reload()} />
-  if (!cliReady) return <><ThemeSync /><LoadingScreen message="Starting the CLI…" error={cliError} onRetry={() => window.location.reload()} /></>
+  if (!cliReady && !cliSkipped) return <><ThemeSync /><LoadingScreen message="Starting the CLI…" error={cliError} onRetry={retryCli} onContinue={cliError ? continueWithoutCli : undefined} continueKind="cli" /></>
   if (!vaultStartup.ready) return <><ThemeSync /><LoadingScreen message="Starting your Personal Vault…" error={vaultStartup.error} onRetry={vaultStartup.retry} onContinue={vaultStartup.error ? vaultStartup.continueWithoutVault : undefined} /></>
 
   return (

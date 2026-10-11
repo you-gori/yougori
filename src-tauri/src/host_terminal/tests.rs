@@ -90,7 +90,7 @@ fn host_workspace_is_created_only_on_use_and_keeps_existing_files() {
 #[test]
 fn renamed_host_workspace_keeps_legacy_work_but_defaults_to_yougori() {
     let profile = tempfile::tempdir().unwrap();
-    let legacy = profile.path().join("OpenDock/Workspace");
+    let legacy = profile.path().join(yougori_cli::legacy_names::PRODUCT).join("Workspace");
     std::fs::create_dir_all(&legacy).unwrap();
     std::fs::write(legacy.join("project.txt"), "keep my work").unwrap();
     assert_eq!(prepare_working_directory(profile.path(), None).unwrap(), profile.path().join("Yougori/Workspace"));
@@ -101,9 +101,10 @@ fn renamed_host_workspace_keeps_legacy_work_but_defaults_to_yougori() {
 #[test]
 fn renamed_host_workspace_ignores_unrelated_legacy_path() {
     let profile = tempfile::tempdir().unwrap();
-    std::fs::write(profile.path().join("OpenDock"), "keep").unwrap();
+    let unrelated = profile.path().join(yougori_cli::legacy_names::PRODUCT);
+    std::fs::write(&unrelated, "keep").unwrap();
     assert_eq!(prepare_working_directory(profile.path(), None).unwrap(), profile.path().join("Yougori/Workspace"));
-    assert_eq!(std::fs::read_to_string(profile.path().join("OpenDock")).unwrap(), "keep");
+    assert_eq!(std::fs::read_to_string(&unrelated).unwrap(), "keep");
 }
 
 #[test]

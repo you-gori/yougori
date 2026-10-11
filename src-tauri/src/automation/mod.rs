@@ -52,7 +52,15 @@ pub(crate) fn start_storage_maintenance(app: &AppHandle) {
             }
             if is_shutting_down(&app) { break; }
             let Ok(state) = app.state::<PlatformStore>().snapshot() else { continue };
-            if !storage_maintenance_idle(&state) || !app.state::<RuntimeManager>().has_pending_storage_reclaim() { continue; }
+            // Folder baselines copy shared-folder text; none may outlive its environment.
+            let live = state.environments.iter().map(|environment| environment.id.clone()).collect();
+            let sweep_app = app.clone();
+            if let Ok((freed, warnings)) = tokio::task::spawn_blocking(move || crate::changes::remove_orphans(&sweep_app.state::<RuntimeManager>(), &live)).await {
+                if freed > 0 { eprintln!("Removed {freed} bytes of change baselines left by deleted environments"); }
+                for warning in warnings { eprintln!("Storage maintenance: {}", crate::lifecycle::safe_diagnostic(&warning)); }
+            }
+            let runtime = app.state::<RuntimeManager>();
+            if !storage_maintenance_due(&state, |pool| runtime.storage_reclaim_pending(pool)) { continue; }
             let control = app.state::<Arc<Control>>();
             if control.jobs.lock().await.iter().any(|job| matches!(job.status, "queued" | "running")) { continue; }
             let response = control.handle(app.clone(), Request {
@@ -63,11 +71,14 @@ pub(crate) fn start_storage_maintenance(app: &AppHandle) {
     });
 }
 
-fn storage_maintenance_idle(state: &crate::models::PlatformState) -> bool {
-    use crate::models::EnvironmentStatus;
+/// A pool with cleanup pending runs it once its own workloads are idle: a running model must
+/// not hold up standard-container cleanup, and the other way round.
+fn storage_maintenance_due(state: &crate::models::PlatformState, pending: impl Fn(&crate::models::RuntimeProviderKind) -> bool) -> bool {
+    use crate::models::{EnvironmentStatus, RuntimeProviderKind};
     !state.startup_report.as_ref().is_some_and(|report| report.status == "running")
-        && !state.environments.iter().any(|environment| crate::commands::provider(environment).is_container()
-            && matches!(environment.status, EnvironmentStatus::Running | EnvironmentStatus::Paused | EnvironmentStatus::Provisioning))
+        && [RuntimeProviderKind::YougoriOci, RuntimeProviderKind::YougoriCuda].iter().any(|pool| pending(pool)
+            && !state.environments.iter().any(|environment| crate::commands::provider(environment) == *pool
+                && matches!(environment.status, EnvironmentStatus::Running | EnvironmentStatus::Paused | EnvironmentStatus::Provisioning)))
 }
 
 async fn connection(
@@ -128,46 +139,76 @@ fn start_at(app: &AppHandle, headless: bool, endpoint: String) -> Result<(), Str
     app.manage(control.clone());
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // A client that disconnects early or a temporary resource limit must not
+        // end the listener: the engine would keep running without a CLI channel.
+        let mut failures = 0u32;
         #[cfg(windows)]
         {
             let mut listener = listener;
             loop {
-                if listener.connect().await.is_err() {
-                    break;
-                }
+                let connected = listener.connect().await;
                 // Keep a replacement instance alive before dropping a client,
                 // preventing another process from taking over the pipe name.
-                let next = match transport::bind(&endpoint, false) {
-                    Ok(next) => next,
-                    Err(error) => {
-                        eprintln!("CLI listener stopped: {error}");
-                        break;
+                let next = loop {
+                    match transport::bind(&endpoint, false) {
+                        Ok(next) => break next,
+                        Err(error) => {
+                            failures = failures.saturating_add(1);
+                            eprintln!("CLI listener is retrying a new connection slot: {error}");
+                            tokio::time::sleep(listener_backoff(failures)).await;
+                        }
                     }
                 };
                 let stream = std::mem::replace(&mut listener, next);
-                if let Ok(permit) = control.clients.clone().try_acquire_owned() {
-                    let control = control.clone();
-                    let app = app.clone();
-                    tokio::spawn(async move {
-                        connection(stream, control, app, permit).await;
-                    });
+                match connected {
+                    Ok(()) => {
+                        failures = 0;
+                        if let Ok(permit) = control.clients.clone().try_acquire_owned() {
+                            let control = control.clone();
+                            let app = app.clone();
+                            tokio::spawn(async move {
+                                connection(stream, control, app, permit).await;
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        failures = failures.saturating_add(1);
+                        eprintln!("CLI connection failed before its request: {error}");
+                        drop(stream);
+                        tokio::time::sleep(listener_backoff(failures)).await;
+                    }
                 }
             }
         }
         #[cfg(unix)]
         {
-            while let Ok((stream, _)) = listener.accept().await {
-                if let Ok(permit) = control.clients.clone().try_acquire_owned() {
-                    let control = control.clone();
-                    let app = app.clone();
-                    tokio::spawn(async move {
-                        connection(stream, control, app, permit).await;
-                    });
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        failures = 0;
+                        if let Ok(permit) = control.clients.clone().try_acquire_owned() {
+                            let control = control.clone();
+                            let app = app.clone();
+                            tokio::spawn(async move {
+                                connection(stream, control, app, permit).await;
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        failures = failures.saturating_add(1);
+                        eprintln!("CLI listener could not accept a connection: {error}");
+                        tokio::time::sleep(listener_backoff(failures)).await;
+                    }
                 }
             }
         }
     });
     Ok(())
+}
+
+/// 100 ms after the first failure, doubling to at most five seconds.
+fn listener_backoff(failures: u32) -> Duration {
+    Duration::from_millis(100u64.saturating_mul(1 << failures.min(6))).min(Duration::from_secs(5))
 }
 
 /// A hidden dashboard throttles React metric polling. Keep resource scheduling

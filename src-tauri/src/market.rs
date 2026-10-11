@@ -39,7 +39,12 @@ const EVENT: &str = "yougori-market";
 
 /// Direct native call; credentials/prompts do not enter automation jobs or history.
 #[tauri::command]
-pub async fn confidential_network_chat(api_key:String,node_id:String,model:String,prompt:String,policy_path:Option<String>)->Result<Value,String>{
+pub async fn confidential_network_chat(api_key:String,node_id:String,model:String,prompt:String,policy_path:Option<String>,window:crate::WebviewWindow)->Result<Value,String>{
+    // A policy file is a raw host path: dashboard or same-user CLI only.
+    if policy_path.is_some(){crate::host_terminal::require_dashboard(window.label())?;}
+    network_chat(api_key,node_id,model,prompt,policy_path).await
+}
+pub(crate) async fn network_chat(api_key:String,node_id:String,model:String,prompt:String,policy_path:Option<String>)->Result<Value,String>{
     if prompt.len()>32768{return Err("Confidential prompt exceeds 32 KiB".into())}
     let api_key=age::secrecy::SecretString::from(api_key);
     use age::secrecy::ExposeSecret;
@@ -51,8 +56,22 @@ pub(crate) fn website() -> String {
     std::env::var("YOUGORI_NETWORK_URL")
         .ok()
         .map(|value| value.trim_end_matches('/').to_owned())
-        .filter(|value| value.starts_with("https://") || value.starts_with("http://127.0.0.1:") || value.starts_with("http://localhost:"))
+        .filter(|value| allowed_website(value))
         .unwrap_or_else(|| "https://yougori.com".into())
+}
+
+/// HTTPS, or plain HTTP only to this computer with a port. The URL is parsed rather than
+/// prefix-matched: `http://localhost:@other.host` would send the session token to other.host.
+fn allowed_website(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else { return false };
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return false;
+    }
+    match url.scheme() {
+        "https" => url.host_str().is_some(),
+        "http" => url.port().is_some() && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")),
+        _ => false,
+    }
 }
 
 #[derive(Default)]
@@ -876,6 +895,15 @@ pub(crate) fn start(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn development_sites_are_parsed_and_never_carry_credentials_elsewhere() {
+        for allowed in ["https://yougori.com", "https://staging.example", "http://127.0.0.1:8787", "http://localhost:3000", "http://[::1]:3000"] {
+            assert!(allowed_website(allowed), "{allowed}");
+        }
+        for refused in ["http://localhost:@evil.example", "http://localhost:3000@evil.example", "https://user:pass@yougori.com", "http://evil.example:80", "http://127.0.0.1", "ftp://127.0.0.1:21", "http://127.0.0.1.evil.example:80", "not a url"] {
+            assert!(!allowed_website(refused), "{refused}");
+        }
+    }
     #[test]
     fn sharing_reports_actual_runtime_precision_and_revision() {
         let health = json!({"runner":"transformers", "precision":"4bit", "revision":"a".repeat(40)});

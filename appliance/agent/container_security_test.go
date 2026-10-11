@@ -50,11 +50,16 @@ func TestWorkloadMountOwnershipCannotBorrowAPeerSlot(t *testing.T) {
 }
 
 func TestWorkloadPathsCannotHideReservedKernelOrDisplayMounts(t *testing.T) {
-	for _, target := range []string{"//proc", "/proc//sys", "//sys/kernel", "/dev/../etc", "/tmp/.X11-unix", "/tmp//.X11-unix/X0", "/opendock/", "/data//nested"} {
+	for _, target := range []string{"//proc", "/proc//sys", "//sys/kernel", "/dev/../etc", "/tmp/.X11-unix", "/tmp//.X11-unix/X0", "/yougori/", "/data//nested",
+		"/yougori", "/yougori/shared/my-pc", "/yougori/secrets/token", "/yougori/bin", legacyContainerMountRoot + "/shared"} {
 		options := workloadOptions{Volumes: []workloadVolume{{Source: "project", Target: target}}}
 		if _, err := options.arguments(); err == nil {
 			t.Fatalf("accepted reserved/noncanonical path %q", target)
 		}
+	}
+	// The user's imported project area is not an agent mount.
+	if !workloadPath("/yougori/project-files/yougori-import-a/code") {
+		t.Fatal("project files must stay usable")
 	}
 	options := workloadOptions{Binds: make([]workloadVolume, 65)}
 	if _, err := options.arguments(); err == nil {

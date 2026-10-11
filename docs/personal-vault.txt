@@ -8,6 +8,13 @@ broker is first installed or updated; Windows controls that system prompt.
 Ordinary starts use a protected Windows Scheduled Task and should not prompt
 again. If that task is missing or changed, Yougori reports the failure and
 offers an explicit Repair startup action instead of elevating automatically.
+A signed Yougori only installs a broker signed by the same publisher; the broker
+is copied to a locked temporary folder before the prompt. The broker
+accepts Desktop-only requests (approvals, item changes, connection settings)
+only from a Yougori app signed by that publisher. Unsigned source builds must be
+registered once: choose Update vault, which records that app's path in the
+protected vault folder through the same administrator prompt. Other programs
+can see only whether the vault is running or locked and how many requests wait.
 
 Add items in Yougori
 Open Personal Vault MCP, select Add items, enter a name and type, and enter the

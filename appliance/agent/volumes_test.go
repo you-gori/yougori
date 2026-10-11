@@ -23,7 +23,7 @@ func (f *fakeVolumes) run(_ context.Context, program string, args ...string) (co
 	case strings.HasPrefix(command, "volume ls"):
 		lines := []string{}
 		for _, name := range f.volumes {
-			lines = append(lines, `{"Name":"`+name+`","Driver":"local","Mountpoint":"/var/lib/nerdctl/x/volumes/opendock/`+name+`/_data"}`)
+			lines = append(lines, `{"Name":"`+name+`","Driver":"local","Mountpoint":"/var/lib/nerdctl/x/volumes/yougori/`+name+`/_data"}`)
 		}
 		return commandOutput{Stdout: strings.Join(lines, "\n")}, nil
 	case strings.HasPrefix(command, "ps --all"):

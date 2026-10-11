@@ -43,6 +43,22 @@ describe("environment action feedback", () => {
     expect(result.current.state?.environments.map(e => e.id)).toEqual(["Beta"])
   })
 
+  it("keeps the newest engine state when replies arrive out of order", async () => {
+    state.stateRevision = 1
+    const slow = deferred<PlatformState>()
+    const older = { ...state, stateRevision: 2, environments: state.environments.map(e => e.id === "Alpha" ? { ...e, status: "running" } : e) } as PlatformState
+    const newer = { ...state, stateRevision: 3, environments: state.environments.map(e => ({ ...e, status: "running" })) } as PlatformState
+    vi.mocked(platformApi.setEnvironmentStatus).mockImplementation(id => id === "Alpha" ? slow.promise : Promise.resolve(newer))
+    const { result } = renderHook(usePlatform, { wrapper })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    let first!: Promise<void>
+    act(() => { first = result.current.setEnvironmentStatus("Alpha", "running") })
+    await act(async () => { await result.current.setEnvironmentStatus("Beta", "running") })
+    await act(async () => { slow.resolve(older); await first })
+    expect(result.current.state?.stateRevision).toBe(3)
+    expect(result.current.state?.environments.map(e => e.status)).toEqual(["running", "running"])
+  })
+
   it("opens a stopped remote entry without implicitly powering on the owner's target", async () => {
     state.environments[0] = { ...state.environments[0]!, kind: "cloud", runtime: "shared://tunnel/host/share-id", status: "stopped" }
     vi.mocked(platformApi.openEnvironmentWindow).mockResolvedValue(true)

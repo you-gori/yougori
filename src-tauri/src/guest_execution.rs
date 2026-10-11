@@ -199,7 +199,16 @@ pub(crate) async fn execute_guest_job(
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut truncated = false;
+    // The guest enforces the timeout. The host still stops polling a guest that never
+    // reports a verified end, or reports one while its output cursors stop advancing.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout) + Duration::from_secs(120);
+    let mut stalled_after_done = 0u32;
     loop {
+        if tokio::time::Instant::now() >= deadline {
+            let _ = cancel_bounded(&runtime, &environment, &execution_id).await;
+            return Err(format!("YOUGORI_OPERATION_INTERRUPTED:Guest execution exceeded its {timeout}-second limit without a verified result; cancellation was requested. Inspect {execution_id} before repeating"));
+        }
+        let previous = (out_cursor, err_cursor);
         let read = protected_output(
             &runtime,
             &environment,
@@ -245,6 +254,14 @@ pub(crate) async fn execute_guest_job(
         }
         if result["done"] != true {
             tokio::time::sleep(Duration::from_millis(250)).await;
+        } else if (out_cursor, err_cursor) == previous {
+            stalled_after_done += 1;
+            if stalled_after_done >= 20 {
+                return Err(format!("YOUGORI_OPERATION_INTERRUPTED:Guest execution reported completion but its remaining output stopped arriving; inspect retained execution {execution_id}"));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        } else {
+            stalled_after_done = 0;
         }
     }
 }

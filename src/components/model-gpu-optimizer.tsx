@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { modelsApi, type GpuOptimizer } from "@/api/projects-api"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
@@ -9,18 +9,33 @@ export function ModelGpuOptimizer({ environmentId }: { environmentId: string }) 
   const [idle, setIdle] = useState("0")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  // Polls and saves can resolve out of order; only the newest-started request is shown.
+  const order = useRef({ started: 0, applied: 0 })
   useEffect(() => {
-    let active = true, first = true
-    const refresh = () => modelsApi.optimizer?.(environmentId)?.then(next => {
-      if (active && next?.supported) { setValue(next); if (first) { setIdle(String(next.idleTimeoutSeconds)); first = false } }
-    }).catch(() => {})
-    void refresh()
+    let active = true, first = true, reading = false
+    const refresh = () => {
+      if (reading) return
+      const sequence = ++order.current.started
+      const request = modelsApi.optimizer?.(environmentId)
+      if (!request) return
+      reading = true
+      void request.then(next => {
+        if (!active || !next?.supported || sequence <= order.current.applied) return
+        order.current.applied = sequence
+        setValue(next); if (first) { setIdle(String(next.idleTimeoutSeconds)); first = false }
+      }).catch(() => {}).finally(() => { reading = false })
+    }
+    refresh()
     const timer = window.setInterval(refresh, 3000)
     return () => { active = false; window.clearInterval(timer) }
   }, [environmentId])
   const save = async (settings: { enabled?: boolean; pinned?: boolean; idleTimeoutSeconds?: number }) => {
     setBusy(true); setError("")
-    try { setValue(await modelsApi.optimizer(environmentId, settings)) }
+    const sequence = ++order.current.started
+    try {
+      const next = await modelsApi.optimizer(environmentId, settings)
+      if (sequence > order.current.applied) { order.current.applied = sequence; setValue(next) }
+    }
     catch (reason) { setError(String(reason)) }
     finally { setBusy(false) }
   }

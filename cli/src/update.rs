@@ -3,8 +3,11 @@
 //! The release manifest (served by yougori.com, written by scripts/release-manifest.mjs):
 //! `{"version":"1.2.0","notes":"…","assets":{"windows-x86_64":{"url":"https://…/Yougori_1.2.0_x64-setup.exe","sha256":"…"},
 //!   "windows-x86_64-engine":{"url":"https://…/yougori-engine-1.2.0-windows-x86_64.zip","sha256":"…"}}}`
-//! A download must match its SHA-256 and, on Windows, carry a valid signature from the same
-//! publisher as the installed copy, so a compromised website alone cannot ship an update.
+//! A download must match its SHA-256. On Windows every Yougori-built executable in it must carry a
+//! valid signature from the same publisher as the installed copy, and on macOS the same Developer
+//! ID team, so a compromised website alone cannot ship one. The third-party runtime is checked
+//! against its own SHA256SUMS. Linux packages have no publisher signature: engine updates there
+//! need an explicit `YOUGORI_ALLOW_UNSIGNED=1`, the same trust as re-running install.sh.
 //! `-engine` assets are archives of the standalone engine for installs without the desktop app.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -136,8 +139,11 @@ async fn download(url: &str, expected: &str, path: &std::path::Path) -> Result<(
 #[cfg(windows)]
 fn signature_command(path: &std::path::Path, script: &str) -> std::process::Command {
     let mut command = std::process::Command::new("powershell.exe");
+    // PowerShell 7 prepends its own module folders to PSModulePath; Windows PowerShell
+    // then cannot load its Security module and every genuine signature looks invalid.
     command.args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("YOUGORI_SIGNATURE_PATH", path);
+        .env("YOUGORI_SIGNATURE_PATH", path)
+        .env_remove("PSModulePath");
     command
 }
 
@@ -146,7 +152,7 @@ fn signer(path: &std::path::Path) -> Result<String, String> {
     // Authenticode: the status must be Valid; the subject identifies the publisher.
     // PowerShell appends arguments after -Command to its source text rather than
     // binding them to $args. Keep paths in the child environment as literal data.
-    let script = "$s = Get-AuthenticodeSignature -LiteralPath $env:YOUGORI_SIGNATURE_PATH; if ($s.Status -ne 'Valid') { exit 3 }; $s.SignerCertificate.Subject";
+    let script = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1'); $s = Get-AuthenticodeSignature -LiteralPath $env:YOUGORI_SIGNATURE_PATH; if ($s.Status -ne 'Valid') { exit 3 }; $s.SignerCertificate.Subject";
     let output = signature_command(path, script)
         .output()
         .map_err(|e| e.to_string())?;
@@ -168,11 +174,21 @@ pub async fn install(yes: bool) -> Result<Value, String> {
     if !yes {
         return Ok(json!({"updateAvailable": true, "latest": status["latest"], "notes": status["notes"], "next": "Run `yougori update --yes` to download and install it. Yougori stops its workloads while it updates."}));
     }
-    let folder = tempfile::Builder::new().prefix("yougori-update-").tempdir().map_err(|e| e.to_string())?.keep();
+    if engine_only_install() && !cfg!(windows) && !cfg!(target_os = "macos") && !allow_unsigned() {
+        return Ok(json!({"updateAvailable": true, "latest": status["latest"], "verified": false, "next": "Linux engine packages are verified only by the website's SHA-256, without a publisher signature. Re-run the installer (curl -fsSL https://yougori.com/install.sh | sh), or set YOUGORI_ALLOW_UNSIGNED=1 and run `yougori update --yes` to accept it."}));
+    }
+    remove_stale_downloads();
+    let folder = tempfile::Builder::new().prefix(UPDATE_PREFIX).tempdir().map_err(|e| e.to_string())?.keep();
     let installer = folder.join(download_name(&url));
-    download(&url, status["sha256"].as_str().unwrap_or(""), &installer).await?;
+    if let Err(error) = download(&url, status["sha256"].as_str().unwrap_or(""), &installer).await {
+        let _ = std::fs::remove_dir_all(&folder);
+        return Err(error);
+    }
     if engine_only_install() {
-        return replace_engine(&installer, &folder, &status).await;
+        // The archive and its unpacked copy are not needed once the files are in place.
+        let result = replace_engine(&installer, &folder, &status).await;
+        let _ = std::fs::remove_dir_all(&folder);
+        return result;
     }
     #[cfg(windows)]
     {
@@ -210,6 +226,7 @@ async fn quit_engine() {
 async fn replace_engine(archive: &std::path::Path, folder: &std::path::Path, status: &Value) -> Result<Value, String> {
     let current = crate::client::engine_executable().ok_or("The standalone engine was not found")?;
     let target = current.parent().ok_or("Cannot locate the engine folder")?.to_path_buf();
+    remove_old_executables(&target);
     let staged = folder.join("unpacked");
     std::fs::create_dir_all(&staged).map_err(|e| e.to_string())?;
     // Windows' own bsdtar reads zip archives; a GNU tar earlier on PATH would not.
@@ -223,18 +240,132 @@ async fn replace_engine(archive: &std::path::Path, folder: &std::path::Path, sta
     if !new_engine.is_file() {
         return Err("The update does not contain the engine; nothing was changed".into());
     }
+    let payloads = signed_payloads(&staged)?;
+    let cli = staged.join("cli").join(if cfg!(windows) { "yougori.exe" } else { "yougori" });
+    if !cli.is_file() {
+        return Err("The update does not contain the CLI; nothing was changed".into());
+    }
     #[cfg(windows)]
     {
         let expected = signer(&current).map_err(|_| "This engine is a development build without a signature; update it from source instead".to_string())?;
-        for binary in [new_engine.clone(), staged.join("cli").join("yougori.exe")] {
-            if binary.is_file() && signer(&binary)? != expected {
-                return Err("The update is signed by a different publisher than your Yougori; nothing was changed".into());
+        for binary in &payloads {
+            if signer(binary)? != expected {
+                return Err(format!("{} is not signed by your Yougori's publisher; nothing was changed", binary.strip_prefix(&staged).unwrap_or(binary).display()));
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = payloads;
+        if !allow_unsigned() {
+            if !cfg!(target_os = "macos") {
+                return Err("Linux engine packages have no publisher signature. Set YOUGORI_ALLOW_UNSIGNED=1 to accept this update; nothing was changed".into());
+            }
+            let team = codesign_team(&current)?.ok_or("This engine has no Developer ID signature; update it from source or re-run the installer")?;
+            for binary in [&new_engine, &cli] {
+                if !codesign_verify(binary, &team) {
+                    return Err(format!("{} is not signed by your Yougori's Developer ID team; nothing was changed", binary.strip_prefix(&staged).unwrap_or(binary).display()));
+                }
             }
         }
     }
     quit_engine().await;
     copy_over(&staged, &target)?;
     Ok(json!({"updated": status["latest"], "folder": target, "next": "Run `yougori doctor` to start the updated engine and check it."}))
+}
+
+fn allow_unsigned() -> bool {
+    std::env::var("YOUGORI_ALLOW_UNSIGNED").as_deref() == Ok("1")
+}
+
+/// Yougori-built executables in an engine archive. The release signs every PE file except the
+/// third-party `runtime/`, which the engine checks against its SHA256SUMS. Links are refused.
+fn signed_payloads(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    fn walk(folder: &std::path::Path, top: bool, found: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+        for entry in std::fs::read_dir(folder).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_symlink() {
+                return Err("The update contains links; nothing was changed".into());
+            }
+            let path = entry.path();
+            if kind.is_dir() {
+                if !(top && entry.file_name().to_string_lossy().eq_ignore_ascii_case("runtime")) {
+                    walk(&path, false, found)?;
+                }
+            } else if path.extension().is_some_and(|ext| ["exe", "dll", "sys", "msi"].iter().any(|pe| ext.eq_ignore_ascii_case(pe))) {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    walk(root, true, &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+/// The Developer ID team that signed a macOS binary, from `codesign -dv` output.
+fn team_identifier(details: &str) -> Option<String> {
+    details.lines()
+        .find_map(|line| line.trim().strip_prefix("TeamIdentifier="))
+        .map(str::trim)
+        .filter(|team| team.len() == 10 && team.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+        .map(str::to_owned)
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn codesign_team(path: &std::path::Path) -> Result<Option<String>, String> {
+    let output = std::process::Command::new("codesign").arg("-dv").arg("--verbose=2").arg(path)
+        .output().map_err(|e| format!("Cannot inspect the engine signature: {e}"))?;
+    Ok(team_identifier(&String::from_utf8_lossy(&output.stderr)))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn codesign_verify(path: &std::path::Path, team: &str) -> bool {
+    std::process::Command::new("codesign").arg("--verify").arg("--strict")
+        .arg(format!("-R=anchor apple generic and certificate leaf[subject.OU] = \"{team}\""))
+        .arg(path).status().is_ok_and(|status| status.success())
+}
+
+const UPDATE_PREFIX: &str = "yougori-update-";
+
+/// Deletes update downloads older than an hour. The Windows installer runs from its download
+/// folder after this process exits, so a folder can only be removed by a later update.
+fn remove_stale_downloads() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let old = entry.metadata().ok().filter(|meta| meta.is_dir())
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+        if old && entry.file_name().to_string_lossy().starts_with(UPDATE_PREFIX) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Deletes `*.old-<pid>` files that [`copy_over`] set aside because they were in use. Files
+/// still held by a running process stay until a later call.
+pub fn remove_old_executables(folder: &std::path::Path) {
+    fn sweep(folder: &std::path::Path, depth: usize) {
+        let Ok(entries) = std::fs::read_dir(folder) else { return };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            let path = entry.path();
+            if kind.is_dir() {
+                if depth > 0 { sweep(&path, depth - 1); }
+            } else if kind.is_file() && set_aside(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    sweep(folder, 3);
+}
+
+fn set_aside(path: &std::path::Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()).and_then(|ext| ext.strip_prefix("old-"))
+        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn copy_over(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
@@ -347,6 +478,41 @@ mod tests {
         assert_eq!(std::fs::read(to.path().join("runtime/appliance/initramfs")).unwrap(), b"new");
         assert_eq!(std::fs::read(to.path().join("yougori-engine")).unwrap(), b"engine 2");
         assert_eq!(std::fs::read(to.path().join("keep.txt")).unwrap(), b"mine");
+    }
+    #[test]
+    fn files_set_aside_by_an_update_are_removed_later() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["yougori-engine.old-41", "cli/yougori.old-7", "vault/helper.old-12", "cli/yougori.exe", "notes.old-draft", "data.old-"] {
+            let path = root.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        remove_old_executables(root.path());
+        for (name, kept) in [("yougori-engine.old-41", false), ("cli/yougori.old-7", false), ("vault/helper.old-12", false),
+            ("cli/yougori.exe", true), ("notes.old-draft", true), ("data.old-", true)] {
+            assert_eq!(root.path().join(name).exists(), kept, "{name}");
+        }
+    }
+
+    #[test]
+    fn every_yougori_executable_outside_the_runtime_needs_the_release_signature() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["yougori-engine.exe", "cli/yougori.exe", "cli/yougori-cli.exe", "vault/yougori-vault.exe", "vault/helper.DLL",
+            "runtime/qemu/qemu-system-x86_64.exe", "runtime/qemu/libglib.dll", "LICENSE", "third-party-sources/notes.txt"] {
+            let path = root.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let found: Vec<String> = signed_payloads(root.path()).unwrap().iter()
+            .map(|path| path.strip_prefix(root.path()).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(found, ["cli/yougori-cli.exe", "cli/yougori.exe", "vault/helper.DLL", "vault/yougori-vault.exe", "yougori-engine.exe"]);
+    }
+    #[test]
+    fn macos_team_is_read_from_codesign_details() {
+        assert_eq!(team_identifier("Executable=/x\nIdentifier=com.yougori\nTeamIdentifier=AB12CD34EF\n").as_deref(), Some("AB12CD34EF"));
+        for details in ["TeamIdentifier=not set", "TeamIdentifier=short", "Identifier=com.yougori"] {
+            assert_eq!(team_identifier(details), None);
+        }
     }
     #[tokio::test]
     async fn downloads_must_be_https_with_a_hash() {

@@ -5,12 +5,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { pinAppleTeam } from "./release-manifest.mjs"
 
 const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash"
 const unix = path => path.replaceAll("\\", "/").replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`)
-const script = readFileSync(new URL("./install/install.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n")
+const unpinned = readFileSync(new URL("./install/install.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n")
+const script = pinAppleTeam(unpinned, "AB12CD34EF")
 
-function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manifestUrl = "https://fixture.invalid/latest.json", badHash = false, aptExit = "0", skillExit = "0", engineOnly = "0", os = "Linux", arch = "x86_64", assetKey = "linux-x86_64", shell = "/bin/bash", startEngine = "1", shadowCli = false, profiles = {} } = {}) {
+function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manifestUrl = "https://fixture.invalid/latest.json", badHash = false, aptExit = "0", skillExit = "0", engineOnly = "0", os = "Linux", arch = "x86_64", assetKey = "linux-x86_64", shell = "/bin/bash", startEngine = "1", shadowCli = false, profiles = {}, source = script, allowUnsigned = "", codesignExit = "0" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "yougori-installer-"))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const bin = join(root, "bin")
@@ -23,7 +25,7 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
     "apt-get": 'printf "%s\\n" "$@" > "$FIXTURE_APT_LOG"; exit "$FIXTURE_APT_EXIT"',
     ln: '[ "$1" = "-sf" ] && { [ "$2" = "/usr/bin/yougori" ] || [ "$2" = "$HOME/.local/opt/yougori-engine/cli/yougori" ]; } && [ "$3" = "$HOME/.local/bin/yougori" ] && cp "$FIXTURE_BIN/yougori" "$3" && chmod 755 "$3"',
     tar: 'while [ "$#" -gt 0 ]; do if [ "$1" = "-C" ]; then shift; mkdir -p "$1/cli"; printf "fixture engine" > "$1/yougori-engine"; printf "fixture cli" > "$1/cli/yougori"; exit 0; fi; shift; done; exit 1',
-    codesign: 'exit 0',
+    codesign: 'printf "%s\\n" "$*" >> "$FIXTURE_CODESIGN_LOG"; exit "$FIXTURE_CODESIGN_EXIT"',
     yougori: 'printf "%s\\n" "$*" >> "$FIXTURE_CLI_LOG"; if [ "$1" = "skills" ] && [ "$FIXTURE_SKILL_EXIT" != 0 ]; then echo "Existing custom skill left unchanged" >&2; exit "$FIXTURE_SKILL_EXIT"; fi; exit 0',
     "qemu-system-x86_64": 'exit 0',
     "qemu-img": 'exit 0',
@@ -40,6 +42,7 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
   mkdirSync(home)
   for (const [name, text] of Object.entries(profiles)) writeFileSync(join(home, name), text)
   const cliLog = join(root, "cli.log")
+  const codesignLog = join(root, "codesign.log")
   const curlLog = join(root, "curl.log")
   const shadow = join(root, "shadow")
   if (shadowCli) {
@@ -49,16 +52,16 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
   }
   const env = { ...process.env, HOME: unix(home), SHELL: shell, YOUGORI_START_ENGINE: startEngine, FIXTURE_CLI_LOG: unix(cliLog), FIXTURE_BIN: unix(bin), FIXTURE_OS: os,
       FIXTURE_ARCH: arch, FIXTURE_SKILL_EXIT: skillExit, YOUGORI_ENGINE_ONLY: engineOnly, YOUGORI_AUTOSTART: "", YOUGORI_RELEASES_URL: manifestUrl,
-      FIXTURE_APT_LOG: unix(log), FIXTURE_APT_EXIT: aptExit, FIXTURE_CURL_LOG: unix(curlLog), FIXTURE_SHADOW: shadowCli ? unix(shadow) : "", FIXTURE_HOME_BIN: shadowCli ? unix(join(home, ".local/bin")) : "",
+      FIXTURE_APT_LOG: unix(log), FIXTURE_APT_EXIT: aptExit, FIXTURE_CODESIGN_LOG: unix(codesignLog), FIXTURE_CODESIGN_EXIT: codesignExit, YOUGORI_ALLOW_UNSIGNED: allowUnsigned, FIXTURE_CURL_LOG: unix(curlLog), FIXTURE_SHADOW: shadowCli ? unix(shadow) : "", FIXTURE_HOME_BIN: shadowCli ? unix(join(home, ".local/bin")) : "",
       FIXTURE_MANIFEST: JSON.stringify({ version: "1.0.0", assets: { [assetKey]: { url: assetUrl ?? `https://fixture.invalid/Yougori.${extension}${assetQuery}`, sha256: badHash ? "0".repeat(64) : sha } } }),
   }
   if (engineOnly === null) delete env.YOUGORI_ENGINE_ONLY
   const rerun = () => spawnSync(bash, ["--noprofile", "--norc", "-c", 'export PATH="${FIXTURE_SHADOW:+$FIXTURE_SHADOW:}$FIXTURE_BIN:${FIXTURE_HOME_BIN:+$FIXTURE_HOME_BIN:}$PATH"; /bin/sh -s'], {
-    input: script, encoding: "utf8", timeout: 15000, env,
+    input: source, encoding: "utf8", timeout: 15000, env,
   })
   const result = rerun()
   if (result.error) throw result.error
-  return { result, rerun, home, curl: existsSync(curlLog) ? readFileSync(curlLog, "utf8") : "", cli: existsSync(cliLog) ? readFileSync(cliLog, "utf8") : "", apt: existsSync(log) ? readFileSync(log, "utf8") : null, engineInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/yougori-engine")), cliInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/cli/yougori")) }
+  return { result, rerun, home, codesign: existsSync(codesignLog) ? readFileSync(codesignLog, "utf8") : "", curl: existsSync(curlLog) ? readFileSync(curlLog, "utf8") : "", cli: existsSync(cliLog) ? readFileSync(cliLog, "utf8") : "", apt: existsSync(log) ? readFileSync(log, "utf8") : null, engineInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/yougori-engine")), cliInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/cli/yougori")) }
 }
 
 test("Unix installer refuses unsafe manifest and download URLs before installing", t => {
@@ -151,6 +154,29 @@ for (const [os, platform] of [["Linux", "linux"], ["Darwin", "macos"]]) {
     assert.match(result.stdout, /engine only, no desktop app/)
   })
 }
+
+test("macOS engine installs verify the engine and CLI against the pinned Developer ID team", t => {
+  const options = { os: "Darwin", engineOnly: "1", assetKey: "macos-x86_64-engine", extension: "tar.gz" }
+  const pinned = install(t, options)
+  assert.equal(pinned.result.status, 0, pinned.result.stderr)
+  const checks = pinned.codesign.trim().split("\n")
+  assert.equal(checks.length, 2)
+  for (const [check, binary] of [[checks[0], "/yougori-engine"], [checks[1], "/cli/yougori"]]) {
+    assert.match(check, /^--verify --strict -R=anchor apple generic and certificate leaf\[subject\.OU\] = "AB12CD34EF" /)
+    assert.ok(check.endsWith(binary), check)
+  }
+  const rejected = install(t, { ...options, codesignExit: "1" })
+  assert.notEqual(rejected.result.status, 0)
+  assert.match(rejected.result.stderr, /signature is not valid/)
+  assert.equal(rejected.engineInstalled, false)
+  const unprepared = install(t, { ...options, source: unpinned })
+  assert.notEqual(unprepared.result.status, 0)
+  assert.match(unprepared.result.stderr, /not prepared for a macOS release/)
+  assert.equal(unprepared.engineInstalled, false)
+  const allowed = install(t, { ...options, source: unpinned, allowUnsigned: "1" })
+  assert.equal(allowed.result.status, 0, allowed.result.stderr)
+  assert.doesNotMatch(allowed.codesign, /-R=/)
+})
 
 test("default CLI install never falls back to a desktop-only release", t => {
   const { result, apt, engineInstalled } = install(t, { engineOnly: null })

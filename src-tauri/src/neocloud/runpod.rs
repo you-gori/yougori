@@ -23,18 +23,15 @@ const TIMED_OUT: &str = "Neocloud did not answer in time";
 /// Pods currently watched until their SSH works, so a pod never gets two watchers.
 static WATCHING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-fn executable() -> PathBuf {
-    install::installed_program(PROVIDER).unwrap_or_else(|| PathBuf::from("runpodctl"))
+/// Only Yougori's own reviewed copy receives the account key, never another `runpodctl`
+/// found on PATH or in the current folder.
+fn executable() -> Result<PathBuf, String> {
+    install::installed_program(PROVIDER)
+        .ok_or_else(|| "Neocloud is not set up on this PC yet. Connect your account to set it up.".to_string())
 }
 
 fn installed() -> bool {
     install::installed_program(PROVIDER).is_some()
-        || std::env::var_os("PATH").is_some_and(|path| {
-            std::env::split_paths(&path).any(|dir| {
-                dir.join(if cfg!(windows) { "runpodctl.exe" } else { "runpodctl" })
-                    .is_file()
-            })
-        })
 }
 
 struct Output {
@@ -44,10 +41,12 @@ struct Output {
 }
 
 /// Runs runpodctl with the saved key (or its own `~/.runpod/config.toml`). `input` is
-/// written to stdin, so secrets such as registry passwords never enter the arguments.
+/// written to stdin, so registry passwords never enter the arguments. runpodctl has no other
+/// input for pod and endpoint environment values (including JUPYTER_PASSWORD): those are
+/// arguments, visible to same-user processes and process auditing while the command runs.
 async fn cli_output(args: &[String], seconds: u64, input: Option<&str>) -> Result<Output, String> {
     let key = accounts::saved_key(PROVIDER)?;
-    let mut command = tokio::process::Command::new(executable());
+    let mut command = tokio::process::Command::new(executable()?);
     if let Some(key) = &key {
         command.env("RUNPOD_API_KEY", key);
     }
@@ -638,8 +637,20 @@ fn validate_pod(r: &PodRequest) -> Result<(), String> {
     valid_env(&r.env)
 }
 
-fn pod_args(r: &PodRequest, ports: &[String], env: &BTreeMap<String, String>) -> Vec<String> {
-    let mut args: Vec<String> = vec!["pod".into(), "create".into(), "--name".into(), r.name.clone()];
+/// RunPod-side pod name: the chosen name plus this node's ID, so reconciling a create never
+/// adopts an unrelated pod that happens to share the name.
+fn provider_pod_name(name: &str, environment_id: &str) -> String {
+    let suffix: String = environment_id
+        .trim_start_matches("env-")
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(8)
+        .collect();
+    format!("{name}-yg{suffix}")
+}
+
+fn pod_args(r: &PodRequest, name: &str, ports: &[String], env: &BTreeMap<String, String>) -> Vec<String> {
+    let mut args: Vec<String> = vec!["pod".into(), "create".into(), "--name".into(), name.into()];
     if r.template_id.is_empty() {
         args.extend(["--image".into(), r.image.clone()]);
     } else {
@@ -808,13 +819,14 @@ pub async fn runpod_create_pod(
         None
     };
     // Template ports are kept when web ports are added; an image gets SSH plus its web ports.
+    // An unreadable template could hide a public Jupyter port, so creation stops instead.
     let mut ports: Vec<Value> = if request.template_id.is_empty() {
         vec![json!({"port":22,"kind":"tcp","name":"SSH"})]
     } else {
         runpod_template(request.template_id.clone())
             .await
             .map(|t| array(&t["ports"]))
-            .unwrap_or_default()
+            .map_err(|error| format!("Cannot read this template's ports ({error}). No pod was created; try again."))?
     };
     for port in &request.http_ports {
         if !ports.iter().any(|p| p["port"] == *port) {
@@ -831,13 +843,16 @@ pub async fn runpod_create_pod(
     };
     let mut env = request.env.clone();
     let id = format!("env-{}", uuid::Uuid::new_v4());
-    // Jupyter gets a private token instead of running open to anyone with the link.
+    let provider_name = provider_pod_name(&request.name, &id);
+    // Jupyter gets a private token instead of running open to anyone with the link. Without a
+    // place to keep that token, no pod is created rather than one with an open notebook.
     let jupyter = ports.iter().any(|p| p["port"] == 8888);
     if jupyter && !env.contains_key("JUPYTER_PASSWORD") {
         let token = uuid::Uuid::new_v4().simple().to_string();
-        if jupyter_entry(&id)?.set_password(&token).is_ok() {
-            env.insert("JUPYTER_PASSWORD".into(), token);
-        }
+        jupyter_entry(&id)?
+            .set_password(&token)
+            .map_err(|_| "Cannot save this pod's Jupyter password in the system credential store. No pod was created.".to_string())?;
+        env.insert("JUPYTER_PASSWORD".into(), token);
     }
     let mut ssh_note = None;
     match ssh_key().await {
@@ -851,7 +866,19 @@ pub async fn runpod_create_pod(
         },
         Err(error) => ssh_note = Some(error),
     }
-    let args = pod_args(&request, &explicit_ports, &env);
+    let args = pod_args(&request, &provider_name, &explicit_ports, &env);
+    // Template and key lookups take time; the reviewed price must still hold when the pod is created.
+    let hourly = if request.compute == "gpu" {
+        match availability::quote(&request).await {
+            Ok(price) => Some(price),
+            Err(error) => {
+                let _ = jupyter_entry(&id).map(|e| e.delete_credential());
+                return Err(error);
+            }
+        }
+    } else {
+        hourly
+    };
     let (label, description) = if request.compute == "gpu" {
         (format!("{} × {}", request.gpu_count, request.gpu_id), "Neocloud GPU pod · opens in Yougori over SSH")
     } else {
@@ -873,6 +900,7 @@ pub async fn runpod_create_pod(
         "jupyter": jupyter && env.contains_key("JUPYTER_PASSWORD") && !request.env.contains_key("JUPYTER_PASSWORD"),
         "sshReady": false,
         "sshNote": ssh_note,
+        "providerName": provider_name,
     });
     let image = if request.image.is_empty() { &request.template_id } else { &request.image };
     let mut environment = node(&id, &request.name, &format!("Neocloud · {label}"), request.compute == "gpu", description);
@@ -904,11 +932,29 @@ pub async fn runpod_create_pod(
         }
     })?;
     if let Err(error) = result {
-        // A refused request created nothing, so its node goes away; only an unanswered
-        // one is kept for checking, because a pod may exist and bill.
+        // An error does not prove nothing was created: a failed or garbled response can still
+        // leave a billing pod. Only a confirmed absence removes the node; an unanswered or
+        // unverifiable request is kept for checking.
         if !error.starts_with(TIMED_OUT) {
-            let _ = jupyter_entry(&id).map(|e| e.delete_credential());
-            emit(&app, &forget(&store, &id)?);
+            match created_pod(&provider_name).await {
+                Ok(None) => {
+                    let _ = jupyter_entry(&id).map(|e| e.delete_credential());
+                    emit(&app, &forget(&store, &id)?);
+                }
+                Ok(Some(pod)) => {
+                    let state = update(&store, &id, |environment, deployment| {
+                        deployment.resource_id = pod.clone();
+                        deployment.state = "Starting".into();
+                        deployment.last_error = None;
+                        environment.status = EnvironmentStatus::Stopped;
+                        environment.last_error = None;
+                    })?;
+                    emit(&app, &state);
+                    watch(app, id);
+                    return Ok(state);
+                }
+                Err(_) => emit(&app, &state),
+            }
         } else {
             emit(&app, &state);
         }
@@ -917,6 +963,14 @@ pub async fn runpod_create_pod(
     emit(&app, &state);
     watch(app, id);
     Ok(state)
+}
+
+/// The live pod created under this node's unique RunPod name, if any.
+async fn created_pod(provider_name: &str) -> Result<Option<String>, String> {
+    Ok(array(&cli(&["pod", "list", "--all", "--name", provider_name], 40).await?)
+        .into_iter()
+        .find(|p| p["name"] == provider_name && p["desiredStatus"] != "TERMINATED")
+        .and_then(|p| p["id"].as_str().map(str::to_owned)))
 }
 
 /// Follows a pod until SSH answers (or it stops), then saves the connection so the
@@ -1528,9 +1582,11 @@ async fn reconcile(environment_id: &str, deployment: &Deployment, store: &Platfo
             .into_iter()
             .find(|e| e["name"] == deployment.name.as_str())
     } else {
-        array(&cli(&["pod", "list", "--all", "--name", &deployment.name], 40).await?)
+        // Nodes created before unique pod names recorded only the chosen name.
+        let name = deployment.extra["providerName"].as_str().unwrap_or(&deployment.name);
+        array(&cli(&["pod", "list", "--all", "--name", name], 40).await?)
             .into_iter()
-            .find(|p| p["name"] == deployment.name.as_str() && p["desiredStatus"] != "TERMINATED")
+            .find(|p| p["name"] == name && p["desiredStatus"] != "TERMINATED")
     };
     update(store, environment_id, |environment, d| {
         environment.last_error = None;
@@ -1735,8 +1791,9 @@ mod tests {
     fn pods_are_argument_arrays_with_the_chosen_template_gpu_and_storage() {
         let request = pod();
         validate_pod(&request).unwrap();
-        let args = pod_args(&request, &[], &BTreeMap::new());
+        let args = pod_args(&request, "pytorch-4090", &[], &BTreeMap::new());
         assert_eq!(args[..4], ["pod", "create", "--name", "pytorch-4090"]);
+        assert_eq!(provider_pod_name("pytorch-4090", "env-3f9a12c4-0000-4000-8000-000000000000"), "pytorch-4090-yg3f9a12c4");
         assert!(args.windows(2).any(|w| w == ["--template-id", "runpod-torch-v280"]));
         assert!(args.windows(2).any(|w| w == ["--gpu-id", "NVIDIA GeForce RTX 4090"]));
         assert!(args.windows(2).any(|w| w == ["--cloud-type", "SECURE"]));
@@ -1746,7 +1803,7 @@ mod tests {
             let mut multiple = pod();
             multiple.gpu_count = count;
             validate_pod(&multiple).unwrap();
-            assert!(pod_args(&multiple, &[], &BTreeMap::new()).windows(2)
+            assert!(pod_args(&multiple, &multiple.name, &[], &BTreeMap::new()).windows(2)
                 .any(|w| w[0] == "--gpu-count" && w[1] == count.to_string()));
         }
         let mut bad = pod();

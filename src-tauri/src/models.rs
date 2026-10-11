@@ -20,16 +20,39 @@ pub enum EnvironmentStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeProviderKind {
     CloudSsh,
-    #[serde(alias = "openDockOci")]
     YougoriOci,
-    #[serde(alias = "openDockCuda")]
     YougoriCuda,
     Qemu,
     NativeSandbox,
+}
+
+impl<'de> Deserialize<'de> for RuntimeProviderKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum Name {
+            CloudSsh,
+            YougoriOci,
+            YougoriCuda,
+            Qemu,
+            NativeSandbox,
+        }
+        // Saved state from earlier releases may still use the old provider names.
+        let saved = String::deserialize(deserializer)?;
+        let current = yougori_cli::legacy_names::runtime_provider_name(&saved);
+        let name = Name::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(current))?;
+        Ok(match name {
+            Name::CloudSsh => Self::CloudSsh,
+            Name::YougoriOci => Self::YougoriOci,
+            Name::YougoriCuda => Self::YougoriCuda,
+            Name::Qemu => Self::Qemu,
+            Name::NativeSandbox => Self::NativeSandbox,
+        })
+    }
 }
 
 impl RuntimeProviderKind {
@@ -44,13 +67,17 @@ mod provider_name_tests {
 
     #[test]
     fn old_provider_values_load_and_new_values_are_written() {
+        let [(previous_oci, _), (previous_cuda, _)] = yougori_cli::legacy_names::RUNTIME_PROVIDER_NAMES;
         for (previous, current, provider) in [
-            ("openDockOci", "yougoriOci", RuntimeProviderKind::YougoriOci),
-            ("openDockCuda", "yougoriCuda", RuntimeProviderKind::YougoriCuda),
+            (previous_oci, "yougoriOci", RuntimeProviderKind::YougoriOci),
+            (previous_cuda, "yougoriCuda", RuntimeProviderKind::YougoriCuda),
         ] {
             assert_eq!(serde_json::from_str::<RuntimeProviderKind>(&format!("\"{previous}\"")).unwrap(), provider);
+            assert_eq!(serde_json::from_str::<RuntimeProviderKind>(&format!("\"{current}\"")).unwrap(), provider);
             assert_eq!(serde_json::to_string(&provider).unwrap(), format!("\"{current}\""));
         }
+        assert_eq!(serde_json::from_str::<RuntimeProviderKind>("\"qemu\"").unwrap(), RuntimeProviderKind::Qemu);
+        assert!(serde_json::from_str::<RuntimeProviderKind>("\"unknown\"").is_err());
     }
 }
 
@@ -489,6 +516,9 @@ pub struct PlatformState {
     /// Changes only when settings change, so narrow updates can reject stale writers.
     #[serde(default)]
     pub settings_revision: u64,
+    /// Increases with every committed change so windows can discard older replies and events.
+    #[serde(default)]
+    pub state_revision: u64,
     /// Last native startup outcome. Credentials and request payloads are never retained.
     #[serde(default)]
     pub startup_report: Option<crate::lifecycle::StartupReport>,

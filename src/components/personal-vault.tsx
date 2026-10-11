@@ -34,27 +34,41 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
   const [editingItems, setEditingItems] = useState(false)
   const [removingItem, setRemovingItem] = useState<string | null>(null)
   const [pluginPath, setPluginPath] = useState("")
-  const refresh = useCallback(async () => {
-    const value = await vaultApi.status()
+  // Status reads can resolve out of order. Only the newest-started read, or a later
+  // local change, may replace what is shown, so an approved request cannot reappear.
+  const statusOrder = useRef({ started: 0, applied: 0 })
+  const applyStatus = useCallback((sequence: number, value: VaultStatus | ((previous: VaultStatus) => VaultStatus)) => {
+    if (sequence <= statusOrder.current.applied) return false
+    statusOrder.current.applied = sequence
     setStatus(value); setLoaded(true)
-    return value
+    return true
   }, [])
+  const refresh = useCallback(async () => {
+    const sequence = ++statusOrder.current.started
+    const value = await vaultApi.status()
+    applyStatus(sequence, value)
+    return value
+  }, [applyStatus])
+  const updateSetup = (setup: VaultStatus["setup"]) => applyStatus(++statusOrder.current.started, previous => ({ ...previous, setup }))
   useEffect(() => {
-    let disposed = false
-    const update = () => { void vaultApi.status().then(value => {
-      if (!disposed) {
-        setStatus(value); setLoaded(true)
+    let disposed = false, reading = false
+    const update = () => {
+      if (reading) return
+      reading = true
+      const sequence = ++statusOrder.current.started
+      void vaultApi.status().then(value => {
+        if (disposed || !applyStatus(sequence, value)) return
         if (open && !formInitialized.current) {
           setMode(value.setup?.mode === "domain" || (value.setup?.mode === "local" && value.setup.hostname) ? "domain" : "quick")
           setHostname(value.setup?.hostname ?? "")
           formInitialized.current = true
         }
-      }
-    }).catch(reason => { if (!disposed) { setError(String(reason)); setLoaded(true) } }) }
+      }).catch(reason => { if (!disposed) { setError(String(reason)); setLoaded(true) } }).finally(() => { reading = false })
+    }
     update()
     const timer = window.setInterval(update, open ? 2000 : 10000)
     return () => { disposed = true; window.clearInterval(timer) }
-  }, [open])
+  }, [applyStatus, open])
   useEffect(() => {
     // `yougori vault open|approve|add` brings the dashboard forward here; the person decides in this window.
     let disposed = false
@@ -109,7 +123,7 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
   }
   const connect = (replace = false) => perform(replace ? "Creating a new quick link..." : "Connecting your tunnel...", async () => {
     const setup = await vaultApi.connection(replace ? "quick" : mode, hostname, cloudflareTokenInput(tunnelToken), routesReviewed, replace)
-    setStatus(previous => ({ ...previous, setup }))
+    updateSetup(setup)
     setTunnelToken(""); setReplaceLink(false)
   })
   const bootstrapVault = (updating: boolean) => perform(updating ? "Updating vault and restoring public access..." : "Starting vault and restoring public access...", async () => {
@@ -195,7 +209,7 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
                     {code(publicUrl, "ChatGPT or Claude server URL")}
                     <div className="vault-actions vault-actions-start">
                       {activeMode === "quick" && <Button size="xs" variant="outline" disabled={Boolean(busy)} onClick={() => setReplaceLink(true)}>Change tunnel domain</Button>}
-                      <Button size="xs" variant="ghost" disabled={Boolean(busy)} onClick={() => void perform("Disconnecting your tunnel...", async () => { const setup = await vaultApi.connection("local"); setStatus(previous => ({ ...previous, setup })); setReplaceLink(false) })}>Disconnect tunnel</Button>
+                      <Button size="xs" variant="ghost" disabled={Boolean(busy)} onClick={() => void perform("Disconnecting your tunnel...", async () => { const setup = await vaultApi.connection("local"); updateSetup(setup); setReplaceLink(false) })}>Disconnect tunnel</Button>
                     </div>
                     {replaceLink && <div className="vault-confirm"><p>The current address will stop working.</p><div className="vault-actions"><Button size="xs" variant="ghost" disabled={Boolean(busy)} onClick={() => setReplaceLink(false)}>Cancel</Button><Button size="xs" disabled={Boolean(busy)} onClick={() => void connect(true)}>Create new quick link</Button></div></div>}
                   </> : <>

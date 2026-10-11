@@ -171,6 +171,8 @@ pub struct WorkspaceManager {
     local_ports_key: Mutex<String>,
 }
 impl WorkspaceManager {
+    /// The environment storage folder, which guests and recipients must never reach.
+    pub(crate) fn storage_directory(&self) -> &Path { &self.root }
     pub(crate) async fn download_tunnel(&self, domain: Option<&str>, store: &PlatformStore) -> Result<(TcpListener, cloudflare::Started), String> {
         let _serial = self.operations.lock().await;
         let account = if let Some(domain) = domain {
@@ -686,46 +688,40 @@ pub(crate) async fn agent_stream(base: &str, token: &str, id: &str, port: u16) -
     Ok(stream)
 }
 pub(crate) async fn cloudflared(root: &Path) -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("YOUGORI_CLOUDFLARED_PATH")
-        .or_else(|| std::env::var_os("OPENDOCK_CLOUDFLARED_PATH")) {
+    if let Some(path) = std::env::var_os("YOUGORI_CLOUDFLARED_PATH") {
         return Ok(PathBuf::from(path));
     }
     let path = root.join(if cfg!(windows) { "tools/cloudflared-2026.8.3.exe" } else { "tools/cloudflared-2026.8.3" });
-    #[cfg(target_os = "macos")]
-    {
-        let _ = path;
-        // Finder has a minimal PATH. Homebrew owns signing and updates for the
-        // preview; never silently execute a similarly named file from cwd.
-        let prefix = if cfg!(target_arch = "aarch64") { "/opt/homebrew" } else { "/usr/local" };
-        let executable = PathBuf::from(prefix).join("opt/cloudflared/bin/cloudflared");
-        if !executable.is_file() {
-            return Err("Public access needs Cloudflare Tunnel on this Mac. Run 'brew install cloudflared', then retry. Nothing was published.".into());
-        }
-        return Ok(executable);
-    }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = path;
         return Ok(PathBuf::from("cloudflared"));
     }
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         if cfg!(target_os = "linux") && !cfg!(any(target_arch = "x86_64", target_arch = "aarch64")) {
             return Err("Public access downloads Cloudflare Tunnel for x86-64 Linux only. Install cloudflared for this CPU and set YOUGORI_CLOUDFLARED_PATH to it, then retry. Nothing was published.".into());
         }
+        // SHA-256 of the program itself, as listed in Cloudflare's release notes.
         #[cfg(windows)]
         const HASH: &str = "83e726ed18ea78c5ad5213c4c3a3a27051393950d2bc8ed4de69bec12d14eaae";
         #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
         const HASH: &str = "f29324fe934d1e100617484c78deef803c4dc2cd351d645bbde42e96b4fccc5e";
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
         const HASH: &str = "4bcfd35521a7cbc545ebfd5d57334a71ee180e2a64874981f374c81472118391";
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        const HASH: &str = "50a04624531e7a98ddb65f1223905e32f84e7488ed3ee8dadcd3260aa8932603";
+        #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+        const HASH: &str = "936aa4ed783b0e191fac48e7140c34605b25d8d5c0495c3599c90e350ae6e4c4";
         if path.is_file() {
             let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
             if hex::encode(Sha256::digest(&bytes)) == HASH {
                 return Ok(path);
             }
         }
-        let url = if cfg!(windows) { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-windows-amd64.exe" } else if cfg!(target_arch = "aarch64") { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-arm64" } else { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-amd64" };
+        let url = if cfg!(windows) { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-windows-amd64.exe" }
+            else if cfg!(target_os = "macos") { if cfg!(target_arch = "aarch64") { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-arm64.tgz" } else { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-amd64.tgz" } }
+            else if cfg!(target_arch = "aarch64") { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-arm64" } else { "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-amd64" };
         let mut response=reqwest::Client::new().get(url).timeout(Duration::from_secs(180)).send().await.map_err(|e|e.to_string())?.error_for_status().map_err(|e|e.to_string())?;
         if response.content_length().unwrap_or(0) > 100 * 1024 * 1024 {
             return Err("Unexpected Cloudflare download size".into());
@@ -737,6 +733,18 @@ pub(crate) async fn cloudflared(root: &Path) -> Result<PathBuf, String> {
             }
             bytes.extend_from_slice(&chunk);
         }
+        // macOS releases are archives: check the published archive, then the program in it.
+        #[cfg(target_os = "macos")]
+        let bytes = {
+            #[cfg(target_arch = "aarch64")]
+            const ARCHIVE_HASH: &str = "40c9144d86df8937c5b43293a1f7d2d2107029aa74725023dd46b1b27154352f";
+            #[cfg(not(target_arch = "aarch64"))]
+            const ARCHIVE_HASH: &str = "61e1316266a00fd70ce40da011d612badc805367fb65293dd1925f938f704c99";
+            if hex::encode(Sha256::digest(&bytes)) != ARCHIVE_HASH {
+                return Err("Cloudflare download verification failed".into());
+            }
+            cloudflared_from_archive(&bytes)?
+        };
         if bytes.len() > 100 * 1024 * 1024 || hex::encode(Sha256::digest(&bytes)) != HASH {
             return Err("Cloudflare download verification failed".into());
         }
@@ -746,13 +754,31 @@ pub(crate) async fn cloudflared(root: &Path) -> Result<PathBuf, String> {
         tokio::fs::write(&path, &bytes)
             .await
             .map_err(|e| e.to_string())?;
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).await.map_err(|e| e.to_string())?;
         }
         Ok(path)
     }
+}
+
+/// The `cloudflared` program from Cloudflare's macOS release archive; nothing else in it is used.
+#[cfg(any(target_os = "macos", test))]
+fn cloudflared_from_archive(archive: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut entries = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    for entry in entries.entries().map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let regular = entry.header().entry_type().is_file();
+        let name = entry.path().map_err(|e| e.to_string())?.into_owned();
+        if regular && name.as_os_str() == "cloudflared" {
+            let mut program = Vec::new();
+            entry.take(100 * 1024 * 1024 + 1).read_to_end(&mut program).map_err(|e| e.to_string())?;
+            return Ok(program);
+        }
+    }
+    Err("The Cloudflare download does not contain cloudflared".into())
 }
 
 #[tauri::command]
@@ -1092,10 +1118,12 @@ pub async fn attach_host_folder(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
     manager: State<'_, WorkspaceManager>,
+    window: crate::WebviewWindow,
 ) -> Result<HostShare, String> {
+    crate::host_terminal::require_dashboard(window.label())?;
     attach_folder(environment_id, path, read_only, &store, &runtime, &manager).await
 }
-async fn attach_folder(
+pub(crate) async fn attach_folder(
     environment_id: String,
     path: String,
     read_only: bool,
@@ -1110,10 +1138,11 @@ async fn attach_folder(
     let folder = PathBuf::from(path)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let managed = manager.root.canonicalize().unwrap_or(manager.root.clone());
-    if folder.starts_with(&managed) || managed.starts_with(&folder) || folder.parent().is_none() {
-        return Err("Yougori's managed runtime directory cannot be shared".into());
-    }
+    // The same rule as remote recipients: guests never see app state, sharing
+    // grants, credentials or other environments' disks, even read-only.
+    let mut yougori_roots = vec![manager.root.clone(), store.data_folder("")];
+    yougori_roots.extend(runtime.storage_pool_roots());
+    crate::host_files::ensure_shareable_folder(&folder, &yougori_roots, false)?;
     if manager.shares.lock().await.len() >= 64 {
         return Err("Disconnect an unused shared folder first".into());
     }
@@ -1297,6 +1326,26 @@ pub async fn open_service_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cloudflared_is_taken_only_from_its_own_archive_entry() {
+        fn archive(entries: &[(&str, &[u8], bool)]) -> Vec<u8> {
+            let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+            for (name, data, directory) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(if *directory { tar::EntryType::Directory } else { tar::EntryType::Regular });
+                header.set_size(data.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder.append_data(&mut header, name, *data).unwrap();
+            }
+            builder.into_inner().unwrap().finish().unwrap()
+        }
+        let program = archive(&[("README", b"notes", false), ("cloudflared", b"program", false)]);
+        assert_eq!(cloudflared_from_archive(&program).unwrap(), b"program");
+        assert!(cloudflared_from_archive(&archive(&[("bin/cloudflared", b"x", false)])).is_err());
+        assert!(cloudflared_from_archive(&archive(&[("cloudflared", b"", true)])).is_err());
+        assert!(cloudflared_from_archive(b"not an archive").is_err());
+    }
     #[test]
     fn only_private_service_addresses_open_inside_yougori() {
         for value in [

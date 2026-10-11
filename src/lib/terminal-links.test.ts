@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest"
-import { extractTerminalLinks, isLocalTerminalLink, mergeTerminalLinks, normalizeTerminalLink } from "./terminal-links"
+import { extractTerminalLinks, isLocalTerminalLink, mergeTerminalLinks, normalizeTerminalLink, terminalLinkRanges } from "./terminal-links"
 
 describe("terminal links", () => {
   it("finds URLs in colored output, strips prose punctuation and deduplicates", () => {
     expect(extractTerminalLinks("Local: \x1b[36mhttp://localhost:5173/\x1b[0m\nSee (https://example.com/path_(one)). https://example.com/path_(one) www.example.org")).toEqual([
       "http://localhost:5173/", "https://example.com/path_(one)", "https://www.example.org/",
+    ])
+  })
+  it("reports on-screen ranges without trailing prose punctuation", () => {
+    const line = "Open (https://x.com). or https://example.com/a.)"
+    expect(terminalLinkRanges(line)).toEqual([
+      { url: "https://x.com/", start: 6, length: "https://x.com".length },
+      { url: "https://example.com/a", start: 25, length: "https://example.com/a".length },
     ])
   })
   it("preserves query strings, fragments and IPv6", () => {

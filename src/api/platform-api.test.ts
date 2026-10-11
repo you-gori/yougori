@@ -432,7 +432,7 @@ describe("browser platform adapter", () => {
     await platformApi.addDestination({
       name: "Secure archive",
       provider: "s3Compatible",
-      location: "https://storage.example.test/opendock",
+      location: "https://storage.example.test/yougori",
       accessKey: "TEST_ACCESS_KEY",
       secretKey: "TEST_SECRET_KEY",
     })

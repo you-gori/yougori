@@ -1,90 +1,79 @@
 {
-  "method": "Verified archives restored into a fresh directory, patches applied with GNU patch, compared against the source tree used for the rebuilt QEMU",
+  "build": "2026-10-11 secure QEMU rebuild",
+  "upstreamRevision": "84f07211cc5b4fc6a371559bf8a5de4fb068e648",
+  "method": "Verified upstream archive restored into a fresh directory; the recorded functional patches and the dated notice patch applied with git apply and Yougori's TPM sources added; compared with the source tree that was compiled",
   "results": [
     {
       "path": "accel/accel-system.c",
-      "builtTreeSha256": "a008d09f5f4209fb85917f2f02a425a7f21236889f941f58e996bddbb4f81fb7",
-      "restoredTreeSha256": "a008d09f5f4209fb85917f2f02a425a7f21236889f941f58e996bddbb4f81fb7",
+      "builtTreeSha256": "863e569f1aaddf45236c2810127868124fe2d01927a27a7021c4ce4c1c156cee",
+      "restoredTreeSha256": "863e569f1aaddf45236c2810127868124fe2d01927a27a7021c4ce4c1c156cee",
       "matches": true
     },
     {
       "path": "accel/whpx/whpx-common.c",
-      "builtTreeSha256": "e12bb23fe5aac6f3982a5755f421cbcbac620d503051f57c36cfe6e81c8500f6",
-      "restoredTreeSha256": "e12bb23fe5aac6f3982a5755f421cbcbac620d503051f57c36cfe6e81c8500f6",
+      "builtTreeSha256": "b8c593b67f61b6f1a8844995b4f128787a7770e35ec9176aa6a9d802dadcf1a5",
+      "restoredTreeSha256": "b8c593b67f61b6f1a8844995b4f128787a7770e35ec9176aa6a9d802dadcf1a5",
       "matches": true
     },
     {
       "path": "backends/tpm/meson.build",
-      "builtTreeSha256": "4822e5d9419093bf5b5b348b077076803ba287b8b23b326bc99864443a9f4a0d",
-      "restoredTreeSha256": "4822e5d9419093bf5b5b348b077076803ba287b8b23b326bc99864443a9f4a0d",
+      "builtTreeSha256": "711db9b181837ee549bf7493ecf9946dea4a21a6e734f2df2cd30cc235b8063d",
+      "restoredTreeSha256": "711db9b181837ee549bf7493ecf9946dea4a21a6e734f2df2cd30cc235b8063d",
       "matches": true
     },
     {
       "path": "backends/tpm/tpm-api.h",
-      "builtTreeSha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca",
-      "restoredTreeSha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca",
+      "builtTreeSha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93",
+      "restoredTreeSha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93",
       "matches": true
     },
     {
       "path": "backends/tpm/tpm-qemu.c",
-      "builtTreeSha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92",
-      "restoredTreeSha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92",
+      "builtTreeSha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
+      "restoredTreeSha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
       "matches": true
     },
     {
       "path": "hw/tpm/tpm_ppi.c",
-      "builtTreeSha256": "ab8d268b7db20cdb2e146ef281475c9b7857a8625273b114b0477423ff38929e",
-      "restoredTreeSha256": "ab8d268b7db20cdb2e146ef281475c9b7857a8625273b114b0477423ff38929e",
+      "builtTreeSha256": "a30eb3eac755a5657b730502b7837f67f8367df2056e0383be08171bdbf4ae52",
+      "restoredTreeSha256": "a30eb3eac755a5657b730502b7837f67f8367df2056e0383be08171bdbf4ae52",
       "matches": true
     },
     {
       "path": "include/accel/accel-ops.h",
-      "builtTreeSha256": "5bc7042eb7483296e6f2b38fcbec8d8a52599c23ce69850b458ce2d0a41313f6",
-      "restoredTreeSha256": "5bc7042eb7483296e6f2b38fcbec8d8a52599c23ce69850b458ce2d0a41313f6",
+      "builtTreeSha256": "340c90229075c263d6ab1a7612b2340fa92a23844ab9c8f0e69b48e8f0cec2e1",
+      "restoredTreeSha256": "340c90229075c263d6ab1a7612b2340fa92a23844ab9c8f0e69b48e8f0cec2e1",
       "matches": true
     },
     {
       "path": "include/qemu/accel.h",
-      "builtTreeSha256": "d4d6e67d7c0ab44a9fbf518d0f4c43dfb7a0d86222560a0d02bb36d742fd030c",
-      "restoredTreeSha256": "d4d6e67d7c0ab44a9fbf518d0f4c43dfb7a0d86222560a0d02bb36d742fd030c",
+      "builtTreeSha256": "e67cbffdc03952841d5ac569f6cd4aa2449c7d07e6dcb29a5231d511e6cb92a6",
+      "restoredTreeSha256": "e67cbffdc03952841d5ac569f6cd4aa2449c7d07e6dcb29a5231d511e6cb92a6",
       "matches": true
     },
     {
       "path": "meson.build",
-      "builtTreeSha256": "ca581e764d9291448f4cc0f6bc39fac32cac37577378329e2e140308ec400991",
-      "restoredTreeSha256": "ca581e764d9291448f4cc0f6bc39fac32cac37577378329e2e140308ec400991",
+      "builtTreeSha256": "04920208f0e40cdde0c06b4f4da0bf79b794ab93cc147770187e3c50defe380e",
+      "restoredTreeSha256": "04920208f0e40cdde0c06b4f4da0bf79b794ab93cc147770187e3c50defe380e",
       "matches": true
     },
     {
       "path": "qapi/tpm.json",
-      "builtTreeSha256": "01d98aed09613f0aecbdbbd11b4f75210e3d74e71ac808b5da62a5275733cbd8",
-      "restoredTreeSha256": "01d98aed09613f0aecbdbbd11b4f75210e3d74e71ac808b5da62a5275733cbd8",
+      "builtTreeSha256": "a445f6beb1a94537ceec95daab3b3dcc3255cbc9d61e359d43abb3d6f8d1dcdd",
+      "restoredTreeSha256": "a445f6beb1a94537ceec95daab3b3dcc3255cbc9d61e359d43abb3d6f8d1dcdd",
       "matches": true
     },
     {
       "path": "system/runstate.c",
-      "builtTreeSha256": "17d31bd0c9bb5b5e879d7104ceb3dbb9104056c7d7d759f19ddab65a7255cba4",
-      "restoredTreeSha256": "17d31bd0c9bb5b5e879d7104ceb3dbb9104056c7d7d759f19ddab65a7255cba4",
+      "builtTreeSha256": "b9c57c7725918d157cc864e2f08cb9eb62586525aa98282a8c7aa65c3a4ffc9b",
+      "restoredTreeSha256": "b9c57c7725918d157cc864e2f08cb9eb62586525aa98282a8c7aa65c3a4ffc9b",
       "matches": true
     },
     {
       "path": "system/tpm-hmp-cmds.c",
-      "builtTreeSha256": "bf112106aba06ddf369cdf5b0e545d6e877cf64a370cbe344f9c96e6e0e5da87",
-      "restoredTreeSha256": "bf112106aba06ddf369cdf5b0e545d6e877cf64a370cbe344f9c96e6e0e5da87",
+      "builtTreeSha256": "524e07fb6c27b2f667e4c2765ae2178804c2a740e4ddee5c7bb2a48bdf119c71",
+      "restoredTreeSha256": "524e07fb6c27b2f667e4c2765ae2178804c2a740e4ddee5c7bb2a48bdf119c71",
       "matches": true
-    }
-  ],
-  "configureAndDependencyGraph": "Passed original configure flags and ninja dry run for 1726 build steps from exported sources; not claimed to be a second full compilation",
-  "omittedHostLinks": [
-    {
-      "component": "edk2-secure-src",
-      "path": "EmulatorPkg/Unix/Host/X11IncludeHack",
-      "target": "/opt/X11/include"
-    },
-    {
-      "component": "qemu-secure-src/roms/edk2",
-      "path": "EmulatorPkg/Unix/Host/X11IncludeHack",
-      "target": "/opt/X11/include"
     }
   ]
 }

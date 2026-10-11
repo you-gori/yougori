@@ -94,6 +94,15 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
         self.assertNotIn('hf_private_read_token', json.dumps(self.runner.request('status', self.body)))
 
+    def test_owner_credential_is_injected_separately_and_validated(self):
+        with self.assertRaisesRegex(ValueError, 'Invalid model configuration'):
+            self.runner.request('run', {**self.body, 'adminToken': 'not-hex'})
+        self.assertFalse(self.runner.running(self.runner.root_dir()))
+        self.body['adminToken'] = 'b' * 64
+        self.body['source'] = SERVER.replace("'status':'ready'", "'status':'ready', 'admin':os.environ.get('YOUGORI_MODEL_ADMIN_TOKEN') == 'b' * 64")
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        self.assertTrue(self.ready()['admin'])
+
     def test_reviewed_vllm_runner_is_persisted_and_injected_into_isolated_bootstrap(self):
         self.body['format']='vllm'
         self.body['source']=SERVER.replace("'status':'ready'", "'status':'ready', 'format':os.environ.get('YOUGORI_MODEL_FORMAT'), 'installVllm':os.environ.get('YOUGORI_INSTALL_VLLM')")

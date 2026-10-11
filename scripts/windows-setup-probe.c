@@ -58,7 +58,7 @@ void mainCRTStartup(void) {
     }
     output = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_ALWAYS, 0, 0);
     if (output == INVALID_HANDLE_VALUE) ExitProcess(2);
-    line("OPENDOCK_WINPE_PROBE_STARTED");
+    line("YOUGORI_WINPE_PROBE_STARTED");
     security();
     for (int i=0; i<60; i++) {
         EnumWindows(window, 0);

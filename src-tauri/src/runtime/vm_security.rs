@@ -384,9 +384,9 @@ pub(super) async fn prepare_required(layout: &RuntimeLayout, directory: &Path, s
     let root = layout.root.join("qemu-secure");
     for file in [
         "qemu-system-x86_64.exe",
-        "opendock-tpm.dll",
-        "opendock-tpm-init.exe",
-        "opendock-tpm-worker.exe",
+        "yougori-tpm.dll",
+        "yougori-tpm-init.exe",
+        "yougori-tpm-worker.exe",
         "OVMF.qemuvars.fd",
         "secure-vars.json",
     ] {
@@ -415,7 +415,7 @@ pub(super) async fn prepare_required(layout: &RuntimeLayout, directory: &Path, s
     validate_vars(&vars)?;
     create_file(&target.join("uefi-vars.json"), &vars)?;
     command_output(
-        &root.join("opendock-tpm-init.exe"),
+        &root.join("yougori-tpm-init.exe"),
         &[path_string(&target.join("tpm.nv"))],
         "create private TPM 2.0 identity",
     )

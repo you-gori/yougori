@@ -128,7 +128,14 @@ pub(super) async fn ensure(id: &str, tool: &str) -> Result<SessionExit, String> 
     let mut output = SetupOutput::default();
     let result = async {
         let installer = call("prepare_terminal_installer", json!({"environmentId":id,"sessionId":session,"tool":tool})).await?;
-        let command = setup_command(installer.as_str().ok_or("Invalid installer response")?, &status)?;
+        let installer = installer.as_str().ok_or("Invalid installer response")?;
+        let command = setup_command(installer, &status)?;
+        // The setup terminal runs where the sandbox's commands run. An engine that
+        // staged the installer elsewhere (outside a microVM's workload) fails here.
+        let staged = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("test -f {}", shell_words::quote(&installer_path(installer)?))}})).await?;
+        if staged["exitCode"] != 0 {
+            return Err(format!("This Yougori engine prepared the {tool} installer outside the sandbox. Update Yougori, then retry; the sandbox and its files were kept."));
+        }
         call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{command}\r"))})).await?;
         let mut offset = 0;
         let mut input = InputReader::default();

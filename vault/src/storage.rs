@@ -202,6 +202,75 @@ impl Store {
 static AUDIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static AUDIT_CACHE: std::sync::Mutex<Option<Vec<Audit>>> = std::sync::Mutex::new(None);
 static AUDIT_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static AUDIT_CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const AUDIT_LIMIT: u64 = 32 * 1024 * 1024;
+const AUDIT_ARCHIVES: usize = 4;
+const AUDIT_RECORD_LIMIT: usize = 8192;
+/// Where complete records end, and whether the log continues with unreadable
+/// framing. A crash can leave one partially written record at the end.
+#[derive(Debug, PartialEq)]
+struct LogShape {
+    complete: u64,
+    damaged: bool,
+}
+fn log_shape(bytes: &[u8]) -> LogShape {
+    let mut offset = 0usize;
+    while bytes.len() - offset >= 4 {
+        let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        if size == 0 || size > AUDIT_RECORD_LIMIT {
+            return LogShape { complete: offset as u64, damaged: true };
+        }
+        if bytes.len() - offset - 4 < size {
+            break;
+        }
+        offset += 4 + size;
+    }
+    LogShape { complete: offset as u64, damaged: false }
+}
+/// Moves the current log aside, keeping the newest archives within the limit.
+fn rotate_audit(root: &Path, path: &Path) -> Result<(), String> {
+    let archive = root.join(format!(
+        "activity-{}.dpapi-log",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+    ));
+    std::fs::rename(path, &archive).map_err(|_| "Cannot archive the protected audit log")?;
+    let mut archives: Vec<_> = std::fs::read_dir(root)
+        .map_err(|_| "Cannot list protected audit archives")?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("activity-") && name.ends_with(".dpapi-log"))
+        .collect();
+    archives.sort();
+    for name in archives.iter().take(archives.len().saturating_sub(AUDIT_ARCHIVES)) {
+        let _ = std::fs::remove_file(root.join(name));
+    }
+    *AUDIT_CACHE.lock().unwrap() = Some(vec![]);
+    Ok(())
+}
+/// Before the first append in a process, drop a torn trailing record and set
+/// aside a log whose framing cannot be read, so new records stay readable.
+fn repair_audit(root: &Path, path: &Path) -> Result<(), String> {
+    if AUDIT_CHECKED.load(std::sync::atomic::Ordering::SeqCst) || !path.exists() {
+        AUDIT_CHECKED.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Ok(());
+    }
+    let bytes = std::fs::read(path).map_err(|_| "Cannot read protected audit log")?;
+    let shape = log_shape(&bytes);
+    if shape.damaged {
+        rotate_audit(root, path)?;
+    } else if shape.complete < bytes.len() as u64 {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|_| "Cannot repair protected audit log")?;
+        file.set_len(shape.complete)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "Cannot repair protected audit log")?;
+        *AUDIT_CACHE.lock().unwrap() = None;
+    }
+    AUDIT_CHECKED.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
 pub(crate) fn record(entry: &Audit) -> Result<(), String> {
     let _guard = AUDIT_LOCK.lock().map_err(|_| "Audit lock unavailable")?;
     if AUDIT_FAILED.load(std::sync::atomic::Ordering::SeqCst) {
@@ -215,8 +284,9 @@ pub(crate) fn record(entry: &Audit) -> Result<(), String> {
     if path.exists() {
         platform::verify_protected(&path, false)?;
     }
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 32 * 1024 * 1024) {
-        return Err("The protected audit log is full. Archive it with an administrator before submitting more requests.".into());
+    repair_audit(&root, &path)?;
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > AUDIT_LIMIT) {
+        rotate_audit(&root, &path)?;
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -249,34 +319,37 @@ pub(crate) fn recent() -> Result<Vec<Audit>, String> {
         return Ok(vec![]);
     }
     platform::verify_protected(&path, false)?;
-    let mut file = std::fs::File::open(path).map_err(|_| "Cannot open audit log")?;
-    let mut records = std::collections::VecDeque::new();
-    loop {
-        let mut size = [0u8; 4];
-        match file.read(&mut size[..1]) {
-            Ok(0) => break,
-            Ok(_) => (),
-            Err(_) => return Err("Audit log read failed".into()),
-        }
-        file.read_exact(&mut size[1..])
-            .map_err(|_| "Incomplete audit log")?;
-        let size = u32::from_be_bytes(size) as usize;
-        if size > 8192 {
-            return Err("Invalid audit record".into());
-        }
-        let mut encrypted = vec![0; size];
-        file.read_exact(&mut encrypted)
-            .map_err(|_| "Incomplete audit record")?;
-        let record = serde_json::from_slice(&dpapi(&encrypted, false)?)
-            .map_err(|_| "Invalid audit record")?;
-        records.push_back(record);
-        if records.len() > 100 {
-            records.pop_front();
-        }
-    }
-    let records: Vec<Audit> = records.into_iter().rev().collect();
+    let mut bytes = vec![];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_to_end(&mut bytes))
+        .map_err(|_| "Cannot open audit log")?;
+    let records: Vec<Audit> = audit_records(&bytes, |encrypted| {
+        dpapi(encrypted, false)
+            .ok()
+            .and_then(|plain| serde_json::from_slice(&plain).ok())
+    });
     *AUDIT_CACHE.lock().unwrap() = Some(records.clone());
     Ok(records)
+}
+
+/// The newest 100 readable records, newest first. A torn final record or
+/// unreadable framing ends the log instead of disabling the broker; a single
+/// undecryptable record is skipped.
+fn audit_records(bytes: &[u8], decode: impl Fn(&[u8]) -> Option<Audit>) -> Vec<Audit> {
+    let end = log_shape(bytes).complete as usize;
+    let mut records = std::collections::VecDeque::new();
+    let mut offset = 0;
+    while offset < end {
+        let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        if let Some(record) = decode(&bytes[offset + 4..offset + 4 + size]) {
+            records.push_back(record);
+            if records.len() > 100 {
+                records.pop_front();
+            }
+        }
+        offset += 4 + size;
+    }
+    records.into_iter().rev().collect()
 }
 
 pub(crate) fn bounded_read(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
@@ -387,6 +460,48 @@ mod tests {
         let end = bytes.len() - 1;
         bytes[end] ^= 1;
         assert!(decrypt(&key, &bytes).is_err());
+    }
+    fn framed(records: &[&[u8]]) -> Vec<u8> {
+        records
+            .iter()
+            .flat_map(|record| (record.len() as u32).to_be_bytes().into_iter().chain(record.iter().copied()))
+            .collect()
+    }
+    fn entry(outcome: &str) -> Vec<u8> {
+        serde_json::to_vec(&Audit {
+            time: "t".into(),
+            client: "c".into(),
+            request: "r".into(),
+            operation: "o".into(),
+            outcome: outcome.into(),
+        })
+        .unwrap()
+    }
+    #[test]
+    fn torn_and_damaged_audit_logs_stay_readable() {
+        let decode = |bytes: &[u8]| serde_json::from_slice::<Audit>(bytes).ok();
+        let (first, second) = (entry("first"), entry("second"));
+        let complete = framed(&[&first, &second]);
+        assert_eq!(log_shape(&complete), LogShape { complete: complete.len() as u64, damaged: false });
+        // A crash after the length prefix, or partway through the data.
+        for cut in [complete.len() - 3, complete.len() - second.len() - 2] {
+            let mut torn = complete.clone();
+            torn.truncate(cut);
+            let shape = log_shape(&torn);
+            assert!(!shape.damaged);
+            assert_eq!(shape.complete as usize, first.len() + 4);
+            let outcomes: Vec<_> = audit_records(&torn, decode).into_iter().map(|a| a.outcome).collect();
+            assert_eq!(outcomes, ["first"]);
+        }
+        // An undecryptable record is skipped; later records are still read.
+        let skipped = framed(&[b"not json", &second]);
+        assert_eq!(audit_records(&skipped, decode).len(), 1);
+        // Impossible framing ends the readable log and marks it for rotation.
+        let mut damaged = framed(&[&first]);
+        damaged.extend_from_slice(&u32::MAX.to_be_bytes());
+        damaged.extend_from_slice(&second);
+        assert_eq!(log_shape(&damaged), LogShape { complete: first.len() as u64 + 4, damaged: true });
+        assert_eq!(audit_records(&damaged, decode).len(), 1);
     }
     #[test]
     fn metadata_never_serializes_values() {

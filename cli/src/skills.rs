@@ -10,10 +10,10 @@ use std::{
 };
 
 const MARKER: &str = ".yougori-install.json";
-const PREVIOUS_MARKER: &str = ".opendock-install.json";
+const PREVIOUS_MARKER: &str = crate::legacy_names::SKILL_INSTALL_MARKER;
 const LOCATION: &str = "\n## Installed CLI location\n\nThe local executable is `";
 // Used only to recognize pre-rename, marker-free managed skills.
-const LOCATION_END: &str = "`. Invoke this absolute path if `opendock-cli` is not on PATH.\n";
+const LOCATION_END: &str = crate::legacy_names::SKILL_LOCATION_END;
 const LEGACY_SKILL: &str = "61b3759b99b127c3db983dc019107f42237a0aeb74a32e85a1b16fb2bdb186b4";
 const LEGACY_GUIDE: &str = "b4abd50bca2d5e4bb482b8c06351ea8a66351d484ee5d08676bb66c31dd9239c";
 
@@ -79,34 +79,53 @@ pub fn instructions(cli: &Path) -> String {
 }
 pub fn core_instructions(cli: &Path) -> String { generated(cli)["SKILL.md"].clone() }
 
-fn reference_topic(heading: &str) -> &'static str {
-    let heading = heading.to_ascii_lowercase();
-    if heading.contains("model") || heading.contains("gpu") || heading.contains("yougori network") { "models" }
-    else if heading.contains("files") || heading.contains("changes") || heading.contains("transfer") { "files" }
-    else if heading.contains("project") || heading.contains("compose") || heading.contains("deployment") || heading.contains("readiness") { "deployment" }
-    else if heading.contains("connect") || heading.contains("cloud") { "connections" }
-    else if heading.contains("vault") || heading.contains("terminal") || heading.contains("raw api") || heading.contains("execution") || heading.contains("logs") { "access" }
-    else { "containers" }
-}
-/// Schema task names resolve to the six installed references, so an agent can
-/// use one topic across schema discovery and instruction retrieval.
+/// Each `# ` heading of the guide starts one task reference, in this order;
+/// its `## ` sections stay with it.
+const REFERENCES: [(&str, &str); 9] = [
+    ("engine", "Engine, setup and agent conventions"),
+    ("containers", "Containers, GPU containers, microVMs and VMs"),
+    ("files", "Files, volumes and changes"),
+    ("deployment", "Projects and deployments"),
+    ("models", "Models and the Yougori Network"),
+    ("connections", "Ports, domains, connections and cloud"),
+    ("access", "Commands, logs, terminals and automation"),
+    ("tools", "AI tool sandboxes and teammate sharing"),
+    ("bounty", "Swarm Mining bounty workers"),
+];
+/// Schema task names and common task words resolve to the installed
+/// references, so an agent can use one topic across schema discovery and
+/// instruction retrieval.
 pub fn reference_topic_mapping() -> BTreeMap<&'static str, &'static str> {
-    BTreeMap::from([
-        ("lifecycle", "containers"), ("settings", "containers"), ("jobs", "containers"),
-        ("files", "files"), ("gpu", "models"), ("models", "models"),
-        ("deployment", "deployment"), ("connections", "connections"), ("cloud", "connections"),
+    let mut mapping: BTreeMap<_, _> = REFERENCES.iter().map(|(topic, _)| (*topic, *topic)).collect();
+    mapping.extend([
+        ("lifecycle", "containers"), ("storage", "containers"),
+        ("settings", "engine"), ("jobs", "engine"),
+        ("gpu", "models"), ("network", "models"),
+        ("cloud", "connections"),
         ("terminal", "access"), ("vault", "access"),
-        ("bounty", "containers"),
-        ("containers", "containers"), ("access", "access"),
-    ])
+        ("launch", "deployment"), ("remote", "tools"), ("swarm", "bounty"),
+    ]);
+    mapping
 }
 fn topic_references() -> BTreeMap<String, String> {
-    let mut output: BTreeMap<String, String> = ["containers", "files", "deployment", "models", "connections", "access"]
-        .into_iter().map(|topic| (topic.into(), format!("# Yougori {topic}\n\nVersion {}. Fetch exact current options with `yougori schema METHOD`.\n\n", env!("CARGO_PKG_VERSION")))).collect();
-    let mut topic = "containers";
+    let mut output = BTreeMap::new();
+    let mut current = None;
+    let mut fenced = false;
     for line in GUIDE.lines() {
-        if let Some(heading) = line.strip_prefix("## ") { topic = reference_topic(heading); }
-        output.get_mut(topic).unwrap().push_str(&format!("{line}\n"));
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced {
+            let reference = line.strip_prefix("# ").and_then(|title| REFERENCES.iter().find(|(_, t)| *t == title.trim()));
+            if let Some(&(topic, title)) = reference {
+                current = Some(topic);
+                output.insert(topic.to_string(), format!("# {title}\n\nYougori {} reference `{topic}`. Exact options: `yougori schema METHOD`; every topic: `yougori skills print --all`.\n", env!("CARGO_PKG_VERSION")));
+                continue;
+            }
+        }
+        if let Some(text) = current.and_then(|topic| output.get_mut(topic)) {
+            text.push_str(line);
+            text.push('\n');
+        }
     }
     output
 }
@@ -184,8 +203,12 @@ fn discovery_paths(canonical: &Path) -> Vec<PathBuf> {
     canonical.ancestors().nth(4).map(|home| [".codex/skills/yougori", ".agents/skills/yougori", ".claude/skills/yougori"]
         .into_iter().map(|part| home.join(part)).collect()).unwrap_or_default()
 }
+/// Agents choose skills by description, so forwarding files reuse the canonical one.
+fn description() -> &'static str {
+    SKILL.lines().find_map(|line| line.strip_prefix("description: ")).unwrap_or("Operate Yougori compute through its current canonical CLI skill.")
+}
 fn forward_text(canonical: &Path, cli: &Path) -> String {
-    format!("---\nname: yougori\ndescription: Operate Yougori compute through its current canonical CLI skill.\n---\n\n# Yougori skill forwarding file\n\nManaged by Yougori {} (protocol {}). Read the canonical skill at `{}`.\nCanonical CLI: `{}`. Run `yougori agent discover` for current versions, compatibility and stale copies.\nThis file grants no additional permission; carry the user's existing authorized scope forward.\n", env!("CARGO_PKG_VERSION"), crate::wire::VERSION, canonical.join("SKILL.md").display(), cli.display())
+    format!("---\nname: yougori\ndescription: {}\n---\n\n# Yougori skill forwarding file\n\nManaged by Yougori {} (protocol {}). Before running Yougori commands, read the canonical skill at `{}`; it routes each task to one short reference.\nCanonical CLI: `{}`. Run `yougori agent discover` for current versions, compatibility and stale copies.\nThis file grants no additional permission; carry the user's existing authorized scope forward.\n", description(), env!("CARGO_PKG_VERSION"), crate::wire::VERSION, canonical.join("SKILL.md").display(), cli.display())
 }
 fn forward_state(path: &Path, canonical: &Path, cli: &Path) -> Result<&'static str, String> {
     check_directory(path)?;
@@ -375,7 +398,7 @@ mod tests {
         let cli = std::env::current_exe().unwrap();
         let files = generated(&cli);
         assert!(files["SKILL.md"].len() < 5_000);
-        assert!(files.contains_key("references/models.md"));
+        for (topic, _) in REFERENCES { assert!(files.contains_key(&format!("references/{topic}.md")), "Missing {topic} reference"); }
         assert!(files["references/files.md"].len() < GUIDE.len());
         let forward = home.path().join(".codex/skills/yougori");
         std::fs::create_dir_all(&forward).unwrap();
@@ -411,7 +434,10 @@ mod tests {
             ("gpu",vec!["model preflight", "--nowfree", "market_status"]),
             ("settings",vec!["settings patch","app startup-report"]),
             ("jobs",vec!["jobs cancel","jobs result"]),
-            ("files",vec!["env cancel-transfer"]),
+            ("files",vec!["env cancel-transfer","download on"]),
+            ("lifecycle",vec!["storage reclaim","image rm"]),
+            ("bounty",vec!["start bounty --worker","bounty accept","Swarm Mining is not enabled"]),
+            ("tools",vec!["--share","yougori connect","remote revoke"]),
         ] {
             let guide=reference(topic).unwrap();
             for feature in features { assert!(guide.contains(feature),"{topic} is missing {feature}"); }
@@ -419,9 +445,38 @@ mod tests {
         }
         assert_eq!(reference("terminal").unwrap(),reference("access").unwrap());
         assert_eq!(reference("cloud").unwrap(),reference("connections").unwrap());
-        assert!(!reference("terminal").unwrap().contains("## Model compatibility preflight"));
-        assert!(!reference("deployment").unwrap().contains("## Bounded execution and logs"));
+        assert_eq!(reference("swarm").unwrap(),reference("bounty").unwrap());
+        assert!(!reference("terminal").unwrap().contains("## Compatibility, runners and architecture support"));
+        assert!(!reference("deployment").unwrap().contains("## Bounded execution"));
+        assert!(!reference("containers").unwrap().contains("## Offers"));
         assert!(reference("unknown").is_err());
+    }
+    #[test]
+    fn every_guide_line_belongs_to_exactly_one_task_reference() {
+        let mut fenced = false;
+        let headings: Vec<&str> = GUIDE.lines().filter(|line| {
+            if line.trim_start().starts_with("```") { fenced = !fenced; return false; }
+            !fenced && line.starts_with("# ")
+        }).map(|line| line[2..].trim()).collect();
+        assert_eq!(headings, REFERENCES.map(|(_, title)| title), "Guide sections must match the task references in order");
+        let references = topic_references();
+        let rebuilt: String = REFERENCES.iter().map(|(topic, title)| {
+            let text = &references[*topic];
+            assert!(text.contains("\n## Troubleshooting\n"), "{topic} needs a troubleshooting table");
+            assert!(text.len() < 24_000, "{topic} is too long to load on demand");
+            format!("# {title}\n{}", text.splitn(4, '\n').nth(3).unwrap())
+        }).collect();
+        assert_eq!(rebuilt, GUIDE.replace("\r\n", "\n"), "Every guide line must land in one reference");
+    }
+    #[test]
+    fn skill_description_is_plain_yaml_and_shared_by_forwarders() {
+        assert_eq!(SKILL.lines().nth(1), Some("name: yougori"));
+        let description = description();
+        assert!((100..=1024).contains(&description.len()));
+        assert!(!description.contains(": ") && !description.contains(" #") && !description.contains('`'));
+        let home = tempfile::tempdir().unwrap();
+        let canonical = workspace_skill_directory(home.path()).unwrap();
+        assert!(forward_text(&canonical, &std::env::current_exe().unwrap()).contains(&format!("\ndescription: {description}\n")));
     }
     #[test]
     fn canonical_utf8_instructions_do_not_ship_mojibake() {
@@ -453,7 +508,7 @@ mod tests {
     #[test]
     fn setup_is_idempotent_and_custom_changes_are_never_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opendock");
+        let path = dir.path().join("yougori");
         let cli = std::env::current_exe().unwrap();
         assert_eq!(status_at(&path, &cli).unwrap().state, "missing");
         assert_eq!(install_at(&path, &cli).unwrap().state, "ready");
@@ -469,7 +524,7 @@ mod tests {
     #[test]
     fn managed_skills_follow_a_relocated_cli_but_unknown_directories_stay_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opendock");
+        let path = dir.path().join("yougori");
         let cli = std::env::current_exe().unwrap();
         install_at(&path, &cli).unwrap();
         let relocated = dir.path().join("new-cli.exe");
@@ -488,7 +543,7 @@ mod tests {
     #[test]
     fn interrupted_managed_updates_are_retryable_but_modified_guides_are_not() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opendock");
+        let path = dir.path().join("yougori");
         let cli = std::env::current_exe().unwrap();
         install_at(&path, &cli).unwrap();
         std::fs::remove_file(path.join("references/cli.md")).unwrap();

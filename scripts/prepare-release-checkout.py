@@ -2,6 +2,8 @@
 
 Run with a NEW destination directory. Runtime payloads and dependencies are copied,
 never linked to live backing images. Build/source caches are shared separately.
+Only files in the Git index are release sources; stage new files first, as the
+compliance source collector also requires.
 """
 import argparse
 import json
@@ -17,12 +19,33 @@ ROOT_ASSET_SUFFIXES = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico',
 ROOT_FILES = {'LICENSE', 'COPYING', 'NOTICE', 'COMMERCIAL_LICENSE.txt', '.gitignore',
               '.gitattributes', 'package.json', 'package-lock.json', 'index.html',
               'vite.config.ts', 'eslint.config.js', 'tsconfig.json', 'tsconfig.app.json',
-              'tsconfig.node.json', 'playwright.config.ts', 'playwright.graph.config.ts',
+              'tsconfig.node.json', 'tsconfig.e2e.json', 'playwright.config.ts', 'playwright.graph.config.ts',
               'components.json'}
+
+
+CREDENTIAL_SUFFIXES = {'.pfx', '.p12', '.pem', '.key', '.jks', '.keystore', '.p8', '.ppk', '.kdbx',
+                       '.mobileprovision', '.keychain', '.keychain-db'}
+CREDENTIAL_NAMES = {'.npmrc', '.pypirc', '.netrc', '.git-credentials', '.dockercfg', 'credentials',
+                    'credentials.json', 'credentials.toml', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+                    'tauri.signing.json'}
 
 
 def run(*args, **kwargs):
     return subprocess.check_output(args, cwd=ROOT, **kwargs).decode().strip()
+
+
+def credential(name):
+    """Names that commonly hold private keys, tokens or signing configuration."""
+    path = Path(name)
+    lower = path.name.lower()
+    return (path.suffix.lower() in CREDENTIAL_SUFFIXES or lower.startswith('.env') or lower in CREDENTIAL_NAMES
+            or (lower.startswith('id_') and lower.endswith(('_rsa', '_ed25519', '_ecdsa')))
+            or any(part.lower() in ('.ssh', '.gnupg', '.aws', '.docker') for part in path.parts[:-1]))
+
+
+def release_source(name):
+    return (name in ROOT_FILES or name.startswith(SOURCE_ROOTS)
+            or ('/' not in name and Path(name).suffix.lower() in ROOT_ASSET_SUFFIXES))
 
 
 def main():
@@ -35,8 +58,12 @@ def main():
         raise ValueError('Use a new release checkout directory; existing files are never overwritten')
     tracked = set(run('git', 'ls-files', '-z').split('\0'))
     untracked = set(run('git', 'ls-files', '--others', '--exclude-standard', '-z').split('\0'))
-    names = sorted(n for n in tracked | untracked if n and (n in tracked or n in ROOT_FILES or n.startswith(SOURCE_ROOTS)
-                   or ('/' not in n and Path(n).suffix.lower() in ROOT_ASSET_SUFFIXES)))
+    # Untracked files are never collected silently: a forgotten source would ship a
+    # candidate that differs from its matching-source archive, and stray files may be private.
+    pending = sorted(n for n in untracked if n and release_source(n))
+    if pending:
+        raise ValueError('Stage new release sources or ignore them before preparing a release: ' + ', '.join(pending[:20]))
+    names = sorted(n for n in tracked if n)
     selected = []
     for name in names:
         path = ROOT / name
@@ -45,7 +72,7 @@ def main():
         if path.is_symlink() or not path.is_file():
             raise ValueError('Linked/non-file source requires review: ' + name)
         path.resolve().relative_to(ROOT)
-        if path.suffix.lower() in ('.pfx', '.p12', '.pem', '.key') or path.name.startswith('.env'):
+        if credential(name):
             raise ValueError('Potential credential must not enter release sources: ' + name)
         selected.append(name)
     destination.mkdir(parents=True)
@@ -73,7 +100,7 @@ def main():
     for name in ('appliance-base.qcow2', 'initramfs-virt', 'vmlinuz-virt', 'SHA256SUMS'):
         shutil.copy2(appliance / name, destination / 'src-tauri/resources/runtime/appliance' / name)
     cuda = destination / 'src-tauri/resources/runtime/cuda'
-    shutil.copy2(staged / 'cuda/opendock-agent', cuda / 'opendock-agent')
+    shutil.copy2(staged / 'cuda/yougori-agent', cuda / 'yougori-agent')
     manifest = cuda / 'SHA256SUMS'
     lines = []
     for line in manifest.read_text().splitlines():

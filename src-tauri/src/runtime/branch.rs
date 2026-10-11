@@ -446,20 +446,43 @@ impl RuntimeManager {
         }
         fs::create_dir_all(&directory)
             .map_err(|error| format!("create computer branch directory: {error}"))?;
-        let temporary_vhdx = directory.join("branch-boot.vhdx");
-        detach_virtual_disk(&temporary_vhdx).await?;
-        match fs::remove_file(&temporary_vhdx) {
+        // Earlier versions staged the temporary disk next to the environment.
+        let legacy_vhdx = directory.join("branch-boot.vhdx");
+        detach_virtual_disk(&legacy_vhdx).await?;
+        match fs::remove_file(&legacy_vhdx) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("remove previous branch boot disk: {error}")),
         }
+        // diskpart runs elevated and reads its script in a legacy code page.
+        // Stage the script and temporary disk in a fresh, ASCII-only folder that
+        // only SYSTEM and Administrators can change, instead of this user-writable
+        // (possibly non-ASCII) profile path where another process could swap it.
+        let program_data = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .ok_or("Windows ProgramData directory is unavailable")?;
+        remove_stale_branch_boot_folders(&program_data).await;
+        let work = program_data.join(format!("YougoriBranchBoot-{}", Uuid::new_v4().simple()));
+        if !work.to_str().is_some_and(str::is_ascii) {
+            return Err("Branch boot media needs an ASCII Windows ProgramData path".into());
+        }
+        create_protected_directory(&work)?;
+        let temporary_vhdx = work.join("branch-boot.vhdx");
+        let result = self.build_computer_branch_boot(&work, &temporary_vhdx, &output).await;
+        let _ = fs::remove_file(&temporary_vhdx);
+        let _ = fs::remove_dir(&work);
+        result
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn build_computer_branch_boot(&self, work: &Path, temporary_vhdx: &Path, output: &Path) -> Result<PathBuf, String> {
         let create_script = format!(
             "create vdisk file=\"{}\" maximum=260 type=expandable\r\nselect vdisk file=\"{}\"\r\nattach vdisk\r\nconvert gpt\r\ncreate partition efi size=200\r\nformat quick fs=fat32 label=\"{}\"\r\nexit\r\n",
             temporary_vhdx.display(),
             temporary_vhdx.display(),
             BRANCH_BOOT_LABEL
         );
-        let create_result = run_diskpart(&directory, "create-branch-boot", &create_script).await;
+        let create_result = run_diskpart(work, "create-branch-boot", &create_script).await;
         if let Err(error) = create_result {
             let _ = detach_virtual_disk(&temporary_vhdx).await;
             return Err(error);
@@ -554,10 +577,10 @@ impl RuntimeManager {
             "verify computer branch boot disk",
         )
         .await?;
-        fs::rename(&partial, &output)
+        fs::rename(&partial, output)
             .map_err(|error| format!("finalize computer branch boot disk: {error}"))?;
-        let _ = fs::remove_file(&temporary_vhdx);
-        Ok(output)
+        let _ = fs::remove_file(temporary_vhdx);
+        Ok(output.to_path_buf())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -748,7 +771,8 @@ fn build_snapshot_disk(
 #[cfg(target_os = "windows")]
 fn stable_disk_id(identity: &str, purpose: &[u8]) -> [u8; 16] {
     let mut hash = Sha256::new();
-    hash.update(b"OpenDock snapshot disk\0");
+    // Part of the stored disk identity; see legacy_names::SNAPSHOT_DISK_HASH_DOMAIN.
+    hash.update(yougori_cli::legacy_names::SNAPSHOT_DISK_HASH_DOMAIN);
     hash.update(purpose);
     hash.update(b"\0");
     hash.update(identity.as_bytes());
@@ -864,8 +888,21 @@ async fn start_read_only_block_server(
     let export_name = Uuid::new_v4().simple().to_string();
     let expected_export = export_name.clone();
     let task = tokio::spawn(async move {
+        // Serve clients independently so one idle or stalled local connection
+        // cannot block QEMU from reconnecting. Dropping the set (when the
+        // server task is aborted) also ends every client connection.
+        const MAX_CLIENTS: usize = 8;
+        let mut clients = tokio::task::JoinSet::new();
         while let Ok((stream, _)) = listener.accept().await {
-            let _ = serve_read_only_nbd(stream, Arc::clone(&disk), &expected_export).await;
+            while clients.try_join_next().is_some() {}
+            if clients.len() >= MAX_CLIENTS {
+                continue;
+            }
+            let disk = Arc::clone(&disk);
+            let expected_export = expected_export.clone();
+            clients.spawn(async move {
+                let _ = serve_read_only_nbd(stream, disk, &expected_export).await;
+            });
         }
     });
     Ok(BranchBlockServer {
@@ -895,57 +932,63 @@ async fn serve_read_only_nbd(
     const NBD_EROFS: u32 = 30;
     const MAX_READ_SIZE: u32 = 32 * 1024 * 1024;
 
-    stream
-        .write_all(b"NBDMAGIC")
+    let negotiation = async {
+        stream
+            .write_all(b"NBDMAGIC")
+            .await
+            .map_err(|error| format!("write block bridge handshake: {error}"))?;
+        stream
+            .write_u64(NBD_OPT_MAGIC)
+            .await
+            .map_err(|error| format!("write block bridge version: {error}"))?;
+        stream
+            .write_u16(0)
+            .await
+            .map_err(|error| format!("write block bridge flags: {error}"))?;
+        let _client_flags = stream
+            .read_u32()
+            .await
+            .map_err(|error| format!("read block bridge client flags: {error}"))?;
+        let option_magic = stream
+            .read_u64()
+            .await
+            .map_err(|error| format!("read block bridge option magic: {error}"))?;
+        let option = stream
+            .read_u32()
+            .await
+            .map_err(|error| format!("read block bridge option: {error}"))?;
+        let export_length = stream
+            .read_u32()
+            .await
+            .map_err(|error| format!("read block bridge export length: {error}"))?;
+        if option_magic != NBD_OPT_MAGIC || option != NBD_OPT_EXPORT_NAME || export_length > 4096 {
+            return Err("snapshot block bridge received an invalid negotiation request".into());
+        }
+        let mut export = vec![0_u8; export_length as usize];
+        stream
+            .read_exact(&mut export)
+            .await
+            .map_err(|error| format!("read block bridge export name: {error}"))?;
+        if export != expected_export.as_bytes() {
+            return Err("snapshot block bridge rejected an unknown export".into());
+        }
+        stream
+            .write_u64(disk.disk_size)
+            .await
+            .map_err(|error| format!("write block bridge size: {error}"))?;
+        stream
+            .write_u16(NBD_FLAG_HAS_FLAGS | NBD_FLAG_READ_ONLY)
+            .await
+            .map_err(|error| format!("write block bridge transmission flags: {error}"))?;
+        stream
+            .write_all(&[0_u8; 124])
+            .await
+            .map_err(|error| format!("finish block bridge handshake: {error}"))?;
+        Ok::<(), String>(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), negotiation)
         .await
-        .map_err(|error| format!("write block bridge handshake: {error}"))?;
-    stream
-        .write_u64(NBD_OPT_MAGIC)
-        .await
-        .map_err(|error| format!("write block bridge version: {error}"))?;
-    stream
-        .write_u16(0)
-        .await
-        .map_err(|error| format!("write block bridge flags: {error}"))?;
-    let _client_flags = stream
-        .read_u32()
-        .await
-        .map_err(|error| format!("read block bridge client flags: {error}"))?;
-    let option_magic = stream
-        .read_u64()
-        .await
-        .map_err(|error| format!("read block bridge option magic: {error}"))?;
-    let option = stream
-        .read_u32()
-        .await
-        .map_err(|error| format!("read block bridge option: {error}"))?;
-    let export_length = stream
-        .read_u32()
-        .await
-        .map_err(|error| format!("read block bridge export length: {error}"))?;
-    if option_magic != NBD_OPT_MAGIC || option != NBD_OPT_EXPORT_NAME || export_length > 4096 {
-        return Err("snapshot block bridge received an invalid negotiation request".into());
-    }
-    let mut export = vec![0_u8; export_length as usize];
-    stream
-        .read_exact(&mut export)
-        .await
-        .map_err(|error| format!("read block bridge export name: {error}"))?;
-    if export != expected_export.as_bytes() {
-        return Err("snapshot block bridge rejected an unknown export".into());
-    }
-    stream
-        .write_u64(disk.disk_size)
-        .await
-        .map_err(|error| format!("write block bridge size: {error}"))?;
-    stream
-        .write_u16(NBD_FLAG_HAS_FLAGS | NBD_FLAG_READ_ONLY)
-        .await
-        .map_err(|error| format!("write block bridge transmission flags: {error}"))?;
-    stream
-        .write_all(&[0_u8; 124])
-        .await
-        .map_err(|error| format!("finish block bridge handshake: {error}"))?;
+        .map_err(|_| "snapshot block bridge negotiation timed out".to_string())??;
 
     loop {
         let mut request = [0_u8; 28];
@@ -1106,15 +1149,21 @@ async fn prepare_host_bootstrap(
     let program_data = std::env::var_os("ProgramData")
         .map(PathBuf::from)
         .ok_or("Windows ProgramData directory is unavailable")?;
-    let directory = program_data.join("Yougori");
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("create computer branch bootstrap directory: {error}"))?;
+    // A SYSTEM ONSTART task runs this script. Standard users may create
+    // entries under ProgramData (and own what they create there), so never
+    // reuse a predictable path: create a fresh directory that only SYSTEM and
+    // Administrators can change, and refuse anything that already exists.
+    let directory = program_data.join(format!("YougoriBranch-{}", Uuid::new_v4().simple()));
+    create_protected_directory(&directory)?;
     let compact_id = id.replace(|character: char| !character.is_ascii_alphanumeric(), "");
     let suffix = compact_id.chars().take(48).collect::<String>();
     let task_name = format!("YougoriBranch_{suffix}");
     let script_path = directory.join(format!("branch-{suffix}.ps1"));
     let script = branch_bootstrap_script(mode, &task_name);
-    write_file_synced(&script_path, script.as_bytes())?;
+    if let Err(error) = write_new_file_synced(&script_path, script.as_bytes()) {
+        let _ = fs::remove_dir(&directory);
+        return Err(error);
+    }
     let task_command = format!(
         "\"{}\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\"",
         system_executable("WindowsPowerShell/v1.0/powershell.exe")?.display(),
@@ -1141,6 +1190,7 @@ async fn prepare_host_bootstrap(
     .await;
     if let Err(error) = create {
         let _ = fs::remove_file(&script_path);
+        let _ = fs::remove_dir(&directory);
         return Err(error);
     }
     Ok(Some(HostBootstrap {
@@ -1167,7 +1217,56 @@ async fn cleanup_host_bootstrap(bootstrap: &HostBootstrap) -> Result<(), String>
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("remove temporary branch script: {error}")),
     };
+    if let Some(directory) = bootstrap.script_path.parent() {
+        let _ = fs::remove_dir(directory);
+    }
     deletion.and(file_deletion)
+}
+
+/// Creates a new directory whose protected ACL grants access only to SYSTEM
+/// and Administrators; files created inside inherit it. Fails if it exists.
+#[cfg(target_os = "windows")]
+fn create_protected_directory(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES},
+        Storage::FileSystem::CreateDirectoryW,
+    };
+    let sddl = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\0".encode_utf16().collect::<Vec<_>>();
+    let wide = path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    // SAFETY: the descriptor is produced and freed here; both strings are NUL-terminated.
+    unsafe {
+        let mut descriptor = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) == 0 {
+            return Err(format!("prepare protected branch bootstrap directory: {}", io::Error::last_os_error()));
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let created = CreateDirectoryW(wide.as_ptr(), &attributes);
+        let error = io::Error::last_os_error();
+        LocalFree(descriptor);
+        if created == 0 {
+            return Err(format!("create protected branch bootstrap directory {}: {error}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn write_new_file_synced(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("create {}: {error}", path.display()))?;
+    file.write_all(contents)
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("flush {}: {error}", path.display()))
 }
 
 #[cfg(target_os = "windows")]
@@ -1306,10 +1405,40 @@ throw 'Windows did not expose a drive letter for the branch boot volume after 5 
     }
 }
 
+/// Staging folders a crash left behind. Builds take minutes, so only folders untouched for a
+/// day are removed: their disk is detached first, then only plain files inside are deleted.
+#[cfg(target_os = "windows")]
+async fn remove_stale_branch_boot_folders(program_data: &Path) {
+    let Ok(entries) = fs::read_dir(program_data) else { return };
+    for entry in entries.flatten() {
+        let ours = entry.file_name().to_str().and_then(|name| name.strip_prefix("YougoriBranchBoot-"))
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let stale = entry.metadata().ok().filter(|meta| meta.is_dir())
+            .and_then(|meta| meta.modified().ok()).and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(86_400));
+        if !ours || !stale || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let work = entry.path();
+        if detach_virtual_disk(&work.join("branch-boot.vhdx")).await.is_err() {
+            continue;
+        }
+        for file in fs::read_dir(&work).into_iter().flatten().flatten() {
+            if file.file_type().is_ok_and(|kind| kind.is_file()) {
+                let _ = fs::remove_file(file.path());
+            }
+        }
+        let _ = fs::remove_dir(&work);
+    }
+}
+
 #[cfg(target_os = "windows")]
 async fn run_diskpart(directory: &Path, name: &str, contents: &str) -> Result<(), String> {
+    if !contents.is_ascii() {
+        return Err("prepare computer branch boot disk: diskpart scripts must be ASCII".into());
+    }
     let script_path = directory.join(format!("{name}.diskpart"));
-    write_file_synced(&script_path, contents.as_bytes())?;
+    write_new_file_synced(&script_path, contents.as_bytes())?;
     let result = command_output(
         &system_executable("diskpart.exe")?,
         &["/s".into(), path_string(&script_path)],

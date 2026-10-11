@@ -4,7 +4,7 @@ export interface ProjectPreview {
   path: string
   project?: string
   error?: string
-  environments?: { name: string; type: string; image: string; cpu: number; memoryGb: number; gpu: boolean; pcAccess: number; editPc: boolean; variables: string[]; action: string }[]
+  environments?: { name: string; type: string; image: string; cpu: number; memoryGb: number; gpu: boolean; pcAccess: number; editPc: boolean; variables: string[]; action: string; pcFolders?: { path: string; target: string | null; readOnly: boolean }[]; projectFiles?: { source: string; target: string }[]; secrets?: { variable: string | null; reference: string; use?: string }[]; bootSource?: string | null }[]
   connections?: number
   publications?: number
   notice?: string
@@ -73,6 +73,8 @@ export const modelsApi = {
   stream: async (environmentId: string, messages: ChatMessage[], options: ChatOptions, onDelta: (text: string) => void, signal: AbortSignal) => {
     const { Channel, invoke, isTauri } = await import("@tauri-apps/api/core")
     if (!isTauri()) return desktop()
+    // A stop pressed while the module loaded must not start generation on the GPU.
+    if (signal.aborted) return { finishReason: "cancelled" } satisfies ChatReply
     const requestId = crypto.randomUUID()
     const onEvent = new Channel<{ delta: string }>()
     onEvent.onmessage = event => { if (!signal.aborted) onDelta(event.delta) }

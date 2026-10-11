@@ -10,8 +10,10 @@ pub fn topic(method: &str) -> &'static str {
     else if method.contains("model") || method.starts_with("market_") || method == "confidential_network_chat" { "models" }
     else if method.contains("cuda") || method.contains("gpu") { "gpu" }
     else if method.contains("settings") || method.contains("startup_report") { "settings" }
-    else if method.contains("terminal") || method.contains("window") || method.contains("execute_") || method.contains("guest_execution") || method.contains("log") { "terminal" }
+    // "_log" keeps provider catalogs out of logs; Cloudflare accounts back saved domains.
+    else if method.contains("terminal") || method.contains("window") || method.contains("execute_") || method.contains("guest_execution") || method.contains("_log") { "terminal" }
     else if method.contains("vault") { "vault" }
+    else if method.contains("cloudflare") { "deployment" }
     else if method.contains("cloud") || method.contains("runpod") { "cloud" }
     else if method.contains("publication") || method.contains("publish") || method.contains("deployment") || method.contains("project") || method.contains("domain") || method.contains("health") || method == "run_workload" { "deployment" }
     else if method.contains("connection") || method.contains("share") || method.contains("remote") { "connections" }
@@ -92,5 +94,17 @@ mod tests {
         assert_eq!(method["exampleRequiresYes"], true);
         assert_eq!(method["cliExample"].as_array().unwrap().last().unwrap(),"--yes");
         assert!(schema(&["--topic".into(), "random".into()]).is_err());
+    }
+    #[test]
+    fn methods_are_filed_by_task_not_by_accidental_substrings() {
+        for (method, expected) in [
+            ("get_environment_logs", "terminal"), ("get_environment_log_window", "terminal"), ("runpod_logs", "terminal"),
+            ("runpod_catalog", "cloud"), ("neocloud_catalog", "cloud"), ("neocloud_prices", "cloud"),
+            ("saved_cloudflare_account", "deployment"), ("forget_cloudflare_account", "deployment"), ("add_saved_domain", "deployment"),
+            ("swarm_dispatch", "bounty"),
+        ] {
+            assert_eq!(topic(method), expected, "{method}");
+        }
+        for method in catalog::methods() { assert!(TOPICS.contains(&topic(method.name)), "{}", method.name); }
     }
 }

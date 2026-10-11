@@ -12,9 +12,9 @@
 #include "migration/blocker.h"
 #include "tpm-api.h"
 
-#define TYPE_TPM_OPENDOCK "tpm-opendock"
-OBJECT_DECLARE_SIMPLE_TYPE(TPMOpenDock, TPM_OPENDOCK)
-struct TPMOpenDock {
+#define TYPE_TPM_YOUGORI "tpm-yougori"
+OBJECT_DECLARE_SIMPLE_TYPE(TPMYougori, TPM_YOUGORI)
+struct TPMYougori {
     TPMBackend parent;
     HANDLE process, job, input, output;
     char *state;
@@ -24,7 +24,7 @@ struct TPMOpenDock {
 
 #define OD_WIRE_MAGIC 0x5954504du
 
-static int od_write(TPMOpenDock *s, const void *buffer, uint32_t size)
+static int od_write(TPMYougori *s, const void *buffer, uint32_t size)
 {
     const uint8_t *bytes = buffer;
     while (size) {
@@ -36,7 +36,7 @@ static int od_write(TPMOpenDock *s, const void *buffer, uint32_t size)
     return 0;
 }
 
-static int od_read(TPMOpenDock *s, void *buffer, uint32_t size)
+static int od_read(TPMYougori *s, void *buffer, uint32_t size)
 {
     uint8_t *bytes = buffer;
     ULONGLONG deadline = GetTickCount64() + 30000;
@@ -56,7 +56,7 @@ static int od_read(TPMOpenDock *s, void *buffer, uint32_t size)
     return 0;
 }
 
-static int od_call(TPMOpenDock *s, uint32_t operation, uint32_t argument,
+static int od_call(TPMYougori *s, uint32_t operation, uint32_t argument,
                    const void *input, uint32_t input_size, void *output, uint32_t *output_size)
 {
     uint32_t request[4] = { OD_WIRE_MAGIC, operation, argument, input_size };
@@ -69,13 +69,13 @@ static int od_call(TPMOpenDock *s, uint32_t operation, uint32_t argument,
     return (int32_t)response[1];
 }
 
-static int od_spawn(TPMOpenDock *s)
+static int od_spawn(TPMYougori *s)
 {
     wchar_t path[32768] = {0};
     DWORD length = GetModuleFileNameW(NULL, path, ARRAY_SIZE(path));
     wchar_t *slash = length && length < ARRAY_SIZE(path) ? wcsrchr(path, L'\\') : NULL;
     if (!slash || slash - path > 32700) return -1;
-    wcscpy(slash + 1, L"opendock-tpm-worker.exe");
+    wcscpy(slash + 1, L"yougori-tpm-worker.exe");
     wchar_t command[32768];
     if (swprintf(command, ARRAY_SIZE(command), L"\"%ls\"", path) < 0) return -1;
     SECURITY_ATTRIBUTES security = { sizeof(security), NULL, TRUE };
@@ -135,35 +135,35 @@ static size_t od_buffer_size(TPMBackend *tb) { return OD_TPM_BUFFER; }
 static void od_cancel(TPMBackend *tb) {}
 static int od_startup(TPMBackend *tb, size_t size)
 {
-    TPMOpenDock *s = TPM_OPENDOCK(tb);
+    TPMYougori *s = TPM_YOUGORI(tb);
     return size > OD_TPM_BUFFER ? -1 : od_call(s, 2, 0, NULL, 0, NULL, NULL);
 }
 static void od_request(TPMBackend *tb, TPMBackendCmd *cmd, Error **errp)
 {
-    TPMOpenDock *s = TPM_OPENDOCK(tb);
+    TPMYougori *s = TPM_YOUGORI(tb);
     uint32_t size = cmd->out_len;
     /* TIS aliases request and response buffers. The request is sent completely
      * before reading the response; never clear that input here. */
     bool selftest = tpm_util_is_selftest(cmd->in, cmd->in_len);
     if (od_call(s, 3, cmd->locty, cmd->in, cmd->in_len, cmd->out, &size) != 0) {
         tpm_util_write_fatal_error_response(cmd->out, cmd->out_len);
-        error_setg(errp, "OpenDock TPM command failed; state was not reset");
+        error_setg(errp, "Yougori TPM command failed; state was not reset");
     } else if (selftest && tpm_cmd_get_errcode(cmd->out) == 0) {
         cmd->selftest_done = true;
     }
 }
 static TpmTypeOptions *od_options(TPMBackend *tb)
 {
-    TPMOpenDock *s = TPM_OPENDOCK(tb);
+    TPMYougori *s = TPM_YOUGORI(tb);
     TpmTypeOptions *options = g_new0(TpmTypeOptions, 1);
-    options->type = TPM_TYPE_OPENDOCK;
-    options->u.opendock.data = g_new0(TPMOpenDockOptions, 1);
-    options->u.opendock.data->state = g_strdup(s->state);
+    options->type = TPM_TYPE_YOUGORI;
+    options->u.yougori.data = g_new0(TPMYougoriOptions, 1);
+    options->u.yougori.data->state = g_strdup(s->state);
     return options;
 }
 static void od_finalize(Object *object)
 {
-    TPMOpenDock *s = TPM_OPENDOCK(object);
+    TPMYougori *s = TPM_YOUGORI(object);
     if (s->opened) od_call(s, 4, 0, NULL, 0, NULL, NULL);
     if (s->input) CloseHandle(s->input);
     if (s->output) CloseHandle(s->output);
@@ -178,14 +178,14 @@ static void od_finalize(Object *object)
 
 static TPMBackend *od_create(QemuOpts *opts)
 {
-    TPMOpenDock *s = TPM_OPENDOCK(object_new(TYPE_TPM_OPENDOCK));
+    TPMYougori *s = TPM_YOUGORI(object_new(TYPE_TPM_YOUGORI));
     s->state = g_strdup(qemu_opt_get(opts, "state"));
     if (!s->state || !*s->state) {
-        error_report("OpenDock TPM requires an explicit per-VM state file");
+        error_report("Yougori TPM requires an explicit per-VM state file");
         goto fail;
     }
     if (strlen(s->state) > 32767 || od_spawn(s)) {
-        error_report("Cannot start the bundled OpenDock TPM worker (%lu)", GetLastError());
+        error_report("Cannot start the bundled Yougori TPM worker (%lu)", GetLastError());
         goto fail;
     }
     if (od_call(s, 1, qemu_opt_get_bool(opts, "create", false), s->state, strlen(s->state), NULL, NULL) != 0) {
@@ -195,7 +195,7 @@ static TPMBackend *od_create(QemuOpts *opts)
     s->opened = true;
     /* Volatile TPM session state is not serialized. Do not offer misleading
      * RAM snapshots/migration; cold backups include the NV and UEFI state. */
-    error_setg(&s->migration_blocker, "OpenDock TPM requires a stopped-VM backup; live memory snapshots are not supported");
+    error_setg(&s->migration_blocker, "Yougori TPM requires a stopped-VM backup; live memory snapshots are not supported");
     if (migrate_add_blocker(&s->migration_blocker, &error_fatal) != 0) goto fail;
     return TPM_BACKEND(s);
 fail:
@@ -212,9 +212,9 @@ static const QemuOptDesc od_opts[] = {
 static void od_class_init(ObjectClass *klass, const void *data)
 {
     TPMBackendClass *k = TPM_BACKEND_CLASS(klass);
-    k->type = TPM_TYPE_OPENDOCK;
+    k->type = TPM_TYPE_YOUGORI;
     k->opts = od_opts;
-    k->desc = "OpenDock private TPM 2.0 (Microsoft reference core)";
+    k->desc = "Yougori private TPM 2.0 (Microsoft reference core)";
     k->create = od_create;
     k->startup_tpm = od_startup;
     k->cancel_cmd = od_cancel;
@@ -224,9 +224,9 @@ static void od_class_init(ObjectClass *klass, const void *data)
     k->handle_request = od_request;
 }
 static const TypeInfo od_info = {
-    .name = TYPE_TPM_OPENDOCK,
+    .name = TYPE_TPM_YOUGORI,
     .parent = TYPE_TPM_BACKEND,
-    .instance_size = sizeof(TPMOpenDock),
+    .instance_size = sizeof(TPMYougori),
     .instance_finalize = od_finalize,
     .class_init = od_class_init,
 };

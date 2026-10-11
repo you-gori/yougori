@@ -24,7 +24,7 @@ for (const part of ["qemu", "qemu-secure"]) {
     reachable.add(name)
     for (const dependency of files.get(name)?.imports ?? []) pending.push(dependency)
   }
-  for (const name of ["libdb-6.2.dll", "libjack64.dll", "libcrypto-3-x64.dll", "opendock-tpm.dll"]) {
+  for (const name of ["libdb-6.2.dll", "libjack64.dll", "libcrypto-3-x64.dll", "yougori-tpm.dll"]) {
     if (reachable.has(name)) throw new Error(`${part}: unexpected QEMU linkage to ${name}`)
   }
   console.log(`${part}: ${files.size} PE files inspected; QEMU has no JACK/Berkeley DB/TPM/OpenSSL import chain.`)

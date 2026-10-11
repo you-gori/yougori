@@ -28,8 +28,8 @@ import (
 
 const (
 	listenAddress    = "0.0.0.0:7443"
-	dataRoot         = "/var/lib/opendock"
-	namespace        = "opendock"
+	dataRoot         = "/var/lib/yougori"
+	namespace        = storageNamespace
 	renderNode       = "/dev/dri/renderD128"
 	containerdSocket = "/run/containerd/containerd.sock"
 )
@@ -44,6 +44,8 @@ type server struct {
 	terminals       sync.Map
 	hostShares      sync.Map
 	token           string
+	tokenMu         sync.RWMutex
+	rotatedToken    string
 	microVM         bool
 	emulated        bool
 	locks           keyedLocker
@@ -289,13 +291,16 @@ func main() {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "secrets"), 0700); err != nil {
 		log.Fatal(err)
 	}
+	releaseLegacyHostShareMounts()
 
 	s := &server{token: configuration.token, microVM: configuration.microVM, emulated: configuration.emulated}
 	if s.microVM {
+		s.rotatedToken = restoreRotatedToken(controlTokenPath, configuration.token)
 		if err := configureMicroVMFabric(); err != nil {
 			log.Printf("private networking: %v", err)
 		}
 	}
+	go s.watchRestartedContainers()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/cli/context", s.auth(method(http.MethodPost, s.configureCLI)))
 	mux.HandleFunc("/v1/fabric/attach", s.auth(method(http.MethodPost, s.attachFabric)))
@@ -308,6 +313,7 @@ func main() {
 	mux.HandleFunc("/v1/storage/reclaim", s.auth(method(http.MethodPost, s.reclaimStorage)))
 	mux.HandleFunc("/v1/storage/grow", s.auth(method(http.MethodPost, s.growStorage)))
 	mux.HandleFunc("/v1/system/exec", s.auth(method(http.MethodPost, s.systemExecute)))
+	mux.HandleFunc("/v1/system/token", s.auth(method(http.MethodPost, s.rotateControlToken)))
 	mux.HandleFunc("/v1/containers/provision", s.auth(method(http.MethodPost, s.provision)))
 	mux.HandleFunc("/v1/containers/action", s.auth(method(http.MethodPost, s.action)))
 	mux.HandleFunc("/v1/containers/delete", s.auth(method(http.MethodPost, s.deleteContainer)))
@@ -373,30 +379,30 @@ func readBootConfiguration() (bootConfiguration, error) {
 func parseBootConfiguration(commandLine string) (bootConfiguration, error) {
 	configuration := bootConfiguration{}
 	for _, field := range strings.Fields(commandLine) {
-		if strings.HasPrefix(field, "opendock.token-source=") {
-			if field != "opendock.token-source=fwcfg" || configuration.firmwareToken {
+		if strings.HasPrefix(field, "yougori.token-source=") {
+			if field != "yougori.token-source=fwcfg" || configuration.firmwareToken {
 				return bootConfiguration{}, errors.New("invalid Yougori credential source")
 			}
 			configuration.firmwareToken = true
 		}
-		if strings.HasPrefix(field, "opendock.emulated=") {
-			if field != "opendock.emulated=1" {
+		if strings.HasPrefix(field, "yougori.emulated=") {
+			if field != "yougori.emulated=1" {
 				return bootConfiguration{}, errors.New("invalid Yougori emulation marker")
 			}
 			configuration.emulated = true
 		}
-		if strings.HasPrefix(field, "opendock.time=") {
-			value, err := strconv.ParseInt(strings.TrimPrefix(field, "opendock.time="), 10, 64)
+		if strings.HasPrefix(field, "yougori.time=") {
+			value, err := strconv.ParseInt(strings.TrimPrefix(field, "yougori.time="), 10, 64)
 			if err != nil || value < 1577836800 || value > 4102444800 {
 				return bootConfiguration{}, errors.New("invalid Yougori boot time")
 			}
 			configuration.bootTime = value
 		}
-		if field == "opendock.mode=microvm" {
+		if field == "yougori.mode=microvm" {
 			configuration.microVM = true
 		}
-		if strings.HasPrefix(field, "opendock.token=") {
-			value := strings.TrimPrefix(field, "opendock.token=")
+		if strings.HasPrefix(field, "yougori.token=") {
+			value := strings.TrimPrefix(field, "yougori.token=")
 			if len(value) != 64 {
 				return bootConfiguration{}, errors.New("invalid Yougori boot token")
 			}
@@ -428,7 +434,7 @@ func method(expected string, next http.HandlerFunc) http.HandlerFunc {
 
 func (s *server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+s.token {
+		if !s.authorized(r) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -477,10 +483,16 @@ func (s *server) systemExecute(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 	if s.microVM {
+		// The host replaces a "boot" credential before running anything else.
+		credential := "boot"
+		if s.credentialRotated() {
+			credential = "rotated"
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":       "ready",
 			"runtime":      "microvm",
 			"gpuAvailable": false,
+			"credential":   credential,
 		})
 		return
 	}
@@ -572,7 +584,7 @@ func (s *server) provision(w http.ResponseWriter, r *http.Request) {
 	args := []string{
 		"--namespace", namespace, "create",
 		"--name", request.ID,
-		"--label", "opendock.managed=true",
+		"--label", managedLabel + "=true",
 		"--network", containerNetwork,
 		"--volume", displayDirectory + ":" + containerDisplayMount,
 		"--cpus", strconv.FormatFloat(request.CPUs, 'f', 2, 64),
@@ -824,8 +836,8 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 			"--namespace", namespace, "create",
 			"--pull", "never",
 			"--name", request.ID,
-			"--label", "opendock.managed=true",
-			"--label", "opendock.retained-image=" + temporaryTag,
+			"--label", managedLabel + "=true",
+			"--label", retainedImageLabel + "=" + temporaryTag,
 			"--network", containerNetwork,
 			"--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount,
 			"--cpus", strconv.FormatFloat(request.CPUs, 'f', 2, 64),
@@ -869,13 +881,13 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 
 func retainedImagePrefix(id string) string {
 	digest := sha256.Sum256([]byte(id))
-	return "opendock.local/containers:" + hex.EncodeToString(digest[:10]) + "-"
+	return imageNamePrefix + "containers:" + hex.EncodeToString(digest[:10]) + "-"
 }
 func newRetainedImageTag(id string) string {
 	return retainedImagePrefix(id) + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 func retainedContainerImage(ctx context.Context, id string) string {
-	output, err := run(ctx, "nerdctl", "--namespace", namespace, "inspect", "--format", `{{index .Config.Labels "opendock.retained-image"}}`, id)
+	output, err := run(ctx, "nerdctl", "--namespace", namespace, "inspect", "--format", `{{index .Config.Labels "`+retainedImageLabel+`"}}`, id)
 	value := strings.TrimSpace(output.Stdout)
 	suffix := strings.TrimPrefix(value, retainedImagePrefix(id))
 	if err != nil || suffix == value || suffix == "" || strings.Trim(suffix, "0123456789") != "" {
@@ -1024,7 +1036,7 @@ func (s *server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	args := []string{"--namespace", namespace, "create", "--pull", "never", "--name", temporaryID, "--label", "opendock.managed=true", "--label", "opendock.retained-image=" + retainedTag, "--network", containerNetwork, "--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount}
+	args := []string{"--namespace", namespace, "create", "--pull", "never", "--name", temporaryID, "--label", managedLabel + "=true", "--label", retainedImageLabel + "=" + retainedTag, "--network", containerNetwork, "--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount}
 	args = append(args, containerSecurityArguments()...)
 	args = append(args, containerNetworkSecurityArguments()...)
 	args = append(args, gpuArgs...)
@@ -1163,6 +1175,11 @@ func (s *server) importSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "snapshot artifact is empty")
 		return
 	}
+	if err := verifySnapshotArchive(temporary, snapshotTag(id)); err != nil {
+		_ = os.Remove(temporary)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	if _, err := run(ctx, "nerdctl", "--namespace", namespace, "load", "--input", temporary); err != nil {
@@ -1231,6 +1248,9 @@ func (s *server) removeConnection(w http.ResponseWriter, r *http.Request) {
 	if sourcePID > 0 {
 		_, _ = run(r.Context(), "nsenter", "-t", strconv.Itoa(sourcePID), "-n", "--", "ip", "link", "del", prefix+"a")
 	}
+	if err := releaseConnectionAddresses(request.ID); err != nil {
+		log.Printf("release connection address for %s: %v", request.ID, err)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"removed": request.ID})
 }
 
@@ -1270,7 +1290,7 @@ func (s *server) batchStats(w http.ResponseWriter, r *http.Request) {
 	listArgs := []string{
 		"--namespace", namespace,
 		"ps", "--all", "--no-trunc",
-		"--filter", "label=opendock.managed=true",
+		"--filter", "label=" + managedLabel + "=true",
 		"--format", "{{json .}}",
 	}
 	listOutput, err := run(ctx, "nerdctl", listArgs...)
@@ -1494,13 +1514,12 @@ func connectNamespaces(ctx context.Context, request connectionRequest) error {
 	prefix := interfacePrefix(request.ID)
 	sourceInterface := prefix + "a"
 	targetInterface := prefix + "b"
-	digest := sha256.Sum256([]byte(request.ID))
-	third := 20 + int(digest[0])%200
-	fourth := (int(digest[1]) % 62) * 4
-	sourceIP := fmt.Sprintf("10.203.%d.%d", third, fourth+1)
-	targetIP := fmt.Sprintf("10.203.%d.%d", third, fourth+2)
-
+	// Remove rules for a previous allocation before choosing the current one.
 	removeConnectionResources(ctx, request.ID, sourcePID, targetPID)
+	sourceIP, targetIP, err := allocateConnectionAddresses(request.ID)
+	if err != nil {
+		return err
+	}
 	_, _ = run(ctx, "nsenter", "-t", strconv.Itoa(sourcePID), "-n", "--", "ip", "link", "del", sourceInterface)
 	_, _ = run(ctx, "nsenter", "-t", strconv.Itoa(targetPID), "-n", "--", "ip", "link", "del", targetInterface)
 	if _, err := run(ctx, "ip", "link", "add", sourceInterface, "type", "veth", "peer", "name", targetInterface); err != nil {
@@ -1555,12 +1574,12 @@ func connectNamespaces(ctx context.Context, request connectionRequest) error {
 		}
 	}
 	if request.SharedPath {
-		if err := mountSharedPath(ctx, request.ID, sourcePID, targetPID, request.Bidirectional); err != nil {
+		if err := mountSharedPath(ctx, request.ID, request.SourceID, sourcePID, targetPID, request.Bidirectional); err != nil {
 			return err
 		}
 	}
 	if request.AllowSecrets {
-		if err := mountSecretPath(ctx, request.ID, sourcePID, targetPID, request.Bidirectional); err != nil {
+		if err := mountSecretPath(ctx, request.ID, request.SourceID, sourcePID, targetPID, request.Bidirectional); err != nil {
 			return err
 		}
 	}
@@ -1600,11 +1619,7 @@ func installConnectionFirewall(ctx context.Context, pid int, destination, chain 
 }
 
 func removeConnectionResources(ctx context.Context, id string, sourcePID, targetPID int) {
-	digest := sha256.Sum256([]byte(id))
-	third := 20 + int(digest[0])%200
-	fourth := (int(digest[1]) % 62) * 4
-	sourceIP := fmt.Sprintf("10.203.%d.%d", third, fourth+1)
-	targetIP := fmt.Sprintf("10.203.%d.%d", third, fourth+2)
+	sourceIP, targetIP := connectionAddresses(id)
 	for _, values := range []struct {
 		pid         int
 		destination string
@@ -1616,8 +1631,8 @@ func removeConnectionResources(ctx context.Context, id string, sourcePID, target
 		_, _ = namespaceIptables(ctx, values.pid, "-D", "OUTPUT", "-d", values.destination, "-j", values.chain)
 		_, _ = namespaceIptables(ctx, values.pid, "-F", values.chain)
 		_, _ = namespaceIptables(ctx, values.pid, "-X", values.chain)
-		for _, target := range []string{"/opendock/shared/" + id, "/opendock/secrets/" + id} {
-			_, _ = run(ctx, "opendock-mount-helper", strconv.Itoa(values.pid), "--unmount", target)
+		for _, target := range []string{"/yougori/shared/" + id, "/yougori/secrets/" + id} {
+			_, _ = run(ctx, "yougori-mount-helper", strconv.Itoa(values.pid), "--unmount", target)
 		}
 		_ = removeHostEntry(values.pid, id)
 	}
@@ -1629,19 +1644,28 @@ func firewallChain(id, suffix string) string {
 }
 
 func setHostEntry(pid int, id, address, name string) error {
-	return changeHostEntry(pid, id, fmt.Sprintf("%s %s # opendock:%s", address, name, id))
+	return changeHostEntry(pid, id, fmt.Sprintf("%s %s # yougori:%s", address, name, id))
 }
 
 func removeHostEntry(pid int, id string) error {
 	return changeHostEntry(pid, id, "")
 }
 
-func mountSharedPath(ctx context.Context, id string, sourcePID, targetPID int, bidirectional bool) error {
+// Connection folders are writable by containers but outside their writable
+// layers; they count toward the source environment's storage limit.
+func chargeConnectionStorage(directory, sourceID string) {
+	if err := chargeOwnedStorage(directory, sourceID); err != nil {
+		log.Printf("limit connection storage %s: %v", filepath.Base(directory), err)
+	}
+}
+
+func mountSharedPath(ctx context.Context, id, sourceID string, sourcePID, targetPID int, bidirectional bool) error {
 	share := filepath.Join(dataRoot, "shares", id)
 	if err := os.MkdirAll(share, 0700); err != nil {
 		return err
 	}
-	target := "/opendock/shared/" + id
+	chargeConnectionStorage(share, sourceID)
+	target := "/yougori/shared/" + id
 	for _, container := range []struct {
 		pid      int
 		readOnly bool
@@ -1659,19 +1683,20 @@ func mountSharedPath(ctx context.Context, id string, sourcePID, targetPID int, b
 // Keep the appliance's historical mount target for existing disks while
 // exposing the product path immediately in each connected guest.
 func ensureYougoriSharedAlias(pid int) error {
-	output, err := run(context.Background(), "opendock-mount-helper", strconv.Itoa(pid), "--shared-alias")
+	output, err := run(context.Background(), "yougori-mount-helper", strconv.Itoa(pid), "--shared-alias")
 	if err != nil {
 		return fmt.Errorf("create environment shared alias: %w (%s)", err, strings.TrimSpace(output.Stderr))
 	}
 	return err
 }
 
-func mountSecretPath(ctx context.Context, id string, sourcePID, targetPID int, bidirectional bool) error {
+func mountSecretPath(ctx context.Context, id, sourceID string, sourcePID, targetPID int, bidirectional bool) error {
 	secret := filepath.Join(dataRoot, "secrets", id)
 	if err := os.MkdirAll(secret, 0700); err != nil {
 		return err
 	}
-	target := "/opendock/secrets/" + id
+	chargeConnectionStorage(secret, sourceID)
+	target := "/yougori/secrets/" + id
 	for _, container := range []struct {
 		pid      int
 		readOnly bool
@@ -1686,7 +1711,7 @@ func mountSecretPath(ctx context.Context, id string, sourcePID, targetPID int, b
 func bindMountIntoNamespace(source, destination string, pid int, readOnly bool) error {
 	output, err := run(
 		context.Background(),
-		"opendock-mount-helper",
+		"yougori-mount-helper",
 		strconv.Itoa(pid),
 		source,
 		destination,
@@ -1751,7 +1776,7 @@ fi`
 	if _, err := namespaceIptables(ctx, pid, "-A", chain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"); err != nil {
 		return err
 	}
-	for _, nameserver := range containerNameservers(pid) {
+	for _, nameserver := range trustedNameservers() {
 		for _, protocol := range []string{"udp", "tcp"} {
 			if _, err := namespaceIptables(ctx, pid, "-A", chain, "-d", nameserver, "-p", protocol, "--dport", "53", "-j", "ACCEPT"); err != nil {
 				return err
@@ -1789,18 +1814,36 @@ fi`
 	return err
 }
 
-func containerNameservers(pid int) []string {
-	contents, err := readContainerConfig(pid, "etc/resolv.conf")
+// DNS may pass the private-network block only for the resolvers configured for
+// the appliance itself. Containers derive their resolv.conf from this file, but
+// a workload can rewrite its own copy to open port 53 on the host or the LAN.
+const trustedResolverConfig = "/etc/resolv.conf"
+
+func trustedNameservers() []string {
+	contents, err := os.ReadFile(trustedResolverConfig)
 	if err != nil {
 		return nil
 	}
+	return parseNameservers(string(contents))
+}
+
+func parseNameservers(contents string) []string {
 	var nameservers []string
-	for _, line := range strings.Split(string(contents), "\n") {
+	seen := map[string]bool{}
+	for _, line := range strings.Split(contents, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[0] == "nameserver" {
-			if address := net.ParseIP(fields[1]); address != nil && address.To4() != nil {
-				nameservers = append(nameservers, address.To4().String())
-			}
+		if len(fields) != 2 || fields[0] != "nameserver" {
+			continue
+		}
+		address := net.ParseIP(fields[1]).To4()
+		// A loopback resolver is never reachable from a container namespace.
+		if address == nil || address.IsLoopback() || address.IsUnspecified() || address.IsMulticast() || seen[address.String()] {
+			continue
+		}
+		seen[address.String()] = true
+		nameservers = append(nameservers, address.String())
+		if len(nameservers) == 3 {
+			break
 		}
 	}
 	return nameservers
@@ -1824,7 +1867,7 @@ func interfacePrefix(id string) string {
 }
 
 func snapshotTag(id string) string {
-	return "opendock.local/snapshots:" + strings.ToLower(id)
+	return imageNamePrefix + "snapshots:" + strings.ToLower(id)
 }
 
 func fileSHA256(path string) (string, error) {
@@ -1887,11 +1930,55 @@ func runAllowExit(ctx context.Context, program string, args ...string) (commandO
 	return runAllowExitProgress(ctx, nil, program, args...)
 }
 
+// Guest commands control how much they print. Keep only the most recent output
+// of each stream, where errors and final results appear, so an endless writer
+// cannot exhaust the appliance's memory.
+const commandOutputLimit = 8 << 20
+
+type boundedOutput struct {
+	data    []byte
+	dropped uint64
+}
+
+func (output *boundedOutput) Write(data []byte) (int, error) {
+	n := len(data)
+	if n >= commandOutputLimit {
+		output.dropped += uint64(len(output.data) + n - commandOutputLimit)
+		output.data = append(output.data[:0], data[n-commandOutputLimit:]...)
+		return n, nil
+	}
+	// Trim in batches so a chatty command does not copy the window per write.
+	if len(output.data)+n > 2*commandOutputLimit {
+		excess := len(output.data) + n - commandOutputLimit
+		output.dropped += uint64(excess)
+		output.data = append(output.data[:0], output.data[excess:]...)
+	}
+	if len(output.data)+n > cap(output.data) {
+		grown := make([]byte, len(output.data), min(max(2*cap(output.data), len(output.data)+n), 2*commandOutputLimit))
+		copy(grown, output.data)
+		output.data = grown
+	}
+	output.data = append(output.data, data...)
+	return n, nil
+}
+
+func (output *boundedOutput) String() string {
+	data, dropped := output.data, output.dropped
+	if len(data) > commandOutputLimit {
+		dropped += uint64(len(data) - commandOutputLimit)
+		data = data[len(data)-commandOutputLimit:]
+	}
+	if dropped == 0 {
+		return string(data)
+	}
+	return fmt.Sprintf("[%d earlier bytes of output omitted]\n", dropped) + string(data)
+}
+
 func runAllowExitProgress(ctx context.Context, progress io.Writer, program string, args ...string) (commandOutput, error) {
 	command := exec.CommandContext(ctx, program, args...)
 	command.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	var stdout boundedOutput
+	var stderr boundedOutput
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if progress != nil {

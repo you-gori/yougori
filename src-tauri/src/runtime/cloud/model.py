@@ -130,7 +130,10 @@ def request(action, body):
         hf_token = body.get('hfToken')
         if hf_token is not None and (not isinstance(hf_token, str) or not 1 <= len(hf_token) <= 1024 or any(char in hf_token for char in '\r\n\0')):
             raise ValueError('Invalid protected Hugging Face token; value withheld')
-        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'revision':revision, 'hfToken':hf_token, 'format':model_format}))]:
+        admin_token = body.get('adminToken')
+        if admin_token is not None and (not isinstance(admin_token, str) or not re.fullmatch(r'[a-f0-9]{64}', admin_token)):
+            raise ValueError('Invalid model configuration')
+        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format}))]:
             path = root / name
             with open(path, 'w', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
                 file.write(data)
@@ -151,6 +154,8 @@ if config.get('revision'):
     os.environ['YOUGORI_MODEL_REVISION']=config['revision']
 if config.get('hfToken'):
     os.environ['HF_TOKEN']=config['hfToken']
+if config.get('adminToken'):
+    os.environ['YOUGORI_MODEL_ADMIN_TOKEN']=config['adminToken']
 (root / 'cache').mkdir(exist_ok=True)
 os.execv(str(python), [str(python), '-u', str(root / 'server.py')])
 '''

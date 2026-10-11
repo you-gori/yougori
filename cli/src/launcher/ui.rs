@@ -443,6 +443,8 @@ enum Item {
     Task(TaskState),
     Lines(Vec<String>),
     Dash(Box<Dash>),
+    /// Drawn from the caller's own state on every tick; see [`scene`].
+    Scene(Box<dyn Fn(usize, usize, Instant) -> Vec<String> + Send>),
 }
 
 struct Painter {
@@ -498,7 +500,7 @@ impl Painter {
         self.last.clear();
     }
 
-    fn render(&self, columns: usize) -> Vec<String> {
+    fn render(&self, columns: usize, rows: usize) -> Vec<String> {
         let now = Instant::now();
         let mut lines = Vec::new();
         // The footer always sits at the bottom, under anything opened after it.
@@ -523,6 +525,7 @@ impl Painter {
                 }
                 Item::Lines(item) => lines.extend(item.iter().cloned()),
                 Item::Dash(dash) => lines.extend(dash.render(columns, self.tick, now)),
+                Item::Scene(scene) => lines.extend(scene(columns, rows, now)),
             }
         }
         lines
@@ -534,7 +537,7 @@ impl Painter {
         }
         let (columns, rows) = size();
         let mut lines = if self.line_start {
-            self.render(columns)
+            self.render(columns, rows)
         } else {
             Vec::new()
         };
@@ -1134,6 +1137,41 @@ impl Drop for Block {
     fn drop(&mut self) {
         finish(self.id, Vec::new());
     }
+}
+
+/// A live view painted by `render(columns, rows, now)` on every animation tick, under the
+/// finished lines. `render` runs with the painter locked, so it must not call this module.
+pub struct Scene {
+    id: u64,
+}
+
+pub fn scene(render: impl Fn(usize, usize, Instant) -> Vec<String> + Send + 'static) -> Scene {
+    Scene {
+        id: add(Item::Scene(Box::new(render))),
+    }
+}
+
+impl Scene {
+    /// Paints the latest state now instead of at the next tick.
+    pub fn redraw(&self) {
+        update(self.id, |_| {});
+    }
+}
+
+impl Drop for Scene {
+    fn drop(&mut self) {
+        finish(self.id, Vec::new());
+    }
+}
+
+/// Whether live views may move: off in CI and with YOUGORI_NO_ANIMATION.
+pub fn animate() -> bool {
+    caps().animate
+}
+
+/// Cuts text to `max` columns, keeping colours intact.
+pub fn clip(text: &str, max: usize) -> String {
+    fit(text, max)
 }
 
 /// Greedy word wrap of one paragraph. Each row comes with the bytes of `text` it used,

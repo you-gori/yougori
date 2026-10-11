@@ -11,7 +11,8 @@ const sourcePath = resolve("src-tauri/src/workspace/install-tools.sh")
 const script = readFileSync(sourcePath, "utf8").replaceAll("\r\n", "\n")
 const unixPath = (path: string) => path.replaceAll("\\", "/").replace(/^([A-Z]):/i, (_, drive: string) => "/" + drive.toLowerCase())
 
-describe("automatic coding-tool installation", () => {
+// Each case runs the real installer script in a shell; process start-up is slow under a loaded run.
+describe("automatic coding-tool installation", { timeout: 30_000 }, () => {
   it("offers OpenClaw in the shared menu catalog and both CLI installer methods", () => {
     expect(terminalInstallers.find(tool => tool.id === "openclaw")).toMatchObject({ name: "OpenClaw", docs: "https://docs.openclaw.ai/install" })
     const catalog = readFileSync(resolve("cli/src/catalog.rs"), "utf8")

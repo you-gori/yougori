@@ -26,6 +26,12 @@ func (s *server) microWorkload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "requires a dedicated microVM")
 		return
 	}
+	// The workload can read the boot credential from /proc/cmdline. It must
+	// already be retired before any workload process exists.
+	if !s.credentialRotated() {
+		writeError(w, 409, "replace the microVM control credential before starting its workload")
+		return
+	}
 	var q microWorkload
 	if !decodeRequest(w, r, &q) {
 		return

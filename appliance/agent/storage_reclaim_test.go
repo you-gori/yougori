@@ -20,7 +20,7 @@ func TestStorageReclaimPreservesImagesAndChecksBusy(t *testing.T) {
 		if result.Busy != busy || len(result.Warnings) != 0 {
 			t.Fatal(result)
 		}
-		if !reflect.DeepEqual(calls, [][]string{{"nerdctl", "--namespace", "opendock", "ps", "--quiet"}, {"/private/agent", "--trim-storage"}}) {
+		if !reflect.DeepEqual(calls, [][]string{{"nerdctl", "--namespace", namespace, "ps", "--quiet"}, {"/private/agent", "--trim-storage"}}) {
 			t.Fatal(calls)
 		}
 	}

@@ -11,6 +11,22 @@ use std::{
 
 static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// runpodctl receives the full-account API key, so Yougori installs one reviewed release
+/// instead of whatever is newest. Digests come from the release's published checksums file and
+/// match GitHub's asset digests. Adopt a newer release only by reviewing it and updating this pin.
+const RUNPOD_RELEASE: &str = "v2.14.0";
+const RUNPOD_ARCHIVES: [(&str, &str); 5] = [
+    ("runpodctl-windows-amd64.zip", "1f820abecd2163dcd0f04aae030bc8268cb1b1457f2aa8d3f7f25b95b33f38a6"),
+    ("runpodctl-windows-arm64.zip", "9f3d29295a7fc7521686806988f1de337b4d9cdd2a7e56546c09941193ce7a34"),
+    ("runpodctl-linux-amd64.tar.gz", "0ee710db29637882abe1d5006a0e84b985bb1229b974d49d9b969a68fbdff665"),
+    ("runpodctl-linux-arm64.tar.gz", "784eddee6b5384917ddbfc3d2a7200dc43014767d710fcbc37c0325084c11b5c"),
+    ("runpodctl-darwin-all.tar.gz", "c67e7badc4af1b99dabbd795bc6e7e3270a85d3898e42681c782169e48029a87"),
+];
+
+fn pinned_release(provider: &str) -> Option<(&'static str, &'static [(&'static str, &'static str)])> {
+    (provider == "runpod").then_some((RUNPOD_RELEASE, &RUNPOD_ARCHIVES[..]))
+}
+
 fn root() -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
@@ -67,7 +83,17 @@ pub(super) fn installed_program(provider: &str) -> Option<PathBuf> {
         };
         return path.is_file().then_some(path);
     }
-    managed_path(provider).ok().filter(|path| path.is_file())
+    managed_path(provider).ok().filter(|path| path.is_file()).filter(|path| match pinned_release(provider) {
+        // A copy from before pinning, or of another release, counts as absent so that
+        // connecting installs the reviewed release.
+        Some((tag, _)) => std::fs::read_to_string(release_marker(path)).is_ok_and(|text| text.trim() == tag),
+        None => true,
+    })
+}
+
+/// Records which reviewed release a pinned CLI was installed from.
+fn release_marker(executable: &Path) -> PathBuf {
+    executable.with_extension("release")
 }
 
 pub(crate) fn managed_cli_dirs() -> Vec<PathBuf> {
@@ -240,10 +266,12 @@ async fn github_binary(provider: &str) -> Result<(), String> {
         .timeout(Duration::from_secs(90))
         .build()
         .map_err(|e| e.to_string())?;
+    let pinned = pinned_release(provider);
     let release: Value = client
-        .get(format!(
-            "https://api.github.com/repos/{repo}/releases/latest"
-        ))
+        .get(match pinned {
+            Some((tag, _)) => format!("https://api.github.com/repos/{repo}/releases/tags/{tag}"),
+            None => format!("https://api.github.com/repos/{repo}/releases/latest"),
+        })
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -264,11 +292,18 @@ async fn github_binary(provider: &str) -> Result<(), String> {
         .as_str()
         .filter(|url| url.starts_with(&format!("https://github.com/{repo}/releases/download/")))
         .ok_or("Provider release URL is invalid")?;
-    let digest = asset["digest"]
-        .as_str()
-        .and_then(|value| value.strip_prefix("sha256:"))
-        .filter(|value| value.len() == 64)
-        .ok_or("Provider release has no SHA-256 digest")?;
+    let digest = match pinned {
+        Some((_, archives)) => archives
+            .iter()
+            .find(|(name, _)| *name == asset_name)
+            .map(|(_, digest)| *digest)
+            .ok_or("This computer has no reviewed build of the provider CLI")?,
+        None => asset["digest"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("sha256:"))
+            .filter(|value| value.len() == 64)
+            .ok_or("Provider release has no SHA-256 digest")?,
+    };
     if asset["size"].as_u64().unwrap_or(u64::MAX) > 80 * 1024 * 1024 {
         return Err("Provider CLI archive is too large".into());
     }
@@ -288,7 +323,11 @@ async fn github_binary(provider: &str) -> Result<(), String> {
     let executable = executable_name(provider)?;
     let target = managed_path(provider)?;
     tokio::task::spawn_blocking(move || {
-        unpack_executable(&bytes, &asset_name, &executable, &target)
+        unpack_executable(&bytes, &asset_name, &executable, &target)?;
+        if let Some((tag, _)) = pinned {
+            std::fs::write(release_marker(&target), tag).map_err(|e| format!("Cannot record the CLI release: {e}"))?;
+        }
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -433,6 +472,13 @@ mod tests {
                 assert!(managed_path(id).is_ok());
             }
         }
+    }
+    #[test]
+    fn runpod_installs_only_its_reviewed_release_for_this_computer() {
+        let (tag, archives) = pinned_release("runpod").unwrap();
+        let (_, asset) = archive_asset("runpod", tag).unwrap();
+        assert!(archives.iter().any(|(name, digest)| *name == asset && digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())));
+        assert!(pinned_release("crusoe").is_none());
     }
     #[test]
     fn archive_extraction_selects_only_the_expected_executable() {

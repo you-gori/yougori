@@ -147,7 +147,39 @@ pub struct Live {
     remote_directories: std::collections::BTreeSet<String>,
     folder_conflicts: std::collections::BTreeSet<String>,
     pub env_files: bool,
+    /// Path identities left untouched by the current two-way pass.
+    held: std::collections::BTreeSet<String>,
+    /// Warnings already shown in this session.
+    warned: std::collections::BTreeSet<String>,
+    /// Container change stamp and checksum of each file from the previous pass.
+    remote_stamps: std::collections::BTreeMap<String, (String, String)>,
+    view: Option<View>,
 }
+
+/// The running dev-server view while `watch` is active. Sync passes keep its log
+/// flowing and notice Ctrl+C or q instead of freezing it.
+struct View {
+    display: Stream,
+    log: Vec<u8>,
+    /// Dev-server markers and keys read during a sync pass, handled after it.
+    events: Vec<String>,
+    input: Vec<Event>,
+    interactive: bool,
+    quit: bool,
+    ended: bool,
+    pumped: Instant,
+}
+
+impl View {
+    fn record(&mut self, output: &[u8]) {
+        self.log.extend_from_slice(output);
+        if self.log.len() > 96 * 1024 {
+            self.log.drain(..self.log.len() - 64 * 1024);
+        }
+    }
+}
+
+const STOPPED: &str = "Sync stopped because the project launcher is closing";
 
 pub(super) fn container_command(container: Option<&str>, command: &str, terminal: bool) -> String {
     match container {
@@ -412,7 +444,47 @@ impl Live {
             remote_directories: Default::default(),
             folder_conflicts: Default::default(),
             env_files: false,
+            held: Default::default(),
+            warned: Default::default(),
+            remote_stamps: Default::default(),
+            view: None,
         })
+    }
+
+    /// Shows dev-server output and reads keys during a long sync pass, at most every
+    /// 100 ms. Ctrl+C or q stops the pass so the launcher can close.
+    pub(super) async fn pump(&mut self) -> Result<(), String> {
+        let Some(view) = self.view.as_mut() else { return Ok(()) };
+        if view.quit {
+            return Err(STOPPED.into());
+        }
+        if view.pumped.elapsed() < Duration::from_millis(100) {
+            return Ok(());
+        }
+        view.pumped = Instant::now();
+        if let Some(dev) = self.dev.as_mut().filter(|_| !view.ended) {
+            let result = dev.action("read", json!({"offset":dev.offset})).await?;
+            dev.offset = result["offset"].as_u64().unwrap_or(dev.offset);
+            let data = B64.decode(result["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
+            let (output, events) = view.display.feed(&data);
+            ui::write(&output);
+            view.record(&output);
+            view.events.extend(events);
+            view.ended = result["done"] == true;
+        }
+        while view.interactive && event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+            let event = event::read().map_err(|e| e.to_string())?;
+            if let Event::Key(key) = &event {
+                let shortcut = ui::footer_visible() && key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
+                let interrupt = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+                if key.kind != KeyEventKind::Release && (interrupt || (shortcut && key.code == KeyCode::Char('q'))) {
+                    view.quit = true;
+                    return Err(STOPPED.into());
+                }
+            }
+            view.input.push(event);
+        }
+        Ok(())
     }
 
     /// Sends the files that differ from the container's copy; returns how many changed.
@@ -421,7 +493,9 @@ impl Live {
         self.database_files.extend(self.saved.databases.keys().cloned());
         let (mut changed, mut removed) = self.saved.changes(&manifest);
         changed.retain(|p| !sync::database_member(p, &self.database_files));
-        removed.retain(|p| !sync::database_member(p, &self.database_files));
+        // Links are not followed. A folder replaced by a link keeps the container's
+        // earlier copy rather than deleting it there.
+        removed.retain(|p| !sync::database_member(p, &self.database_files) && !sync::under_link(&self.folder, p));
         self.saved.pending.retain(|p| !sync::database_member(p, &self.database_files));
         self.keep_remote_links(&mut changed, &mut removed).await?;
         let total = (changed.len() + removed.len()) as u64;
@@ -460,6 +534,7 @@ impl Live {
             self.receiver.barrier().await?;
             completed += 1;
             if let Some(progress) = &progress { progress.progress("Syncing files", completed, total, "files"); }
+            self.pump().await?;
         }
         for path in &changed {
             if let Some(progress) = &progress { progress.detail(&clean(path)); }
@@ -477,6 +552,7 @@ impl Live {
             self.receiver.barrier().await?;
             completed += 1;
             if let Some(progress) = &progress { progress.progress("Syncing files", completed, total, "files"); }
+            self.pump().await?;
         }
         if let Some(progress) = progress { progress.clear(); }
         if copied_dependencies {
@@ -582,11 +658,39 @@ impl Live {
         gpu: bool,
         cancel: &AtomicBool,
     ) -> Result<(), String> {
+        // No alternate screen: normal terminal scrollback keeps the full development log.
+        let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+        self.view = Some(View {
+            display: Stream::new(&self.nonce, Some((self.app_port, local_port)), ui::color()),
+            // This attempt's output, so a failure is explained from what it printed.
+            log: Vec::new(),
+            events: Vec::new(),
+            input: Vec::new(),
+            interactive,
+            quit: false,
+            ended: false,
+            pumped: Instant::now(),
+        });
+        let result = self.watching(name, local_port, env_files, two_way, continuous_sync, gpu, cancel, interactive).await;
+        self.view = None;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn watching(
+        &mut self,
+        name: &str,
+        local_port: u16,
+        env_files: bool,
+        two_way: bool,
+        continuous_sync: bool,
+        gpu: bool,
+        cancel: &AtomicBool,
+        interactive: bool,
+    ) -> Result<(), String> {
         let mut startup = StartupProgress::new();
         let mut attempt = 1;
         let mut failure_summary = String::new();
-        // This attempt's output, so a failure is explained from what it printed.
-        let mut log: Vec<u8> = Vec::new();
         let mut served = false;
         let project = package::Project::load(&self.folder).ok();
         let command = self.custom_command.clone().or_else(|| project.as_ref().map(package::Project::command_label)).unwrap_or_default();
@@ -601,9 +705,6 @@ impl Live {
             watcher.watch(&self.folder, notify::RecursiveMode::Recursive).map_err(|e| e.to_string())?;
             Some(watcher)
         } else { None };
-        let mut display = Stream::new(&self.nonce, Some((self.app_port, local_port)), ui::color());
-        // No alternate screen: normal terminal scrollback keeps the full development log.
-        let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
         let _raw = if interactive {
             Some(ui::Raw::on()?)
         } else {
@@ -647,7 +748,7 @@ impl Live {
         let mut dirty = false;
         let mut restarted: Option<Instant> = None;
         loop {
-            if cancel.load(Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) || self.view.as_ref().is_some_and(|view| view.quit) {
                 return Ok(());
             }
             let dev = self.dev.as_mut().ok_or("Missing development terminal")?;
@@ -656,12 +757,14 @@ impl Live {
             let data = B64
                 .decode(result["data"].as_str().unwrap_or(""))
                 .map_err(|e| e.to_string())?;
-            let (output, events) = display.feed(&data);
+            let view = self.view.as_mut().ok_or("Missing project view")?;
+            let (output, fresh) = view.display.feed(&data);
             ui::write(&output);
-            log.extend_from_slice(&output);
-            if log.len() > 96 * 1024 {
-                log.drain(..log.len() - 64 * 1024);
-            }
+            view.record(&output);
+            // Markers read while a sync pass ran come first.
+            let mut events = std::mem::take(&mut view.events);
+            events.extend(fresh);
+            let ended = view.ended || result["done"] == true;
             let stopped = |attempt: u8| if attempt > 1 { format!("stopped after {attempt} attempts") } else { "stopped".to_owned() };
             for event in events {
                 match event.as_str() {
@@ -669,7 +772,8 @@ impl Live {
                         if let Some((summary, mut details)) = failure_details(event) {
                             ui::warn(&summary);
                             let context = diagnose::Context { root: &self.folder, env_files, node, change: change_command };
-                            let causes = diagnose::explain(&String::from_utf8_lossy(&log), &context);
+                            let log = self.view.as_ref().map(|view| String::from_utf8_lossy(&view.log).into_owned()).unwrap_or_default();
+                            let causes = diagnose::explain(&log, &context);
                             // Specific causes replace the generic reason; memory findings stay.
                             if !causes.is_empty() && event.split(':').nth(3) == Some("exit") {
                                 details.remove(0);
@@ -683,7 +787,7 @@ impl Live {
                     }
                     event if event.starts_with("attempt:") => {
                         attempt = event[8..].parse::<u8>().unwrap_or(1).clamp(1, 2);
-                        log.clear();
+                        if let Some(view) = self.view.as_mut() { view.log.clear(); }
                         served = false;
                     }
                     event if event == "installing" || event.starts_with("installing:") => {
@@ -752,7 +856,7 @@ impl Live {
                     _ => {}
                 }
             }
-            if result["done"] == true {
+            if ended {
                 return Err("The project supervisor exited. Run yougori launch again.".into());
             }
             for event in rx.try_iter() {
@@ -782,6 +886,7 @@ impl Live {
                     match self.sync_both(env_files).await {
                         Ok(count) if count > 0 => { ui::dash(|d| d.note(&format!("Two-way sync · {count} file changes"))); }
                         Ok(_) => {},
+                        Err(_) if self.view.as_ref().is_some_and(|view| view.quit) => return Ok(()),
                         Err(error) => {
                             let message = format!("Two-way sync paused: {}", clean(&error));
                             if self.conflicts.insert(message.clone()) { ui::warn(&message); }
@@ -801,6 +906,7 @@ impl Live {
                             });
                             }
                         }
+                        Err(_) if self.view.as_ref().is_some_and(|view| view.quit) => return Ok(()),
                         Err(error) => {
                             let message = format!("File sync will retry: {}", clean(&error));
                             if self.conflicts.insert(message.clone()) { ui::warn(&message); }
@@ -811,8 +917,12 @@ impl Live {
                 checked = Instant::now();
                 dirty = false;
             }
+            let mut input = self.view.as_mut().map(|view| std::mem::take(&mut view.input)).unwrap_or_default();
             while interactive && event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
-                match event::read().map_err(|e| e.to_string())? {
+                input.push(event::read().map_err(|e| e.to_string())?);
+            }
+            for event in input {
+                match event {
                     Event::Key(k) if k.kind != KeyEventKind::Release => {
                         if k.code == KeyCode::Char('c')
                             && k.modifiers.contains(KeyModifiers::CONTROL)

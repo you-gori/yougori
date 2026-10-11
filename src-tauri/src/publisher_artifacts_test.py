@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("YOUGORI_MODEL", "owner/tiny")
 os.environ.setdefault("YOUGORI_MODEL_TOKEN", "private-test-token")
+os.environ.setdefault("YOUGORI_MODEL_ADMIN_TOKEN", "private-admin-token")
 os.environ["YOUGORI_PUBLISHER_SOURCE"] = base64.b64encode(zlib.compress((Path(__file__).parent / "model_runner/publisher_artifacts.py").read_bytes())).decode()
 import model_server as model
 
@@ -52,8 +53,10 @@ class PublisherTests(unittest.TestCase):
         payload = {"scope": scope, "revision": self.manifest["artifactRevision"], "exp": int(time.time()) + 300, **fields}
         value = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
         return value + "." + hmac.new(model.TOKEN.encode(), value.encode(), hashlib.sha256).hexdigest()
-    def request(self, path, owner=False, body=None):
-        request = urllib.request.Request(self.base + path, data=None if body is None else json.dumps(body).encode(), headers={"Authorization": "Bearer " + model.TOKEN} if owner else {})
+    def request(self, path, owner=False, body=None, admin=False):
+        headers = {"Authorization": "Bearer " + model.TOKEN} if owner else {}
+        if admin: headers["X-Yougori-Admin"] = model.ADMIN_TOKEN
+        request = urllib.request.Request(self.base + path, data=None if body is None else json.dumps(body).encode(), headers=headers)
         try:
             with urllib.request.urlopen(request) as response:
                 return response.status, response.read()
@@ -122,10 +125,13 @@ class PublisherTests(unittest.TestCase):
     def test_closed_transition_immediately_revokes_existing_grants_without_reloading(self):
         grant = self.cap("bundle")
         self.assertEqual(self.request("/v1/yougori/publishing", body={"downloads": False})[0], 401)
-        self.assertEqual(self.request("/v1/yougori/publishing", owner=True, body={"downloads": False})[0], 200)
+        # The API key shared with the gateway and apps cannot open or close downloads.
+        self.assertEqual(self.request("/v1/yougori/publishing", owner=True, body={"downloads": False})[0], 403)
+        self.assertEqual(self.request("/v1/yougori/bundle?grant=" + grant)[0], 200)
+        self.assertEqual(self.request("/v1/yougori/publishing", owner=True, admin=True, body={"downloads": False})[0], 200)
         self.assertEqual(self.request("/v1/yougori/bundle?grant=" + grant)[0], 403)
         self.assertEqual(model.STATE["status"], "ready")
-        self.request("/v1/yougori/publishing", owner=True, body={"downloads": True})
+        self.request("/v1/yougori/publishing", owner=True, admin=True, body={"downloads": True})
         self.assertEqual(self.request("/v1/yougori/artifacts", owner=True)[0], 200)
     def test_changed_files_are_not_served_under_the_old_manifest(self):
         (Path(self.folder.name) / "model.safetensors").write_bytes(b"changed")

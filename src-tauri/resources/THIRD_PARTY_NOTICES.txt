@@ -3,10 +3,9 @@
 Yougori distributes third-party runtime components, including a locally modified
 secure QEMU runtime. Copyright remains with each component's authors. The
 AGPL-3.0-only license applies to original Yougori code except where a
-separate license notice applies. Yougori LLC separately offers paid commercial
-licenses for rights it can grant. Neither route relicenses third-party code or
-overrides any component's own license. Existing OpenDock names in upstream or project notices
-are retained as historical attribution.
+separate license notice applies. Its copyright holders may separately offer paid
+commercial licenses for rights they can grant. Neither route relicenses third-party code or
+overrides any component's own license.
 
 The links below identify upstream projects and source locations. They are not,
 by themselves, a complete corresponding-source distribution or a written source
@@ -115,9 +114,8 @@ The VMA notice is retained separately for the replaced package version.
   That directory also includes `AUTHORS`, package metadata, and the license
   texts in `docs/LICENSE*`. These sources may be used, modified, and
   redistributed under their own licenses, independently of Yougori's license.
-- `scripts/patch-novnc.mjs` removes a historical viewport extension when present;
-  fresh installations use upstream noVNC. The packaged sources reflect the
-  package after this build preparation step.
+- `scripts/patch-novnc.mjs` stops the build if a historical viewport extension is
+  still installed, so the packaged noVNC is the unmodified upstream package.
 
 ## Embedded Linux appliance
 

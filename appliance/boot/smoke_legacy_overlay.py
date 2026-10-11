@@ -33,7 +33,12 @@ VENDOR_FILES = (
     "usr/local/libexec/cni/host-local", "usr/local/libexec/cni/loopback",
     "usr/local/libexec/cni/portmap", "usr/local/libexec/cni/tuning",
 )
-BOOT_EXECUTABLES = ("usr/local/sbin/opendock-agent", "usr/local/sbin/opendock-mount-helper")
+BOOT_EXECUTABLES = ("usr/local/sbin/yougori-agent", "usr/local/sbin/yougori-mount-helper")
+# The previous release predates the rename to Yougori. Its boot settings and data path
+# use the old product name, and containerd keeps environments in a namespace that
+# cannot be renamed (see appliance/agent/legacy_names.go).
+LEGACY = "opendock"
+STORAGE_NAMESPACE = LEGACY
 
 
 def trusted_boot_executables(initramfs):
@@ -164,6 +169,7 @@ class ProjectFiles(BaseHTTPRequestHandler):
 
 class VM:
     def __init__(self, args, media, stage):
+        product = LEGACY if stage == "legacy" else "yougori"
         self.token = secrets.token_hex(32)
         self.port = unused_port()
         self.serial = args.workdir / (stage + "-serial.log")
@@ -176,7 +182,8 @@ class VM:
                    "-m", "512", "-smp", "2", "-nodefaults", "-display", "none", "-monitor", "none",
                    "-serial", "file:" + str(self.serial), "-no-reboot", "-kernel", str(media / "vmlinuz-virt"),
                    "-initrd", str(media / "initramfs-virt"), "-append",
-                   "root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,ext4 softlevel=microvm opendock.mode=microvm opendock.token=" + self.token,
+                   "root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,ext4 softlevel=microvm "
+                   + f"{product}.mode=microvm {product}.token=" + self.token,
                    "-drive", "file=" + str(args.workdir / "legacy-overlay.qcow2") + ",if=virtio,format=qcow2",
                    "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{self.port}-:7443",
                    "-device", "virtio-net-pci,netdev=net0"]
@@ -228,10 +235,10 @@ class VM:
         self.log.close()
 
 
-def mount_project(vm, server):
+def mount_project(vm, server, data_root):
     vm.request("/v1/workloads/mount", {"id": ENVIRONMENT, "slot": ENVIRONMENT + "-0", "endpoint": f"http://10.0.2.2:{server.server_port}",
                                          "token": ProjectFiles.token, "readOnly": True})
-    contents = vm.execute(f"cat /var/lib/opendock/workload-mounts/{ENVIRONMENT}-0/project.txt")
+    contents = vm.execute(f"cat {data_root}/workload-mounts/{ENVIRONMENT}-0/project.txt")
     assert contents == PROJECT.decode(), contents
 
 
@@ -249,9 +256,9 @@ def legacy_stage(args, server, report):
         vm.wait()
         report["legacyKernel"] = vm.execute("uname -r").strip()
         report["legacyVendorSHA256"] = vendor_hashes(vm)
-        vm.execute(f"mkdir -p /var/lib/opendock/migration-fixture-data; printf '%s' '{MARKER}' > /var/lib/opendock/migration-fixture-data/marker")
+        vm.execute(f"mkdir -p /var/lib/{LEGACY}/migration-fixture-data; printf '%s' '{MARKER}' > /var/lib/{LEGACY}/migration-fixture-data/marker")
         start_runtime(vm)
-        mount_project(vm, server)
+        mount_project(vm, server, f"/var/lib/{LEGACY}")
         vm.request("/v1/microvm/workload", {"image": args.image, "options": MICRO_OPTIONS})
         vm.execute(f"nerdctl --namespace yougori-workload exec app /bin/sh -c \"printf '%s' '{MARKER}' > /legacy-marker\"")
         vm.execute("nerdctl --namespace yougori-workload stop --time 10 app")
@@ -290,17 +297,19 @@ def candidate_stage(args, server, report):
             assert vm.execute(f"sha256sum /{name}").split()[0] == entry["sha256"], name
             assert vm.execute(f"stat -c '%s %a' /{name}").strip() == f"{entry['bytes']} 755", name
         report["trustedBootExecutables"] = boot
-        assert vm.execute("cat /var/lib/opendock/migration-fixture-data/marker") == MARKER
+        assert vm.execute("cat /var/lib/yougori/migration-fixture-data/marker") == MARKER
+        # Existing containers record bind-mount sources under the old data path.
+        assert vm.execute(f"readlink /var/lib/{LEGACY}").strip() == "yougori"
         modules = vm.execute("test -d /lib/modules/$(uname -r); modprobe fuse; modprobe br_netfilter; modprobe nf_conntrack; grep -E '^(fuse|br_netfilter|nf_conntrack) ' /proc/modules")
         report["moduleLoadEvidence"] = modules
         start_runtime(vm)
-        mount_project(vm, server)
+        mount_project(vm, server, "/var/lib/yougori")
         vm.request("/v1/microvm/workload", {"image": args.image, "options": MICRO_OPTIONS})
         app_command = "nerdctl --namespace yougori-workload exec app /bin/sh -c "
         assert vm.execute(app_command + "'cat /legacy-marker'") == MARKER
         vm.execute('app_pid=$(nerdctl --namespace yougori-workload inspect --format "{{.State.Pid}}" app); '
-                   '/usr/local/sbin/opendock-mount-helper "$app_pid" --shared-alias')
-        assert vm.execute(app_command + "'readlink /yougori/shared'").strip() == "/opendock/shared"
+                   '/usr/local/sbin/yougori-mount-helper "$app_pid" --shared-alias')
+        vm.execute(app_command + "'test -d /yougori/shared && test ! -L /yougori/shared'")
         report["trustedSharedAliasHelper"] = True
         status = vm.execute(app_command + "'grep -E \"^(NoNewPrivs|Seccomp|CapEff):\" /proc/self/status; cat /sys/fs/cgroup/pids.max'")
         assert "NoNewPrivs:\t1" in status and "Seccomp:\t2" in status and "4096" in status, status
@@ -310,12 +319,12 @@ def candidate_stage(args, server, report):
         # use shared-store quotas, so create this disposable network probe with
         # nerdctl and ask the authenticated agent to attach its managed uplink.
         image = shlex.quote(args.image)
-        vm.execute(f"nerdctl --namespace opendock pull {image}; nerdctl --namespace opendock create --name {ENVIRONMENT} --network none "
+        vm.execute(f"nerdctl --namespace {STORAGE_NAMESPACE} pull {image}; nerdctl --namespace {STORAGE_NAMESPACE} create --name {ENVIRONMENT} --network none "
                    f"--cpus 0.5 --memory 128m --pids-limit 4096 --cap-drop ALL --security-opt no-new-privileges=true "
-                   f"--security-opt seccomp=builtin --volume /var/lib/opendock/workload-mounts/{ENVIRONMENT}-0:/project:ro "
-                   f"--entrypoint /bin/sh {image} -c 'sleep 2147483647'; nerdctl --namespace opendock start {ENVIRONMENT}")
+                   f"--security-opt seccomp=builtin --volume /var/lib/yougori/workload-mounts/{ENVIRONMENT}-0:/project:ro "
+                   f"--entrypoint /bin/sh {image} -c 'sleep 2147483647'; nerdctl --namespace {STORAGE_NAMESPACE} start {ENVIRONMENT}")
         vm.request("/v1/containers/internet", {"id": ENVIRONMENT, "networkAccess": True})
-        command = f"nerdctl --namespace opendock exec {ENVIRONMENT} /bin/sh -c "
+        command = f"nerdctl --namespace {STORAGE_NAMESPACE} exec {ENVIRONMENT} /bin/sh -c "
         assert vm.execute(command + "'cat /project/project.txt'") == PROJECT.decode()
         vm.execute(command + "'wget -q -T 20 -O /tmp/internet-result http://example.com; test -s /tmp/internet-result'")
         vm.execute(command + f"\"if wget -q -T 2 -O /tmp/private-host http://10.0.2.2:{server.server_port}/; then exit 1; fi\"")
@@ -323,7 +332,7 @@ def candidate_stage(args, server, report):
                        "internetCNI": True, "privateHostBlocked": True, "securityStatus": status,
                        "vendorExecutablesUpdated": True,
                        "candidateInitramfsBytes": (args.candidate / "initramfs-virt").stat().st_size})
-        vm.execute(f"nerdctl --namespace opendock stop --time 10 {ENVIRONMENT}; nerdctl --namespace yougori-workload stop --time 10 app")
+        vm.execute(f"nerdctl --namespace {STORAGE_NAMESPACE} stop --time 10 {ENVIRONMENT}; nerdctl --namespace yougori-workload stop --time 10 app")
         vm.execute("sync")
         print("512 MiB same-overlay kernel upgrade, preserved data, CNI and FUSE passed", flush=True)
     finally:

@@ -9,9 +9,9 @@ See compliance/evidence/runtime-notices.json and docs/compliance-status.md.
 alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f
 File: recipe-verified.json
 
-{
-  "revision": "60a7585bbab2fa0f762504eb617dbca90216e31f"
-}
+{
+  "revision": "60a7585bbab2fa0f762504eb617dbca90216e31f"
+}
 
 
 ========================================================================
@@ -1477,9 +1477,9 @@ fi
 alpine/alpine-keys/b9f23becced4d7b3ccc0fa0f28530243ccd314a0
 File: recipe-verified.json
 
-{
-  "revision": "b9f23becced4d7b3ccc0fa0f28530243ccd314a0"
-}
+{
+  "revision": "b9f23becced4d7b3ccc0fa0f28530243ccd314a0"
+}
 
 
 ========================================================================
@@ -1891,9 +1891,9 @@ bad4da65221150a5d4cc6f63981e4dd203d40844d32e82c17f346eee5350e460e32d28f0e231a2b7
 alpine/alpine-base/0934530484bbcde7498e2c694c710a49616a450e
 File: recipe-verified.json
 
-{
-  "revision": "0934530484bbcde7498e2c694c710a49616a450e"
-}
+{
+  "revision": "0934530484bbcde7498e2c694c710a49616a450e"
+}
 
 
 ========================================================================
@@ -2301,9 +2301,9 @@ of this License.
 alpine/bridge/8bac74716d06c84627ab02d101fd9d2bafd0a34c
 File: recipe-verified.json
 
-{
-  "revision": "8bac74716d06c84627ab02d101fd9d2bafd0a34c"
-}
+{
+  "revision": "8bac74716d06c84627ab02d101fd9d2bafd0a34c"
+}
 
 
 ========================================================================
@@ -3006,9 +3006,9 @@ exit 0
 alpine/ca-certificates/e41cbd2ae991adfe8df298ba8e8e777e90bd0e03
 File: recipe-verified.json
 
-{
-  "revision": "e41cbd2ae991adfe8df298ba8e8e777e90bd0e03"
-}
+{
+  "revision": "e41cbd2ae991adfe8df298ba8e8e777e90bd0e03"
+}
 
 
 ========================================================================
@@ -10332,9 +10332,9 @@ Public License instead of this License.
 alpine/lddtree/007305e7880a70d5c804019aa3da115da732776b
 File: recipe-verified.json
 
-{
-  "revision": "007305e7880a70d5c804019aa3da115da732776b"
-}
+{
+  "revision": "007305e7880a70d5c804019aa3da115da732776b"
+}
 
 
 ========================================================================

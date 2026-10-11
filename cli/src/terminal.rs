@@ -17,6 +17,8 @@ mod tool_setup;
 mod transport;
 mod ollama;
 
+pub const USAGE: &str = "Usage: yougori terminal ENV [--project] [--container NAME]";
+
 pub(crate) async fn open_ollama(id: &str,name: &str) -> Result<SessionExit,String> {
     ollama::open(id,name).await
 }
@@ -157,7 +159,7 @@ async fn run_inner(args: &[String]) -> Result<(), String> {
     let target = args
         .get(1)
         .filter(|s| !s.starts_with('-'))
-        .ok_or("Usage: yougori terminal ENV [--project] [--container NAME]")?;
+        .ok_or(USAGE)?;
     let mut project = false;
     let mut container = None;
     let mut i = 2;
@@ -174,7 +176,7 @@ async fn run_inner(args: &[String]) -> Result<(), String> {
                 container = Some(name.as_str());
                 project = true;
             }
-            _ => return Err("Usage: yougori terminal ENV [--project] [--container NAME]".into()),
+            _ => return Err(USAGE.into()),
         }
         i += 1;
     }
@@ -299,7 +301,7 @@ pub(crate) async fn setup_tool(id: &str, tool: &str) -> Result<SessionExit, Stri
 pub(crate) async fn tool_ready(id: &str, tool: &str) -> Result<bool, String> {
     if !crate::container_tools::TOOLS.contains(&tool) { return Err("Unknown tool".into()); }
     let probe = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("{TOOL_ENV}; if command -v {tool} >/dev/null 2>&1; then printf ready; else printf missing; fi")}})).await?;
-    if probe["exitCode"] != 0 { return Err("Could not check the tool inside this container".into()); }
+    if probe["exitCode"] != 0 { return Err("Could not check the tool inside this sandbox".into()); }
     match probe["stdout"].as_str().unwrap_or("").trim() {
         "ready" => Ok(true),
         "missing" => Ok(false),
@@ -369,7 +371,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
             let script = shell_words::split(&command).map_err(|_| "Invalid tool launcher")?.pop().ok_or("Missing tool launcher")?;
             let path = format!("{status}.sh");
             let staged = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("umask 077; printf %s {} > {}",shell_words::quote(&script),shell_words::quote(&path))}})).await?;
-            if staged["exitCode"] != 0 { return Err("Could not stage the tool launcher inside this container".into()); }
+            if staged["exitCode"] != 0 { return Err("Could not stage the tool launcher inside this sandbox".into()); }
             Some(format!("exec sh {}", shell_words::quote(&path)))
         } else { command.map(str::to_owned) };
         let mut offset = 0;
@@ -445,8 +447,8 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                 }
                 if tool.is_some() {
                     let exit = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("test -f {0} && cat {0} && rm -f {0}",shell_words::quote(&status))}})).await?;
-                    let code = exit["stdout"].as_str().unwrap_or("").trim().parse::<u8>().map_err(|_| "The tool session ended without an exit result. The container and files remain.")?;
-                    if code != 0 { return Err(format!("The tool session exited with status {code}. Read its terminal output above; the container and files remain.")); }
+                    let code = exit["stdout"].as_str().unwrap_or("").trim().parse::<u8>().map_err(|_| "The tool session ended without an exit result. The sandbox and files remain.")?;
+                    if code != 0 { return Err(format!("The tool session exited with status {code}. Read its terminal output above; the sandbox and files remain.")); }
                 }
                 break SessionExit::Completed;
             }
@@ -485,7 +487,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
             }
             if actions.exit_hint {
                 ui::line("")?;
-                ui::line(if tool.is_some() { "Ctrl+C interrupts the guest tool. Press Ctrl+] to return to your PC terminal; the container and files remain." }
+                ui::line(if tool.is_some() { "Ctrl+C interrupts the guest tool. Press Ctrl+] to return to your PC terminal; the sandbox and files remain." }
                     else { "Ctrl+C interrupts the guest command. Press Ctrl+D at an empty shell prompt, type exit, or press Ctrl+] to return to your PC terminal." })?;
             }
             if actions.menu {

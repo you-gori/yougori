@@ -68,12 +68,12 @@ def main():
     parsed = json.loads(features)
     verify.require(parsed.get("linux", {}).get("seccomp", {}).get("enabled") is True, "Rebuilt runc lost seccomp support")
     if args.helper:
-        helper = root / "usr/local/bin/opendock-mount-helper"
+        helper = root / "usr/local/bin/yougori-mount-helper"
         shutil.copyfile(args.helper, helper)
         helper.chmod(0o755)
-        completed = subprocess.run(["chroot", str(root), "/usr/local/bin/opendock-mount-helper"], capture_output=True, text=True)
+        completed = subprocess.run(["chroot", str(root), "/usr/local/bin/yougori-mount-helper"], capture_output=True, text=True)
         verify.require(completed.returncode == 2 and "usage:" in completed.stderr, "Static helper failed Alpine startup")
-        results.append({"path": "custom/opendock-mount-helper", "sha256": verify.sha256(args.helper),
+        results.append({"path": "custom/yougori-mount-helper", "sha256": verify.sha256(args.helper),
                         "exitCode": completed.returncode, "output": completed.stdout + completed.stderr})
     args.record.parent.mkdir(parents=True, exist_ok=True)
     record = {"schemaVersion": 1, "status": "passed", "archiveSha256": manifest["archive"]["sha256"],

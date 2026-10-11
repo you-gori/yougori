@@ -2,7 +2,7 @@
 
 The initramfs carries an unmodified `resize2fs` 1.47.4 executable and only its
 required libraries (`libe2p`, `libext2fs`, `libcom_err`, musl loader/libc).
-These are isolated in `/usr/local/lib/opendock-storage`; no host filesystem
+These are isolated in `/usr/local/lib/yougori-storage`; no host filesystem
 tools or host disks are exposed to the guest.
 
 Packages are authenticated by Alpine's signed APK index. Build inputs are
@@ -19,4 +19,4 @@ and are NOT shipped in this private helper directory.
 License texts accompany this file. Before publishing binary releases, provide
 the complete corresponding source and Alpine build recipes/patches alongside
 the download, as required by the applicable licenses. The storage helper does
-not alter the license of OpenDock's own independently executed code.
+not alter the license of Yougori's own independently executed code.

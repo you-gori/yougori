@@ -1420,15 +1420,24 @@ pub async fn set_environment_status(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<PlatformState, String> {
-    if matches!(status, EnvironmentStatus::Stopped | EnvironmentStatus::Paused) { crate::file_import::cancel_transfers(&environment_id, None); crate::guest_execution::cancel_environment_jobs(&environment_id); }
-    let snapshot_interruption = if matches!(status, EnvironmentStatus::Stopped | EnvironmentStatus::Paused) {
-        let state = store.snapshot()?;
-        let environment = state.environments.iter().find(|environment| environment.id == environment_id).ok_or("Environment not found")?;
-        Some(runtime.interrupt_snapshot_exports(runtime_id(environment)))
-    } else { None };
-    if status == EnvironmentStatus::Running {
+    // Validate before any side effect: a rejected request must not cancel transfers
+    // or jobs, or rewrite a model server it is not going to start.
+    if matches!(
+        status,
+        EnvironmentStatus::Provisioning | EnvironmentStatus::Error
+    ) {
+        return Err("Provisioning and error states are controlled by the runtime".into());
+    }
+    let requested = store.environment(&environment_id)?;
+    let stopping = matches!(status, EnvironmentStatus::Stopped | EnvironmentStatus::Paused);
+    // Snapshot exports hold the lifecycle lock, so they are interrupted before taking it.
+    let snapshot_interruption = stopping.then(|| runtime.interrupt_snapshot_exports(runtime_id(&requested)));
+    if status == EnvironmentStatus::Running
+        && requested.status != EnvironmentStatus::Provisioning
+        && !store.snapshot()?.pending_factory_resets.iter().any(|pending| pending.environment.id == environment_id)
+    {
         // A model environment that is reused gets this version's model server; if that fails
-        // it starts with the one it has.
+        // it starts with the one it has. The refresh takes the lifecycle lock itself.
         if let Err(error) = crate::model_runner::refresh_server(&environment_id, &store, &runtime).await {
             eprintln!("Model server was not updated for {environment_id}: {error}");
         }
@@ -1440,12 +1449,7 @@ pub async fn set_environment_status(
     } else {
         network_lock.try_lock().map_err(|_| "Another lifecycle or network operation is changing this environment; retry after that operation finishes.".to_string())?
     };
-    if matches!(
-        status,
-        EnvironmentStatus::Provisioning | EnvironmentStatus::Error
-    ) {
-        return Err("Provisioning and error states are controlled by the runtime".into());
-    }
+    if stopping { crate::file_import::cancel_transfers(&environment_id, None); crate::guest_execution::cancel_environment_jobs(&environment_id); }
     let guarded = store.environment(&environment_id)?;
     let _container_serial = environment_container_policy_guard(&runtime, &guarded).await?;
     let current_state = store.snapshot()?;
@@ -1778,6 +1782,9 @@ pub async fn delete_environment(
     if environment.status == EnvironmentStatus::Provisioning {
         return Err("Wait for this environment to finish creating before deleting it".into());
     }
+    // Resolved now: removing the runtime can also remove the storage route that locates it.
+    let baseline = crate::changes::baseline_path(&runtime, &environment_id).ok();
+    let pool = runtime.storage_runtime(runtime_id(&environment)).ok().flatten();
     if crate::peer_sharing::is_shared(&environment) {
         for connection in state.connections.iter().filter(|connection| connection.source_id == environment_id || connection.target_id == environment_id) {
             runtime.remove_environment_connection(&connection.id, connection_runtime_id(&state, &connection.source_id), connection_runtime_id(&state, &connection.target_id), false).await?;
@@ -1891,6 +1898,26 @@ pub async fn delete_environment(
     };
     if let Some(error) = launcher_cleanup_error {
         storage_cleanup.warnings.push(format!("The environment was deleted, but launcher settings cleanup is incomplete: {error}"));
+    }
+    // The folder baseline keeps copies of shared-folder text; it must not outlive the environment.
+    if let Some(baseline) = baseline {
+        match std::fs::metadata(&baseline).map(|metadata| metadata.len()).and_then(|bytes| std::fs::remove_file(&baseline).map(|()| bytes)) {
+            Ok(bytes) => storage_cleanup.reclaimed_cache_bytes = storage_cleanup.reclaimed_cache_bytes.saturating_add(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => storage_cleanup.warnings.push(format!("The environment was deleted, but its folder change baseline was kept: {error}")),
+        }
+    }
+    // Release the image it was created from when no remaining environment names it, before
+    // the trim below returns the freed blocks. The runtime keeps images any container uses.
+    let named = |image: &str| image.trim_start_matches("docker.io/").trim_start_matches("library/").to_owned();
+    if provider(&environment).is_container()
+        && !next.environments.iter().any(|other| provider(other).is_container() && named(&other.runtime) == named(&environment.runtime))
+    {
+        match pool.as_deref().unwrap_or(&*runtime).release_environment_image(&provider(&environment), &environment.runtime).await {
+            Ok(true) => storage_cleanup.notes.push(format!("Removed its image {}, which no other environment uses.", environment.runtime)),
+            Ok(false) => {}
+            Err(error) => storage_cleanup.warnings.push(format!("The environment was deleted, but its image was kept: {error}")),
+        }
     }
     if provider(&environment).is_container() {
         match runtime.reclaim_container_storage(&provider(&environment)).await {
@@ -2883,13 +2910,20 @@ pub async fn restore_snapshot(
                 if live_full_vm && !restored_network {
                     runtime.update_vm_internet(runtime_id(&environment), false).await?;
                 }
-                runtime
+                if let Err(error) = runtime
                     .restore_vm_snapshot(
                         runtime_id(&environment),
                         &vm_disk(&environment)?,
                         &snapshot.id,
                     )
-                    .await?;
+                    .await
+                {
+                    // A refused restore leaves the VM as it was, including its internet access.
+                    if live_full_vm && !restored_network && environment.network_access {
+                        let _ = runtime.update_vm_internet(runtime_id(&environment), true).await;
+                    }
+                    return Err(error);
+                }
                 if live_full_vm {
                     runtime.update_vm_internet(runtime_id(&environment), restored_network).await?;
                 }

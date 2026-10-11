@@ -162,18 +162,31 @@ pub(super) async fn serve_authenticated(websocket: &mut WebSocketStream<TcpStrea
         return Err("Private connection interrupted".into());
     }
     manager.audit(&grant.id, "private connection opened", true).await;
-    let touch = async {
+    // Like the terminal stream, re-authorize continuously: revoking or downgrading
+    // the share, or giving the environment PC folders or connections the owner has
+    // not acknowledged, closes an already open private connection.
+    let watchdog = async {
         loop {
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            let mut sessions = manager.sessions.lock().await;
-            let Some(session) = sessions.get_mut(&hash(&open.token)) else { break };
-            if session.expires <= now() { break }
-            session.seen = now();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            {
+                let mut sessions = manager.sessions.lock().await;
+                let Some(session) = sessions.get_mut(&hash(&open.token)) else { break };
+                if session.expires <= now() || session.grant != grant.id || session.cancel.is_cancelled() { break }
+                session.seen = now();
+            }
+            let current = manager.db.lock().await.grants.iter().find(|candidate| candidate.id == grant.id).cloned();
+            let Some(current) = current else { break };
+            if !current.active() || current.permission != Permission::Control || current.target_id != grant.target_id {
+                break;
+            }
+            if check_control_scope(&app, &current.target_id, current.acknowledge_existing_access).await.is_err() {
+                break;
+            }
         }
     };
     tokio::select! {
         _ = relay(websocket, socket, cancel, runtime.fabric_clone(), &owner_id) => {},
-        _ = touch => {},
+        _ = watchdog => {},
     }
     runtime.close_bridge_peer(&rule_id, &open.peer_id);
     manager.audit(&grant.id, "private connection closed", true).await;

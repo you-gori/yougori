@@ -15,7 +15,7 @@ pub struct VolumeStore {
 impl RuntimeManager {
     /// True when this runtime's container appliance already runs. Never boots it.
     async fn appliance_running(&self) -> bool {
-        let mut guard = self.appliance.lock().await;
+        let Some(mut guard) = self.appliance_peek().await else { return false };
         matches!(guard.as_mut().map(|process| process.child.try_wait()), Some(Ok(None)))
     }
 

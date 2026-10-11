@@ -22,8 +22,9 @@ Use lowercase `yougori` on Linux and macOS, where command names are case-sensiti
 In a new project, or when files differ from the last container sync, `yougori`
 and `yougori cli` first offer to run the detected or saved command, or continue
 to the main menu. Unchanged projects go directly to the menu. The check uses
-existing sync metadata, respects the project's ignore rules, and does not start
-the engine. Continuing to the menu leaves the changes pending for a later run.
+existing sync metadata and compares the same files launch copies (ignore files
+do not apply), and does not start the engine. Continuing to the menu leaves the
+changes pending for a later run.
 From the home menu, choose a project folder, create
 or manage environments, run/chat with models, copy files, share a PC folder,
 manage snapshots/backups, set up RunPod, open MCP Vault and its approval/setup
@@ -107,7 +108,7 @@ change versions, including both app writes and the helper's own commits. Helper
 restarts, database replacements, mode changes and priority changes invalidate
 that shortcut. Unchanged record baselines do not rewrite the sync checkpoint.
 
-Project setup also asks "How should project files sync?" One-way (this computer
+Project setup also asks "Which directions can project changes sync?" One-way (this computer
 to the environment) is the default. Two-way is optional and saves terminal edits,
 new files and deletions from /workspace back into the laptop project folder.
 The choice is saved per local project or project/cloud server. Existing projects
@@ -132,25 +133,41 @@ across restarts. Conflict priority is respected; if it selects the opposite
 direction, that conflict waits for a handoff in that direction or Sync both ways.
 On-demand sessions have no filesystem watcher, no periodic database comparison,
 and no final sync on quit. Sync home before quitting when switching to localhost.
-Continuous sync checks about every five seconds, watches local
-edits, and flushes the configured direction(s) before a normal quit.
+Continuous sync starts a check about five seconds after the previous one ends;
+one-way sync also sends saved local edits within a fraction of a second. It
+flushes the configured direction(s) before a normal quit. Checks of large
+projects take longer; unchanged files are not hashed again, and the dev-server
+log, shortcut keys and Ctrl+C stay responsive while a check runs.
 The first launch copies the project; subsequent launches send changed files and
 deletions. Interrupted checkpoints are recovered by comparing checksums against
 the existing workspace, preserving guest-only runtime files. They do not trigger
 another full project copy. Temporary transfer errors keep both copies intact;
 retry from the Sync menu, or let continuous mode retry while the app keeps running.
-Both modes include ordinary project files regardless of
+The first copy and one-way sync include ordinary project files regardless of
 .gitignore or .yougoriignore: databases, uploads, dependencies, builds and .git.
 The chosen .env preference still applies; transient sync files are omitted.
+Two-way sync never exchanges .git, .hg, .svn, node_modules, .venv, venv or
+__pycache__ folders, in any spelling this computer treats as the same name.
+Each side keeps its own Git metadata, installed dependencies and caches, so
+hooks, package binaries and bytecode changed in the container are never brought
+to this computer. The container installs dependencies from the synced package files.
 Files larger than 256 MiB are supported with bounded transfers.
 Edits outside /workspace are not synced.
 If both copies changed since their last shared version, including edit/delete
 conflicts, the selected priority decides the winner. Keep both versions leaves
 the conflicting file or record untouched until resolved. Initial differences
 when enabling two-way follow the same preference. Empty directories are tracked
-as well as files. Symlinks and special files are
-not followed or transferred; their paths are protected from deletion and do not
-block other files. Incompatible filenames pause sync with an explanation.
+as well as files. Symlinks, junctions and special files are not followed or
+transferred on either side; their paths, including a folder replaced by a link,
+are protected from deletion and do not block other files. Names this computer
+cannot store, such as names Windows reserves or container names that differ only
+by letter case, are skipped with a warning while other files keep syncing.
+On Windows and macOS, a letter-case rename made on this computer, or a file
+renamed that way in the container, is applied to the other copy when that copy
+is unchanged. Other letter-case differences, such as a folder renamed in the
+container, keep both copies with a warning until the names match.
+OneDrive and other cloud placeholders are ordinary files and are read (downloaded
+if needed) when they sync.
 SQLite databases are detected by their file header. Their committed records are
 read through SQLite (including WAL writes while the app stays open), compared
 against persisted row checksums and transferred in the selected direction.
@@ -202,7 +219,9 @@ logs and file sync continue. Local projects open in /workspace; cloud projects o
 inside their project container, not the cloud host. In model chat (including RunPod),
 send /terminal; while the model is loading, press t. Model shells open in the active
 model environment. Type exit or press Ctrl+] to close the shell without stopping
-the workload. Ctrl+C inside that shell interrupts its foreground command only.
+the workload. In a local container, Ctrl+C there opens Cancel / Stop sandbox / Stop and
+delete (Cancel selected) instead of reaching the shell; in cloud and RunPod shells it
+interrupts the foreground command.
 You can also use `yougori terminal ENV` from another terminal. A desktop terminal
 application is required for opening a new window on Linux.
 
@@ -244,7 +263,7 @@ terminal after installation. In a source checkout: npm run cli -- run nginx.
 The integrated Desktop CLI already includes the public command on PATH. Linux
 Debian packages install /usr/bin/yougori and /usr/bin/yougori-desktop separately.
 On macOS, add /Applications/Yougori.app/Contents/Resources/cli to your shell PATH
-(adjust for the bundle location). Legacy yougori-cli and opendock-cli still work.
+(adjust for the bundle location). The legacy yougori-cli name still works.
 
 Declarative projects
   yougori up [-f path/to/yougori.yaml]
@@ -424,9 +443,9 @@ runs per pod. Model weights and usage remain in that folder; retention depends o
 the pod's storage. Switching models after stopping keeps separate chat histories.
 Chat, streaming, /api, API keys, usage, localhost access and optional Cloudflare
 access work through pinned SSH. Keep Yougori and SSH connected for API access.
-The server binds only to the pod's loopback interface. Ctrl+C opens Stop / Stop and
-delete. On Neocloud these stop or permanently delete the RunPod pod; locally they
-stop or delete the model environment. Stop is selected by default. Repeated Ctrl+C
+The server binds only to the pod's loopback interface. Ctrl+C opens Cancel / Stop /
+Stop and delete. On Neocloud these stop or permanently delete the RunPod pod; locally they
+stop or delete the model environment. Cancel is selected by default. Repeated Ctrl+C
 presses keep this menu open until Enter selects an action, including during a reply.
 Shutdown also ignores further Ctrl+C presses until the chosen action finishes.
 A stopped pod may still incur storage charges. The explicit model stop command
@@ -457,4 +476,5 @@ Use Authorization: Bearer API_KEY. Unauthenticated requests are rejected. Reques
 are bounded; one generation uses the GPU at a time. Both streaming and ordinary
 JSON responses are supported.
 The CLI prints the local API key only when explicitly enabling its API. Store it
-privately. /exit leaves the model running; model stop ENV releases its active GPU memory.
+privately. /detach leaves the model running; /exit opens Cancel / Stop / Stop and delete;
+model stop ENV releases its active GPU memory.

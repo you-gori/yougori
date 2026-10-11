@@ -7,7 +7,7 @@ import (
 )
 
 func TestSnapshotPreservesActualProcessAndRemovesHostRuntimeMetadata(t *testing.T) {
-	config, err := portableSnapshotConfiguration([]byte(`{"process":{"args":["/entry","node","app.js","one argument"],"env":["CUSTOM=yes"],"cwd":"/app","user":{"uid":1000,"gid":1001,"additionalGids":[42]}}}`), []byte(`{"Entrypoint":["/entry"],"Cmd":["old"],"Volumes":{"/data":{}},"StopSignal":"SIGUSR1"}`), []byte(`{"Labels":{"nerdctl/mounts.0":"private host path","opendock.managed":"true","custom":"keep"}}`))
+	config, err := portableSnapshotConfiguration([]byte(`{"process":{"args":["/entry","node","app.js","one argument"],"env":["CUSTOM=yes"],"cwd":"/app","user":{"uid":1000,"gid":1001,"additionalGids":[42]}}}`), []byte(`{"Entrypoint":["/entry"],"Cmd":["old"],"Volumes":{"/data":{}},"StopSignal":"SIGUSR1"}`), []byte(`{"Labels":{"nerdctl/mounts.0":"private host path","`+managedLabel+`":"true","custom":"keep"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestSnapshotPreservesActualProcessAndRemovesHostRuntimeMetadata(t *testing.
 	}
 	var labels map[string]string
 	json.Unmarshal(data["Labels"], &labels)
-	if labels["custom"] != "keep" || labels["nerdctl/mounts.0"] != "" || labels["opendock.managed"] != "" {
+	if labels["custom"] != "keep" || labels["nerdctl/mounts.0"] != "" || labels[managedLabel] != "" {
 		t.Fatal(labels)
 	}
 	flags, err := snapshotStartupOptions(labels, "must not duplicate the saved command")

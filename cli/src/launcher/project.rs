@@ -159,6 +159,8 @@ fn entry_offer(folder: &Path, settings: &Path) -> Result<Option<EntryOffer>, Str
         .is_some_and(|id| id == synced.environment && !synced.token.is_empty());
     let changed = if has_baseline {
         let filter = sync::Filter::load(folder, setup.as_ref().is_some_and(|s| s.env_files))?;
+        // Compare the same files the last sync recorded.
+        let filter = if synced.two_way { filter.two_way() } else { filter };
         let current = sync::scan(folder, &filter)?;
         let (changed, removed) = sync::diff(&synced.files, &current);
         let mut files: Vec<_> = changed.union(&removed).cloned().collect();
@@ -217,21 +219,54 @@ pub(super) async fn offer_on_entry(folder: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Writes a project file through a temporary file in its folder, so an interruption
+/// never leaves it empty or half written. With `original`, the existing file is
+/// replaced (through a link, keeping its permissions) only if it still has that
+/// content; returns false when another program changed it meanwhile.
+fn write_atomically(path: &Path, original: Option<&str>, contents: &str) -> Result<bool, String> {
+    use std::io::Write;
+    let target = match original {
+        Some(_) => fs::canonicalize(path).map_err(|e| e.to_string())?,
+        None => path.to_path_buf(),
+    };
+    let folder = target.parent().ok_or("Missing project folder")?;
+    // The sync filter never transfers .yougori-sync-* files.
+    let mut temp = tempfile::Builder::new().prefix(".yougori-sync-").tempfile_in(folder).map_err(|e| e.to_string())?;
+    temp.write_all(contents.as_bytes()).map_err(|e| e.to_string())?;
+    if original.is_some() {
+        let permissions = fs::metadata(&target).map_err(|e| e.to_string())?.permissions();
+        temp.as_file().set_permissions(permissions).map_err(|e| e.to_string())?;
+    }
+    temp.as_file().sync_all().map_err(|e| e.to_string())?;
+    match original {
+        Some(original) => {
+            if fs::read_to_string(&target).map_err(|e| e.to_string())? != original {
+                return Ok(false);
+            }
+            temp.persist(&target).map_err(|e| e.to_string())?;
+        }
+        None => match temp.persist_noclobber(&target) {
+            Ok(_) => {}
+            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) => return Err(e.error.to_string()),
+        },
+    }
+    Ok(true)
+}
+
 fn write_project_shortcut(folder: &Path, project: &package::Project, quiet: bool) -> Result<(), String> {
     if project.is_python() {
-        use std::io::Write;
         let content = include_str!("assets/python-yougori.py");
         let path = folder.join("yougori");
-        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
-                if !quiet { ui::step("Added python yougori to this project"); }
-            },
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                if !quiet && fs::read_to_string(&path).ok().as_deref() != Some(content) {
-                    ui::warn("An existing file named yougori was kept. Run this project with yougori launch.");
-                }
-            },
+        if path.exists() {
+            if !quiet && fs::read_to_string(&path).ok().as_deref() != Some(content) {
+                ui::warn("An existing file named yougori was kept. Run this project with yougori launch.");
+            }
+            return Ok(());
+        }
+        match write_atomically(&path, None, content) {
+            Ok(true) => if !quiet { ui::step("Added python yougori to this project"); },
+            Ok(false) => if !quiet { ui::warn("An existing file named yougori was kept. Run this project with yougori launch."); },
             Err(e) => return Err(format!("Cannot add the Python shortcut: {e}")),
         }
         return Ok(());
@@ -244,7 +279,10 @@ fn write_project_shortcut(folder: &Path, project: &package::Project, quiet: bool
     let updated = cloud.as_deref().unwrap_or(updated);
     let change = package::add_change_script(updated);
     if local.is_some() || cloud.is_some() || change.is_some() {
-        fs::write(path, change.as_deref().unwrap_or(updated)).map_err(|e| e.to_string())?;
+        if !write_atomically(&path, Some(&text), change.as_deref().unwrap_or(updated))? {
+            if !quiet { ui::warn("package.json changed while adding the Yougori shortcuts, so it was kept. Run this project with yougori launch."); }
+            return Ok(());
+        }
         if !quiet {
             if local.is_some() { ui::step(&format!("Added {} to package.json", project.shortcut())); }
             if cloud.is_some() { ui::step("Added npm run yougori-cloud to package.json"); }
@@ -794,12 +832,39 @@ fn port_in_use(error: &str) -> bool {
         .any(|message| error.contains(message))
 }
 
-fn local_publication_params(id: &str, guest_port: u16, host_port: u16) -> Value {
-    let mut params = json!({"environmentId":id,"port":live::proxy_port(guest_port),"kind":"local"});
+fn local_publication_params(id: &str, network: &str, guest_port: u16, host_port: u16) -> Value {
+    // "This computer" stays on 127.0.0.1; the other choices also serve the local network.
+    let kind = if matches!(network, "lan" | "quick" | "domain") { "local" } else { "loopback" };
+    let mut params = json!({"environmentId":id,"port":live::proxy_port(guest_port),"kind":kind});
     if host_port != 0 {
         params["hostPort"] = json!(host_port);
     }
     params
+}
+
+/// Publications of the other local kind at this port, which `params` replaces: older
+/// launchers reached only this PC, and "This computer" once reached the local network.
+/// Returns their IDs and the params to publish, which leave the port to the engine while
+/// a remaining publication, such as a tunnel sharing a replaced listener, holds it.
+fn local_replacements(publications: &[Value], mut params: Value) -> (Vec<String>, Value) {
+    let mut replaced = Vec::new();
+    let mut held = false;
+    for publication in publications {
+        let other_kind = matches!(publication["kind"].as_str(), Some("loopback" | "local"))
+            && publication["kind"] != params["kind"];
+        match publication["id"].as_str() {
+            Some(id) if other_kind && publication["port"] == params["port"] => {
+                replaced.push(id.to_owned())
+            }
+            _ => held |= publication["hostPort"] == params["hostPort"],
+        }
+    }
+    if held && !replaced.is_empty() {
+        if let Some(params) = params.as_object_mut() {
+            params.remove("hostPort");
+        }
+    }
+    (replaced, params)
 }
 
 async fn publish_local(
@@ -811,32 +876,18 @@ async fn publish_local(
         .environment
         .as_deref()
         .ok_or("Missing environment ID")?;
-    // Replace publications made by older launchers, which reached only this PC.
     let services = call("list_environment_services", json!({"environmentId":id})).await?;
-    let mut replaced_loopback = false;
-    for publication in services["publications"].as_array().into_iter().flatten() {
-        if publication["kind"] == "loopback"
-            && publication["port"] == live::proxy_port(setup.guest_port)
-        {
-            if let Some(publication_id) = publication["id"].as_str() {
-                call(
-                    "unpublish_environment_service",
-                    json!({"publicationId":publication_id}),
-                )
-                .await?;
-                replaced_loopback = true;
-            }
-        }
-    }
-    let params = local_publication_params(
-        id,
-        setup.guest_port,
-        if replaced_loopback {
-            0
-        } else {
-            setup.local_port
-        },
+    let (replaced, params) = local_replacements(
+        services["publications"].as_array().map(Vec::as_slice).unwrap_or_default(),
+        local_publication_params(id, &setup.network, setup.guest_port, setup.local_port),
     );
+    for publication_id in replaced {
+        call(
+            "unpublish_environment_service",
+            json!({"publicationId":publication_id}),
+        )
+        .await?;
+    }
     let publication = match call("publish_environment_service", params.clone()).await {
         Ok(publication) => publication,
         Err(error) if port_in_use(&error) => {
@@ -861,7 +912,7 @@ async fn publish_local(
             }
             cancelled(cancel)?;
             // An omitted hostPort asks the engine to bind a free port atomically.
-            let automatic = local_publication_params(id, setup.guest_port, 0);
+            let automatic = local_publication_params(id, &setup.network, setup.guest_port, 0);
             call("publish_environment_service", automatic).await?
         }
         Err(error) => return Err(error),
@@ -1163,7 +1214,7 @@ async fn launch(
             public.push(clean(url));
         }
     }
-    // The local publication serves this PC and devices on its local network.
+    // The local publication serves this PC and, unless "This computer" was chosen, its local network.
     if domain_uses_local_port {
         // Port zero asks the engine to allocate a free localhost port atomically.
         setup.local_port = 0;
@@ -1635,18 +1686,72 @@ mod tests {
 
     #[test]
     fn automatic_local_port_omits_host_port_for_cli_validation() {
-        let automatic = local_publication_params("env-test", 3000, 0);
+        let automatic = local_publication_params("env-test", "lan", 3000, 0);
         assert!(automatic.get("hostPort").is_none());
         crate::catalog::find("publish_environment_service")
             .unwrap()
             .validate(&automatic)
             .unwrap();
-        let fixed = local_publication_params("env-test", 3000, 5281);
+        let fixed = local_publication_params("env-test", "lan", 3000, 5281);
         assert_eq!(fixed["hostPort"], 5281);
         crate::catalog::find("publish_environment_service")
             .unwrap()
             .validate(&fixed)
             .unwrap();
+    }
+
+    #[test]
+    fn this_computer_publishes_on_loopback_and_other_choices_on_the_local_network() {
+        let port = live::proxy_port(3000);
+        for (network, kind) in [
+            ("computer", "loopback"),
+            ("lan", "local"),
+            ("quick", "local"),
+            ("domain", "local"),
+        ] {
+            let params = local_publication_params("env-test", network, 3000, 5281);
+            assert_eq!(
+                params,
+                json!({"environmentId":"env-test","port":port,"kind":kind,"hostPort":5281}),
+                "{network}"
+            );
+            crate::catalog::find("publish_environment_service")
+                .unwrap()
+                .validate(&params)
+                .unwrap();
+        }
+        let publication = |id: &str, kind: &str, port: u16, host_port: u16| {
+            json!({"id":id,"kind":kind,"port":port,"hostPort":host_port})
+        };
+        // A saved "This computer" project replaces its network-reachable publication and keeps its port.
+        let computer = local_publication_params("env-test", "computer", 3000, 5281);
+        let existing = [
+            publication("pub-lan", "local", port, 5281),
+            publication("pub-other-port", "local", port + 1, 5282),
+            publication("pub-quick", "cloudflare", port, 45001),
+        ];
+        assert_eq!(
+            local_replacements(&existing, computer.clone()),
+            (vec!["pub-lan".to_string()], computer.clone())
+        );
+        // Launching again keeps its own publication.
+        let current = [publication("pub-computer", "loopback", port, 5281)];
+        assert_eq!(local_replacements(&current, computer.clone()), (vec![], computer));
+        // Local network replaces the loopback one, and leaves the port to the engine
+        // when a tunnel still shares that listener.
+        let lan = local_publication_params("env-test", "lan", 3000, 5281);
+        assert_eq!(
+            local_replacements(&current, lan.clone()),
+            (vec!["pub-computer".to_string()], lan.clone())
+        );
+        let shared = [current[0].clone(), publication("pub-domain", "cloudflare", port, 5281)];
+        assert_eq!(
+            local_replacements(&shared, lan),
+            (
+                vec!["pub-computer".to_string()],
+                local_publication_params("env-test", "lan", 3000, 0)
+            )
+        );
     }
 
     #[test]
@@ -1727,6 +1832,21 @@ mod tests {
         add_project_shortcut(dir.path(), &project).unwrap();
         assert_eq!(fs::read_to_string(dir.path().join("yougori")).unwrap(), "user content");
         assert!(!dir.path().join("package.json").exists());
+    }
+
+    #[test]
+    fn project_files_are_replaced_whole_or_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        fs::write(&path, "{}\n").unwrap();
+        assert!(write_atomically(&path, Some("{}\n"), "{\"scripts\":{}}\n").unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"scripts\":{}}\n");
+        // Another program saved the file after it was read: its version stays.
+        assert!(!write_atomically(&path, Some("{}\n"), "lost edit").unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"scripts\":{}}\n");
+        assert!(!write_atomically(&path, None, "x").unwrap());
+        // No temporary files are left behind.
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

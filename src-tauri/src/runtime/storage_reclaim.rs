@@ -26,6 +26,12 @@ fn qcow2_has_free_clusters(info: &serde_json::Value, check: &serde_json::Value) 
     Some(file_clusters > data + metadata)
 }
 
+/// An image another container still uses, or one already gone, is simply kept.
+fn image_kept(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    ["is using", "being used", "in use", "must force", "conflict", "no such image", "not found"].iter().any(|text| error.contains(text))
+}
+
 #[derive(Deserialize)]
 struct TrimResult {
     busy: bool,
@@ -49,11 +55,11 @@ mod tests {
     fn pending_cleanup_survives_engine_restart_without_environment_entries() {
         let data = tempfile::tempdir().unwrap();
         let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
-        assert!(!runtime.has_pending_storage_reclaim());
+        assert!(!runtime.storage_reclaim_pending(&RuntimeProviderKind::YougoriCuda));
         runtime.mark_storage_reclaim(&RuntimeProviderKind::YougoriCuda).unwrap();
         drop(runtime);
         let reopened = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
-        assert!(reopened.has_pending_storage_reclaim());
+        assert!(reopened.storage_reclaim_pending(&RuntimeProviderKind::YougoriCuda));
     }
 
     #[test]
@@ -66,6 +72,22 @@ mod tests {
         assert_eq!(qcow2_has_free_clusters(&info(serde_json::json!([])), &check(123_344)), Some(true));
         assert_eq!(qcow2_has_free_clusters(&info(serde_json::json!([{ "id": "1" }])), &check(123_434)), Some(true));
         assert_eq!(qcow2_has_free_clusters(&serde_json::json!({}), &check(1)), None);
+    }
+
+    #[test]
+    fn images_in_use_or_already_gone_are_kept_quietly() {
+        assert!(image_kept("conflict: unable to remove repository reference \"python:3.12\" (must force) - container abc is using its referenced image"));
+        assert!(image_kept("Error: No such image: python:3.12"));
+        assert!(!image_kept("connect to agent: connection refused"));
+    }
+
+    #[test]
+    fn pending_cleanup_is_tracked_per_pool() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        runtime.mark_storage_reclaim(&RuntimeProviderKind::YougoriOci).unwrap();
+        assert!(runtime.storage_reclaim_pending(&RuntimeProviderKind::YougoriOci));
+        assert!(!runtime.storage_reclaim_pending(&RuntimeProviderKind::YougoriCuda));
     }
 
     #[tokio::test]
@@ -126,11 +148,6 @@ impl RuntimeManager {
     pub(super) fn mark_storage_reclaim(&self, provider: &RuntimeProviderKind) -> Result<(), String> {
         std::fs::write(self.reclaim_marker(provider), b"pending").map_err(|e| format!("Record pending storage cleanup: {e}"))
     }
-    pub(crate) fn has_pending_storage_reclaim(&self) -> bool {
-        let pending = |engine: &Self| [RuntimeProviderKind::YougoriCuda, RuntimeProviderKind::YougoriOci]
-            .iter().any(|provider| engine.reclaim_marker(provider).is_file());
-        pending(self) || self.registered_storage_runtimes().iter().any(|engine| engine.as_ref().is_ok_and(|engine| pending(engine)))
-    }
     pub async fn reclaim_pending_container_storage(&self, id: &str, provider: &RuntimeProviderKind) -> Result<(), String> {
         if *provider == RuntimeProviderKind::YougoriCuda {
             let mut pending = self.reclaim_marker(provider).try_exists().map_err(|e| e.to_string())?;
@@ -150,6 +167,39 @@ impl RuntimeManager {
             for warning in result.warnings { eprintln!("Pending storage cleanup: {warning}"); }
         }
         Ok(())
+    }
+
+    /// Whether this pool, on any drive, still owes Windows a disk cleanup.
+    pub(crate) fn storage_reclaim_pending(&self, provider: &RuntimeProviderKind) -> bool {
+        self.reclaim_marker(provider).is_file()
+            || self.registered_storage_runtimes().iter().any(|engine| engine.as_ref().is_ok_and(|engine| engine.reclaim_marker(provider).is_file()))
+    }
+
+    /// Removes the image a deleted environment was created from. The runtime refuses images
+    /// any container still uses, so shared bases stay; a stopped pool is never started for this.
+    /// Returns whether the image was removed.
+    pub async fn release_environment_image(&self, provider: &RuntimeProviderKind, image: &str) -> Result<bool, String> {
+        // Snapshot and restore tags have their own lifecycle in the agent.
+        if image.trim().is_empty() || image.starts_with(yougori_cli::legacy_names::IMAGE_NAME_PREFIX) { return Ok(false); }
+        let body = serde_json::json!({"action": "remove", "image": image});
+        let result = if *provider == RuntimeProviderKind::YougoriCuda {
+            let Ok(endpoint) = self.cuda.current_endpoint().await else { return Ok(false) };
+            async {
+                let response = self.client.post(format!("{}/v1/images/action", endpoint.base_url)).bearer_auth(&endpoint.token)
+                    .timeout(Duration::from_secs(120)).json(&body).send().await.map_err(|e| e.to_string())?;
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                if status.is_success() { Ok(()) } else { Err(format!("{status}: {text}")) }
+            }.await
+        } else {
+            if self.appliance.lock().await.is_none() { return Ok(false); }
+            self.agent_post::<_, serde_json::Value>("/v1/images/action", &body).await.map(|_| ())
+        };
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) if image_kept(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     fn reclaim_marker(&self, provider: &RuntimeProviderKind) -> std::path::PathBuf {

@@ -5,7 +5,7 @@ import { AlertCircleIcon, XIcon } from "lucide-react"
 import { hostTerminalApi } from "@/api/host-terminal-api"
 import { workspaceApi } from "@/api/workspace-api"
 import { terminalClipboard, terminalClipboardAction } from "@/lib/terminal-clipboard"
-import { normalizeTerminalLink } from "@/lib/terminal-links"
+import { terminalLinkRanges } from "@/lib/terminal-links"
 import { terminalTheme } from "@/lib/terminal-theme"
 import "@xterm/xterm/css/xterm.css"
 
@@ -77,10 +77,8 @@ export function HostTerminalCanvas({ tab, active, onState, onControls }: {
     })
     const links = terminal.registerLinkProvider({ provideLinks: (line, callback) => {
       const text = terminal.buffer.active.getLine(line - 1)?.translateToString(true) ?? ""
-      callback([...text.matchAll(/https?:\/\/[^\s<>"']+/g)].flatMap(match => {
-        const url = normalizeTerminalLink(match[0])
-        return url ? [{ text: url, range: { start: { x: match.index! + 1, y: line }, end: { x: match.index! + url.length, y: line } }, activate: () => { void workspaceApi.openUrl(url).catch(report) } }] : []
-      }))
+      // Highlight the characters on screen, not the normalized address that opens.
+      callback(terminalLinkRanges(text).map(({ url, start, length }) => ({ text: url, range: { start: { x: start + 1, y: line }, end: { x: start + length, y: line } }, activate: () => { void workspaceApi.openUrl(url).catch(report) } })))
     } })
     const poll = async () => {
       if (disposed || !ready) return

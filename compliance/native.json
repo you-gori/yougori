@@ -124,7 +124,7 @@
     "libdb-6.2.dll",
     "libjack64.dll",
     "libcrypto-3-x64.dll",
-    "opendock-tpm.dll"
+    "yougori-tpm.dll"
   ],
-  "reviewedPeInventorySha256": "67554323700f4423cc9ea27e7f363d92fe481eb4a3fede12a99495000ed63478"
+  "reviewedPeInventorySha256": "e4a541adcc4e08711b886f9155212a2e9050b79e3da44010fbd438697d039a13"
 }

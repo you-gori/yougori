@@ -1,4 +1,4 @@
-# OpenDock secure Windows VM runtime
+# Yougori secure Windows VM runtime
 
 Native Windows x64 runtime, built September 2026. No host TPM passthrough,
 simulator control socket, private signing key, or Windows requirement bypass.
@@ -22,14 +22,14 @@ records remain intact; supplementary annotation/equivalence evidence is in
 `compliance/evidence/qemu-modification-notices.json`.
 The firmware configuration disables the interactive shell and network boot,
 and uses QEMU's authenticated variable service without requiring SMM.
-The existing OpenDock `runtime/gpu/egl-bridge.c` is also built for this runtime
+The existing Yougori `runtime/gpu/egl-bridge.c` is also built for this runtime
 to preserve explicit adapter selection; the source-built D3D11-only ANGLE DLL is
 kept separately as `libEGL_angle.dll`. `ANGLE_BUILD.json` and `ANGLE-NOTICES.txt`
 record its source revision, compiler inputs and embedded-component licenses.
 
 The TPM glue replaces the reference test simulator's entropy and NV-storage
 platform and uses Windows BCryptGenRandom. A private BSD-licensed
-`opendock-tpm-worker.exe` loads the reference core and OpenSSL in its own process.
+`yougori-tpm-worker.exe` loads the reference core and OpenSSL in its own process.
 The GPL QEMU backend sends TPM command bytes and lifecycle requests through
 inherited anonymous pipes. QEMU does not load or link the TPM/OpenSSL library.
 There are no TPM listener ports, shared QEMU objects, or host TPM calls.
@@ -68,7 +68,7 @@ https://www.gnu.org/licenses/lgpl-3.0.txt. Compiler/build tools are not bundled.
 `virt-firmware` 25.7 (https://gitlab.com/kraxel/virt-firmware) generates the
 initial JSON variable store. It includes public Microsoft 2011/2023 trust
 certificates, a generated public platform certificate, the Microsoft DBX,
-and the Authenticode hash of exactly OpenDock's installer bootstrap. The
+and the Authenticode hash of exactly Yougori's installer bootstrap. The
 temporary platform private key is neither saved nor distributed.
 
 The binary manifest covers the native binaries, firmware, public-variable

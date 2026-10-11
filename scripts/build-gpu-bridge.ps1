@@ -25,13 +25,13 @@ Push-Location $build
 try {
   & $env:ComSpec /d /c "call `"$vcvars`" >nul && lib /nologo /def:angle-imports.def /machine:x64 /out:angle-imports.lib && cl /nologo /O1 /MT /c /W3 `"$source`" && link /nologo /DLL /NOIMPLIB /NOEXP @egl-exports.rsp egl-bridge.obj angle-imports.lib /OUT:libEGL.dll dxgi.lib dxguid.lib"
   if ($LASTEXITCODE) { throw 'EGL bridge compilation failed' }
-  & $env:ComSpec /d /c "call `"$vcvars`" >nul && cl /nologo /O1 /MT /W3 /DOPENDOCK_GPU_PROBE `"$source`" /Fe:opendock-gpu-probe.exe /link dxgi.lib dxguid.lib"
+  & $env:ComSpec /d /c "call `"$vcvars`" >nul && cl /nologo /O1 /MT /W3 /DYOUGORI_GPU_PROBE `"$source`" /Fe:yougori-gpu-probe.exe /link dxgi.lib dxguid.lib"
   if ($LASTEXITCODE) { throw 'GPU probe compilation failed' }
 } finally { Pop-Location }
 # Preserve the complete upstream library; never replace it with a previous proxy.
 if (-not (Test-Path -LiteralPath $original)) { Copy-Item -LiteralPath $egl -Destination $original }
 Copy-Item -LiteralPath (Join-Path $build 'libEGL.dll') -Destination $egl -Force
-Copy-Item -LiteralPath (Join-Path $build 'opendock-gpu-probe.exe') -Destination $qemu -Force
+Copy-Item -LiteralPath (Join-Path $build 'yougori-gpu-probe.exe') -Destination $qemu -Force
 Copy-Item -LiteralPath (Join-Path $repo 'runtime/gpu/LICENSE') -Destination (Join-Path $qemu 'GPU-BRIDGE-LICENSE.txt')
 $manifest = Join-Path $qemu 'SHA256SUMS'
 $checksums = Get-ChildItem -LiteralPath $qemu -File -Recurse | Where-Object FullName -ne $manifest | Sort-Object FullName | ForEach-Object {

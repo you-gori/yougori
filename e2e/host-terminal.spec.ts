@@ -81,7 +81,7 @@ test("Edit the App opens a separate terminal in the source checkout with editing
   await expect(page.getByRole("region", { name: "Yougori CLI" }).getByRole("tab", { name: "Terminal 1" })).toBeVisible()
   await editButton.click()
   await expect(editor.getByRole("tab", { name: "Terminal 1" })).toBeVisible()
-  const sessions = await page.evaluate(async () => { const path = "/src/api/host-terminal-api.ts"; return (await (await import(path)).hostTerminalApi.info()).sessions })
+  const sessions = await page.evaluate(async () => { const path = "/src/api/host-terminal-api.ts", { hostTerminalApi } = await import(path) as typeof import("../src/api/host-terminal-api"); return (await hostTerminalApi.info()).sessions })
   expect(sessions.some(session => session.sessionId.startsWith("host-edit-") && session.cwd === "C:\\Projects\\yougori")).toBe(true)
   expect(sessions.some(session => !session.sessionId.startsWith("host-edit-") && session.cwd === "C:\\Users\\Test\\Yougori\\Workspace")).toBe(true)
 })

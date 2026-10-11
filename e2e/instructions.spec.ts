@@ -206,7 +206,7 @@ async function checkPlacement(page: Page) {
 }
 async function mockWindowOpening(page: Page, failFirst = false) {
   await page.evaluate(async failFirst => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     let failed = !failFirst
     platformApi.openEnvironmentWindow = async (id: string) => {
       if (!failed) { failed = true; throw new Error("Fixture: window launch failed; retry safely") }
@@ -299,7 +299,7 @@ test("interactive walkthrough creates, connects, opens, installs, runs Hello Wor
   await next(page, "create-submit")
   // An early rejection is reported after closing; retry is explicit.
   await page.evaluate(async () => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     const original = platformApi.createEnvironment
     platformApi.createEnvironment = async () => {
       platformApi.createEnvironment = original
@@ -323,7 +323,7 @@ test("interactive walkthrough creates, connects, opens, installs, runs Hello Wor
   await next(page, "create-resources")
   await next(page, "create-submit")
   await page.evaluate(async () => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     const original = platformApi.createEnvironment
     platformApi.createEnvironment = async (request: Parameters<typeof original>[0]) => {
       const pending = await original(request)
@@ -373,7 +373,7 @@ test("interactive walkthrough creates, connects, opens, installs, runs Hello Wor
   await next(first, "install")
   await expect(first.locator('[data-tour="install-tools"]')).toBeEnabled()
   await first.evaluate(async () => {
-    const path = "/src/api/workspace-api.ts", { workspaceApi } = await import(path)
+    const path = "/src/api/workspace-api.ts", { workspaceApi } = await import(path) as typeof import("../src/api/workspace-api")
     const original = workspaceApi.terminal
     const writes: string[] = []; Object.assign(window, { tutorialWrites: writes })
     workspaceApi.terminal = (...args: Parameters<typeof original>) => { if (args[2] === "write") writes.push(atob(args[3]?.data ?? "")); return original(...args) }
@@ -395,7 +395,7 @@ test("interactive walkthrough creates, connects, opens, installs, runs Hello Wor
   await expect(first.locator(".tour-card")).toHaveCount(0)
   await next(second, "environment-switcher")
   await second.evaluate(async () => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     const commands: { id: string; command: string }[] = []
     Object.assign(window, { websiteCommands: commands })
     platformApi.executeEnvironmentCommand = async (id: string, command: string) => {
@@ -410,7 +410,7 @@ test("interactive walkthrough creates, connects, opens, installs, runs Hello Wor
   expect(await second.evaluate(() => (window as unknown as { websiteCommands: { id: string }[] }).websiteCommands.map(item => item.id))).toEqual([environment.id])
   await step(second, "demo-start")
   await second.evaluate(async () => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     const run = JSON.parse(localStorage.getItem("yougori.instructions.v1")!).run
     platformApi.executeEnvironmentCommand = async (id: string, command: string) => {
       (window as unknown as { websiteCommands: { id: string; command: string }[] }).websiteCommands.push({ id, command })
@@ -441,7 +441,7 @@ test("interactive walkthrough creates, connects, opens, installs, runs Hello Wor
   await options.getByRole("radio", { name: "Public access / Cloudflare Tunnel", exact: true }).check()
   await expect(options.getByRole("radio", { name: "Quick link — no account", exact: true })).toBeChecked()
   await page.evaluate(async () => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     const workspacePath = "/src/api/workspace-api.ts", { workspaceApi } = await import(workspacePath)
     const run = JSON.parse(localStorage.getItem("yougori.instructions.v1")!).run
     const checks = { ready: false, publications: 0 }
@@ -514,7 +514,7 @@ test("automatic website setup touches only the tutorial container and cannot res
   await openWebsitePortGuide(page)
   await page.evaluate(async () => {
     const tourPath = "/src/lib/instructions-tour.ts", { changeTour } = await import(tourPath)
-    const apiPath = "/src/api/platform-api.ts", { platformApi } = await import(apiPath)
+    const apiPath = "/src/api/platform-api.ts", { platformApi } = await import(apiPath) as typeof import("../src/api/platform-api")
     const original = JSON.parse(localStorage.getItem("yougori.platform.v1")!)
     original.environments.push({ ...original.environments[0], id: "env-unrelated", name: "Existing project" })
     localStorage.setItem("yougori.platform.v1", JSON.stringify(original))
@@ -578,7 +578,7 @@ test("Skip during the website preflight cancels publication and keeps normal dia
   const options = page.locator("[data-service-options]")
   await options.getByRole("radio", { name: "Public access / Cloudflare Tunnel", exact: true }).check()
   await page.evaluate(async () => {
-    const path = "/src/api/platform-api.ts", { platformApi } = await import(path)
+    const path = "/src/api/platform-api.ts", { platformApi } = await import(path) as typeof import("../src/api/platform-api")
     const workspacePath = "/src/api/workspace-api.ts", { workspaceApi } = await import(workspacePath)
     const run = JSON.parse(localStorage.getItem("yougori.instructions.v1")!).run
     platformApi.executeEnvironmentCommand = () => new Promise(resolve => Object.assign(window, { finishDemoCheck: () => resolve({ exitCode: 0, stdout: `yougori-hello-${run}`, stderr: "" }) }))

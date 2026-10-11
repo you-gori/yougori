@@ -25,7 +25,7 @@ fn fixture() -> (Vec<u8>, Vec<u8>) {
 fn streaming_snapshot_is_a_valid_oci_archive_with_preserved_configuration() {
     let directory = tempfile::tempdir().unwrap();
     let (wire, rootfs) = fixture();
-    let (file, size, checksum) = build_archive(wire.as_slice(), NamedTempFile::new_in(directory.path()).unwrap(), directory.path(), "opendock.local/snapshots:test").unwrap();
+    let (file, size, checksum) = build_archive(wire.as_slice(), NamedTempFile::new_in(directory.path()).unwrap(), directory.path(), "yougori.local/snapshots:test").unwrap();
     let bytes = std::fs::read(file.path()).unwrap();
     assert_eq!(size, bytes.len() as u64);
     assert_eq!(checksum, hex::encode(Sha256::digest(&bytes)));
@@ -45,7 +45,7 @@ fn streaming_snapshot_is_a_valid_oci_archive_with_preserved_configuration() {
         data
     };
     let index: Value = serde_json::from_slice(&files["index.json"]).unwrap();
-    assert_eq!(index["manifests"][0]["annotations"]["io.containerd.image.name"], "opendock.local/snapshots:test");
+    assert_eq!(index["manifests"][0]["annotations"]["io.containerd.image.name"], "yougori.local/snapshots:test");
     let manifest: Value = serde_json::from_slice(blob(&index["manifests"][0])).unwrap();
     let config: Value = serde_json::from_slice(blob(&manifest["config"])).unwrap();
     assert_eq!(config["config"]["WorkingDir"], "/project");
@@ -70,7 +70,7 @@ fn failed_snapshot_streams_leave_no_archive() {
     let mut extra = wire.clone();
     extra.extend(b"trailing incomplete export");
     for bad in [wire[..wire.len() - 8].to_vec(), corrupt, extra, b"wrong version".to_vec()] {
-        assert!(build_archive(bad.as_slice(), NamedTempFile::new_in(directory.path()).unwrap(), directory.path(), "opendock.local/snapshots:test").is_err());
+        assert!(build_archive(bad.as_slice(), NamedTempFile::new_in(directory.path()).unwrap(), directory.path(), "yougori.local/snapshots:test").is_err());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 }

@@ -23,7 +23,7 @@ $sender=$ast.Find({param($node) $node -is [Management.Automation.Language.Functi
 $script:OriginalSender=(Get-Item Function:Send-CudaPayload).ScriptBlock
 $script:Calls=0;$script:Diagnostics='';$script:Endpoint=$null
 $script:TestDistro=$Distro;$script:Mode=$Mode
-$distro='OpenDock-CUDA-123456abcdef'
+$distro='Yougori-CUDA-123456abcdef'
 $script:ProductionDistro=$distro
 if($Mode -eq 'guard'){$distro='bad distro "quoted"'}
 function Send-CudaPayload([Diagnostics.ProcessStartInfo]$StartInfo,[string]$Archive){
@@ -41,7 +41,7 @@ $assignment=$ast.Find({param($node) $node -is [Management.Automation.Language.As
 $preflight=Invoke-Expression $assignment.Right.Extent.Text
 if($ScriptFile){$preflight=[IO.File]::ReadAllText($ScriptFile)}
 $staging=$Staging
-$guard=$ast.Find({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text.Contains("distro -cnotmatch '^OpenDock-CUDA-")},$true)
+$guard=$ast.Find({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text.Contains("distro -cnotmatch '^Yougori-CUDA-")},$true)
 $path=$ast.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$preflightPath'},$true)
 $write=$ast.Find({param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Extent.Text.StartsWith('[IO.File]::WriteAllText($preflightPath,')},$true)
 $send=$ast.Find({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Send-CudaPayload' -and $node.Extent.Text.Contains('/bin/sh -s')},$true)

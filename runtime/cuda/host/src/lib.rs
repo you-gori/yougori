@@ -63,15 +63,127 @@ fn identity(directory: &Path) -> Result<(String, String), String> {
         return Err("CUDA storage must be a dedicated absolute directory".into());
     }
     let absolute = std::path::absolute(directory).map_err(|e| e.to_string())?;
-    let normalized = absolute
-        .to_string_lossy()
-        .trim_start_matches("\\\\?\\")
-        .trim_end_matches(['\\', '/'])
-        .to_lowercase();
+    let absolute = absolute.to_string_lossy();
+    // install.ps1 and verify-owned.ps1 derive the same name: Get-CudaWindowsPath drops the
+    // extended-length prefix (a UNC share stays \\server\share), and the digest input uses
+    // .NET's ToLowerInvariant, which is Windows' invariant-locale lowercasing.
+    let plain = match absolute.strip_prefix("\\\\?\\UNC\\") {
+        Some(share) => format!("\\\\{share}"),
+        None => absolute.trim_start_matches("\\\\?\\").to_owned(),
+    };
     #[cfg(windows)]
-    let normalized = normalized.replace('/', "\\");
+    let plain = plain.replace('/', "\\");
+    let normalized = invariant_lowercase(plain.trim_end_matches(['\\', '/']));
     let digest = hex::encode(Sha256::digest(normalized.as_bytes()));
-    Ok((format!("OpenDock-CUDA-{}", &digest[..12]), digest))
+    Ok((format!("Yougori-CUDA-{}", &digest[..12]), digest))
+}
+
+/// Lowercases like .NET's `ToLowerInvariant` in Windows PowerShell: per UTF-16 unit with the
+/// invariant locale, without Unicode special casing (no final sigma; U+0130 is unchanged).
+#[cfg(windows)]
+fn invariant_lowercase(text: &str) -> String {
+    use windows_sys::Win32::Globalization::{LCMapStringEx, LCMAP_LOWERCASE, LOCALE_NAME_INVARIANT};
+    let source: Vec<u16> = text.encode_utf16().collect();
+    if source.is_empty() {
+        return String::new();
+    }
+    unsafe {
+        let map = |output: *mut u16, length: i32| LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE,
+            source.as_ptr(), source.len() as i32, output, length, std::ptr::null(), std::ptr::null(), 0);
+        let needed = map(std::ptr::null_mut(), 0);
+        if needed > 0 {
+            let mut output = vec![0u16; needed as usize];
+            let written = map(output.as_mut_ptr(), needed);
+            if written > 0 {
+                return String::from_utf16_lossy(&output[..written as usize]);
+            }
+        }
+    }
+    text.to_lowercase()
+}
+#[cfg(not(windows))]
+fn invariant_lowercase(text: &str) -> String {
+    text.to_lowercase()
+}
+
+/// WSL relays Windows' 127.0.0.1:PORT to the guest agent (NAT networking), or the guest owns it
+/// directly (mirrored networking). The bearer token is sent only when no other Windows process
+/// listens on that port: one that grabbed it after the free port was chosen could collect the token.
+/// This process itself is not another party.
+#[cfg(windows)]
+fn trusted_listener(port: u16) -> bool {
+    use windows_sys::Win32::NetworkManagement::IpHelper::*;
+    let mut owners = Vec::new();
+    for family in [2u32, 23u32] {
+        let mut size = 0u32;
+        // u64 storage keeps the table aligned for its DWORD rows.
+        let mut table = Vec::<u64>::new();
+        let status = loop {
+            let status = unsafe {
+                GetExtendedTcpTable(table.as_mut_ptr().cast(), &mut size, 0, family, TCP_TABLE_OWNER_PID_LISTENER, 0)
+            };
+            if status != 122 || table.len() * 8 >= size as usize {
+                break status;
+            }
+            table = vec![0u64; (size as usize).div_ceil(8)];
+        };
+        if status != 0 {
+            return false;
+        }
+        unsafe {
+            if family == 2 {
+                let rows = &*(table.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
+                let rows = std::slice::from_raw_parts(rows.table.as_ptr(), rows.dwNumEntries as usize);
+                owners.extend(rows.iter().filter(|row| {
+                    network_port(row.dwLocalPort) == port && matches!(row.dwLocalAddr.to_ne_bytes(), [127, 0, 0, 1] | [0, 0, 0, 0])
+                }).map(|row| row.dwOwningPid));
+            } else {
+                let rows = &*(table.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
+                let rows = std::slice::from_raw_parts(rows.table.as_ptr(), rows.dwNumEntries as usize);
+                // A dual-stack [::] listener also accepts IPv4 connections to 127.0.0.1.
+                owners.extend(rows.iter().filter(|row| network_port(row.dwLocalPort) == port && row.ucLocalAddr == [0; 16])
+                    .map(|row| row.dwOwningPid));
+            }
+        }
+    }
+    owners.into_iter().all(|pid| pid == std::process::id() || process_image(pid).is_some_and(|image| wsl_relay(&image)))
+}
+#[cfg(not(windows))]
+fn trusted_listener(_port: u16) -> bool {
+    true
+}
+fn network_port(value: u32) -> u16 {
+    u16::from_be(value as u16)
+}
+#[cfg(windows)]
+fn process_image(pid: u32) -> Option<PathBuf> {
+    use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::*};
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut path = vec![0u16; 32768];
+        let mut length = path.len() as u32;
+        let okay = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length);
+        CloseHandle(process);
+        (okay != 0).then(|| PathBuf::from(String::from_utf16_lossy(&path[..length as usize])))
+    }
+}
+/// WSL's own relay, installed in an administrator-protected folder.
+fn wsl_relay(image: &Path) -> bool {
+    let named = image.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        name.eq_ignore_ascii_case("wslrelay.exe") || name.eq_ignore_ascii_case("wslhost.exe")
+    });
+    let folder = image.parent().map(|folder| folder.to_string_lossy().to_lowercase()).unwrap_or_default();
+    named && ["ProgramFiles", "SystemRoot"].iter().filter_map(|key| std::env::var(key).ok()).any(|root| {
+        let root = root.trim_end_matches('\\').to_lowercase();
+        !root.is_empty() && folder.starts_with(&format!("{root}\\"))
+    })
+}
+fn endpoint_port(base_url: &str) -> Option<u16> {
+    base_url.rsplit(':').next()?.parse().ok()
 }
 
 fn hidden(program: &str) -> Command {
@@ -123,14 +235,18 @@ impl CudaRuntime {
     /// app data folder was renamed, but WSL still owns the disk at its original
     /// path. Restore only that exact moved installation; never rewrite a CUDA
     /// identity or register an unverified disk under another distribution.
-    pub fn restore_relocated_installation(current: &Path, original: &Path) -> Result<bool, String> {
+    /// `legacy_prefix` is the distribution-name prefix earlier releases used; such an
+    /// installation is renamed once its disk is back in place.
+    pub fn restore_relocated_installation(current: &Path, original: &Path, legacy_prefix: &str) -> Result<bool, String> {
         let manifest = current.join("installed.json");
         if !manifest.is_file() || original.exists() { return Ok(false); }
         let bytes = fs::read(&manifest).map_err(|e| format!("Read moved CUDA installation: {e}"))?;
         if bytes.len() > 4096 { return Ok(false); }
-        let installed: Installed = match serde_json::from_slice(&bytes) { Ok(value) => value, Err(_) => return Ok(false) };
+        let mut installed: Installed = match serde_json::from_slice(&bytes) { Ok(value) => value, Err(_) => return Ok(false) };
         let (original_name, original_digest) = identity(original)?;
-        if installed.version != 1 || installed.distribution != original_name || installed.identity != original_digest {
+        let legacy_name = format!("{legacy_prefix}{}", &original_digest[..12]);
+        let legacy = installed.distribution == legacy_name;
+        if installed.version != 1 || (installed.distribution != original_name && !legacy) || installed.identity != original_digest {
             return Ok(false);
         }
         for path in [current, &current.join("distribution"), &current.join("distribution/ext4.vhdx")] {
@@ -149,6 +265,10 @@ impl CudaRuntime {
         }
         fs::rename(current, original).map_err(|e| format!("Restore CUDA disk to its WSL-registered directory: {e}"))?;
         let verify = (|| {
+            if legacy {
+                CudaRuntime::rename_legacy_distribution(original, legacy_prefix)?;
+                installed.distribution = original_name.clone();
+            }
             CudaRuntime::new(original.to_owned())?.installation()?;
             let bootstrap = original.join("bootstrap");
             fs::create_dir_all(&bootstrap).map_err(|e| e.to_string())?;
@@ -177,6 +297,48 @@ impl CudaRuntime {
         Ok(true)
     }
 
+    /// Earlier releases registered this storage's WSL distribution under another
+    /// product name, `{legacy_prefix}{digest}`. Rename that exact registration to the
+    /// current name and record it, so the installation verifies again. The disk is
+    /// not moved or copied. Returns whether a distribution was renamed.
+    pub fn rename_legacy_distribution(directory: &Path, legacy_prefix: &str) -> Result<bool, String> {
+        let manifest = directory.join("installed.json");
+        if !cfg!(windows) || !manifest.is_file() { return Ok(false); }
+        let bytes = fs::read(&manifest).map_err(|e| format!("Read CUDA installation: {e}"))?;
+        if bytes.len() > 4096 { return Ok(false); }
+        let Ok(mut installed) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return Ok(false) };
+        let (name, digest) = identity(directory)?;
+        let legacy = format!("{legacy_prefix}{}", &digest[..12]);
+        if installed["version"] != 1 || installed["identity"] != digest.as_str() || installed["distribution"] != legacy.as_str() {
+            return Ok(false);
+        }
+        let bootstrap = directory.join("bootstrap");
+        fs::create_dir_all(&bootstrap).map_err(|e| e.to_string())?;
+        fs::write(bootstrap.join("rename-distribution.ps1"), include_str!("../../rename-distribution.ps1")).map_err(|e| e.to_string())?;
+        fs::write(bootstrap.join("paths.ps1"), include_str!("../../paths.ps1")).map_err(|e| e.to_string())?;
+        let mut command = std::process::Command::new("powershell.exe");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let status = command.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(bootstrap.join("rename-distribution.ps1"))
+            .arg("-DataDirectory").arg(directory)
+            .arg("-From").arg(&legacy)
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map_err(|e| format!("Rename CUDA distribution: {e}"))?;
+        if !status.success() {
+            return Err("The CUDA distribution from an earlier release could not be renamed. Its disk was not changed.".into());
+        }
+        installed["distribution"] = name.into();
+        let temporary = directory.join("installed.json.rename");
+        fs::write(&temporary, serde_json::to_vec(&installed).map_err(|e| e.to_string())?)
+            .and_then(|()| fs::rename(&temporary, &manifest))
+            .map_err(|e| format!("Record renamed CUDA distribution: {e}"))?;
+        Ok(true)
+    }
+
     fn ownership(&self) -> Result<std::fs::File, String> {
         std::fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
         let mut options = std::fs::OpenOptions::new();
@@ -188,7 +350,7 @@ impl CudaRuntime {
         }
         options.open(self.directory.join("runtime-owner.lock")).map_err(|error| {
             if error.raw_os_error() == Some(32) || error.raw_os_error() == Some(33) {
-                "[OPENDOCK_RUNTIME_BUSY] Another live Yougori instance owns this CUDA runtime. Close that instance normally; its containers were not interrupted.".into()
+                "[YOUGORI_RUNTIME_BUSY] Another live Yougori instance owns this CUDA runtime. Close that instance normally; its containers were not interrupted.".into()
             } else { format!("Lock CUDA runtime: {error}") }
         })
     }
@@ -525,7 +687,7 @@ impl CudaRuntime {
         if cleanup_agent.is_some() {
             command.arg("-c").arg(include_str!("../../cleanup.sh").replace("\r\n", "\n")).arg("yougori-cleanup");
         } else {
-            command.arg("/usr/local/sbin/opendock-cuda-start");
+            command.arg("/usr/local/sbin/yougori-cuda-start");
         }
         command.stdin(Stdio::piped())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -563,8 +725,8 @@ impl CudaRuntime {
                 let log =
                     std::fs::read_to_string(self.directory.join("runtime.log")).unwrap_or_default();
                 if log.contains("already owned by another Yougori process")
-                    || log.contains("already owned by another OpenDock process") {
-                    return Err("[OPENDOCK_RUNTIME_BUSY] An abandoned Yougori CUDA runtime is still running. Press Stop to recover it. A runtime owned by another live app will not be stopped.".into());
+                    || log.contains("already owned by another Yougori process") {
+                    return Err("[YOUGORI_RUNTIME_BUSY] An abandoned Yougori CUDA runtime is still running. Press Stop to recover it. A runtime owned by another live app will not be stopped.".into());
                 }
                 return Err(startup_failure(&log, &self.directory.join("runtime.log"), cleanup_agent.is_some()));
             }
@@ -579,6 +741,9 @@ impl CudaRuntime {
     }
 
     async fn health(&self, endpoint: &Endpoint) -> bool {
+        if !endpoint_port(&endpoint.base_url).is_some_and(trusted_listener) {
+            return false;
+        }
         self.client
             .get(format!("{}/v1/health", endpoint.base_url))
             .bearer_auth(&endpoint.token)
@@ -677,7 +842,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "compacts only the explicitly prepared idle integration-runtime VHDX"]
     async fn compact_pretrimmed_test_disk() -> Result<(), String> {
-        let path = PathBuf::from(std::env::var("OPENDOCK_CUDA_TEST_ROOT").map_err(|_| "test root required")?);
+        let path = PathBuf::from(std::env::var("YOUGORI_CUDA_TEST_ROOT").map_err(|_| "test root required")?);
         let expected = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../build/cuda/integration-runtime").canonicalize().map_err(|e| e.to_string())?;
         if path.canonicalize().map_err(|e| e.to_string())? != expected { return Err("Refusing user CUDA disk".into()); }
         let runtime = CudaRuntime::new(path)?;
@@ -758,9 +923,9 @@ mod tests {
     fn setup_errors_report_the_actual_failure_without_blaming_prerequisites() {
         let directory = tempfile::tempdir().unwrap();
         let log = directory.path().join("setup.log");
-        std::fs::write(&log, format!("{}\n\0YOUGORI_CUDA_SETUP_ERROR: CUDA setup file is missing: C:\\Example\\opendock-mount-helper\nPowerShell diagnostic details\n", "download progress\n".repeat(2000))).unwrap();
+        std::fs::write(&log, format!("{}\n\0YOUGORI_CUDA_SETUP_ERROR: CUDA setup file is missing: C:\\Example\\yougori-mount-helper\nPowerShell diagnostic details\n", "download progress\n".repeat(2000))).unwrap();
         let message = setup_failure(&log);
-        assert!(message.contains("CUDA setup file is missing: C:\\Example\\opendock-mount-helper"));
+        assert!(message.contains("CUDA setup file is missing: C:\\Example\\yougori-mount-helper"));
         assert!(message.contains("Existing container disks were kept"));
         assert!(!message.contains("driver"));
         assert!(!message.contains("download progress"));
@@ -770,8 +935,8 @@ mod tests {
     fn names_are_stable_scoped_and_never_shell_arguments() {
         let directory = std::env::temp_dir().join("Yougori CUDA test");
         let (name, digest) = identity(&directory).unwrap();
-        assert!(name.starts_with("OpenDock-CUDA-"));
-        assert_eq!(name.len(), 26);
+        assert!(name.starts_with("Yougori-CUDA-"));
+        assert_eq!(name.len(), "Yougori-CUDA-".len() + 12);
         assert_eq!(digest.len(), 64);
         assert_ne!(identity(&directory.join("other")).unwrap().0, name);
         assert!(identity(Path::new("relative")).is_err());
@@ -785,6 +950,53 @@ mod tests {
                 identity(Path::new("\\\\?\\C:\\Users\\Test\\CUDA")).unwrap(),
                 identity(Path::new("c:\\users\\test\\cuda")).unwrap()
             );
+            assert_eq!(
+                identity(Path::new("\\\\?\\UNC\\Server\\Share\\CUDA")).unwrap(),
+                identity(Path::new("\\\\server\\share\\cuda")).unwrap()
+            );
+        }
+    }
+    #[test]
+    #[cfg(windows)]
+    fn names_match_windows_powershell_lowercasing() {
+        // .NET's ToLowerInvariant keeps U+0130, maps every capital sigma to σ and leaves
+        // Kelvin/Ohm signs alone; Rust's Unicode lowercasing differs on each.
+        assert_eq!(invariant_lowercase("C:\\Users\\\u{130}brahim\\\u{3A3}\u{391}\u{3A3}"), "c:\\users\\\u{130}brahim\\\u{3C3}\u{3B1}\u{3C3}");
+        let script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); [Console]::Write($env:YOUGORI_CASE_FIXTURE.ToLowerInvariant())";
+        let sample = "C:\\Data\\\u{130}\u{3A3}\u{391}\u{3A3}\\\u{212A}\u{2126}\u{1E9E}\u{10A0}\u{1C90}\u{13A0}\\\u{10400}End";
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("YOUGORI_CASE_FIXTURE", sample)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), invariant_lowercase(sample));
+    }
+    #[test]
+    fn the_runtime_token_goes_only_to_wsl() {
+        assert_eq!(endpoint_port("http://127.0.0.1:49519"), Some(49519));
+        assert_eq!(network_port(u32::from(49519u16.to_be())), 49519);
+        #[cfg(windows)]
+        {
+            let program_files = std::env::var("ProgramFiles").unwrap();
+            assert!(wsl_relay(&Path::new(&program_files).join("WSL").join("wslrelay.exe")));
+            assert!(!wsl_relay(&std::env::temp_dir().join("wslrelay.exe")));
+            assert!(!wsl_relay(&Path::new(&program_files).join("WSL").join("relay.exe")));
+            // Another Windows process holding the agent's port is never sent the token.
+            let mut impostor = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", "$l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0); $l.Start(); [Console]::Out.WriteLine($l.LocalEndpoint.Port); [Console]::Out.Flush(); Start-Sleep -Seconds 30"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut std::io::BufReader::new(impostor.stdout.take().unwrap()), &mut line).unwrap();
+            let port: u16 = line.trim().parse().unwrap();
+            assert!(!trusted_listener(port));
+            impostor.kill().unwrap();
+            impostor.wait().unwrap();
+            assert!(trusted_listener(port));
+            let own = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+            assert!(trusted_listener(own.local_addr().unwrap().port()));
         }
     }
     #[test]
@@ -833,9 +1045,25 @@ mod tests {
         fs::write(current.join("installed.json"), serde_json::json!({
             "version": 1, "distribution": name, "identity": digest
         }).to_string()).unwrap();
-        assert!(!CudaRuntime::restore_relocated_installation(&current, &original).unwrap());
+        assert!(!CudaRuntime::restore_relocated_installation(&current, &original, "Earlier-CUDA-").unwrap());
         assert_eq!(fs::read(current.join("distribution/ext4.vhdx")).unwrap(), b"test disk");
         assert!(!original.exists());
+    }
+
+    #[test]
+    fn only_an_exact_earlier_distribution_name_is_renamed() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("runtime/cuda");
+        fs::create_dir_all(&directory).unwrap();
+        assert!(!CudaRuntime::rename_legacy_distribution(&directory, "Earlier-CUDA-").unwrap());
+        let (name, digest) = identity(&directory).unwrap();
+        for distribution in [name.clone(), "Ubuntu-22.04".into(), format!("Earlier-CUDA-{}", &digest[..11])] {
+            let manifest = serde_json::json!({"version": 1, "distribution": distribution, "identity": digest}).to_string();
+            fs::write(directory.join("installed.json"), &manifest).unwrap();
+            // Nothing matches, so no WSL command runs and the manifest is unchanged.
+            assert!(!CudaRuntime::rename_legacy_distribution(&directory, "Earlier-CUDA-").unwrap());
+            assert_eq!(fs::read_to_string(directory.join("installed.json")).unwrap(), manifest);
+        }
     }
 
     #[cfg(windows)]
@@ -890,7 +1118,7 @@ mod tests {
         fs::create_dir(&root).map_err(|error| format!("Recovery fixture must be a new directory: {error}"))?;
         let fixture_id = root.file_name().unwrap().to_string_lossy().to_string();
         fs::write(root.join("yougori-recovery-fixture.txt"), &fixture_id).map_err(|error| error.to_string())?;
-        let payload = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../src-tauri/resources/runtime/cuda/opendock-agent").canonicalize().map_err(|error| error.to_string())?;
+        let payload = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../src-tauri/resources/runtime/cuda/yougori-agent").canonicalize().map_err(|error| error.to_string())?;
         let runtime = CudaRuntime::new(root.clone())?;
         runtime.install(&payload).await?;
         let result = async {
@@ -948,8 +1176,8 @@ mod tests {
     #[ignore = "requires the explicitly installed build/cuda/integration-runtime test distribution"]
     async fn native_lifecycle_runs_cuda_and_preserves_data_on_shutdown() -> Result<(), String> {
         let root = PathBuf::from(
-            std::env::var("OPENDOCK_CUDA_TEST_ROOT")
-                .map_err(|_| "Set OPENDOCK_CUDA_TEST_ROOT to the dedicated test runtime")?,
+            std::env::var("YOUGORI_CUDA_TEST_ROOT")
+                .map_err(|_| "Set YOUGORI_CUDA_TEST_ROOT to the dedicated test runtime")?,
         );
         let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../build/cuda/integration-runtime")
@@ -992,14 +1220,14 @@ mod tests {
         let result = async {
             post(&client, &endpoint, "/v1/containers/provision", serde_json::json!({"id":id,"image":"docker.io/library/python:3.12-slim","command":"sleep 2147483647","cpus":1,"memoryBytes":536870912,"networkAccess":false,"gpuAccess":true})).await?;
             post(&client, &endpoint, "/v1/containers/action", serde_json::json!({"id":id,"action":"start","networkAccess":false})).await?;
-            let command = format!("printf survived > /root/opendock-shutdown-test\npython3 - <<'OPENDOCK_CUDA_PROBE'\n{}\nOPENDOCK_CUDA_PROBE", include_str!("../../kernel-probe.py"));
+            let command = format!("printf survived > /root/yougori-shutdown-test\npython3 - <<'YOUGORI_CUDA_PROBE'\n{}\nYOUGORI_CUDA_PROBE", include_str!("../../kernel-probe.py"));
             let reply = post(&client, &endpoint, "/v1/containers/exec", serde_json::json!({"id":id,"command":command})).await?;
             if reply["exitCode"] != 0 || !reply["stdout"].as_str().unwrap_or_default().contains("CUDA KERNEL PASS") { return Err(reply.to_string()); }
             runtime.shutdown().await?;
             if runtime.status().await.running { return Err("Runtime remained running after shutdown".into()); }
             let endpoint = runtime.ensure_started().await?;
             post(&client, &endpoint, "/v1/containers/action", serde_json::json!({"id":id,"action":"start","networkAccess":false})).await?;
-            let reply = post(&client, &endpoint, "/v1/containers/exec", serde_json::json!({"id":id,"command":"test -f /root/opendock-shutdown-test && test -e /dev/dxg"})).await?;
+            let reply = post(&client, &endpoint, "/v1/containers/exec", serde_json::json!({"id":id,"command":"test -f /root/yougori-shutdown-test && test -e /dev/dxg"})).await?;
             if reply["exitCode"] != 0 { return Err("CUDA container did not survive full runtime shutdown".into()); }
             Ok(())
         }.await;

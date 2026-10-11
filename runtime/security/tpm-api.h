@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
-#ifndef OPENDOCK_TPM_API_H
-#define OPENDOCK_TPM_API_H
+#ifndef YOUGORI_TPM_API_H
+#define YOUGORI_TPM_API_H
 #include <stdint.h>
 
 /* Private ABI inside the TPM worker and initialization/test tools. QEMU uses

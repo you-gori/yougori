@@ -271,6 +271,7 @@ impl Live {
 
     pub(super) async fn sync_databases_direction(&mut self, two_way: bool, direction: sync::Direction) -> Result<usize, String> {
         let filter = sync::Filter::load(&self.folder, self.env_files)?;
+        let filter = if two_way { filter.two_way() } else { filter };
         self.database_files.retain(|p| !filter.excluded(p, false));
         let mut changed = 0;
         let mut errors = Vec::new();
@@ -278,6 +279,15 @@ impl Live {
         if paths.is_empty() { return Ok(0); }
         let progress = ui::task("Syncing project databases");
         for (index, path) in paths.iter().enumerate() {
+            if two_way {
+                // Record writes on this computer follow the same name rules as files.
+                if self.is_held(path) { continue; }
+                if let Err(error) = two_way::host_target(&self.folder, path) {
+                    self.warn_once(format!("Database sync skipped {}: {}", clean(path), clean(&error)));
+                    continue;
+                }
+            }
+            self.pump().await?;
             progress.detail(&format!("{} / {} · {}", index + 1, paths.len(), clean(path)));
             match self.sync_database(path, two_way, direction, &progress).await {
                 Ok(count) => changed += count,

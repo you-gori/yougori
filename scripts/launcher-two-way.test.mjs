@@ -81,8 +81,8 @@ test('listing an open WAL database preserves SQLite locks and commits stay visib
   const inventory=call({op:'sqlite-scan',path:'records.sqlite',offset:0})
   assert.ok(existsSync(file+'-wal'))
   // Header probes must not open/close DB or SHM descriptors in the SQL process.
-  const listing=call({op:'list',path:'',offset:0})
-  assert.equal(listing.entries.find(e=>e.name==='records.sqlite').kind,'sqlite')
+  const listing=call({op:'tree',cursor:null,offset:0,prune:[]})
+  assert.equal(listing.entries.find(e=>e.path==='records.sqlite').kind,'sqlite')
   assert.ok(app("SELECT value FROM records WHERE id='base'").includes('from app'))
   assert.ok(existsSync(file+'-wal'),'another app unlinked the sync helper’s open WAL')
   const [key,expected]=inventory.entries[0]
@@ -224,7 +224,21 @@ test('files above 256 MiB upload, hash and read without loading the whole file i
 })
 test('invalid paths, changed file types, oversized chunks and wrong checksums are rejected', t => {
   const {root, call} = fixture(t)
-  for (const path of ['../escape','/absolute','a/../../b','a\\b','a:stream']) assert.throws(() => call({op:'begin',path,expected:null}), /path/)
+  const invalid = ['../escape','/absolute','a/../../b','a\\b','a/./b','a//b','nul\0byte','line\nbreak','.yougori-sync-temp','x'.repeat(4097)]
+  // Linux containers store ':' in names (the PC decides whether it can); on
+  // Windows it would address an NTFS stream.
+  if (process.platform === 'win32') invalid.push('a:stream')
+  for (const path of invalid) {
+    for (const r of [{op:'begin',path,expected:null},{op:'hash',path},{op:'read',path,offset:0},{op:'delete',path,expected:null},{op:'hashes',paths:[path]}]) {
+      assert.throws(() => call(r), /path/, `${r.op} ${JSON.stringify(path)}`)
+    }
+  }
+  if (process.platform !== 'win32') {
+    call({op:'begin',path:'app-12:00.log',expected:null})
+    call({op:'chunk',data:Buffer.from('log').toString('base64')})
+    call({op:'commit',hash:digest('log')})
+    assert.equal(call({op:'hash',path:'app-12:00.log'}).hash, digest('log'))
+  }
   mkdirSync(join(root,'folder'))
   assert.throws(() => call({op:'delete',path:'folder',expected:null}), /regular file/)
   call({op:'begin',path:'file',expected:null})
@@ -234,18 +248,67 @@ test('invalid paths, changed file types, oversized chunks and wrong checksums ar
   call({op:'abort'})
   assert.equal(existsSync(join(root,'file')), false)
 })
-test('directory listing is paged, new files are discovered, and internal staging files stay hidden', t => {
+function inventory(call, prune = []) {
+  const entries = []
+  let cursor = null, offset = 0, pages = 0
+  for (;;) {
+    const page = call({op:'tree',cursor,offset,prune})
+    // Each reply stays well inside the PC's 256 KiB frame limit once base64-encoded.
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) * 4 / 3 < 256 * 1024)
+    entries.push(...page.entries); cursor = page.cursor; pages += 1
+    if (page.next === null) return { entries, pages }
+    assert.ok(page.next > offset)
+    offset = page.next
+  }
+}
+
+test('workspace inventory is paged, new files are discovered, and internal staging files stay hidden', t => {
   const {root,call} = fixture(t)
-  for (let i=0; i<150; i++) writeFileSync(join(root,`f${i}`),'')
+  mkdirSync(join(root,'many'))
+  const name = i => `${'f'.repeat(160)}-${i}`
+  for (let i=0; i<1200; i++) writeFileSync(join(root,'many',name(i)),'')
   writeFileSync(join(root,'.yougori-sync-temp'),'hidden')
-  let offset=0, names=[]
-  do {
-    const page=call({op:'list',path:'',offset})
-    assert.ok(page.entries.length <= 64)
-    names.push(...page.entries.map(e=>e.name)); offset=page.next
-  } while(offset !== null)
-  assert.equal(names.length,150)
-  assert.equal(new Set(names).size,150)
+  writeFileSync(join(root,'many','.yougori-sync-upload'),'hidden')
+  const first = inventory(call)
+  assert.ok(first.pages > 1, 'large inventories span several replies')
+  const paths = first.entries.map(e => e.path)
+  assert.equal(new Set(paths).size, paths.length)
+  assert.deepEqual(paths.filter(p => p.startsWith('many/')).length, 1200)
+  assert.ok(!paths.some(p => p.split('/').some(part => part.startsWith('.yougori-sync-'))))
+  // Parents come before their contents, and every file carries a change stamp.
+  assert.ok(paths.indexOf('many') < paths.indexOf(`many/${name(0)}`))
+  assert.ok(first.entries.filter(e => e.kind === 'file').every(e => /^\d+:\d+:\d+:\d+$/.test(e.stamp)))
+  // A page from an earlier or unknown inventory is refused rather than mixed in.
+  assert.throws(() => call({op:'tree',cursor:'stale',offset:5,prune:[]}), /expired/)
+  writeFileSync(join(root,'many','added-later'),'new')
+  assert.ok(inventory(call).entries.some(e => e.path === 'many/added-later'))
+  const before = first.entries.find(e => e.path === `many/${name(0)}`).stamp
+  writeFileSync(join(root,'many',name(0)),'edited')
+  assert.notEqual(inventory(call).entries.find(e => e.path === `many/${name(0)}`).stamp, before)
+})
+
+test('workspace inventory reports host-only folders and links without entering them', t => {
+  const {root,call} = fixture(t)
+  const outside = mkdtempSync(join(tmpdir(),'yougori-inventory-outside-'))
+  t.after(() => rmSync(outside,{recursive:true,force:true}))
+  writeFileSync(join(outside,'private'),'outside the workspace')
+  for (const folder of ['node_modules/pkg','.git/hooks','app/node_modules/.bin','src/.GIT','src/.g\u200cit','.venv/bin','lib/__pycache__']) mkdirSync(join(root,folder),{recursive:true})
+  for (const file of ['node_modules/pkg/index.js','.git/hooks/pre-commit','app/node_modules/.bin/tool','src/.GIT/config','src/.g\u200cit/HEAD','.venv/bin/python','lib/__pycache__/a.pyc','src/app.js','app/package.json']) writeFileSync(join(root,file),'x')
+  symlinkSync(outside,join(root,'linked'),process.platform === 'win32' ? 'junction' : 'dir')
+  const prune = ['.git','.hg','.svn','node_modules','.venv','venv','__pycache__']
+  const { entries } = inventory(call, prune)
+  const byPath = Object.fromEntries(entries.map(e => [e.path, e]))
+  for (const folder of ['node_modules','.git','app/node_modules','src/.GIT','src/.g\u200cit','.venv','lib/__pycache__']) {
+    assert.deepEqual(byPath[folder], {path:folder,kind:'dir',pruned:true}, folder)
+    assert.ok(!entries.some(e => e.path.startsWith(`${folder}/`)), `${folder} was entered`)
+  }
+  assert.equal(byPath.linked.kind, 'link')
+  assert.ok(!entries.some(e => e.path.startsWith('linked/')))
+  for (const file of ['src/app.js','app/package.json']) assert.equal(byPath[file].kind, 'file')
+  assert.equal(readFileSync(join(outside,'private'),'utf8'),'outside the workspace')
+  // Without a prune list the same folders are inventoried normally.
+  assert.ok(inventory(call).entries.some(e => e.path === 'node_modules/pkg/index.js'))
+  assert.throws(() => call({op:'tree',cursor:null,offset:0,prune:'node_modules'}), /Invalid/)
 })
 test('directory symlinks and Windows junctions cannot redirect reads or writes', t => {
   const {root,call} = fixture(t)

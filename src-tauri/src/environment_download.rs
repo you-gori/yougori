@@ -108,10 +108,12 @@ impl Downloads {
         for link in self.live.lock().await.values_mut().filter(|link| link.owner == owner_id) { link.seen = Instant::now(); }
         self.list(store).await
     }
-    pub(crate) async fn stop(&self, environment_id: &str) {
+    /// Reports whether a live or preparing link existed; queued starts are cancelled either way.
+    pub(crate) async fn stop(&self, environment_id: &str) -> bool {
         if let Ok(mut generations) = self.generations.lock() { let generation = generations.entry(environment_id.into()).or_default(); *generation = generation.wrapping_add(1); }
-        if let Ok(pending) = self.pending.lock() { if let Some(token) = pending.get(environment_id) { token.cancel(); } }
-        self.live.lock().await.remove(environment_id);
+        let mut stopped = false;
+        if let Ok(pending) = self.pending.lock() { if let Some(token) = pending.get(environment_id) { token.cancel(); stopped = true; } }
+        self.live.lock().await.remove(environment_id).is_some() || stopped
     }
     pub(crate) async fn start(&self, request: StartRequest, app: &AppHandle) -> Result<DownloadInfo, String> {
         self.start_generated(request, None, app).await
@@ -329,8 +331,8 @@ pub async fn keep_environment_downloads_alive(owner_id: String, downloads: State
     downloads.keep_alive(&owner_id, &store).await
 }
 #[tauri::command]
-pub async fn stop_environment_download(environment_id: String, downloads: State<'_, Downloads>) -> Result<(), String> {
-    downloads.stop(&environment_id).await; Ok(())
+pub async fn stop_environment_download(environment_id: String, downloads: State<'_, Downloads>) -> Result<bool, String> {
+    Ok(downloads.stop(&environment_id).await)
 }
 
 pub fn start_cleanup(app: &AppHandle) {

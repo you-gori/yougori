@@ -15,9 +15,9 @@ $dump = "$ucrt/objdump.exe"
 $queue = [Collections.Generic.Queue[string]]::new()
 foreach ($file in @(
   "$QemuBuildDirectory/qemu-system-x86_64.exe",
-  "$repo/build/secure-runtime/tpm/opendock-tpm.dll",
-  "$repo/build/secure-runtime/tpm/opendock-tpm-init.exe",
-  "$repo/build/secure-runtime/tpm/opendock-tpm-worker.exe",
+  "$repo/build/secure-runtime/tpm/yougori-tpm.dll",
+  "$repo/build/secure-runtime/tpm/yougori-tpm-init.exe",
+  "$repo/build/secure-runtime/tpm/yougori-tpm-worker.exe",
   "$angle/libEGL.dll", "$angle/libGLESv2.dll"
 )) { $queue.Enqueue($file) }
 $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -64,7 +64,7 @@ Copy-Item -LiteralPath "$repo/build/runtime-cache/edk2-secure-src/License.txt" -
 Copy-Item -LiteralPath "$angle/ANGLE_BUILD.json", "$angle/ANGLE-NOTICES.txt" -Destination $output
 Copy-Item -LiteralPath "$repo/build/runtime-cache/secureboot-objects/License.txt" -Destination "$output/SECUREBOOT-OBJECTS-LICENSE.txt"
 Copy-Item -LiteralPath "$repo/runtime/security/SOURCES.txt" -Destination $output
-Copy-Item -LiteralPath "$repo/runtime/security/LICENSE" -Destination "$output/OPENDOCK-TPM-LICENSE.txt"
+Copy-Item -LiteralPath "$repo/runtime/security/LICENSE" -Destination "$output/YOUGORI-TPM-LICENSE.txt"
 $sourceRecord = [ordered]@{
   schemaVersion = 1
   source = 'https://github.com/qemu/qemu'

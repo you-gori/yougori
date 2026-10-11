@@ -149,6 +149,14 @@ struct MicroVmCommandOutput {
     exit_code: i32,
 }
 
+/// Guest agents that can retire their boot credential report it as "boot"
+/// until the host replaces it; older agents omit the field.
+#[derive(Debug, Default, Deserialize)]
+struct MicroVmHealth {
+    #[serde(default)]
+    credential: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MicroVmSourceManifest {
@@ -245,6 +253,17 @@ impl RuntimeManager {
             }
         }
         self.grow_disk(disk, capacity_gb, false).await
+    }
+
+    async fn live_vm_qmp_port(&self, id: &str) -> Option<u16> {
+        let mut processes = self.vms.lock().await;
+        processes.get_mut(id).and_then(|process| {
+            if process.child.try_wait().ok().flatten().is_none() {
+                Some(process.qmp_port)
+            } else {
+                None
+            }
+        })
     }
 
     pub(super) async fn vm_lifecycle_mutex(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -1187,7 +1206,14 @@ impl RuntimeManager {
         let console=self.start_vm_with_profile(
             id, disk_path, resource_policy, VmLaunchProfile::Micro(manifest, network_access),
         ).await?;
-        self.start_micro_workload(id).await?;
+        if let Err(error) = self.start_micro_workload(id).await {
+            // The environment is reported as failed; do not leave its VM running
+            // and holding CPU, memory and its disk behind that status.
+            if let Err(stop) = self.vm_action(id, "stop").await {
+                return Err(format!("{error}. Stopping the microVM also failed: {stop}"));
+            }
+            return Err(error);
+        }
         Ok(console)
     }
 
@@ -1294,7 +1320,7 @@ impl RuntimeManager {
                         websocket_port,
                         qmp_port,
                         display,
-                        Uuid::new_v4().simple().to_string()[..8].to_owned(),
+                        vnc_console_password(),
                         false,
                         None,
                     )
@@ -1493,6 +1519,142 @@ impl RuntimeManager {
         Err(last_error)
     }
 
+    async fn micro_vm_agent(&self, id: &str) -> Result<AgentEndpoint, String> {
+        let mut processes = self.vms.lock().await;
+        let process = processes
+            .get_mut(id)
+            .ok_or_else(|| "microVM is not running".to_string())?;
+        if process
+            .child
+            .try_wait()
+            .map_err(|error| format!("inspect microVM: {error}"))?
+            .is_some()
+        {
+            return Err("microVM is not running".into());
+        }
+        if !process.is_micro_vm {
+            return Err("commands through the microVM guest agent require a microVM".into());
+        }
+        process
+            .micro_endpoint
+            .clone()
+            .ok_or_else(|| "this custom microVM has no Yougori guest agent".to_string())
+    }
+
+    /// Wait for a built-in microVM's guest agent and retire its boot credential.
+    ///
+    /// The boot credential is on the guest kernel command line, which every
+    /// process in the microVM, including its OCI workload, can read from
+    /// /proc/cmdline. Before the first command, terminal or workload, replace it
+    /// with a fresh credential known only to this process and the guest agent.
+    /// Older guest agents report no credential state and keep their boot one.
+    pub(super) async fn ready_micro_vm_agent(
+        &self,
+        id: &str,
+        unavailable: &str,
+    ) -> Result<AgentEndpoint, String> {
+        // QMP reports the machine before Alpine finishes booting, so a request
+        // sent right after start would reach a port with nothing listening yet.
+        let deadline = tokio::time::Instant::now() + super::host_platform::guest_boot_timeout();
+        loop {
+            let endpoint = self.micro_vm_agent(id).await?;
+            let reply = self
+                .client
+                .get(format!("{}/v1/health", endpoint.base_url))
+                .bearer_auth(&endpoint.token)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await;
+            if let Ok(reply) = reply.and_then(|reply| reply.error_for_status()) {
+                let health = reply.json::<MicroVmHealth>().await.unwrap_or_default();
+                if health.credential.as_deref() != Some("boot") {
+                    return Ok(endpoint);
+                }
+                if let Some(endpoint) = self.rotate_micro_vm_credential(id, &endpoint).await? {
+                    return Ok(endpoint);
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(unavailable.into());
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Returns the endpoint to use, or None when a concurrent request replaced
+    /// the credential first and the caller must reload it.
+    async fn rotate_micro_vm_credential(
+        &self,
+        id: &str,
+        endpoint: &AgentEndpoint,
+    ) -> Result<Option<AgentEndpoint>, String> {
+        let rotated = AgentEndpoint {
+            base_url: endpoint.base_url.clone(),
+            token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+        };
+        let reply = self
+            .client
+            .post(format!("{}/v1/system/token", endpoint.base_url))
+            .bearer_auth(&endpoint.token)
+            .json(&json!({ "token": rotated.token }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await;
+        match reply {
+            Ok(reply) if reply.status().is_success() => {}
+            Ok(reply) if reply.status() == reqwest::StatusCode::UNAUTHORIZED => return Ok(None),
+            Ok(reply)
+                if matches!(
+                    reply.status(),
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+                ) =>
+            {
+                return Ok(Some(endpoint.clone()))
+            }
+            Ok(reply) => {
+                let status = reply.status();
+                let detail = reply.text().await.unwrap_or_default();
+                return Err(format!(
+                    "secure microVM guest agent credential ({status}): {}",
+                    detail.trim()
+                ));
+            }
+            Err(error) => {
+                // The guest saves the replacement before replying, so a lost
+                // reply may still have switched it.
+                let mut switched = false;
+                for _ in 0..3 {
+                    switched = self
+                        .client
+                        .get(format!("{}/v1/health", rotated.base_url))
+                        .bearer_auth(&rotated.token)
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await
+                        .is_ok_and(|reply| reply.status().is_success());
+                    if switched {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                if !switched {
+                    return Err(format!("secure microVM guest agent credential: {error}"));
+                }
+            }
+        }
+        let mut processes = self.vms.lock().await;
+        if let Some(current) = processes
+            .get_mut(id)
+            .and_then(|process| process.micro_endpoint.as_mut())
+        {
+            // Never overwrite the endpoint of a newer launch of this VM.
+            if current.base_url == endpoint.base_url && current.token == endpoint.token {
+                current.token = rotated.token.clone();
+            }
+        }
+        Ok(Some(rotated))
+    }
+
     pub async fn execute_micro_vm_command(
         &self,
         id: &str,
@@ -1507,47 +1669,12 @@ impl RuntimeManager {
         if command.len() > 32 * 1024 {
             return Err("microVM command exceeds the 32 KiB safety limit".into());
         }
-        let endpoint = {
-            let mut processes = self.vms.lock().await;
-            let process = processes
-                .get_mut(id)
-                .ok_or_else(|| "microVM is not running".to_string())?;
-            if process
-                .child
-                .try_wait()
-                .map_err(|error| format!("inspect microVM: {error}"))?
-                .is_some()
-            {
-                return Err("microVM is not running".into());
-            }
-            if !process.is_micro_vm {
-                return Err("commands through the microVM guest agent require a microVM".into());
-            }
-            process
-                .micro_endpoint
-                .clone()
-                .ok_or_else(|| "this custom microVM has no Yougori guest agent".to_string())?
-        };
-        // QMP reports the machine before Alpine finishes booting, so a command
-        // sent right after start would reach a port with nothing listening yet.
-        let deadline = tokio::time::Instant::now() + super::host_platform::guest_boot_timeout();
-        loop {
-            if self
-                .client
-                .get(format!("{}/v1/health", endpoint.base_url))
-                .bearer_auth(&endpoint.token)
-                .timeout(Duration::from_secs(2))
-                .send()
-                .await
-                .is_ok_and(|reply| reply.status().is_success())
-            {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err("The microVM guest agent is still booting or unavailable. Try the command again in a moment.".into());
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        let endpoint = self
+            .ready_micro_vm_agent(
+                id,
+                "The microVM guest agent is still booting or unavailable. Try the command again in a moment.",
+            )
+            .await?;
         let response = self
             .client
             .post(format!("{}/v1/system/exec", endpoint.base_url))
@@ -1808,18 +1935,9 @@ impl RuntimeManager {
         if super::vm_security::profile(disk_path.parent().ok_or("Missing VM directory")?)?.is_some() {
             return Err("This VM has a virtual TPM. Use a stopped-VM local or cloud backup, which includes its disk, TPM identity and Secure Boot state. Disk-only snapshots are not safe for encrypted VMs.".into());
         }
-        let qmp_port = {
-            let mut processes = self.vms.lock().await;
-            processes.get_mut(id).and_then(|process| {
-                if process.child.try_wait().ok().flatten().is_none() {
-                    Some(process.qmp_port)
-                } else {
-                    None
-                }
-            })
-        };
+        let qmp_port = self.live_vm_qmp_port(id).await;
         if let Some(port) = qmp_port {
-            qmp_human_command(port, &format!("savevm {snapshot_id}")).await?;
+            live_vm_snapshot(port, LiveSnapshot::Save, snapshot_id).await?;
         } else {
             command_output(
                 &self.layout.qemu_img,
@@ -1855,18 +1973,9 @@ impl RuntimeManager {
         if super::vm_security::profile(disk_path.parent().ok_or("Missing VM directory")?)?.is_some() {
             return Err("Restore a complete local or cloud backup for this TPM-enabled VM; a disk-only snapshot cannot restore its security identity.".into());
         }
-        let qmp_port = {
-            let mut processes = self.vms.lock().await;
-            processes.get_mut(id).and_then(|process| {
-                if process.child.try_wait().ok().flatten().is_none() {
-                    Some(process.qmp_port)
-                } else {
-                    None
-                }
-            })
-        };
+        let qmp_port = self.live_vm_qmp_port(id).await;
         if let Some(port) = qmp_port {
-            qmp_human_command(port, &format!("loadvm {snapshot_id}")).await
+            live_vm_snapshot(port, LiveSnapshot::Load, snapshot_id).await
         } else {
             command_output(
                 &self.layout.qemu_img,
@@ -1897,20 +2006,11 @@ impl RuntimeManager {
         let _lifecycle_guard = lifecycle_lock.lock().await;
         ensure_no_pending_vm_restore(&self.data_root, id)?;
         verify_environment_artifact(&self.data_root, id, disk_path, "virtual machine disk")?;
-        let qmp_port = {
-            let mut processes = self.vms.lock().await;
-            processes.get_mut(id).and_then(|process| {
-                if process.child.try_wait().ok().flatten().is_none() {
-                    Some(process.qmp_port)
-                } else {
-                    None
-                }
-            })
-        };
+        let qmp_port = self.live_vm_qmp_port(id).await;
         if let Some(port) = qmp_port {
-            qmp_human_command(port, &format!("delvm {snapshot_id}")).await
+            live_vm_snapshot(port, LiveSnapshot::Delete, snapshot_id).await
         } else {
-            command_output(
+            match command_output(
                 &self.layout.qemu_img,
                 &[
                     "snapshot".into(),
@@ -1921,7 +2021,12 @@ impl RuntimeManager {
                 "delete virtual machine snapshot",
             )
             .await
-            .map(|_| ())
+            {
+                // Older versions recorded running full-VM snapshots that QEMU
+                // had rejected. Deleting such a record must still succeed.
+                Err(error) if error.contains("snapshot not found") => Ok(()),
+                result => result.map(|_| ()),
+            }
         }
     }
 
@@ -2033,6 +2138,9 @@ impl RuntimeManager {
         if self.vm_is_running(id).await? {
             return Err("stop the virtual machine before restoring its disk".into());
         }
+        // Before qemu-img opens it: a backing or external data file would make
+        // the restored disk read another host file or a remote share.
+        ensure_standalone_qcow2(artifact_path)?;
         let security = super::vm_security::read_backup(artifact_path)?;
         command_output(
             &self.layout.qemu_img,
@@ -2821,10 +2929,10 @@ impl RuntimeManager {
             arguments.extend([
                 "-bios".into(), path_string(&profile.firmware(&root)?),
                 "-device".into(), format!("uefi-vars-x64,jsonfile={},force-secure-boot=on,disable-custom-mode=on", path_string(&state.join("uefi-vars.json")).replace(',', ",,")),
-                "-tpmdev".into(), format!("opendock,id=opendock-tpm,state={}", path_string(&state.join("tpm.nv")).replace(',', ",,")),
+                "-tpmdev".into(), format!("yougori,id=yougori-tpm,state={}", path_string(&state.join("tpm.nv")).replace(',', ",,")),
                 // TIS transports TPM 2.0 too. CRB's sub-page command RAM cannot
                 // be mapped by WHPX and otherwise forces slow TCG fallback.
-                "-device".into(), "tpm-tis,tpmdev=opendock-tpm".into(),
+                "-device".into(), "tpm-tis,tpmdev=yougori-tpm".into(),
             ]);
             root.join("qemu-system-x86_64.exe")
         } else {
@@ -2917,7 +3025,7 @@ impl RuntimeManager {
         };
         let cmdline = match endpoint {
             Some(endpoint) => format!(
-                "{} softlevel=microvm opendock.mode=microvm opendock.token={} opendock.time={}",
+                "{} softlevel=microvm yougori.mode=microvm yougori.token={} yougori.time={}",
                 kernel_cmdline, endpoint.token,
                 SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs()
             ),
@@ -3017,6 +3125,19 @@ impl RuntimeManager {
 enum PathKind {
     File,
     Directory,
+}
+
+/// VNC authentication uses at most eight characters. Draw each from 64
+/// symbols (48 random bits) instead of eight hex digits (32 bits).
+fn vnc_console_password() -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let random = Uuid::new_v4();
+    let bits = random.as_bytes()[..6]
+        .iter()
+        .fold(0_u64, |value, byte| value << 8 | u64::from(*byte));
+    (0..8)
+        .map(|index| ALPHABET[((bits >> (index * 6)) & 63) as usize] as char)
+        .collect()
 }
 
 pub(super) fn validate_runtime_identifier(kind: &str, value: &str) -> Result<(), String> {
@@ -3945,6 +4066,33 @@ pub(super) fn branch_disk_graph(
     })
 }
 
+/// Restored VM disks must be self-contained, unencrypted QCOW2 images.
+pub(super) fn ensure_standalone_qcow2(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| format!("inspect virtual machine backup: {error}"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("Virtual machine backups must be regular files".into());
+    }
+    let mut header = [0_u8; 104];
+    File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|error| format!("Invalid virtual machine backup header: {error}"))?;
+    let version = u32::from_be_bytes(header[4..8].try_into().unwrap());
+    let backing_offset = u64::from_be_bytes(header[8..16].try_into().unwrap());
+    let backing_size = u32::from_be_bytes(header[16..20].try_into().unwrap());
+    let encryption = u32::from_be_bytes(header[32..36].try_into().unwrap());
+    let incompatible_features = u64::from_be_bytes(header[72..80].try_into().unwrap());
+    if &header[..4] != b"QFI\xfb"
+        || !matches!(version, 2 | 3)
+        || backing_offset != 0
+        || backing_size != 0
+        || encryption != 0
+        || (version == 3 && incompatible_features & 4 != 0)
+    {
+        return Err("Virtual machine backups must be standalone, unencrypted QCOW2 disks without backing files or external data files".into());
+    }
+    Ok(())
+}
+
 pub(super) async fn hash_file(path: PathBuf) -> Result<(u64, String), String> {
     tokio::task::spawn_blocking(move || {
         let mut file = File::open(&path).map_err(|error| {
@@ -3972,13 +4120,158 @@ pub(super) async fn hash_file(path: PathBuf) -> Result<(u64, String), String> {
     .map_err(|error| format!("join virtual machine integrity task: {error}"))?
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveSnapshot {
+    Save,
+    Load,
+    Delete,
+}
+
+/// Writable qcow2 system disks captured by live snapshots, vmstate first.
+const LIVE_SNAPSHOT_NODES: [&str; 3] = ["yougori-vm-disk", "yougori-microvm-disk", "yougori-branch-boot-disk"];
+const LIVE_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// HMP savevm/loadvm/delvm require every writable drive to support internal
+/// snapshots. Full VMs keep UEFI variables and imported drives in raw files, so
+/// those commands always failed, and HMP reports failures only as text. Use
+/// QMP snapshot jobs limited to the qcow2 system disks instead. The pflash
+/// variables travel in the VM state and are written back after a load.
+async fn live_vm_snapshot(port: u16, action: LiveSnapshot, tag: &str) -> Result<(), String> {
+    let nodes = qmp_request(port, "query-named-block-nodes", Some(json!({ "flat": true }))).await?;
+    let nodes = nodes.as_array().ok_or("virtual machine returned an invalid block device list")?;
+    let devices: Vec<&str> = LIVE_SNAPSHOT_NODES
+        .into_iter()
+        .filter(|name| nodes.iter().any(|node| node["node-name"] == *name && node["ro"] == false && node["drv"] == "qcow2"))
+        .collect();
+    let Some((command, arguments)) = live_snapshot_plan(action, tag, nodes, &devices)? else { return Ok(()) };
+    match qmp_snapshot_job(port, command, arguments).await {
+        Err(error) if error.contains("CommandNotFound") => {
+            let verb = match action { LiveSnapshot::Save => "savevm", LiveSnapshot::Load => "loadvm", LiveSnapshot::Delete => "delvm" };
+            qmp_human_command(port, &format!("{verb} {tag}")).await
+        }
+        // WHPX and GPU acceleration cannot save a running VM's state. Take an
+        // atomic, crash-consistent snapshot of the disks instead; restoring
+        // one (like a snapshot of a stopped VM) requires stopping the VM.
+        Err(error) if action == LiveSnapshot::Save && live_state_blocked(&error) => {
+            let actions: Vec<_> = devices
+                .iter()
+                .map(|device| json!({ "type": "blockdev-snapshot-internal-sync", "data": { "device": device, "name": tag } }))
+                .collect();
+            qmp_request(port, "transaction", Some(json!({ "actions": actions }))).await.map(|_| ())
+        }
+        Err(error) if action == LiveSnapshot::Load && live_state_blocked(&error) => Err(format!(
+            "Stop the virtual machine to restore this snapshot; its running state cannot be replaced live. {error}"
+        )),
+        Err(error) if action == LiveSnapshot::Load => Err(format!("{error}. The virtual machine may be paused; restart it if it does not respond.")),
+        result => result,
+    }
+}
+
+/// QEMU migration blockers (WHPX dirty tracking, virgl) prevent saving or
+/// loading running VM state.
+fn live_state_blocked(error: &str) -> bool {
+    error.contains("migratab") || error.contains("State blocked")
+}
+
+fn live_snapshot_plan(
+    action: LiveSnapshot,
+    tag: &str,
+    nodes: &[serde_json::Value],
+    devices: &[&str],
+) -> Result<Option<(&'static str, serde_json::Value)>, String> {
+    if devices.is_empty() {
+        return Err("This virtual machine has no snapshot-capable system disk".into());
+    }
+    let saved = |name: &str| {
+        nodes.iter()
+            .find(|node| node["node-name"] == name)
+            .and_then(|node| node["image"]["snapshots"].as_array())
+            .and_then(|snapshots| snapshots.iter().find(|item| item["name"] == tag))
+    };
+    let job_id = format!("yougori-snapshot-{}", Uuid::new_v4().simple());
+    Ok(Some(match action {
+        LiveSnapshot::Save => {
+            if devices.iter().any(|name| saved(name).is_some()) {
+                return Err(format!("Snapshot {tag} already exists on this virtual machine disk"));
+            }
+            ("snapshot-save", json!({ "job-id": job_id, "tag": tag, "vmstate": devices[0], "devices": devices }))
+        }
+        LiveSnapshot::Load => {
+            if devices.iter().any(|name| saved(name).is_none()) {
+                return Err("This snapshot is not stored in the virtual machine disk. Older Yougori versions could record live full-VM snapshots that QEMU had rejected; delete it and create a new snapshot.".into());
+            }
+            let Some(vmstate) = devices.iter().find(|name| saved(name).and_then(|item| item["vm-state-size"].as_u64()).unwrap_or(0) > 0) else {
+                return Err("This snapshot has no saved memory state. Stop the virtual machine, then restore it.".into());
+            };
+            if nodes.iter().any(|node| node["node-name"].as_str().is_some_and(|name| name.starts_with("import-")) && node["ro"] == false) {
+                return Err("Imported drives are not part of snapshots. Stop the virtual machine before restoring so their contents stay consistent.".into());
+            }
+            ("snapshot-load", json!({ "job-id": job_id, "tag": tag, "vmstate": vmstate, "devices": devices }))
+        }
+        LiveSnapshot::Delete => {
+            let devices: Vec<&str> = devices.iter().copied().filter(|name| saved(name).is_some()).collect();
+            if devices.is_empty() {
+                return Ok(None);
+            }
+            ("snapshot-delete", json!({ "job-id": job_id, "tag": tag, "devices": devices }))
+        }
+    }))
+}
+
+async fn qmp_snapshot_job(port: u16, command: &str, arguments: serde_json::Value) -> Result<(), String> {
+    let id = arguments["job-id"].as_str().unwrap_or_default().to_owned();
+    // QEMU saves/loads VM state in its main loop, so the monitor may not answer the
+    // command or a poll until a multi-GB state transfer completes.
+    qmp_request_until(port, command, Some(arguments), LIVE_SNAPSHOT_TIMEOUT).await?;
+    let started = Instant::now();
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let jobs = qmp_request_until(port, "query-jobs", None, LIVE_SNAPSHOT_TIMEOUT).await?;
+        let job = jobs
+            .as_array()
+            .and_then(|jobs| jobs.iter().find(|job| job["id"] == id.as_str()))
+            .cloned()
+            .ok_or_else(|| format!("virtual machine {command} job ended without a result"))?;
+        if job["status"] == "concluded" {
+            let _ = qmp_request(port, "job-dismiss", Some(json!({ "id": id }))).await;
+            return match job["error"].as_str() {
+                Some(error) => Err(format!("virtual machine {command} failed: {error}")),
+                None => Ok(()),
+            };
+        }
+        if started.elapsed() > LIVE_SNAPSHOT_TIMEOUT {
+            return Err(format!("virtual machine {command} did not finish within {} minutes", LIVE_SNAPSHOT_TIMEOUT.as_secs() / 60));
+        }
+    }
+}
+
+/// QEMU builds without snapshot jobs. HMP reports failures only in its text.
 async fn qmp_human_command(port: u16, command: &str) -> Result<(), String> {
-    qmp_execute(
+    let reply = qmp_request_until(
         port,
         "human-monitor-command",
         Some(json!({ "command-line": command })),
+        LIVE_SNAPSHOT_TIMEOUT,
     )
-    .await
+    .await?;
+    human_command_result(command, &reply)
+}
+
+fn human_command_result(command: &str, reply: &serde_json::Value) -> Result<(), String> {
+    let failure = reply
+        .as_str()
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.to_ascii_lowercase().starts_with("warning:"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if failure.is_empty() {
+        Ok(())
+    } else {
+        let verb = command.split_whitespace().next().unwrap_or(command);
+        Err(format!("virtual machine rejected {verb}: {failure}"))
+    }
 }
 
 pub(super) async fn qmp_execute(
@@ -4030,24 +4323,35 @@ pub(super) async fn qmp_request(
     command: &str,
     arguments: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    qmp_request_until(port, command, arguments, Duration::from_secs(10)).await
+}
+
+async fn qmp_request_until(
+    port: u16,
+    command: &str,
+    arguments: Option<serde_json::Value>,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|error| format!("connect to virtual machine control socket: {error}"))?;
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+    // A long operation (VM state save/load) also delays the monitor's handshake.
+    let handshake = if timeout > Duration::from_secs(10) { timeout } else { Duration::from_secs(5) };
+    tokio::time::timeout(handshake, reader.read_line(&mut line))
         .await
         .map_err(|_| "virtual machine control greeting timed out".to_string())?
         .map_err(|error| format!("read virtual machine control greeting: {error}"))?;
     write_qmp(&mut writer, json!({ "execute": "qmp_capabilities" })).await?;
-    read_qmp_result(&mut reader).await?;
+    read_qmp_result_until(&mut reader, handshake.max(Duration::from_secs(10))).await?;
     let mut request = json!({ "execute": command });
     if let Some(arguments) = arguments {
         request["arguments"] = arguments;
     }
     write_qmp(&mut writer, request).await?;
-    read_qmp_result(&mut reader).await
+    read_qmp_result_until(&mut reader, timeout).await
 }
 
 async fn write_qmp(
@@ -4063,10 +4367,11 @@ async fn write_qmp(
         .map_err(|error| format!("write virtual machine command: {error}"))
 }
 
-async fn read_qmp_result(
+async fn read_qmp_result_until(
     reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+    timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -4105,6 +4410,23 @@ async fn apply_vm_resource_limits(
     qmp_execute(qmp_port, "balloon", Some(json!({ "value": memory_bytes }))).await
 }
 
+/// Indexes of the host CPUs a VM process may use. Each VM gets a contiguous
+/// window (SMT siblings stay together) at an offset derived from its process,
+/// stable across live resizes, so VMs no longer all stack on the first CPUs.
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux", test)), allow(dead_code))]
+fn cpu_window(process_id: u32, available: usize, requested: usize) -> Vec<usize> {
+    if available == 0 {
+        return Vec::new();
+    }
+    let requested = requested.clamp(1, available);
+    if requested == available {
+        return (0..available).collect();
+    }
+    let spread = (u64::from(process_id).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize;
+    let start = (spread % available) & !1;
+    (0..requested).map(|offset| (start + offset) % available).collect()
+}
+
 #[cfg(target_os = "windows")]
 fn apply_process_cpu_limit(process_id: u32, desired_cpus: f64) -> Result<(), String> {
     use windows_sys::Win32::{
@@ -4120,11 +4442,9 @@ fn apply_process_cpu_limit(process_id: u32, desired_cpus: f64) -> Result<(), Str
         .unwrap_or(1)
         .min(usize::BITS as usize);
     let requested = (desired_cpus.round().clamp(1.0, available as f64) as usize).min(available);
-    let mask = if requested == usize::BITS as usize {
-        usize::MAX
-    } else {
-        (1_usize << requested) - 1
-    };
+    let mask = cpu_window(process_id, available, requested)
+        .into_iter()
+        .fold(0_usize, |mask, cpu| mask | (1_usize << cpu));
 
     // SAFETY: the handle is opened for this known child process, used once, and closed below.
     unsafe {
@@ -4161,12 +4481,10 @@ fn apply_process_cpu_limit(process_id: u32, desired_cpus: f64) -> Result<(), Str
         if libc::sched_getaffinity(0, size, &mut allowed) != 0 {
             return Err(format!("Read available CPU affinity: {}", std::io::Error::last_os_error()));
         }
-        let mut remaining = desired_cpus.ceil().max(1.0) as usize;
-        for cpu in 0..libc::CPU_SETSIZE as usize {
-            if remaining > 0 && libc::CPU_ISSET(cpu, &allowed) {
-                libc::CPU_SET(cpu, &mut selected);
-                remaining -= 1;
-            }
+        let usable: Vec<usize> = (0..libc::CPU_SETSIZE as usize).filter(|cpu| libc::CPU_ISSET(*cpu, &allowed)).collect();
+        let requested = (desired_cpus.ceil().max(1.0) as usize).min(usable.len());
+        for index in cpu_window(process_id, usable.len(), requested) {
+            libc::CPU_SET(usable[index], &mut selected);
         }
         let threads = std::fs::read_dir(format!("/proc/{process_id}/task")).map_err(|e| format!("Read VM threads: {e}"))?;
         for thread in threads {
@@ -4233,6 +4551,128 @@ mod tests {
         assert!(manager.vm_action("../outside", "stop").await.is_err());
     }
 
+    /// A minimal guest agent: health reports the credential state, and with
+    /// rotation /v1/system/token replaces the credential like the real agent.
+    async fn fake_micro_agent(
+        boot: String,
+        rotation: bool,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<(String, usize)>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let state = std::sync::Arc::new(std::sync::Mutex::new((boot.clone(), 0_usize)));
+        let shared = state.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let (state, boot) = (shared.clone(), boot.clone());
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    let (head, body) = loop {
+                        let count = socket.read(&mut buffer).await.unwrap_or(0);
+                        if count == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..count]);
+                        let text = String::from_utf8_lossy(&request).into_owned();
+                        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                            let length = head
+                                .lines()
+                                .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|value| value.trim().parse::<usize>().unwrap_or(0)))
+                                .unwrap_or(0);
+                            if body.len() >= length {
+                                break (head.to_owned(), body.to_owned());
+                            }
+                        }
+                    };
+                    let (status, reply) = {
+                        let mut state = state.lock().unwrap();
+                        let expected = format!("authorization: bearer {}", state.0);
+                        if !head.lines().any(|line| line.to_ascii_lowercase() == expected) {
+                            ("401 Unauthorized", json!({ "error": "unauthorized" }))
+                        } else if head.starts_with("GET /v1/health ") {
+                            let mut health = json!({ "status": "ready", "runtime": "microvm" });
+                            if rotation {
+                                health["credential"] = json!(if state.0 == boot { "boot" } else { "rotated" });
+                            }
+                            ("200 OK", health)
+                        } else if rotation && head.starts_with("POST /v1/system/token ") {
+                            let request: serde_json::Value = serde_json::from_str(&body).unwrap();
+                            state.0 = request["token"].as_str().unwrap().to_owned();
+                            state.1 += 1;
+                            ("200 OK", json!({ "credential": "rotated" }))
+                        } else {
+                            ("404 Not Found", json!({ "error": "not found" }))
+                        }
+                    };
+                    let reply = reply.to_string();
+                    let _ = socket
+                        .write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes())
+                        .await;
+                });
+            }
+        });
+        (address, state)
+    }
+
+    #[tokio::test]
+    async fn micro_vm_boot_credential_is_retired_before_guest_use() {
+        let data = tempfile::tempdir().unwrap();
+        let manager = super::RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        for (id, rotation) in [("env-rotating-agent", true), ("env-legacy-agent", false)] {
+            let boot = "a".repeat(64);
+            let (address, state) = fake_micro_agent(boot.clone(), rotation).await;
+            // Any long-running process stands in for QEMU.
+            let mut command = tokio::process::Command::new(if cfg!(windows) { "ping" } else { "sleep" });
+            if cfg!(windows) {
+                command.args(["-n", "30", "127.0.0.1"]);
+            } else {
+                command.arg("30");
+            }
+            let child = command
+                .stdout(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let process_id = child.id().unwrap();
+            manager.vms.lock().await.insert(
+                id.into(),
+                super::VmProcess {
+                    internet: None,
+                    child,
+                    _branch_block_server: None,
+                    _port_reservations: VmPortReservations::new(),
+                    is_micro_vm: true,
+                    gpu_enabled: false,
+                    gpu: None,
+                    micro_endpoint: Some(AgentEndpoint { base_url: address, token: boot.clone() }),
+                    process_id,
+                    allocated_cpus: 1,
+                    allocated_micro_memory_gb: Some(1.0),
+                    qmp_port: 0,
+                    websocket_port: 0,
+                    console_password: String::new(),
+                },
+            );
+            let first = manager.ready_micro_vm_agent(id, "unavailable").await.unwrap();
+            let second = manager.ready_micro_vm_agent(id, "unavailable").await.unwrap();
+            let stored = manager.vms.lock().await.get(id).unwrap().micro_endpoint.clone().unwrap();
+            let (current, rotations) = state.lock().unwrap().clone();
+            if rotation {
+                // The command-line credential is dead and the host uses the replacement.
+                assert_ne!(first.token, boot);
+                assert!(first.token.len() == 64 && first.token.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+                assert_eq!((current.as_str(), rotations), (first.token.as_str(), 1));
+                assert_eq!(second.token, first.token);
+                assert_eq!(stored.token, first.token);
+            } else {
+                // Older guest agents keep working with their boot credential.
+                assert_eq!((first.token.as_str(), stored.token.as_str(), rotations), (boot.as_str(), boot.as_str(), 0));
+            }
+            manager.vms.lock().await.remove(id);
+        }
+    }
+
     #[test]
     fn vm_graphics_uses_one_primary_adapter_with_a_vga_fallback() {
         let enabled = super::full_vm_graphics_arguments(true);
@@ -4251,6 +4691,62 @@ mod tests {
         assert_eq!(super::full_vm_cpu_model("tcg"), "max,vmx=off,svm=off,la57=off");
     }
     use super::*;
+
+    #[test]
+    fn vm_cpu_windows_spread_processes_and_stay_stable() {
+        assert_eq!(cpu_window(4, 24, 24), (0..24).collect::<Vec<_>>());
+        assert_eq!(cpu_window(4, 1, 4), vec![0]);
+        assert!(cpu_window(4, 0, 1).is_empty());
+        let window = cpu_window(9_876, 24, 4);
+        assert_eq!(window.len(), 4);
+        assert_eq!(window, cpu_window(9_876, 24, 4), "live resizes keep the same cores");
+        assert!(window.iter().all(|cpu| *cpu < 24));
+        assert_eq!(window[0] % 2, 0, "SMT sibling pairs stay together");
+        let starts: std::collections::HashSet<_> = (1..=32_u32).map(|pid| cpu_window(pid * 4, 24, 2)[0]).collect();
+        assert!(starts.len() > 4, "VMs must not all start on the same CPUs: {starts:?}");
+    }
+
+    #[test]
+    fn vnc_console_passwords_use_the_full_eight_character_space() {
+        let first = vnc_console_password();
+        assert_eq!(first.len(), 8);
+        assert!(first.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')));
+        assert_ne!(first, vnc_console_password());
+    }
+
+    #[test]
+    fn hmp_text_failures_are_errors() {
+        assert!(human_command_result("savevm snap", &json!("")).is_ok());
+        assert!(human_command_result("savevm snap", &json!("warning: slow storage\r\n")).is_ok());
+        let error = human_command_result("savevm snap", &json!("Error: Device 'yougori-uefi-vars' is writable but does not support snapshots\r\n")).unwrap_err();
+        assert!(error.contains("savevm") && error.contains("does not support snapshots"));
+    }
+
+    #[test]
+    fn live_snapshots_cover_qcow2_system_disks_and_reject_phantom_restores() {
+        let disk = |snapshots: serde_json::Value| json!({"node-name": "yougori-vm-disk", "drv": "qcow2", "ro": false, "image": {"snapshots": snapshots}});
+        let vars = json!({"node-name": "yougori-uefi-vars", "drv": "raw", "ro": false, "image": {}});
+        let devices = ["yougori-vm-disk"];
+        let empty = [disk(json!([])), vars.clone()];
+        let (command, arguments) = live_snapshot_plan(LiveSnapshot::Save, "snap-a", &empty, &devices).unwrap().unwrap();
+        assert_eq!(command, "snapshot-save");
+        assert_eq!(arguments["devices"], json!(["yougori-vm-disk"]));
+        assert_eq!(arguments["vmstate"], "yougori-vm-disk");
+        // A record that QEMU never stored cannot report a successful restore.
+        assert!(live_snapshot_plan(LiveSnapshot::Load, "snap-a", &empty, &devices).unwrap_err().contains("not stored"));
+        assert!(live_snapshot_plan(LiveSnapshot::Delete, "snap-a", &empty, &devices).unwrap().is_none());
+        let offline = [disk(json!([{"name": "snap-a", "vm-state-size": 0}])), vars.clone()];
+        assert!(live_snapshot_plan(LiveSnapshot::Load, "snap-a", &offline, &devices).unwrap_err().contains("no saved memory state"));
+        let live = [disk(json!([{"name": "snap-a", "vm-state-size": 4096}])), vars.clone()];
+        assert!(live_snapshot_plan(LiveSnapshot::Save, "snap-a", &live, &devices).unwrap_err().contains("already exists"));
+        let (command, arguments) = live_snapshot_plan(LiveSnapshot::Load, "snap-a", &live, &devices).unwrap().unwrap();
+        assert_eq!((command, arguments["vmstate"].as_str()), ("snapshot-load", Some("yougori-vm-disk")));
+        let (command, _) = live_snapshot_plan(LiveSnapshot::Delete, "snap-a", &live, &devices).unwrap().unwrap();
+        assert_eq!(command, "snapshot-delete");
+        let imported = [live[0].clone(), vars, json!({"node-name": "import-0123456789abcdef", "drv": "raw", "ro": false})];
+        assert!(live_snapshot_plan(LiveSnapshot::Load, "snap-a", &imported, &devices).unwrap_err().contains("Imported drives"));
+        assert!(live_snapshot_plan(LiveSnapshot::Save, "snap-b", &imported, &[]).is_err());
+    }
 
     #[test]
     fn runtime_identifiers_reject_path_and_hmp_injection() {
@@ -4618,6 +5114,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(String::from_utf8_lossy(&response[..count]).contains("101 Switching Protocols"));
+        // GPU (virgl) state cannot be saved live; the disks are still captured.
+        manager.create_vm_snapshot("env-runtime-test", &provisioned.disk_path, "live-gpu").await.unwrap();
+        manager.delete_vm_snapshot("env-runtime-test", &provisioned.disk_path, "live-gpu").await.unwrap();
         let orphan = manager
             .data_root
             .join("bases")
@@ -4698,6 +5197,40 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "launches the bundled QEMU runtime"]
+    async fn bundled_full_vm_live_snapshots_exclude_raw_firmware_state() {
+        let app_data = tempfile::tempdir().unwrap();
+        let manifest_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let manager = RuntimeManager::new(&manifest_directory, app_data.path()).unwrap();
+        let source = app_data.path().join("source.qcow2");
+        command_output(&manager.layout.qemu_img, &["create".into(), "-f".into(), "qcow2".into(), path_string(&source), "128M".into()], "create test virtual disk").await.unwrap();
+        let provisioned = manager.provision_vm("env-live-snapshot", source.to_str().unwrap()).await.unwrap();
+        let range = |value: f64| crate::models::ResourceRange { min: value, preferred: value, max: value, current: 0.0 };
+        let policy = crate::models::ResourcePolicy { cpu: range(1.0), memory_gb: range(0.5), priority: crate::models::Priority::Normal, dynamic: true };
+        manager.start_vm("env-live-snapshot", &provisioned.disk_path, &provisioned.source_path, &policy, false).await.unwrap();
+        let disk = &provisioned.disk_path;
+        // HMP savevm refused the raw UEFI variables, so these used to be phantoms.
+        manager.create_vm_snapshot("env-live-snapshot", disk, "live-a").await.unwrap();
+        assert!(manager.create_vm_snapshot("env-live-snapshot", disk, "live-a").await.unwrap_err().contains("already exists"));
+        assert!(manager.restore_vm_snapshot("env-live-snapshot", disk, "never-saved").await.unwrap_err().contains("not stored"));
+        manager.create_vm_snapshot("env-live-snapshot", disk, "live-b").await.unwrap();
+        manager.delete_vm_snapshot("env-live-snapshot", disk, "live-b").await.unwrap();
+        manager.delete_vm_snapshot("env-live-snapshot", disk, "live-b").await.unwrap();
+        match manager.restore_vm_snapshot("env-live-snapshot", disk, "live-a").await {
+            // Hosts that can save VM state restore it in place.
+            Ok(()) => assert!(manager.vm_is_running("env-live-snapshot").await.unwrap()),
+            // WHPX keeps a crash-consistent disk snapshot instead.
+            Err(error) => assert!(error.contains("Stop the virtual machine"), "{error}"),
+        }
+        assert!(manager.vm_is_running("env-live-snapshot").await.unwrap());
+        manager.shutdown_all().await;
+        manager.restore_vm_snapshot("env-live-snapshot", disk, "live-a").await.unwrap();
+        manager.delete_vm_snapshot("env-live-snapshot", disk, "live-a").await.unwrap();
+        // Stopped VMs use qemu-img; deleting a missing snapshot stays idempotent.
+        manager.delete_vm_snapshot("env-live-snapshot", disk, "live-a").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "launches the bundled direct-kernel microVM runtime"]
     async fn bundled_alpine_micro_vm_exposes_qmp_without_a_display() {
         let app_data = tempfile::tempdir().unwrap();
@@ -4767,7 +5300,7 @@ mod tests {
         eprintln!("microVM OpenRC ready after {:.3}s following QMP; actual boot RAM512MiB", userspace_started.elapsed().as_secs_f64());
         let command_output = loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let response = tokio::time::timeout(remaining, manager.execute_micro_vm_command("micro-runtime-test", "printf opendock-agent-ready")).await;
+            let response = tokio::time::timeout(remaining, manager.execute_micro_vm_command("micro-runtime-test", "printf yougori-agent-ready")).await;
             match response {
                 Ok(Ok(output)) => break output,
                 Ok(Err(error)) if Instant::now() >= deadline => {
@@ -4778,7 +5311,7 @@ mod tests {
             }
         };
         assert_eq!(command_output.exit_code, 0);
-        assert_eq!(command_output.stdout, "opendock-agent-ready");
+        assert_eq!(command_output.stdout, "yougori-agent-ready");
         assert!(command_output.stderr.is_empty());
         eprintln!("microVM authenticated command ready after {:.3}s following QMP", userspace_started.elapsed().as_secs_f64());
         // Saving a smaller next-boot policy cannot make the live allocation

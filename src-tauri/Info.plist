@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Merged into Yougori.app's Info.plist; shown by macOS 15+ before local network access. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Yougori connects your environments, shares and models to devices on your local network when you use them there.</string>
+</dict>
+</plist>

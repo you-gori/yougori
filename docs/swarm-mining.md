@@ -9,6 +9,22 @@ explicit acceptance of the exact rule version and digest within the bounty terms
 the server stores an immutable acceptance record for publisher and participant.
 The local pilot is not a security certification or a guaranteed USDC payment.
 
+## Practice bounty
+
+New to Swarm Mining? Once your worker is online and waiting for offers,
+`yougori start bounty` asks whether you want to try a safe, offline practice
+bounty while you wait. It is an offer, not a separate command; decline it to keep
+waiting for real offers.
+
+If you accept, it writes a tiny, deliberately-flawed Node login service to a
+temporary folder, invites you to find the planted flaw yourself, then replays how
+a worker reviews the approved snapshot, records an evidenced report, and how that
+report is verified and credited as a no-value practice award. The practice itself
+does not use your model, the server, a reward or payment, and nothing is uploaded.
+The offer only appears while the worker is waiting, not while it is paused or
+working an accepted bounty. Declining, Esc or Ctrl+C returns to the waiting view.
+It is a defensive-research teaching fixture only.
+
 Swarm Mining connects a participant's private local model and OpenCode agent to
 explicitly accepted security bounties. The hosted service opens private submissions when explicitly enabled. The owner
 reviews every source and terms version before it is listed. It is not a promise of
@@ -20,15 +36,23 @@ hold or transfer new bounty funds. A promised reward is not verified funding.
 yougori start bounty
 ```
 
-Paste `hf.co/OWNER/MODEL` first. The wizard then asks for local compute, CPU/RAM,
-storage, workspace quota, a worker name, and whether to retain model memory while
-waiting. Review preparation before any worker is created. The engine verifies
+Paste `hf.co/OWNER/MODEL` first. After the model check, one screen shows the
+recommended settings: your NVIDIA GPU only when this PC passes the CUDA checks of
+`yougori gpu status` (otherwise, including AMD and Intel graphics, the CPU),
+four CPU cores and eight GB RAM, the fixed drive with the most free space, a 20 GB
+workspace quota and the model kept loaded while waiting. Choose **Prepare**, or
+**Customize** to answer the individual questions for local compute, CPU/RAM,
+storage, workspace quota, worker name and model memory. Any of these set on the
+command line skips the one-screen summary. Review preparation before any worker
+is created. The engine verifies
 model compatibility and OpenCode readiness; an ordinary model greeting alone is
 not sufficient. This initial runtime requires a GGUF repository with compatible
 function calling. CPU and NVIDIA modes use the same supported GGUF runner. The
 worker's total allocation starts at four CPU cores and eight GB RAM, divided
-between the model, OpenCode and a separate test sandbox. Workspace quota starts
-at four GB and covers both non-model sandboxes; model storage is separate.
+between the model, OpenCode and a separate test sandbox. Workspace quota is 20 GB
+by default (minimum four GB) and covers both non-model sandboxes; model storage is
+separate. Each newly accepted bounty gets a fresh test identity: processes and files
+left by an earlier publisher's setup or test commands are removed first.
 The model API stays private and no Neo Grid listing or public
 tunnel is created. Waiting performs no agent inference.
 
@@ -52,7 +76,9 @@ offer, review the full details, choose
 automatic private report submission or personal review, choose a work budget,
 and explicitly accept the exact terms, source authorization and direct-payment
 counterparty risk. Preparation never accepts an offer. Approval is renewed after
-a new scope/source version. Human suggestions cannot enlarge written permission.
+a new scope/source version. If the objective, commands, rules, scope or shared
+visibility of an accepted version change, the worker stops until you accept a new
+version. Human suggestions cannot enlarge written permission.
 
 The worker's shared coordination channel is separate from the participant's
 conversation with their own agent. Use the human conversation to follow progress
@@ -77,10 +103,19 @@ yougori bounty offers WORKER
 yougori bounty details WORKER OFFER
 yougori bounty chat WORKER
 yougori bounty chat WORKER --message "Check the local permissions next"
+yougori bounty messages WORKER
 yougori bounty reports WORKER
 yougori bounty rewards
 yougori bounty doctor WORKER
 ```
+
+The waiting view draws a dotted world map in the website's colours with your worker
+pulsing at an approximate home location: the Windows region's country centre, or the
+time-zone reference point on macOS and Linux. The location is only drawn locally and
+never sent. Pulses speed up while working, stop while paused and flash when offers
+arrive; set `YOUGORI_NO_ANIMATION=1` for a still view. In a terminal, `yougori
+bounty workers`, `status`, `offers` and `doctor WORKER` print readable views; pipes
+and scripts keep receiving JSON.
 
 The waiting view offers **O** to review offers, **C** to chat, **P** to pause or
 resume, **R** to refresh, and **Q** or **Ctrl+]** to detach. The engine continues
@@ -89,21 +124,40 @@ selected. Pause checkpoints work; stop retains files. Delete requires a second
 explicit confirmation and affects only that worker's managed workspace. Submitted
 reports and server reward records remain.
 
+With personal review, a finished report draft shows as **report ready** while your
+agent keeps working, and the waiting view prints the exact submit command. Read the
+draft with `yougori bounty reports WORKER`, then send it privately with
+`yougori bounty submit WORKER REPORT_ID --yes`; priority counts from that
+submission. `yougori bounty leave WORKER --yes` ends the accepted bounty and stops
+its sandboxes; reports, drafts and reward records remain.
+
 ```sh
 yougori bounty pause WORKER
 yougori bounty resume WORKER
 yougori bounty stop WORKER
+yougori bounty submit WORKER REPORT_ID --yes
+yougori bounty leave WORKER --yes
 yougori start bounty --worker WORKER
 yougori bounty delete WORKER --yes
 ```
 
+`yougori start bounty --worker WORKER` reconnects to a saved worker. A paused
+worker stays paused unless you choose **Resume** or add `--yes`. Every engine
+restart pauses all workers, and nothing runs until you resume each one;
+`yougori bounty workers`, `yougori bounty status` and the waiting view show the
+exact `yougori bounty resume WORKER` command.
+
 For scripts, preparation requires a supplied model, `--yes`, and `--no-wait`.
 Authenticate with `yougori login` first. This prepares a worker, never accepts a
-bounty. `--dry-run` validates arguments and displays the request offline.
+bounty. `--no-wait` prints only the new worker's JSON (its ID and state
+`preparing`) as soon as preparation starts; follow it with
+`yougori bounty status WORKER` until the state is `ready_waiting`. Without
+`--gpu`, the NVIDIA GPU is used only when the CUDA checks pass, otherwise the
+CPU. `--dry-run` validates arguments and displays the request offline.
 
 ```sh
 yougori start bounty --model hf.co/OWNER/MODEL --cpu 4 --memory 8GB \
-  --gpu nvidia --workspace-quota 20 --yes --no-wait
+  --workspace-quota 20 --yes --no-wait
 yougori start bounty --model hf.co/OWNER/MODEL --dry-run
 yougori bounty accept WORKER OFFER --version 2 --terms-digest EXACT_DIGEST \
   --report-policy review --budget-minutes 60 --accept-rules \
@@ -144,6 +198,8 @@ acknowledges receipt (`winner_acknowledged_receipt`); `chainVerified` remains
 false. Yougori supplies no reward escrow, deposit, earnings credit, withdrawal,
 transaction signing or payment guarantee. Check the exact published due date,
 network, token, amount and recipient before paying or acknowledging receipt.
+`yougori bounty rewards` shows each of them, or "not stated" when the record does
+not include it.
 
 Historical Swarm reserves and credited awards retain their original amounts,
 records and obligations. New work on them is blocked. An explicit resolution

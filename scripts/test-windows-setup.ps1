@@ -9,18 +9,18 @@ param(
 # Opt-in developer test. Uses the real RuntimeManager, disposable disks, and
 # an observer inside WinPE. Does not take screenshots or install Windows.
 $ErrorActionPreference = 'Stop'
-$scratch = Join-Path ([IO.Path]::GetTempPath()) ("opendock-setup-probe-" + [guid]::NewGuid())
-$names = @('OPENDOCK_TEST_WINDOWS_ISO','OPENDOCK_TEST_WINDOWS_PROBE','OPENDOCK_TEST_WINDOWS_CPUS','OPENDOCK_TEST_WINDOWS_MEMORY_GB','OPENDOCK_TEST_WINDOWS_RESTART','OPENDOCK_TEST_WINDOWS_GPU')
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ("yougori-setup-probe-" + [guid]::NewGuid())
+$names = @('YOUGORI_TEST_WINDOWS_ISO','YOUGORI_TEST_WINDOWS_PROBE','YOUGORI_TEST_WINDOWS_CPUS','YOUGORI_TEST_WINDOWS_MEMORY_GB','YOUGORI_TEST_WINDOWS_RESTART','YOUGORI_TEST_WINDOWS_GPU')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name) }
 try {
     & "$PSScriptRoot/build-windows-setup-probe.ps1" -OutputDirectory $scratch
-    $env:OPENDOCK_TEST_WINDOWS_ISO = (Resolve-Path -LiteralPath $Iso).Path
-    $env:OPENDOCK_TEST_WINDOWS_PROBE = "$scratch/probe.img"
-    $env:OPENDOCK_TEST_WINDOWS_CPUS = [string]$Cpus
-    $env:OPENDOCK_TEST_WINDOWS_MEMORY_GB = $MemoryGb.ToString([Globalization.CultureInfo]::InvariantCulture)
-    $env:OPENDOCK_TEST_WINDOWS_RESTART = if ($Restart) { '1' } else { $null }
-    $env:OPENDOCK_TEST_WINDOWS_GPU = if ($Gpu) { '1' } else { $null }
+    $env:YOUGORI_TEST_WINDOWS_ISO = (Resolve-Path -LiteralPath $Iso).Path
+    $env:YOUGORI_TEST_WINDOWS_PROBE = "$scratch/probe.img"
+    $env:YOUGORI_TEST_WINDOWS_CPUS = [string]$Cpus
+    $env:YOUGORI_TEST_WINDOWS_MEMORY_GB = $MemoryGb.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $env:YOUGORI_TEST_WINDOWS_RESTART = if ($Restart) { '1' } else { $null }
+    $env:YOUGORI_TEST_WINDOWS_GPU = if ($Gpu) { '1' } else { $null }
     if ($TestBinary) {
         & "$PSScriptRoot/test-production-runtime.ps1" -Group windows -TestBinary $TestBinary -TimeoutSeconds 900
     } else {
@@ -32,7 +32,7 @@ try {
     $resolved = [IO.Path]::GetFullPath($scratch)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
-        (Split-Path $resolved -Leaf).StartsWith('opendock-setup-probe-') -and (Test-Path -LiteralPath $resolved)) {
+        (Split-Path $resolved -Leaf).StartsWith('yougori-setup-probe-') -and (Test-Path -LiteralPath $resolved)) {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }

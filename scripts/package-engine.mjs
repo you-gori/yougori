@@ -10,6 +10,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSyn
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { signWindowsPayload } from "./windows-payload-signing.mjs"
+import { signMacPayload } from "./macos-payload-signing.mjs"
 import { assertMacCli, assertPortableCli, assertLinuxCli, nativeTarget, portableCliBuildEnv, preflight, releaseTarget, releaseArchitecture } from "./release-preflight.mjs"
 import { checkCompliance } from "./compliance-check.mjs"
 import { checkInstalledLicenses } from "./check-installed-licenses.mjs"
@@ -81,6 +82,7 @@ async function main() {
   cpSync(binary, join(stage, exe))
   if (process.platform === "win32") signWindowsPayload(root, join(stage, exe))
   else chmodSync(join(stage, exe), 0o755)
+  if (process.platform === "darwin") signMacPayload(join(stage, exe))
   await checkInstalledLicenses(root, stage, { win32: "windows", darwin: "macos", linux: "linux" }[process.platform])
   const archive = join(out, process.platform === "win32" ? `${name}.zip` : `${name}.tar.gz`)
   rmSync(archive, { force: true })

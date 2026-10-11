@@ -2,7 +2,7 @@
   "source": "logo1.png",
   "sourceSha256": "92b4bd8556f3cc01c530b7c0b9a0a65922f379756e57a011f56447932ea8ace9",
   "iconSha256": "7c64199ced3fe42f092d96611877954051feb631331c4c1f98e8c706c50a8468",
-  "generatorSha256": "5e2ce9671e35d87911791b7a9a3d0157b95efc09bdbb51df13ffb29419061519",
+  "generatorSha256": "12707df9385506649f85804bad86c0ec7936dd7fb4799aad655f007428e8e711",
   "assets": [
     {
       "file": "nsis-sidebar.bmp",
@@ -32,7 +32,7 @@
       "file": "dmg-background.png",
       "width": 720,
       "height": 460,
-      "sha256": "1191323a5ebe79641d26376fa26623c53ae846fdff137995e279c5b1b97d9c76"
+      "sha256": "30a580b7a16508ba8c0c3cc170a5b7dedd2320297028e08dd12aa8ad372ce8cd"
     }
   ]
 }

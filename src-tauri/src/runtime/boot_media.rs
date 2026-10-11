@@ -36,7 +36,7 @@ pub(super) fn image(executable: &[u8]) -> Result<Vec<u8>, String> {
     // Standard 1.44 MB FAT12 geometry, with only EFI/BOOT/BOOTX64.EFI.
     let mut disk = vec![0_u8; 2880 * SECTOR];
     disk[..3].copy_from_slice(&[0xeb, 0x3c, 0x90]);
-    disk[3..11].copy_from_slice(b"OPENDOCK");
+    disk[3..11].copy_from_slice(b"YOUGORI ");
     disk[11..13].copy_from_slice(&512_u16.to_le_bytes());
     disk[13] = 1;
     disk[14..16].copy_from_slice(&1_u16.to_le_bytes());
@@ -49,7 +49,7 @@ pub(super) fn image(executable: &[u8]) -> Result<Vec<u8>, String> {
     disk[26..28].copy_from_slice(&2_u16.to_le_bytes());
     disk[38] = 0x29;
     disk[39..43].copy_from_slice(&0x4f44424f_u32.to_le_bytes());
-    disk[43..54].copy_from_slice(b"OPENDOCK   ");
+    disk[43..54].copy_from_slice(b"YOUGORI    ");
     disk[54..62].copy_from_slice(b"FAT12   ");
     disk[510..512].copy_from_slice(&[0x55, 0xaa]);
     let mut fat = vec![0_u8; 9 * SECTOR];
@@ -204,8 +204,8 @@ mod tests {
             let mut trace = String::new();
             while Instant::now() < deadline {
                 trace.push_str(&boot_trace(port).await);
-                if trace.contains("OPENDOCK_BOOT_NO_INSTALLER")
-                    || trace.contains("OPENDOCK_BOOT_TEST_OS")
+                if trace.contains("YOUGORI_BOOT_NO_INSTALLER")
+                    || trace.contains("YOUGORI_BOOT_TEST_OS")
                 {
                     break;
                 }
@@ -218,16 +218,16 @@ mod tests {
         let trace = result.unwrap();
         eprintln!("Secure Boot rejection: {trace}");
         assert!(
-            trace.contains("OPENDOCK_BOOT_START"),
+            trace.contains("YOUGORI_BOOT_START"),
             "our explicitly trusted bootstrap must run"
         );
         assert!(
-            trace.contains("OPENDOCK_BOOT_LOAD_FAILED"),
+            trace.contains("YOUGORI_BOOT_LOAD_FAILED"),
             "firmware must reject unsigned code"
         );
-        assert!(trace.contains("OPENDOCK_BOOT_NO_INSTALLER"));
-        assert!(!trace.contains("OPENDOCK_BOOT_TEST_OS"));
-        assert!(!trace.contains("OPENDOCK_BOOT_INSTALLER_HANDOFF"));
+        assert!(trace.contains("YOUGORI_BOOT_NO_INSTALLER"));
+        assert!(!trace.contains("YOUGORI_BOOT_TEST_OS"));
+        assert!(!trace.contains("YOUGORI_BOOT_INSTALLER_HANDOFF"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -308,7 +308,7 @@ mod tests {
             for count in 0..=3 { assert!(trace.contains(&format!("RESTART_TEST_BOOT_{count}")), "{trace}"); }
             assert_eq!(trace.matches("RESTART_TEST_STALE_SNP_RAM").count(), 3, "{trace}");
             assert!(trace.contains("RESTART_TEST_COMPLETE"), "{trace}");
-            assert!(!trace.contains("OPENDOCK_BOOT_START"), "restarts must prefer the installed disk, not start the ISO again: {trace}");
+            assert!(!trace.contains("YOUGORI_BOOT_START"), "restarts must prefer the installed disk, not start the ISO again: {trace}");
             assert_eq!(fs::read(&iso).map_err(|e| e.to_string())?, original_iso);
             let deadline = Instant::now() + Duration::from_secs(20);
             while manager.vm_is_running(id).await? && Instant::now() < deadline {
@@ -403,8 +403,8 @@ mod tests {
             let mut trace = String::new();
             while Instant::now() < deadline {
                 trace.push_str(&boot_trace(port).await);
-                if trace.contains("OPENDOCK_BOOT_TEST_OS")
-                    || trace.contains("OPENDOCK_BOOT_NO_INSTALLER")
+                if trace.contains("YOUGORI_BOOT_TEST_OS")
+                    || trace.contains("YOUGORI_BOOT_NO_INSTALLER")
                 {
                     break;
                 }
@@ -412,21 +412,21 @@ mod tests {
             }
             eprintln!("Installed={installed}: {trace}");
             manager.shutdown_all().await;
-            assert!(trace.contains("OPENDOCK_BOOT_TEST_OS"));
+            assert!(trace.contains("YOUGORI_BOOT_TEST_OS"));
             assert_eq!(
-                trace.contains("OPENDOCK_BOOT_INSTALLER_HANDOFF"),
+                trace.contains("YOUGORI_BOOT_INSTALLER_HANDOFF"),
                 !installed
             );
-            assert_eq!(trace.contains("OPENDOCK_BOOT_START"), !installed);
+            assert_eq!(trace.contains("YOUGORI_BOOT_START"), !installed);
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "boots a disposable VM against OPENDOCK_TEST_WINDOWS_ISO read-only; no keys, screenshots, OS installation, or user VM changes"]
+    #[ignore = "boots a disposable VM against YOUGORI_TEST_WINDOWS_ISO read-only; no keys, screenshots, OS installation, or user VM changes"]
     async fn installer_boot_real_windows_loader_handoff_needs_no_keyboard() {
         let source = PathBuf::from(
-            std::env::var_os("OPENDOCK_TEST_WINDOWS_ISO")
-                .expect("Set OPENDOCK_TEST_WINDOWS_ISO to a local x64 Windows ISO"),
+            std::env::var_os("YOUGORI_TEST_WINDOWS_ISO")
+                .expect("Set YOUGORI_TEST_WINDOWS_ISO to a local x64 Windows ISO"),
         );
         assert!(source.is_file());
         let before = fs::metadata(&source).unwrap();
@@ -451,7 +451,7 @@ mod tests {
             .provision_vm("env-boot-test", original.to_str().unwrap())
             .await
             .unwrap();
-        let cpus = std::env::var("OPENDOCK_TEST_WINDOWS_CPUS")
+        let cpus = std::env::var("YOUGORI_TEST_WINDOWS_CPUS")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
             .unwrap_or(2)
@@ -478,12 +478,12 @@ mod tests {
         let mut trace = String::new();
         while Instant::now() < deadline {
             trace.push_str(&boot_trace(port).await);
-            if trace.contains("OPENDOCK_BOOT_NO_INSTALLER")
-                || trace.contains("OPENDOCK_BOOT_INSTALLER_RETURNED")
+            if trace.contains("YOUGORI_BOOT_NO_INSTALLER")
+                || trace.contains("YOUGORI_BOOT_INSTALLER_RETURNED")
             {
                 break;
             }
-            if trace.contains("OPENDOCK_BOOT_WINDOWS_HANDOFF") {
+            if trace.contains("YOUGORI_BOOT_WINDOWS_HANDOFF") {
                 let stats = super::super::vm::qmp_request(port, "query-blockstats", None)
                     .await
                     .unwrap();

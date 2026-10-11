@@ -81,7 +81,7 @@ echo "Building Yougori appliance agent"
 	-buildvcs=false \
     -trimpath \
     -ldflags='-s -w -buildid=' \
-    -o "$work_directory/opendock-agent" .
+    -o "$work_directory/yougori-agent" .
 )
 : "${YOUGORI_MUSL_TOOLCHAIN_MANIFEST:?Set the verified private musl native build manifest; no system compiler fallback is permitted.}"
 python3 "$repo_root/scripts/vendor-oci-build/native-compiler.py" \
@@ -90,13 +90,13 @@ python3 "$repo_root/scripts/vendor-oci-build/native-compiler.py" \
   --source "$repo_root/appliance/mount-helper.c" -- \
   -static-pie -Os -s -fstack-protector-strong -Wl,-z,relro,-z,now,-z,noexecstack \
   -Wall -Wextra -Werror \
-  -o "$work_directory/opendock-mount-helper" \
+  -o "$work_directory/yougori-mount-helper" \
   "$repo_root/appliance/mount-helper.c"
 
 echo "Assembling Alpine root filesystem"
 tar -xzf "$cache_directory/$alpine_archive" -C "$rootfs"
 cp /etc/resolv.conf "$rootfs/etc/resolv.conf"
-mkdir -p "$rootfs/usr/local/sbin" "$rootfs/etc/containerd" "$rootfs/etc/network" "$rootfs/sys/fs/cgroup" "$rootfs/var/lib/opendock/exports" "$rootfs/var/lib/opendock/shares" "$rootfs/var/lib/opendock/secrets"
+mkdir -p "$rootfs/usr/local/sbin" "$rootfs/etc/containerd" "$rootfs/etc/network" "$rootfs/sys/fs/cgroup" "$rootfs/var/lib/yougori/exports" "$rootfs/var/lib/yougori/shares" "$rootfs/var/lib/yougori/secrets"
 install -m 0755 \
   "$nerdctl_root/bin/containerd" \
   "$nerdctl_root/bin/containerd-shim-runc-v2" \
@@ -135,11 +135,11 @@ chroot "$rootfs" /bin/sh -euxc '
   update-ca-certificates
 '
 
-install -m 0755 "$work_directory/opendock-agent" "$rootfs/usr/local/sbin/opendock-agent"
-ln -s /usr/local/sbin/opendock-agent "$rootfs/usr/local/bin/yougori"
-install -m 0755 "$work_directory/opendock-mount-helper" "$rootfs/usr/local/sbin/opendock-mount-helper"
+install -m 0755 "$work_directory/yougori-agent" "$rootfs/usr/local/sbin/yougori-agent"
+ln -s /usr/local/sbin/yougori-agent "$rootfs/usr/local/bin/yougori"
+install -m 0755 "$work_directory/yougori-mount-helper" "$rootfs/usr/local/sbin/yougori-mount-helper"
 install -m 0755 "$repo_root/appliance/rootfs/etc/init.d/containerd" "$rootfs/etc/init.d/containerd"
-install -m 0755 "$repo_root/appliance/rootfs/etc/init.d/opendock-agent" "$rootfs/etc/init.d/opendock-agent"
+install -m 0755 "$repo_root/appliance/rootfs/etc/init.d/yougori-agent" "$rootfs/etc/init.d/yougori-agent"
 install -m 0644 "$repo_root/appliance/rootfs/etc/containerd/config.toml" "$rootfs/etc/containerd/config.toml"
 install -D -m 0644 "$repo_root/appliance/rootfs/etc/sysctl.d/90-yougori-security.conf" "$rootfs/etc/sysctl.d/90-yougori-security.conf"
 install -m 0755 "$repo_root/appliance/boot/upgrade-root.sh" "$rootfs/usr/local/sbin/yougori-upgrade-root"
@@ -186,9 +186,9 @@ chroot "$rootfs" /bin/sh -euxc '
   rc-update add bootmisc boot
   rc-update add networking boot
   rc-update add containerd default
-  rc-update add opendock-agent default
+  rc-update add yougori-agent default
   rc-update add networking microvm
-  rc-update add opendock-agent microvm
+  rc-update add yougori-agent microvm
 '
 
 rm -f "$rootfs/etc/resolv.conf"
@@ -208,7 +208,7 @@ find "$rootfs/var/log" -type f -exec truncate -s 0 -- {} +
 
 echo "Creating sparse copy-on-write base image"
 truncate -s 6G "$raw_image"
-mkfs.ext4 -F -m 0 -L opendock-root "$raw_image"
+mkfs.ext4 -F -m 0 -L yougori-root "$raw_image"
 mount -o loop "$raw_image" "$mountpoint"
 cp -a "$rootfs/." "$mountpoint/"
 sync

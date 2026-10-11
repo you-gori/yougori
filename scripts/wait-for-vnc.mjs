@@ -32,6 +32,7 @@ function greeting(url, timeoutMs, signal) {
   })
 }
 
+/** @param {string} url @param {{ timeoutMs?: number, signal?: AbortSignal }} [options] */
 export async function waitForVnc(url, { timeoutMs = 15_000, signal } = {}) {
   const deadline = performance.now() + timeoutMs
   let lastError

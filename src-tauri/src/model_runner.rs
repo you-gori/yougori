@@ -10,8 +10,22 @@ mod local;
 pub(crate) mod huggingface;
 pub(crate) mod preflight;
 mod vllm;
-pub use preflight::model_preflight;
 pub(crate) use neocloud::{start_model, stop_model};
+/// Owner settings (recording, publisher downloads, usage reset) require a second credential that
+/// stays in the container and this engine. The API key is shared with apps and the network.
+pub(crate) const ADMIN_TOKEN: &str = "YOUGORI_MODEL_ADMIN_TOKEN";
+const ADMIN_PATHS: [&str; 3] = ["/v1/listen/config", "/v1/usage/reset", "/v1/yougori/publishing"];
+fn admin_reference() -> Result<String, String> {
+    let reference = format!("model-admin-{}", uuid::Uuid::new_v4().simple());
+    crate::projects::secrets::store(&reference, &format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple()))?;
+    Ok(reference)
+}
+pub(crate) fn ensure_admin_token(options: &mut yougori_cli::workload::Options) -> Result<(), String> {
+    if !options.secret_environment.contains_key(ADMIN_TOKEN) {
+        options.secret_environment.insert(ADMIN_TOKEN.into(), admin_reference()?);
+    }
+    Ok(())
+}
 pub fn normalize_model(model: &str) -> Result<String, String> {
     if crate::model_registry::is_registry(model.trim()) { return Ok(model.trim().into()); }
     let model = model
@@ -39,7 +53,9 @@ pub fn normalize_model(model: &str) -> Result<String, String> {
     Ok(model.into())
 }
 #[tauri::command]
-pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, app: AppHandle) -> Result<Value, String> {
+pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
+    // A local model folder is a raw host path: dashboard or same-user CLI only.
+    if folder.is_some() { crate::host_terminal::require_dashboard(window.label())?; }
     run_model_with_resources(model, port, Some(ModelResources { model_folder:folder, ..Default::default() }), quant, app).await
 }
 /// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod.
@@ -130,6 +146,7 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
     let gguf = compatibility["runner"] == "yougori-llama-cpp";
     let vllm = compatibility["runner"] == "yougori-vllm";
     let mut protected = json!({"YOUGORI_MODEL_TOKEN": token_reference});
+    protected[ADMIN_TOKEN] = json!(admin_reference()?);
     if let Some(token) = huggingface::token() {
         crate::projects::secrets::store(huggingface::TOKEN_REFERENCE, &token)?;
         protected["HF_TOKEN"] = json!(huggingface::TOKEN_REFERENCE);
@@ -203,6 +220,7 @@ async fn run_registry_model(model:String,port:Option<u16>,resources:Option<Model
     if version["prequantized"]!=true {if let Some(precision)=match version["quant"].as_str(){Some("NF4")=>Some("4bit"),Some("INT8")=>Some("8bit"),_=>None}{environment["YOUGORI_MODEL_PRECISION"]=json!(precision);}}
     if gguf {environment["YOUGORI_MODEL_FORMAT"]=json!("gguf");environment["YOUGORI_MODEL_QUANT"]=version["quant"].clone();let files=cached["files"].as_array().into_iter().flatten().filter(|file|file["name"].as_str().is_some_and(|name|name.ends_with(".gguf"))).cloned().collect::<Vec<_>>();environment["YOUGORI_MODEL_FILES"]=json!(serde_json::to_string(&files).map_err(|e|e.to_string())?);}
     let mut protected=json!({"YOUGORI_MODEL_TOKEN":reference});
+    protected[ADMIN_TOKEN]=json!(admin_reference()?);
     optimizer::environment(&mut environment,&mut protected)?;
     let range=|n:f64|json!({"min":n,"preferred":n,"max":n});
     let name=yougori_cli::public::model_environment_name(&model,state.environments.iter().map(|e|e.name.as_str()));
@@ -285,9 +303,12 @@ pub(crate) async fn refresh_server(
             Ok(())
         })?;
     }
-    let mut options=runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
+    // Options are keyed by runtime ID; a factory reset gives the environment a new one.
+    let options_id=env.runtime_id.as_deref().unwrap_or(&env.id);
+    let mut options=runtime.workload_options(options_id)?;
     let old=options.clone();
     optimizer::refresh_options(&mut options)?;
+    ensure_admin_token(&mut options)?;
     options.environment.insert("YOUGORI_PUBLISHER_SOURCE".into(),publisher_source());
     if options.environment.contains_key("YOUGORI_MODEL_PATH") { options.environment.insert("YOUGORI_REGISTRY_SOURCE".into(),registry_source()); }
     // Keep already working, unquantized environments at their original precision.
@@ -320,8 +341,8 @@ pub(crate) async fn refresh_server(
         }
     }
     if options!=old {
-        runtime.save_workload_options(&env.id,&options)?;
-        if let Err(error)=runtime.update_workload_configuration(env).await{runtime.save_workload_options(&env.id,&old)?;return Err(error)}
+        runtime.save_workload_options(options_id,&options)?;
+        if let Err(error)=runtime.update_workload_configuration(env).await{runtime.save_workload_options(options_id,&old)?;return Err(error)}
     }
     if current==command{return Ok(())}
     crate::commands::startup::update(environment_id, &command, store, runtime)
@@ -374,7 +395,11 @@ async fn model_connection(
         "Model server is starting. Check Logs for installation/download progress and try again."
     })?)
     };
-    let control = if path == "/v1/yougori/optimizer" { format!("X-Yougori-GPU-Control: {}\r\n", crate::projects::secrets::variable(&options,"YOUGORI_GPU_CONTROL_TOKEN")?) } else {String::new()};
+    let mut control = if path == "/v1/yougori/optimizer" { format!("X-Yougori-GPU-Control: {}\r\n", crate::projects::secrets::variable(&options,"YOUGORI_GPU_CONTROL_TOKEN")?) } else {String::new()};
+    // Servers started before the owner credential existed accept these settings with the API key.
+    if ADMIN_PATHS.contains(&path) {
+        if let Ok(admin) = crate::projects::secrets::variable(&options, ADMIN_TOKEN) { control.push_str(&format!("X-Yougori-Admin: {admin}\r\n")); }
+    }
     let request=format!("{} {path} HTTP/1.1\r\nHost: localhost\r\n{control}Authorization: Bearer {token}\r\nX-Yougori-Client: yougori\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{encoded}",if body.is_some(){"POST"}else{"GET"},encoded.len());
     stream
         .write_all(request.as_bytes())
@@ -423,10 +448,12 @@ pub(crate) async fn model_request(
     .await
     .map_err(|_| "Model response timed out; try a shorter conversation")?
 }
-/// Only the local engine may lease optional free-provider recording.
+/// Owner setting: requires the engine-held admin credential, not only the API key.
 pub(crate) async fn configure_publishing(app: &AppHandle, id: &str, open: bool) -> Result<Value,String> {
     model_request(app,id,"/v1/yougori/publishing",Some(json!({"downloads":open}))).await.map_err(|_|"Stop this model and run it again to enable publisher-hosted pages; its container and files are kept".to_owned())
 }
+/// Only the local engine may lease optional free-provider recording: the server requires the
+/// engine-held admin credential in addition to the API key.
 pub(crate) async fn configure_listen(app: &AppHandle, id: &str, mode: &str, enabled: bool) -> Result<Value, String> {
     if enabled && mode != "free" { return Err("--listen requires --nowfree".into()); }
     model_request(app, id, "/v1/listen/config", Some(json!({"enabled":enabled,"mode":mode}))).await

@@ -71,7 +71,7 @@ impl ErrorDetails {
             ("engine_unavailable", true, "not_submitted")
         } else if lower.contains("another live owner") || lower.contains("already in use") || lower.contains("revision") && lower.contains("conflict") {
             ("resource_conflict", false, "not_started")
-        } else if lower.contains("permission") || lower.contains("requires --yes") || lower.contains("ownership") {
+        } else if lower.contains("permission") || lower.contains("requires --yes") || lower.contains("repeat with --yes") || lower.contains("--yes confirmation is required") || lower.contains("ownership") {
             ("permission_denied", false, "not_started")
         } else if lower.starts_with("usage:") || lower.contains("unknown parameter") || lower.contains("missing parameter") || lower.contains("must be") || lower.contains("unknown command") || lower.contains("unknown method") {
             ("invalid_request", false, "not_started")
@@ -258,6 +258,11 @@ mod tests {
         assert!(!details.retryable);
         assert_eq!(details.outcome, "unknown");
         assert_eq!(ErrorDetails::from_message("Usage: yougori rm ENV --yes").code, "invalid_request");
+        // Missing confirmations from the CLI parser and the engine both mean nothing ran.
+        for refusal in ["Deletes this environment. Repeat with --yes only if this is intended.", "Publishes a public link. Explicit --yes confirmation is required."] {
+            let details = ErrorDetails::from_message(refusal);
+            assert_eq!((details.code.as_str(), details.outcome.as_str()), ("permission_denied", "not_started"), "{refusal}");
+        }
         assert_eq!(ErrorDetails::from_message("YOUGORI_OPERATION_INTERRUPTED: cleanup timed out").outcome,"reconciliation_required");
         let future:Response=serde_json::from_value(serde_json::json!({"version":VERSION,"ok":true,"result":{},"futureAdditiveField":true})).unwrap();
         assert!(future.ok);

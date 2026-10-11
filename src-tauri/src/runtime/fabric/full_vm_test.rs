@@ -48,7 +48,7 @@ async fn boot(runtime: &RuntimeManager, id: &str) -> Result<Guest, String> {
         std::fs::File::create(root.join("pc-test-serial.log")).map_err(|e| e.to_string())?;
     let errors = std::fs::File::create(root.join("pc-test-qemu.log")).map_err(|e| e.to_string())?;
     let mut args=vec!["-name".into(),format!("Yougori test {id}"),"-machine".into(),"q35".into(),"-accel".into(),"tcg,thread=multi".into(),"-cpu".into(),"max".into(),"-m".into(),"512".into(),"-nodefaults".into(),"-display".into(),"none".into(),"-monitor".into(),"none".into(),"-serial".into(),"stdio".into(),
-        "-kernel".into(),runtime.layout.appliance_kernel.to_string_lossy().into_owned(),"-initrd".into(),runtime.layout.appliance_initramfs.to_string_lossy().into_owned(),"-append".into(),format!("root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,e1000e,ext4 softlevel=microvm opendock.mode=microvm opendock.token={token}"),
+        "-kernel".into(),runtime.layout.appliance_kernel.to_string_lossy().into_owned(),"-initrd".into(),runtime.layout.appliance_initramfs.to_string_lossy().into_owned(),"-append".into(),format!("root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,e1000e,ext4 softlevel=microvm yougori.mode=microvm yougori.token={token}"),
         "-drive".into(),format!("file={},format=qcow2,if=virtio",vm.disk_path.to_string_lossy().replace(',',",,")),"-netdev".into(),format!("user,id=net0,hostfwd=tcp:127.0.0.1:{control}-:7443"),"-device".into(),"virtio-net-pci,netdev=net0".into()];
     args.extend(qemu_args(id, private, false));
     let mut command = tokio::process::Command::new(&runtime.layout.qemu_system);

@@ -37,6 +37,11 @@ MODEL_REVISION = os.environ.get("YOUGORI_MODEL_REVISION")
 MODEL_PATH = os.environ.get("YOUGORI_MODEL_PATH")
 REGISTRY_VERIFIED = None
 TOKEN = os.environ["YOUGORI_MODEL_TOKEN"]
+# Owner settings need this second credential, kept by the local engine. The API key above is
+# shared with apps and the network; holding it must not change recording, downloads or usage.
+ADMIN_TOKEN = os.environ.get("YOUGORI_MODEL_ADMIN_TOKEN", "")
+# Engines and installers never receive the server's credentials.
+PRIVATE_ENVIRONMENT = ("YOUGORI_MODEL_TOKEN", "YOUGORI_MODEL_ADMIN_TOKEN", "YOUGORI_GPU_CONTROL_TOKEN")
 # GGUF uses llama.cpp, vLLM uses its pinned native/plugin implementation; other weights use Transformers.
 FORMAT = os.environ.get("YOUGORI_MODEL_FORMAT", "safetensors")
 STATE = {"status": "installing", "model": MODEL, "error": None}
@@ -149,8 +154,7 @@ def download_snapshot(revision, files):
     STATE.update(status="downloading", download={"receivedBytes": 0, "totalBytes": total, "bytesPerSecond": 0, "transport": "xet"})
     for attempt, transport in enumerate(("xet", "https")):
         temporary_before = incomplete_downloads()
-        environment = {**os.environ, **DOWNLOAD_ENV}
-        environment.pop("YOUGORI_MODEL_TOKEN", None)
+        environment = {k: v for k, v in {**os.environ, **DOWNLOAD_ENV}.items() if k not in PRIVATE_ENVIRONMENT}
         if attempt:
             environment["HF_HUB_DISABLE_XET"] = "1"
         process = subprocess.Popen([sys.executable, "-u", "-c", DOWNLOAD_WORKER],
@@ -883,8 +887,7 @@ def load_gguf():
     STATE["status"] = "loading"
     cpu_only = os.environ.get("YOUGORI_MODEL_CPU") == "1"
     print("Loading " + MODEL + " on " + ("CPU" if cpu_only else "GPU") + " with llama.cpp " + LLAMA_BUILD + "...", flush=True)
-    environment = dict(os.environ)
-    environment.pop("YOUGORI_MODEL_TOKEN", None)
+    environment = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
     environment["LD_LIBRARY_PATH"] = os.path.dirname(binary) + (":" + environment["LD_LIBRARY_PATH"] if environment.get("LD_LIBRARY_PATH") else "")
     devices = {} if cpu_only else llama_cuda_devices(binary, environment)
     global ENGINE_PROCESS
@@ -982,7 +985,7 @@ def kolibri_plugin():
     os.makedirs(folder, exist_ok=True)
     wheel = os.path.join(folder, name)
     download(url, wheel, size, sha)
-    environment = {k:v for k,v in os.environ.items() if k not in ("HF_TOKEN", "YOUGORI_MODEL_TOKEN")}
+    environment = {k:v for k,v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
     subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-index", wheel],
                    env=environment, check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -1032,7 +1035,7 @@ def load_vllm():
         "--max-num-seqs", "1", "--enforce-eager", "--generation-config", "vllm", "--disable-log-stats"]
     if kolibri: args += ["--reasoning-parser", "kolibri1"]
     if kolibri and (config.get("quantization_config") or {}).get("quant_method") == "fp8": args += ["--kv-cache-dtype", "fp8"]
-    environment = {k:v for k,v in os.environ.items() if k not in ("HF_TOKEN", "YOUGORI_MODEL_TOKEN")}
+    environment = {k:v for k,v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
     environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", VLLM_NO_USAGE_STATS="1",
                        VLLM_PLUGINS="aleph_alpha_inference" if kolibri else "", VLLM_API_KEY=LLAMA["key"])
     # Native engine diagnostics can contain caller content. Never forward them to workload logs.
@@ -1681,6 +1684,10 @@ class Handler(BaseHTTPRequestHandler):
         # non-ASCII strings, so malformed keys must fail authentication first.
         return value.isascii() and secrets.compare_digest(value, "Bearer " + TOKEN)
 
+    def admin_authorized(self):
+        supplied = self.headers.get("X-Yougori-Admin", "")
+        return bool(ADMIN_TOKEN) and supplied.isascii() and secrets.compare_digest(supplied, ADMIN_TOKEN)
+
     def do_GET(self):
         if not self.authorized():
             return self.reply(401, {"error": {"message": "A model API token is required"}})
@@ -1705,6 +1712,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(401, {"error": {"message": "A model API token is required"}})
         if gpu_route(self):
             return
+        if self.path in ("/v1/listen/config", "/v1/usage/reset") and not self.admin_authorized():
+            return self.reply(403, {"error": {"message": "Only the local Yougori engine can change this model's settings"}})
         if self.path == "/v1/listen/config":
             try:
                 length = int(self.headers.get("Content-Length", "0"))

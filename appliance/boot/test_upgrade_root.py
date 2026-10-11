@@ -78,33 +78,82 @@ class BootUpgradeTests(unittest.TestCase):
             return subprocess.run([busybox, "sh", str(UPDATER), str(root), str(payload)],
                                   env={**os.environ, "PATH": directory}, capture_output=True)
 
-    def test_updates_legacy_agent_and_preserves_application_files(self):
+    def test_moves_disk_from_pre_rename_names_and_preserves_application_files(self):
+        # Disks from releases before the rename to Yougori use the old product name.
+        legacy = "opendock"
         with tempfile.TemporaryDirectory() as temp:
             root, payload = self.fixture(temp)
-            legacy_agent = root / "usr/local/sbin/opendock-agent"
-            legacy_agent.parent.mkdir(parents=True)
-            legacy_agent.write_bytes(b"old-agent")
-            legacy_helper = root / "usr/local/sbin/opendock-mount-helper"
-            legacy_helper.write_bytes(b"old-mount-helper")
-            application = root / "var/lib/opendock/container-storage/project/data.db"
+            sbin = root / "usr/local/sbin"
+            sbin.mkdir(parents=True)
+            (sbin / f"{legacy}-agent").write_bytes(b"old-agent")
+            (sbin / f"{legacy}-mount-helper").write_bytes(b"old-mount-helper")
+            (root / "etc/init.d").mkdir(parents=True)
+            (root / f"etc/init.d/{legacy}-agent").write_bytes(b"old-service")
+            for runlevel in ("default", "microvm"):
+                (root / "etc/runlevels" / runlevel).mkdir(parents=True)
+                (root / "etc/runlevels" / runlevel / f"{legacy}-agent").symlink_to(f"/etc/init.d/{legacy}-agent")
+            (root / "usr/local/bin").mkdir(parents=True)
+            (root / "usr/local/bin/yougori").symlink_to(f"/usr/local/sbin/{legacy}-agent")
+            (root / f"usr/local/lib/{legacy}-storage").mkdir(parents=True)
+            (root / f"usr/local/lib/{legacy}-storage/resize2fs").write_bytes(b"old-tool")
+            application = root / f"var/lib/{legacy}/container-storage/project/data.db"
             application.parent.mkdir(parents=True)
             application.write_bytes(b"user data stays byte-for-byte")
-            result = self.run_upgrade(root, payload)
-            self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assertEqual(legacy_agent.read_bytes(), (payload / "usr/local/sbin/opendock-agent").read_bytes())
-            self.assertEqual(legacy_helper.read_bytes(), (payload / "usr/local/sbin/opendock-mount-helper").read_bytes())
-            self.assertEqual(legacy_agent.stat().st_mode & 0o777, 0o755)
+            (root / "etc/passwd").write_text(
+                "root:x:0:0:root:/root:/bin/sh\n"
+                f"{legacy}-apps:x:1000:1000:Linux User,,,:/home/{legacy}-apps:/bin/sh\n")
+            (root / "etc/shadow").write_text(f"root:*:1::::::\n{legacy}-apps:!:1::::::\n")
+            (root / "etc/group").write_text(f"root:x:0:root\n{legacy}-apps:x:1000:\n")
+            (root / f"home/{legacy}-apps").mkdir(parents=True)
+            (root / f"home/{legacy}-apps/settings").write_bytes(b"app settings")
+            for attempt in range(2):
+                result = self.run_upgrade(root, payload)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                agent = sbin / "yougori-agent"
+                self.assertEqual(agent.read_bytes(), (payload / "usr/local/sbin/yougori-agent").read_bytes())
+                self.assertEqual(agent.stat().st_mode & 0o777, 0o755)
+                self.assertEqual((sbin / "yougori-mount-helper").read_bytes(), (payload / "usr/local/sbin/yougori-mount-helper").read_bytes())
+                for old in (f"usr/local/sbin/{legacy}-agent", f"usr/local/sbin/{legacy}-mount-helper",
+                            f"etc/init.d/{legacy}-agent", f"usr/local/lib/{legacy}-storage"):
+                    self.assertFalse((root / old).exists() or (root / old).is_symlink(), old)
+                for runlevel in ("default", "microvm"):
+                    directory = root / "etc/runlevels" / runlevel
+                    self.assertEqual(os.readlink(directory / "yougori-agent"), "/etc/init.d/yougori-agent")
+                    self.assertFalse((directory / f"{legacy}-agent").is_symlink())
+                self.assertEqual(os.readlink(root / "usr/local/bin/yougori"), "/usr/local/sbin/yougori-agent")
+                moved = root / "var/lib/yougori/container-storage/project/data.db"
+                self.assertEqual(moved.read_bytes(), b"user data stays byte-for-byte")
+                # Existing containers record bind-mount sources under the old path.
+                self.assertEqual(os.readlink(root / f"var/lib/{legacy}"), "yougori")
+                self.assertEqual(application.read_bytes(), b"user data stays byte-for-byte")
+                self.assertIn("yougori-apps:x:1000:1000:Linux User,,,:/home/yougori-apps:/bin/sh", (root / "etc/passwd").read_text())
+                self.assertIn("yougori-apps:!:", (root / "etc/shadow").read_text())
+                self.assertIn("yougori-apps:x:1000:", (root / "etc/group").read_text())
+                for account_file in ("passwd", "shadow", "group"):
+                    self.assertNotIn(legacy, (root / "etc" / account_file).read_text())
+                self.assertEqual((root / "home/yougori-apps/settings").read_bytes(), b"app settings")
+                self.assertFalse((root / f"home/{legacy}-apps").exists())
             self.assertEqual((root / "etc/sysctl.d/90-yougori-security.conf").stat().st_mode & 0o777, 0o644)
-            self.assertEqual(application.read_bytes(), b"user data stays byte-for-byte")
             self.assertEqual((root / "lib/modules" / os.uname().release / "kernel/fs/fuse/fuse.ko").read_bytes(), b"trusted-module")
             for name in prepare.VENDOR_FILES:
                 self.assertEqual((root / name).read_bytes(), (payload / name).read_bytes())
                 self.assertEqual((root / name).stat().st_mode & 0o777, 0o755)
-            result = self.run_upgrade(root, payload)
-            self.assertEqual(result.returncode, 0, result.stderr.decode())
-            self.assertEqual(application.read_bytes(), b"user data stays byte-for-byte")
             self.assertEqual(list(root.rglob(".yougori-boot.*")), [])
             self.assertEqual(list(root.glob(".yougori-oci.*")), [])
+
+    def test_leaves_both_data_folders_alone_when_both_exist(self):
+        legacy = "opendock"
+        with tempfile.TemporaryDirectory() as temp:
+            root, payload = self.fixture(temp)
+            (root / f"var/lib/{legacy}").mkdir(parents=True)
+            (root / f"var/lib/{legacy}/old").write_bytes(b"old")
+            (root / "var/lib/yougori").mkdir(parents=True)
+            (root / "var/lib/yougori/new").write_bytes(b"new")
+            result = self.run_upgrade(root, payload)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual((root / f"var/lib/{legacy}/old").read_bytes(), b"old")
+            self.assertEqual((root / "var/lib/yougori/new").read_bytes(), b"new")
+            self.assertFalse((root / f"var/lib/{legacy}").is_symlink())
 
     def test_replaces_complete_legacy_vendor_set_and_preserves_link_targets(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -164,7 +213,7 @@ class BootUpgradeTests(unittest.TestCase):
                 result = self.run_upgrade(root, payload)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(legacy.read_bytes(), b"preserved until complete verification")
-                self.assertFalse((root / "usr/local/sbin/opendock-agent").exists())
+                self.assertFalse((root / "usr/local/sbin/yougori-agent").exists())
                 self.assertEqual(list(root.glob(".yougori-oci.*")), [])
 
     def test_vendor_archive_rejects_links_and_escape_even_with_matching_archive_hash(self):
@@ -285,7 +334,7 @@ class BootUpgradeTests(unittest.TestCase):
             root, payload = self.fixture(temp)
             original = Path(temp) / "user-original"
             original.write_bytes(b"preserve the symlink target")
-            agent = root / "usr/local/sbin/opendock-agent"
+            agent = root / "usr/local/sbin/yougori-agent"
             agent.parent.mkdir(parents=True)
             agent.symlink_to(original)
             result = self.run_upgrade(root, payload)
@@ -296,11 +345,11 @@ class BootUpgradeTests(unittest.TestCase):
     def test_replaces_hardlinked_leaf_without_changing_other_link(self):
         with tempfile.TemporaryDirectory() as temp:
             root, payload = self.fixture(temp)
-            source = payload / "usr/local/sbin/opendock-agent"
+            source = payload / "usr/local/sbin/yougori-agent"
             other = Path(temp) / "user-linked-file"
             other.write_bytes(source.read_bytes())
             other.chmod(0o600)
-            agent = root / "usr/local/sbin/opendock-agent"
+            agent = root / "usr/local/sbin/yougori-agent"
             agent.parent.mkdir(parents=True)
             os.link(other, agent)
             result = self.run_upgrade(root, payload)
@@ -331,7 +380,7 @@ class BootUpgradeTests(unittest.TestCase):
                         archive.write(b"tampered")
                 result = self.run_upgrade(root, payload)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((root / "usr/local/sbin/opendock-agent").exists())
+                self.assertFalse((root / "usr/local/sbin/yougori-agent").exists())
 
     def test_module_archive_is_deterministic_and_rejects_links(self):
         with tempfile.TemporaryDirectory() as temp:

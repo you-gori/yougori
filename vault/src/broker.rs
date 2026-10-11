@@ -1,6 +1,6 @@
 use crate::{
     native, platform,
-    policy::{Identity, Operation, Ticket, QUEUE_LIMIT, REQUEST_LIFETIME},
+    policy::{Identity, Operation, QUEUE_LIMIT, REQUEST_LIFETIME},
     protocol::{self, ItemInput, Request},
     storage::{Audit, Contents, Item, Store},
 };
@@ -19,6 +19,8 @@ mod http;
 mod oauth;
 struct Session {
     identity: Identity,
+    /// OS-verified Desktop process (pipe connections only); see `platform::peer`.
+    desktop: bool,
     cancelled: Arc<AtomicBool>,
     connected: AtomicBool,
     allowed: AtomicBool,
@@ -49,9 +51,22 @@ impl Shared {
             entry.cancel.store(true, Ordering::SeqCst);
         }
     }
-    fn status(&self) -> Value {
+    /// Item names, clients, request details and activity are for Desktop only.
+    /// Other local processes learn only whether requests are waiting.
+    fn status(&self, desktop: bool) -> Value {
+        if !desktop {
+            let pending: Vec<Value> = self
+                .pending
+                .lock()
+                .unwrap()
+                .values()
+                .map(|p| json!({"ready": p.summary.lock().unwrap()["ready"] == true}))
+                .collect();
+            return json!({"running":true,"desktop":false,"version":env!("CARGO_PKG_VERSION"),"locked":self.locked.load(Ordering::SeqCst),"pendingCount":pending.len(),"pending":pending,"items":[],"clients":[],"activity":[]});
+        }
         let mut status = self.snapshot.lock().unwrap().clone();
         status["running"] = json!(true);
+        status["desktop"] = json!(true);
         status["locked"] = json!(self.locked.load(Ordering::SeqCst));
         status["pending"] = json!(self
             .pending
@@ -74,6 +89,8 @@ impl Shared {
 }
 enum Action {
     Connect,
+    /// A connection already approved in Desktop while the worker stayed free.
+    ApprovedConnect,
     Tool(Operation),
     AddItems(Vec<ItemInput>),
     Browse,
@@ -148,12 +165,13 @@ pub(crate) fn run() -> Result<(), String> {
                 drop(pipe);
                 continue;
             };
-            let Ok(identity) = platform::peer(pipe.as_raw_handle()) else {
+            let Ok((identity, desktop)) = platform::peer(pipe.as_raw_handle()) else {
                 drop(pipe);
                 continue;
             };
             let session = Arc::new(Session {
                 identity,
+                desktop,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 connected: AtomicBool::new(true),
                 allowed: AtomicBool::new(false),
@@ -224,7 +242,7 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 
                 break;
             }
         }
-        let response = match serde_json::from_slice::<Request>(&bytes) {
+        let mut response = match serde_json::from_slice::<Request>(&bytes) {
             Ok(request) if remote && !matches!(request, Request::Mcp { .. }) => {
                 json!({"error":"Remote connections support MCP requests only"})
             }
@@ -233,7 +251,9 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 
                 .unwrap_or_else(|error| json!({"error":error})),
             Err(_) => json!({"error":"Invalid or unsupported vault request"}),
         };
-        if protocol::write(&mut writer, &response).await.is_err() {
+        let written = protocol::write(&mut writer, &response).await;
+        protocol::wipe(&mut response);
+        if written.is_err() {
             break;
         }
     }
@@ -250,7 +270,7 @@ async fn enqueue(
     let id = uuid::Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
     let operation = match &action {
-        Action::Connect => "connect",
+        Action::Connect | Action::ApprovedConnect => "connect",
         Action::Tool(v) => v.name(),
         Action::AddItems(_) => "add_items",
         Action::Browse => "browse",
@@ -293,7 +313,7 @@ async fn handle(
     shared: &Arc<Shared>,
 ) -> Result<Value, String> {
     match request {
-        Request::Status {} => Ok(shared.status()),
+        Request::Status {} => Ok(shared.status(session.desktop)),
         Request::Lock {} => {
             shared.lock();
             crate::storage::record(&Audit {
@@ -306,14 +326,14 @@ async fn handle(
             Ok(json!({"locked":true}))
         }
         Request::Deny { request } => {
-            if !platform::desktop_foreground(&session.identity) { return Err("Open Yougori Desktop to deny requests".into()); }
+            if !platform::desktop_foreground(&session.identity, session.desktop) { return Err("Open Yougori Desktop to deny requests".into()); }
             if let Some(p) = shared.pending.lock().unwrap().get(&request) {
                 p.cancel.store(true, Ordering::SeqCst);
             }
             Ok(json!({"denied":true}))
         }
         Request::Approve { request } => {
-            if !platform::desktop_foreground(&session.identity) || !native::unlocked_desktop() {
+            if !platform::desktop_foreground(&session.identity, session.desktop) || !native::unlocked_desktop() {
                 return Err("Open Yougori Desktop to approve this request".into());
             }
             let pending = shared.pending.lock().unwrap().get(&request).cloned().ok_or("Request is no longer pending")?;
@@ -326,7 +346,7 @@ async fn handle(
         }
         Request::Manage {} => Err("Use Add items in Yougori Desktop".into()),
         Request::AddItems { items } => {
-            if !platform::desktop_foreground(&session.identity) || !native::unlocked_desktop() {
+            if !platform::desktop_foreground(&session.identity, session.desktop) || !native::unlocked_desktop() {
                 return Err("Open Yougori Desktop to add vault items".into());
             }
             enqueue(Action::AddItems(items), session, sender, shared).await
@@ -337,17 +357,17 @@ async fn handle(
             enqueue(Action::HttpCredentials, session, sender, shared).await
         }
         Request::HttpEndpoint {} => {
-            if !platform::desktop_process(&session.identity) { return Err("Only Yougori Desktop can start the vault gateway".into()); }
+            if !session.desktop { return Err("Only Yougori Desktop can start the vault gateway".into()); }
             http::start(shared.clone(), sender.clone()).await
         },
         Request::HttpOrigin { origin } => {
-            if !platform::desktop_process(&session.identity) { return Err("Only Yougori Desktop can configure the vault gateway".into()); }
+            if !session.desktop { return Err("Only Yougori Desktop can configure the vault gateway".into()); }
             shared.oauth.lock().unwrap().set_origin(origin)?;
             Ok(json!({"configured":true}))
         }
         Request::Remote {} => enqueue(Action::Remote, session, sender, shared).await,
         Request::RemoteOff {} => {
-            if !platform::desktop_foreground(&session.identity) { return Err("Open Yougori Desktop to disable remote vault access".into()); }
+            if !platform::desktop_foreground(&session.identity, session.desktop) { return Err("Open Yougori Desktop to disable remote vault access".into()); }
             if let Some(stop) = shared.remote_stop.lock().unwrap().take() {
                 stop.abort();
             }
@@ -356,7 +376,7 @@ async fn handle(
             Ok(json!({"disabled":true}))
         }
         Request::Revoke { client } => {
-            if !platform::desktop_foreground(&session.identity) { return Err("Open Yougori Desktop to revoke a client".into()); }
+            if !platform::desktop_foreground(&session.identity, session.desktop) { return Err("Open Yougori Desktop to revoke a client".into()); }
             if !shared.snapshot.lock().unwrap()["clients"]
                 .as_array()
                 .is_some_and(|clients| clients.iter().any(|v| v["id"] == client))
@@ -423,9 +443,11 @@ async fn handle(
                     match parsed.and_then(|v| v.validate().map(|_| v)) {
                         Ok(operation) => {
                             match enqueue(Action::Tool(operation), session, sender, shared).await {
-                                Ok(value) => Ok(
-                                    json!({"content":[{"type":"text","text":serde_json::to_string(&value).unwrap()}],"isError":false}),
-                                ),
+                                Ok(mut value) => {
+                                    let text = zeroize::Zeroizing::new(serde_json::to_string(&value).unwrap());
+                                    protocol::wipe(&mut value);
+                                    Ok(json!({"content":[{"type":"text","text":&*text}],"isError":false}))
+                                }
                                 Err(error) => Ok(
                                     json!({"content":[{"type":"text","text":error}],"isError":true}),
                                 ),
@@ -478,7 +500,7 @@ fn desktop_decision(job: &Job, shared: &Shared, title: &str, content: &str, allo
     *pending.summary.lock().unwrap() = json!({
         "id": job.id,
         "client": job.session.identity.summary(),
-        "operation": match &job.action { Action::Tool(op) => op.name(), Action::Connect => "connect", _ => "vault" },
+        "operation": match &job.action { Action::Tool(op) => op.name(), Action::Connect | Action::ApprovedConnect => "connect", _ => "vault" },
         "title": title,
         "description": content,
         "allowLabel": allow,
@@ -523,9 +545,73 @@ fn all_credentials(contents: &Contents) -> Value {
     json!({"count":credentials.len(),"credentials":credentials})
 }
 fn mcp_result_fits(value: &Value) -> bool {
-    let Ok(text) = serde_json::to_string(value) else { return false; };
-    serde_json::to_vec(&json!({"jsonrpc":"2.0","id":"reserved-id","result":{"content":[{"type":"text","text":text}],"isError":false}}))
-        .is_ok_and(|bytes| bytes.len() < protocol::MAX_FRAME - 1024)
+    let Ok(text) = serde_json::to_string(value).map(zeroize::Zeroizing::new) else { return false; };
+    let mut wrapper = json!({"jsonrpc":"2.0","id":"reserved-id","result":{"content":[{"type":"text","text":&*text}],"isError":false}});
+    let fits = serde_json::to_vec(&wrapper)
+        .map(zeroize::Zeroizing::new)
+        .is_ok_and(|bytes| bytes.len() < protocol::MAX_FRAME - 1024);
+    protocol::wipe(&mut wrapper);
+    fits
+}
+const CONNECT_TITLE: &str = "Allow this client to submit requests?";
+const CONNECT_ALLOW: &str = "Allow Requests";
+fn connect_content(identity: &Identity) -> String {
+    format!("{}\n\nRequested access: submit requests to Personal Vault.\nNo information, credentials, or execution permission is granted. Every tool call needs a new approval.",who(identity))
+}
+/// Waits for the Desktop decision on an unauthenticated (OAuth sign-in)
+/// connection without occupying the single operation worker. Only one such
+/// prompt may wait at a time, so sign-in attempts cannot crowd out agents.
+async fn connection_decision(shared: &Arc<Shared>, session: &Arc<Session>) -> Result<(), String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let generation = shared.generation.load(Ordering::SeqCst);
+    let deadline = Instant::now() + REQUEST_LIFETIME;
+    let pending = Arc::new(Pending {
+        summary: Mutex::new(json!({
+            "id": id,
+            "client": session.identity.summary(),
+            "operation": "connect",
+            "title": CONNECT_TITLE,
+            "description": connect_content(&session.identity),
+            "allowLabel": CONNECT_ALLOW,
+            "ready": true,
+            "unauthenticated": true,
+            "expiresAt": (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339(),
+        })),
+        decision: AtomicU8::new(0),
+        cancel: Arc::new(AtomicBool::new(false)),
+        session: Arc::downgrade(session),
+    });
+    {
+        let mut waiting = shared.pending.lock().unwrap();
+        if waiting.len() >= QUEUE_LIMIT
+            || waiting.values().any(|p| p.summary.lock().unwrap()["unauthenticated"] == true)
+        {
+            return Err("Another sign-in is waiting for review in Yougori. Try again shortly.".into());
+        }
+        waiting.insert(id.clone(), pending.clone());
+    }
+    struct Waiting<'a>(&'a Shared, String);
+    impl Drop for Waiting<'_> {
+        fn drop(&mut self) {
+            self.0.pending.lock().unwrap().remove(&self.1);
+        }
+    }
+    let _waiting = Waiting(shared, id);
+    loop {
+        if pending.decision.load(Ordering::SeqCst) == 1 {
+            return Ok(());
+        }
+        // Windows locking, revocation and vault locking all advance the generation.
+        if pending.cancel.load(Ordering::SeqCst)
+            || session.cancelled.load(Ordering::SeqCst)
+            || !session.connected.load(Ordering::SeqCst)
+            || Instant::now() >= deadline
+            || shared.generation.load(Ordering::SeqCst) != generation
+        {
+            return Err("Connection denied or expired".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 #[cfg(test)]
 mod inventory_tests {
@@ -577,7 +663,7 @@ fn worker(
         }
         let operation = match &job.action {
             Action::Tool(op) => op.name(),
-            Action::Connect => "connect",
+            Action::Connect | Action::ApprovedConnect => "connect",
             Action::AddItems(_) => "add_items",
             Action::Browse => "browse",
             Action::HttpSetup => "setup",
@@ -619,7 +705,7 @@ fn work(
     }
     if matches!(job.action, Action::HttpSetup | Action::HttpCredentials) {
         let setup = matches!(job.action, Action::HttpSetup);
-        if !platform::desktop_foreground(&job.session.identity) || !valid(job, shared) {
+        if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) {
             return Err("Open Yougori Desktop to manage the vault".into());
         }
         if setup {
@@ -634,7 +720,7 @@ fn work(
         return Ok(result);
     }
     if matches!(job.action, Action::Browse) {
-        if !platform::desktop_foreground(&job.session.identity) || !valid(job, shared) { return Err("Open Yougori Desktop to view vault items".into()); }
+        if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) { return Err("Open Yougori Desktop to view vault items".into()); }
         if state.is_none() {
             *state = Some(Store::open()?);
         }
@@ -642,7 +728,7 @@ fn work(
         return Ok(json!({"ready":true}));
     }
     if let Action::AddItems(inputs) = &job.action {
-        if !platform::desktop_foreground(&job.session.identity) || !valid(job, shared) {
+        if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) {
             return Err("Open Yougori Desktop to add vault items".into());
         }
         if state.is_none() {
@@ -680,7 +766,7 @@ fn work(
     }
     if state.is_none() || shared.locked.load(Ordering::SeqCst) {
         *state = Some(Store::open()?);
-        if !matches!(job.action, Action::Connect | Action::Tool(_)) {
+        if !matches!(job.action, Action::Connect | Action::ApprovedConnect | Action::Tool(_)) {
             shared.locked.store(false, Ordering::SeqCst);
         }
     }
@@ -690,13 +776,13 @@ fn work(
             if !shared.remote.lock().unwrap().is_null() {
                 return Ok(shared.remote.lock().unwrap().clone());
             }
-            if !platform::desktop_foreground(&job.session.identity) || !valid(job, shared) { return Err("Open Yougori Desktop to enable device requests".into()); }
+            if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) { return Err("Open Yougori Desktop to enable device requests".into()); }
             audit(store, job, "remote_access", "enabled")?;
             let remote = runtime.block_on(start_remote(shared.clone(), sender.clone()))?;
             *shared.remote.lock().unwrap() = remote.clone();
             Ok(remote)
         }
-        Action::Connect => {
+        Action::Connect | Action::ApprovedConnect => {
             if store.contents.clients.len() >= 32
                 && !store
                     .contents
@@ -709,13 +795,9 @@ fn work(
                 );
             }
             audit(store, job, "connect", "requested")?;
-            let content = format!("{}\n\nRequested access: submit requests to Personal Vault.\nNo information, credentials, or execution permission is granted. Every tool call needs a new approval.",who(&job.session.identity));
-            if !desktop_decision(job, shared,
-                "Allow this client to submit requests?",
-                &content,
-                "Allow Requests",
-            )? || !valid(job, shared)
-            {
+            let approved = matches!(job.action, Action::ApprovedConnect)
+                || desktop_decision(job, shared, CONNECT_TITLE, &connect_content(&job.session.identity), CONNECT_ALLOW)?;
+            if !approved || !valid(job, shared) {
                 audit(store, job, "connect", "denied")?;
                 return Err("Connection denied or expired".into());
             }
@@ -749,7 +831,7 @@ fn work(
         }
         Action::Remove(id) => {
             if !store.contents.items.contains_key(id) { return Err("Item not found".into()); }
-            if !platform::desktop_foreground(&job.session.identity) || !valid(job, shared) { return Err("Open Yougori Desktop to remove vault items".into()); }
+            if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) { return Err("Open Yougori Desktop to remove vault items".into()); }
             audit(store, job, "item", "remove_requested")?;
             let old = store.contents.items.remove(id);
             if let Err(e) = store.save() {
@@ -785,7 +867,6 @@ fn work(
                 } else {
                     format!("{}\n\nShare the vault inventory with this agent ONCE? This reveals item names, types, IDs, and personal-information field names, but no values. The agent must request values separately.", who(&job.session.identity))
                 };
-                let mut ticket = Ticket::new(&job.session.identity, operation, job.generation, job.deadline);
                 let approved = desktop_decision(job, shared,
                     if bulk { "Share all credentials with this agent?" } else { "Show vault item names to this agent?" },
                     &content,
@@ -797,7 +878,6 @@ fn work(
                 }
                 shared.locked.store(false, Ordering::SeqCst);
                 audit(store, job, operation.name(), "approved_once")?;
-                ticket.consume(&job.session.identity, operation, shared.generation.load(Ordering::SeqCst), Instant::now(), !shared.locked.load(Ordering::SeqCst), valid(job, shared), approved)?;
                 if !valid(job, shared) || shared.locked.load(Ordering::SeqCst) {
                     return Err("Request result withheld because the client disconnected or vault locked".into());
                 }
@@ -824,12 +904,6 @@ fn work(
                 item.id,
                 disclosure
             );
-            let mut ticket = Ticket::new(
-                &job.session.identity,
-                operation,
-                job.generation,
-                job.deadline,
-            );
             let approved = desktop_decision(job, shared,
                 if matches!(operation, Operation::Credential(_)) {
                     "Share a credential with this agent?"
@@ -850,15 +924,11 @@ fn work(
             shared.locked.store(false, Ordering::SeqCst);
             audit(store, job, operation.name(), "approved_once")?;
             audit(store, job, operation.name(), "execution_started")?;
-            ticket.consume(
-                &job.session.identity,
-                operation,
-                shared.generation.load(Ordering::SeqCst),
-                Instant::now(),
-                !shared.locked.load(Ordering::SeqCst),
-                valid(job, shared),
-                approved,
-            )?;
+            // The decision is single-use: `desktop_decision` consumed it and this
+            // job owns the exact operation shown. Revalidate the session only.
+            if !valid(job, shared) || shared.locked.load(Ordering::SeqCst) {
+                return Err("Request cancelled before execution".into());
+            }
             let result = match operation {
                 Operation::ListItems(_) | Operation::AllCredentials(_) => unreachable!(),
                 Operation::Credential(_) => Ok(json!({"item":item.id,"name":item.label,"kind":item.kind,"value":item.value})),
@@ -978,6 +1048,7 @@ async fn start_remote(
                 };
                 let session = Arc::new(Session {
                     identity,
+                    desktop: false,
                     cancelled: Arc::new(AtomicBool::new(false)),
                     connected: AtomicBool::new(true),
                     allowed: AtomicBool::new(false),

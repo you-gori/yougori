@@ -93,10 +93,10 @@ async fn exercise_model(app: &AppHandle) -> Result<(), String> {
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     drop(listener);
     eprintln!("Model integration: create the TinyLlama CUDA workload");
-    let model = crate::model_runner::run_model(
+    let model = crate::model_runner::run_model_with_resources(
         "hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0".into(),
         Some(port),
-        None,
+        Some(Default::default()),
         None,
         app.clone(),
     )
@@ -176,7 +176,7 @@ async fn exercise_model(app: &AppHandle) -> Result<(), String> {
 }
 #[cfg(windows)]
 async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
-    let boundary=project_action("unused".into(),"apply".into(),app.clone());
+    let boundary=run_project_action("unused".into(),"apply".into(),app.clone());
     let reconciliation=reconcile_project_action("unused".into(),"apply".into(),app.clone());
     let workload=run_workload(json!({}),false,app.clone());
     eprintln!("Project future sizes: boundary {} bytes, reconciliation {} bytes, workload {} bytes",std::mem::size_of_val(&boundary),std::mem::size_of_val(&reconciliation),std::mem::size_of_val(&workload));
@@ -193,14 +193,14 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
     let compose_path = root.join("compose.yaml");
     std::fs::write(&compose_path, compose).map_err(|e| e.to_string())?;
     eprintln!("Project integration: translate Compose and reject overwrite");
-    import_compose(
+    import_compose_file(
         compose_path.to_string_lossy().into_owned(),
         true,
         None,
         app.clone(),
     )
     .await?;
-    assert!(import_compose(
+    assert!(import_compose_file(
         compose_path.to_string_lossy().into_owned(),
         true,
         None,
@@ -233,7 +233,7 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
         .push(manifest::Port::Mapping(format!("{host_port}:8080")));
     std::fs::write(&file, manifest::to_yaml(&p)?).map_err(|e| e.to_string())?;
     eprintln!("Project integration: create nodes with variables, named volume and PC bind mount");
-    let result = project_action(path.clone(), "up".into(), app.clone()).await?;
+    let result = run_project_action(path.clone(), "up".into(), app.clone()).await?;
     let front = result["environments"]["frontend"].as_str().unwrap();
     let db = result["environments"]["database"].as_str().unwrap();
     let exec = |id: &str, command: &str| json!({"request":{"environmentId":id,"command":command}});
@@ -304,7 +304,7 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
     let file_key=format!("{front}//app-source");let copied_destination=saved.files[&file_key].destination.clone();
     saved.files.get_mut(&file_key).unwrap().active=false;
     let service_key=format!("{db}/loopback/8080/{host_port}");saved.bindings.retain(|binding|serde_json::to_value(binding).unwrap()["key"]!=service_key);saved.pending.insert(format!("service:{service_key}"),"accepted".into());save_record(&runtime,&project_key,&saved)?;
-    let again = project_action(path.clone(), "apply".into(), app.clone()).await?;
+    let again = run_project_action(path.clone(), "apply".into(), app.clone()).await?;
     assert_eq!(again["environments"], result["environments"]);
     assert_eq!(
         app.state::<PlatformStore>()
@@ -319,7 +319,7 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
     let files=call(app,"execute_environment_command",exec(front,"cat /app-source/code.txt")).await?;assert_eq!(files["stdout"],"code-before\n");
     eprintln!("Project integration: repair managed guest drift and interrupted startup without duplicate nodes");
     call(app,"execute_environment_command",exec(front,"printf guest-drift > /app-source/code.txt")).await?;
-    let drifted=project_action(path.clone(),"apply".into(),app.clone()).await?;
+    let drifted=run_project_action(path.clone(),"apply".into(),app.clone()).await?;
     assert_eq!(drifted["environments"],result["environments"]);
     let repaired=call(app,"execute_environment_command",exec(front,"cat /app-source/code.txt")).await?;assert_eq!(repaired["stdout"],"code-before\n");
     status(app,front,false).await?;
@@ -329,7 +329,7 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
     assert!(!restore_interrupted_staging(front,&app.state::<PlatformStore>(),&runtime).await?);
     assert_eq!(runtime.workload_options(front)?.args,p.environments["frontend"].options(&p.project)?.args);
     assert!(!registry(&runtime)?.projects[&project_key].staging.contains_key(front));
-    let recovered=project_action(path.clone(),"apply".into(),app.clone()).await?;assert_eq!(recovered["environments"],result["environments"]);
+    let recovered=run_project_action(path.clone(),"apply".into(),app.clone()).await?;assert_eq!(recovered["environments"],result["environments"]);
     p.environments
         .get_mut("frontend")
         .unwrap()
@@ -337,7 +337,7 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
         .insert("VALUE".into(), "updated".into());
     std::fs::write(code.join("code.txt"),"code-after\n").map_err(|e|e.to_string())?;
     std::fs::write(&file, manifest::to_yaml(&p)?).map_err(|e| e.to_string())?;
-    project_action(path.clone(), "apply".into(), app.clone()).await?;
+    run_project_action(path.clone(), "apply".into(), app.clone()).await?;
     let updated = call(
         app,
         "execute_environment_command",
@@ -356,7 +356,7 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
     eprintln!("Project integration: removing a declared port revokes only its publication");
     p.environments.get_mut("database").unwrap().ports.clear();
     std::fs::write(&file, manifest::to_yaml(&p)?).map_err(|e| e.to_string())?;
-    project_action(path.clone(), "apply".into(), app.clone()).await?;
+    run_project_action(path.clone(), "apply".into(), app.clone()).await?;
     let ports = call(
         app,
         "list_environment_services",
@@ -377,12 +377,12 @@ async fn exercise(app: &AppHandle, root: &Path) -> Result<(), String> {
     eprintln!("Project integration: retiring declarations releases only managed links and stops only owned nodes");
     p.environments.get_mut("frontend").unwrap().files.clear();
     std::fs::write(&file,manifest::to_yaml(&p)?).map_err(|e|e.to_string())?;
-    project_action(path.clone(),"apply".into(),app.clone()).await?;
+    run_project_action(path.clone(),"apply".into(),app.clone()).await?;
     let detached=call(app,"execute_environment_command",exec(front,&format!("test ! -e /app-source && test -f '{copied_destination}/code.txt'"))).await?;assert_eq!(detached["exitCode"],0);
     p.environments.remove("frontend");p.connections.retain(|connection|connection.endpoints().map(|(a,b)|a!="frontend"&&b!="frontend").unwrap_or(false));
     std::fs::write(&file,manifest::to_yaml(&p)?).map_err(|e|e.to_string())?;
-    let retired=project_action(path.clone(),"apply".into(),app.clone()).await?;assert!(retired["environments"].get("frontend").is_none());assert_eq!(node(app,front)?.status,EnvironmentStatus::Stopped);
-    project_action(path.clone(), "down".into(), app.clone()).await?;
+    let retired=run_project_action(path.clone(),"apply".into(),app.clone()).await?;assert!(retired["environments"].get("frontend").is_none());assert_eq!(node(app,front)?.status,EnvironmentStatus::Stopped);
+    run_project_action(path.clone(), "down".into(), app.clone()).await?;
     assert!(app
         .state::<PlatformStore>()
         .snapshot()?
@@ -473,6 +473,9 @@ fn project_cloud_identity_resolves_file_names_with_spaces_and_preserves_public_k
     let relative = "My Keys/cloud identity.pem";
     let resolved = resolve(relative).unwrap();
     assert_eq!(resolved.environments["server"].cloud.as_ref().unwrap()["identityFile"], directory.path().join(relative).to_string_lossy().as_ref());
+    for escape in ["../outside.pem", "keys/../../outside.pem"] {
+        assert!(resolve(escape).unwrap_err().contains("inside the project folder"), "{escape}");
+    }
     let absolute = directory.path().join("absolute key.pem").to_string_lossy().into_owned();
     assert_eq!(resolve(&absolute).unwrap().environments["server"].cloud.as_ref().unwrap()["identityFile"], absolute);
     let kind = "ssh-ed25519";
@@ -505,4 +508,58 @@ fn project_cloud_identity_resolves_file_names_with_spaces_and_preserves_public_k
     store.mutate(|state|{state.environments[0].description="Yougori project project-key / api".into();Ok(())}).unwrap();
     assert!(restore_interrupted_staging("owned-id",&store,&runtime).await.unwrap_err().contains("running runtime was preserved"));
     assert!(registry(&runtime).unwrap().projects["project-key"].staging.contains_key("owned-id"));assert_eq!(store.snapshot().unwrap().environments[0].status,EnvironmentStatus::Running);
+}
+
+#[test]
+fn project_copies_and_relative_boot_sources_stay_inside_the_project_folder() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("project");
+    std::fs::create_dir_all(root.join("code")).unwrap();
+    std::fs::write(root.join("disk.img"), "disk").unwrap();
+    let private = outer.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::write(private.join("disk.img"), "outside").unwrap();
+    let copy = |source: &str| {
+        let project: Project = serde_json::from_value(json!({"project":"confine","environments":{"api":{"image":"alpine:latest","files":[{"source":source,"target":"/app"}]}}})).unwrap();
+        resolve_spec(project, &root)
+    };
+    assert!(copy("code").is_ok());
+    assert!(copy(&root.join("code").to_string_lossy()).is_ok(), "absolute paths inside the project remain valid");
+    for escape in ["../private".to_owned(), private.to_string_lossy().into_owned()] {
+        assert!(copy(&escape).unwrap_err().contains("inside the project folder"), "{escape}");
+    }
+    let boot = |source: &str| {
+        let project: Project = serde_json::from_value(json!({"project":"confine","environments":{"vm":{"type":"vm","source":source}}})).unwrap();
+        resolve_spec(project, &root)
+    };
+    assert!(boot("disk.img").is_ok());
+    assert!(boot("../private/disk.img").unwrap_err().contains("inside the project folder"));
+}
+
+#[test]
+fn project_summary_lists_every_host_folder_copy_and_secret_reference() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("project");
+    std::fs::create_dir_all(root.join("code")).unwrap();
+    let shared = outer.path().join("shared notes");
+    std::fs::create_dir(&shared).unwrap();
+    let project: Project = serde_json::from_value(json!({"project":"review","environments":{"api":{
+        "image":"alpine:latest","permissions":{"pc":true,"edit":true},
+        "pc_access":[{"path":shared.to_string_lossy(),"read_only":false},{"path":"code","target":"/mnt/code"}],
+        "files":[{"source":"code","target":"/app"}],
+        "secrets":{"API_KEY":"company-api"},
+        "health":{"port":8080,"bearer_secret":"probe-token"}
+    }}})).unwrap();
+    let project = resolve_spec(project, &root).unwrap();
+    let value = summary(&project, None, &root.join("yougori.yaml"));
+    let api = &value["environments"][0];
+    let folders = api["pcFolders"].as_array().unwrap();
+    assert_eq!(api["pcAccess"], folders.len());
+    assert!(folders.iter().any(|f| f["path"].as_str().unwrap().ends_with("shared notes") && f["readOnly"] == false && f["target"].is_null()));
+    assert!(folders.iter().any(|f| f["target"] == "/mnt/code" && f["readOnly"] == true));
+    assert_eq!(api["projectFiles"][0]["target"], "/app");
+    let secrets = api["secrets"].as_array().unwrap();
+    assert!(secrets.iter().any(|s| s["variable"] == "API_KEY" && s["reference"] == "company-api"));
+    assert!(secrets.iter().any(|s| s["reference"] == "probe-token" && s["use"] == "healthCheck"));
+    assert!(!value.to_string().contains("top-secret"));
 }

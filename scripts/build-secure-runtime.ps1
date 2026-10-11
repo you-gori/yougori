@@ -13,7 +13,7 @@ $build = "$repo/build/secure-runtime"
 $cache = "$repo/build/runtime-cache"
 $bash = "$build/toolchain/msys64/usr/bin/bash.exe"
 if (-not (Test-Path -LiteralPath $bash)) {
-  throw 'Prepare the workspace-only MSYS2 UCRT64 toolchain described in runtime/security/README.md. End users use the bundled binaries; only source builds need this toolchain.'
+  throw 'Prepare a workspace-only MSYS2 UCRT64 toolchain at build/secure-runtime/toolchain/msys64 (see docs/rebuilding-third-party.txt). End users use the bundled binaries; only source builds need this toolchain.'
 }
 function Check([string]$Step) { if ($LASTEXITCODE) { throw "$Step failed ($LASTEXITCODE)" } }
 function WslPath([string]$Path) {
@@ -96,7 +96,7 @@ if ($Install) {
     if (-not $path.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe runtime target: $path" }
   }
   $running = Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -in @('yougori.exe', 'opendock.exe') -or ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($destination + '\', [StringComparison]::OrdinalIgnoreCase))
+    $_.Name -eq 'yougori.exe' -or ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($destination + '\', [StringComparison]::OrdinalIgnoreCase))
   }
   if ($running) { throw 'Close Yougori and its secure VMs before installing the staged runtime. The completed build was preserved.' }
   if (Test-Path -LiteralPath $destination) { Move-Item -LiteralPath $destination -Destination $preserved }

@@ -75,8 +75,10 @@ func (s *server) workloadMount(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) releaseWorkloadMounts(id string) {
 	s.hostShares.Range(func(key, value any) bool {
+		// Match this environment's numbered slots exactly: deleting "web" must
+		// not unmount the PC folders of "web-2".
 		name, ok := key.(string)
-		if !ok || !strings.HasPrefix(name, "workload:"+id+"-") {
+		if !ok || !strings.HasPrefix(name, "workload:") || !validWorkloadSlot(id, strings.TrimPrefix(name, "workload:")) {
 			return true
 		}
 		mounted := value.(*mountedHostShare)

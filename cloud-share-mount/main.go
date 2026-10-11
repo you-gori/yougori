@@ -102,11 +102,14 @@ func (n *node) call(ctx context.Context, operation string, fields map[string]int
 	return result, 0
 }
 
+// The mount is owned by the connecting account. With default_permissions the
+// kernel enforces these owner-only modes, so other accounts on a shared
+// server cannot read or change the PC folder.
 func (n *node) attr(v info, out *fuse.Attr) {
 	out.Size = v.Size
-	out.Mode = syscall.S_IFREG | 0644
+	out.Mode = syscall.S_IFREG | 0600
 	if v.Directory {
-		out.Mode = syscall.S_IFDIR | 0755
+		out.Mode = syscall.S_IFDIR | 0700
 	}
 	if n.readOnly {
 		out.Mode &^= 0222
@@ -271,7 +274,9 @@ func main() {
 	if _, status := root.call(context.Background(), "stat", nil); status != 0 {
 		panic(fmt.Sprintf("cannot access selected folder: %v", status))
 	}
-	server, err := fs.Mount(mount, root, &fs.Options{MountOptions: fuse.MountOptions{DirectMount: true, AllowOther: true, FsName: "Yougori shared files", Name: "yougori", MaxWrite: 65536}, AttrTimeout: duration(time.Second), EntryTimeout: duration(time.Second)})
+	// AllowOther lets the connecting account use a mount created through sudo;
+	// default_permissions makes the kernel apply the owner-only modes above.
+	server, err := fs.Mount(mount, root, &fs.Options{MountOptions: fuse.MountOptions{DirectMount: true, AllowOther: true, Options: []string{"default_permissions"}, FsName: "Yougori shared files", Name: "yougori", MaxWrite: 65536}, AttrTimeout: duration(time.Second), EntryTimeout: duration(time.Second)})
 	if err != nil {
 		panic(fmt.Sprintf("mount failed: %v", err))
 	}

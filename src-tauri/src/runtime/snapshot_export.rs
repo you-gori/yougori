@@ -111,7 +111,7 @@ impl RuntimeManager {
         let directory = self.data_root.join("snapshots");
         check_space(&directory)?;
         let file = NamedTempFile::new_in(&directory).map_err(|e| format!("Create snapshot file: {e}"))?;
-        let tag = format!("opendock.local/snapshots:{}", snapshot_id.to_lowercase());
+        let tag = format!("{}{}", yougori_cli::legacy_names::SNAPSHOT_TAG_PREFIX, snapshot_id.to_lowercase());
         let _lease = tokio::select! {
             biased;
             _ = export.cancellation.cancelled() => return Err(cancelled_export()),

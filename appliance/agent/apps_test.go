@@ -53,13 +53,13 @@ func TestAppInputsAndInstallTargets(t *testing.T) {
 }
 
 func TestMicroVMClockSeedIsBounded(t *testing.T) {
-	base := "opendock.mode=microvm opendock.token=" + strings.Repeat("a", 64)
-	configuration, err := parseBootConfiguration(base + " opendock.time=1788566400")
+	base := "yougori.mode=microvm yougori.token=" + strings.Repeat("a", 64)
+	configuration, err := parseBootConfiguration(base + " yougori.time=1788566400")
 	if err != nil || configuration.bootTime != 1788566400 {
 		t.Fatal(configuration, err)
 	}
 	for _, value := range []string{"0", "bad", "-1", "999999999999"} {
-		if _, err := parseBootConfiguration(base + " opendock.time=" + value); err == nil {
+		if _, err := parseBootConfiguration(base + " yougori.time=" + value); err == nil {
 			t.Fatal("accepted invalid time", value)
 		}
 	}

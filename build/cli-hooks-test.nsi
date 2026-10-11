@@ -1,5 +1,5 @@
 !include "LogicLib.nsh"
-!include "C:\Users\Argon\Desktop\yougori\src-tauri\installer\cli-hooks.nsh"
+!include "..\src-tauri\installer\cli-hooks.nsh"
 Name "Yougori CLI hook compile test"
 OutFile "cli-hooks-test.exe"
 RequestExecutionLevel user

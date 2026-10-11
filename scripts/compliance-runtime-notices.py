@@ -145,7 +145,7 @@ def main():
             retain(name + '/' + version + ' GPL-2.0-or-later library option', texts)
     for path in sorted((ROOT / 'compliance/notices').glob('*.txt')):
         retain(path.stem, [(path.name, path.read_bytes())])
-    versions = sorted(set(re.findall(rb'go1\.\d+\.\d+', (ROOT / 'src-tauri/resources/runtime/cuda/opendock-agent').read_bytes())))
+    versions = sorted(set(re.findall(rb'go1\.\d+\.\d+', (ROOT / 'src-tauri/resources/runtime/cuda/yougori-agent').read_bytes())))
     for version in versions:
         value = version.decode()
         path = WORK / 'standard-licenses' / (value + '-LICENSE')

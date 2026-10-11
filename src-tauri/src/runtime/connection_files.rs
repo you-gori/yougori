@@ -100,7 +100,7 @@ impl SelectedAccess {
         match &self.client {
             FolderClient::Agent { endpoint, token, runtime_id, .. } => {
                 body["id"] = json!(runtime_id);
-                let response = reqwest::Client::new().post(format!("{endpoint}/v1/remote/files"))
+                let response = loopback_client().post(format!("{endpoint}/v1/remote/files"))
                     .bearer_auth(token).json(&body)
                     .timeout(std::time::Duration::from_secs(25)).send().await
                     .map_err(|_| "The selected guest folder is unavailable")?;
@@ -130,7 +130,7 @@ impl FolderClient {
                 let command = if *micro_workload {
                     format!("nerdctl --namespace yougori-workload exec app /bin/sh -lc '{}'", command.replace('\'', "'\"'\"'"))
                 } else { command.to_owned() };
-                let response = reqwest::Client::new().post(format!("{endpoint}{exec_path}"))
+                let response = loopback_client().post(format!("{endpoint}{exec_path}"))
                     .bearer_auth(token).json(&json!({"id":runtime_id,"command":command}))
                     .timeout(std::time::Duration::from_secs(25)).send().await
                     .map_err(|_| "The target guest command service is unavailable")?;
@@ -148,6 +148,12 @@ fn storage_permission(permissions: &[PermissionKind]) -> bool {
             PermissionKind::Files | PermissionKind::Volumes | PermissionKind::Data
         )
     })
+}
+/// Guest agents and host folder servers listen on loopback; a configured
+/// proxy must never receive their bearer tokens.
+fn loopback_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::builder().no_proxy().build().unwrap_or_default())
 }
 fn safe_id(id: &str) -> bool {
     !id.is_empty()
@@ -259,7 +265,7 @@ impl SharedFiles {
             || !header.lines().any(|l| {
                 l.split_once(':').is_some_and(|(k, v)| {
                     (k.eq_ignore_ascii_case("x-yougori-files")
-                        || k.eq_ignore_ascii_case("x-opendock-files")) && v.trim() == "1"
+                        || k.eq_ignore_ascii_case(yougori_cli::legacy_names::FILES_HEADER)) && v.trim() == "1"
                 })
             })
         {
@@ -325,7 +331,7 @@ impl SharedFiles {
             return Ok((status, "application/json", bytes));
         }
         if requested_path.is_empty() && body["operation"] == "list" && !share.selected.is_empty() {
-            let reply = reqwest::Client::new().post(format!("http://127.0.0.1:{}/files", server.port))
+            let reply = loopback_client().post(format!("http://127.0.0.1:{}/files", server.port))
                 .bearer_auth(&server.token).json(&body).timeout(std::time::Duration::from_secs(20))
                 .send().await.map_err(|_| "Shared folder is unavailable")?;
             let mut value: Value = reply.json().await.map_err(|_| "Invalid shared folder listing")?;
@@ -334,9 +340,7 @@ impl SharedFiles {
             return Ok((200, "application/json", serde_json::to_vec(&value).unwrap()));
         }
         // Reuse the authenticated, path-confined and read-only-enforcing file API.
-        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-        let reply = CLIENT
-            .get_or_init(reqwest::Client::new)
+        let reply = loopback_client()
             .post(format!("http://127.0.0.1:{}/files", server.port))
             .bearer_auth(&server.token)
             .json(&body)

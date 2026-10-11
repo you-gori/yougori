@@ -2,6 +2,7 @@ use crate::{public,wire};
 use serde_json::{json,Value};
 use std::{io::{IsTerminal,Write},time::Duration};
 
+pub const USAGE:&str="Usage: yougori logs ENV [--cursor CURSOR] [--limit BYTES] [--tail BYTES] [--last-error] [--follow]";
 #[derive(Debug)]pub struct Options{pub cursor:Option<String>,pub limit:usize,pub tail:usize,pub follow:bool,pub last_error:bool}
 #[derive(Default)]pub(crate) struct TerminalText{state:u8}
 impl TerminalText{
@@ -31,7 +32,7 @@ pub fn parse(args:&[String])->Result<Options,String>{
             "--limit"|"--tail"=>{i+=1;let value=args.get(i).and_then(|v|v.parse::<usize>().ok()).ok_or("Log byte count must be a nonnegative integer")?;
                 if flag=="--limit"{if !(1..=65536).contains(&value){return Err("Log limit must be 1–65536 bytes".into());}options.limit=value;}
                 else{if value>262144{return Err("Log tail must be at most 262144 bytes".into());}options.tail=value;}},
-            _=>return Err("Usage: logs ENV [--cursor CURSOR] [--limit BYTES] [--tail BYTES] [--last-error] [--follow]".into()),
+            _=>return Err(USAGE.into()),
         }i+=1;
     }Ok(options)
 }

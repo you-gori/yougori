@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest"
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { PersonalVault } from "@/components/personal-vault"
 import { vaultApi, type VaultStatus } from "@/api/vault-api"
@@ -206,6 +206,24 @@ describe("Personal Vault", () => {
     await waitFor(() => expect(vaultApi.control).toHaveBeenCalledWith("approve", "request"))
     fireEvent.click(within(pending).getByRole("button", { name: "Deny" }))
     await waitFor(() => expect(vaultApi.control).toHaveBeenCalledWith("deny", "request"))
+  })
+  it("does not let a slower earlier status read bring back an approved request", async () => {
+    const request = { id: "request", client, operation: "personal_info", title: "Share email?", description: "Return only email", allowLabel: "Approve once", ready: true, expiresAt: new Date().toISOString() }
+    vi.mocked(vaultApi.status).mockResolvedValue({ ...base, pending: [request] })
+    vi.mocked(vaultApi.control).mockResolvedValue({})
+    render(<PersonalVault />)
+    fireEvent.click(screen.getByRole("button", { name: "Personal Vault MCP" }))
+    const pending = await screen.findByRole("region", { name: "Pending vault requests" })
+    await waitFor(() => expect(listen).toHaveBeenCalledWith("vault-approval-needed", expect.any(Function)))
+    let finishSlow!: (value: VaultStatus) => void
+    vi.mocked(vaultApi.status).mockImplementationOnce(() => new Promise(resolve => { finishSlow = resolve }))
+    const notify = vi.mocked(listen).mock.calls.find(call => call[0] === "vault-approval-needed")![1]
+    notify({ event: "vault-approval-needed", id: 1, payload: 1 })
+    vi.mocked(vaultApi.status).mockResolvedValue(base)
+    fireEvent.click(within(pending).getByRole("button", { name: "Approve once" }))
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Pending vault requests" })).not.toBeInTheDocument())
+    await act(async () => { finishSlow({ ...base, pending: [request] }) })
+    expect(screen.queryByRole("region", { name: "Pending vault requests" })).not.toBeInTheDocument()
   })
   it("shows vault recovery inside the app after continuing past a startup failure", async () => {
     vi.mocked(vaultApi.status).mockResolvedValue({ ...base, running: false, gateway: { running: false, port: 49732 } })

@@ -348,9 +348,11 @@ mod platform {
         },
         System::{
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
-                JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
-                JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+                JobObjectCpuRateControlInformation, JobObjectExtendedLimitInformation,
+                QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                 JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
                 JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
                 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -859,6 +861,24 @@ mod platform {
     }
 
     pub fn is_running(process: &NativeSandboxProcess) -> Result<bool, String> {
+        // Launchers often exit after starting the real application in the same
+        // job. The branch runs while any process in its job is alive; closing
+        // the job early would kill that application through KILL_ON_JOB_CLOSE.
+        if process.job_handle != 0 {
+            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            if unsafe {
+                QueryInformationJobObject(
+                    process.job_handle as HANDLE,
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    null_mut(),
+                )
+            } != 0
+            {
+                return Ok(accounting.ActiveProcesses > 0);
+            }
+        }
         if process.process_handle == 0 {
             return Ok(false);
         }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { FolderOpenIcon, ImportIcon } from "lucide-react"
 import { projectsApi, type ProjectPreview, type DeploymentReadiness } from "@/api/projects-api"
 import { usePlatform } from "@/context/platform-context"
@@ -15,10 +15,23 @@ export function ProjectManager() {
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [readiness,setReadiness]=useState<DeploymentReadiness|null>(null)
-  const discover = useCallback(() => projectsApi.discover().then(setProjects), [])
+  // Background and explicit discovery can overlap; a slower older read must not replace a newer list.
+  const discovery = useRef({ started: 0, applied: 0 })
+  const discover = useCallback(async () => {
+    const sequence = ++discovery.current.started
+    const found = await projectsApi.discover()
+    if (sequence > discovery.current.applied) { discovery.current.applied = sequence; setProjects(found) }
+  }, [])
   useEffect(() => {
-    let alive = true
-    const refresh = () => void projectsApi.discover().then(p => { if (alive) setProjects(p) }).catch(() => undefined)
+    let alive = true, reading = false
+    const refresh = () => {
+      if (reading) return
+      reading = true
+      const sequence = ++discovery.current.started
+      void projectsApi.discover().then(found => {
+        if (alive && sequence > discovery.current.applied) { discovery.current.applied = sequence; setProjects(found) }
+      }).catch(() => undefined).finally(() => { reading = false })
+    }
     refresh()
     const timer = window.setInterval(refresh, 15000)
     return () => { alive = false; window.clearInterval(timer) }
@@ -50,6 +63,7 @@ export function ProjectManager() {
           <div><h3 className="font-semibold">{selected.project}</h3><p className="break-all text-xs text-muted-foreground">{selected.path}</p></div>
           <div className="overflow-x-auto rounded-lg border"><table className="w-full text-left text-sm"><thead className="bg-muted/50 text-xs text-muted-foreground"><tr>{["Environment", "Image / type", "CPU", "RAM", "My PC", "Change"].map(s => <th className="px-3 py-2 font-medium" key={s}>{s}</th>)}</tr></thead><tbody className="divide-y">{selected.environments?.map(e => <tr key={e.name}><td className="px-3 py-2 font-medium">{e.name}</td><td className="max-w-60 truncate px-3 py-2" title={e.image}>{e.image || e.type}{e.gpu ? " · GPU" : ""}</td><td className="px-3 py-2">{e.cpu}</td><td className="whitespace-nowrap px-3 py-2">{e.memoryGb} GB</td><td className="px-3 py-2">{e.pcAccess ? e.editPc ? "View & Edit" : "View only" : "Off"}</td><td className="px-3 py-2 capitalize">{e.action}</td></tr>)}</tbody></table></div>
           <p className="text-xs text-muted-foreground">{selected.connections} connections · {selected.publications} public routes. {selected.notice}</p>
+          {selected.environments?.some(e => e.pcFolders?.length || e.projectFiles?.length || e.secrets?.length || e.bootSource) ? <div aria-label="Host access" className="space-y-1 rounded-lg border p-3 text-xs"><p className="font-medium">Review what this project uses from your PC</p>{selected.environments.map(e => [...(e.pcFolders ?? []).map(f => `PC folder ${f.readOnly ? "(view only)" : "(view & edit)"}: ${f.path}${f.target ? ` → ${f.target}` : ""}`), ...(e.projectFiles ?? []).map(f => `Copied into the image: ${f.source} → ${f.target}`), ...(e.secrets ?? []).map(s => `Saved secret “${s.reference}”${s.variable ? ` as ${s.variable}` : " for its health check"}`), ...(e.bootSource ? [`Boot media: ${e.bootSource}`] : [])].map(line => <p className="break-all" key={`${e.name}:${line}`}><span className="font-medium">{e.name}</span> · {line}</p>))}</div> : null}
           {selected.environments?.some(e => e.editPc) ? <p className="text-xs text-amber-700 dark:text-amber-300">This project grants View & Edit access to selected PC folders. Review their changes from the environment’s Changes view.</p> : null}
         </section> : null}
         {error ? <p role="alert" className="whitespace-pre-wrap text-sm text-destructive-foreground">{error}</p> : null}

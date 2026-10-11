@@ -8,43 +8,58 @@ use windows_sys::Win32::{
 /// never mutate the same appliance overlay, VM disks, or state generations.
 pub struct InstanceLock {
     #[cfg(target_os = "windows")]
-    handle: isize,
+    handles: Vec<isize>,
     #[cfg(unix)]
     _file: std::fs::File,
     #[cfg(unix)]
     _previous_file: Option<std::fs::File>,
 }
 
+/// Creates a named mutex that no other process holds yet.
+#[cfg(target_os = "windows")]
+fn exclusive_mutex(name: &str, running: &str) -> Result<isize, String> {
+    let name = format!("{name}\0").encode_utf16().collect::<Vec<_>>();
+    // SAFETY: `name` is NUL-terminated and remains alive for the call. A null
+    // security descriptor requests the caller's default mutex ACL.
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(format!(
+            "create the Yougori single-instance lock: Windows error {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    // GetLastError must be read before any other Win32 call.
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Err(running.into());
+    }
+    Ok(handle as isize)
+}
+
 impl InstanceLock {
     pub fn acquire() -> Result<Self, String> {
         #[cfg(target_os = "windows")]
         {
-            let name = "Local\\OpenDock.Runtime.Singleton.v1\0"
-                .encode_utf16()
-                .collect::<Vec<_>>();
-            // SAFETY: `name` is NUL-terminated and remains alive for the call. A null
-            // security descriptor requests the caller's default mutex ACL.
-            let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-            if handle.is_null() {
-                return Err(format!(
-                    "create the Yougori single-instance lock: Windows error {}",
-                    unsafe { GetLastError() }
-                ));
-            }
-            // GetLastError must be read before any other Win32 call.
-            let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-            if already_running {
-                unsafe {
-                    CloseHandle(handle);
+            let current = exclusive_mutex(
+                "Local\\Yougori.Runtime.Singleton.v1",
+                "Yougori is already running. Use the existing window before starting another instance.",
+            )?;
+            // Earlier engines held a differently named mutex. Hold it as well so an
+            // older engine that is still running can never own these disks.
+            match exclusive_mutex(
+                yougori_cli::legacy_names::WINDOWS_SINGLETON_MUTEX,
+                "An older Yougori engine is still running. Close it before starting this version.",
+            ) {
+                Ok(previous) => Ok(Self { handles: vec![current, previous] }),
+                Err(error) => {
+                    unsafe {
+                        CloseHandle(current as HANDLE);
+                    }
+                    Err(error)
                 }
-                return Err(
-                    "Yougori is already running. Use the existing window before starting another instance."
-                        .into(),
-                );
             }
-            Ok(Self {
-                handle: handle as isize,
-            })
         }
 
         #[cfg(unix)]
@@ -52,7 +67,11 @@ impl InstanceLock {
             use std::os::{fd::AsRawFd, unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt}};
             // The previous release used a different socket directory. Lock its
             // existing inode as well so an older engine cannot own these disks.
-            let previous_directory = std::path::PathBuf::from(format!("/tmp/opendock-{}", unsafe { libc::geteuid() }));
+            let previous_directory = std::path::PathBuf::from(format!(
+                "{}{}",
+                yougori_cli::legacy_names::UNIX_SOCKET_DIRECTORY_PREFIX,
+                unsafe { libc::geteuid() }
+            ));
             match std::fs::DirBuilder::new().mode(0o700).create(&previous_directory) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -99,11 +118,10 @@ impl InstanceLock {
 #[cfg(target_os = "windows")]
 impl Drop for InstanceLock {
     fn drop(&mut self) {
-        if self.handle != 0 {
+        for handle in self.handles.drain(..) {
             unsafe {
-                CloseHandle(self.handle as HANDLE);
+                CloseHandle(handle as HANDLE);
             }
-            self.handle = 0;
         }
     }
 }

@@ -126,7 +126,7 @@ func (s *server) appContainer(request appRequest) string {
 	return request.ID
 }
 func appsAccountReady() bool {
-	account, err := user.Lookup("opendock-apps")
+	account, err := user.Lookup("yougori-apps")
 	return err == nil && account.Uid != "0"
 }
 func appsReady() bool {
@@ -211,8 +211,8 @@ func (s *server) appsInstall(w http.ResponseWriter, r *http.Request) {
 		command.Stderr = output
 		err := command.Run()
 		if err == nil {
-			if _, lookupErr := user.Lookup("opendock-apps"); lookupErr != nil {
-				command = exec.CommandContext(ctx, "adduser", "-D", "-h", "/home/opendock-apps", "opendock-apps")
+			if _, lookupErr := user.Lookup("yougori-apps"); lookupErr != nil {
+				command = exec.CommandContext(ctx, "adduser", "-D", "-h", "/home/yougori-apps", "yougori-apps")
 				command.Stdout = output
 				command.Stderr = output
 				err = command.Run()
@@ -300,7 +300,7 @@ func (s *server) appsLaunch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "Cannot create display credentials")
 		return
 	}
-	directory, err := os.MkdirTemp("/tmp", "opendock-app-")
+	directory, err := os.MkdirTemp("/tmp", "yougori-app-")
 	if err != nil {
 		s.apps.mu.Unlock()
 		writeError(w, 500, err.Error())
@@ -318,7 +318,7 @@ func (s *server) appsLaunch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, app.info())
 }
 func (a *graphicalApp) launch(commandLine string) error {
-	account, err := user.Lookup("opendock-apps")
+	account, err := user.Lookup("yougori-apps")
 	if err != nil {
 		return err
 	}
@@ -333,7 +333,7 @@ func (a *graphicalApp) launch(commandLine string) error {
 	if err = os.Chown(a.directory, int(uid), int(gid)); err != nil {
 		return err
 	}
-	environment := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + account.HomeDir, "USER=opendock-apps", "LOGNAME=opendock-apps", "LANG=C.UTF-8", "DISPLAY=:" + strconv.Itoa(a.Display), "XDG_RUNTIME_DIR=" + a.directory, "LIBGL_ALWAYS_SOFTWARE=1", "MOZ_ENABLE_WAYLAND=0"}
+	environment := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + account.HomeDir, "USER=yougori-apps", "LOGNAME=yougori-apps", "LANG=C.UTF-8", "DISPLAY=:" + strconv.Itoa(a.Display), "XDG_RUNTIME_DIR=" + a.directory, "LIBGL_ALWAYS_SOFTWARE=1", "MOZ_ENABLE_WAYLAND=0"}
 	spawn := func(cmd *exec.Cmd) (*exec.Cmd, error) {
 		a.mu.Lock()
 		defer a.mu.Unlock()

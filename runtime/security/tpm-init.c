@@ -12,7 +12,7 @@ int main(int argc, char **argv)
     if (argc != 2 || !size || size >= 32768) return 2;
     wchar_t *slash = wcsrchr(path, L'\\');
     if (!slash || slash - path > 32700) return 2;
-    wcscpy(slash + 1, L"opendock-tpm.dll");
+    wcscpy(slash + 1, L"yougori-tpm.dll");
     HMODULE library = LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!library) { fprintf(stderr, "Load virtual TPM library: %lu\n", GetLastError()); return 1; }
     OdTpmVersion version = (OdTpmVersion)(void *)GetProcAddress(library, "od_tpm_version");

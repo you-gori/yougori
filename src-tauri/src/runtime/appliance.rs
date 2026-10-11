@@ -8,7 +8,6 @@ use std::{
 
 use reqwest::{Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -373,6 +372,10 @@ impl RuntimeManager {
     async fn delete_container_inner(&self, id: &str, remove_model_cache: bool) -> Result<(), String> {
         if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.delete_container_inner(id, remove_model_cache)).await; }
 
+        // Same order as PC-folder preparation: workload lock before the writer
+        // lease, so a concurrent start cannot re-register this workload's shares.
+        let bind_lock = self.workload_bind_mutex(id).await;
+        let _bind_guard = bind_lock.lock().await;
         let _lease = self.appliance_operations.write().await;
         let caches = if remove_model_cache { self.unshared_model_caches(id)? } else { Vec::new() };
         // Persist before deleting anything: a crash must not lose the need to
@@ -469,6 +472,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         _image: &str,
         _command: &str,
     ) -> Result<SnapshotArtifact, String> {
+        super::vm::validate_runtime_identifier("snapshot", snapshot_id)?;
         self.inherit_storage(snapshot_id, id)?;
         if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.create_container_snapshot(id, snapshot_id, _image, _command)).await; }
 
@@ -501,6 +505,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         network_access: bool,
         gpu_access: bool,
     ) -> Result<(), String> {
+        super::vm::validate_runtime_identifier("snapshot", snapshot_id)?;
         if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.restore_container_snapshot(id, snapshot_id, image, command, network_access, gpu_access)).await; }
 
         self.register_container_provider(id, &self.read_route("snapshots", snapshot_id)?)?;
@@ -531,6 +536,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         snapshot_id: &str,
         artifact_path: &std::path::Path,
     ) -> Result<SnapshotArtifact, String> {
+        super::vm::validate_runtime_identifier("snapshot", snapshot_id)?;
         if let Some(engine) = self.storage_runtime(snapshot_id)? { return Box::pin(engine.import_container_snapshot(snapshot_id, artifact_path)).await; }
 
         let metadata = tokio::fs::metadata(artifact_path)
@@ -539,20 +545,10 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         if !metadata.is_file() || metadata.len() == 0 {
             return Err("restored OCI snapshot artifact is empty or not a file".into());
         }
-        let mut checksum_file = File::open(artifact_path)
-            .map_err(|error| format!("open restored OCI snapshot artifact: {error}"))?;
-        let mut digest = Sha256::new();
-        let mut buffer = vec![0_u8; 1024 * 1024];
-        loop {
-            let count = checksum_file
-                .read(&mut buffer)
-                .map_err(|error| format!("hash restored OCI snapshot artifact: {error}"))?;
-            if count == 0 {
-                break;
-            }
-            digest.update(&buffer[..count]);
-        }
-        let checksum_sha256 = hex::encode(digest.finalize());
+        // Multi-gigabyte artifacts: hash off the async executor threads.
+        let (_, checksum_sha256) = super::vm::hash_file(artifact_path.to_path_buf())
+            .await
+            .map_err(|error| format!("hash restored OCI snapshot artifact: {error}"))?;
         let file = tokio::fs::File::open(artifact_path)
             .await
             .map_err(|error| format!("open restored OCI snapshot artifact: {error}"))?;
@@ -629,6 +625,8 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         id: &str,
         snapshot_id: &str,
     ) -> Result<(), String> {
+        // The identifier names a host file below; never let it leave snapshots/.
+        super::vm::validate_runtime_identifier("snapshot", snapshot_id)?;
         if let Some(engine) = self.storage_runtime(id)? { return Box::pin(engine.delete_container_snapshot(id, snapshot_id)).await; }
         self.mark_storage_reclaim(&self.container_provider(id)?)?;
         let _: serde_json::Value = self
@@ -811,21 +809,56 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
 
     pub(super) async fn appliance_endpoint(&self) -> Result<AgentEndpoint, String> {
         let _gpu_lease = self.gpu_launches.read().await;
-        let mut process_guard = self.appliance.lock().await;
-        if let Some(process) = process_guard.as_mut() {
-            match process.child.try_wait() {
-                Ok(None) => {
-                    if self.health(&process.endpoint).await.is_ok() {
-                        return Ok(process.endpoint.clone());
+        // A slow probe under load or software emulation is not a dead runtime.
+        // Restarting kills every running container, so only replace a live
+        // process after its agent stays unreachable for the whole grace period.
+        // Probe without holding the process lock: status readers (appliance_peek)
+        // must not report the runtime busy while a slow agent is being retried.
+        let health_started = Instant::now();
+        let mut probe_timeout = APPLIANCE_HEALTH_TIMEOUT;
+        let mut retry_delay = Duration::from_millis(250);
+        let mut probed: Option<String> = None;
+        loop {
+            let endpoint = {
+                let mut guard = self.appliance.lock().await;
+                let Some(process) = guard.as_mut() else { break };
+                match process.child.try_wait() {
+                    Ok(None) => process.endpoint.clone(),
+                    Ok(Some(_)) => {
+                        guard.take();
+                        break;
                     }
+                    Err(error) => return Err(format!("inspect Yougori appliance process: {error}")),
                 }
-                Ok(Some(_)) => {
-                    process_guard.take();
+            };
+            probed = Some(endpoint.token.clone());
+            match self.health_within(&endpoint, probe_timeout).await {
+                Ok(()) => return Ok(endpoint),
+                Err(error) if health_started.elapsed() >= appliance_health_grace() => {
+                    eprintln!(
+                        "Yougori appliance did not answer health checks for {} seconds; restarting it: {error}",
+                        health_started.elapsed().as_secs()
+                    );
+                    break;
                 }
-                Err(error) => return Err(format!("inspect Yougori appliance process: {error}")),
+                Err(_) => {}
             }
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = (retry_delay * 2).min(Duration::from_secs(4));
+            probe_timeout = Duration::from_secs(5);
         }
 
+        let mut process_guard = self.appliance.lock().await;
+        // Another caller may have replaced the runtime while this one waited.
+        // Use a healthy replacement instead of restarting it again.
+        if let Some(process) = process_guard.as_mut() {
+            if probed.as_deref() != Some(process.endpoint.token.as_str())
+                && matches!(process.child.try_wait(), Ok(None))
+                && self.health_within(&process.endpoint, APPLIANCE_HEALTH_TIMEOUT).await.is_ok()
+            {
+                return Ok(process.endpoint.clone());
+            }
+        }
         if let Some(mut stale) = process_guard.take() {
             let _ = stale.child.kill().await;
             let _ = stale.child.wait().await;
@@ -931,11 +964,15 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
     }
 
     async fn health(&self, endpoint: &AgentEndpoint) -> Result<(), String> {
+        self.health_within(endpoint, APPLIANCE_HEALTH_TIMEOUT).await
+    }
+
+    async fn health_within(&self, endpoint: &AgentEndpoint, timeout: Duration) -> Result<(), String> {
         let response = self
             .client
             .get(format!("{}/v1/health", endpoint.base_url))
             .bearer_auth(&endpoint.token)
-            .timeout(Duration::from_secs(2))
+            .timeout(timeout)
             .send()
             .await
             .map_err(|error| error.to_string())?;
@@ -975,7 +1012,11 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         if overlay.exists() && base_changed {
             return Err(format!("Container runtime upgrade is blocked because this disk requires a different backing image. Existing container data and recovery disks were left untouched. Restore the previous Yougori runtime and export your environments before upgrading. Disk: {}", overlay.display()));
         }
-        archive_overlay_base(&self.data_root, &self.appliance_overlay_source, base_digest)?;
+        // Copying and hashing the base image takes seconds; keep it off the async threads.
+        let (data_root, source, digest) = (self.data_root.clone(), self.appliance_overlay_source.clone(), base_digest.clone());
+        tokio::task::spawn_blocking(move || archive_overlay_base(&data_root, &source, &digest))
+            .await
+            .map_err(|error| format!("prepare container backing archive: {error}"))??;
         if overlay.exists() {
             let fingerprint = appliance_overlay_fingerprint(&overlay)?;
             let marker_is_current = recorded.as_ref().is_some_and(|marker| {
@@ -1108,8 +1149,8 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                 &path_string(&self.layout.appliance_initramfs),
                 "-append",
                 &format!(
-                    "root=/dev/vda rw rootfstype=ext4 console=ttyS0 modules=virtio_pci,virtio_blk,virtio_net,virtio_gpu,drm,ext4 opendock.token-source=fwcfg{}",
-                    if cfg!(target_arch = "aarch64") { " opendock.emulated=1" } else { "" }
+                    "root=/dev/vda rw rootfstype=ext4 console=ttyS0 modules=virtio_pci,virtio_blk,virtio_net,virtio_gpu,drm,ext4 yougori.token-source=fwcfg{}",
+                    if cfg!(target_arch = "aarch64") { " yougori.emulated=1" } else { "" }
                 ),
                 "-fw_cfg",
                 &boot_token.argument(),
@@ -1230,6 +1271,13 @@ fn appliance_check_usable(exit_code: Option<i32>, stdout: &[u8]) -> bool {
         && check["check-errors"].as_u64() == Some(0)
         && check.get("corruptions").map(serde_json::Value::as_u64).unwrap_or(Some(0)) == Some(0)
         && check["filename"].is_string()
+}
+
+const APPLIANCE_HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long a live appliance may miss health checks before it is restarted.
+fn appliance_health_grace() -> Duration {
+    Duration::from_secs(if cfg!(target_arch = "aarch64") { 60 } else { 20 })
 }
 
 fn appliance_boot_expired(elapsed: Duration, maximum: Duration, quiet: Duration, emulated_arm: bool) -> bool {
@@ -1827,7 +1875,7 @@ mod tests {
             .execute_container_command(
                 source,
                 &format!(
-                    "printf shared-value > /yougori/shared/{connection}/value && printf secret-value > /opendock/secrets/{connection}/value"
+                    "printf shared-value > /yougori/shared/{connection}/value && printf secret-value > /yougori/secrets/{connection}/value"
                 ),
             )
             .await
@@ -1837,7 +1885,7 @@ mod tests {
             .execute_container_command(
                 target,
                 &format!(
-                    "cat /yougori/shared/{connection}/value /opendock/secrets/{connection}/value"
+                    "cat /yougori/shared/{connection}/value /yougori/secrets/{connection}/value"
                 ),
             )
             .await
@@ -1856,7 +1904,7 @@ mod tests {
         let server = manager
             .execute_container_command(
                 target,
-                "/bin/busybox sh -c 'while true; do printf allowed | /bin/busybox nc -l -p 45678; done' </dev/null >/tmp/opendock-server.log 2>&1 &",
+                "/bin/busybox sh -c 'while true; do printf allowed | /bin/busybox nc -l -p 45678; done' </dev/null >/tmp/yougori-server.log 2>&1 &",
             )
             .await
             .unwrap();

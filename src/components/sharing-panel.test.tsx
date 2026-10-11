@@ -9,6 +9,7 @@ import { remoteAccessApi } from "@/api/remote-access-api"
 const { refresh } = vi.hoisted(() => ({ refresh: vi.fn() }))
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => ({ refreshPlatform: refresh, state: { environments: [] } }) }))
 vi.mock("@/api/remote-access-api", () => ({ remoteAccessApi: { list: vi.fn(), create: vi.fn(), connect: vi.fn(), start: vi.fn(), stop: vi.fn(), remove: vi.fn() } }))
+// Typing without per-key timers keeps these interaction tests fast under a loaded full-suite run.
 vi.mock("./cloudflare-account-fields", () => ({ CloudflareAccountFields: ({ presets, onSelectPreset }: { presets: { id: string; hostname: string }[]; onSelectPreset(id: string): void }) => <div>Tunnel settings{presets.map(p => <button key={p.id} type="button" onClick={() => onSelectPreset(p.id)}>{`Use ${p.hostname}`}</button>)}</div> }))
 afterEach(cleanup)
 beforeEach(() => {
@@ -17,7 +18,7 @@ beforeEach(() => {
 })
 
 it("requires explicit PC folder consent and never offers unrestricted PC control", async () => {
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   render(<SharingPanel environmentId="my-pc" />)
   await user.click(screen.getByRole("button", { name: "Share My PC via Tunnel" }))
   await user.click(screen.getByRole("button", { name: "Add person" }))
@@ -35,7 +36,7 @@ it("requires explicit PC folder consent and never offers unrestricted PC control
 
 it("reuses an active tunnel instead of offering another start", async () => {
   vi.mocked(remoteAccessApi.list).mockResolvedValue({ grants: [{ id: "share-test", targetId: "my-pc", username: "teammate", permission: "view", folder: "C:/Projects", expiresAt: null, status: "online", link: "https://example.trycloudflare.com/share/share-test", connectedUsers: 0 }], url: "https://example.trycloudflare.com", port: 1234, audit: [] })
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   render(<SharingPanel environmentId="my-pc" />)
   await user.click(screen.getByRole("button", { name: "Share My PC via Tunnel" }))
   expect(await screen.findByText("https://example.trycloudflare.com/share/share-test")).toBeInTheDocument()
@@ -45,7 +46,7 @@ it("reuses an active tunnel instead of offering another start", async () => {
 })
 
 it("connects with share credentials and preserves whitespace in the password", async () => {
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   render(<SharingPanel />)
   await user.click(screen.getByRole("button", { name: "Connect to Shared Environment" }))
   await user.type(screen.getByLabelText("Link"), "https://example.trycloudflare.com/share/share-test")
@@ -58,7 +59,7 @@ it("connects with share credentials and preserves whitespace in the password", a
 
 
 it("reconnects the selected node and keeps failed credentials editable for retry", async () => {
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   const connected = vi.fn()
   vi.mocked(remoteAccessApi.connect).mockRejectedValueOnce(new Error("Wrong credentials")).mockResolvedValueOnce({} as never)
   render(<SharingPanel reconnectEnvironmentId="env-original" onConnected={connected} />)
@@ -82,7 +83,7 @@ it("turns the link on with a domain saved for another app", async () => {
   const id = "3f1c2b8e-4a5d-4e6f-9a7b-1c2d3e4f5a6b"
   localStorage.setItem("yougori.public-access-presets.v1", JSON.stringify([{ id, credentialEnvironmentId: "public-presets", port: 5281, hostname: "crm.prompx.com", hostPort: 5281 }]))
   vi.mocked(remoteAccessApi.list).mockResolvedValue({ grants: [{ id: "share-test", targetId: "my-pc", username: "teammate", permission: "view", folder: "C:/Projects", expiresAt: null, status: "offline", link: null, connectedUsers: 0 }], url: null, port: null, audit: [] })
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   render(<SharingPanel environmentId="my-pc" />)
   await user.click(screen.getByRole("button", { name: "Share My PC via Tunnel" }))
   expect(await screen.findByText("Waiting for link")).toBeInTheDocument()
@@ -96,7 +97,7 @@ it("removes people whose access was revoked or expired", async () => {
   const grant = (id: string, username: string, status: "revoked" | "expired" | "online") => ({ id, targetId: "my-pc", username, permission: "view" as const, folder: "C:/Projects", expiresAt: null, status, link: null, connectedUsers: 0 })
   vi.mocked(remoteAccessApi.list).mockResolvedValue({ grants: [grant("share-a", "alice", "revoked"), grant("share-b", "bob", "expired"), grant("share-c", "carol", "online")], url: null, port: null, audit: [] })
   vi.mocked(remoteAccessApi.remove).mockResolvedValue(undefined)
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   render(<SharingPanel environmentId="my-pc" />)
   await user.click(screen.getByRole("button", { name: "Share My PC via Tunnel" }))
   expect(await screen.findByText("alice")).toBeInTheDocument()

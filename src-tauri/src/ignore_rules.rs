@@ -77,16 +77,30 @@ impl Rules {
     }
 }
 
+/// Whether the whole `path` matches `pattern`, where `**` spans zero or more folders.
+/// Dynamic programming from the last pattern segment keeps this to one pass per
+/// segment; trying every `**` split recursively is exponential for patterns such as
+/// `a/**/**/**/b`.
 fn segments_match(pattern: &[String], path: &[&str]) -> bool {
-    match pattern.split_first() {
-        None => path.is_empty(),
-        Some((first, rest)) if first == "**" => {
-            (0..=path.len()).any(|skip| segments_match(rest, &path[skip..]))
+    // matches[j]: the remaining pattern matches path[j..].
+    let mut matches = vec![false; path.len() + 1];
+    matches[path.len()] = true;
+    for segment in pattern.iter().rev() {
+        let mut current = vec![false; path.len() + 1];
+        if segment == "**" {
+            let mut any = false;
+            for j in (0..=path.len()).rev() {
+                any |= matches[j];
+                current[j] = any;
+            }
+        } else {
+            for j in 0..path.len() {
+                current[j] = matches[j + 1] && glob(segment, path[j]);
+            }
         }
-        Some((first, rest)) => path
-            .split_first()
-            .is_some_and(|(name, tail)| glob(first, name) && segments_match(rest, tail)),
+        matches = current;
     }
+    matches[0]
 }
 
 /// Wildcard match of one path segment: `*`, `?` and `[...]` (with ranges and `!`/`^` negation).
@@ -181,6 +195,21 @@ mod tests {
         assert!(rules.ignored("cert.pem", false) && rules.ignored("cert.peM", false));
         assert!(rules.ignored("secret1.txt", false) && !rules.ignored("secret12.txt", false));
         assert!(!rules.ignored("src/main.rs", false));
+    }
+    #[test]
+    fn repeated_double_star_rules_stay_fast() {
+        let pattern = format!("a/{}b", "**/".repeat(40));
+        let rules = Rules::parse(&pattern);
+        let deep = vec!["a"; 64].join("/");
+        let started = std::time::Instant::now();
+        assert!(!rules.ignored(&deep, false));
+        assert!(rules.ignored(&format!("{deep}/b"), false));
+        assert!(rules.ignored("a/b", false), "** still matches zero folders");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let rules = Rules::parse("src/**/generated/**\n/**/*.tmp\n");
+        assert!(rules.ignored("src/generated/x.rs", false) && rules.ignored("src/a/b/generated/c/d", false));
+        assert!(!rules.ignored("src/a/generate/x.rs", false));
+        assert!(rules.ignored("x/y/z.tmp", false) && rules.ignored("z.tmp", false));
     }
     #[test]
     fn wildcards() {

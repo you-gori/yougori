@@ -17,17 +17,17 @@ import (
 
 func TestParseMicroVMBootConfiguration(t *testing.T) {
 	token := strings.Repeat("a1", 32)
-	configuration, err := parseBootConfiguration("quiet opendock.mode=microvm opendock.token=" + token)
+	configuration, err := parseBootConfiguration("quiet yougori.mode=microvm yougori.token=" + token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if configuration.token != token || !configuration.microVM {
 		t.Fatalf("unexpected boot configuration: %#v", configuration)
 	}
-	if _, err := parseBootConfiguration("opendock.mode=microvm"); err == nil {
+	if _, err := parseBootConfiguration("yougori.mode=microvm"); err == nil {
 		t.Fatal("a missing authentication token was accepted")
 	}
-	if _, err := parseBootConfiguration("opendock.token=invalid"); err == nil {
+	if _, err := parseBootConfiguration("yougori.token=invalid"); err == nil {
 		t.Fatal("an invalid authentication token was accepted")
 	}
 }

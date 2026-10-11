@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{future::Future, io::IsTerminal};
 use zeroize::Zeroizing;
 
-pub const HELP: &str = "Yougori shared sandbox\n\n  yougori connect LINK USERNAME PASSWORD\n\nOpens the owner's shared sandbox in this terminal, like an SSH session.\nUse the complete HTTPS share link and the credentials supplied by its owner.\nRun the installed tool (codex, claude, opencode, etc.) inside this shell.\nCtrl+] disconnects; the sandbox and files stay on the owner's computer.\nThe owner must keep Yougori, the container and sharing gateway running.\n\nPasswords in this command can appear in shell history and process arguments.\nFor credentials supplied privately through JSON, use yougori remote connect --file -.\n";
+pub const HELP: &str = "Yougori shared sandbox\n\n  yougori connect LINK USERNAME [PASSWORD]\n\nOpens the owner's shared sandbox in this terminal, like an SSH session.\nUse the complete HTTPS share link and the credentials supplied by its owner.\nRun the installed tool (codex, claude, opencode, etc.) inside this shell.\nCtrl+] disconnects; the sandbox and files stay on the owner's computer.\nThe owner must keep Yougori, the container and sharing gateway running.\n\nLeave out PASSWORD to type it privately. A password in the command can appear\nin shell history and process arguments. For credentials supplied privately\nthrough JSON, use yougori remote connect --file -.\n";
 
 pub(crate) struct Recipient {
     pub username: String,
@@ -78,7 +78,18 @@ pub(crate) fn connection_command(
     password(&recipient.password)?;
     let quote = |value: &str| {
         if powershell {
-            format!("'{}'", value.replace('\'', "''"))
+            // PowerShell also ends single-quoted strings at typographic single quotes
+            // (U+2018–U+201B); doubling any of them keeps it literal.
+            let mut quoted = String::with_capacity(value.len() + 2);
+            quoted.push('\'');
+            for c in value.chars() {
+                if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+                    quoted.push(c);
+                }
+                quoted.push(c);
+            }
+            quoted.push('\'');
+            quoted
         } else {
             shell_words::quote(value).into_owned()
         }
@@ -180,16 +191,27 @@ fn connected_environment<'a>(state: &'a Value, link: &str) -> Result<&'a str, St
 }
 
 pub async fn connect(args: &[String]) -> Result<(), String> {
-    if args.len() != 3 {
-        return Err("Usage: yougori connect LINK USERNAME PASSWORD".into());
+    if !(2..=3).contains(&args.len()) {
+        return Err("Usage: yougori connect LINK USERNAME [PASSWORD]".into());
     }
     share_address(&args[0])?;
     let name = username(&args[1])?;
-    let secret = Zeroizing::new(args[2].clone());
-    password(&secret)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err("yougori connect requires an interactive terminal. For scripts use yougori remote connect --file -.".into());
     }
+    let secret = match args.get(2) {
+        Some(secret) => Zeroizing::new(secret.clone()),
+        // Typed privately: kept out of shell history and process arguments.
+        None => {
+            use crate::cli_ui as ui;
+            let _raw = ui::Raw::on()?;
+            Zeroizing::new(ui::input(&format!("{name} · password"), "", true, &|entry| {
+                password(entry)?;
+                Ok(entry.into())
+            })?)
+        }
+    };
+    password(&secret)?;
     crate::client::start(None).await?;
     let state = call(
         "connect_remote_share",
@@ -411,6 +433,10 @@ mod tests {
         let command = connection_command(LINK, &person, true).unwrap();
         assert!(command.contains("quote''\" $() ; `hello` / space → café"));
         assert!(!command.contains("'\"'\"'"));
+        // Typographic single quotes also end PowerShell strings; each is doubled.
+        let curly = recipient("alice", "a\u{2018}b\u{2019}c\u{201a}d\u{201b}e; whoami");
+        let command = connection_command(LINK, &curly, true).unwrap();
+        assert!(command.ends_with("'a\u{2018}\u{2018}b\u{2019}\u{2019}c\u{201a}\u{201a}d\u{201b}\u{201b}e; whoami'"), "{}", command.as_str());
         assert!(password("hello\nworld").is_err());
         assert!(password("short").is_err());
         assert_eq!(username(" Alice ").unwrap(), "alice");
@@ -420,7 +446,7 @@ mod tests {
     #[test]
     fn powershell_parses_the_invite_as_literal_arguments() {
         use std::os::windows::process::CommandExt;
-        let secret = "literal'\" $(throw 'injection') ; `hello` / → café";
+        let secret = "literal'\" $(throw 'injection') ; `hello` / → café \u{2019}; throw \u{2018}curly\u{2019}; \u{201b}";
         let person = recipient("alice", secret);
         let invite = connection_command(LINK, &person, true).unwrap();
         let script = format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); function yougori {{ ConvertTo-Json -InputObject @($args) -Compress }}; {}", invite.as_str());

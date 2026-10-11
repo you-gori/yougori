@@ -1,16 +1,17 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { GuestTerminal } from "./guest-terminal"
 import { workspaceApi, type TerminalOutput } from "@/api/workspace-api"
 
-const terminalState = vi.hoisted(() => ({ input: undefined as ((data: string) => void) | undefined, options: {} as { disableStdin?: boolean } }))
+const terminalState = vi.hoisted(() => ({ input: undefined as ((data: string) => void) | undefined, options: {} as { disableStdin?: boolean }, osc: {} as Record<number, (data: string) => boolean> }))
+const clipboard = vi.hoisted(() => ({ writeText: vi.fn(), readText: vi.fn() }))
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   options = terminalState.options
   cols = 80
   rows = 24
   buffer = { active: { length: 0 } }
-  parser = { registerOscHandler: () => ({ dispose() {} }) }
+  parser = { registerOscHandler: (id: number, handler: (data: string) => boolean) => { terminalState.osc[id] = handler; return { dispose() {} } } }
   open() {}
   loadAddon() {}
   focus() {}
@@ -24,6 +25,11 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }))
 vi.mock("@/components/terminal-link-cards", () => ({ TerminalLinkCards: () => null }))
 vi.mock("@/api/workspace-api", () => ({ workspaceApi: { terminal: vi.fn(), prepareInstaller: vi.fn() } }))
+vi.mock("@/lib/terminal-clipboard", async importOriginal => ({
+  ...await importOriginal<typeof import("@/lib/terminal-clipboard")>(),
+  terminalClipboard: clipboard,
+  osc52CopyText: (data: string) => atob(data.slice(data.indexOf(";") + 1)),
+}))
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(yes => { resolve = yes })
@@ -62,6 +68,34 @@ describe("guest terminal lifecycle", () => {
     unmount()
     await act(async () => { firstWrite.resolve(output); await firstWrite.promise })
     expect(vi.mocked(workspaceApi.terminal).mock.calls.filter(call => call[2] === "write")).toHaveLength(1)
+  })
+
+  it("asks before a guest program copies to the clipboard and remembers a block", async () => {
+    clipboard.writeText.mockResolvedValue(undefined)
+    const ready = vi.fn()
+    render(<GuestTerminal environmentId="alpha" sessionId="tab-1" active onReady={ready} />)
+    await waitFor(() => expect(ready).toHaveBeenCalledWith("tab-1", true))
+    act(() => { terminalState.osc[52]!("c;" + btoa("first")) })
+    expect(clipboard.writeText).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }))
+    expect(clipboard.writeText).toHaveBeenCalledExactlyOnceWith("first")
+    act(() => { terminalState.osc[52]!("c;" + btoa("second")) })
+    fireEvent.click(screen.getByRole("button", { name: "Block" }))
+    act(() => { terminalState.osc[52]!("c;" + btoa("third")) })
+    expect(screen.queryByRole("group", { name: "Clipboard request" })).toBeNull()
+    expect(clipboard.writeText).toHaveBeenCalledOnce()
+  })
+
+  it("copies without asking again once allowed for this terminal", async () => {
+    clipboard.writeText.mockResolvedValue(undefined)
+    const ready = vi.fn()
+    render(<GuestTerminal environmentId="alpha" sessionId="tab-1" active onReady={ready} />)
+    await waitFor(() => expect(ready).toHaveBeenCalledWith("tab-1", true))
+    act(() => { terminalState.osc[52]!("c;" + btoa("first")) })
+    fireEvent.click(screen.getByRole("button", { name: "Always allow here" }))
+    act(() => { terminalState.osc[52]!("c;" + btoa("second")) })
+    expect(clipboard.writeText.mock.calls).toEqual([["first"], ["second"]])
+    expect(screen.queryByRole("group", { name: "Clipboard request" })).toBeNull()
   })
 
   it("does not let pasted input race the installer command in its dedicated shell", async () => {

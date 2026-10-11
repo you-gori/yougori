@@ -446,8 +446,6 @@ fn spawn_shell(owner: &str, config: ShellConfig, size: PtySize) -> Result<Arc<Se
         "PATH",
         std::env::join_paths(paths).map_err(|e| e.to_string())?,
     );
-    command.env("OPENDOCK_CLI", &config.cli);
-    command.env("OPENDOCK_APP", &config.app);
     command.env("YOUGORI_CLI", &config.cli);
     command.env("YOUGORI_APP", &config.app);
     configure_terminal_environment(&mut command);
@@ -458,7 +456,7 @@ fn spawn_shell(owner: &str, config: ShellConfig, size: PtySize) -> Result<Arc<Se
         // No execution-policy change and no elevation. .cmd aliases avoid npm's
         // optional .ps1 wrappers under a restricted PowerShell script policy.
         let mut bootstrap =
-            String::from("function global:yougori { & $env:YOUGORI_CLI @args }; function global:opendock { & $env:YOUGORI_CLI @args }; ");
+            String::from("function global:yougori { & $env:YOUGORI_CLI @args }; ");
         for name in ["codex", "claude", "gemini", "kilo", "opencode"] {
             if let Some(path) = search_command(name) {
                 command.env(format!("YOUGORI_AGENT_{}", name.to_uppercase()), path);

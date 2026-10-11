@@ -45,7 +45,13 @@ func workloadPath(s string) bool {
 			return false
 		}
 	}
-	for _, reserved := range []string{"/proc", "/sys", "/dev", "/opendock", containerDisplayMount} {
+	// Paths this agent mounts into containers, and their parent. /yougori/project-files is
+	// the user's own imported project area and stays usable. The pre-rename mount root
+	// still holds these paths in containers created by earlier versions.
+	if s == "/yougori" {
+		return false
+	}
+	for _, reserved := range []string{"/proc", "/sys", "/dev", legacyContainerMountRoot, "/yougori/bin", "/yougori/secrets", "/yougori/shared", containerDisplayMount} {
 		if s == reserved || strings.HasPrefix(s, reserved+"/") {
 			return false
 		}

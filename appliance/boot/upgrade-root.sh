@@ -212,12 +212,66 @@ while read -r digest size relative extra; do
 done < "$vendor_manifest"
 rm -rf "$yougori_vendor_temp"
 yougori_vendor_temp=
-install_boot_file 0755 usr/local/sbin/opendock-agent
-install_boot_file 0755 usr/local/sbin/opendock-mount-helper
-install_boot_file 0755 etc/init.d/opendock-agent
+install_boot_file 0755 usr/local/sbin/yougori-agent
+install_boot_file 0755 usr/local/sbin/yougori-mount-helper
+install_boot_file 0755 etc/init.d/yougori-agent
 install_boot_file 0755 etc/init.d/containerd
 install_boot_file 0644 etc/containerd/config.toml
 install_boot_file 0644 etc/sysctl.d/90-yougori-security.conf
+
+# Disks created by releases from before the product was renamed to Yougori use the
+# old name for the agent, its data, the apps account and helper files. Move them to
+# the Yougori names. Each step runs only when the old item exists and the new one does
+# not, so repeating it is harmless. The old name appears only in this section; the
+# host-side equivalents are in cli/src/legacy_names.rs.
+legacy=opendock
+regular_directory() {
+  [ -d "$1" ] && [ ! -L "$1" ]
+}
+for runlevel in default microvm; do
+  runlevel_directory=$yougori_root/etc/runlevels/$runlevel
+  regular_directory "$yougori_root/etc/runlevels" && regular_directory "$runlevel_directory" || continue
+  if [ -L "$runlevel_directory/$legacy-agent" ]; then
+    [ -e "$runlevel_directory/yougori-agent" ] || [ -L "$runlevel_directory/yougori-agent" ] ||
+      ln -s /etc/init.d/yougori-agent "$runlevel_directory/yougori-agent"
+    rm -f "$runlevel_directory/$legacy-agent"
+  fi
+done
+for legacy_file in usr/local/sbin/$legacy-agent usr/local/sbin/$legacy-mount-helper \
+    etc/init.d/$legacy-agent var/log/$legacy-agent.log; do
+  if [ -L "$yougori_root/$legacy_file" ] || [ -f "$yougori_root/$legacy_file" ]; then
+    rm -f "$yougori_root/$legacy_file"
+  fi
+done
+cli_link=$yougori_root/usr/local/bin/yougori
+if [ -L "$cli_link" ] && [ "$(readlink "$cli_link")" = "/usr/local/sbin/$legacy-agent" ]; then
+  ln -sfn /usr/local/sbin/yougori-agent "$cli_link"
+fi
+legacy_storage=$yougori_root/usr/local/lib/$legacy-storage
+if regular_directory "$legacy_storage"; then
+  rm -rf "$legacy_storage"
+fi
+# Keep the old data path as a link: existing containers record bind-mount sources
+# under it, and containerd cannot rewrite them.
+legacy_data=$yougori_root/var/lib/$legacy
+if regular_directory "$yougori_root/var/lib" && regular_directory "$legacy_data" &&
+   [ ! -e "$yougori_root/var/lib/yougori" ] && [ ! -L "$yougori_root/var/lib/yougori" ]; then
+  mv "$legacy_data" "$yougori_root/var/lib/yougori"
+  ln -s yougori "$legacy_data"
+fi
+legacy_home=$yougori_root/home/$legacy-apps
+for account_file in passwd shadow group; do
+  [ -f "$yougori_root/etc/$account_file" ] && [ ! -L "$yougori_root/etc/$account_file" ] || continue
+  if grep -q "^$legacy-apps:" "$yougori_root/etc/$account_file" &&
+     ! grep -q "^yougori-apps:" "$yougori_root/etc/$account_file"; then
+    sed -i -e "s#^$legacy-apps:#yougori-apps:#" -e "s#:/home/$legacy-apps:#:/home/yougori-apps:#" \
+      "$yougori_root/etc/$account_file"
+  fi
+done
+if regular_directory "$yougori_root/home" && regular_directory "$legacy_home" &&
+   [ ! -e "$yougori_root/home/yougori-apps" ] && [ ! -L "$yougori_root/home/yougori-apps" ]; then
+  mv "$legacy_home" "$yougori_root/home/yougori-apps"
+fi
 sync
 if [ "$yougori_restore_read_only" = 1 ]; then
   mount -t ext4 -o remount,ro none "$yougori_root"

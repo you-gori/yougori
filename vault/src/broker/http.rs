@@ -286,6 +286,7 @@ async fn mcp(
             let id = uuid::Uuid::new_v4().to_string();
             let session = Arc::new(Session {
                 identity,
+                desktop: false,
                 cancelled: Arc::new(AtomicBool::new(false)),
                 connected: AtomicBool::new(true),
                 allowed: AtomicBool::new(oauth_admission.is_some()),
@@ -330,7 +331,7 @@ async fn mcp(
         ),
     )
     .await;
-    let value = match result {
+    let mut value = match result {
         Ok(Ok(value)) => value,
         _ => {
             json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32000,"message":"Vault request did not finish. Open Personal Vault MCP in Yougori to review it, then retry."}})
@@ -344,8 +345,10 @@ async fn mcp(
     let mut response = if value.is_null() {
         StatusCode::ACCEPTED.into_response()
     } else {
-        Json(value).into_response()
+        Json(&value).into_response()
     };
+    // The serialized body is sent as is; wipe the disclosed values in memory.
+    protocol::wipe(&mut value);
     response
         .headers_mut()
         .insert("cache-control", "no-store".parse().unwrap());

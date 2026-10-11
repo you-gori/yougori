@@ -88,7 +88,7 @@
     },
     "naturalExitCode": 1,
     "disklessFixtureStopped": false,
-    "stderr": "C:\\Users\\Argon\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu\\qemu-system-x86_64.exe: egl: eglInitialize failed: EGL_SUCCESS\r\nC:\\Users\\Argon\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu\\qemu-system-x86_64.exe: egl: init failed\r\n",
+    "stderr": "C:\\Users\\<user>\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu\\qemu-system-x86_64.exe: egl: eglInitialize failed: EGL_SUCCESS\r\nC:\\Users\\<user>\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu\\qemu-system-x86_64.exe: egl: init failed\r\n",
     "passed": true
   },
   {
@@ -180,7 +180,7 @@
     },
     "naturalExitCode": 1,
     "disklessFixtureStopped": false,
-    "stderr": "C:\\Users\\Argon\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu-secure\\qemu-system-x86_64.exe: egl: eglInitialize failed: EGL_SUCCESS\r\nC:\\Users\\Argon\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu-secure\\qemu-system-x86_64.exe: egl: init failed\r\n",
+    "stderr": "C:\\Users\\<user>\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu-secure\\qemu-system-x86_64.exe: egl: eglInitialize failed: EGL_SUCCESS\r\nC:\\Users\\<user>\\Desktop\\yougori\\build\\angle-smoke-r4gpnfnu\\qemu-secure\\qemu-system-x86_64.exe: egl: init failed\r\n",
     "passed": true
   }
 ]

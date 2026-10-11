@@ -100,6 +100,7 @@ impl PlatformStore {
             .lock()
             .map_err(|_| "Platform state is unavailable".to_string())?;
         state.settings_revision = next_settings_revision(&current, &state)?;
+        state.state_revision = current.state_revision.saturating_add(1);
         persist_state(&self.path, &state)?;
         *current = state.clone();
         Ok(state)
@@ -116,6 +117,7 @@ impl PlatformStore {
         let mut candidate = current.clone();
         operation(&mut candidate)?;
         candidate.settings_revision = next_settings_revision(&current, &candidate)?;
+        candidate.state_revision = current.state_revision.saturating_add(1);
         persist_state(&self.path, &candidate)?;
         *current = candidate.clone();
         Ok(candidate)
@@ -132,6 +134,7 @@ impl PlatformStore {
         let mut candidate = current.clone();
         operation(&mut candidate)?;
         candidate.settings_revision = next_settings_revision(&current, &candidate)?;
+        candidate.state_revision = current.state_revision.saturating_add(1);
         *current = candidate.clone();
         Ok(candidate)
     }
@@ -271,6 +274,19 @@ mod tests {
         assert_eq!(store.snapshot().unwrap().settings_revision, initial.settings_revision + 1);
         drop(store);
         assert_eq!(PlatformStore::load(path).unwrap().snapshot().unwrap().settings_revision, initial.settings_revision + 1);
+    }
+
+    #[test]
+    fn state_revision_increases_with_every_committed_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = PlatformStore::load(directory.path().join("state.json")).unwrap();
+        let initial = store.snapshot().unwrap().state_revision;
+        let changed = store.mutate(|state| { state.host.hostname = "host-renamed".into(); Ok(()) }).unwrap();
+        assert_eq!(changed.state_revision, initial + 1);
+        assert_eq!(store.mutate_ephemeral(|_| Ok(())).unwrap().state_revision, initial + 2);
+        assert!(store.mutate(|_| Err("rejected".into())).is_err());
+        assert_eq!(store.replace(changed).unwrap().state_revision, initial + 3);
+        assert_eq!(store.snapshot().unwrap().state_revision, initial + 3);
     }
 
     #[test]

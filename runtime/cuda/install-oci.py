@@ -171,13 +171,13 @@ def install(archive, manifest, root=Path('/'), component='oci'):
 
 
 def main():
-    require(os.geteuid() == 0 and Path('/etc/opendock-cuda-runtime').is_file(), 'Use only the owned CUDA root')
+    require(os.geteuid() == 0 and Path('/etc/yougori-cuda-runtime').is_file(), 'Use only the owned CUDA root')
     for process in Path('/proc').glob('[0-9]*/comm'):
         try:
             name = process.read_text().strip()
         except (FileNotFoundError, ProcessLookupError):
             continue
-        require(not name.startswith(('containerd', 'opendock-agent')), 'Stop CUDA workloads before updating OCI')
+        require(not name.startswith(('containerd', 'yougori-agent')), 'Stop CUDA workloads before updating OCI')
     require(len(sys.argv) in (3, 4), 'Expected archive, manifest and optional component')
     component = sys.argv[3] if len(sys.argv) == 4 else 'oci'
     print(json.dumps(install(Path(sys.argv[1]), Path(sys.argv[2]), component=component)))

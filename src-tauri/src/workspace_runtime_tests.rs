@@ -12,7 +12,7 @@ fn print_guest_logs(directory: &Path) {
         let _ = file.take(16 * 1024).read_to_end(&mut bytes);
         eprintln!("Guest {name} (last 16 KiB):");
         for line in String::from_utf8_lossy(&bytes).lines() {
-            if line.contains("opendock.token=") {
+            if line.contains("yougori.token=") {
                 eprintln!("[guest command line containing authentication token omitted]");
             } else {
                 eprintln!("{line}");
@@ -213,7 +213,7 @@ async fn exercise_workspace(kind: &str) -> Result<(), String> {
         expect_ok("delete file",guest("rm -f -- '/tmp/editor-demo/created.txt'".into()).await?)?;
         expect_ok("delete folder",guest("rmdir '/tmp/editor-demo/nested'".into()).await?)?;
         eprintln!("Starting a localhost-only guest HTTP service");
-        let command="/bin/busybox sh -c 'while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 17\\r\\nConnection: close\\r\\n\\r\\nworkspace-http-ok\" | /bin/busybox nc -l -s 127.0.0.1 -p 4200 -w 2; done' </dev/null >/tmp/opendock-workspace-server.log 2>&1 &";
+        let command="/bin/busybox sh -c 'while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Length: 17\\r\\nConnection: close\\r\\n\\r\\nworkspace-http-ok\" | /bin/busybox nc -l -s 127.0.0.1 -p 4200 -w 2; done' </dev/null >/tmp/yougori-workspace-server.log 2>&1 &";
         let output=if kind=="container"{runtime.execute_container_command(&env.id,command).await?}else{runtime.execute_micro_vm_command(&env.id,command).await?};
         if output.exit_code!=0{return Err(format!("Test HTTP server: {}",output.stderr));}
         tokio::time::sleep(Duration::from_millis(400)).await;
@@ -289,7 +289,7 @@ async fn workspace_fullvm_forwarding_and_viewers() {
     env.resource_policy.memory_gb.preferred = 0.5;
     let source = data.path().join("blank.qcow2");
     let mut command =
-        tokio::process::Command::new(if cfg!(target_os = "linux") { PathBuf::from("/usr/bin/qemu-img") } else if cfg!(target_os = "macos") { PathBuf::from(if cfg!(target_arch = "aarch64") { "/opt/homebrew/opt/qemu/bin/qemu-img" } else { "/usr/local/opt/qemu/bin/qemu-img" }) } else { resources.join("resources/runtime/qemu/qemu-img.exe") });
+        tokio::process::Command::new(if cfg!(target_os = "linux") { PathBuf::from("/usr/bin/qemu-img") } else if cfg!(target_os = "macos") { std::env::var_os("YOUGORI_MACOS_QEMU_DIR").map(|directory| PathBuf::from(directory).join("qemu-img")).unwrap_or_else(|| PathBuf::from(if cfg!(target_arch = "aarch64") { "/opt/homebrew/opt/qemu/bin/qemu-img" } else { "/usr/local/opt/qemu/bin/qemu-img" })) } else { resources.join("resources/runtime/qemu/qemu-img.exe") });
     command
         .args(["create", "-f", "qcow2"])
         .arg(&source)

@@ -8,23 +8,27 @@
   "patches": [
     {
       "path": "runtime/security/qemu-windows-tpm.patch",
-      "sha256": "66436c9beca2589e092ee7316245f04d26ee3b10849854584533680ca3959657"
+      "sha256": "5401a0c4654c106af95c98d8b49ad82e5ff41f247abb128e96df4c920818729c"
     },
     {
       "path": "runtime/security/qemu-whpx-tpm-ppi.patch",
-      "sha256": "f9d3e01f43ccc395806f208d427f5c1b34caecc1ae511344e8867761b69a60f0"
+      "sha256": "46ac95a8e3fbdc10ae24eb0d17332173a033669e2c64ec21357727fd13b78b14"
     },
     {
       "path": "runtime/security/qemu-whpx-reboot.patch",
       "sha256": "5a4bf0fb3b721755e42801d633100c41745fb0d85ba426eee15e088b37b058cc"
     },
     {
+      "path": "runtime/security/qemu-license-notices.patch",
+      "sha256": "60853788957c47fed4849afeabcf78c6fc4a3f84db49ac8cdd649185ba556784"
+    },
+    {
       "path": "runtime/security/tpm-qemu.c",
-      "sha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92"
+      "sha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57"
     },
     {
       "path": "runtime/security/tpm-api.h",
-      "sha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca"
+      "sha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93"
     }
   ],
   "firmware": "Unmodified pc-bios files from the recorded QEMU revision, with bz2 firmware decompressed",

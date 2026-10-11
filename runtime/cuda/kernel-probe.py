@@ -36,7 +36,7 @@ try:
 .version 8.0
 .target sm_75
 .address_size 64
-.visible .entry opendock_probe(.param .u64 output) {
+.visible .entry yougori_probe(.param .u64 output) {
     .reg .b64 %rd;
     .reg .b32 %r;
     ld.param.u64 %rd, [output];
@@ -55,7 +55,7 @@ try:
     call("cuModuleLoadData", c.byref(module), ptx)
     try:
         kernel = c.c_void_p()
-        call("cuModuleGetFunction", c.byref(kernel), module, c.c_char_p(b"opendock_probe"))
+        call("cuModuleGetFunction", c.byref(kernel), module, c.c_char_p(b"yougori_probe"))
         memory = c.c_uint64()
         call("cuMemAlloc_v2", c.byref(memory), c.c_size_t(256 * 4))
         try:

@@ -54,7 +54,7 @@ fn migrate_legacy_app_data(current: &std::path::Path) -> std::io::Result<()> {
     let Some(parent) = current.parent() else {
         return Err(std::io::Error::other("Cannot locate the Yougori data parent folder"));
     };
-    let previous = parent.join("com.opendock.desktop");
+    let previous = parent.join(yougori_cli::legacy_names::APP_DATA_FOLDER);
     if current.join("platform-state.json").exists() || !previous.join("platform-state.json").exists() {
         return Ok(());
     }
@@ -82,7 +82,7 @@ fn migrate_legacy_app_data(current: &std::path::Path) -> std::io::Result<()> {
 }
 
 fn relocated_app_storage(previous_storage: &std::path::Path, current_app_data: &std::path::Path) -> Option<std::path::PathBuf> {
-    let previous_app_data = current_app_data.parent()?.join("com.opendock.desktop");
+    let previous_app_data = current_app_data.parent()?.join(yougori_cli::legacy_names::APP_DATA_FOLDER);
     let relative = previous_storage.strip_prefix(&previous_app_data).ok()?;
     let relocated = current_app_data.join(relative);
     (!previous_app_data.exists() && relocated.exists()).then_some(relocated)
@@ -95,7 +95,7 @@ mod app_data_migration_tests {
     #[test]
     fn moves_existing_data_without_replacing_a_newer_state() {
         let root = tempfile::tempdir().unwrap();
-        let previous = root.path().join("com.opendock.desktop");
+        let previous = root.path().join(yougori_cli::legacy_names::APP_DATA_FOLDER);
         let current = root.path().join("com.yougori.desktop");
         std::fs::create_dir_all(&previous).unwrap();
         std::fs::write(previous.join("platform-state.json"), "old-state").unwrap();
@@ -112,7 +112,7 @@ mod app_data_migration_tests {
     #[test]
     fn refuses_to_merge_two_populated_data_folders() {
         let root = tempfile::tempdir().unwrap();
-        let previous = root.path().join("com.opendock.desktop");
+        let previous = root.path().join(yougori_cli::legacy_names::APP_DATA_FOLDER);
         let current = root.path().join("com.yougori.desktop");
         std::fs::create_dir_all(&previous).unwrap();
         std::fs::create_dir_all(&current).unwrap();
@@ -126,7 +126,7 @@ mod app_data_migration_tests {
     #[test]
     fn remaps_saved_runtime_path_only_after_its_data_was_moved() {
         let root = tempfile::tempdir().unwrap();
-        let previous = root.path().join("com.opendock.desktop");
+        let previous = root.path().join(yougori_cli::legacy_names::APP_DATA_FOLDER);
         let current = root.path().join("com.yougori.desktop");
         std::fs::create_dir_all(current.join("runtime")).unwrap();
         assert_eq!(relocated_app_storage(&previous.join("runtime"), &current), Some(current.join("runtime")));
@@ -354,6 +354,21 @@ fn launch_error(message: &str) {
     }
 }
 
+/// A failed start would otherwise vanish: release builds have no console and abort on
+/// panic. Save the reason next to the app data (or in the temporary folder), show it
+/// unless running headless for the CLI, then exit with a failure status.
+fn startup_failed(app_directory: Option<std::path::PathBuf>, headless: bool, error: &str) -> ! {
+    let message = format!("Yougori could not start: {error}");
+    let folder = app_directory
+        .filter(|folder| std::fs::create_dir_all(folder).is_ok())
+        .unwrap_or_else(std::env::temp_dir);
+    let log = folder.join("startup-error.log");
+    let saved = std::fs::write(&log, format!("{} {message}\n", chrono::Utc::now().to_rfc3339())).is_ok();
+    let shown = if saved { format!("{message}\n\nDetails were saved to {}", log.display()) } else { message };
+    if headless { eprintln!("{shown}") } else { launch_error(&shown) }
+    std::process::exit(1)
+}
+
 /// Guest provisioning nests deep async state machines; unoptimised builds overflow tokio's
 /// default 2 MiB worker stacks. The runtime lives for the whole process.
 fn install_async_runtime() {
@@ -379,6 +394,10 @@ pub fn run() {
             None => return,
         },
     };
+    // An engine update sets in-use executables aside; this is the first run after it.
+    if let Some(folder) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.to_path_buf())).filter(|dir| dir.join("cli").is_dir()) {
+        std::thread::spawn(move || yougori_cli::update::remove_old_executables(&folder));
+    }
     let mut context = tauri::generate_context!();
     if headless {
         for window in &mut context.config_mut().app.windows { window.create = false; }
@@ -404,6 +423,9 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_notification::init());
     let app = builder
         .setup(move |app| {
+            // Tauri panics on a setup error and release builds abort without a
+            // console, so record and show the reason before returning it.
+            let outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
             let app_directory = app.path().app_data_dir()?;
             migrate_legacy_app_data(&app_directory)?;
             let resource_directory = resource_dir(app.handle()).map_err(std::io::Error::other)?;
@@ -424,8 +446,11 @@ pub fn run() {
             if !storage_directory.is_absolute() { return Err(std::io::Error::other("Environment storage must be an absolute folder path").into()); }
             let runtime = runtime::RuntimeManager::new(&resource_directory, &storage_directory)
                 .map_err(std::io::Error::other)?;
-            tauri::async_runtime::block_on(runtime.cleanup_orphan_branch_boot_disks())
-                .map_err(std::io::Error::other)?;
+            // Leftover temporary branch disks only waste space; branch creation
+            // retries this cleanup and reports failures where it matters.
+            if let Err(error) = tauri::async_runtime::block_on(runtime.cleanup_orphan_branch_boot_disks()) {
+                eprintln!("Computer branch cleanup deferred: {error}");
+            }
             let backup =
                 backup::BackupManager::new(&app_directory).map_err(std::io::Error::other)?;
             let mut state = store.snapshot().map_err(std::io::Error::other)?;
@@ -602,7 +627,14 @@ pub fn run() {
                 }
             });
             Ok(())
+            })();
+            if let Err(error) = &outcome {
+                startup_failed(app.path().app_data_dir().ok(), headless, &error.to_string());
+            }
+            outcome
         })
+        // Windows get only what the dashboard uses. CLI-only commands (guest jobs, shares,
+        // Swarm, raw workloads) are reached through automation::dispatch.
         .invoke_handler(tauri::generate_handler![
             environment_download::start_environment_download,
             environment_download::list_environment_downloads,
@@ -628,7 +660,6 @@ pub fn run() {
             model_runner::optimizer::model_optimizer,
             model_runner::model_usage,
             market::market_status,
-            swarm::swarm_dispatch,
             model_registry::model_registry_request,
             model_registry::model_registry_connect,
             model_registry::model_registry_pause,
@@ -652,7 +683,6 @@ pub fn run() {
             projects::discover_projects,
             projects::import_compose,
             projects::project_action,
-            projects::run_workload,
             host_terminal::get_host_terminal_info,
             host_terminal::validate_edit_app_folder,
             host_terminal::set_up_agent_access,
@@ -710,12 +740,7 @@ pub fn run() {
             remote_access::client::reconnect_remote_share,
             remote_access::client::remote_share_request,
             remote_access::client::download_remote_folder,
-            peer_sharing::create_environment_share,
-            peer_sharing::list_environment_shares,
-            peer_sharing::revoke_environment_share,
-            peer_sharing::import_environment_share,
             cloud_deployment::cloud_authenticate,
-            cloud_deployment::deploy_cloud_environment,
             cloud_deployment::cloud_deployment_action,
             cloud_deployment::delete_cloud_deployment,
             neocloud::neocloud_providers,
@@ -725,7 +750,6 @@ pub fn run() {
             neocloud::accounts::neocloud_forget_account,
             neocloud::catalog::neocloud_catalog,
             neocloud::neocloud_discover,
-            neocloud::neocloud_prices,
             neocloud::neocloud_plan,
             neocloud::create_neocloud_environment,
             neocloud::neocloud_action,
@@ -734,7 +758,6 @@ pub fn run() {
             neocloud::runpod::runpod_connect,
             neocloud::runpod::runpod_disconnect,
             neocloud::runpod::runpod_catalog,
-            neocloud::runpod::runpod_gpu_offers,
             neocloud::runpod::runpod_template,
             neocloud::runpod::runpod_search_templates,
             neocloud::runpod::runpod_hub,
@@ -749,8 +772,6 @@ pub fn run() {
             neocloud::runpod::runpod_attach,
             neocloud::runpod::runpod_volume,
             neocloud::runpod::runpod_registry,
-            isolated_cli::open_isolated_cli,
-            isolated_cli::grant_isolated_cli_environment,
             commands::cloud::configure_cloud_environment,
             commands::refresh_host_metrics,
             local_backup::export_local_backup,
@@ -761,15 +782,8 @@ pub fn run() {
             duplication::cleanup_environment_duplication,
             commands::get_guest_session,
             commands::execute_environment_command,
-            guest_execution::execute_guest_job,
-            guest_execution::guest_execution_output,
-            guest_execution::cancel_guest_execution,
-            guest_execution::release_guest_execution,
             file_import::cancel_file_transfer,
             lifecycle::patch_settings,
-            lifecycle::get_settings_snapshot,
-            lifecycle::get_startup_report,
-            lifecycle::recover_environment_runtime_report,
             projects::deployment_status,
             projects::secrets::set_deployment_secret,
             projects::secrets::delete_deployment_secret,
@@ -778,14 +792,11 @@ pub fn run() {
             model_runner::huggingface::model_huggingface_status,
             projects::readiness::get_environment_health_check,
             projects::readiness::set_environment_health_check,
-            workspace::publication_preflight,
             workspace::host_share_credentials,
-            workspace::get_environment_log_window,
             commands::execute_connected_command,
             commands::list_environment_folders,
             commands::request_connected_files,
             commands::workloads::get_environment_logs,
-            commands::workloads::manage_oci_images,
             commands::read_environment_console,
             workspace::terminal_action,
             workspace::installers::prepare_terminal_installer,
@@ -818,8 +829,11 @@ pub fn run() {
             workspace::open_service_window,
             guest_keyboard::set_guest_keyboard_capture,
         ])
-        .build(context)
-        .expect("error while building Yougori");
+        .build(context);
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => startup_failed(None, headless, &error.to_string()),
+    };
     app.run(|app_handle, event| {
         if let tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. } = &event {
             if label == "main" {

@@ -19,6 +19,11 @@ use subtle::ConstantTimeEq;
 
 const SCOPE: &str = "vault:requests";
 const MONTH: i64 = 30 * 86400;
+/// A rotated refresh token is remembered this long to detect replay.
+const REUSE_WINDOW: i64 = 86400;
+/// Per-grant retention keeps busy connectors from filling the token store.
+const ACCESS_PER_GRANT: usize = 4;
+const USED_REFRESH_PER_GRANT: usize = 8;
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -55,6 +60,10 @@ struct Token {
     grant: String,
     expires: i64,
     used: bool,
+    #[serde(default)]
+    issued: i64,
+    #[serde(default)]
+    used_at: i64,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Database {
@@ -78,7 +87,10 @@ pub(super) struct OAuth {
     pending: BTreeMap<String, Authorization>,
     codes: BTreeMap<String, Authorization>,
     path: Option<std::path::PathBuf>,
-    rate: (i64, usize),
+    /// Unauthenticated registration and sign-in attempts.
+    signin: (i64, usize),
+    /// Failed token requests; valid exchanges and refreshes are never throttled.
+    token_failures: (i64, usize),
 }
 impl Default for OAuth {
     fn default() -> Self {
@@ -88,9 +100,18 @@ impl Default for OAuth {
             pending: BTreeMap::new(),
             codes: BTreeMap::new(),
             path: None,
-            rate: (0, 0),
+            signin: (0, 0),
+            token_failures: (0, 0),
         }
     }
+}
+fn within(bucket: &mut (i64, usize), limit: usize) -> bool {
+    let time = now();
+    if time - bucket.0 >= 60 {
+        *bucket = (time, 0);
+    }
+    bucket.1 += 1;
+    bucket.1 <= limit
 }
 impl OAuth {
     pub(super) fn configured(&self) -> bool {
@@ -162,22 +183,22 @@ impl OAuth {
         self.db
             .access
             .retain(|_, t| t.expires > time && self.db.grants.contains_key(&t.grant));
-        self.db
-            .refresh
-            .retain(|_, t| t.expires > time && self.db.grants.contains_key(&t.grant));
+        self.db.refresh.retain(|_, t| {
+            t.expires > time
+                && self.db.grants.contains_key(&t.grant)
+                && !(t.used && time - t.used_at > REUSE_WINDOW)
+        });
         self.db
             .clients
             .retain(|id, c| c.expires > time || self.db.grants.values().any(|g| &g.client == id));
         self.pending.retain(|_, a| a.expires > time);
         self.codes.retain(|_, a| a.expires > time);
     }
-    fn rate(&mut self) -> bool {
-        let time = now();
-        if time - self.rate.0 >= 60 {
-            self.rate = (time, 0);
-        }
-        self.rate.1 += 1;
-        self.rate.1 <= 60
+    fn signin_rate(&mut self) -> bool {
+        within(&mut self.signin, 60)
+    }
+    fn token_failure(&mut self) -> bool {
+        within(&mut self.token_failures, 60)
     }
     pub(super) fn principal(&self, token: &str) -> Option<Identity> {
         let t = self.db.access.get(&hash(token))?;
@@ -307,7 +328,7 @@ async fn register(State(state): State<HttpState>, Json(body): Json<Value>) -> Re
             "Public OAuth is offline.",
         );
     }
-    if !oauth.rate() || oauth.db.clients.len() >= 128 {
+    if !oauth.signin_rate() || oauth.db.clients.len() >= 128 {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "temporarily_unavailable",
@@ -447,7 +468,7 @@ async fn authorize(State(state): State<HttpState>, Query(q): Query<AuthQuery>) -
             "Use code with S256 PKCE and the advertised resource and scope.",
         );
     }
-    if !oauth.rate() || oauth.pending.len() >= 16 {
+    if !oauth.signin_rate() || oauth.pending.len() >= 16 {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "temporarily_unavailable",
@@ -558,12 +579,19 @@ async fn consent(
     );
     let session = Arc::new(Session {
         identity: identity(&authorization.client, &client, &context),
+        desktop: false,
         cancelled: Arc::new(AtomicBool::new(false)),
         connected: AtomicBool::new(true),
         allowed: AtomicBool::new(false),
         admission: AtomicU64::new(0),
     });
-    let result = enqueue(Action::Connect, &session, &state.sender, &state.shared).await;
+    // Anyone with the tunnel address can reach this page. Wait for the Desktop
+    // decision outside the single operation worker; only the approved result
+    // is recorded by the worker.
+    let result = match super::connection_decision(&state.shared, &session).await {
+        Ok(()) => enqueue(Action::ApprovedConnect, &session, &state.sender, &state.shared).await,
+        Err(error) => Err(error),
+    };
     session.connected.store(false, Ordering::SeqCst);
     if result.is_err() {
         return redirect(None);
@@ -635,13 +663,39 @@ fn authenticate_client(
     }
     Some(id.into())
 }
-fn issue(oauth: &mut OAuth, grant: &str) -> Result<Value, String> {
-    let expiry = oauth.db.grants.get(grant).ok_or("Grant expired")?.expires;
-    if oauth.db.access.len() >= 512 || oauth.db.refresh.len() >= 4096 {
-        return Err("Token limit reached. Reconnect later.".into());
+/// Removes the oldest tokens selected by `select` beyond `keep`.
+fn evict(tokens: &mut BTreeMap<String, Token>, keep: usize, select: impl Fn(&Token) -> bool) {
+    let mut chosen: Vec<(i64, String)> = tokens
+        .iter()
+        .filter(|(_, t)| select(t))
+        .map(|(id, t)| (t.used_at.max(t.issued), id.clone()))
+        .collect();
+    if chosen.len() <= keep {
+        return;
     }
+    chosen.sort();
+    for (_, id) in chosen.drain(..chosen.len() - keep) {
+        tokens.remove(&id);
+    }
+}
+/// Issues an access/refresh pair. `rotated` is the hash of the refresh token
+/// being exchanged; it is marked used only if the new pair is saved. Store
+/// limits evict the oldest superseded tokens; they never revoke a grant.
+fn issue(oauth: &mut OAuth, grant: &str, rotated: Option<&str>) -> Result<Value, String> {
+    let expiry = oauth.db.grants.get(grant).ok_or("Grant expired")?.expires;
+    let time = now();
+    evict(&mut oauth.db.access, ACCESS_PER_GRANT - 1, |t| t.grant == grant);
+    evict(&mut oauth.db.access, 511, |_| true);
+    evict(&mut oauth.db.refresh, USED_REFRESH_PER_GRANT - 1, |t| t.grant == grant && t.used);
+    evict(&mut oauth.db.refresh, 4095, |t| t.used);
     let access = random();
     let refresh = random();
+    let previous = rotated.and_then(|hash| {
+        let token = oauth.db.refresh.get_mut(hash)?;
+        let previous = (token.used, token.used_at);
+        (token.used, token.used_at) = (true, time);
+        Some(previous)
+    });
     if let Some(client) = oauth
         .db
         .grants
@@ -654,8 +708,10 @@ fn issue(oauth: &mut OAuth, grant: &str) -> Result<Value, String> {
         hash(&access),
         Token {
             grant: grant.into(),
-            expires: (now() + 3600).min(expiry),
+            expires: (time + 3600).min(expiry),
             used: false,
+            issued: time,
+            used_at: 0,
         },
     );
     oauth.db.refresh.insert(
@@ -664,11 +720,18 @@ fn issue(oauth: &mut OAuth, grant: &str) -> Result<Value, String> {
             grant: grant.into(),
             expires: expiry,
             used: false,
+            issued: time,
+            used_at: 0,
         },
     );
     if let Err(e) = oauth.save() {
         oauth.db.access.remove(&hash(&access));
         oauth.db.refresh.remove(&hash(&refresh));
+        if let (Some(hash), Some((used, used_at))) = (rotated, previous) {
+            if let Some(token) = oauth.db.refresh.get_mut(hash) {
+                (token.used, token.used_at) = (used, used_at);
+            }
+        }
         return Err(e);
     }
     Ok(
@@ -689,14 +752,10 @@ async fn token(
             "Public OAuth is offline.",
         );
     };
-    if !oauth.rate() {
-        return error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "temporarily_unavailable",
-            "Too many requests.",
-        );
-    }
     let Some(client) = authenticate_client(&oauth.db, &headers, &form) else {
+        if !oauth.token_failure() {
+            return error(StatusCode::TOO_MANY_REQUESTS, "temporarily_unavailable", "Too many failed requests.");
+        }
         return error(
             StatusCode::UNAUTHORIZED,
             "invalid_client",
@@ -714,23 +773,27 @@ async fn token(
             "Use the advertised resource and scope.",
         );
     }
-    let invalid = || {
+    let invalid = |oauth: &mut OAuth| {
+        if !oauth.token_failure() {
+            return error(StatusCode::TOO_MANY_REQUESTS, "temporarily_unavailable", "Too many failed requests.");
+        }
         error(StatusCode::BAD_REQUEST,"invalid_grant","Authorization expired, was already used, or does not match this client. Connect again.")
     };
+    let mut rotated = None;
     let grant = match form.get("grant_type").map(String::as_str) {
         Some("authorization_code") => {
             let Some(code) = form.get("code") else {
-                return invalid();
+                return invalid(&mut oauth);
             };
             let Some(a) = oauth.codes.get(&hash(code)) else {
-                return invalid();
+                return invalid(&mut oauth);
             };
             let Some(verifier) = form.get("code_verifier").filter(|v| {
                 (43..=128).contains(&v.len())
                     && v.bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
             }) else {
-                return invalid();
+                return invalid(&mut oauth);
             };
             let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
             if a.client != client
@@ -738,7 +801,7 @@ async fn token(
                 || form.get("redirect_uri") != Some(&a.redirect)
                 || !bool::from(challenge.as_bytes().ct_eq(a.challenge.as_bytes()))
             {
-                return invalid();
+                return invalid(&mut oauth);
             }
             oauth.codes.remove(&hash(code));
             if oauth.db.grants.len() >= 128 {
@@ -761,24 +824,24 @@ async fn token(
         }
         Some("refresh_token") => {
             let Some(refresh) = form.get("refresh_token") else {
-                return invalid();
+                return invalid(&mut oauth);
             };
             let Some(t) = oauth.db.refresh.get(&hash(refresh)).cloned() else {
-                return invalid();
+                return invalid(&mut oauth);
             };
             let Some(g) = oauth.db.grants.get(&t.grant) else {
-                return invalid();
+                return invalid(&mut oauth);
             };
             if g.client != client || g.origin != origin {
-                return invalid();
+                return invalid(&mut oauth);
             }
             if t.used {
                 oauth.db.grants.remove(&t.grant);
                 oauth.prune();
                 let _ = oauth.save();
-                return invalid();
+                return invalid(&mut oauth);
             }
-            oauth.db.refresh.get_mut(&hash(refresh)).unwrap().used = true;
+            rotated = Some(hash(refresh));
             t.grant
         }
         _ => {
@@ -789,16 +852,20 @@ async fn token(
             )
         }
     };
-    match issue(&mut oauth, &grant) {
+    match issue(&mut oauth, &grant, rotated.as_deref()) {
         Ok(value) => secure(Json(value).into_response()),
         Err(_) => {
-            oauth.db.grants.remove(&grant);
-            oauth.prune();
-            let _ = oauth.save();
+            // A failed refresh keeps the grant and its unused token for a retry;
+            // only a new, never-delivered authorization is discarded.
+            if rotated.is_none() {
+                oauth.db.grants.remove(&grant);
+                oauth.prune();
+                let _ = oauth.save();
+            }
             error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
-                "Could not save authorization. Connect again.",
+                "Could not save authorization. Retry, or connect again.",
             )
         }
     }
@@ -855,11 +922,13 @@ mod tests {
         headers.insert("origin", "https://vault.example".parse().unwrap());
         headers.insert("cookie", cookie.parse().unwrap());
         let worker_state = state.clone();
+        // Desktop approves the sign-in prompt, which waits outside the worker.
+        let approval = tokio::spawn(sign_in_prompt(state.clone(), 1));
         // Simulated native worker exists only in this isolated test fixture.
         let worker = tokio::task::spawn_blocking(move || {
             for _ in 0..1 {
                 let job = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-                assert!(matches!(job.action, Action::Connect));
+                assert!(matches!(job.action, Action::ApprovedConnect));
                 assert!(!job.session.allowed.load(Ordering::SeqCst));
                 job.session.allowed.store(true, Ordering::SeqCst);
                 job.session.admission.store(0, Ordering::SeqCst);
@@ -880,6 +949,7 @@ mod tests {
         )
         .await;
         assert_eq!(approved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(approval.await.unwrap()["title"], CONNECT_TITLE);
         assert_eq!(
             approved.headers()["content-security-policy"],
             consent_policy
@@ -1090,7 +1160,7 @@ mod tests {
         // The ordinary test temp directory must fail the production ACL check.
         assert!(oauth.save().is_err());
         oauth.path = None;
-        let tokens = issue(&mut oauth, "grant").unwrap();
+        let tokens = issue(&mut oauth, "grant", None).unwrap();
         let access = tokens["access_token"].as_str().unwrap();
         let bytes = crate::storage::dpapi(&serde_json::to_vec(&oauth.db).unwrap(), true).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("fixture client"));
@@ -1458,22 +1528,110 @@ mod tests {
             )
             .await
         });
-        let job = tokio::task::spawn_blocking(move || {
-            receiver.recv_timeout(Duration::from_secs(3)).unwrap()
-        })
-        .await
-        .unwrap();
-        assert!(matches!(job.action, Action::Connect));
-        assert!(job.session.identity.environment.contains("Sign-in code:"));
+        // Deny in Desktop: nothing reaches the operation worker and no code is minted.
+        let prompt = sign_in_prompt(state.clone(), 2).await;
+        assert!(prompt["client"]["environment"].as_str().unwrap().contains("Sign-in code:"));
         assert!(state.shared.oauth.lock().unwrap().codes.is_empty());
-        // A denial from the native worker must never mint an authorization code.
-        job.response.send(Err("Denied".into())).unwrap();
         let response = task.await.unwrap();
         assert!(response.headers()["location"]
             .to_str()
             .unwrap()
             .contains("error=access_denied"));
+        assert!(receiver.try_recv().is_err());
         assert!(state.shared.oauth.lock().unwrap().codes.is_empty());
+        assert!(state.shared.pending.lock().unwrap().is_empty());
+    }
+    /// Waits for the unauthenticated sign-in prompt, then approves (1) or
+    /// denies (2) it as Desktop would. Returns the prompt shown to the user.
+    async fn sign_in_prompt(state: HttpState, decision: u8) -> Value {
+        for _ in 0..200 {
+            let found = state.shared.pending.lock().unwrap().values().find(|p| p.summary.lock().unwrap()["unauthenticated"] == true).cloned();
+            if let Some(pending) = found {
+                let summary = pending.summary.lock().unwrap().clone();
+                assert_eq!(summary["ready"], true);
+                if decision == 1 {
+                    pending.decision.store(1, Ordering::SeqCst);
+                } else {
+                    pending.cancel.store(true, Ordering::SeqCst);
+                }
+                return summary;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("No sign-in prompt was shown");
+    }
+    async fn sign_in_form(state: &HttpState, id: &str) -> (HeaderMap, String) {
+        let response = authorize(
+            State(state.clone()),
+            Query(AuthQuery {
+                client_id: id.into(),
+                redirect_uri: "https://client.example/callback".into(),
+                response_type: "code".into(),
+                code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+                code_challenge_method: "S256".into(),
+                state: "client-state".into(),
+                scope: None,
+                resource: None,
+            }),
+        )
+        .await;
+        let cookie = response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        let body = String::from_utf8(axum::body::to_bytes(response.into_body(), 20000).await.unwrap().to_vec()).unwrap();
+        let ticket = body.split("name=\"ticket\" value=\"").nth(1).unwrap().split('"').next().unwrap().to_owned();
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://vault.example".parse().unwrap());
+        headers.insert("cookie", cookie.parse().unwrap());
+        (headers, ticket)
+    }
+    #[tokio::test]
+    async fn waiting_sign_ins_never_occupy_the_worker_and_wait_one_at_a_time() {
+        let (state, receiver) = fixture();
+        let client = fixture_client(&state, "none").await;
+        let id = client["client_id"].as_str().unwrap().to_owned();
+        let (headers, ticket) = sign_in_form(&state, &id).await;
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            consent(State(first_state), headers, Form(Consent { ticket, decision: "continue".into() })).await
+        });
+        for _ in 0..200 {
+            if !state.shared.pending.lock().unwrap().is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The waiting prompt holds no operation-worker job: agents keep working.
+        assert!(receiver.try_recv().is_err());
+        // A second anonymous sign-in cannot queue behind it.
+        let (headers, ticket) = sign_in_form(&state, &id).await;
+        let second = consent(State(state.clone()), headers, Form(Consent { ticket, decision: "continue".into() })).await;
+        assert!(second.headers()["location"].to_str().unwrap().contains("error=access_denied"));
+        assert_eq!(state.shared.pending.lock().unwrap().len(), 1);
+        // Windows lock or vault lock (a generation change) ends the wait.
+        state.shared.lock();
+        assert!(first.await.unwrap().headers()["location"].to_str().unwrap().contains("error=access_denied"));
+        assert!(receiver.try_recv().is_err());
+        assert!(state.shared.pending.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn refresh_rotation_evicts_superseded_tokens_and_never_revokes_live_grants() {
+        let mut oauth = OAuth::default();
+        oauth.set_origin(Some("https://vault.example".into())).unwrap();
+        oauth.db.clients.insert("fixture".into(), Client { name: "fixture".into(), redirects: vec![], method: "none".into(), secret: None, expires: now() + MONTH });
+        oauth.db.grants.insert("grant".into(), Grant { client: "fixture".into(), origin: "https://vault.example".into(), expires: now() + MONTH });
+        let mut refresh = issue(&mut oauth, "grant", None).unwrap()["refresh_token"].as_str().unwrap().to_owned();
+        for _ in 0..600 {
+            let next = issue(&mut oauth, "grant", Some(&hash(&refresh))).unwrap();
+            refresh = next["refresh_token"].as_str().unwrap().to_owned();
+            assert!(oauth.principal(next["access_token"].as_str().unwrap()).is_some());
+        }
+        assert!(oauth.db.grants.contains_key("grant"));
+        assert!(oauth.db.access.len() <= ACCESS_PER_GRANT);
+        assert!(oauth.db.refresh.values().filter(|t| t.used).count() <= USED_REFRESH_PER_GRANT);
+        assert_eq!(oauth.db.refresh.values().filter(|t| !t.used).count(), 1);
+        // Recently rotated tokens are still recognized as replays; old ones expire.
+        for token in oauth.db.refresh.values_mut().filter(|t| t.used) {
+            token.used_at = now() - REUSE_WINDOW - 1;
+        }
+        oauth.prune();
+        assert_eq!(oauth.db.refresh.len(), 1);
     }
     #[tokio::test]
     async fn expired_tokens_origin_changes_and_registration_validation_fail_closed() {

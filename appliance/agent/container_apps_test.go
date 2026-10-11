@@ -45,12 +45,12 @@ func TestContainerRunningIsRequiredBeforeApps(t *testing.T) {
 }
 
 func TestContainerDisplayScriptStaysInsideItsNamespace(t *testing.T) {
-	script := containerDisplayScript("/var/lib/opendock/app-displays/env-a", "/tmp/opendock-app-1/display.sock", "/home/opendock-apps", 21, []string{"/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--clear-groups", "--"})
+	script := containerDisplayScript("/var/lib/yougori/app-displays/env-a", "/tmp/yougori-app-1/display.sock", "/home/yougori-apps", 21, []string{"/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--clear-groups", "--"})
 	for _, fragment := range []string{
-		"mount --bind '/var/lib/opendock/app-displays/env-a' /tmp/.X11-unix",
-		"export HOME='/home/opendock-apps'",
+		"mount --bind '/var/lib/yougori/app-displays/env-a' /tmp/.X11-unix",
+		"export HOME='/home/yougori-apps'",
 		"'/usr/bin/setpriv' '--reuid=1000' '--regid=1000' '--clear-groups' '--' Xvnc :21",
-		"-rfbunixpath '/tmp/opendock-app-1/display.sock'",
+		"-rfbunixpath '/tmp/yougori-app-1/display.sock'",
 		"-nolisten tcp",
 		"[ ! -S /tmp/.X11-unix/X21 ]",
 		"DISPLAY=:21",
@@ -65,7 +65,7 @@ func TestContainerDisplayScriptStaysInsideItsNamespace(t *testing.T) {
 	if !strings.Contains(script, "-rfbport -1") {
 		t.Fatal("display must not open a VNC port", script)
 	}
-	quoted := containerDisplayScript("/var/lib/opendock/app-displays/env-a'; touch /tmp/pwned; '", "/tmp/s", "/home/opendock-apps", 22, []string{"su-exec", "1000:1000"})
+	quoted := containerDisplayScript("/var/lib/yougori/app-displays/env-a'; touch /tmp/pwned; '", "/tmp/s", "/home/yougori-apps", 22, []string{"su-exec", "1000:1000"})
 	if strings.Contains(quoted, "; touch /tmp/pwned;") && !strings.Contains(quoted, `'\''`) {
 		t.Fatal("directory was not quoted", quoted)
 	}
@@ -74,7 +74,7 @@ func TestContainerDisplayScriptStaysInsideItsNamespace(t *testing.T) {
 func TestContainerAppRunsInsideTheContainer(t *testing.T) {
 	args := containerAppArguments("env-a", 21, "xterm -title demo")
 	joined := strings.Join(args, " ")
-	for _, fragment := range []string{"--namespace opendock exec", "--env DISPLAY=:21", "env-a /bin/sh -lc xterm -title demo"} {
+	for _, fragment := range []string{"--namespace " + namespace + " exec", "--env DISPLAY=:21", "env-a /bin/sh -lc xterm -title demo"} {
 		if !strings.Contains(joined, fragment) {
 			t.Fatalf("missing %q in %q", fragment, joined)
 		}

@@ -97,6 +97,7 @@ pub(super) async fn run(model:String,port:Option<u16>,resources:ModelResources,q
     if check["localCode"]==true {environment["YOUGORI_LOCAL_CODE"]=json!("1");}
     if gguf{environment["YOUGORI_MODEL_FORMAT"]=json!("gguf");environment["YOUGORI_MODEL_QUANT"]=check["quant"].clone();environment["YOUGORI_MODEL_FILES"]=json!(check["files"].to_string());}
     let mut protected=json!({"YOUGORI_MODEL_TOKEN":reference});
+    protected[super::ADMIN_TOKEN]=json!(super::admin_reference()?);
     if !source_only {super::optimizer::environment(&mut environment,&mut protected)?;}
     let name=yougori_cli::public::model_environment_name(&model,state.environments.iter().map(|e|e.name.as_str()));let range=|n:f64|json!({"min":n,"preferred":n,"max":n});
     let mut result=crate::projects::run_workload(json!({"name":name,"kind":"container","provider":if source_only{"yougoriOci"}else{"yougoriCuda"},"autoSetupCuda":!source_only,"runtime":if gguf||source_only{LLAMA_CPP_IMAGE}else{TRANSFORMERS_IMAGE},"containerCommand":server_command(),"gpuAccess":!source_only,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"binds":[{"source":check["localFolder"],"target":"/yougori-model","readOnly":true}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()}),true,app).await?;

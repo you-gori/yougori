@@ -43,20 +43,27 @@ pub(crate) async fn run_transfer(provider:&str,args:&[String])->Result<String,St
 pub(crate) async fn run_with_timeout(provider:&str,args:&[String],seconds:u64)->Result<String,String>{
     #[cfg(test)]
     if let Ok(result) = crate::duplication::TEST_CLI.try_with(|handler| (handler.borrow_mut())(provider, args)) { return result; }
-    let program=cli(provider)?;
     // Windows Azure/gcloud installations use .cmd launchers. Rust's process API
     // quotes their argument arrays; user values are additionally restricted above.
-    #[cfg(windows)]let program={use std::os::windows::process::CommandExt;let result=std::process::Command::new("where.exe").creation_flags(0x08000000).arg(program).output().map_err(|e|e.to_string())?;String::from_utf8_lossy(&result.stdout).lines().find(|s|windows_launcher(std::path::Path::new(s))).ok_or_else(||format!("Install the official {provider} CLI and restart Yougori"))?.to_owned()};
+    let program=installed_cli(cli(provider)?,std::env::var_os("PATH")).ok_or_else(||format!("Install the official {provider} CLI and restart Yougori"))?;
     let mut command=tokio::process::Command::new(program);command.args(args).env("AWS_PAGER","").env("AZURE_CORE_COLLECT_TELEMETRY","0").env("CLOUDSDK_CORE_DISABLE_PROMPTS","1").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]command.creation_flags(0x08000000);
     let mut child=command.spawn().map_err(|e|format!("Install the official {provider} CLI and restart Yougori: {e}"))?;let stdout=child.stdout.take().unwrap();let stderr=child.stderr.take().unwrap();
     let result=tokio::time::timeout(Duration::from_secs(seconds),async{tokio::try_join!(output(stdout),output(stderr),async{child.wait().await.map_err(|e|e.to_string())})}).await.map_err(|_|"Cloud operation timed out; inspect the recorded deployment before retrying".to_string()).and_then(|r|r);
     if result.is_err(){let _=child.kill().await;let _=child.wait().await;}let(out,err,status)=result?;if !status.success(){return Err(format!("{provider} CLI: {}",String::from_utf8_lossy(&err)))}Ok(String::from_utf8_lossy(&out).into_owned())
 }
-/// `where` also lists the Cloud SDK's and Azure CLI's extensionless shell scripts, which
-/// Windows cannot start; only real executables and batch launchers qualify.
-#[cfg_attr(not(windows),allow(dead_code))]
-fn windows_launcher(path:&std::path::Path)->bool{path.is_file()&&path.extension().and_then(|e|e.to_str()).is_some_and(|e|["exe","cmd","bat","com"].iter().any(|x|e.eq_ignore_ascii_case(x)))}
+/// Provider CLIs come only from absolute PATH folders. `where.exe` and shell lookup
+/// try the current folder first, and an engine started by the CLI inherits the
+/// user's project folder, where a planted `gcloud.cmd` would otherwise run.
+fn installed_cli(program:&str,path:Option<std::ffi::OsString>)->Option<std::path::PathBuf>{
+    for directory in std::env::split_paths(&path?).filter(|directory|directory.is_absolute()){
+        // The Cloud SDK and Azure CLI also ship extensionless shell scripts, which
+        // Windows cannot start; only real executables and batch launchers qualify.
+        #[cfg(windows)]for extension in ["com","exe","bat","cmd"]{let candidate=directory.join(format!("{program}.{extension}"));if candidate.is_file(){return Some(candidate)}}
+        #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;let candidate=directory.join(program);if candidate.metadata().is_ok_and(|m|m.is_file()&&m.permissions().mode()&0o111!=0){return Some(candidate)}}
+    }
+    None
+}
 pub(crate) fn strings(values:&[&str])->Vec<String>{values.iter().map(|s|s.to_string()).collect()}
 pub(crate) fn common(d:&Deployment)->Vec<String>{match d.provider.as_str(){"aws"=>strings(&["--profile",&d.account,"--region",&d.region,"--output","json"]),"azure"=>strings(&["--subscription",&d.account,"--output","json","--only-show-errors"]),_=>strings(&["--project",&d.account,"--zone",&d.region,"--format=json","--quiet"])}}
 
@@ -166,7 +173,17 @@ pub async fn delete_cloud_deployment(environment_id:String,confirmation:String,s
 
 #[cfg(test)]mod tests{
     use super::*;
-    #[test]fn only_runnable_windows_launchers_are_chosen(){let dir=tempfile::tempdir().unwrap();for name in["gcloud","gcloud.cmd","aws.EXE"]{std::fs::write(dir.path().join(name),b"x").unwrap();}assert!(!windows_launcher(&dir.path().join("gcloud")));assert!(windows_launcher(&dir.path().join("gcloud.cmd")));assert!(windows_launcher(&dir.path().join("aws.EXE")));assert!(!windows_launcher(&dir.path().join("missing.cmd")));}
+    #[test]fn provider_clis_resolve_only_from_absolute_path_folders(){
+        let installed=tempfile::tempdir().unwrap();let project=tempfile::tempdir().unwrap();
+        let name=if cfg!(windows){"gcloud.cmd"}else{"gcloud"};
+        for folder in [installed.path(),project.path()]{std::fs::write(folder.join(name),b"x").unwrap();std::fs::write(folder.join("gcloud-script"),b"x").unwrap();
+            #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(folder.join(name),std::fs::Permissions::from_mode(0o755)).unwrap();}}
+        // Relative and empty PATH entries resolve against the current (project) folder.
+        let path=std::env::join_paths([std::path::PathBuf::from("."),std::path::PathBuf::new(),std::path::PathBuf::from("node_modules/.bin"),installed.path().to_owned()]).unwrap();
+        assert_eq!(installed_cli("gcloud",Some(path)).unwrap(),installed.path().join(name));
+        assert!(installed_cli("gcloud",Some(std::env::join_paths([project.path().join("missing")]).unwrap())).is_none());
+        #[cfg(windows)]{std::fs::write(installed.path().join("az"),b"x").unwrap();assert!(installed_cli("az",Some(installed.path().as_os_str().to_owned())).is_none(),"extensionless scripts cannot start on Windows");}
+    }
     #[test]fn provider_plans_never_open_firewalls_or_accept_shell_options(){let request=DeployRequest{provider:"aws".into(),account:"production".into(),region:"eu-west-1".into(),name:"website".into(),image:"ami-123456".into(),machine_type:"t3.small".into(),subnet:"subnet-123".into(),security_group:"sg-123".into(),key_pair:"yougori".into(),resource_group:String::new(),ssh_public_key:String::new(),image_project:String::new(),container_image:String::new(),username:"ubuntu".into()};assert!(validate(&request).is_ok());let d=Deployment{provider:"aws".into(),account:request.account.clone(),region:request.region.clone(),resource_group:String::new(),name:"website-abc".into(),resource_id:String::new(),state:String::new(),address:String::new(),username:"ubuntu".into(),request_id:"request-id".into(),last_error:None};let plan=create_plan(&request,&d,None).unwrap();assert!(plan.windows(2).any(|p|p==["--client-token","request-id"]));assert!(!plan.iter().any(|p|p.contains("authorize-security-group")));let mut bad=request;bad.image="ami-x;curl bad".into();assert!(validate(&bad).is_err());assert!(action_plan(&d,"destroy").is_err());assert!(action_plan(&d,"start").is_err());assert!(action_plan(&d,"inspect").unwrap().iter().any(|p|p.contains("client-token")));}
 }
 

@@ -33,7 +33,7 @@ func TestInternetCNIUsesDedicatedIPv4Uplink(t *testing.T) {
 	if err := json.Unmarshal([]byte(internetCNI), &config); err != nil {
 		t.Fatal(err)
 	}
-	if config.Name != "opendock-internet" || config.Bridge != "odinet0" || !config.Gateway || !config.Masquerade || config.IPAM.Subnet != "10.90.0.0/16" {
+	if config.Name != internetNetworkName || config.Bridge != "odinet0" || !config.Gateway || !config.Masquerade || config.IPAM.Subnet != "10.90.0.0/16" {
 		t.Fatalf("unexpected uplink config: %+v", config)
 	}
 }
@@ -77,7 +77,7 @@ esac
 	if strings.Count(commands, "ip link set dev veth-managed down\n") != 2 || !strings.Contains(commands, "ip link set dev veth-managed up\n") {
 		t.Fatalf("wrong cable changes: %s", commands)
 	}
-	for _, forbidden := range []string{"nerdctl --namespace opendock stop", "nerdctl --namespace opendock restart", "ip link set dev eth0", "ip link del"} {
+	for _, forbidden := range []string{"nerdctl --namespace yougori stop", "nerdctl --namespace yougori restart", "ip link set dev eth0", "ip link del"} {
 		if strings.Contains(commands, forbidden) {
 			t.Fatalf("unexpected destructive command: %s", forbidden)
 		}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +20,11 @@ import (
 const asyncOutputLimit = 512 * 1024
 const asyncReadLimit = 64 * 1024
 const asyncMaxSessions = 32
+
+// Finished executions stay readable for a while, but never block new work:
+// only running ones count toward asyncMaxSessions, and the oldest finished
+// ones make room once this many are retained.
+const asyncMaxRetained = 64
 const asyncLease = 90 * time.Second
 
 type execRing struct {
@@ -107,6 +113,38 @@ func (s *server) asyncManager() *asyncManager {
 	manager, _ := asyncManagers.LoadOrStore(s, &asyncManager{entries: make(map[string]*asyncExecution)})
 	return manager.(*asyncManager)
 }
+
+// admit reports whether another execution may start, evicting the oldest
+// finished executions when too many are retained. Call with manager.mu held.
+func (manager *asyncManager) admit() bool {
+	running := 0
+	var finished []*asyncExecution
+	for _, item := range manager.entries {
+		item.mu.Lock()
+		if item.done {
+			finished = append(finished, item)
+		} else {
+			running++
+		}
+		item.mu.Unlock()
+	}
+	if running >= asyncMaxSessions {
+		return false
+	}
+	sort.Slice(finished, func(a, b int) bool { return finished[a].completedAt().Before(finished[b].completedAt()) })
+	for len(manager.entries) >= asyncMaxRetained && len(finished) > 0 {
+		delete(manager.entries, finished[0].execution)
+		finished = finished[1:]
+	}
+	return len(manager.entries) < asyncMaxRetained
+}
+
+func (item *asyncExecution) completedAt() time.Time {
+	item.mu.Lock()
+	defer item.mu.Unlock()
+	return item.completed
+}
+
 func (s *server) registerAsyncExecRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/exec/start", s.auth(method(http.MethodPost, s.asyncExecStart)))
 	mux.HandleFunc("/v1/exec/read", s.auth(method(http.MethodPost, s.asyncExecRead)))
@@ -152,9 +190,9 @@ func (s *server) asyncExecStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "execution ID already exists; inspect it instead of repeating a command")
 		return
 	}
-	if len(manager.entries) >= asyncMaxSessions {
+	if !manager.admit() {
 		manager.mu.Unlock()
-		writeError(w, 429, "execution capacity reached; release completed executions")
+		writeError(w, 429, "execution capacity reached; wait for or cancel running executions")
 		return
 	}
 	item, err := s.startAsyncCommand(request)

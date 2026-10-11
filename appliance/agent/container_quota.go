@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -82,7 +83,7 @@ func kernelProjectQuota(device string, project uint32, limit *uint64) (diskQuota
 	return quota, nil
 }
 
-func fileProject(path string, requested *uint32, directory bool) (uint32, error) {
+func fileProject(path string, requested *uint32, directory, reassign bool) (uint32, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return 0, err
@@ -94,7 +95,7 @@ func fileProject(path string, requested *uint32, directory bool) (uint32, error)
 		return 0, errno
 	}
 	if requested != nil {
-		if attrs.Project != 0 && attrs.Project != *requested {
+		if attrs.Project != 0 && attrs.Project != *requested && !reassign {
 			return attrs.Project, errors.New("this storage already belongs to another container")
 		}
 		attrs.Project = *requested
@@ -112,6 +113,10 @@ func fileProject(path string, requested *uint32, directory bool) (uint32, error)
 // Assign directories before reading their children, so new files inherit the
 // project. Initial adoption is allowed only while that container is stopped.
 func assignContainerProject(roots []string, project uint32) error {
+	return assignProject(roots, project, false)
+}
+
+func assignProject(roots []string, project uint32, reassign bool) error {
 	for _, root := range roots {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -120,7 +125,7 @@ func assignContainerProject(roots []string, project uint32) error {
 			if !entry.IsDir() && !entry.Type().IsRegular() {
 				return nil // Never follow a guest symlink or open a FIFO/device.
 			}
-			_, err := fileProject(path, &project, entry.IsDir())
+			_, err := fileProject(path, &project, entry.IsDir(), reassign)
 			return err
 		})
 		if err != nil {
@@ -128,6 +133,30 @@ func assignContainerProject(roots []string, project uint32) error {
 		}
 	}
 	return nil
+}
+
+// Folders a container can write outside its writable layer, such as its app
+// display socket directory and connection shares, belong to the agent rather
+// than to another container. Charge them to the owning environment's project,
+// whatever project a file currently has, so they cannot fill shared storage.
+func chargeOwnedStorage(directory, ownerID string) error {
+	if _, err := os.Lstat(directory); os.IsNotExist(err) {
+		return nil
+	}
+	config, err := loadContainerQuota(ownerID)
+	if os.IsNotExist(err) {
+		return nil // The owner has no individual storage limit yet.
+	}
+	if err != nil {
+		return err
+	}
+	if !config.Complete || config.Retired {
+		return nil
+	}
+	if err := requireContainerStorePath(directory); err != nil {
+		return err
+	}
+	return assignProject([]string{directory}, config.Project, true)
 }
 
 type inspectedStorageContainer struct {
@@ -357,6 +386,13 @@ func configureContainerStorage(ctx context.Context, id string, limit uint64, all
 			if err := writeStorageJSON(filepath.Join(containerQuotaDirectory, id+".json"), config); err != nil {
 				return result, err
 			}
+		}
+	}
+	// Charge the display socket directory while the container cannot write
+	// to it. Existing limits adopt it at their next stopped start.
+	if config.Complete && !container.State.Running && !container.State.Paused {
+		if err := chargeOwnedStorage(containerDisplayDirectory(id), id); err != nil {
+			log.Printf("limit display storage for %s: %v", id, err)
 		}
 	}
 	quota, err := kernelProjectQuota(device, config.Project, nil)

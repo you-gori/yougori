@@ -22,7 +22,7 @@ import { usePlatform } from "@/context/platform-context"
 import { statusLabel } from "@/lib/domain"
 import { environmentLabel } from "@/lib/environment-category"
 import { environmentActionLabel } from "@/lib/environment-actions"
-import { supportsConnections } from "@/lib/environment-connections"
+import { isTunnelShared, supportsConnections } from "@/lib/environment-connections"
 import { cn } from "@/lib/utils"
 import { fitWindowToGuestDisplay } from "@/lib/fit-guest-window"
 import { terminalInstallers, type TerminalReadyHandler, type TerminalInstallerId } from "@/lib/terminal-installers"
@@ -65,7 +65,9 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
   const tabStrip = useRef<HTMLDivElement>(null)
   const activeTab = tabs.find(tab => tab.id === activeId) ?? tabs[0]!
   const activeEnvironment = state?.environments.find(env => env.id === activeTab.environmentId)
-  const cloudSharedFiles = activeEnvironment?.kind === "cloud" && state?.connections.some(connection => connection.active
+  // A shared tunnel is one tab with its own remote views; local views and power do not apply.
+  const remote = isTunnelShared(activeEnvironment)
+  const cloudSharedFiles = !remote && activeEnvironment?.kind === "cloud" && state?.connections.some(connection => connection.active
     && (connection.sourceId === activeEnvironment.id || connection.targetId === activeEnvironment.id)
     && connection.permissions.some(permission => ["data", "files", "volumes"].includes(permission)))
   useEffect(()=>{
@@ -112,6 +114,8 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
     void workspaceApi.windows().then(setWindows).catch(() => setWindowsError("Couldn't load open windows. Close this menu and try again.")).finally(() => setWindowsLoading(false))
   }
   const addTab = (environmentId = activeTab.environmentId) => {
+    const remoteTab = isTunnelShared(state?.environments.find(env => env.id === environmentId)) && tabs.find(tab => tab.environmentId === environmentId)
+    if (remoteTab) { setActiveId(remoteTab.id); return }
     const number = Math.max(0, ...tabs.filter(tab => tab.environmentId === environmentId).map(tab => tab.number)) + 1
     const tab = newTab(environmentId, number); setTabs(current => [...current, tab]); setActiveId(tab.id)
     tourTerminalOpened(environmentId)
@@ -119,6 +123,7 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
   // Files, logs and the service browser open beside terminals and desktops, one
   // tab per view so an environment keeps them all available at once.
   const openView = (view: WorkspaceView, environmentId = activeTab.environmentId) => {
+    if (isTunnelShared(state?.environments.find(env => env.id === environmentId))) return
     const existing = tabs.find(tab => tab.environmentId === environmentId && tab.view === view)
     if (existing) { setActiveId(existing.id); return }
     const number = Math.max(0, ...tabs.filter(tab => tab.environmentId === environmentId).map(tab => tab.number)) + 1
@@ -171,7 +176,7 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
   }
 
   const openAnotherWindow = async () => {
-    if (activeTab.appSessionId) return guestAppsApi.openWindow(activeTab.environmentId, activeTab.appSessionId)
+    if (activeTab.appSessionId && !remote) return guestAppsApi.openWindow(activeTab.environmentId, activeTab.appSessionId)
     prepareTourWindow(activeTab.environmentId)
     try {
       const opened = await openEnvironmentWindow(activeTab.environmentId)
@@ -195,8 +200,6 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
             <p className="px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">Starts automatically in a new terminal tab.</p>
           </MenuPopup>
         </Menu> : null
-
-  if (activeEnvironment?.runtime.startsWith("shared://tunnel/")) return <RemoteWorkspace key={activeEnvironment.id} environment={activeEnvironment} initialAppSessionId={initialAppSessionId} onClose={onClose} />
 
   return <main className={`flex ${embedded?"h-full":"h-screen"} min-h-0 min-w-0 flex-col overflow-hidden bg-background text-foreground`} data-guest-workspace>
     {!compact ? <header className="flex h-11 shrink-0 items-center gap-2.5 border-b bg-muted/40 px-3" data-workspace-toolbar>
@@ -238,20 +241,20 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
         <Menu>
           <MenuTrigger render={<Button type="button" aria-label="Workspace actions" title="Workspace actions" disabled={busy} loading={environmentAction === "stopping"} size="icon-sm" variant="ghost" className="text-muted-foreground" />}><EllipsisIcon aria-hidden="true" /></MenuTrigger>
           <MenuPopup align="end" className="w-56">
-            <MenuGroup>
+            {!remote ? <><MenuGroup>
               <MenuGroupLabel>Open a view</MenuGroupLabel>
               <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("files")}><FileCodeIcon aria-hidden="true" />Files and code editor</MenuItem>
               {cloudSharedFiles ? <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("shared")}><FolderIcon aria-hidden="true" />Shared files</MenuItem> : null}
               <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("logs")}><ScrollTextIcon aria-hidden="true" />Logs</MenuItem>
               <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("browser")}><GlobeIcon aria-hidden="true" />Browser</MenuItem>
             </MenuGroup>
-            <MenuSeparator />
+            <MenuSeparator /></> : null}
             {activeEnvironment?.kind === "fullVm" ? <MenuItem disabled={activeEnvironment.status !== "running" || Boolean(activeTab.appSessionId)} onClick={() => void perform(fitWindowToGuestDisplay)}><Maximize2Icon aria-hidden="true" />Fit window to desktop</MenuItem> : null}
             {activeEnvironment?.kind === "fullVm" ? <><MenuItem onClick={() => setAutoResizeDisplay(value => !value)}><MonitorIcon aria-hidden="true" />{autoResizeDisplay ? "Keep guest resolution" : "Auto-resize guest resolution"}</MenuItem><p className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">{autoResizeDisplay ? "Asks the guest to match the focused window. Requires a compatible guest display driver." : "Keeps the resolution set inside the guest."} The desktop is never stretched or cropped. Bars remain if the guest cannot match the window.</p><p className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">Windows key is captured over the focused guest display; move the pointer out to release it.</p><MenuSeparator /></> : null}
             <MenuItem onClick={onClose}><XIcon aria-hidden="true" />Close window</MenuItem>
-            <MenuSeparator />
+            {!remote ? <><MenuSeparator />
             <MenuItem variant="destructive" disabled={busy || activeEnvironment?.status !== "running"} onClick={() => void perform(() => setEnvironmentStatus(activeTab.environmentId, "stopped"))}><PowerIcon aria-hidden="true" />{activeEnvironment?.kind === "cloud" ? "Disconnect" : "Stop environment"}</MenuItem>
-            <p className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">{activeEnvironment?.kind === "cloud" ? "Disconnect closes these SSH terminals. The cloud server stays on." : "Stopping disconnects all windows using this environment."}</p>
+            <p className="px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">{activeEnvironment?.kind === "cloud" ? "Disconnect closes these SSH terminals. The cloud server stays on." : "Stopping disconnects all windows using this environment."}</p></> : null}
           </MenuPopup>
         </Menu>
       </div>
@@ -262,7 +265,7 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
       <div className="flex h-9 shrink-0 items-center gap-1 border-b bg-muted/20 px-3" data-workspace-tabs>
         <div className="min-w-0 overflow-x-auto [scrollbar-width:thin]" ref={tabStrip}>
           <TabsList aria-label="Environment screens" variant="underline" size="sm" className="h-9 gap-1 data-[orientation=horizontal]:py-0 [&_[data-slot=tab-indicator]]:hidden">
-            {tabs.map(tab => { const env = state?.environments.find(item => item.id === tab.environmentId); const TabIcon = tab.view ? viewIcon[tab.view] : tab.appSessionId || env?.kind === "fullVm" ? MonitorIcon : TerminalIcon; const mode = tab.view ? viewLabel[tab.view] : tab.modelChat ? "Chat" : tab.installer ? `Install ${terminalInstallers.find(tool => tool.id === tab.installer)!.name}` : tab.appSessionId ? "App" : env?.kind === "fullVm" ? "Desktop" : "Terminal"; return <div className={cn("flex h-9 shrink-0 items-center rounded-t-md border-b-2 pr-1", tab.id === activeId ? "border-primary bg-primary/5 text-foreground" : "border-transparent text-muted-foreground hover:bg-accent/60")} key={tab.id}>
+            {tabs.map(tab => { const env = state?.environments.find(item => item.id === tab.environmentId); const shared = isTunnelShared(env); const TabIcon = tab.view ? viewIcon[tab.view] : shared ? GlobeIcon : tab.appSessionId || env?.kind === "fullVm" ? MonitorIcon : TerminalIcon; const mode = tab.view ? viewLabel[tab.view] : shared ? "Shared" : tab.modelChat ? "Chat" : tab.installer ? `Install ${terminalInstallers.find(tool => tool.id === tab.installer)!.name}` : tab.appSessionId ? "App" : env?.kind === "fullVm" ? "Desktop" : "Terminal"; return <div className={cn("flex h-9 shrink-0 items-center rounded-t-md border-b-2 pr-1", tab.id === activeId ? "border-primary bg-primary/5 text-foreground" : "border-transparent text-muted-foreground hover:bg-accent/60")} key={tab.id}>
               <TabsTab value={tab.id} aria-label={`${env?.name ?? "Removed"} · ${mode} ${tab.number}`} title={`${env?.name ?? "Removed"} · ${mode} ${tab.number}`} className="h-7 min-w-0 gap-2 px-2.5 text-xs sm:text-xs"><TabIcon aria-hidden="true" className={cn("size-3.5", tab.id === activeId && "text-primary")} />{!compact ? <><span className="max-w-32 truncate">{env?.name ?? "Removed"}</span><span className="sr-only"> · </span></> : null}<span className="shrink-0 font-normal text-muted-foreground">{mode} {tab.number}</span></TabsTab>
               <Button type="button" aria-label={`Close ${env?.name ?? "removed environment"} tab ${tab.number}`} title="Close tab" onClick={() => closeTab(tab.id)} size="icon-xs" variant="ghost" className="text-muted-foreground hover:text-foreground"><XIcon aria-hidden="true" className="size-3" /></Button>
             </div> })}
@@ -273,7 +276,7 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
           {toolbarActions}
           {activeEnvironment ? <ModelEnvironmentActions key={`model-${activeEnvironment.id}`} environment={activeEnvironment} onChat={openModelChat} /> : null}
           {cloudSharedFiles ? <Button type="button" size="sm" variant="ghost" className="rounded-md text-xs" onClick={() => openView("shared")}><FolderIcon aria-hidden="true" />Shared files</Button> : null}
-          <EnvironmentChanges key={activeTab.environmentId} environmentId={activeTab.environmentId} />
+          {!remote ? <EnvironmentChanges key={activeTab.environmentId} environmentId={activeTab.environmentId} /> : null}
           <ConnectionSkillsDialog environmentId={activeTab.environmentId} renderTrigger={openSkills => <Menu>
             <MenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="CLI actions" title="CLI actions" />}><EllipsisIcon aria-hidden="true" /></MenuTrigger>
             <MenuPopup align="end">
@@ -282,11 +285,11 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
                 <MenuSubTrigger disabled={busy || activeEnvironment?.status !== "running" || (!readyTerminals[activeId] && !activeTab.installer)}><DownloadIcon aria-hidden="true" />Install tools</MenuSubTrigger>
                 <MenuSubPopup>{terminalInstallers.map(tool => <MenuItem key={tool.id} aria-label={`Install ${tool.name}`} onClick={() => startInstaller(tool.id)}>{tool.name}</MenuItem>)}</MenuSubPopup>
               </MenuSub> : null}
-              <MenuSeparator />
+              {!remote ? <><MenuSeparator />
               <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("files")}><FileCodeIcon aria-hidden="true" />Files</MenuItem>
               {cloudSharedFiles ? <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("shared")}><FolderIcon aria-hidden="true" />Shared files</MenuItem> : null}
               <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("logs")}><ScrollTextIcon aria-hidden="true" />Logs</MenuItem>
-              <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("browser")}><GlobeIcon aria-hidden="true" />Browser</MenuItem>
+              <MenuItem disabled={activeEnvironment?.status !== "running"} onClick={() => openView("browser")}><GlobeIcon aria-hidden="true" />Browser</MenuItem></> : null}
               <MenuSeparator />
               <MenuItem onClick={() => void perform(() => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(), "fullscreen")}><Maximize2Icon aria-hidden="true" />{fullscreen ? "Exit fullscreen" : "Fullscreen"}</MenuItem>
               <MenuItem onClick={onClose}><XIcon aria-hidden="true" />Hide CLI</MenuItem>
@@ -295,7 +298,7 @@ export function GuestWorkspace({ initialEnvironmentId, initialAppSessionId, onCl
         </div> : null}
       </div>
       {tabs.map(tab => { const env = state?.environments.find(item => item.id === tab.environmentId); return <TabsPanel className={`min-h-0 overflow-hidden ${tab.id !== activeId ? "hidden!" : ""}`} keepMounted key={tab.id} value={tab.id}>
-        {env?.status === "running" ? (tab.view === "files" ? <GuestFiles environmentId={env.id} active={tab.id === activeId} /> : tab.view === "shared" ? <ConnectedFiles environmentId={env.id} active={tab.id === activeId} /> : tab.view === "logs" ? <GuestLogs environmentId={env.id} active={tab.id === activeId} /> : tab.view === "browser" ? <GuestBrowser environmentId={env.id} active={tab.id === activeId} /> : tab.appSessionId ? <GuestAppView environmentId={env.id} sessionId={tab.appSessionId} active={tab.id === activeId} /> : <GuestScene active={tab.id === activeId} environment={env} terminalSessionId={tab.id} onReady={registerReady} installer={tab.installer} modelChat={tab.modelChat} autoResizeDisplay={autoResizeDisplay} />) : <div className="grid h-full place-items-center overflow-auto p-6"><div className="flex w-full max-w-sm flex-col items-center gap-4 text-center"><div className="flex size-12 items-center justify-center rounded-xl border bg-muted/40 text-muted-foreground"><PowerIcon aria-hidden="true" className="size-5" /></div><div className="flex min-w-0 flex-col gap-2"><h1 className="break-words text-base font-semibold">{env ? env.name : "Environment removed"}</h1><p className="text-sm leading-relaxed text-muted-foreground">{env ? env.kind === "cloud" ? "Disconnected. Connect to resume access to this server." : `${statusLabel[env.status]}. Start this environment to continue your ${env.kind === "fullVm" ? "desktop" : "terminal"} session.` : "This environment is no longer available. Choose another one from the switcher above."}</p></div>{env ? <Button type="button" size="sm" disabled={env.status === "provisioning" || Boolean(environmentActions[env.id])} loading={environmentActions[env.id] === "starting" || environmentActions[env.id] === "connecting"} onClick={() => void perform(() => setEnvironmentStatus(env.id, "running"))}>{env.kind === "cloud" ? "Connect" : <><PlayIcon aria-hidden="true" />Start environment</>}</Button> : null}</div></div>}
+        {env && isTunnelShared(env) ? <RemoteWorkspace key={env.id} environment={env} initialAppSessionId={tab.appSessionId} onClose={() => closeTab(tab.id)} /> : env?.status === "running" ? (tab.view === "files" ? <GuestFiles environmentId={env.id} active={tab.id === activeId} /> : tab.view === "shared" ? <ConnectedFiles environmentId={env.id} active={tab.id === activeId} /> : tab.view === "logs" ? <GuestLogs environmentId={env.id} active={tab.id === activeId} /> : tab.view === "browser" ? <GuestBrowser environmentId={env.id} active={tab.id === activeId} /> : tab.appSessionId ? <GuestAppView environmentId={env.id} sessionId={tab.appSessionId} active={tab.id === activeId} /> : <GuestScene active={tab.id === activeId} environment={env} terminalSessionId={tab.id} onReady={registerReady} installer={tab.installer} modelChat={tab.modelChat} autoResizeDisplay={autoResizeDisplay} />) : <div className="grid h-full place-items-center overflow-auto p-6"><div className="flex w-full max-w-sm flex-col items-center gap-4 text-center"><div className="flex size-12 items-center justify-center rounded-xl border bg-muted/40 text-muted-foreground"><PowerIcon aria-hidden="true" className="size-5" /></div><div className="flex min-w-0 flex-col gap-2"><h1 className="break-words text-base font-semibold">{env ? env.name : "Environment removed"}</h1><p className="text-sm leading-relaxed text-muted-foreground">{env ? env.kind === "cloud" ? "Disconnected. Connect to resume access to this server." : `${statusLabel[env.status]}. Start this environment to continue your ${env.kind === "fullVm" ? "desktop" : "terminal"} session.` : "This environment is no longer available. Choose another one from the switcher above."}</p></div>{env ? <Button type="button" size="sm" disabled={env.status === "provisioning" || Boolean(environmentActions[env.id])} loading={environmentActions[env.id] === "starting" || environmentActions[env.id] === "connecting"} onClick={() => void perform(() => setEnvironmentStatus(env.id, "running"))}>{env.kind === "cloud" ? "Connect" : <><PlayIcon aria-hidden="true" />Start environment</>}</Button> : null}</div></div>}
       </TabsPanel> })}
     </Tabs>
   </main>

@@ -18,6 +18,7 @@ from urllib.error import HTTPError
 
 os.environ["YOUGORI_MODEL"] = "example/test-model"
 os.environ["YOUGORI_MODEL_TOKEN"] = "a" * 64
+os.environ["YOUGORI_MODEL_ADMIN_TOKEN"] = "b" * 64
 spec = importlib.util.spec_from_file_location("model_server", Path(__file__).parents[1] / "src-tauri/src/model_server.py")
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
@@ -536,7 +537,11 @@ class ModelServerTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as denied:
                     urlopen(Request(base + "/v1/usage/reset", data=b"{}"))
                 self.assertEqual(denied.exception.code, 401)
-                urlopen(Request(base + "/v1/usage/reset", data=b"{}", headers=headers)).close()
+                # The shared API key alone cannot reset the owner's usage history.
+                with self.assertRaises(HTTPError) as denied:
+                    urlopen(Request(base + "/v1/usage/reset", data=b"{}", headers=headers))
+                self.assertEqual(denied.exception.code, 403)
+                urlopen(Request(base + "/v1/usage/reset", data=b"{}", headers={**headers, "X-Yougori-Admin": "b" * 64})).close()
                 self.assertEqual(server.load_usage()["totals"]["requests"], 0)
             finally:
                 http.shutdown()
@@ -757,8 +762,9 @@ class FreeListenerTests(unittest.TestCase):
             http=server.Server(("127.0.0.1",0),server.Handler)
             worker=threading.Thread(target=http.serve_forever,daemon=True);worker.start()
             base="http://127.0.0.1:"+str(http.server_port)
-            def request(endpoint, body=None, authorized=True):
+            def request(endpoint, body=None, authorized=True, admin=True):
                 headers={"Authorization":"Bearer "+server.TOKEN} if authorized else {}
+                if authorized and admin: headers["X-Yougori-Admin"]=server.ADMIN_TOKEN
                 return urlopen(Request(base+endpoint,data=json.dumps(body).encode() if body is not None else None,headers=headers),timeout=3)
             try: yield path,request
             finally: http.shutdown();http.server_close();worker.join()
@@ -774,6 +780,11 @@ class FreeListenerTests(unittest.TestCase):
             for config,auth,status in [({"enabled":True,"mode":"free"},False,401),({"enabled":True,"mode":"paid"},True,400),({"enabled":True,"mode":"free","token":"secret"},True,400)]:
                 with self.assertRaises(HTTPError) as error: request("/v1/listen/config",config,auth)
                 self.assertEqual(error.exception.code,status)
+            # An API-key holder cannot claim free sharing to turn on recording.
+            with self.assertRaises(HTTPError) as error: request("/v1/listen/config",{"enabled":True,"mode":"free"},admin=False)
+            self.assertEqual(error.exception.code,403)
+            with patch.object(server,"ADMIN_TOKEN",""), self.assertRaises(HTTPError) as error: request("/v1/listen/config",{"enabled":True,"mode":"free"})
+            self.assertEqual(error.exception.code,403,"A server without an owner credential refuses owner settings")
             request("/v1/listen/config",{"enabled":True,"mode":"free"}).close()
             request("/v1/chat/completions",body).close()
             value=self.records(path)

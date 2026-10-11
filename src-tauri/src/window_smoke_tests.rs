@@ -46,7 +46,7 @@ fn native_guest_windows_render_through_async_ipc() {
     let result = Arc::new(SmokeResult::default());
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = format!(
-        "com.opendock.window-smoke-{}",
+        "com.yougori.window-smoke-{}",
         uuid::Uuid::new_v4().simple()
     );
     context.config_mut().app.windows.clear();

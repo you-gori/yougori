@@ -137,12 +137,23 @@ test("macOS builds require a native matching CLI, no cross-target or universal s
   assert.throws(() => assertMacCli(peFixture("KERNEL32.dll"), "x64"), /Mach-O/)
 })
 
-test("Mac installer is architecture-local, with explicit external QEMU paths", async () => {
+test("Mac installer is architecture-local and bundles QEMU built from pinned sources", async () => {
   const config = JSON.parse(await readFile(new URL("../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8"))
   assert.deepEqual(config.bundle.targets, ["app", "dmg"])
   assert.equal(config.bundle.macOS.minimumSystemVersion, "14.0")
   assert.equal(config.bundle.macOS.hardenedRuntime, true)
-  for (const path of Object.keys(config.bundle.resources)) assert.doesNotMatch(path, /\.exe|\.dll|qemu|runtime\/$|resources\/$/)
+  assert.equal(config.bundle.resources["../build/macos-runtime/qemu/"], "runtime/qemu/")
+  // Never the Windows QEMU folder or the whole resources tree.
+  for (const path of Object.keys(config.bundle.resources)) assert.doesNotMatch(path, /\.exe|\.dll|resources\/runtime\/qemu|resources\/$/)
+  const inputs = JSON.parse(await readFile(new URL("./macos-runtime/inputs.json", import.meta.url), "utf8"))
+  assert.equal(inputs.deploymentTarget, config.bundle.macOS.minimumSystemVersion)
+  assert.equal(inputs.sources.at(-1).name, "qemu")
+  for (const source of inputs.sources) {
+    assert.match(source.url, /^https:\/\//)
+    assert.match(source.sha256, /^[0-9a-f]{64}$/)
+    assert.ok(source.license && source.version, source.name)
+  }
+  // Development builds without a runtime fall back to native Homebrew QEMU.
   assert.equal(macosPaths("arm64").qemu, "/opt/homebrew/opt/qemu/bin/qemu-system-x86_64")
   assert.equal(macosPaths("x64").qemu, "/usr/local/opt/qemu/bin/qemu-system-x86_64")
   assert.throws(() => macosPaths("ia32"), /Supported/)

@@ -60,7 +60,7 @@ func memoryRangesOnline(root string, ranges []memoryRange) (bool, error) {
 // Only the private QEMU appliance owns these memory devices. CUDA's WSL
 // kernel is shared with other distributions and must not be changed here.
 func (s *server) systemCapacity(w http.ResponseWriter, r *http.Request) {
-	if s.microVM || os.Getenv("OPENDOCK_CUDA_MODE") == "1" {
+	if s.microVM || os.Getenv("YOUGORI_CUDA_MODE") == "1" {
 		writeError(w, http.StatusConflict, "live capacity growth is only available for the standard container runtime")
 		return
 	}

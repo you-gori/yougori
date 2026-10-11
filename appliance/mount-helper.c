@@ -95,17 +95,26 @@ static int open_relative_directory(int root, const char *relative, bool create) 
   return -1;
 }
 
-static int make_shared_alias(int root) {
+// Shared folders mount under /yougori/shared. Earlier releases mounted them in another
+// directory and linked this path to it, so replace such a link with the directory.
+// This helper is the only writer of the path.
+static int make_shared_directory(int root) {
   int directory = open_relative_directory(root, "yougori", true);
   if (directory < 0) return -1;
-  const char *target = "/opendock/shared";
-  int result = symlinkat(target, directory, "shared");
-  if (result < 0 && errno == EEXIST) {
-    char existing[128];
-    ssize_t length = readlinkat(directory, "shared", existing, sizeof(existing));
-    result = length == (ssize_t)strlen(target) &&
-             memcmp(existing, target, strlen(target)) == 0 ? 0 : -1;
-    if (result < 0) errno = EEXIST;
+  struct stat status;
+  int result = fstatat(directory, "shared", &status, AT_SYMLINK_NOFOLLOW);
+  if (result == 0 && S_ISLNK(status.st_mode)) {
+    result = unlinkat(directory, "shared", 0);
+  } else if (result < 0 && errno == ENOENT) {
+    result = 0;
+  }
+  if (result == 0 && mkdirat(directory, "shared", 0755) != 0 && errno != EEXIST) result = -1;
+  if (result == 0) {
+    result = fstatat(directory, "shared", &status, AT_SYMLINK_NOFOLLOW);
+    if (result == 0 && !S_ISDIR(status.st_mode)) {
+      errno = ENOTDIR;
+      result = -1;
+    }
   }
   int saved_errno = errno;
   close(directory);
@@ -117,7 +126,7 @@ int main(int argc, char **argv) {
   bool unmount_only = argc == 4 && strcmp(argv[2], "--unmount") == 0;
   bool shared_alias = argc == 3 && strcmp(argv[2], "--shared-alias") == 0;
   if (argc != 5 && !unmount_only && !shared_alias) {
-    fprintf(stderr, "usage: opendock-mount-helper <pid> <source> <destination> <read-only>\n");
+    fprintf(stderr, "usage: yougori-mount-helper <pid> <source> <destination> <read-only>\n");
     return 2;
   }
   char *end = NULL;
@@ -130,10 +139,10 @@ int main(int argc, char **argv) {
   const char *source = argv[2];
   const char *destination = shared_alias ? "/yougori/shared" : argv[3];
   bool read_only = !unmount_only && !shared_alias && strcmp(argv[4], "true") == 0;
-  if (!shared_alias && ((!unmount_only && !starts_with(source, "/var/lib/opendock/shares/") &&
-       !starts_with(source, "/var/lib/opendock/secrets/")) ||
-      (!starts_with(destination, "/opendock/shared/") &&
-       !starts_with(destination, "/opendock/secrets/")) ||
+  if (!shared_alias && ((!unmount_only && !starts_with(source, "/var/lib/yougori/shares/") &&
+       !starts_with(source, "/var/lib/yougori/secrets/")) ||
+      (!starts_with(destination, "/yougori/shared/") &&
+       !starts_with(destination, "/yougori/secrets/")) ||
       strstr(source, "..") != NULL || strstr(destination, "..") != NULL)) {
     fprintf(stderr, "mount path is outside the Yougori share roots\n");
     return 2;
@@ -156,7 +165,7 @@ int main(int argc, char **argv) {
   if (root < 0 && unmount_only && errno == ENOENT) { close(process); return 0; }
   if (root < 0) fail("open environment root");
   if (shared_alias) {
-    if (make_shared_alias(root) != 0) fail("create shared folder alias");
+    if (make_shared_directory(root) != 0) fail("create shared folder directory");
     close(root);
     close(process);
     return 0;

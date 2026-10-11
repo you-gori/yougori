@@ -34,14 +34,20 @@ pub(crate) async fn run_neocloud_model(model: String, environment_id: String, po
     options.environment.insert("YOUGORI_MODEL_REVISION".into(),compatibility["revision"].as_str().unwrap_or("").into());
     let format=if compatibility["runner"]=="yougori-vllm" {"vllm"} else {"safetensors"};
     options.environment.insert("YOUGORI_MODEL_FORMAT".into(),format.into());
-    let hf_token = super::huggingface::token();
+    super::ensure_admin_token(&mut options)?;
+    let admin = crate::projects::secrets::variable(&options, super::ADMIN_TOKEN)?;
+    // The rented pod keeps its configuration on the provider's disk. Public repositories download
+    // without the account token; only gated or private ones receive it.
+    let hf_token = super::huggingface::token().filter(|_| compatibility["hubTokenRequired"] != false);
     if let Some(value) = &hf_token {
         crate::projects::secrets::store(super::huggingface::TOKEN_REFERENCE, value)?;
         options.secret_environment.insert("HF_TOKEN".into(), super::huggingface::TOKEN_REFERENCE.into());
+    } else if options.secret_environment.get("HF_TOKEN").is_some_and(|reference| reference == super::huggingface::TOKEN_REFERENCE) {
+        options.secret_environment.remove("HF_TOKEN");
     }
     runtime.save_workload_options(id, &options)?;
     let result = runtime.cloud.session(&environment_id).await?.request("model/run",
-        json!({"model":model,"token":token,"hfToken":hf_token,"revision":compatibility["revision"],"format":format,"source":super::server_source()})).await?;
+        json!({"model":model,"token":token,"adminToken":admin,"hfToken":hf_token,"revision":compatibility["revision"],"format":format,"source":super::server_source()})).await?;
     options.environment.insert("YOUGORI_MODEL".into(), model.clone());
     runtime.save_workload_options(id, &options)?;
     store.mutate(|state| {

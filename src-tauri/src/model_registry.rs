@@ -96,7 +96,12 @@ fn private_directory(path: &Path) -> Result<(),String> {
 }
 
 #[tauri::command]
-pub async fn model_registry_upload(model_id: String, folder: String, label: String, quant: Option<String>, resume: Option<String>, app: AppHandle) -> Result<Value, String> {
+pub async fn model_registry_upload(model_id: String, folder: String, label: String, quant: Option<String>, resume: Option<String>, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
+    // Uploading reads a raw host folder: dashboard or same-user CLI only.
+    crate::host_terminal::require_dashboard(window.label())?;
+    upload_model_folder(model_id, folder, label, quant, resume, app).await
+}
+pub(crate) async fn upload_model_folder(model_id: String, folder: String, label: String, quant: Option<String>, resume: Option<String>, app: AppHandle) -> Result<Value, String> {
     let _guard = TRANSFER.try_lock().map_err(|_| "Another model transfer is in progress")?;
     PAUSE.store(false,Ordering::Relaxed);
     let folder = PathBuf::from(folder).canonicalize().map_err(|_| "Choose an existing model folder")?;

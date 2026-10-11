@@ -88,7 +88,7 @@ impl RuntimeManager {
         let output = tokio::time::timeout(
             Duration::from_secs(8),
             command_output(
-                &self.layout.root.join("qemu/opendock-gpu-probe.exe"),
+                &self.layout.root.join("qemu/yougori-gpu-probe.exe"),
                 &[],
                 "Enumerate graphics adapters",
             ),
@@ -120,9 +120,8 @@ impl RuntimeManager {
         let adapters = self.gpu_adapters().await?;
         let mut active = Vec::new();
         let mut busy = false;
-        {
-            let mut guard = self.appliance.lock().await;
-            if let Some(process) = guard.as_mut() {
+        match self.appliance_peek().await {
+            Some(mut guard) => if let Some(process) = guard.as_mut() {
                 if process
                     .child
                     .try_wait()
@@ -135,7 +134,9 @@ impl RuntimeManager {
                         adapter: process.gpu.clone(),
                     });
                 }
-            }
+            },
+            // Starting or resizing; changing the GPU must wait until it settles.
+            None => busy = true,
         }
         for (id, process) in self.vms.lock().await.iter_mut() {
             if process.gpu_enabled
@@ -260,10 +261,10 @@ impl GpuLaunch {
             Err(e) => return Err(format!("Reset GPU verification report: {e}")),
         }
         command
-            .env("OPENDOCK_GPU_REPORT", &self.report_path)
-            .env_remove("OPENDOCK_GPU_LUID");
+            .env("YOUGORI_GPU_REPORT", &self.report_path)
+            .env_remove("YOUGORI_GPU_LUID");
         if let Some(adapter) = &self.selected {
-            command.env("OPENDOCK_GPU_LUID", &adapter.luid);
+            command.env("YOUGORI_GPU_LUID", &adapter.luid);
         }
         Ok(())
     }

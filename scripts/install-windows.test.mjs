@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -33,6 +33,26 @@ test("Windows installer requires valid signatures from its exact publisher", { s
     assert.equal(result.status, expected, result.stderr)
     assert.match(result.stdout, expected ? /Nothing was installed/ : /VERIFIED/)
   }
+})
+
+test("Windows engine installs check every Yougori executable except the hash-checked runtime", { skip: process.platform !== "win32" }, t => {
+  const root = mkdtempSync(join(tmpdir(), 'yougori payloads '))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  for (const name of ['yougori-engine.exe', 'cli/yougori.exe', 'cli/yougori-cli.exe', 'vault/yougori-vault.exe', 'vault/helper.DLL', 'runtime/qemu/qemu-system-x86_64.exe', 'runtime/qemu/libglib.dll', 'LICENSE']) {
+    mkdirSync(join(root, name, '..'), { recursive: true })
+    writeFileSync(join(root, name), 'fixture')
+  }
+  const start = script.indexOf('function Get-SignedPayloads')
+  const fragment = script.slice(start, script.indexOf('function Stop-InstalledEngine', start))
+  const run = extra => spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`$ErrorActionPreference='Stop'; function Fail($message) { [Console]::Out.WriteLine("FAILED: $message"); exit 7 };\n${fragment}\n${extra}\nGet-SignedPayloads $env:FIXTURE_ROOT | ForEach-Object { $_.Substring($env:FIXTURE_ROOT.Length + 1) }`, 'utf16le').toString('base64')], {
+    encoding: 'utf8', windowsHide: true, timeout: 15000, env: { ...process.env, FIXTURE_ROOT: root },
+  })
+  const result = run('')
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(result.stdout.trim().split(/\r?\n/).sort(), ['cli\\yougori-cli.exe', 'cli\\yougori.exe', 'vault\\helper.DLL', 'vault\\yougori-vault.exe', 'yougori-engine.exe'])
+  const linked = run(`New-Item -ItemType Junction -Path (Join-Path $env:FIXTURE_ROOT 'cli\\linked') -Target $env:TEMP | Out-Null`)
+  assert.equal(linked.status, 7, linked.stderr)
+  assert.match(linked.stdout, /contains links\. Nothing was installed/)
 })
 
 for (const mode of ['offline', 'stops', 'refuses', 'timeout']) test(`Windows reinstall handles an engine that ${mode}`, { skip: process.platform !== "win32" }, t => {

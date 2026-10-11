@@ -299,6 +299,9 @@ async fn run_authenticated(
     let wsl = cfg!(windows) && matches!(provider, "latitude" | "nebius");
     let executable = if wsl {
         std::path::PathBuf::from("wsl.exe")
+    } else if provider == "runpod" {
+        // The RunPod key controls the whole account: only Yougori's reviewed copy receives it.
+        install::installed_program(provider).ok_or("Neocloud is not set up on this PC yet. Connect your account to set it up.")?
     } else {
         install::installed_program(provider).unwrap_or_else(|| std::path::PathBuf::from(binary))
     };
@@ -1428,8 +1431,8 @@ async fn provider_resource_absent(deployment: &Deployment) -> Result<bool, Strin
         _ => return Err("Unsupported provider".into()),
     };
     let get_result = run(&deployment.provider, &action_args(deployment, "inspect")?).await;
-    if get_result.is_ok() {
-        return Ok(false);
+    if let Ok(value) = &get_result {
+        return Ok(terminated(deployment, value) || terminated(deployment, &value["pod"]));
     }
     let error = get_result.err().unwrap_or_default().to_ascii_lowercase();
     if !(error.contains("not found") || error.contains("no such") || error.contains("404")) {
@@ -1444,11 +1447,21 @@ async fn provider_resource_absent(deployment: &Deployment) -> Result<bool, Strin
             "The provider did not return a structured resource list to verify deletion".into(),
         );
     }
+    let list = match list {
+        Value::Array(items) => Value::Array(items.into_iter().filter(|item| !terminated(deployment, item)).collect()),
+        other => other,
+    };
     Ok(!listed_resource(
         &list,
         &deployment.resource_id,
         &deployment.provider,
     ))
+}
+
+/// RunPod keeps a terminated pod visible for a while. It no longer bills or exists as a
+/// machine, so deletion is complete.
+fn terminated(deployment: &Deployment, value: &Value) -> bool {
+    deployment.provider == "runpod" && deployment.product != "serverless" && value["desiredStatus"] == "TERMINATED"
 }
 
 async fn serverless_action(

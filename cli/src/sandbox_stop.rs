@@ -1,4 +1,4 @@
-//! Explicit lifecycle choices for terminals owned by a local container owner.
+//! Explicit lifecycle choices for terminals owned by a local container or microVM owner.
 use crate::{cli_ui as ui, public::call};
 use serde_json::{json, Value};
 use std::future::Future;
@@ -19,11 +19,15 @@ fn choice(index: usize) -> Action {
 }
 
 pub(crate) fn is_local_sandbox(env: &Value) -> bool {
-    env["kind"] == "container"
-        && matches!(env["provider"].as_str(), Some("yougoriOci" | "yougoriCuda"))
-        && !env["runtime"].as_str().is_some_and(|runtime| {
-            runtime.starts_with("shared://") || runtime.starts_with("cloud://")
-        })
+    let local = !env["runtime"].as_str().is_some_and(|runtime| {
+        runtime.starts_with("shared://") || runtime.starts_with("cloud://")
+    });
+    local
+        && match env["kind"].as_str() {
+            Some("container") => matches!(env["provider"].as_str(), Some("yougoriOci" | "yougoriCuda")),
+            Some("microVm") => env["provider"] == "qemu",
+            _ => false,
+        }
 }
 
 fn target<'a>(state: &'a Value, id: &str) -> Result<&'a Value, String> {
@@ -209,10 +213,33 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn local_microvm_sandboxes_have_the_same_stop_and_delete_choices() {
+        let microvm = json!({"environments":[{"id":"target","name":"codex","kind":"microVm","provider":"qemu","runtime":"builtin:alpine"}]});
+        assert!(is_local_sandbox(&microvm["environments"][0]));
+        for (action, expected) in [
+            (Action::Stop, vec!["get_platform_state", "set_environment_status"]),
+            (Action::Delete, vec!["get_platform_state", "set_environment_status", "delete_environment"]),
+        ] {
+            let mut calls = vec![];
+            assert!(apply("target", action, |method, params| {
+                if method != "get_platform_state" {
+                    assert_eq!(params["environmentId"], "target");
+                }
+                calls.push(method);
+                std::future::ready(Ok(if method == "get_platform_state" { microvm.clone() } else { json!({}) }))
+            })
+            .await
+            .unwrap());
+            assert_eq!(calls, expected);
+        }
+    }
+    #[tokio::test]
     async fn cloud_shared_or_missing_nodes_cannot_be_deleted_as_local_sandboxes() {
         for env in [
             json!({"id":"target","kind":"cloud","provider":"cloudSsh","runtime":"cloud://x"}),
             json!({"id":"target","kind":"container","provider":"yougoriOci","runtime":"shared://tunnel/x"}),
+            json!({"id":"target","kind":"microVm","provider":"qemu","runtime":"shared://tunnel/x"}),
+            json!({"id":"target","kind":"fullVm","provider":"qemu","runtime":"C:/disk.qcow2"}),
             json!({"id":"other","kind":"container","provider":"yougoriOci","runtime":"ubuntu"}),
         ] {
             let mut count = 0;

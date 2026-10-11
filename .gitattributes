@@ -36,3 +36,8 @@
 # Retain the vendored Clef source and license line endings.
 /src-tauri/src/model_runner/adapters/clef/joint_schema_model.py whitespace=cr-at-eol
 /src-tauri/src/model_runner/adapters/clef/LICENSE -whitespace
+
+# Guest and Linux scripts run under /bin/sh and must keep LF on every checkout.
+*.sh text eol=lf
+/runtime/cuda/wsl.conf text eol=lf
+/appliance/rootfs/** text eol=lf

@@ -278,7 +278,6 @@ fn desktop_path(explicit: Option<&str>) -> Result<PathBuf, String> {
     if let Some(path) = explicit
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("YOUGORI_APP").map(PathBuf::from))
-        .or_else(|| std::env::var_os("OPENDOCK_APP").map(PathBuf::from))
     {
         if path.is_absolute() && path.is_file() {
             return Ok(path);
@@ -359,10 +358,21 @@ pub fn engine_executable() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
+/// The engine runs from its install folder, never from the folder the CLI was
+/// started in: Windows searches the current folder first for programs it runs.
+fn engine_directory(executable: &Path) -> PathBuf {
+    executable
+        .parent()
+        .filter(|folder| folder.is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 fn launch(executable: &Path, args: &[&str]) -> Result<std::process::Child, String> {
     let mut command = std::process::Command::new(executable);
     command
         .args(args)
+        .current_dir(engine_directory(executable))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -567,6 +577,13 @@ fn process_present(pid: u32) -> Option<bool> {
 #[cfg(test)]
 mod macos_path_tests {
     use super::*;
+    #[test]
+    fn the_engine_starts_in_its_own_folder_not_the_callers() {
+        let folder = tempfile::tempdir().unwrap();
+        let executable = folder.path().join(if cfg!(windows) { "yougori.exe" } else { "yougori" });
+        assert_eq!(engine_directory(&executable), folder.path());
+        assert_eq!(engine_directory(Path::new("missing-folder/yougori")), std::env::temp_dir());
+    }
     #[tokio::test]
     async fn a_stalled_receipt_does_not_block_cli_runtime_shutdown() {
         let begin=Instant::now();

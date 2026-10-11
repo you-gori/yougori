@@ -104,16 +104,16 @@ fn setup_visible(log: &str) -> bool {
     log.lines().zip(log.lines().skip(1)).any(|(marker, title)| {
         marker == "VISIBLE_WINDOW" && title.starts_with("Windows") && title.ends_with("Setup")
     }) && log.contains("SETUP_PROCESS\r\n")
-        && log.contains("OPENDOCK_WINPE_PROBE_STARTED")
+        && log.contains("YOUGORI_WINPE_PROBE_STARTED")
 }
 
 #[test]
 fn windows_setup_verification_requires_a_visible_window_and_process() {
-    assert!(!setup_visible("OPENDOCK_BOOT_WINDOWS_HANDOFF"));
+    assert!(!setup_visible("YOUGORI_BOOT_WINDOWS_HANDOFF"));
     assert!(!setup_visible(
-        "OPENDOCK_WINPE_PROBE_STARTED\r\nSETUP_PROCESS\r\nsetup.exe"
+        "YOUGORI_WINPE_PROBE_STARTED\r\nSETUP_PROCESS\r\nsetup.exe"
     ));
-    assert!(setup_visible("OPENDOCK_WINPE_PROBE_STARTED\r\nVISIBLE_WINDOW\r\nWindows 11 Setup\r\nSETUP_PROCESS\r\nSetupHost.exe"));
+    assert!(setup_visible("YOUGORI_WINPE_PROBE_STARTED\r\nVISIBLE_WINDOW\r\nWindows 11 Setup\r\nSETUP_PROCESS\r\nSetupHost.exe"));
     assert!(probe_log(&[]).is_none());
     assert!(probe_log(&vec![0; 1_474_560]).is_none());
 }
@@ -122,7 +122,7 @@ fn windows_setup_verification_requires_a_visible_window_and_process() {
 fn windows_setup_observer_reads_only_the_bounded_fat_log() {
     let mut image =
         super::boot_media::image(include_bytes!("../../boot-helper/test-os.efi")).unwrap();
-    let text = b"OPENDOCK_WINPE_PROBE_STARTED\r\nVISIBLE_WINDOW\r\nWindows 11 Setup\r\nSETUP_PROCESS\r\nSetupHost.exe\r\n";
+    let text = b"YOUGORI_WINPE_PROBE_STARTED\r\nVISIBLE_WINDOW\r\nWindows 11 Setup\r\nSETUP_PROCESS\r\nSetupHost.exe\r\n";
     let entry = 19 * 512 + 32;
     image[entry..entry + 11].copy_from_slice(b"PROBE   LOG");
     image[entry + 11] = 0x20;
@@ -139,13 +139,13 @@ fn windows_setup_observer_reads_only_the_bounded_fat_log() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires OPENDOCK_TEST_WINDOWS_ISO and OPENDOCK_TEST_WINDOWS_PROBE; disposable disks only; no screenshots or Windows installation"]
+#[ignore = "requires YOUGORI_TEST_WINDOWS_ISO and YOUGORI_TEST_WINDOWS_PROBE; disposable disks only; no screenshots or Windows installation"]
 async fn windows_setup_reaches_visible_installer() {
     let iso = std::path::PathBuf::from(
-        std::env::var_os("OPENDOCK_TEST_WINDOWS_ISO").expect("Set Windows ISO"),
+        std::env::var_os("YOUGORI_TEST_WINDOWS_ISO").expect("Set Windows ISO"),
     );
     let probe = std::path::PathBuf::from(
-        std::env::var_os("OPENDOCK_TEST_WINDOWS_PROBE")
+        std::env::var_os("YOUGORI_TEST_WINDOWS_PROBE")
             .expect("Build the test probe using scripts/build-windows-setup-probe.ps1"),
     );
     let before = fs::metadata(&iso).unwrap();
@@ -172,12 +172,12 @@ async fn windows_setup_reaches_visible_installer() {
         .unwrap();
     let probe_copy = temp.path().join("probe.img");
     fs::copy(&probe, &probe_copy).unwrap();
-    let cpus = std::env::var("OPENDOCK_TEST_WINDOWS_CPUS")
+    let cpus = std::env::var("YOUGORI_TEST_WINDOWS_CPUS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(12)
         .clamp(1, 24);
-    let memory = std::env::var("OPENDOCK_TEST_WINDOWS_MEMORY_GB")
+    let memory = std::env::var("YOUGORI_TEST_WINDOWS_MEMORY_GB")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(4.0)
@@ -190,7 +190,7 @@ async fn windows_setup_reaches_visible_installer() {
     .unwrap();
     let started = Instant::now();
     let result: Result<String, String> = async {
-        let gpu = std::env::var_os("OPENDOCK_TEST_WINDOWS_GPU").is_some();
+        let gpu = std::env::var_os("YOUGORI_TEST_WINDOWS_GPU").is_some();
         manager.start_vm_with_network(id, &disk.disk_path, &iso, &policy, gpu, false).await?;
         if gpu {
             let vms = manager.vms.lock().await;
@@ -215,7 +215,7 @@ async fn windows_setup_reaches_visible_installer() {
             "driver":"raw", "node-name":"setup-probe", "file":{"driver":"file","filename":path_string(&probe_copy)}
         }))).await?;
         qmp_request(port, "device_add", Some(json!({"driver":"usb-storage","id":"setup-probe","drive":"setup-probe"}))).await?;
-        let restart_test = std::env::var_os("OPENDOCK_TEST_WINDOWS_RESTART").is_some();
+        let restart_test = std::env::var_os("YOUGORI_TEST_WINDOWS_RESTART").is_some();
         let mut restarted = false;
         let mut next_observer = 45;
         let mut last_log = String::new();
@@ -230,11 +230,11 @@ async fn windows_setup_reaches_visible_installer() {
             }
             if let Ok(bytes) = fs::read(&probe_copy) {
                 if let Some(log) = probe_log(&bytes) {
-                    let recent = &log[log.rfind("OPENDOCK_WINPE_PROBE_STARTED").unwrap_or(0)..];
+                    let recent = &log[log.rfind("YOUGORI_WINPE_PROBE_STARTED").unwrap_or(0)..];
                     if setup_visible(recent)
                         && recent.contains("TPM_2_0_DETECTED")
                         && recent.contains("SECURE_BOOT_ENFORCED") {
-                        if !restart_test || (restarted && boot_log.matches("OPENDOCK_BOOT_WINDOWS_HANDOFF").count() >= 2 && log.matches("OPENDOCK_WINPE_PROBE_STARTED").count() >= 2) {
+                        if !restart_test || (restarted && boot_log.matches("YOUGORI_BOOT_WINDOWS_HANDOFF").count() >= 2 && log.matches("YOUGORI_WINPE_PROBE_STARTED").count() >= 2) {
                             eprintln!("Windows Setup verified on {cpus} CPUs / {memory} GB in {:.1}s:\n{log}", started.elapsed().as_secs_f64());
                             return Ok(log);
                         }
@@ -250,7 +250,7 @@ async fn windows_setup_reaches_visible_installer() {
                             eprintln!("Requested WinPE guest reboot; requiring a new observer after reboot");
                         }
                     }
-                    last_log = if restarted && log.matches("OPENDOCK_WINPE_PROBE_STARTED").count() < 2 { String::new() } else { log };
+                    last_log = if restarted && log.matches("YOUGORI_WINPE_PROBE_STARTED").count() < 2 { String::new() } else { log };
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;

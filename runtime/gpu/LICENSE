@@ -1,5 +1,5 @@
 Yougori Windows EGL bridge and GPU probe
-Copyright 2026 Yougori LLC
+Copyright 2026 Yougori
 
 The code in egl-bridge.c may be used under the GNU General Public License,
 version 2 or (at your option) any later version.

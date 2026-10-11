@@ -55,4 +55,6 @@ hostTerminalApi.terminal = async () => { throw new Error("CLI boot failed"); };`
   await expect(page.getByRole("alert")).toContainText("CLI boot failed")
   await expect(page.getByRole("button", { name: "Try again" })).toBeVisible()
   await expect(page.locator("[data-environment-canvas]")).toHaveCount(0)
+  await page.getByRole("button", { name: "Open Yougori" }).click()
+  await expect(page.locator("[data-environment-canvas]")).toBeVisible()
 })

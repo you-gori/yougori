@@ -22,7 +22,7 @@ index 49a5baf..b0c2a1b 100644
                 env: ['G_TEST_SLOW=1', 'SPEED=thorough', 'RUST_BACKTRACE=1'])
  
 -meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
-+# OpenDock stages explicit runtime artifacts; Windows development does not need
++# Yougori stages explicit runtime artifacts; Windows development does not need
 +# the optional symlink installation tree (or host Developer Mode privileges).
 +if host_machine.system() != 'windows'
 +  meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
@@ -49,12 +49,12 @@ index 3f2850a..d4b9745 100644
  #
  # @emulator: Software Emulator TPM type (since 2.11)
  #
-+# @opendock: Private in-process TPM 2.0 (OpenDock Windows build)
++# @yougori: Private in-process TPM 2.0 (Yougori Windows build)
 +#
  # Since: 1.5
  ##
 -{ 'enum': 'TpmType', 'data': [ 'passthrough', 'emulator' ],
-+{ 'enum': 'TpmType', 'data': [ 'passthrough', 'emulator', 'opendock' ],
++{ 'enum': 'TpmType', 'data': [ 'passthrough', 'emulator', 'yougori' ],
    'if': 'CONFIG_TPM' }
  
  ##
@@ -63,22 +63,22 @@ index 3f2850a..d4b9745 100644
    'if': 'CONFIG_TPM' }
  
 +##
-+# @TPMOpenDockOptions:
++# @TPMYougoriOptions:
 +#
 +# @state: Private persistent TPM state file
 +#
 +# Since: 11.1
 +##
-+{ 'struct': 'TPMOpenDockOptions', 'data': { 'state': 'str' },
++{ 'struct': 'TPMYougoriOptions', 'data': { 'state': 'str' },
 +  'if': 'CONFIG_TPM' }
 +##
-+# @TPMOpenDockOptionsWrapper:
++# @TPMYougoriOptionsWrapper:
 +#
 +# @data: Private software TPM configuration
 +#
 +# Since: 11.1
 +##
-+{ 'struct': 'TPMOpenDockOptionsWrapper', 'data': { 'data': 'TPMOpenDockOptions' },
++{ 'struct': 'TPMYougoriOptionsWrapper', 'data': { 'data': 'TPMYougoriOptions' },
 +  'if': 'CONFIG_TPM' }
 +
  ##
@@ -88,7 +88,7 @@ index 3f2850a..d4b9745 100644
  #       passthrough type
  #     - 'emulator' The configuration options for TPM emulator backend
  #       type
-+#     - 'opendock' Private in-process TPM configuration
++#     - 'yougori' Private in-process TPM configuration
  #
  # Since: 1.5
  ##
@@ -98,7 +98,7 @@ index 3f2850a..d4b9745 100644
    'data': { 'passthrough' : 'TPMPassthroughOptionsWrapper',
 -            'emulator': 'TPMEmulatorOptionsWrapper' },
 +            'emulator': 'TPMEmulatorOptionsWrapper',
-+            'opendock': 'TPMOpenDockOptionsWrapper' },
++            'yougori': 'TPMYougoriOptionsWrapper' },
    'if': 'CONFIG_TPM' }
  
  ##
@@ -110,8 +110,8 @@ index 9ed6ad6..7925f49 100644
              teo = ti->options->u.emulator.data;
              monitor_printf(mon, ",chardev=%s", teo->chardev);
              break;
-+        case TPM_TYPE_OPENDOCK:
-+            monitor_printf(mon, ",state=%s", ti->options->u.opendock.data->state);
++        case TPM_TYPE_YOUGORI:
++            monitor_printf(mon, ",state=%s", ti->options->u.yougori.data->state);
 +            break;
          case TPM_TYPE__MAX:
              break;

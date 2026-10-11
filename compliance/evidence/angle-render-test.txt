@@ -1,4 +1,4 @@
-   Compiling yougori v1.0.0 (C:\Users\Argon\Desktop\yougori\src-tauri)
+   Compiling yougori v1.0.0 (C:\Users\<user>\Desktop\yougori\src-tauri)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 27.36s
      Running unittests src\lib.rs (src-tauri\target\debug\deps\yougori_lib-4ce5f3f740f365ef.exe)
 

@@ -20,7 +20,7 @@ const containerStoreRoot = "/var/lib/yougori-container-storage"
 const containerStoreMount = containerStoreRoot + "/mount"
 const containerStoreImage = containerStoreRoot + "/data.ext4"
 
-var containerStoreTrees = []string{"containerd", "nerdctl", "opendock"}
+var containerStoreTrees = []string{"containerd", "nerdctl", "yougori"}
 
 type containerStoreState struct {
 	Version  int    `json:"version"`
@@ -167,7 +167,7 @@ func containerStorageTool(ctx context.Context, name string, args ...string) erro
 		return errors.New("unsupported container filesystem operation")
 	}
 	command := exec.CommandContext(ctx, name, args...)
-	const tools = "/usr/local/lib/opendock-storage"
+	const tools = "/usr/local/lib/yougori-storage"
 	if name == "resize2fs" {
 		if _, err := os.Stat(tools + "/ld-musl-x86_64.so.1"); err == nil {
 			command = exec.CommandContext(ctx, tools+"/ld-musl-x86_64.so.1", append([]string{"--library-path", tools, tools + "/" + name}, args...)...)

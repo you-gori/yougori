@@ -33,7 +33,7 @@ expand network access. Do not attempt to modify platform configuration or creden
 
 Finish one reserved investigation with bounty_attempt. Record observations, expected
 behavior, outcome, evidence, and limitations. Outcomes are not_reproduced, candidate,
-inconclusive, blocked, interrupted, or setup_failed. Never invent completed tests or
+inconclusive, blocked (including a failed setup), or interrupted. Never invent completed tests or
 observations. Evidence must show the result you actually obtained.
 
 Peer updates are concise completed-action records. Do not publish hidden reasoning,

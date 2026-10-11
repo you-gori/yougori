@@ -33,7 +33,7 @@
           ],
           "version": "6.14-1"
         },
-        "btrfsPrefix": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix",
+        "btrfsPrefix": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix",
         "compilerInputs": [
           {
             "bytes": 928584,
@@ -42,16 +42,16 @@
           },
           {
             "bytes": 144,
-            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/bin/musl-gcc",
+            "path": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/bin/musl-gcc",
             "sha256": "425f4f8c724bf95bb55a51d52d0e9b028cf390b15882985a704204e09a5f289b"
           },
           {
             "bytes": 1182,
-            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/musl-gcc.specs",
+            "path": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/musl-gcc.specs",
             "sha256": "be8e622ba20c15974fd43a1db325743e18577cc78f11a6095471b5cb7ef0d8b9"
           }
         ],
-        "flags": "-O2 -ffile-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci -fdebug-prefix-map=/home/argonaliu/yougori-oci-security-20261010=/build/oci",
+        "flags": "-O2 -ffile-prefix-map=/home/<user>/yougori-oci-security-20261010=/build/oci -fdebug-prefix-map=/home/<user>/yougori-oci-security-20261010=/build/oci",
         "gcc": "gcc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0\nCopyright (C) 2021 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
         "initialPreparationInputsSha256": "4fe62545d76336b85f118dc2b3f6217b9e6611149b8d590ddff0872b5fac8e4d",
         "inputsSha256": "1679bafc8de20d7b8a5894adc6726b747677e5b86e93f559533c1a55988538a9",
@@ -62,17 +62,17 @@
         "libraries": [
           {
             "bytes": 2815492,
-            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libc.a",
+            "path": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libc.a",
             "sha256": "eef5dec13a0b47c68745901ca27763abe3091a77b183b32ff3a5d26ac63b8772"
           },
           {
             "bytes": 334780,
-            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libseccomp.a",
+            "path": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix/lib/libseccomp.a",
             "sha256": "d65351ae5bc328ed1a366cfae0b7578d91f3160519ed4247b4215deb0670c642"
           },
           {
             "bytes": 31442,
-            "path": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix/lib/libbtrfs.a",
+            "path": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/btrfs-prefix/lib/libbtrfs.a",
             "sha256": "5f0a6c25f7c3b57bd73100d6905decd3675cadda7d28abe5eaf4203c8d4c8aee"
           },
           {
@@ -211,7 +211,7 @@
           },
           "version": "1.2.6-r2"
         },
-        "muslPrefix": "/home/argonaliu/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix",
+        "muslPrefix": "/home/<user>/yougori-oci-security-20261010/native-4fe62545d763/musl-prefix",
         "nativeInputsSha256": "6831a3dcdd609fcbb908bc2850b6923774161f4e78549dda8a2b0035a9d3f725",
         "packages": "gcc-11\t11.4.0-1ubuntu1~22.04.3\tgcc-11\t11.4.0-1ubuntu1~22.04.3\nlibc6\t2.35-0ubuntu3.15\tglibc\t2.35-0ubuntu3.15\nlibc6-dev\t2.35-0ubuntu3.15\tglibc\t2.35-0ubuntu3.15\nlibgcc-11-dev\t11.4.0-1ubuntu1~22.04.3\tgcc-11\t11.4.0-1ubuntu1~22.04.3\nlinux-libc-dev\t5.15.0-198.208\tlinux\t5.15.0-198.208\n",
         "wrapperPatch": {

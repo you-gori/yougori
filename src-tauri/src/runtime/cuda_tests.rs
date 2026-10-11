@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 #[tokio::test]
 #[ignore = "uses only the explicitly prepared build/cuda/integration-runtime WSL test distribution"]
 async fn cuda_individual_storage_limits_grow_online() -> Result<(), String> {
-    let root = PathBuf::from(std::env::var("OPENDOCK_CUDA_TEST_ROOT").map_err(|_| "Dedicated CUDA test root is required")?);
+    let root = PathBuf::from(std::env::var("YOUGORI_CUDA_TEST_ROOT").map_err(|_| "Dedicated CUDA test root is required")?);
     let expected = Path::new(env!("CARGO_MANIFEST_DIR")).join("../build/cuda/integration-runtime").canonicalize().map_err(|e| e.to_string())?;
     if root.canonicalize().map_err(|e| e.to_string())? != expected { return Err("Refusing user CUDA storage".into()); }
     let data = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -60,7 +60,7 @@ async fn cuda_outdated_runtime_deletion_preserves_peer() -> Result<(), String> {
 }
 
 async fn cuda_cleanup_preserves_peer(compact: bool) -> Result<(), String> {
-    let root = PathBuf::from(std::env::var("OPENDOCK_CUDA_TEST_ROOT").map_err(|_| "Dedicated CUDA test root is required")?);
+    let root = PathBuf::from(std::env::var("YOUGORI_CUDA_TEST_ROOT").map_err(|_| "Dedicated CUDA test root is required")?);
     let expected = Path::new(env!("CARGO_MANIFEST_DIR")).join("../build/cuda/integration-runtime").canonicalize().map_err(|e| e.to_string())?;
     if root.canonicalize().map_err(|e| e.to_string())? != expected { return Err("Refusing user CUDA storage".into()); }
     let data = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -122,7 +122,7 @@ async fn cuda_cleanup_preserves_peer(compact: bool) -> Result<(), String> {
         }
         runtime.container_action(&peer, "start", false).await?;
         if runtime.execute_container_command(&peer, "cat /root/reclaim-marker").await?.stdout.trim() != "peer-safe" { return Err("Peer data did not survive compaction".into()); }
-        let probe = runtime.execute_container_command(&peer, "/opendock/bin/cuda-check").await?;
+        let probe = runtime.execute_container_command(&peer, "/yougori/bin/cuda-check").await?;
         if probe.exit_code != 0 { return Err(probe.stderr); }
         eprintln!("CUDA deletion and snapshot cleanup succeeded with an outdated runtime; peer files and CUDA kernel survived");
         Ok(())
@@ -175,8 +175,8 @@ macro_rules! ensure_ne {
 #[ignore = "uses only the explicitly prepared build/cuda/integration-runtime WSL test distribution"]
 async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String> {
     let test_root = PathBuf::from(
-        std::env::var("OPENDOCK_CUDA_TEST_ROOT")
-            .map_err(|_| "Set OPENDOCK_CUDA_TEST_ROOT to the dedicated integration runtime")?,
+        std::env::var("YOUGORI_CUDA_TEST_ROOT")
+            .map_err(|_| "Set YOUGORI_CUDA_TEST_ROOT to the dedicated integration runtime")?,
     );
     let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../build/cuda/integration-runtime")
@@ -199,7 +199,7 @@ async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String
     let snap_id = format!("snapshot-cuda-{}", uuid::Uuid::new_v4().simple());
     let environment:Environment=serde_json::from_value(json!({"id":id,"name":"CUDA integration","kind":"container","provider":"yougoriCuda","status":"running","runtime":"docker.io/library/python:3.12-slim","description":"test","createdAt":"test","cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,"resourcePolicy":policy})).unwrap();
     let probe = format!(
-        "python3 - <<'OPENDOCK_CUDA_TEST'\n{}\nOPENDOCK_CUDA_TEST",
+        "python3 - <<'YOUGORI_CUDA_TEST'\n{}\nYOUGORI_CUDA_TEST",
         include_str!("../../../runtime/cuda/kernel-probe.py")
     );
     runtime.register_container_provider(&copy_id, &RuntimeProviderKind::YougoriCuda)?;
@@ -220,7 +220,7 @@ async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String
         ensure_eq!(live_storage.capacity_gb, storage.capacity_gb);
         ensure!(runtime.update_container_resources(&id,cpus+1.0,0.5).await.is_err());
         ensure!(runtime.update_container_resources(&id,1.0,memory+1.0).await.is_err());
-        runtime.execute_container_command(&id,"printf persistent > /root/opendock-cuda-test").await?;
+        runtime.execute_container_command(&id,"printf persistent > /root/yougori-cuda-test").await?;
         let session_id=format!("terminal-{}",uuid::Uuid::new_v4().simple());
         let terminal=runtime.workspace_request(&environment,"/v1/terminal/create",json!({"id":id,"sessionId":session_id,"cols":80,"rows":24})).await?;
         ensure_eq!(terminal["sessionId"].as_str(),Some(session_id.as_str()));
@@ -251,7 +251,7 @@ async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String
         runtime.import_container_snapshot(&snap_id,&artifact.path).await?;
         runtime.restore_container_snapshot(&copy_id,&snap_id,&environment.runtime,"sleep 2147483647",false,true).await?;
         runtime.container_action(&copy_id,"start",false).await?;
-        let restored=runtime.execute_container_command(&copy_id,"cat /root/opendock-cuda-test").await?;
+        let restored=runtime.execute_container_command(&copy_id,"cat /root/yougori-cuda-test").await?;
         ensure_eq!(restored.stdout,"persistent");
         ensure_eq!(runtime.execute_container_command(&copy_id,&probe).await?.exit_code,0);
         runtime.container_action(&copy_id,"stop",false).await?;
@@ -266,7 +266,7 @@ async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String
         runtime.container_action(&copy_id,"stop",false).await?;
         runtime.cuda.shutdown().await?;
         runtime.container_action(&id,"start",false).await?;
-        ensure_eq!(runtime.execute_container_command(&id,"cat /root/opendock-cuda-test").await?.stdout,"persistent");
+        ensure_eq!(runtime.execute_container_command(&id,"cat /root/yougori-cuda-test").await?.stdout,"persistent");
         ensure_eq!(runtime.execute_container_command(&id,&probe).await?.exit_code,0);
         runtime.container_action(&id,"stop",false).await?;
         runtime.delete_container_snapshot(&id,&snap_id).await?;
@@ -275,11 +275,11 @@ async fn cuda_application_lifecycle_files_and_real_kernel() -> Result<(), String
         let abandoned = std::mem::replace(&mut runtime.cuda, yougori_cuda_runtime::CudaRuntime::new(test_root.clone())?);
         drop(abandoned);
         let busy = runtime.container_action(&id,"start",false).await.err().ok_or("An orphaned runtime was silently adopted")?;
-        ensure!(busy.contains("YOUGORI_RUNTIME_BUSY") || busy.contains("OPENDOCK_RUNTIME_BUSY"),
+        ensure!(busy.contains("YOUGORI_RUNTIME_BUSY"),
             "Expected the competing-runtime ownership guard, got: {busy}");
         runtime.recover_container_provider(&RuntimeProviderKind::YougoriCuda).await?;
         runtime.container_action(&id,"start",false).await?;
-        ensure_eq!(runtime.execute_container_command(&id,"cat /root/opendock-cuda-test").await?.stdout,"persistent");
+        ensure_eq!(runtime.execute_container_command(&id,"cat /root/yougori-cuda-test").await?.stdout,"persistent");
         ensure_eq!(runtime.execute_container_command(&id,&probe).await?.exit_code,0);
         eprintln!("Stop-button orphan recovery restored the owned runtime; files and CUDA still passed");
         Ok(())

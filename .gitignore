@@ -20,6 +20,7 @@ build/cuda/
 build/oci-runtime/
 build/nvidia-cdi-runtime/
 build/linux/
+build/macos-runtime/
 runtime/cuda/host/target/
 cli/target/
 vault/target/
@@ -45,6 +46,7 @@ src-tauri/resources/cli/
 /.gemini/
 /.windsurf/
 AGENTS.md
+!/src-tauri/src/swarm/AGENTS.md
 CLAUDE.md
 GEMINI.md
 .cursorrules
@@ -88,3 +90,15 @@ crates/*/target/
 # Local release-check copies of bundled runtimes.
 /build/release-audit-2026-09-22/runtime/
 /build/staged-appliance/
+
+# Release signing configuration and private key material are never versioned.
+/build/release-signing/
+*.pfx
+*.p12
+*.pem
+*.key
+/.cargo/credentials
+/.cargo/credentials.toml
+
+# Local audit and report output.
+/output/

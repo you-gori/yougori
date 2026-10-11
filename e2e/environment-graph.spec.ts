@@ -159,7 +159,7 @@ test("cloud environment from creation popup adds a verified server node with Ope
   await expect(node).not.toContainText("other.example.com")
   await expect(node.locator('[data-environment-connection-point]')).toHaveCount(0)
   await expect(node.getByRole("button", { name: "Connect Cloud database to another environment", exact: true })).toBeVisible()
-  await page.evaluate(async () => { const { platformApi } = await import("/src/api/platform-api.ts"); platformApi.openEnvironmentWindow = async () => true })
+  await page.evaluate(async () => { const { platformApi } = await import("/src/api/platform-api.ts" as string) as typeof import("../src/api/platform-api"); platformApi.openEnvironmentWindow = async () => true })
   await node.getByRole("button", { name: "Open", exact: true }).click()
   await expect(node.getByText("Connected", { exact: true })).toBeVisible()
   await expect(node.getByRole("button", { name: "Open", exact: true })).toBeVisible()
@@ -187,7 +187,7 @@ test("cloud environment from creation popup adds a verified server node with Ope
 test("cloud setup requires successful SSH access and preserves failed drafts", async ({ page }) => {
   await openGraph(page)
   await page.evaluate(async () => {
-    const { cloudApi } = await import("/src/api/cloud-api.ts")
+    const { cloudApi } = await import("/src/api/cloud-api.ts" as string) as typeof import("../src/api/cloud-api")
     cloudApi.testConnection = async request => {
       localStorage.setItem("cloud-test-request", JSON.stringify(request))
       throw new Error("Permission denied (publickey)")
@@ -227,7 +227,7 @@ test("cloud setup requires successful SSH access and preserves failed drafts", a
   await expect(identity).toHaveValue("C:/Keys/cloud.pem")
   await expect(add).toBeDisabled()
   await page.evaluate(async () => {
-    const { cloudApi } = await import("/src/api/cloud-api.ts")
+    const { cloudApi } = await import("/src/api/cloud-api.ts" as string) as typeof import("../src/api/cloud-api")
     cloudApi.testConnection = async request => {
       await new Promise(resolve => setTimeout(resolve, 500))
       return { ...request, hostKey: "ssh-ed25519 TEST-PREVIEW-ONLY" }
@@ -264,7 +264,7 @@ test("cloud setup accepts a pasted public key and explains a missing matching ag
   const publicKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY= google-ssh"
   const help = "This is a public SSH key. Load its matching private key into this PC's SSH agent, or use Browse to select the private key file. A public key alone cannot sign in."
   await page.evaluate(async message => {
-    const { cloudApi } = await import("/src/api/cloud-api.ts")
+    const { cloudApi } = await import("/src/api/cloud-api.ts" as string) as typeof import("../src/api/cloud-api")
     cloudApi.testConnection = async () => { throw new Error(message) }
   }, help)
   await page.getByRole("group", { name: "Dashboard actions", exact: true }).getByRole("button", { name: "New environment", exact: true }).click()
@@ -279,7 +279,7 @@ test("cloud setup accepts a pasted public key and explains a missing matching ag
   await expect(identity).toHaveValue(publicKey)
   await expect(dialog.getByRole("button", { name: "Add cloud node" })).toBeDisabled()
   await page.evaluate(async () => {
-    const { cloudApi } = await import("/src/api/cloud-api.ts")
+    const { cloudApi } = await import("/src/api/cloud-api.ts" as string) as typeof import("../src/api/cloud-api")
     cloudApi.testConnection = async request => ({ ...request, hostKey: "ssh-ed25519 TEST-PREVIEW-ONLY" })
   })
   await dialog.getByRole("button", { name: "Connect", exact: true }).click()
@@ -359,7 +359,7 @@ for (const kind of ["container", "microVm", "fullVm"] as const) test(`connection
   expect(copied).not.toContain("Not shared here")
   if (kind === "container") {
     await page.evaluate(async () => {
-      const module = "/src/api/platform-api.ts", { platformApi } = await import(module)
+      const module = "/src/api/platform-api.ts", { platformApi } = await import(module) as typeof import("../src/api/platform-api")
       const original = platformApi.connectionSkills
       Object.assign(window, { restoreSkills: () => { platformApi.connectionSkills = original } })
       platformApi.connectionSkills = async () => { throw new Error("Fixture: connection state unavailable") }
@@ -374,7 +374,7 @@ for (const kind of ["container", "microVm", "fullVm"] as const) test(`connection
   }
   await page.keyboard.press("Escape")
   await page.evaluate(async () => {
-    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module)
+    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module) as typeof import("../src/api/workspace-api")
     await workspaceApi.unshare("share-input")
     await workspaceApi.unshare("share-project")
   })
@@ -474,7 +474,7 @@ async function openGraph(page: Page, environments = [fixture("Alpha"), fixture("
   state.host.totalStorageGb = 1024
   state.host.usedStorageGb = 128
   state.environments = environments
-  const seedKey = `opendock.test.seed.${Date.now()}.${Math.random()}`
+  const seedKey = `yougori.test.seed.${Date.now()}.${Math.random()}`
   await page.addInitScript(({ state, seedKey }) => {
     if (!sessionStorage.getItem(seedKey)) {
       if (!localStorage.getItem("yougori.workspace-view")) localStorage.setItem("yougori.workspace-view", "list")
@@ -767,7 +767,7 @@ test("local backups choose a folder, show errors and confirm a verified save", a
     localBackupApi.export = async (id: string, folder: string) => {
       if (id !== "Alpha" || folder !== "C:\\Backups") throw new Error("Wrong backup target")
       if (!attempts++) throw new Error("Destination is full")
-      return "C:\\Backups\\Yougori-backup-test\\backup.opendock"
+      return "C:\\Backups\\Yougori-backup-test\\backup.yougori"
     }
   })
   await page.getByRole("button", { name: "Configure Alpha", exact: true }).click()
@@ -931,7 +931,7 @@ test("configuration popup saves fixed values and preserves drafts", async ({ pag
 test("configuration popup start failures stay visible and actions unlock for retry", async ({ page }) => {
   await openGraph(page)
   await page.evaluate(async () => {
-    const url = "/src/api/platform-api.ts", { platformApi } = await import(url)
+    const url = "/src/api/platform-api.ts", { platformApi } = await import(url) as typeof import("../src/api/platform-api")
     const original = platformApi.setEnvironmentStatus
     platformApi.setEnvironmentStatus = async () => {
       await new Promise(resolve => window.addEventListener("finish-start-test", resolve, { once: true }))
@@ -958,7 +958,7 @@ test("configuration popup start failures stay visible and actions unlock for ret
 
 async function holdAction(page: Page, method: "setEnvironmentStatus" | "openEnvironmentWindow", fail = false) {
   await page.evaluate(async ({ method, fail }) => {
-    const url = "/src/api/platform-api.ts", { platformApi } = await import(url)
+    const url = "/src/api/platform-api.ts", { platformApi } = await import(url) as typeof import("../src/api/platform-api")
     const api = platformApi as Record<string, (...args: unknown[]) => Promise<unknown>>
     const original = api[method]!
     localStorage.setItem(`test-calls:${method}`, "0")
@@ -1193,7 +1193,7 @@ test("My PC chooses folders, defaults to read-only, mounts and disconnects", asy
 })
 
 test("GPU is a category and legacy CUDA nodes have no Shared GPU connector", async ({ page }) => {
-  const env = { ...fixture("Alpha"), provider: "yougoriCuda", gpuAccess: true }
+  const env = { ...fixture("Alpha"), provider: "yougoriCuda" as const, gpuAccess: true }
   await openGraph(page, [env])
   await expect(page.locator('[data-environment-id="Alpha"]')).toContainText("GPU · NVIDIA CUDA")
   await expect(page.locator('[data-capability-kind="gpu"]')).toHaveCount(0)
@@ -1436,7 +1436,7 @@ test("coding-tool dropdown starts automatically in fresh container terminals wit
   // A cold Vite start must compile the lazy workspace and terminal modules.
   await expect(page.getByRole("button", { name: "Install tools", exact: true })).toBeEnabled({ timeout: 60000 })
   await page.evaluate(async () => {
-    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module)
+    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module) as typeof import("../src/api/workspace-api")
     const original = workspaceApi.terminal
     const writes: { environmentId: string; sessionId: string; data: string }[] = []
     Object.assign(window, { installerWrites: writes })
@@ -1494,7 +1494,7 @@ test("installer preparation failure preserves the existing prompt and can be ret
   await page.keyboard.type("echo unfinished")
   await expect(page.getByRole("tabpanel").locator(".xterm-screen")).toContainText("echo unfinished")
   await page.evaluate(async () => {
-    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module)
+    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module) as typeof import("../src/api/workspace-api")
     const prepare = workspaceApi.prepareInstaller
     workspaceApi.prepareInstaller = async () => { workspaceApi.prepareInstaller = prepare; throw new Error("Fixture: image has no writable /tmp") }
   })
@@ -1515,7 +1515,7 @@ test("closing a preparing install tab prevents delayed command execution", async
   await page.goto("/?environment=env-install-cancel")
   await expect(page.getByRole("button", { name: "Install tools", exact: true })).toBeEnabled()
   await page.evaluate(async () => {
-    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module)
+    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module) as typeof import("../src/api/workspace-api")
     workspaceApi.prepareInstaller = async () => {
       document.documentElement.setAttribute("data-install-preparing", "true")
       await new Promise<void>(resolve => window.addEventListener("finish-install-prepare", () => resolve(), { once: true }))
@@ -1571,7 +1571,7 @@ test("coding-tool dropdown is disabled for stopped or ended terminals and absent
   await page.goto("/?environment=env-install-stopped")
   await expect(page.getByRole("button", { name: "Install tools", exact: true })).toBeDisabled()
   await page.evaluate(async () => {
-    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module)
+    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module) as typeof import("../src/api/workspace-api")
     const original = workspaceApi.terminal
     workspaceApi.terminal = async (...args: Parameters<typeof original>) => args[2] === "read" ? { data: "", offset: 0, done: true } : original(...args)
   })
@@ -1713,7 +1713,7 @@ for (const accelerated of [false, true]) test(`real QEMU ${accelerated ? "accele
   const qemu = spawn(resolve(directory, "qemu-system-x86_64.exe"), [
     "-L", resolve("src-tauri/resources/runtime/qemu/share"),
     "-machine", "q35", "-accel", "tcg", "-m", "64", "-nodefaults", "-S",
-    "-device", accelerated ? "virtio-vga-gl,id=opendock-display,max_outputs=1" : "VGA",
+    "-device", accelerated ? "virtio-vga-gl,id=yougori-display,max_outputs=1" : "VGA",
     "-display", accelerated ? "egl-headless" : "none", "-monitor", "none",
     "-vnc", `127.0.0.1:${rfbPort - 5900},websocket=127.0.0.1:${websocketPort},share=force-shared`,
   ], { cwd: directory, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] })
@@ -1754,7 +1754,7 @@ for (const accelerated of [false, true]) test(`real QEMU ${accelerated ? "accele
       await target.evaluate((element, size) => { element.style.width = `${size[0]}px`; element.style.height = `${size[1]}px` }, [width, height])
       await expect.poll(async () => {
         const bounds = await canvas.boundingBox()
-        const source = await canvas.evaluate(element => [element.width, element.height])
+        const source = await canvas.evaluate(element => [(element as HTMLCanvasElement).width, (element as HTMLCanvasElement).height])
         return Boolean(bounds && Math.abs(bounds.width / bounds.height - source[0]! / source[1]!) < 0.001
           && bounds.width <= width + 1 && bounds.height <= height + 1
           && (Math.abs(bounds.width - width) < 1 || Math.abs(bounds.height - height) < 1))
@@ -1762,7 +1762,7 @@ for (const accelerated of [false, true]) test(`real QEMU ${accelerated ? "accele
     }
     // Matching the viewport to the actual framebuffer removes bars without
     // changing pixels, cropping the desktop, or pretending VGA supports resize.
-    const source = await canvas.evaluate(element => [element.width, element.height])
+    const source = await canvas.evaluate(element => [(element as HTMLCanvasElement).width, (element as HTMLCanvasElement).height])
     await target.evaluate((element, size) => { element.style.width = `${size[0]}px`; element.style.height = `${size[1]}px` }, source)
     await expect.poll(async () => {
       const bounds = await canvas.boundingBox()
@@ -1944,7 +1944,7 @@ test("connection form never submits hidden port values", async ({ page }) => {
 test("connection form blocks duplicate submission and preserves a failed draft for retry", async ({ page }) => {
   await openGraph(page)
   await page.evaluate(async () => {
-    const url = "/src/api/platform-api.ts", { platformApi } = await import(url)
+    const url = "/src/api/platform-api.ts", { platformApi } = await import(url) as typeof import("../src/api/platform-api")
     const original = platformApi.createConnection
     platformApi.createConnection = async () => {
       await new Promise(resolve => window.addEventListener("finish-connection-test", resolve, { once: true }))
@@ -1978,7 +1978,7 @@ test("connection form keeps drafts through telemetry and resets only when reopen
   const alpha = fixture("Alpha"); alpha.status = "running"
   await openGraph(page, [alpha, fixture("Beta")])
   await page.evaluate(async () => {
-    const url = "/src/api/platform-api.ts", { platformApi } = await import(url)
+    const url = "/src/api/platform-api.ts", { platformApi } = await import(url) as typeof import("../src/api/platform-api")
     const original = platformApi.refreshHostMetrics
     platformApi.refreshHostMetrics = async () => {
       const state = await original()
@@ -2267,7 +2267,7 @@ for (const category of ["Container", "GPU", "MicroVM", "VM"]) for (const fails o
     await openGraph(page, [])
     await page.evaluate(async fails => {
       localStorage.setItem("yougori.cuda.fixture", JSON.stringify({ supported: true, installed: true, running: false, detail: "Browser creation fixture" }))
-      const url = "/src/api/platform-api.ts", { platformApi } = await import(url)
+      const url = "/src/api/platform-api.ts", { platformApi } = await import(url) as typeof import("../src/api/platform-api")
       const original = platformApi.createEnvironment
       platformApi.createEnvironment = async (request: Parameters<typeof original>[0]) => {
         const pending = await original(request)
@@ -2543,7 +2543,7 @@ test("OCI image picker stays inside the viewport with readable results in both t
 
 test("failed internet saves restore state and allow a retry", async ({ page }) => {
     await openGraph(page,[fixture("Alpha")])
-    await page.evaluate(async()=>{const {platformApi}=await import("/src/api/platform-api.ts");const original=platformApi.updateContainerNetwork;platformApi.updateContainerNetwork=async()=>{try{await new Promise((_,reject)=>window.addEventListener("fail-save",()=>reject(Error("Test save failed")),{once:true}))}finally{platformApi.updateContainerNetwork=original}}})
+    await page.evaluate(async()=>{const {platformApi}=await import("/src/api/platform-api.ts" as string) as typeof import("../src/api/platform-api");const original=platformApi.updateContainerNetwork;platformApi.updateContainerNetwork=async()=>{try{return await new Promise<never>((_,reject)=>window.addEventListener("fail-save",()=>reject(Error("Test save failed")),{once:true}))}finally{platformApi.updateContainerNetwork=original}}})
     const access=page.getByRole("switch",{name:"Internet access for Alpha",exact:true})
     await access.click();await expect(access).toBeDisabled()
     await page.evaluate(()=>window.dispatchEvent(new Event("fail-save")))
@@ -2613,7 +2613,7 @@ test("Cloudflare quick links can still be chosen when saved credentials are unav
   const env = fixture("Alpha"); env.status = "running"
   await seedServices(page); await openGraph(page, [env])
   await page.evaluate(async () => {
-    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url)
+    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url) as typeof import("../src/api/workspace-api")
     workspaceApi.savedCloudflare = async () => { throw new Error("Vault unavailable") }
     const original = workspaceApi.publish
     workspaceApi.publish = (...args: Parameters<typeof original>) => {
@@ -2641,7 +2641,7 @@ test("port settings offer matching saved Cloudflare domains and show other ports
   ])), { matching, other })
   await seedServices(page); await openGraph(page, [env])
   await page.evaluate(async matching => {
-    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url)
+    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url) as typeof import("../src/api/workspace-api")
     await workspaceApi.saveCloudflarePreset("public-presets", 4200, matching, "app.example.com", 45000, "test-only-token")
   }, matching)
   await page.getByRole("button", { name: "Port 4200 in Alpha", exact: true }).click()
@@ -2743,7 +2743,7 @@ test("remembered Cloudflare reconnect errors reopen account settings", async ({ 
   const env = fixture("Alpha"); env.status = "running"
   await seedServices(page); await openGraph(page, [env])
   await page.evaluate(async () => {
-    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url)
+    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url) as typeof import("../src/api/workspace-api")
     const publication = await workspaceApi.publish("Alpha", 4200, "cloudflare", 45000, { hostname: "app.example.com", token: "fake-test-only-token", remember: true, routesReviewed: true })
     await workspaceApi.unpublish(publication.id)
     workspaceApi.publish = async () => { throw new Error("Saved tunnel token has expired") }
@@ -2763,7 +2763,7 @@ test("Cloudflare account failure allows retry without an anonymous fallback or e
   const env = fixture("Alpha"); env.status = "running"
   await seedServices(page); await openGraph(page, [env])
   await page.evaluate(async () => {
-    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url)
+    const url = "/src/api/workspace-api.ts", { workspaceApi } = await import(url) as typeof import("../src/api/workspace-api")
     const original = workspaceApi.publish
     workspaceApi.publish = async () => { workspaceApi.publish = original; throw new Error("Cloudflare rejected authentication. Check the token.") }
   })
@@ -2810,7 +2810,7 @@ test("list uses one state-aware lifecycle button and double-click configuration"
   alpha.networkAccess = true
   await openGraph(page, [alpha])
   await page.evaluate(async () => {
-    const { platformApi } = await import("/src/api/platform-api.ts")
+    const { platformApi } = await import("/src/api/platform-api.ts" as string) as typeof import("../src/api/platform-api")
     platformApi.openEnvironmentWindow = async () => true
   })
   const item = page.locator('[data-environment-id="Alpha"]')
@@ -2916,7 +2916,7 @@ test("list access switches reflect saved permissions and recover from disconnect
   await page.keyboard.press("Escape")
   await expect(pc).toBeChecked()
   await page.evaluate(async () => {
-    const { workspaceApi } = await import("/src/api/workspace-api.ts")
+    const { workspaceApi } = await import("/src/api/workspace-api.ts" as string) as typeof import("../src/api/workspace-api")
     const original = workspaceApi.unshare
     workspaceApi.unshare = async id => {
       workspaceApi.unshare = original
@@ -2930,7 +2930,7 @@ test("list access switches reflect saved permissions and recover from disconnect
   await pc.click()
   await expect(pc).not.toBeChecked()
   const saved = await page.evaluate(async () => {
-    const { workspaceApi } = await import("/src/api/workspace-api.ts")
+    const { workspaceApi } = await import("/src/api/workspace-api.ts" as string) as typeof import("../src/api/workspace-api")
     return workspaceApi.services("Alpha")
   })
   expect(saved.shares).toHaveLength(0)
@@ -3032,7 +3032,7 @@ test("CLI shares the environments canvas and keeps its session across views", as
   await page.getByRole("menuitem", { name: "Install tools", exact: true }).hover()
   for (const tool of terminalInstallers) await expect(page.getByRole("menuitem", { name: `Install ${tool.name}`, exact: true })).toBeVisible()
   await page.evaluate(async () => {
-    const module = "/src/api/host-terminal-api.ts", { hostTerminalApi } = await import(module)
+    const module = "/src/api/host-terminal-api.ts", { hostTerminalApi } = await import(module) as typeof import("../src/api/host-terminal-api")
     const original = hostTerminalApi.terminal
     Object.assign(window, { cliInstallerWrites: [] as string[] })
     hostTerminalApi.terminal = (request: Parameters<typeof original>[0]) => {
@@ -3086,7 +3086,7 @@ test("terminal tolerates a missed read and allows dismissing and reconnecting af
   await page.goto("/?environment=env-reconnect")
   await expect(page.getByRole("button", { name: "Install tools", exact: true })).toBeEnabled()
   await page.evaluate(async () => {
-    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module)
+    const module = "/src/api/workspace-api.ts", { workspaceApi } = await import(module) as typeof import("../src/api/workspace-api")
     const original = workspaceApi.terminal
     const control = { failures: 1, successfulReads: 0, creates: 0, closes: 0 }
     Object.assign(window, { terminalRecovery: control })

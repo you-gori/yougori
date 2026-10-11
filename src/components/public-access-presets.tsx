@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react"
-import { EyeIcon, EyeOffIcon, Globe2Icon, PlugZapIcon, PlusIcon, Trash2Icon } from "lucide-react"
+import { PlugZapIcon, PlusIcon, Trash2Icon } from "lucide-react"
 import { workspaceApi, type SetupTunnelConnection } from "@/api/workspace-api"
 import type { GraphEnvironment } from "@/components/graph-capabilities"
-import { sameEndpoint, type CapabilityEndpoint } from "@/components/graph-capabilities"
-import type { useCapabilityConnections } from "@/components/use-capability-connections"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -12,25 +10,7 @@ import { cloudflareTokenInput } from "@/lib/cloudflare-token"
 import { publicAccessPresetScope, readPublicAccessPresets, validServicePort, writePublicAccessPresets, type PublicAccessPreset } from "@/lib/public-access-presets"
 import { useTopicWalkthroughModal } from "@/lib/topic-walkthrough"
 
-type PresetWiring = Pick<ReturnType<typeof useCapabilityConnections>, "active" | "hovered" | "clickEndpoint" | "pointerDown">
-
-export function SavedSetupCard({ preset, onManage, wiring }: { preset: PublicAccessPreset; onManage(): void; wiring: PresetWiring }) {
-  const [domainVisible, setDomainVisible] = useState(false)
-  const endpoint: CapabilityEndpoint = { kind: "preset", id: preset.id }
-  const highlighted = sameEndpoint(wiring.active, endpoint) || sameEndpoint(wiring.hovered, endpoint)
-  return <div className="workspace-access-card workspace-domain-card relative min-w-0 shrink-0" data-saved-setups-card data-preset-card={preset.id}>
-    <Button aria-label={domainVisible ? `Manage ${preset.hostname}, app port ${preset.port}` : `Manage saved setup, app port ${preset.port}`} title={domainVisible ? `${preset.hostname} · app port :${preset.port}` : `Saved domain · app port :${preset.port}`} className={`workspace-access-button w-full min-w-0 ${highlighted ? "border-primary! ring-2 ring-primary/20" : ""}`} type="button" variant="outline" onClick={onManage}>
-      <span className="workspace-access-icon"><Globe2Icon aria-hidden="true" /></span>
-      <span className="truncate">{domainVisible ? preset.hostname : "Domain"} <span className="text-muted-foreground">:{preset.port}</span></span>
-    </Button>
-    <Button aria-label={domainVisible ? `Hide domain for port ${preset.port}` : `Show domain for port ${preset.port}`} aria-pressed={domainVisible} className="absolute! right-2 top-1/2 z-20 size-7! -translate-y-1/2" onClick={() => setDomainVisible(value => !value)} size="icon-xs" type="button" variant="ghost">
-      {domainVisible ? <EyeOffIcon aria-hidden="true" /> : <EyeIcon aria-hidden="true" />}
-    </Button>
-    <Button aria-label={`Connect saved setup for app port ${preset.port}`} aria-pressed={sameEndpoint(wiring.active, endpoint)} className="absolute! -bottom-px left-1/2 z-30 size-11! -translate-x-1/2 translate-y-1/2 touch-none rounded-full! p-0! hover:bg-transparent" data-preset-connection-point={preset.id} data-connection-side="bottom" onClick={() => wiring.clickEndpoint(endpoint)} onPointerDown={event => wiring.pointerDown(event, endpoint)} type="button" variant="ghost"><span aria-hidden="true" className="pointer-events-none size-4 rounded-full border-[3px] border-background bg-primary shadow-[0_0_0_1px_var(--primary)]" /></Button>
-  </div>
-}
-
-export function PublicAccessPresets({ environments, refresh, wiring }: { environments: GraphEnvironment[]; refresh(id: string): Promise<void>; wiring?: PresetWiring }) {
+export function PublicAccessPresets({ environments, refresh }: { environments: GraphEnvironment[]; refresh(id: string): Promise<void> }) {
   const [open, setOpen] = useState(false)
   const topic = useTopicWalkthroughModal(open)
   const [presets, setPresets] = useState(readPublicAccessPresets)
@@ -126,10 +106,8 @@ export function PublicAccessPresets({ environments, refresh, wiring }: { environ
     await saveList(presets.filter(item => item.id !== preset.id))
     setMessage("Setup removed. Active connections and tokens remembered for individual nodes remain until you disconnect or forget them there.")
   })
-  const openManager = () => { setPresets(readPublicAccessPresets()); setTarget(null); setError(""); setMessage(""); setOpen(true) }
 
   return <>
-    {wiring ? presets.map(preset => <SavedSetupCard key={preset.id} preset={preset} onManage={openManager} wiring={wiring} />) : null}
     <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!busy && !(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
       <DialogPopup data-instruction="public-presets-dialog" className="max-w-3xl" closeProps={{ disabled: busy }}>
         <DialogHeader><DialogTitle>Public access setups</DialogTitle><DialogDescription>Save a domain and app port once, then use it with any environment running an app on that port. Each domain needs its own dedicated Cloudflare tunnel and local bridge port.</DialogDescription></DialogHeader>

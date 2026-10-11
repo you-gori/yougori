@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"golang.org/x/sys/unix"
 )
 
 type hostFileInfo struct {
@@ -56,10 +59,38 @@ type hostShareRequest struct {
 	Connection bool   `json:"connection"`
 }
 
+// PC folders mount at a name derived from both identifiers, outside the
+// connection share directory. Joining them with "-" was ambiguous: "a-b"+"c"
+// and "a"+"b-c" shared one mount point, and a connection named "host-…" could
+// collide with a PC folder.
+const hostShareRoot = dataRoot + "/host-shares"
+
+func hostShareMountPath(id, shareID string) string {
+	digest := sha256.Sum256([]byte(id + "\x00" + shareID))
+	return path.Join(hostShareRoot, hex.EncodeToString(digest[:16]))
+}
+
+// Detach mount points left by an agent that used the ambiguous legacy names.
+// Their FUSE servers ended with that agent, so the mounts are already dead.
+func releaseLegacyHostShareMounts() {
+	entries, err := os.ReadDir(path.Join(dataRoot, "shares"))
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "host-") {
+			continue
+		}
+		legacy := path.Join(dataRoot, "shares", entry.Name())
+		_ = unix.Unmount(legacy, unix.MNT_DETACH)
+		_ = os.Remove(legacy)
+	}
+}
+
 func unmountHostShare(ctx context.Context, share *mountedHostShare) error {
 	bounded, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	if _, err := run(bounded, "opendock-mount-helper", strconv.Itoa(share.pid), "--unmount", share.destination); err != nil {
+	if _, err := run(bounded, "yougori-mount-helper", strconv.Itoa(share.pid), "--unmount", share.destination); err != nil {
 		return err
 	}
 	return share.server.Unmount()
@@ -248,9 +279,9 @@ func (s *server) attachHostShare(w http.ResponseWriter, r *http.Request) {
 	key := request.ID + ":" + request.ShareID
 	unlock := s.locks.lock("hostshare:" + key)
 	defer unlock()
-	destination := "/opendock/shared/my-pc/" + request.ShareID
+	destination := "/yougori/shared/my-pc/" + request.ShareID
 	if request.Connection {
-		destination = "/opendock/shared/" + request.ShareID
+		destination = "/yougori/shared/" + request.ShareID
 	}
 	pid, err := s.environmentPID(r.Context(), request.ID)
 	if err != nil {
@@ -280,7 +311,7 @@ func (s *server) attachHostShare(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = syscall.Mknod("/dev/fuse", syscall.S_IFCHR|0600, int(10<<8|229))
 	_, _ = run(r.Context(), "modprobe", "fuse")
-	source := path.Join(dataRoot, "shares", "host-"+request.ID+"-"+request.ShareID)
+	source := hostShareMountPath(request.ID, request.ShareID)
 	if err = os.MkdirAll(source, 0700); err != nil {
 		writeError(w, 500, err.Error())
 		return
@@ -298,7 +329,7 @@ func (s *server) attachHostShare(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Connection {
 		if err = ensureYougoriSharedAlias(pid); err != nil {
-			_, _ = run(r.Context(), "opendock-mount-helper", strconv.Itoa(pid), "--unmount", destination)
+			_, _ = run(r.Context(), "yougori-mount-helper", strconv.Itoa(pid), "--unmount", destination)
 			mount.Unmount()
 			writeError(w, 500, "cannot make the Yougori shared folder visible: "+err.Error())
 			return

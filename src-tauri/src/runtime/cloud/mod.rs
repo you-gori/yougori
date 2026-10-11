@@ -56,7 +56,9 @@ pub fn endpoints(info: &Value) -> Result<(Option<String>, Option<String>), Strin
     ))
 }
 pub fn validate(profile: &Profile, key_required: bool) -> Result<(), String> {
-    if !(2..=80).contains(&profile.name.trim().len()) {
+    // Characters, not bytes: environment rename allows 80 characters, and
+    // guest SSH reuses that name for its temporary connection profile.
+    if !(2..=80).contains(&profile.name.trim().chars().count()) {
         return Err("Use a name between 2 and 80 characters".into());
     }
     if !["aws", "google", "azure", "other"].contains(&profile.vendor.as_str()) {

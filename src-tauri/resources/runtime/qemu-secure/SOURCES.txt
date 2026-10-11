@@ -1,0 +1,78 @@
+# Yougori secure Windows VM runtime
+
+Native Windows x64 runtime, built September 2026. No host TPM passthrough,
+simulator control socket, private signing key, or Windows requirement bypass.
+
+Pinned source revisions (the build script fetches and checks these exact commits):
+
+| Component | Source | Revision | Local changes |
+| --- | --- | --- | --- |
+| QEMU 11.1 | https://github.com/qemu/qemu | 84f07211cc5b4fc6a371559bf8a5de4fb068e648 | `qemu-windows-tpm.patch`, `qemu-whpx-tpm-ppi.patch`, `qemu-whpx-reboot.patch`, `qemu-license-notices.patch`, `tpm-qemu.c`, `tpm-api.h` |
+| Microsoft/TCG TPM 2.0 reference | https://github.com/microsoft/ms-tpm-20-ref | ee21db0a941decd3cac67925ea3310873af60ab3 | `ms-tpm-openssl3.patch`, private Windows platform/library glue |
+| EDK2 stable202608 | https://github.com/tianocore/edk2 | 2970e5699ba6267f3384ffab20f96647578aebc8 | `edk2-svsm-probe.patch`; QEMU_PV_VARS, Secure Boot and TPM2 build options |
+| Microsoft Secure Boot objects | https://github.com/microsoft/secureboot_objects | 9a2bbf82e86b62694e44aba3a4068d8dd0c943d7 | Public x64 DBX only |
+
+EDK2 submodules are fixed by that commit. `scripts/build-secure-runtime.ps1`
+and its referenced shell scripts are the build instructions. Patches are
+under `runtime/security/`. Preserve these sources with binary releases.
+`qemu-license-notices.patch` is applied last. It adds dated notices to all ten
+modified upstream files, identifying changes first recorded on 2026-09-09 and
+notices added on 2026-09-13. It changes no executable code. The original build
+records remain intact; supplementary annotation/equivalence evidence is in
+`compliance/evidence/qemu-modification-notices.json`.
+The firmware configuration disables the interactive shell and network boot,
+and uses QEMU's authenticated variable service without requiring SMM.
+The existing Yougori `runtime/gpu/egl-bridge.c` is also built for this runtime
+to preserve explicit adapter selection; the source-built D3D11-only ANGLE DLL is
+kept separately as `libEGL_angle.dll`. `ANGLE_BUILD.json` and `ANGLE-NOTICES.txt`
+record its source revision, compiler inputs and embedded-component licenses.
+
+The TPM glue replaces the reference test simulator's entropy and NV-storage
+platform and uses Windows BCryptGenRandom. A private BSD-licensed
+`yougori-tpm-worker.exe` loads the reference core and OpenSSL in its own process.
+The GPL QEMU backend sends TPM command bytes and lifecycle requests through
+inherited anonymous pipes. QEMU does not load or link the TPM/OpenSSL library.
+There are no TPM listener ports, shared QEMU objects, or host TPM calls.
+The worker belongs to a private Windows job and exits with its QEMU parent.
+The existing `tpm.nv` format and identities are unchanged.
+The guest uses the TPM 2.0 TIS interface. The QEMU patch page-aligns and zeros
+the PPI backing mapping for WHPX; its guest-visible ACPI interface is unchanged.
+CRB's sub-page command RAM is not used with WHPX.
+The reboot patch adapts Mohamed Mediouni's [WHPX partition reset proposal](https://patchew.org/QEMU/20260421205749.55060-1-mohamed@unpredictable.fr/),
+with error checking. It resets hypervisor interrupt/partition state before
+restoring vCPU registers, without replacing the QEMU process or guest disks.
+The optional Windows API is unavailable on Windows 10 hosts; that host's reboot
+behavior is not certified by the Windows 11 regression test.
+`edk2-svsm-probe.patch` requires SEV-SNP before the VirtMmCommunication driver
+examines SNP secrets/SVSM metadata. Ordinary guest RAM survives a warm reset;
+Windows PE had left nonzero data there, causing a false SVSM detection and an
+invalid VMGEXIT instruction on this Intel/WHPX host. The patch keeps the
+authenticated QEMU variable service, TPM identity, and Secure Boot enforcement.
+OpenSSL conversion uses public APIs rather than the upstream private BIGNUM
+layout. Unimplemented ACT timers are disabled. TPM live migration is blocked.
+This is a software TPM, not a certified or physically tamper-resistant module.
+
+Shared libraries other than ANGLE are unmodified MSYS2 UCRT64 packages. `PACKAGES.txt` records
+their exact versions, upstream URLs, licenses and package build jobs. Their
+packaging recipes and patches are at https://github.com/msys2/MINGW-packages;
+source/package archives are available through https://packages.msys2.org/.
+ANGLE uses the retained package source inputs with `scripts/build-angle-runtime.py`
+and `runtime/gpu/angle-d3d11.gn`; do not replace it with the Vulkan-enabled
+package DLLs. Its compiled implementation closure is reviewed separately in
+`compliance/native.json` and `compliance/evidence/angle-build.json`.
+`licenses/` includes the toolchain's upstream license notices (including some
+build-only tool notices) plus the missing p11-kit 0.26.5 notices obtained from
+https://github.com/p11-glue/p11-kit/tree/0.26.5 and GNU LGPL v3 from
+https://www.gnu.org/licenses/lgpl-3.0.txt. Compiler/build tools are not bundled.
+
+`virt-firmware` 25.7 (https://gitlab.com/kraxel/virt-firmware) generates the
+initial JSON variable store. It includes public Microsoft 2011/2023 trust
+certificates, a generated public platform certificate, the Microsoft DBX,
+and the Authenticode hash of exactly Yougori's installer bootstrap. The
+temporary platform private key is neither saved nor distributed.
+
+The binary manifest covers the native binaries, firmware, public-variable
+template, dependencies and notices. Source builds are version-pinned, but are
+not claimed byte-identical: compiler versions, firmware timestamps and the
+generated public platform certificate can differ. Existing VMs pin their
+firmware digest; preserve the previous runtime when rebuilding/upgrading.

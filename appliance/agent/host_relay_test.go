@@ -106,7 +106,7 @@ func TestHostRelayRejectsMalformedFrames(t *testing.T) {
 }
 
 func TestCUDAStreamsRequireAuthentication(t *testing.T) {
-	t.Setenv("OPENDOCK_CUDA_MODE", "1")
+	t.Setenv("YOUGORI_CUDA_MODE", "1")
 	s := &server{token: strings.Repeat("a", 64)}
 	for _, handler := range []http.HandlerFunc{s.hostRelay, s.fabricStream, s.verifyCUDA, s.localServicePorts} {
 		reply := httptest.NewRecorder()
@@ -118,7 +118,7 @@ func TestCUDAStreamsRequireAuthentication(t *testing.T) {
 }
 
 func TestCUDALocalPublishingRejectsUntrustedDestinations(t *testing.T) {
-	t.Setenv("OPENDOCK_CUDA_MODE", "1")
+	t.Setenv("YOUGORI_CUDA_MODE", "1")
 	localPorts.Lock()
 	beforePorts, beforeAddress := localPorts.ports, localPorts.hostAddress
 	localPorts.Unlock()
@@ -142,7 +142,7 @@ func TestCUDALocalPublishingRejectsUntrustedDestinations(t *testing.T) {
 			t.Fatalf("private destination %s rejected: %d", address, reply.Code)
 		}
 	}
-	t.Setenv("OPENDOCK_CUDA_MODE", "0")
+	t.Setenv("YOUGORI_CUDA_MODE", "0")
 	reply := httptest.NewRecorder()
 	s.localServicePorts(reply, httptest.NewRequest("POST", "/", strings.NewReader(`{"ids":[],"ports":[3000],"hostAddress":"192.168.1.2"}`)))
 	if reply.Code != 400 {

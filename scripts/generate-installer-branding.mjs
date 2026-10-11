@@ -46,7 +46,7 @@ const artwork = [
     <path d="M326 267h64m-13-13 13 13-13 13" fill="none" stroke="#6e8074" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M40 389h640" stroke="#d9d4cb"/>
     ${text(40, 420, 12, "#666b65", "Containers. Virtual machines. One workspace.")}
-    ${text(680, 420, 11, "#666b65", "Yougori LLC", 'text-anchor="end"')}` },
+    ${text(680, 420, 11, "#666b65", "Yougori", 'text-anchor="end"')}` },
 ]
 
 // NSIS/WiX require uncompressed, bottom-up 24-bit Windows bitmaps, not PNGs

@@ -33,7 +33,7 @@ for object in "$output/objects/"*.o; do
   case "$object" in *_X509_X509_ECC.o|*_X509_X509_RSA.o) continue ;; esac
   printf '"%s"\n' "$(cygpath -m "$object")"
 done > "$output/link.rsp"
-gcc -shared -s -Wl,--gc-sections -o "$output/opendock-tpm.dll" @"$output/link.rsp" -lcrypto -lbcrypt -lwinpthread
-gcc -O2 -s "-ffile-prefix-map=$repo=/yougori" "-ffile-prefix-map=$(cygpath -m "$repo")=/yougori" -I"$repo/runtime/security" "$repo/runtime/security/tpm-init.c" -o "$output/opendock-tpm-init.exe"
-gcc -O2 -s -Wall -Wextra -Werror "-ffile-prefix-map=$repo=/yougori" "-ffile-prefix-map=$(cygpath -m "$repo")=/yougori" -I"$repo/runtime/security" "$repo/runtime/security/tpm-worker.c" -o "$output/opendock-tpm-worker.exe"
-echo "Built private TPM library: $output/opendock-tpm.dll"
+gcc -shared -s -Wl,--gc-sections -o "$output/yougori-tpm.dll" @"$output/link.rsp" -lcrypto -lbcrypt -lwinpthread
+gcc -O2 -s "-ffile-prefix-map=$repo=/yougori" "-ffile-prefix-map=$(cygpath -m "$repo")=/yougori" -I"$repo/runtime/security" "$repo/runtime/security/tpm-init.c" -o "$output/yougori-tpm-init.exe"
+gcc -O2 -s -Wall -Wextra -Werror "-ffile-prefix-map=$repo=/yougori" "-ffile-prefix-map=$(cygpath -m "$repo")=/yougori" -I"$repo/runtime/security" "$repo/runtime/security/tpm-worker.c" -o "$output/yougori-tpm-worker.exe"
+echo "Built private TPM library: $output/yougori-tpm.dll"

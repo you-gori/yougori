@@ -42,8 +42,8 @@ class LocalSnapshot(unittest.TestCase):
             checksum = hashlib.sha256(b'fixture').hexdigest()
             put('src-tauri/resources/runtime/appliance/SHA256SUMS', ''.join(
                 f'{checksum}  {name}\n' for name in ('appliance-base.qcow2', 'initramfs-virt', 'vmlinuz-virt')).encode())
-            put('src-tauri/resources/runtime/cuda/opendock-agent')
-            put('src-tauri/resources/runtime/cuda/SHA256SUMS', f'{checksum}  opendock-agent\n'.encode())
+            put('src-tauri/resources/runtime/cuda/yougori-agent')
+            put('src-tauri/resources/runtime/cuda/SHA256SUMS', f'{checksum}  yougori-agent\n'.encode())
             git('add', '.')
             developer_index = git('ls-files', '--stage', '-z')
             (source / 'src/deleted.ts').unlink()
@@ -52,10 +52,21 @@ class LocalSnapshot(unittest.TestCase):
             put('assets/new.svg', b'new asset')
             put('public/new.svg', b'new public asset')
             put('.env', b'never copy secrets')
+            # Unstaged new sources stop the snapshot instead of being collected or skipped.
+            result = subprocess.run(['python' if os.name == 'nt' else 'python3', str(script), str(destination),
+                                     '--runtime', str(runtime)], capture_output=True, text=True, env=clean_env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Stage new release sources', result.stderr)
+            self.assertIn('src/new.ts', result.stderr)
+            self.assertFalse(destination.exists())
+            git('add', 'src/new.ts', 'new-image.png', 'assets/new.svg', 'public/new.svg')
+            put('notes/private.txt', b'unrelated untracked file outside release sources')
+            developer_index = git('ls-files', '--stage', '-z')
             result = subprocess.run(['python' if os.name == 'nt' else 'python3', str(script), str(destination),
                                      '--runtime', str(runtime)], capture_output=True, text=True, env=clean_env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(git('ls-files', '--stage', '-z'), developer_index)
+            self.assertFalse((destination / 'notes/private.txt').exists())
             for name in ('src/new.ts', 'new-image.png', 'assets/new.svg', 'public/new.svg'):
                 self.assertEqual((destination / name).read_bytes(), (source / name).read_bytes())
             self.assertFalse((destination / '.env').exists())
@@ -78,6 +89,16 @@ class LocalSnapshot(unittest.TestCase):
                                      '--runtime', str(runtime)], capture_output=True, text=True, env=clean_env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((fresh / 'src-tauri/resources/cli').is_dir())
+            # Tracked credential-like files stop the snapshot.
+            for name in ('docs/.npmrc', 'scripts/release.p8', 'cli/.ssh/config', 'build/tauri.signing.json'):
+                put(name, b'secret')
+                git('add', '--force', name)
+                blocked = subprocess.run(['python' if os.name == 'nt' else 'python3', str(script), str(base / ('blocked-' + Path(name).name)),
+                                          '--runtime', str(runtime)], capture_output=True, text=True, env=clean_env)
+                self.assertNotEqual(blocked.returncode, 0, name)
+                self.assertIn('Potential credential', blocked.stderr)
+                git('rm', '--cached', '--quiet', name)
+                (source / name).unlink()
 
 
 if __name__ == '__main__':

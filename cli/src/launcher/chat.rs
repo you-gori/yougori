@@ -68,7 +68,7 @@ fn options(args: &[String]) -> Result<Options, String> {
             "--listen" if run && !listen => listen = true,
             "--closed-weights" | "--publish" if run && !publish => publish = true,
             "--folder" if run && !resources.contains_key("modelFolder") => {
-                i += 1; resources.insert("modelFolder".into(),json!(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--folder needs a model folder")?));
+                i += 1; resources.insert("modelFolder".into(),public::model_folder(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--folder needs a model folder")?)?);
             }
             "--quant" if run => {
                 i += 1;
@@ -1200,7 +1200,9 @@ mod tests {
         let args=|flags:&[&str]| ["model","run","owner/model"].into_iter().chain(flags.iter().copied()).map(str::to_owned).collect::<Vec<_>>();
         for flag in ["--closed-weights", "--publish"] {
             let parsed=options(&args(&["--nowfree",flag,"--listen","--folder","D:/Models/private"])).unwrap();
-            assert!(parsed.publish && parsed.listen);assert_eq!(parsed.resources["modelFolder"],"D:/Models/private");
+            assert!(parsed.publish && parsed.listen);assert_eq!(parsed.resources["modelFolder"],public::model_folder("D:/Models/private").unwrap());
+            let relative=options(&args(&["--nowfree","--folder","models/private"])).unwrap();
+            assert_eq!(relative.resources["modelFolder"],json!(std::env::current_dir().unwrap().join("models/private").to_string_lossy()));
             assert!(options(&args(&["--now",flag])).unwrap().publish);
         }
         for flags in [vec!["--closed-weights"],vec!["--publish"],vec!["--nowfree","--closed-weights","--publish"],vec!["--nowfree","--closed-weights","--closed-weights"],vec!["--nowfree","--publish","--publish"],vec!["--nowfree","--folder"],vec!["--nowfree","--folder","D:/M","--neocloud"]] {assert!(options(&args(&flags)).is_err());}

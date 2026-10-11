@@ -28,9 +28,33 @@ type terminalSession struct {
 	output       []byte
 	base         uint64
 	done         bool
+	doneAt       time.Time
 	changed      chan struct{}
 	streamOffset *uint64
 }
+
+// An exited shell keeps its output readable until the desktop closes it. Only
+// live shells count toward the limit; abandoned exited ones are pruned.
+const terminalLimit = 64
+const exitedTerminalRetention = 10 * time.Minute
+
+func (s *server) liveTerminals(now time.Time) int {
+	live := 0
+	s.terminals.Range(func(key, value interface{}) bool {
+		session := value.(*terminalSession)
+		session.mu.Lock()
+		done, doneAt := session.done, session.doneAt
+		session.mu.Unlock()
+		if !done {
+			live++
+		} else if !doneAt.IsZero() && now.Sub(doneAt) > exitedTerminalRetention {
+			s.terminals.CompareAndDelete(key, value)
+		}
+		return true
+	})
+	return live
+}
+
 type terminalRequest struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionId"`
@@ -72,20 +96,40 @@ func (s *server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/shares/detach", s.auth(method(http.MethodPost, s.detachHostShare)))
 }
 
+// ptyIoctl uses SyscallConn because os.File.Fd would switch the master to
+// blocking mode, silently disabling the write deadlines that bound input to a
+// guest that stopped reading.
+func ptyIoctl(file *os.File, request uintptr, argument unsafe.Pointer) error {
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var errno syscall.Errno
+	if err := raw.Control(func(fd uintptr) {
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, fd, request, uintptr(argument))
+	}); err != nil {
+		return err
+	}
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 func openPTY(cols, rows uint16) (*os.File, *os.File, error) {
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, nil, err
 	}
 	unlock := int32(0)
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(), syscall.TIOCSPTLCK, uintptr(unsafe.Pointer(&unlock))); errno != 0 {
+	if err := ptyIoctl(master, syscall.TIOCSPTLCK, unsafe.Pointer(&unlock)); err != nil {
 		master.Close()
-		return nil, nil, errno
+		return nil, nil, err
 	}
 	number := uint32(0)
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(), syscall.TIOCGPTN, uintptr(unsafe.Pointer(&number))); errno != 0 {
+	if err := ptyIoctl(master, syscall.TIOCGPTN, unsafe.Pointer(&number)); err != nil {
 		master.Close()
-		return nil, nil, errno
+		return nil, nil, err
 	}
 	slave, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", number), os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
@@ -109,7 +153,7 @@ func resizePTY(file *os.File, cols, rows uint16) {
 		rows = 200
 	}
 	size := [4]uint16{rows, cols, 0, 0}
-	syscall.Syscall(syscall.SYS_IOCTL, file.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&size)))
+	_ = ptyIoctl(file, syscall.TIOCSWINSZ, unsafe.Pointer(&size))
 }
 func (s *server) terminalCreate(w http.ResponseWriter, r *http.Request) {
 	var request terminalRequest
@@ -120,9 +164,7 @@ func (s *server) terminalCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "terminal already exists")
 		return
 	}
-	count := 0
-	s.terminals.Range(func(_, _ interface{}) bool { count++; return true })
-	if count >= 64 {
+	if s.liveTerminals(time.Now()) >= terminalLimit {
 		writeError(w, 429, "close an unused terminal first")
 		return
 	}
@@ -179,6 +221,7 @@ func (s *server) terminalCreate(w http.ResponseWriter, r *http.Request) {
 		master.Close()
 		session.mu.Lock()
 		session.done = true
+		session.doneAt = time.Now()
 		session.notifyLocked()
 		session.mu.Unlock()
 	}()

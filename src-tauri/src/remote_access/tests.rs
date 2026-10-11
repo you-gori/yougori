@@ -104,24 +104,41 @@ fn strong_salted_verifiers_and_no_plaintext_persistence() {
     );
 }
 #[tokio::test]
-async fn sign_in_rate_limit_is_bounded_globally_and_per_recipient() {
+async fn sign_in_rate_limit_is_per_recipient_and_client_so_floods_cannot_lock_out_everyone() {
     let dir = tempfile::tempdir().unwrap();
     let manager = RemoteAccess::new(dir.path().to_owned()).unwrap();
-    for _ in 0..5 {
-        manager.rate_limit("alice").await.unwrap();
+    for n in 0..5 {
+        manager.rate_limit(&format!("198.51.100.{n}"), "share\nalice").await.unwrap();
     }
-    assert!(manager.rate_limit("alice").await.is_err());
-    for n in 0..25 {
-        manager.rate_limit(&n.to_string()).await.unwrap();
+    assert!(manager.rate_limit("198.51.100.9", "share\nalice").await.is_err());
+    // One client spraying invented shares is stopped without affecting other recipients or clients.
+    for n in 0..10 {
+        manager.rate_limit("203.0.113.7", &format!("invented-{n}\nuser")).await.unwrap();
     }
-    assert!(manager.rate_limit("new user").await.is_err());
+    assert!(manager.rate_limit("203.0.113.7", "share\nbob").await.is_err());
+    assert!(manager.rate_limit("192.0.2.1", "share\nbob").await.is_ok());
     manager
         .attempts
         .lock()
         .await
         .iter_mut()
-        .for_each(|(at, _)| *at = now() - 61);
-    assert!(manager.rate_limit("alice").await.is_ok());
+        .for_each(|(at, _, _)| *at = now() - 61);
+    assert!(manager.rate_limit("198.51.100.9", "share\nalice").await.is_ok());
+    assert_eq!(client_address("POST / HTTP/1.1\r\nCF-Connecting-IP: 2001:db8::1\r\n"), "2001:db8::1");
+    assert_eq!(client_address("POST / HTTP/1.1\r\nCF-Connecting-IP: not an address\r\n"), "direct");
+    assert_eq!(client_address("POST / HTTP/1.1\r\n"), "direct");
+}
+#[test]
+fn unreadable_sharing_state_is_kept_aside_and_sharing_resets() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("remote-access.json"), b"{ damaged").unwrap();
+    let manager = RemoteAccess::new(dir.path().to_owned()).unwrap();
+    assert!(manager.db.blocking_lock().grants.is_empty());
+    assert!(!dir.path().join("remote-access.json").exists());
+    let kept = std::fs::read_dir(dir.path()).unwrap().filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("remote-access.json.unreadable-"))
+        .expect("damaged state is kept for inspection");
+    assert_eq!(std::fs::read(kept.path()).unwrap(), b"{ damaged");
 }
 #[test]
 fn share_urls_cannot_contain_passwords_or_redirect_to_plaintext() {
@@ -206,7 +223,7 @@ fn pc_files_are_scoped_read_only_and_chunk_bounded() {
         json!({"operation":"remove","path":""})
     )
     .is_err());
-    assert!(files::validate_pc_root(folder, root.path()).is_err());
+    assert!(files::validate_pc_root(folder, &[root.path().to_owned()]).is_err());
 }
 #[test]
 fn activity_is_bounded_and_contains_no_request_payloads() {

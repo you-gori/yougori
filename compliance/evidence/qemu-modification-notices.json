@@ -5,15 +5,14 @@
     "path": "runtime/security/qemu-license-notices.patch",
     "sha256": "60853788957c47fed4849afeabcf78c6fc4a3f84db49ac8cdd649185ba556784"
   },
-  "method": "Restored affected files from checksum-verified upstream archive; applied original patches and notice patch. Removing only the exact new comment headers reproduces all 12 recorded build-source hashes.",
-  "originalBuildRecordsPreserved": true,
+  "method": "Restored affected files from the checksum-verified upstream archive; applied the recorded functional patches, the notice patch and Yougori's TPM sources. This reproduces every compiled source file, and removing only the dated comment headers leaves exactly the functional sources.",
   "results": [
     {
       "path": "accel/accel-system.c",
       "annotated": true,
       "annotatedSha256": "863e569f1aaddf45236c2810127868124fe2d01927a27a7021c4ce4c1c156cee",
       "withoutNoticeSha256": "a008d09f5f4209fb85917f2f02a425a7f21236889f941f58e996bddbb4f81fb7",
-      "builtTreeSha256": "a008d09f5f4209fb85917f2f02a425a7f21236889f941f58e996bddbb4f81fb7",
+      "builtTreeSha256": "863e569f1aaddf45236c2810127868124fe2d01927a27a7021c4ce4c1c156cee",
       "matches": true
     },
     {
@@ -21,7 +20,7 @@
       "annotated": true,
       "annotatedSha256": "b8c593b67f61b6f1a8844995b4f128787a7770e35ec9176aa6a9d802dadcf1a5",
       "withoutNoticeSha256": "e12bb23fe5aac6f3982a5755f421cbcbac620d503051f57c36cfe6e81c8500f6",
-      "builtTreeSha256": "e12bb23fe5aac6f3982a5755f421cbcbac620d503051f57c36cfe6e81c8500f6",
+      "builtTreeSha256": "b8c593b67f61b6f1a8844995b4f128787a7770e35ec9176aa6a9d802dadcf1a5",
       "matches": true
     },
     {
@@ -29,31 +28,31 @@
       "annotated": true,
       "annotatedSha256": "711db9b181837ee549bf7493ecf9946dea4a21a6e734f2df2cd30cc235b8063d",
       "withoutNoticeSha256": "4822e5d9419093bf5b5b348b077076803ba287b8b23b326bc99864443a9f4a0d",
-      "builtTreeSha256": "4822e5d9419093bf5b5b348b077076803ba287b8b23b326bc99864443a9f4a0d",
+      "builtTreeSha256": "711db9b181837ee549bf7493ecf9946dea4a21a6e734f2df2cd30cc235b8063d",
       "matches": true
     },
     {
       "path": "backends/tpm/tpm-api.h",
       "annotated": false,
-      "annotatedSha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca",
-      "withoutNoticeSha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca",
-      "builtTreeSha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca",
+      "annotatedSha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93",
+      "withoutNoticeSha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93",
+      "builtTreeSha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93",
       "matches": true
     },
     {
       "path": "backends/tpm/tpm-qemu.c",
       "annotated": false,
-      "annotatedSha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92",
-      "withoutNoticeSha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92",
-      "builtTreeSha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92",
+      "annotatedSha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
+      "withoutNoticeSha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
+      "builtTreeSha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
       "matches": true
     },
     {
       "path": "hw/tpm/tpm_ppi.c",
       "annotated": true,
-      "annotatedSha256": "4debe5e84c97a2f352b196c3bdb30aff2ad192f9c19913d32d6577e95eaed6be",
-      "withoutNoticeSha256": "ab8d268b7db20cdb2e146ef281475c9b7857a8625273b114b0477423ff38929e",
-      "builtTreeSha256": "ab8d268b7db20cdb2e146ef281475c9b7857a8625273b114b0477423ff38929e",
+      "annotatedSha256": "a30eb3eac755a5657b730502b7837f67f8367df2056e0383be08171bdbf4ae52",
+      "withoutNoticeSha256": "be5a53973de1f24553462fd43f29798eddad442f8b383efd34e0d4f5f014b34e",
+      "builtTreeSha256": "a30eb3eac755a5657b730502b7837f67f8367df2056e0383be08171bdbf4ae52",
       "matches": true
     },
     {
@@ -61,7 +60,7 @@
       "annotated": true,
       "annotatedSha256": "340c90229075c263d6ab1a7612b2340fa92a23844ab9c8f0e69b48e8f0cec2e1",
       "withoutNoticeSha256": "5bc7042eb7483296e6f2b38fcbec8d8a52599c23ce69850b458ce2d0a41313f6",
-      "builtTreeSha256": "5bc7042eb7483296e6f2b38fcbec8d8a52599c23ce69850b458ce2d0a41313f6",
+      "builtTreeSha256": "340c90229075c263d6ab1a7612b2340fa92a23844ab9c8f0e69b48e8f0cec2e1",
       "matches": true
     },
     {
@@ -69,23 +68,23 @@
       "annotated": true,
       "annotatedSha256": "e67cbffdc03952841d5ac569f6cd4aa2449c7d07e6dcb29a5231d511e6cb92a6",
       "withoutNoticeSha256": "d4d6e67d7c0ab44a9fbf518d0f4c43dfb7a0d86222560a0d02bb36d742fd030c",
-      "builtTreeSha256": "d4d6e67d7c0ab44a9fbf518d0f4c43dfb7a0d86222560a0d02bb36d742fd030c",
+      "builtTreeSha256": "e67cbffdc03952841d5ac569f6cd4aa2449c7d07e6dcb29a5231d511e6cb92a6",
       "matches": true
     },
     {
       "path": "meson.build",
       "annotated": true,
-      "annotatedSha256": "346891d52f5ba98ae3a600f8b0a14b92e06250764c3b99dd9de9ad8e1920744f",
-      "withoutNoticeSha256": "ca581e764d9291448f4cc0f6bc39fac32cac37577378329e2e140308ec400991",
-      "builtTreeSha256": "ca581e764d9291448f4cc0f6bc39fac32cac37577378329e2e140308ec400991",
+      "annotatedSha256": "04920208f0e40cdde0c06b4f4da0bf79b794ab93cc147770187e3c50defe380e",
+      "withoutNoticeSha256": "6fb56c9181aa2f98740bdd61132e0e28efc94525cc7c716447bf8ca50019913f",
+      "builtTreeSha256": "04920208f0e40cdde0c06b4f4da0bf79b794ab93cc147770187e3c50defe380e",
       "matches": true
     },
     {
       "path": "qapi/tpm.json",
       "annotated": true,
-      "annotatedSha256": "89baab07e09e57ab6860b8ebf0a7d99fd6c0b867a59a8c686ad3bf691e4ac887",
-      "withoutNoticeSha256": "01d98aed09613f0aecbdbbd11b4f75210e3d74e71ac808b5da62a5275733cbd8",
-      "builtTreeSha256": "01d98aed09613f0aecbdbbd11b4f75210e3d74e71ac808b5da62a5275733cbd8",
+      "annotatedSha256": "a445f6beb1a94537ceec95daab3b3dcc3255cbc9d61e359d43abb3d6f8d1dcdd",
+      "withoutNoticeSha256": "a2bf60be2e085bec5f1ddf1fb7d9ee16255862ee5549e00e97f1d2c759b3ca14",
+      "builtTreeSha256": "a445f6beb1a94537ceec95daab3b3dcc3255cbc9d61e359d43abb3d6f8d1dcdd",
       "matches": true
     },
     {
@@ -93,15 +92,15 @@
       "annotated": true,
       "annotatedSha256": "b9c57c7725918d157cc864e2f08cb9eb62586525aa98282a8c7aa65c3a4ffc9b",
       "withoutNoticeSha256": "17d31bd0c9bb5b5e879d7104ceb3dbb9104056c7d7d759f19ddab65a7255cba4",
-      "builtTreeSha256": "17d31bd0c9bb5b5e879d7104ceb3dbb9104056c7d7d759f19ddab65a7255cba4",
+      "builtTreeSha256": "b9c57c7725918d157cc864e2f08cb9eb62586525aa98282a8c7aa65c3a4ffc9b",
       "matches": true
     },
     {
       "path": "system/tpm-hmp-cmds.c",
       "annotated": true,
-      "annotatedSha256": "a02dabceb5b77d7ce8f5efe8a8138d9977ad782f3096612a57e0eac10095f2e7",
-      "withoutNoticeSha256": "bf112106aba06ddf369cdf5b0e545d6e877cf64a370cbe344f9c96e6e0e5da87",
-      "builtTreeSha256": "bf112106aba06ddf369cdf5b0e545d6e877cf64a370cbe344f9c96e6e0e5da87",
+      "annotatedSha256": "524e07fb6c27b2f667e4c2765ae2178804c2a740e4ddee5c7bb2a48bdf119c71",
+      "withoutNoticeSha256": "5978fff60db9d4506f1a5efcfa29bfd32fd98ba14d4461fe82bd70ab61563f53",
+      "builtTreeSha256": "524e07fb6c27b2f667e4c2765ae2178804c2a740e4ddee5c7bb2a48bdf119c71",
       "matches": true
     }
   ]

@@ -5,13 +5,20 @@ const path = require('path');
 const crypto = require('crypto');
 // Offsets must remain exactly representable in the file protocol.
 const MAX = Number.MAX_SAFE_INTEGER;
+// Folds a name as case-insensitive filesystems compare it, like sync::folded in the CLI.
+function fold(name) {
+  return name.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '').replace(/[. ]+$/, '').toUpperCase();
+}
 module.exports = function create(root) {
   let upload;
+  let inventory;
   const sqlite = require('./sqlite.cjs')(relative => target(relative));
   const hashes = new Map();
+  // The PC decides which names it can store; the guest refuses only unsafe paths.
+  // Linux stores ':' in names, but on Windows it would address an NTFS stream.
   function target(relative, directory = false, inspectLinks = false) {
     if (relative === '' && directory) return root;
-    if (typeof relative !== 'string' || !relative || relative.length > 4096 || /[\\\x00-\x1f:]/.test(relative) || relative.split('/').some(p => !p || p === '.' || p === '..' || p.startsWith('.yougori-sync-'))) throw Error('Invalid sync path');
+    if (typeof relative !== 'string' || !relative || relative.length > 4096 || /[\\\x00-\x1f]/.test(relative) || (process.platform === 'win32' && relative.includes(':')) || relative.split('/').some(p => !p || p === '.' || p === '..' || p.startsWith('.yougori-sync-'))) throw Error('Invalid sync path');
     let current = root;
     if (fs.lstatSync(root).isSymbolicLink()) throw Error('Workspace is a symlink');
     for (const part of relative.split('/')) {
@@ -39,6 +46,43 @@ module.exports = function create(root) {
       if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs || after.ino !== stat.ino) throw Error('File changed during sync; retrying');
       return digest.digest('hex');
     } finally { fs.closeSync(fd); }
+  }
+  // Parents before children. Links are reported, never followed. Pruned folders
+  // (host-only, or nested too deeply) are reported without their contents.
+  function walk(prune, report) {
+    if (fs.lstatSync(root).isSymbolicLink()) throw Error('Workspace is a symlink');
+    const pruned = new Set(prune.map(fold));
+    const entries = [];
+    const folders = [''];
+    while (folders.length) {
+      const folder = folders.pop();
+      const dir = folder ? path.join(root, folder) : root;
+      let names;
+      try { names = fs.readdirSync(dir); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') continue; throw e; }
+      const children = [];
+      for (const name of names.sort()) {
+        if (name.startsWith('.yougori-sync-')) continue;
+        const relative = folder ? `${folder}/${name}` : name;
+        let stat;
+        try { stat = fs.lstatSync(path.join(dir, name), { bigint: true }); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+        if (stat.isSymbolicLink()) entries.push({ path: relative, kind: 'link' });
+        else if (stat.isDirectory()) {
+          const deep = relative.split('/').length >= 128;
+          entries.push(pruned.has(fold(name)) || deep ? { path: relative, kind: 'dir', pruned: true } : { path: relative, kind: 'dir' });
+          if (!pruned.has(fold(name)) && !deep) children.push(relative);
+        } else if (stat.isFile()) {
+          let database = false;
+          // Names the helper cannot address are reported as files; the PC holds them.
+          try { database = sqlite.request({ op: 'sqlite-detect', path: relative }).database; } catch {}
+          entries.push({ path: relative, kind: database ? 'sqlite' : 'file', stamp: `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` });
+        } else entries.push({ path: relative, kind: 'other' });
+        if (entries.length > 2000000) throw Error('The workspace has too many files for two-way sync; use one-way sync');
+        // Keep the PC's request alive while a large workspace is inventoried.
+        if (entries.length % 2000 === 0) report({ phase: 'inventory', done: entries.length });
+      }
+      folders.push(...children.reverse());
+    }
+    return entries;
   }
   function cachedHash(file) {
     let stat;
@@ -107,16 +151,25 @@ module.exports = function create(root) {
         if (!Array.isArray(r.paths) || r.paths.length > 64) throw Error('Invalid link batch');
         return { skipped: r.paths.filter(p => target(p, false, true) === null) };
       }
-      case 'list': {
-        const dir = target(r.path, true);
-        const names = fs.readdirSync(dir).filter(n => !n.startsWith('.yougori-sync-')).sort();
+      case 'tree': {
+        // The whole workspace in a few replies instead of one request per folder.
+        // The first page walks it once; later pages read that snapshot.
+        if (!Array.isArray(r.prune) || r.prune.length > 64 || r.prune.some(n => typeof n !== 'string')) throw Error('Invalid sync inventory request');
         const offset = Number.isSafeInteger(r.offset) && r.offset >= 0 ? r.offset : 0;
-        const entries = names.slice(offset, offset + 64).map(name => {
-          const s = fs.lstatSync(path.join(dir, name));
-          const relative = r.path ? `${r.path}/${name}` : name;
-          return { name, kind: s.isSymbolicLink() ? 'link' : s.isDirectory() ? 'dir' : s.isFile() ? (sqlite.request({op:'sqlite-detect',path:relative}).database ? 'sqlite' : 'file') : 'other' };
-        });
-        return { entries, next: offset + entries.length < names.length ? offset + entries.length : null };
+        if (offset === 0) inventory = { id: crypto.randomBytes(12).toString('hex'), entries: walk(r.prune, report) };
+        else if (!inventory || inventory.id !== r.cursor || offset > inventory.entries.length) throw Error('Sync inventory expired; retrying');
+        const entries = [];
+        let size = 0, next = offset;
+        while (next < inventory.entries.length && entries.length < 4096) {
+          const bytes = Buffer.byteLength(JSON.stringify(inventory.entries[next])) + 1;
+          if (entries.length && size + bytes > 160 * 1024) break;
+          entries.push(inventory.entries[next]);
+          size += bytes;
+          next += 1;
+        }
+        const cursor = inventory.id;
+        if (next >= inventory.entries.length) inventory = undefined;
+        return { entries, cursor, next: inventory ? next : null };
       }
       case 'hash': {
         const file = target(r.path);

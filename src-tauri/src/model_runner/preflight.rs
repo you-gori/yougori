@@ -89,6 +89,8 @@ pub(crate) fn inspect_gguf(model:&str,metadata:&Value,label:&str,chosen:&[Value]
         "resources":{"cpuRecommended":2,"memoryGbRecommended":4,"storageGbRecommended":(gb*1.05+6.0).ceil(),"gpuMemoryGbEstimated":(gb*1.15+1.5).ceil(),"weightsBytes":bytes,"estimateOnly":true},
         "downloads":{"location":"persistent guest model volume","revisionPinned":true,"safetensorsOnly":false,"checksumVerification":"requiredBeforeLoad","checksumsVerified":false,"hostWeightImportRequired":false},"remoteCodeAllowed":false})
 }
+/// Gated or private repositories need the saved Hugging Face token; public ones never receive it.
+pub(crate) fn hub_token_required(metadata:&Value)->bool{metadata["private"]==true||!matches!(metadata["gated"],Value::Null|Value::Bool(false))}
 pub(super) async fn preflight(model:&str)->Result<Value,String>{preflight_quant(model,None).await}
 /// GGUF repositories run with llama.cpp (quantized, so they fit consumer GPUs); others use Transformers safetensors.
 pub(super) async fn preflight_quant(model:&str,quant:Option<&str>)->Result<Value,String>{
@@ -101,13 +103,20 @@ pub(crate) async fn preflight_pinned(model:&str,quant:Option<&str>,revision:Opti
     let metadata=fetch_metadata(&client,url,model).await?;
     let sha=metadata["sha"].as_str().filter(|s|s.len()==40&&s.bytes().all(|b|b.is_ascii_hexdigit())).ok_or("Model metadata did not provide an immutable revision")?;
     let files=metadata["siblings"].as_array().cloned().unwrap_or_default();
-    if let Some((label,chosen))=gguf_choice(&files,quant)?{return Ok(inspect_gguf(model,&metadata,&label,&chosen))}
+    let token_required=hub_token_required(&metadata);
+    if let Some((label,chosen))=gguf_choice(&files,quant)?{let mut result=inspect_gguf(model,&metadata,&label,&chosen);result["hubTokenRequired"]=json!(token_required);return Ok(result)}
     if quant.is_some(){return Err(format!("{model} has no GGUF files; --quant chooses a GGUF quantization"))}
     let config=fetch_metadata(&client,format!("https://huggingface.co/{model}/resolve/{sha}/config.json"),model).await?;
-    Ok(inspect(model,&metadata,&config))
+    let mut result=inspect(model,&metadata,&config);result["hubTokenRequired"]=json!(token_required);
+    Ok(result)
 }
 #[tauri::command]
-pub async fn model_preflight(model:String,quant:Option<String>,folder:Option<String>)->Result<Value,String>{if let Some(folder)=folder{return super::local::preflight(normalize_model(&model)?,folder,quant).await;}let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);Ok(result)}
+pub async fn model_preflight(model:String,quant:Option<String>,folder:Option<String>,window:crate::WebviewWindow)->Result<Value,String>{
+    // Inspecting a local model folder reads a raw host path: dashboard or same-user CLI only.
+    if folder.is_some(){crate::host_terminal::require_dashboard(window.label())?;}
+    preflight_model(model,quant,folder).await
+}
+pub(crate) async fn preflight_model(model:String,quant:Option<String>,folder:Option<String>)->Result<Value,String>{if let Some(folder)=folder{return super::local::preflight(normalize_model(&model)?,folder,quant).await;}let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);Ok(result)}
 #[tauri::command]
 pub async fn model_support_task(model:String,agent:String,quant:Option<String>)->Result<Value,String>{
     let preflight=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;
@@ -134,6 +143,11 @@ pub async fn model_support_task(model:String,agent:String,quant:Option<String>)-
         assert_eq!(clef["supported"],true);assert_eq!(clef["runner"],"yougori-clef");assert_eq!(clef["task"],"structured-decision");
         let security=inspect("superagent-ai/security-one-27b",&json!({"siblings":[{"rfilename":"model.safetensors"}],"pipeline_tag":"text-classification"}),&json!({"model_type":"qwen3_5"}));
         assert_eq!(security["supported"],true);assert_eq!(security["runner"],"yougori-security-one");
+    }
+    #[test]fn only_gated_or_private_repositories_need_the_hub_token(){
+        for(metadata,required)in[(json!({"gated":false,"private":false}),false),(json!({}),false),(json!({"gated":"auto"}),true),(json!({"gated":"manual","private":false}),true),(json!({"gated":false,"private":true}),true)]{
+            assert_eq!(hub_token_required(&metadata),required,"{metadata}");
+        }
     }
     #[test]fn decision_models_never_get_a_chat_deployment(){let meta=json!({"sha":"a".repeat(40),"siblings":[{"rfilename":"joint_head_config.json"},{"rfilename":"joint_head.safetensors"}],"pipeline_tag":"text-generation"});let result=inspect("example/joint-decision",&meta,&json!({"model_type":"qwen3_5"}));assert_eq!(result["supported"],false);assert_eq!(result["task"],"structured-decision");assert_eq!(result["dependencies"]["applicable"],false);assert_eq!(result["dependencies"]["requiresDedicatedSdk"],true);assert!(result["dependencies"]["pythonMinimum"].is_null());}
     #[test]fn unknown_architectures_and_unsafe_weights_are_rejected_before_creation(){for(config,files)in[(json!({"model_type":"future_unknown"}),json!([{"rfilename":"model.safetensors"}])),(json!({"model_type":"llama"}),json!([{"rfilename":"pytorch_model.bin"}]))]{let result=inspect("test/model",&json!({"siblings":files}),&config);assert_eq!(result["supported"],false);}}

@@ -162,7 +162,11 @@ pub async fn vault_status(app: AppHandle, window: WebviewWindow) -> Result<Value
             || !yougori_vault::platform::installed_binary()?.exists();
         match yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await {
             Ok(mut value) => {
-                value["updateRequired"] = json!(update_required);
+                let unregistered = crate::vault_setup::unregistered(&value);
+                value["updateRequired"] = json!(update_required || unregistered);
+                if unregistered {
+                    value["notice"] = json!("Personal Vault does not recognize this copy of Yougori yet. Select Update vault to register it.");
+                }
                 value["gateway"] = crate::vault_gateway::status(&app).await;
                 value["setup"] = crate::vault_setup::status(&app).await?;
                 Ok(value)
@@ -191,7 +195,10 @@ pub async fn vault_control(
         let request = match action.as_str() {
             "start" => {
                 let bundled = bundled_broker(&app)?;
-                yougori_vault::platform::launch(&bundled, true)?;
+                // Elevation waits for the administrator prompt and installer.
+                tokio::task::spawn_blocking(move || yougori_vault::platform::launch(&bundled, true))
+                    .await
+                    .map_err(|_| "Could not start vault protection")??;
                 return Ok(json!({"starting":true}));
             }
             "manage" => Request::Manage {},

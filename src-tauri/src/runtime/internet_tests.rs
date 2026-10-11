@@ -52,6 +52,47 @@ async fn live_container_internet_cable_preserves_process_and_routes() -> Result<
 }
 
 #[tokio::test]
+#[ignore = "boots a disposable OCI appliance; containerd restarts the container by its own policy"]
+async fn container_restarted_by_its_policy_regains_its_internet() -> Result<(), String> {
+    let data = tempfile::tempdir().unwrap();
+    let manager = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path())?;
+    let id = "env-restart-internet";
+    let fetch = "wget -T 8 -qO- https://example.com | grep -q 'Example Domain'";
+    // Exits with an error after a while, so containerd starts it again in a new network namespace.
+    let command = "sh -c 'sleep 40; exit 1'";
+    let started = |stat: &str| stat.split_whitespace().nth(21).map(str::to_owned);
+    let result = async {
+        manager.provision_container(id, "quay.io/libpod/alpine:latest", command, &policy(), true, false).await?;
+        let mut options = manager.workload_options(id)?;
+        options.restart = "on-failure".into();
+        manager.save_workload_options(id, &options)?;
+        manager.update_container_configuration(id, true, false, true, false, command, &policy()).await?;
+        manager.container_action(id, "start", true).await?;
+        let first = started(&manager.execute_container_command(id, "cat /proc/1/stat").await?.stdout);
+        assert_eq!(manager.execute_container_command(id, fetch).await?.exit_code, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(150);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let Ok(stat) = manager.execute_container_command(id, "cat /proc/1/stat").await else { continue };
+            if stat.exit_code == 0 && started(&stat.stdout).is_some() && started(&stat.stdout) != first {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "containerd did not restart the container");
+        }
+        // Nothing on the host asked for this: the agent restores the enabled uplink.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while manager.execute_container_command(id, fetch).await?.exit_code != 0 {
+            assert!(std::time::Instant::now() < deadline, "restarted container stayed offline");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        manager.delete_container(id).await?;
+        Ok(())
+    }.await;
+    manager.shutdown_all().await;
+    result
+}
+
+#[tokio::test]
 #[ignore = "boots a disposable full VM and verifies its live link through QMP"]
 async fn live_vm_internet_cable_preserves_process_and_display() -> Result<(), String> {
     let data = tempfile::tempdir().unwrap();

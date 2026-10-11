@@ -1,4 +1,5 @@
 import { run } from "@/api/platform-api"
+import { BACKUP_EXTENSION } from "@/lib/legacy-names"
 import type { PlatformState } from "@/types/platform"
 
 export const localBackupApi = {
@@ -11,7 +12,7 @@ export const localBackupApi = {
     if (!("__TAURI_INTERNALS__" in window)) return run("choose_local_backup", {}, () => importing ? "C:\\Backups\\backup.yougori" : "C:\\Backups")
     const { open } = await import("@tauri-apps/plugin-dialog")
     const path = await open(importing
-      ? { title: "Open a Yougori backup", filters: [{ name: "Yougori backup", extensions: ["yougori", "opendock"] }], multiple: false }
+      ? { title: "Open a Yougori backup", filters: [{ name: "Yougori backup", extensions: ["yougori", BACKUP_EXTENSION] }], multiple: false }
       : { title: "Choose where to save the backup folder", directory: true, multiple: false })
     return typeof path === "string" ? path : null
   },

@@ -332,10 +332,13 @@ mod windows {
     }
 
     fn runtime_args(args: &[OsString], disk: &Path, name: &str) -> bool {
-        let previous = name.strip_prefix("Yougori ").map(|suffix| format!("OpenDock {suffix}"));
-        let microvm = name.strip_prefix("Yougori ").or_else(|| name.strip_prefix("OpenDock "))
-            .filter(|_| name != "Yougori Internal OCI Runtime" && name != "OpenDock Internal OCI Runtime")
-            .map(|id| [format!("Yougori microVM {id}"), format!("OpenDock microVM {id}")]);
+        use yougori_cli::legacy_names;
+        let previous = legacy_names::vm_name(name);
+        let legacy_prefix = format!("{} ", legacy_names::PRODUCT);
+        let legacy_runtime = format!("{} Internal OCI Runtime", legacy_names::PRODUCT);
+        let microvm = name.strip_prefix("Yougori ").or_else(|| name.strip_prefix(legacy_prefix.as_str()))
+            .filter(|_| name != "Yougori Internal OCI Runtime" && name != legacy_runtime)
+            .map(|id| [format!("Yougori microVM {id}"), format!("{} microVM {id}", legacy_names::PRODUCT)]);
         let named = args.windows(2).any(|pair| {
             pair[0] == "-name" && (pair[1] == name
                 || previous.as_ref().is_some_and(|value| pair[1] == value.as_str())
@@ -528,7 +531,7 @@ mod windows {
         use super::*;
 
         fn fixture_command(exe: &Path, disk: &Path) -> std::process::Command {
-            fixture_command_named(exe, disk, "OpenDock Internal OCI Runtime")
+            fixture_command_named(exe, disk, "Yougori Internal OCI Runtime")
         }
 
         fn fixture_command_named(exe: &Path, disk: &Path, name: &str) -> std::process::Command {
@@ -567,13 +570,13 @@ mod windows {
         #[test]
         #[ignore = "internal subprocess helper for the isolated orphan recovery test"]
         fn recovery_fixture_parent() {
-            let Some(directory) = std::env::var_os("OPENDOCK_RECOVERY_FIXTURE_DIR") else {
+            let Some(directory) = std::env::var_os("YOUGORI_RECOVERY_FIXTURE_DIR") else {
                 return;
             };
             let directory = PathBuf::from(directory);
             let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources/runtime/qemu/qemu-system-x86_64.exe");
-            let name = std::env::var("OPENDOCK_RECOVERY_FIXTURE_NAME").unwrap_or_else(|_| "OpenDock Internal OCI Runtime".into());
+            let name = std::env::var("YOUGORI_RECOVERY_FIXTURE_NAME").unwrap_or_else(|_| "Yougori Internal OCI Runtime".into());
             let child = fixture_command_named(&exe, &directory.join("system.qcow2"), &name)
                 .spawn()
                 .unwrap();
@@ -611,7 +614,7 @@ mod windows {
                     "runtime::recovery::windows::tests::recovery_fixture_parent",
                     "--ignored",
                 ])
-                .env("OPENDOCK_RECOVERY_FIXTURE_DIR", temp.path())
+                .env("YOUGORI_RECOVERY_FIXTURE_DIR", temp.path())
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -657,7 +660,7 @@ mod windows {
             let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("resources/runtime/qemu/qemu-system-x86_64.exe");
             let allowed = vec![exe.clone()];
-            let name = "OpenDock env-test-vm";
+            let name = "Yougori env-test-vm";
             let mut owned = fixture_command_named(&exe, &disk, name).spawn().unwrap();
             // Check both the startup guard and refusal to kill a live owner's runtime.
             let busy = check_named(&disk, &allowed, false, name);
@@ -676,8 +679,8 @@ mod windows {
                     "runtime::recovery::windows::tests::recovery_fixture_parent",
                     "--ignored",
                 ])
-                .env("OPENDOCK_RECOVERY_FIXTURE_DIR", temp.path())
-                .env("OPENDOCK_RECOVERY_FIXTURE_NAME", name)
+                .env("YOUGORI_RECOVERY_FIXTURE_DIR", temp.path())
+                .env("YOUGORI_RECOVERY_FIXTURE_NAME", name)
                 .status()
                 .unwrap();
             assert!(status.success());
@@ -703,7 +706,7 @@ mod windows {
             std::fs::write(&other_disk, b"keep me").unwrap();
             check_named(&other_disk, &allowed, true, name).unwrap();
             assert_ne!(unsafe { WaitForSingleObject(guard.0 .0, 0) }, WAIT_OBJECT_0);
-            check_named(&disk, &allowed, true, "OpenDock env-unrelated").unwrap();
+            check_named(&disk, &allowed, true, "Yougori env-unrelated").unwrap();
             assert_ne!(unsafe { WaitForSingleObject(guard.0 .0, 0) }, WAIT_OBJECT_0);
             // An abandoned runtime is reclaimed by an ordinary start, without
             // asking the user to recover it first.
@@ -723,7 +726,7 @@ mod windows {
             let mut args: Vec<OsString> = [
                 "qemu",
                 "-name",
-                "OpenDock Internal OCI Runtime",
+                "Yougori Internal OCI Runtime",
                 "-blockdev",
                 &block,
             ]
@@ -734,7 +737,7 @@ mod windows {
             assert!(!appliance_args(&args, &temp.path().join("other.qcow2")));
             args[2] = "User VM".into();
             assert!(!appliance_args(&args, &disk));
-            args[2] = "OpenDock Internal OCI Runtime".into();
+            args[2] = "Yougori Internal OCI Runtime".into();
             args[4] = "not JSON".into();
             assert!(!appliance_args(&args, &disk));
         }
@@ -745,11 +748,11 @@ mod windows {
             let disk = temp.path().join("system.qcow2");
             std::fs::write(&disk, b"fixture").unwrap();
             let block = serde_json::json!({"driver":"file", "filename":disk}).to_string();
-            for name in ["OpenDock env-target", "OpenDock microVM env-target"] {
+            for name in ["Yougori env-target", "Yougori microVM env-target"] {
                 let args: Vec<OsString> = ["qemu", "-name", name, "-blockdev", &block].into_iter().map(Into::into).collect();
-                assert!(runtime_args(&args, &disk, "OpenDock env-target"));
-                assert!(!runtime_args(&args, &disk, "OpenDock env-other"));
-                assert!(!runtime_args(&args, &temp.path().join("other.qcow2"), "OpenDock env-target"));
+                assert!(runtime_args(&args, &disk, "Yougori env-target"));
+                assert!(!runtime_args(&args, &disk, "Yougori env-other"));
+                assert!(!runtime_args(&args, &temp.path().join("other.qcow2"), "Yougori env-target"));
                 assert!(!appliance_args(&args, &disk));
             }
         }

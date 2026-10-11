@@ -113,14 +113,14 @@ static Status launch(BootServices *bs, Handle parent, Handle device, const Char 
     status = bs->load_image(0, parent, path, buffer, buffer_size, &child);
     if (buffer) bs->free_pool(buffer);
     bs->free_pool(path);
-    if (ERROR(status)) { trace("OPENDOCK_BOOT_LOAD_FAILED"); return status; }
-    trace(windows ? "OPENDOCK_BOOT_WINDOWS_HANDOFF" : "OPENDOCK_BOOT_INSTALLER_HANDOFF");
+    if (ERROR(status)) { trace("YOUGORI_BOOT_LOAD_FAILED"); return status; }
+    trace(windows ? "YOUGORI_BOOT_WINDOWS_HANDOFF" : "YOUGORI_BOOT_INSTALLER_HANDOFF");
     size_t exit_size = 0;
     Char *exit_data = 0;
     status = bs->start_image(child, &exit_size, &exit_data);
     if (exit_data) bs->free_pool(exit_data);
     bs->unload_image(child);
-    trace("OPENDOCK_BOOT_INSTALLER_RETURNED");
+    trace("YOUGORI_BOOT_INSTALLER_RETURNED");
     trace_status(status);
     return status;
 }
@@ -130,7 +130,7 @@ Status efi_main(Handle image, SystemTable *system) {
     LoadedImage *self = 0;
     Handle *handles = 0;
     size_t count = 0;
-    trace("OPENDOCK_BOOT_START");
+    trace("YOUGORI_BOOT_START");
     bs->set_watchdog(0, 0, 0, 0);
     /* The firmware can launch this USB helper before it has connected the
      * lower-priority CD's UDF filesystem driver. Enumerate devices first. */
@@ -160,7 +160,7 @@ Status efi_main(Handle image, SystemTable *system) {
         }
     }
     bs->free_pool(handles);
-    trace("OPENDOCK_BOOT_NO_INSTALLER");
+    trace("YOUGORI_BOOT_NO_INSTALLER");
     system->output->output(system->output,
         L"Yougori could not start this installer.\r\nUse a bootable x64 ISO, or select an already-installed VM disk.\r\nYour existing disk has not been erased.\r\n");
     /* Keep actionable text visible instead of dropping beginners into a shell. */

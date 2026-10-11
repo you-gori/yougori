@@ -105,9 +105,9 @@ index 6c73a45..76d6ece 100644
 -#  define EC_POINT_get_affine_coordinates EC_POINT_get_affine_coordinates_GFp
 -#  define EC_POINT_set_affine_coordinates EC_POINT_set_affine_coordinates_GFp
 -#endif  // OPENSSL_VERSION_NUMBER
-+/* OpenDock: use the public OpenSSL API, never private bignum_st layouts. */
++/* Yougori: use the public OpenSSL API, never private bignum_st layouts. */
 +#if OPENSSL_VERSION_NUMBER < 0x30000000L
-+#  error OpenDock requires OpenSSL 3 or newer
++#  error Yougori requires OpenSSL 3 or newer
 +#endif
 +static inline void od_bn_free(BIGNUM **value) { BN_clear_free(*value); }
  

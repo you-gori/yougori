@@ -69,7 +69,7 @@ func portableSnapshotConfiguration(spec []byte, image, container json.RawMessage
 		labels = make(map[string]string)
 	}
 	for key := range labels {
-		if strings.HasPrefix(key, "nerdctl/") || strings.HasPrefix(key, "containerd.io/") || strings.HasPrefix(key, "io.containerd.") || strings.HasPrefix(key, "opendock.") || strings.HasPrefix(key, "io.yougori.snapshot.") {
+		if strings.HasPrefix(key, "nerdctl/") || strings.HasPrefix(key, "containerd.io/") || strings.HasPrefix(key, "io.containerd.") || strings.HasPrefix(key, productLabelPrefix) || strings.HasPrefix(key, "io.yougori.snapshot.") {
 			delete(labels, key)
 		}
 	}

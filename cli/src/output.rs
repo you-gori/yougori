@@ -45,9 +45,9 @@ fn section(title: &str, color: bool) -> String {
 
 fn tone(value: &str) -> &'static str {
     match value.to_ascii_lowercase().as_str() {
-        "running" | "ready" | "connected" | "healthy" | "ok" | "in use" | "active" | "published" => GOOD,
+        "running" | "ready" | "connected" | "healthy" | "ok" | "in use" | "active" | "published" | "live" | "working" => GOOD,
         "error" | "failed" | "fail" | "needs attention" | "unavailable" => BAD,
-        "warning" | "warn" | "starting" | "stopping" | "pending" | "provisioning" => WARN,
+        "warning" | "warn" | "starting" | "stopping" | "pending" | "provisioning" | "preparing" | "preparing bounty" | "report ready" => WARN,
         _ => MUTED,
     }
 }
@@ -334,6 +334,156 @@ pub fn ps(environments: &Value, color: bool) -> String {
     output
 }
 
+/// Terminal views for `yougori bounty` results; none means the JSON is shown instead.
+pub fn bounty(action: &str, result: &Value, color: bool) -> Option<String> {
+    match action {
+        "workers" => Some(bounty_workers(&result["workers"], color)),
+        "status" if result["worker"].is_object() => Some(bounty_worker(&result["worker"], color)),
+        "offers" => Some(bounty_offers(&result["offers"], color)),
+        "doctor" if result["worker"].is_object() => Some(bounty_doctor(result, color)),
+        _ => None,
+    }
+}
+
+fn bounty_doctor(result: &Value, color: bool) -> String {
+    let mut output = bounty_worker(&result["worker"], color);
+    output.push('\n');
+    output.push_str(&section("Checks", color));
+    for (ok, good, attention) in [
+        (result["credentialConfigured"] == true, "Registered with yougori.com", "Not registered with yougori.com yet; this finishes when preparation succeeds"),
+        (result["localOnly"] != false, "Model API stays private on this computer", "Model API can be reached from outside this computer"),
+        (result["publicInference"] != true, "Not shared on Neo Grid", "Also shared on Neo Grid"),
+    ] {
+        let (mark, text, style) = if ok { ("✓", good, GOOD) } else { ("!", attention, WARN) };
+        output.push_str(&format!("{} {text}\n", styled(mark, style, color)));
+    }
+    output
+}
+
+fn worker_state(worker: &Value) -> String {
+    yougori_cli::bounty::state_label(worker["state"].as_str().unwrap_or("")).into()
+}
+
+fn worker_model(worker: &Value) -> String {
+    text(&worker["model"]).trim_start_matches("hf.co/").to_owned()
+}
+
+/// Paused by an engine restart: nothing runs until the participant resumes it.
+fn restored(worker: &Value) -> bool {
+    worker["state"] == "paused" && worker["restored"] == true
+}
+
+/// The newest report draft waiting for the participant's review.
+fn review_draft(worker: &Value) -> Option<String> {
+    worker["reviewReports"].as_array().and_then(|drafts| drafts.last()).and_then(Value::as_str).map(safe)
+}
+
+/// The error if there is one, otherwise what the worker is doing.
+fn worker_detail(worker: &Value) -> String {
+    if restored(worker) {
+        return "paused when the engine restarted".into();
+    }
+    let first = |value: &Value| value.as_str().and_then(|s| s.lines().find(|line| !line.trim().is_empty())).map(str::to_owned);
+    first(&worker["error"]).or_else(|| first(&worker["stage"])).unwrap_or_else(|| match worker["state"].as_str() {
+        Some("paused") => "progress saved".into(),
+        Some("ready_waiting" | "waiting" | "ready") => "waiting for bounty offers".into(),
+        _ => "—".into(),
+    })
+}
+
+fn bounty_workers(workers: &Value, color: bool) -> String {
+    let workers = workers.as_array().map(Vec::as_slice).unwrap_or_default();
+    let rows: Vec<Vec<String>> = workers.iter().map(|worker| vec![
+        text(&worker["name"]), worker_state(worker), worker_model(worker), worker_detail(worker), text(&worker["id"]),
+    ]).collect();
+    let mut output = section("Bounty workers", color);
+    if rows.is_empty() {
+        output.push_str("No bounty workers yet. Start one with `yougori start bounty`.\n");
+        return output;
+    }
+    output.push_str(&table(&["NAME", "STATE", "MODEL", "DETAIL", "ID"], &rows, color));
+    // Workers that wait for the participant get their exact next command, even when the
+    // table had to shorten the ID column.
+    let name_and_id = |worker: &Value| (safe(&text(&worker["name"])), safe(&text(&worker["id"])));
+    let paused: Vec<_> = workers.iter().filter(|worker| restored(worker)).map(name_and_id).collect();
+    if !paused.is_empty() {
+        output.push_str(&format!("\n{}\n", styled("The engine restarted, so these workers paused. Nothing runs until you resume them:", WARN, color)));
+        for (name, id) in paused {
+            output.push_str(&format!("Resume {name}: yougori bounty resume {id}\n"));
+        }
+    }
+    let drafts: Vec<_> = workers.iter().filter(|worker| worker["state"] == "awaiting_review")
+        .filter_map(|worker| review_draft(worker).map(|report| (name_and_id(worker), report))).collect();
+    if !drafts.is_empty() {
+        output.push_str(&format!("\n{}\n", styled("Report drafts wait for your review. Read them with yougori bounty reports ID, then submit:", WARN, color)));
+        for ((name, id), report) in drafts {
+            output.push_str(&format!("Submit {name}'s draft: yougori bounty submit {id} {report} --yes\n"));
+        }
+    }
+    output.push_str(&format!("\n{}\n", styled("Open one: yougori start bounty --worker ID", MUTED, color)));
+    output
+}
+
+fn bounty_worker(worker: &Value, color: bool) -> String {
+    let id = safe(&text(&worker["id"]));
+    let state = worker_state(worker);
+    let resources = &worker["resources"];
+    let mut runs = vec![if worker["gpu"] == "cpu" { "Processor".to_owned() } else { "NVIDIA GPU".to_owned() }];
+    if let Some(cpu) = resources["cpu"].as_f64() { runs.push(format!("{cpu} CPU")); }
+    if let Some(memory) = resources["memoryGb"].as_f64() { runs.push(format!("{memory} GB")); }
+    if let Some(drive) = resources["storageDrive"].as_str() { runs.push(drive.to_owned()); }
+    let mut rows = vec![
+        ("Name", text(&worker["name"])),
+        ("State", state.clone()),
+        ("Model", worker_model(worker)),
+        ("Runs on", runs.join(" · ")),
+        ("Workspace", worker["workspaceQuotaGb"].as_f64().map_or_else(|| "—".into(), |gb| format!("{gb} GB for bounty workspaces"))),
+        ("Bounty", text(&worker["bountyId"])),
+        ("Attempts", text(&worker["completedAttempts"])),
+        (if worker["error"].is_string() { "Problem" } else { "Doing" }, worker_detail(worker)),
+        ("ID", id.clone()),
+    ];
+    let drafts: Vec<&str> = worker["reviewReports"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if !drafts.is_empty() {
+        rows.insert(7, ("Drafts", format!("{} · waiting for your review", drafts.join(", "))));
+    }
+    if rows[5].1 == "—" { rows.remove(5); }
+    let mut output = section("Bounty worker", color);
+    for (label, value) in rows {
+        let value = safe(&value);
+        let value = if label == "State" || label == "Problem" { styled(&value, tone(if label == "Problem" { "failed" } else { &state }), color) } else { value };
+        output.push_str(&format!("{}  {value}\n", styled(&format!("{label:<9}"), MUTED, color)));
+    }
+    if restored(worker) {
+        output.push_str(&format!("\n{}", styled("The engine restarted, so this worker paused. Nothing runs until you resume it.", WARN, color)));
+    }
+    let report = review_draft(worker).unwrap_or_else(|| "REPORT_ID".into());
+    let next = match worker["state"].as_str().unwrap_or("") {
+        "paused" => format!("Resume: yougori bounty resume {id}"),
+        "stopped" => format!("Start again: yougori start bounty --worker {id}"),
+        "awaiting_review" => format!("Read the draft: yougori bounty reports {id}  ·  Submit it: yougori bounty submit {id} {report} --yes"),
+        _ if worker["error"].is_string() => format!("Check it: yougori bounty doctor {id}  ·  Try again: yougori start bounty --worker {id}"),
+        _ => format!("Open the live view: yougori start bounty --worker {id}"),
+    };
+    output.push_str(&format!("\n{}\n", styled(&next, MUTED, color)));
+    output
+}
+
+fn bounty_offers(offers: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = offers.as_array().into_iter().flatten().map(|offer| {
+        let reward = format!("{} {}", text(&offer["reward"]["amount"]), offer["reward"]["currency"].as_str().unwrap_or("")).trim().to_owned();
+        vec![text(&offer["bounty"]["title"]), reward, offer["id"].as_str().or(offer["bounty"]["id"].as_str()).unwrap_or("—").to_owned()]
+    }).collect();
+    let mut output = section("Bounty offers", color);
+    if rows.is_empty() {
+        output.push_str("No offers right now. Your worker keeps waiting; new offers appear in its live view.\n");
+        return output;
+    }
+    output.push_str(&table(&["BOUNTY", "REWARD", "OFFER ID"], &rows, color));
+    output.push_str(&format!("\n{}\n", styled("Review one: yougori bounty details WORKER OFFER_ID, or press O in the live view", MUTED, color)));
+    output
+}
+
 pub fn ports(publications: &Value, color: bool) -> String {
     let rows: Vec<Vec<String>> = publications.as_array().into_iter().flatten().map(|row| {
         let p = &row["publication"];
@@ -464,4 +614,57 @@ pub fn status(overview: &Value, color: bool) -> String {
         output.push_str(&table(&["NAME", "TYPE", "STATUS", "CPU", "MEMORY", "PUBLISHED"], &rows, color));
     }
     output
+}
+
+#[cfg(test)]
+mod bounty_views {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn workers_status_and_offers_read_like_sentences() {
+        let workers = json!({"workers":[
+            {"id":"worker-1","name":"ToA","state":"ready_waiting","model":"hf.co/owner/model","error":null,"stage":null},
+            {"id":"worker-2","name":"TOOT","state":"failed","model":"owner/model","error":"copy container backing image: missing\nsecond line","stage":"Worker needs attention"}]});
+        let view = bounty("workers", &workers, false).unwrap();
+        assert!(view.contains("BOUNTY WORKERS") && view.contains("NAME") && view.contains("STATE"), "{view}");
+        assert!(view.contains("live") && view.contains("waiting for bounty offers") && view.contains("owner/model"), "{view}");
+        assert!(view.contains("needs attention") && view.contains("copy container backing image") && !view.contains("second line"), "{view}");
+        assert!(!view.contains("hf.co/") && !view.contains('\u{1b}'), "{view}");
+        assert!(bounty("workers", &json!({"workers":[]}), false).unwrap().contains("yougori start bounty"));
+        let status = json!({"worker":{"id":"worker-2","name":"TOOT\u{1b}[31m","state":"failed","model":"owner/model","gpu":"nvidia",
+            "resources":{"cpu":4,"memoryGb":8,"storageDrive":"D:\\"},"workspaceQuotaGb":20.0,"completedAttempts":0,"error":"backing image missing"}});
+        let card = bounty("status", &status, false).unwrap();
+        assert!(card.contains("NVIDIA GPU · 4 CPU · 8 GB · D:\\") && card.contains("20 GB for bounty workspaces"), "{card}");
+        assert!(card.contains("Problem") && card.contains("backing image missing"), "{card}");
+        assert!(card.contains("yougori bounty doctor worker-2") && !card.contains('\u{1b}'), "{card}");
+        assert!(!card.contains("Bounty   "), "no empty bounty row: {card}");
+        let offers = json!({"offers":[{"id":"offer-1","bounty":{"id":"b1","title":"Audit login"},"reward":{"amount":"250","currency":"USDC"}}]});
+        let list = bounty("offers", &offers, false).unwrap();
+        assert!(list.contains("Audit login") && list.contains("250 USDC") && list.contains("offer-1"), "{list}");
+        assert!(bounty("offers", &json!({"offers":[]}), false).unwrap().contains("No offers right now"));
+        assert!(bounty("rewards", &json!({}), false).is_none(), "other results stay JSON");
+        let doctor = bounty("doctor", &json!({"worker":status["worker"],"credentialConfigured":false,"localOnly":true,"publicInference":false}), false).unwrap();
+        assert!(doctor.contains("CHECKS") && doctor.contains("! Not registered with yougori.com yet") && doctor.contains("✓ Model API stays private"), "{doctor}");
+        assert!(bounty("doctor", &json!({"host":{}}), false).is_none(), "machine checks without a worker stay JSON");
+    }
+
+    #[test]
+    fn restarted_workers_and_review_drafts_show_their_next_command() {
+        let workers = json!({"workers":[
+            {"id":"worker-1","name":"ToA","state":"paused","restored":true,"model":"owner/model","stage":"Paused when the Yougori engine restarted. Resume to recheck authorization and continue."},
+            {"id":"worker-2","name":"Kit","state":"awaiting_review","reviewReports":["report_9"],"model":"owner/model","stage":"Your agent is reviewing the approved project"},
+            {"id":"worker-3","name":"Old","state":"paused","model":"owner/model","stage":"Progress saved"}]});
+        let view = bounty("workers", &workers, false).unwrap();
+        assert!(view.contains("paused when the engine restarted") && view.contains("Nothing runs until you resume them"), "{view}");
+        assert!(view.contains("Resume ToA: yougori bounty resume worker-1") && !view.contains("bounty resume worker-3"), "{view}");
+        assert!(view.contains("report ready") && view.contains("Submit Kit's draft: yougori bounty submit worker-2 report_9 --yes"), "{view}");
+        let card = bounty("status", &json!({"worker":workers["workers"][0]}), false).unwrap();
+        assert!(card.contains("The engine restarted, so this worker paused") && card.contains("Resume: yougori bounty resume worker-1"), "{card}");
+        let card = bounty("status", &json!({"worker":workers["workers"][1]}), false).unwrap();
+        assert!(card.contains("Drafts") && card.contains("report_9 · waiting for your review"), "{card}");
+        assert!(card.contains("yougori bounty reports worker-2") && card.contains("yougori bounty submit worker-2 report_9 --yes"), "{card}");
+        let card = bounty("status", &json!({"worker":workers["workers"][2]}), false).unwrap();
+        assert!(!card.contains("engine restarted") && card.contains("Resume: yougori bounty resume worker-3"), "{card}");
+    }
 }

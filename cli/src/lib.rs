@@ -36,6 +36,11 @@ pub mod network;
 pub mod model_registry;
 pub mod confidential;
 pub mod bounty;
+pub mod bounty_practice;
+pub mod legacy_names;
+pub mod bounty_map;
+#[cfg(test)]
+mod help_coverage;
 
 pub const SKILL: &str = include_str!("../../skills/yougori/SKILL.txt");
 pub const GUIDE: &str = include_str!("../../skills/yougori/references/cli.txt");

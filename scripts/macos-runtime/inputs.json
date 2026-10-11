@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "description": "Pinned sources for the QEMU runtime bundled in the macOS app. Built natively for each Mac CPU by scripts/build-macos-runtime.sh.",
+  "deploymentTarget": "14.0",
+  "sources": [
+    {"name": "zstd", "version": "1.5.7", "license": "BSD-3-Clause OR GPL-2.0-only", "url": "https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.tar.gz", "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3"},
+    {"name": "pcre2", "version": "10.49", "license": "BSD-3-Clause", "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.49/pcre2-10.49.tar.bz2", "sha256": "53c156e1ba416a20da8e65395daa132da0d80e76910424caca3fcdae7831d384"},
+    {"name": "libffi", "version": "3.8.0", "license": "MIT", "url": "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz", "sha256": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4"},
+    {"name": "glib", "version": "2.90.1", "license": "LGPL-2.1-or-later", "url": "https://download.gnome.org/sources/glib/2.90/glib-2.90.1.tar.xz", "sha256": "93c941aa17d5eb1d53fe838365f29a8b4e539c222a256d974ec8f30fc413e396"},
+    {"name": "pixman", "version": "0.46.4", "license": "MIT", "url": "https://cairographics.org/releases/pixman-0.46.4.tar.gz", "sha256": "d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c"},
+    {"name": "libslirp", "version": "4.9.5", "license": "BSD-3-Clause", "url": "https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.9.5/libslirp-v4.9.5.tar.gz", "sha256": "f43e68b60b580647574ec4a0e2b6c600a56281e6c39f79426510832dc810f483"},
+    {"name": "nettle", "version": "4.0", "license": "LGPL-3.0-or-later OR GPL-2.0-or-later", "url": "https://ftpmirror.gnu.org/nettle/nettle-4.0.tar.gz", "sha256": "3addbc00da01846b232fb3bc453538ea5468da43033f21bb345cb1e9073f5094"},
+    {"name": "dtc", "version": "1.8.1", "license": "GPL-2.0-or-later OR BSD-2-Clause", "url": "https://mirrors.edge.kernel.org/pub/software/utils/dtc/dtc-1.8.1.tar.xz", "sha256": "23526015a6f1550e0541a53fe7acea1b5a11e3697cdf3a3bdc076abc38f6045d"},
+    {"name": "qemu", "version": "11.1.2", "license": "GPL-2.0-only", "url": "https://download.qemu.org/qemu-11.1.2.tar.xz", "sha256": "731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016"}
+  ]
+}

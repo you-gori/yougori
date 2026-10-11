@@ -9,27 +9,33 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
 
   app start [--engine]|status|show|quit  Start the background engine (--engine: the one without the
                                    desktop app) / inspect / open the dashboard / stop
-  env list|show|create|start|stop|restart|pause|open|delete|reset|recover
+  app start --app ABSOLUTE_EXECUTABLE_PATH  Start this desktop app executable
+  app startup-report | autostart on [--dashboard]|off|status  Sign-in startup health / start at sign-in
+  env list|show|create|start|stop|restart|pause|open|delete|reset|recover|recover-report
   env resources|storage|internet|gpu|exec|console|skills ENV_ID
+  env execution-output|cancel-execution|release-execution ENV_ID --execution-id ID
+                                   Read, cancel (--yes) or free an exec --no-wait guest job
+  env cancel-transfer ENV_ID [--transfer-id ID] --yes  Cancel file copies
   connection list|create|folders|exec|enable|disable|delete
-  remote create|connect|list|update|revoke|remove|start|stop|files|inspect|download
+  remote create|connect|list|update|revoke|disconnect|remove|start|stop|files|inspect|download
                                   Tunnel sharing (credentials via --file -)
-  share list|add|remove            My PC folders
-  ports list|add|remove|publish|unpublish
+  share list|add|remove|credentials  My PC folders (credentials --yes reveals a bearer URL)
+  ports list|add|remove|preflight|publish|unpublish
                                   publish --domain HOST uses a saved domain
   domain list|add|edit|remember|remove  Saved Cloudflare domains (token via --file -)
   drives list|attach|detach ENV    A VM's imported-files drives (--transfer-id ID)
-  lan share ENV --address IP --permission view|control | list | revoke ID | import --file invitation.json
+  lan share ENV --address IP --permission view|control --yes | list | revoke ID | import --file invitation.json --yes
   project list | inspect PATH       Find and validate yougori.yaml projects
   agent inventory                  JSON compute targets, capabilities and readiness without secrets
-  agent setup                      Install/update the Yougori skill for local agents
+  agent setup --yes                Install/update the Yougori skill for local agents
   env install-skills ENV           Write the Yougori skill and live access reference inside a guest
-  cloud scan HOST [--port 22] | test|add --file request.json | connect|disconnect|show ENV
-  cloud configure ENV --file request.json | auth --provider aws|azure|google --account NAME
+  cloud scan HOST [--port 22] | test --file request.json | connect|disconnect|show ENV
+  cloud add --file request.json --yes | configure ENV --file request.json --yes
+  cloud auth --provider aws|azure|google --account NAME
   cloud options KIND --provider aws|azure|google --account NAME [--region R]   Look up values for deploy:
                                    regions, images, machineTypes, subnets, securityGroups, keyPairs, resourceGroups, sshKeys
-  cloud deploy --file request.json --risk-acknowledged true | power ENV --action inspect|start|stop
-  cloud delete ENV --confirmation EXACT_NAME
+  cloud deploy --file request.json --risk-acknowledged true --yes | power ENV --action inspect|start|stop
+  cloud delete ENV --confirmation EXACT_NAME --yes
   neocloud providers | list | discover --provider P [--location REGION]
   neocloud catalog --provider P --product cpu|gpu [--location REGION_OR_PROJECT]
   neocloud install --provider P --yes | account --provider P | login --file - --yes
@@ -39,7 +45,7 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
   neocloud quote --provider P --offer ID [--hours N] [--product gpu|cpu]
   neocloud plan --file request.json | create --file request.json --yes | inspect|start|stop ENV
   neocloud delete ENV --confirmation EXACT_NAME --yes | recover ENV --resource-id ID
-  storage location [--set PATH] | storage reclaim
+  storage location [--set PATH --yes] | storage reclaim --yes
   env startup ENV --command "..."  Change a stopped container's startup command
   snapshot list|create|restore|delete
   backup list|destinations|add-destination|delete-destination|run|restore|export|import
@@ -150,6 +156,40 @@ fn toggle(flags: &mut BTreeMap<String, String>, name: &str) -> Result<bool, Stri
         Some("true") => Ok(true),
         _ => Err(format!("--{name} must be true or false")),
     }
+}
+
+/// Parameters that carry credentials. They are read only from --file (a private
+/// JSON file, or `-` for stdin), never from the command line, where process
+/// listings and shell history keep them. `a.b` names a field inside `a`.
+fn credential_parameters(method: &str) -> &'static [&'static str] {
+    match method {
+        "set_deployment_secret" => &["value"],
+        "model_registry_connect" | "confidential_network_chat" | "runpod_connect" | "neocloud_authenticate" => &["apiKey"],
+        "update_remote_share" | "connect_remote_share" | "runpod_registry" => &["password"],
+        "add_saved_domain" => &["token"],
+        "publish_environment_service" | "start_remote_tunnel" | "publication_preflight" => &["cloudflare.token"],
+        "create_remote_share" | "add_backup_destination" => &["request"],
+        "import_environment_share" => &["invitation"],
+        _ => &[],
+    }
+}
+
+fn credentials_in_arguments(
+    method: &str,
+    flags: &BTreeMap<String, String>,
+    argument_json: Option<&serde_json::Map<String, Value>>,
+) -> Vec<&'static str> {
+    credential_parameters(method)
+        .iter()
+        .copied()
+        .filter(|parameter| {
+            let (key, field) = parameter.split_once('.').map_or((*parameter, None), |(key, field)| (key, Some(field)));
+            let present = |value: &Value| field.is_none_or(|field| value.get(field).is_some());
+            flags.iter().any(|(flag, value)| {
+                camel(flag) == key && field.is_none_or(|_| serde_json::from_str(value).is_ok_and(|value| present(&value)))
+            }) || argument_json.and_then(|json| json.get(key)).is_some_and(present)
+        })
+        .collect()
 }
 
 fn set_explicit(params: &mut serde_json::Map<String, Value>, key: &str, value: Value) -> Result<(), String> {
@@ -313,10 +353,7 @@ pub fn parse(
     if !(1..=86400).contains(&timeout) {
         return Err("--timeout must be between 1 and 86400 seconds".into());
     }
-    if words.first() == Some(&"call") && words.get(1) == Some(&"set_deployment_secret")
-        && (flags.contains_key("json") || flags.contains_key("value")) {
-        return Err("Application secrets must be supplied through --file - or a private JSON file, never shell arguments".into());
-    }
+    let argument_json = flags.contains_key("json");
     let input = match (flags.remove("json"), flags.remove("file")) {
         (Some(_), Some(_)) => return Err("Use either --json or --file, not both".into()),
         (Some(text), None) => {
@@ -329,6 +366,7 @@ pub fn parse(
         .as_object()
         .cloned()
         .ok_or("Parameters must be a JSON object")?;
+    let supplied = argument_json.then(|| params.clone());
     let group = words.first().copied().unwrap_or("");
     let action = words.get(1).copied().unwrap_or("");
     let mut select = None;
@@ -505,7 +543,8 @@ pub fn parse(
             "execute_connected_command"
         }
         ("connection", "folders") => {
-            set_explicit(&mut params, "environmentId", json!(words.get(2).ok_or("An environment ID is required")?))?;
+            words.get(2).ok_or("An environment ID is required")?;
+            positional = Some("environmentId");
             params.entry("path").or_insert(json!(""));
             "list_environment_folders"
         }
@@ -605,6 +644,13 @@ pub fn parse(
             method
         }
     };
+    let exposed = credentials_in_arguments(method, &flags, supplied.as_ref());
+    if !exposed.is_empty() {
+        return Err(format!(
+            "{} must be supplied through --file - (stdin) or a private JSON file, never shell arguments or --json, which process listings and shell history keep.",
+            exposed.join(", ")
+        ));
+    }
     if let Some(key) = positional {
         if let Some(word) = words.get(2) {
             set_explicit(&mut params, key, json!(word))?;
@@ -874,6 +920,39 @@ mod tests {
         }
         let request=parse(&["call","set_deployment_secret","--file","-","--yes"].map(str::to_owned),|_|Ok(json!({"name":"x","value":"private"}))).unwrap();
         assert_eq!(request.request.method,"set_deployment_secret");
+    }
+    #[test]
+    fn credentials_are_refused_from_the_command_line_but_accepted_from_stdin() {
+        for args in [
+            vec!["neocloud", "login", "--provider", "runpod", "--api-key", "rp_secret", "--yes"],
+            vec!["neocloud", "login", "--json", r#"{"provider":"runpod","apiKey":"rp_secret"}"#, "--yes"],
+            vec!["domain", "add", "app.example.com", "--tunnel-port", "45000", "--token", "cf_secret", "--yes"],
+            vec!["call", "runpod_connect", "--api-key", "rp_secret", "--yes"],
+            vec!["call", "model_registry_connect", "--json", r#"{"model":"yg/a/b","endpoint":"https://x","apiKey":"k"}"#, "--yes"],
+            vec!["remote", "update", "share-one", "--password", "a long password", "--yes"],
+            vec!["remote", "connect", "--json", r#"{"link":"https://example.com","username":"a","password":"a long password"}"#],
+            vec!["ports", "publish", "env-1", "--port", "3000", "--cloudflare", r#"{"hostname":"a.example.com","token":"cf"}"#, "--yes"],
+            vec!["ports", "publish", "env-1", "--json", r#"{"port":3000,"cloudflare":{"hostname":"a.example.com","token":"cf"}}"#, "--yes"],
+            vec!["remote", "start", "--cloudflare", r#"{"hostname":"a.example.com","token":"cf"}"#, "--yes"],
+            vec!["ports", "preflight", "env-1", "--port", "3000", "--kind", "cloudflare", "--cloudflare", r#"{"hostname":"a.example.com","token":"cf"}"#],
+        ] {
+            let error = run(&args).unwrap_err();
+            assert!(error.contains("never shell arguments"), "{args:?}: {error}");
+        }
+        let login = parse(&["neocloud", "login", "--provider", "runpod", "--file", "-", "--yes"].map(str::to_owned), |_| Ok(json!({"apiKey":"rp_secret"}))).unwrap();
+        assert_eq!(login.request.params, json!({"provider":"runpod","apiKey":"rp_secret"}));
+        // A public hostname without a token stays an ordinary argument.
+        let published = run(&["ports", "publish", "env-1", "--port", "3000", "--cloudflare", r#"{"hostname":"a.example.com","remember":true,"routesReviewed":true}"#, "--yes"]).unwrap();
+        assert_eq!(published.request.params["cloudflare"]["hostname"], "a.example.com");
+        assert!(run(&["window", "capture", "environment-env-1-main", "--token", "capture-token"]).is_ok());
+    }
+    #[test]
+    fn connection_folders_takes_one_environment_and_an_optional_path() {
+        let request = run(&["connection", "folders", "env-1"]).unwrap().request;
+        assert_eq!((request.method.as_str(), &request.params), ("list_environment_folders", &json!({"environmentId":"env-1","path":""})));
+        assert_eq!(run(&["connection", "folders", "env-1", "--path", "/app"]).unwrap().request.params["path"], "/app");
+        assert!(run(&["connection", "folders"]).is_err());
+        assert!(run(&["connection", "folders", "env-1", "extra"]).is_err());
     }
     #[test]
     fn no_guest_output_is_parsed_as_instructions() {

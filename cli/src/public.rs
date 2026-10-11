@@ -21,13 +21,15 @@ Public commands:
   npm run yougori-cloud           Select a connected cloud server and run this project there
   yougori launch --cloud [--change]  Cloud project launch with on-demand sync and dev logs
   python yougori [--change]       Run a Python project after its first setup
-  yougori run [-d] [--name NAME] [-p HOST:GUEST] [-e KEY=VALUE] IMAGE [COMMAND...]
+  yougori run [-d] [--name NAME] [-p HOST:GUEST] [-e KEY[=VALUE]] [--env-file FILE] IMAGE [COMMAND...]
   yougori create [OPTIONS] IMAGE    Create without starting
   yougori status                   Everything at a glance: environments, links, sharing, jobs
   yougori ps [-a] [--type container|gpu|model|microvm|vm|cloud|shared|app]
-  yougori inspect ENV | logs ENV [--cursor CURSOR] [--tail BYTES] [--follow]
+  yougori inspect ENV             One environment's full record
+  yougori logs ENV [--cursor CURSOR] [--limit BYTES] [--tail BYTES] [--last-error] [--follow]
   yougori exec ENV [--no-wait] [--timeout WAIT_SECONDS] [--guest-timeout SECONDS] -- COMMAND...
-  yougori terminal ENV            Open an interactive shell; exit leaves the workload running
+  yougori terminal ENV [--project] [--container NAME]  Interactive shell; exit leaves the workload running
+                                  --project starts in /workspace; --container enters a cloud server's Docker container
   yougori download on ENV [--domain HOST] --yes  Share a complete copy while this CLI stays open
   yougori download list | off ID   Lifetime download counts / turn off a download link
   yougori cp PC_PATH... ENV        Copy PC files into a local or connected cloud environment
@@ -43,18 +45,20 @@ Public commands:
   yougori doctor                   Is this computer ready? Checks engine, runtimes, GPU, disk, PATH
   yougori app autostart on [--dashboard] | off | status
   yougori update [--check | --yes]  Signed, hash-checked updates from yougori.com
-  yougori uninstall [--yes]        Removes the app; keeps environments and their data
+  yougori uninstall [--yes]        Turn off start at sign-in and quit the engine, then run the Windows
+                                  desktop uninstaller (other installs: remove manually). Data stays
   yougori top [--once]             Live CPU, memory, storage and network per environment
   Add --format json|table to status/ps/ports (table in a terminal, JSON when piped)
-  yougori start|stop|restart ENV   Accepts an ID or exact environment name
+  yougori start|stop|restart ENV   Accepts an ID or a unique name in any letter case
   yougori start bounty            Prepare a private local Swarm Mining worker; model first
   yougori bounty --help           Offers, own-agent chat, reports, rewards and lifecycle
   yougori start --environment ENV Explicit selector, including an environment named bounty
   yougori rm ENV --yes             Permanently delete an environment and its managed data
-  yougori pull IMAGE | images | image rm IMAGE
+  yougori pull IMAGE | images | image rm IMAGE --yes | image prune [--yes]
   yougori up|apply|down [-f yougori.yaml]
   yougori deployment status [-f yougori.yaml]  Application, tunnel and public HTTPS readiness
   yougori deployment secret set NAME --yes    Reads {"value":"..."} from private stdin
+  yougori deployment secret delete NAME --yes  Remove a stored application secret
   yougori import compose.yaml [--dry-run]
   yougori run --gpu nvidia IMAGE
   yougori run --isolation microvm IMAGE
@@ -76,6 +80,7 @@ Public commands:
   yougori model upload yg/PUBLISHER/MODEL --folder PATH --version v1 [--quant Q4_K_M] [--resume ID]
   yougori model download yg/PUBLISHER/MODEL --output PATH  Verify and download authorized weights
   yougori model permissions yg/PUBLISHER/MODEL --wallet 0x... --role caller|downloader|host|remove
+  yougori model versions yg/PUBLISHER/MODEL  A publication and its versions
   yougori model run yg/PUBLISHER/MODEL --now|--nowfree  Run a published model on your GPU
   yougori model unshare ENV        Stop sharing; leave the model running
   yougori model auth login | status | logout  Protected Hugging Face token shared with the App
@@ -90,6 +95,8 @@ Public commands:
   yougori model access ENV         API key plus local and public addresses
   yougori model usage ENV [--days 7] [--reset --yes]
   yougori changes ENV [--baseline] [--offset N]
+  yougori vault status             Is Personal Vault running; how many requests await approval
+  yougori vault open | approve | add  Bring Personal Vault forward; the person decides in the app
   yougori vault mcp                Connect an MCP client to Personal Vault
   yougori vault identity --output DEVICE.json
   yougori vault mcp --remote HOST:49731 --pin SHA256 --identity DEVICE.json
@@ -97,7 +104,7 @@ Public commands:
   yougori remote create|connect|list|update|revoke|disconnect|remove|start|stop|files|inspect|download
                                   Remote tunnel sharing; use --file - for credentials
   yougori remote start --domain app.example.com   Share on a saved domain
-  yougori connect LINK USERNAME PASSWORD  Connect to a shared sandbox in this terminal
+  yougori connect LINK USERNAME [PASSWORD]  Connect to a shared sandbox; omit PASSWORD to type it privately
   yougori agent inventory         Machine-readable compute targets and current capabilities
   yougori agent discover          Current CLI/engine, protocol and canonical skill identity
   yougori neocloud providers | discover --provider P [--location REGION]
@@ -107,13 +114,16 @@ Public commands:
   yougori info | version
   yougori help | --help | --version
   yougori codex | claude | gemini | ollama | opencode | kilo | openclaw
-                                  Install/start a tool container in this terminal; TOOL --help for options
+                                  Install/start a tool sandbox (a microVM; --isolation container opts out)
+                                  in this terminal; TOOL --help for options
   yougori TOOL --share             Add teammates and print their connection commands before launch
 
 Run options: --cpu CORES, --memory 4GB, --storage 30GB, --storage-drive PATH,
   --volume NAME:/guest/path[:ro], --mount PC_FOLDER:/guest/path[:ro],
   --workdir /path, --entrypoint PROGRAM, --user USER, --restart POLICY,
   --internet true|false (default true), -it (interactive shell), --dry-run.
+  -e KEY takes the value from this shell's environment and --env-file reads
+  KEY=VALUE lines, keeping secrets out of the command line.
 Ports bind to 127.0.0.1. Use `ports publish` for explicit LAN/public access.
 up/apply preserve removed nodes and data; down stops without deleting volumes.
 Use --dry-run to validate before starting. No Docker installation is needed.
@@ -122,15 +132,24 @@ In a terminal, new local environments ask which drive to use and show free space
 Reusing an environment keeps its existing storage location.
 "#;
 
-pub async fn call(method: &str, params: Value) -> Result<Value, String> {
+/// A request on behalf of the user. `confirmed` must reflect an explicit --yes or an
+/// interactive confirmation of exactly this effect; without it the engine refuses
+/// methods that require confirmation.
+pub async fn send(method: &str, params: Value, confirmed: bool) -> Result<Value, String> {
     let mut req = client::request(method, params);
-    req.confirmed = true;
+    req.confirmed = confirmed;
     let result = client::call(&req).await?;
     if result["accepted"] == true {
         client::wait_job(result["jobId"].as_str().ok_or("Missing job ID")?, 86400).await
     } else {
         Ok(result)
     }
+}
+
+/// For flows that confirmed their effects with the user (menus, the launcher, tool
+/// setup, explicit verbs such as `cp` and `exec`) or whose methods need no confirmation.
+pub async fn call(method: &str, params: Value) -> Result<Value, String> {
+    send(method, params, true).await
 }
 
 pub async fn call_with_progress(method: &str, params: Value, progress: impl FnMut(&Value)) -> Result<Value, String> {
@@ -329,6 +348,10 @@ fn absolute(path: &str) -> Result<PathBuf, String> {
         Ok(std::env::current_dir().map_err(|e| e.to_string())?.join(p))
     }
 }
+/// `--folder` is relative to where the user runs the CLI, not the engine's folder.
+pub fn model_folder(path: &str) -> Result<Value, String> {
+    Ok(json!(absolute(path)?.to_string_lossy()))
+}
 fn value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
     *i += 1;
     args.get(*i)
@@ -400,9 +423,27 @@ pub fn parse_run(args: &[String], machine: bool) -> Result<Run, String> {
             }
             "-e" | "--env" => {
                 let e = value(args, &mut i, flag)?;
-                let (k, v) = e.split_once('=').ok_or("Use -e KEY=VALUE")?;
-                if spec.environment.insert(k.into(), v.into()).is_some() {
+                // KEY alone takes its value from this shell's environment, which keeps
+                // secrets out of the command line, as with docker run -e KEY.
+                let (k, v) = match e.split_once('=') {
+                    Some((k, v)) => (k.to_owned(), v.to_owned()),
+                    None => {
+                        let v = std::env::var(&e).map_err(|_| format!("-e {e}: set {e} in this shell first, or use -e {e}=VALUE"))?;
+                        (e, v)
+                    }
+                };
+                if spec.environment.insert(k.clone(), v).is_some() {
                     return Err(format!("Environment variable {k} supplied twice"));
+                }
+            }
+            "--env-file" => {
+                let path = value(args, &mut i, flag)?;
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read --env-file {path}: {e}"))?;
+                for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
+                    let (k, v) = line.split_once('=').ok_or("--env-file lines must be KEY=VALUE")?;
+                    if spec.environment.insert(k.trim().into(), v.into()).is_some() {
+                        return Err(format!("Environment variable {} supplied twice", k.trim()));
+                    }
                 }
             }
             "--workdir" | "-w" => spec.working_dir = Some(value(args, &mut i, flag)?),
@@ -522,6 +563,72 @@ pub fn parse_run(args: &[String], machine: bool) -> Result<Run, String> {
     })
 }
 
+/// Docker Hub shorthand and full names compare equal: `nginx` is `docker.io/library/nginx:latest`.
+fn image_key(reference: &str) -> String {
+    let (name, digest) = reference.trim().split_once('@').map_or((reference.trim(), None), |(name, digest)| (name, Some(digest)));
+    let mut parts: Vec<&str> = name.split('/').collect();
+    let registry = if parts.len() > 1 && (parts[0].contains(['.', ':']) || parts[0] == "localhost") { parts.remove(0) } else { "docker.io" };
+    let mut path = parts.join("/");
+    if registry == "docker.io" && !path.contains('/') { path = format!("library/{path}"); }
+    let tagged = path.rsplit('/').next().is_some_and(|last| last.contains(':'));
+    let mut key = format!("{registry}/{path}");
+    if !tagged && digest.is_none() { key.push_str(":latest"); }
+    if let Some(digest) = digest { key = format!("{key}@{digest}"); }
+    key
+}
+/// Images in the container engine's list that no environment names. Internal images
+/// are never candidates: snapshots live under a `.local` registry, and Yougori's own
+/// helpers (such as the Personal Vault gateway) are pinned by digest.
+fn unused_images(images: &Value, environments: &Value) -> Vec<Value> {
+    let used: std::collections::BTreeSet<String> = environments.as_array().into_iter().flatten()
+        .filter_map(|environment| environment["runtime"].as_str()).map(image_key).collect();
+    images.as_array().into_iter().flatten().filter_map(|image| {
+        let name = image["Name"].as_str().filter(|name| !name.is_empty() && !name.contains("<none>") && !name.contains('@'))?;
+        let key = image_key(name);
+        let internal = key.starts_with(crate::legacy_names::IMAGE_NAME_PREFIX) || key.split('/').next().is_some_and(|registry| registry.ends_with(".local"));
+        (!internal && !used.contains(&key)).then(|| json!({"image":name,"size":image["Size"]}))
+    }).collect()
+}
+/// Lists, or with `--yes` removes, unused images. The engine never forces removal,
+/// so an image that any container still uses is kept and reported.
+async fn prune_images(confirmed: bool) -> Result<Value, String> {
+    let state = call("get_platform_state", json!({})).await?;
+    let images = send("manage_oci_images", json!({"action":"list"}), false).await?;
+    let unused = unused_images(&images, &state["environments"]);
+    if !confirmed {
+        return Ok(json!({"unused":unused,"next":"yougori image prune --yes","note":"Images no environment uses in the default drive's container engine. Removing one only means a later run pulls it again."}));
+    }
+    let (mut removed, mut kept) = (Vec::new(), Vec::new());
+    for item in unused {
+        let image = item["image"].as_str().unwrap_or_default().to_owned();
+        match send("manage_oci_images", json!({"action":"remove","image":image}), true).await {
+            Ok(_) => removed.push(item),
+            Err(error) => kept.push(json!({"image":image,"reason":error})),
+        }
+    }
+    Ok(json!({"removed":removed,"kept":kept}))
+}
+
+/// Environment values may be secrets; a dry-run plan shows only their names.
+fn redacted_plan(request: &Value) -> Value {
+    let mut safe = request.clone();
+    for pointer in ["/workload/environment", "/microvmWorkload/options/environment"] {
+        if let Some(vars) = safe.pointer_mut(pointer).and_then(Value::as_object_mut) {
+            for v in vars.values_mut() {
+                *v = json!("[redacted]")
+            }
+        }
+    }
+    safe
+}
+
+/// The top-level words `handle` serves. `yougori help` and the agent guide name each one.
+pub const COMMANDS: &[&str] = &[
+    "run", "create", "ps", "start", "stop", "restart", "rm", "exec", "logs", "inspect", "pull",
+    "images", "image", "info", "version", "up", "down", "apply", "import", "changes", "model",
+    "cp", "ls", "rename", "volume", "init", "prefs", "deployment",
+];
+
 pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
     let Some(first) = args.first().map(String::as_str) else {
         return Ok(None);
@@ -533,13 +640,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
     } else {
         first
     };
-    if ![
-        "run", "create", "ps", "start", "stop", "restart", "rm", "exec", "logs", "inspect", "pull",
-        "images", "image", "info", "version", "up", "down", "apply", "import", "changes", "model",
-        "cp", "ls", "rename", "volume", "init", "prefs", "deployment",
-    ]
-    .contains(&command)
-    {
+    if !COMMANDS.contains(&command) {
         return Ok(None);
     }
     if command == "version" {
@@ -556,7 +657,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
                     _ => return Err("Usage: yougori deployment status [-f yougori.yaml]".into()),
                 };
                 client::start(None).await?;
-                return call("deployment_status", json!({"path":path})).await.map(Some);
+                return send("deployment_status", json!({"path":path}), false).await.map(Some);
             },
             Some("secret") => {
                 // Read a bounded private JSON request from stdin, never accept
@@ -595,14 +696,8 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
         }
         let run = parse_run(&rest, matches!(first, "machine" | "vm"))?;
         if run.dry {
-            let mut safe = run.request.clone();
-            if let Some(vars) = safe["workload"]["environment"].as_object_mut() {
-                for v in vars.values_mut() {
-                    *v = json!("[redacted]")
-                }
-            }
             return Ok(Some(
-                json!({"dryRun":true,"request":safe,"start":command=="run"}),
+                json!({"dryRun":true,"request":redacted_plan(&run.request),"start":command=="run"}),
             ));
         }
         // A pipe is a machine client: finish with one JSON result instead of
@@ -610,9 +705,10 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
         let terminal_output = std::io::stdout().is_terminal();
         let attach_output = attach_run_output(&run, terminal_output)?;
         client::start(None).await?;
-        let result = call(
+        let result = send(
             "run_workload",
             json!({"request":run.request,"start":command=="run"}),
+            false,
         )
         .await?;
         if command == "run" && attach_output {
@@ -651,7 +747,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
             ));
         }
         client::start(None).await?;
-        return call("project_action", json!({"path":path,"action":command}))
+        return send("project_action", json!({"path":path,"action":command}), false)
             .await
             .map(Some);
     }
@@ -667,9 +763,10 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
             ));
         }
         client::start(None).await?;
-        return call(
+        return send(
             "import_compose",
             json!({"path":path,"write":true,"project":p}),
+            false,
         )
         .await
         .map(Some);
@@ -696,12 +793,19 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
     {
         return Err("Usage: yougori volume rm NAME... --yes. This permanently deletes the volume and its data.".into());
     }
+    let image_prune = command == "image" && args.get(1).is_some_and(|action| action == "prune");
+    if image_prune && !matches!(args.len(), 2 | 3) || image_prune && args.get(2).is_some_and(|arg| arg != "--yes") {
+        return Err("Usage: yougori image prune [--yes]. Without --yes it only lists images that no environment uses.".into());
+    }
+    if command == "image" && !image_prune && !matches!(args, [_, rm, _, yes] if rm == "rm" && yes == "--yes") {
+        return Err("Usage: yougori image rm IMAGE --yes. This removes the image from Yougori's container engine.".into());
+    }
     let execution = if command == "exec" {
-        if args.len() < 3 { return Err("Usage: exec ENV [--no-wait] [--timeout SECONDS] -- COMMAND [ARG...]".into()); }
+        if args.len() < 3 { return Err(crate::execution::USAGE.into()); }
         Some(crate::execution::parse(&args[2..])?)
     } else { None };
     let logs = if command == "logs" {
-        if args.len()<2{return Err("Usage: logs ENV [--cursor CURSOR] [--limit BYTES] [--tail BYTES] [--last-error] [--follow]".into());}
+        if args.len()<2{return Err(crate::logs::USAGE.into());}
         Some(crate::logs::parse(&args[2..])?)
     }else{None};
     client::start(None).await?;
@@ -717,7 +821,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
             if args.len() != 1 {
                 return Err("Usage: yougori info".into());
             }
-            call("get_platform_state", json!({})).await?
+            send("get_platform_state", json!({}), false).await?
         }
         "ps" => {
             let usage = || format!("Usage: yougori ps [-a] [--type {}]", crate::overview::TYPES.join("|"));
@@ -734,7 +838,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
             if wanted.as_deref().is_some_and(|t| !crate::overview::TYPES.contains(&t)) {
                 return Err(usage());
             }
-            let envs = call("get_platform_state", json!({})).await?["environments"].clone();
+            let envs = send("get_platform_state", json!({}), false).await?["environments"].clone();
             Value::Array(envs.as_array().into_iter().flatten()
                 .filter(|e| wanted.as_deref().is_none_or(|t| crate::overview::matches_type(e, t)))
                 .map(crate::overview::listing)
@@ -742,28 +846,31 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
         }
         "start" | "stop" => {
             let id = resolve(require_one()?).await?;
-            call(
+            send(
                 "set_environment_status",
                 json!({"environmentId":id,"status":if command=="start"{"running"}else{"stopped"}}),
+                false,
             )
             .await?
         }
         "restart" | "rm" => {
             let target = if command == "rm" { &args[1] } else { require_one()? };
             let id = resolve(target).await?;
-            call(
+            // rm was confirmed with --yes above.
+            send(
                 if command == "restart" {
                     "restart_environment"
                 } else {
                     "delete_environment"
                 },
                 json!({"environmentId":id}),
+                command == "rm",
             )
             .await?
         }
         "inspect" => {
             let id = resolve(require_one()?).await?;
-            call("get_platform_state", json!({})).await?["environments"]
+            send("get_platform_state", json!({}), false).await?["environments"]
                 .as_array()
                 .and_then(|a| a.iter().find(|v| v["id"] == id))
                 .cloned()
@@ -776,14 +883,14 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
                 return Err("Usage: yougori ls ENV [PATH]".into());
             }
             let id = resolve(&args[1]).await?;
-            call("list_environment_folders", json!({"environmentId":id,"path":args.get(2).map_or("", String::as_str)})).await?
+            send("list_environment_folders", json!({"environmentId":id,"path":args.get(2).map_or("", String::as_str)}), false).await?
         }
         "rename" => {
             if args.len() != 3 {
                 return Err("Usage: yougori rename ENV NEW_NAME".into());
             }
             let id = resolve(&args[1]).await?;
-            call("rename_environment", json!({"environmentId":id,"name":args[2]})).await?
+            send("rename_environment", json!({"environmentId":id,"name":args[2]}), false).await?
         }
         "logs" => {
             let id=resolve(&args[1]).await?;
@@ -804,22 +911,23 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
             if args.len() != 1 {
                 return Err("Usage: yougori images".into());
             }
-            call("manage_oci_images", json!({"action":"list"})).await?
+            send("manage_oci_images", json!({"action":"list"}), false).await?
         }
         "pull" => {
-            call(
+            send(
                 "manage_oci_images",
                 json!({"action":"pull","image":require_one()?}),
+                false,
             )
             .await?
         }
+        "image" if image_prune => prune_images(args.len() == 3).await?,
+        // Confirmed with --yes above.
         "image" => {
-            if args.len() != 3 || args[1] != "rm" {
-                return Err("Usage: yougori image rm IMAGE".into());
-            }
-            call(
+            send(
                 "manage_oci_images",
                 json!({"action":"remove","image":args[2]}),
+                true,
             )
             .await?
         }
@@ -843,9 +951,10 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
                 i += 1;
             }
             let id = resolve(&args[1]).await?;
-            call(
+            send(
                 "environment_changes",
                 json!({"environmentId":id,"baseline":baseline,"offset":offset}),
+                false,
             )
             .await?
         }
@@ -986,7 +1095,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
             }
             "--listen" if action == "run" && !listen => listen = true,
             "--closed-weights" | "--publish" if action == "run" && !publish => publish = true,
-            "--folder" if action == "run" && !resources.contains_key("modelFolder") => {resources.insert("modelFolder".into(),json!(value(args,&mut i,"--folder")?));}
+            "--folder" if action == "run" && !resources.contains_key("modelFolder") => {resources.insert("modelFolder".into(),model_folder(&value(args,&mut i,"--folder")?)?);}
             "--quant" if action == "run" => quant = Some(value(args, &mut i, "--quant")?),
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
@@ -1697,6 +1806,33 @@ fn usage_summary(id: &str, usage: &Value, days: u32, now_hour: u64) -> Value {
 mod tests {
     use super::*;
     #[test]
+    fn image_prune_keeps_every_image_an_environment_names_and_internal_images() {
+        for (short, full) in [("nginx", "docker.io/library/nginx:latest"), ("node:24", "docker.io/library/node:24"), ("ghcr.io/owner/app", "ghcr.io/owner/app:latest"), ("localhost:5000/app:1", "localhost:5000/app:1"), ("user/app@sha256:abc", "docker.io/user/app@sha256:abc")] {
+            assert_eq!(image_key(short), full);
+        }
+        let images = json!([
+            {"Name":"docker.io/library/ubuntu:24.04","Size":"87MB"},
+            {"Name":"docker.io/library/nginx:alpine","Size":"20MB"},
+            {"Name":"docker.io/library/redis:latest","Size":"40MB"},
+            {"Name":format!("{}snapshots:env-1", crate::legacy_names::IMAGE_NAME_PREFIX)},
+            {"Name":"yougori.local/snapshots:env-2"},
+            {"Name":"<none>:<none>"},
+            {"Name":"docker.io/library/python@sha256:1a63a53928ce53d2b0baf08092a703f4840ac5dfbd61fd48802dbf48e08c801e"},
+        ]);
+        let environments = json!([{"runtime":"ubuntu:24.04"},{"runtime":"redis"},{"runtime":"builtin:alpine"},{"runtime":"C:/Images/Linux.iso"}]);
+        assert_eq!(unused_images(&images, &environments), vec![json!({"image":"docker.io/library/nginx:alpine","size":"20MB"})]);
+    }
+    #[test]
+    fn dry_run_plans_never_show_environment_values_for_any_isolation() {
+        for isolation in ["container", "microvm"] {
+            let args = ["--isolation", isolation, "-e", "API_TOKEN=private-value", "--dry-run", "alpine:3.24"].map(str::to_owned);
+            let run = parse_run(&args, false).unwrap();
+            let plan = serde_json::to_string(&redacted_plan(&run.request)).unwrap();
+            assert!(!plan.contains("private-value"), "{isolation}: {plan}");
+            assert!(plan.contains("API_TOKEN"), "{isolation}: the variable name stays visible");
+        }
+    }
+    #[test]
     fn neocloud_models_keep_pending_gpu_pods_but_exclude_deleted_and_other_products() {
         let state = json!({"environments":[
             {"id":"local","kind":"container","name":"local"},
@@ -1857,6 +1993,20 @@ mod tests {
         assert_eq!(r.request["workload"]["args"][1], "a; touch /bad");
         assert_eq!(r.request["workload"]["environment"]["KEY"], "with spaces")
     }
+
+    #[test]
+    fn environment_values_can_stay_out_of_the_command_line() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("app.env");
+        std::fs::write(&file, "# private\nAPI_TOKEN=from file\n\nMODE=dev=1\n").unwrap();
+        let r = parse_run(&args(&["-e", "PATH", "--env-file", file.to_str().unwrap(), "ubuntu"]), false).unwrap();
+        let environment = &r.request["workload"]["environment"];
+        assert_eq!(environment["PATH"], std::env::var("PATH").unwrap());
+        assert_eq!(environment["API_TOKEN"], "from file");
+        assert_eq!(environment["MODE"], "dev=1");
+        assert!(parse_run(&args(&["-e", "YOUGORI_TEST_VARIABLE_THAT_IS_NOT_SET", "ubuntu"]), false).is_err());
+        assert!(parse_run(&args(&["-e", "API_TOKEN=x", "--env-file", file.to_str().unwrap(), "ubuntu"]), false).is_err());
+    }
     #[test]
     fn storage_selection_does_not_consume_guest_command_options() {
         let run=parse_run(&args(&["--storage-drive","D:/","alpine","echo","--storage-drive","guest-value"]),false).unwrap();
@@ -1888,6 +2038,19 @@ mod tests {
             vec!["--gpu", "amd", "ubuntu"],
         ] {
             assert!(parse_run(&args(&a), false).is_err())
+        }
+    }
+
+    #[tokio::test]
+    async fn destructive_verbs_need_explicit_confirmation_before_any_engine_call() {
+        for a in [
+            vec!["image", "rm", "nginx"],
+            vec!["image", "rm", "nginx", "--force"],
+            vec!["image", "nginx"],
+            vec!["rm", "web"],
+            vec!["volume", "rm", "data"],
+        ] {
+            assert!(handle(&args(&a)).await.unwrap_err().contains("--yes"), "{a:?}");
         }
     }
 }

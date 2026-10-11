@@ -48,7 +48,6 @@ export default defineConfig({
         manualChunks(id) {
           const moduleId = id.replaceAll("\\", "/")
           if (moduleId.includes("/node_modules/@novnc/novnc/")) return "vnc-runtime"
-          if (moduleId.includes("/node_modules/@xyflow/")) return "graph-runtime"
           if (
             moduleId.includes("/node_modules/react/")
             || moduleId.includes("/node_modules/react-dom/")

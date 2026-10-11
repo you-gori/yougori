@@ -57,6 +57,11 @@ func (s *server) startup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "startup command is too long or contains null characters")
 		return
 	}
+	// The image is a nerdctl argument; a leading "-" would be parsed as a flag.
+	if request.Image != "" && !validWorkloadImage(request.Image) {
+		writeError(w, http.StatusBadRequest, "invalid original image reference")
+		return
+	}
 	unlock := s.locks.lock(containerLockKey(request.ID))
 	defer unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)

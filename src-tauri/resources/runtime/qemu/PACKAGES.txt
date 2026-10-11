@@ -52,7 +52,7 @@ Groups          : None
 Provides        : mingw-w64-ucrt-x86_64-omp  mingw-w64-ucrt-x86_64-cc-libs
 Depends On      : mingw-w64-ucrt-x86_64-libwinpthread  mingw-w64-ucrt-x86_64-tzdata
 Optional Deps   : None
-Required By     : mingw-w64-ucrt-x86_64-gcc  mingw-w64-ucrt-x86_64-gettext-runtime  mingw-w64-ucrt-x86_64-gnutls  mingw-w64-ucrt-x86_64-jsoncpp  mingw-w64-ucrt-x86_64-libb2  mingw-w64-ucrt-x86_64-libepoxy  mingw-w64-ucrt-x86_64-libjpeg-turbo  mingw-w64-ucrt-x86_64-libpng  mingw-w64-ucrt-x86_64-libtasn1  mingw-w64-ucrt-x86_64-mpdecimal  mingw-w64-ucrt-x86_64-mpfr  mingw-w64-ucrt-x86_64-ncurses  mingw-w64-ucrt-x86_64-nettle  mingw-w64-ucrt-x86_64-ninja  mingw-w64-ucrt-x86_64-pixman  mingw-w64-ucrt-x86_64-python  mingw-w64-ucrt-x86_64-virglrenderer  mingw-w64-ucrt-x86_64-zstd
+Required By     : mingw-w64-ucrt-x86_64-gcc  mingw-w64-ucrt-x86_64-gettext-runtime  mingw-w64-ucrt-x86_64-gn  mingw-w64-ucrt-x86_64-gnutls  mingw-w64-ucrt-x86_64-jsoncpp  mingw-w64-ucrt-x86_64-libb2  mingw-w64-ucrt-x86_64-libepoxy  mingw-w64-ucrt-x86_64-libjpeg-turbo  mingw-w64-ucrt-x86_64-libpng  mingw-w64-ucrt-x86_64-libtasn1  mingw-w64-ucrt-x86_64-mpdecimal  mingw-w64-ucrt-x86_64-mpfr  mingw-w64-ucrt-x86_64-ncurses  mingw-w64-ucrt-x86_64-nettle  mingw-w64-ucrt-x86_64-ninja  mingw-w64-ucrt-x86_64-pixman  mingw-w64-ucrt-x86_64-python  mingw-w64-ucrt-x86_64-virglrenderer  mingw-w64-ucrt-x86_64-zstd
 Optional For    : None
 Conflicts With  : None
 Replaces        : None

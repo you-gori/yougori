@@ -333,8 +333,14 @@ async fn reclaim_abandoned_runtimes(app: &AppHandle) -> BTreeMap<String, Result<
     results
 }
 
-fn save_startup_report(store: &PlatformStore, report: &StartupReport) -> Result<(), String> {
-    store.mutate(|state| { state.startup_report = Some(report.clone()); Ok(()) }).map(|_| ())
+/// The report only describes startup progress. A failed save (for example an antivirus
+/// sharing violation on the state file) is retried once, then logged, and must never
+/// stop the remaining environments from starting.
+fn save_startup_report(store: &PlatformStore, report: &StartupReport) {
+    let save = || store.mutate(|state| { state.startup_report = Some(report.clone()); Ok(()) }).map(|_| ());
+    if let Err(error) = save().or_else(|_| { std::thread::sleep(std::time::Duration::from_millis(250)); save() }) {
+        eprintln!("Startup progress could not be recorded: {}", safe_diagnostic(&error));
+    }
 }
 
 fn complete_startup_report(report: &mut StartupReport) {
@@ -388,10 +394,10 @@ async fn automatic_startup(app: &AppHandle) -> Result<(), String> {
             stage: "recovery".into(), status: "pending".into(), recovery: None, readiness: None, error: None, recovery_action: None,
         }).collect(),
     };
-    save_startup_report(&store, &report)?;
+    save_startup_report(&store, &report);
     let startup_settings = initial.settings.clone();
     report.service_registration = Some(tokio::task::spawn_blocking(move || startup_registration::describe(&startup_settings)).await.map_err(|error| error.to_string())?);
-    save_startup_report(&store, &report)?;
+    save_startup_report(&store, &report);
     let recoveries = reclaim_abandoned_runtimes(app).await;
     for index in 0..report.environments.len() {
         let id = report.environments[index].environment_id.clone();
@@ -403,7 +409,7 @@ async fn automatic_startup(app: &AppHandle) -> Result<(), String> {
                         report.environments[index].status = "failed".into();
                         report.environments[index].error = recovery.error.clone();
                         report.environments[index].recovery_action = recovery.recovery_action.clone();
-                        save_startup_report(&store, &report)?;
+                        save_startup_report(&store, &report);
                         continue;
                     }
                 }
@@ -411,41 +417,41 @@ async fn automatic_startup(app: &AppHandle) -> Result<(), String> {
                     report.environments[index].status = "failed".into();
                     report.environments[index].error = Some(safe_diagnostic(error));
                     report.environments[index].recovery_action = Some("Reconnect the original storage and retry the verified provider recovery".into());
-                    save_startup_report(&store, &report)?;
+                    save_startup_report(&store, &report);
                     continue;
                 }
             }
         }
         report.environments[index].stage = "reconciliation".into();
-        save_startup_report(&store, &report)?;
+        save_startup_report(&store, &report);
         if let Err(error) = crate::projects::restore_interrupted_staging(&id, &store, &runtime).await {
             report.environments[index].status = "failed".into();
             report.environments[index].error = Some(safe_diagnostic(&error));
             report.environments[index].recovery_action = Some("Reconcile the saved deployment configuration on its original provider before retrying startup. Its interrupted staging marker was preserved.".into());
-            save_startup_report(&store, &report)?;
+            save_startup_report(&store, &report);
             continue;
         }
         report.environments[index].stage = "starting".into();
-        save_startup_report(&store, &report)?;
+        save_startup_report(&store, &report);
         if let Err(error) = commands::set_environment_status(id.clone(), EnvironmentStatus::Running, store.clone(), runtime.clone()).await {
             report.environments[index].status = "failed".into();
             report.environments[index].error = Some(safe_diagnostic(&error));
             report.environments[index].recovery_action = Some("Inspect the saved startup command and provider checks, then retry Start".into());
             let _ = store.mutate(|state| { if let Some(environment) = state.environments.iter_mut().find(|environment| environment.id == id) { environment.last_error = Some(format!("Automatic startup failed: {}", safe_diagnostic(&error))); } Ok(()) });
-            save_startup_report(&store, &report)?;
+            save_startup_report(&store, &report);
             continue;
         }
         report.environments[index].stage = "publication".into();
-        save_startup_report(&store, &report)?;
+        save_startup_report(&store, &report);
         if let Err(error) = crate::workspace::restore_environment_publications(&id, &store, &runtime, &workspace).await {
             report.environments[index].status = "failed".into();
             report.environments[index].error = Some(safe_diagnostic(&error));
             report.environments[index].recovery_action = Some("Inspect the saved publication and listener conflict, then retry its connection".into());
-            save_startup_report(&store, &report)?;
+            save_startup_report(&store, &report);
             continue;
         }
         report.environments[index].stage = "readiness".into();
-        save_startup_report(&store, &report)?;
+        save_startup_report(&store, &report);
         match wait_for_readiness(
             || crate::projects::readiness::environment_readiness(&id, None, &store, &runtime, &workspace),
             std::time::Duration::from_secs(120), std::time::Duration::from_secs(2),
@@ -466,10 +472,11 @@ async fn automatic_startup(app: &AppHandle) -> Result<(), String> {
                 report.environments[index].recovery_action = Some("Inspect application logs and publication status, then verify readiness again".into());
             }
         }
-        save_startup_report(&store, &report)?;
+        save_startup_report(&store, &report);
     }
     complete_startup_report(&mut report);
-    save_startup_report(&store, &report)
+    save_startup_report(&store, &report);
+    Ok(())
 }
 
 pub fn start(app: &AppHandle) {

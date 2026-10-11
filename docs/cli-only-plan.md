@@ -50,7 +50,7 @@ Project launcher links are development previews. The shared proxy prevents brows
 The app and the CLI are two windows onto the same engine and the same data. Whatever is created, changed or deleted in one appears in the other, and both can be used at once.
 
 - Both call the same engine, so environments, connections, ports, publications, shares, snapshots, backups, saved domains and model conversations are shared.
-- A CLI change is pushed to the open app immediately (`opendock-platform-state`, `yougori-model-chat-history`); the app also refreshes every 2 seconds.
+- A CLI change is pushed to the open app immediately (`yougori-platform-state`, `yougori-model-chat-history`); the app also refreshes every 2 seconds.
 - The engine runs one operation at a time for conflicting changes.
 - Display-only state (graph layout, view mode, tour progress) stays in the app.
 

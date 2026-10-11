@@ -8,6 +8,10 @@ const evidence = tool.schema.array(tool.schema.object({
   contentBase64: tool.schema.string().max(49152),
 })).max(4).default([])
 
+function errorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined
+}
+
 async function request(action: string, params: unknown, sessionID: string) {
   const id = randomUUID()
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionID)) throw new Error("Invalid managed session")
@@ -41,15 +45,16 @@ async function request(action: string, params: unknown, sessionID: string) {
       try {
         await writeFile(acknowledged, id, { flag: "wx", mode: 0o600 })
         for (const path of [reply, acknowledged]) {
-          try { await unlink(path) } catch (error: any) {
-            if (error?.code !== "ENOENT") throw error
+          try { await unlink(path) } catch (error: unknown) {
+            if (errorCode(error) !== "ENOENT") throw error
           }
         }
       } catch { /* Receipt is already known; the owner reclaims any durable acknowledgment. */ }
       return result
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Native publication briefly owns the checked receipt before chown.
-      if (error?.code !== "ENOENT" && error?.code !== "EACCES") throw error
+      const code = errorCode(error)
+      if (code !== "ENOENT" && code !== "EACCES") throw error
     }
     await new Promise(resolve => setTimeout(resolve, 200))
   }

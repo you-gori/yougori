@@ -3,6 +3,7 @@ import { chmodSync, copyFileSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { signWindowsPayload } from "./windows-payload-signing.mjs"
+import { signMacPayload } from "./macos-payload-signing.mjs"
 import { assertPortableCli, assertMacCli, assertLinuxCli, portableCliBuildEnv, releaseTarget, nativeTarget, releaseArchitecture } from "./release-preflight.mjs"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -32,10 +33,9 @@ else if (process.platform === "darwin") assertMacCli(readFileSync(binary), proce
 else assertLinuxCli(readFileSync(binary), arch)
 copyFileSync(binary, join(destination, name))
 if (process.platform === "win32" && !development) signWindowsPayload(root, join(destination, name))
+// The compatibility copy below keeps this signature.
+if (process.platform === "darwin" && !development) signMacPayload(join(destination, name))
 const compatibilityName = process.platform === "win32" ? "yougori-cli.exe" : "yougori-cli"
 copyFileSync(join(destination, name), join(destination, compatibilityName))
-// Keep existing agent skills and user scripts working after the rename.
-const legacyName = process.platform === "win32" ? "opendock-cli.exe" : "opendock-cli"
-copyFileSync(join(destination, name), join(destination, legacyName))
-if (process.platform !== "win32") for (const file of [name, compatibilityName, legacyName]) chmodSync(join(destination, file), 0o755)
+if (process.platform !== "win32") for (const file of [name, compatibilityName]) chmodSync(join(destination, file), 0o755)
 console.log(`Bundled ${development ? "development " : ""}${name} (no Node.js dependency at runtime)`)

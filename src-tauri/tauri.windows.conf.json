@@ -34,7 +34,6 @@
       "resources/vault/yougori-vault.exe": "vault/yougori-vault.exe",
       "resources/cli/yougori.exe": "cli/yougori.exe",
       "resources/cli/yougori-cli.exe": "cli/yougori-cli.exe",
-      "resources/cli/opendock-cli.exe": "cli/opendock-cli.exe",
       "resources/THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt",
       "resources/APPLICATION_LICENSES.txt": "APPLICATION_LICENSES.txt",
       "resources/RUNTIME_LICENSES.txt": "RUNTIME_LICENSES.txt",

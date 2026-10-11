@@ -3,7 +3,6 @@
 // saved changes to /workspace as they arrive, without starting a process per change.
 // One operation per line, paths and data base64-encoded:
 //   W path data   write a file        D path   delete a file or folder
-//   Z             empty /workspace except node_modules (before a full copy)
 //   T token       record which PC copy this workspace matches
 //   K             restart the dev server (after package changes, or after it exited)
 //   B seq         acknowledge everything received so far
@@ -39,19 +38,19 @@ function write(file, data) {
   // Small files land in one write; larger ones appear whole through a rename, so watchers
   // never compile half a file.
   if (data.length < 65536) return fs.writeFileSync(file, data);
-  const temporary = `${file}.yougori-${process.pid}`;
-  fs.writeFileSync(temporary, data);
-  fs.renameSync(temporary, file);
+  // Sync never transfers .yougori-sync-* names, so a leftover is never copied to the PC.
+  const temporary = path.posix.join(path.posix.dirname(file), `.yougori-sync-${process.pid}-${Date.now()}`);
+  try {
+    fs.writeFileSync(temporary, data, { flag: 'wx' });
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
 }
 
 function remove(file) {
   fs.rmSync(file, { recursive: true, force: true });
-}
-
-function clear() {
-  for (const name of fs.readdirSync(root)) {
-    if (name !== 'node_modules') fs.rmSync(path.posix.join(root, name), { recursive: true, force: true });
-  }
 }
 
 function restart() {
@@ -78,7 +77,6 @@ function handle(line) {
       }
       case 'W': write(target(a), Buffer.from(b || '', 'base64')); break;
       case 'D': remove(target(a)); break;
-      case 'Z': clear(); break;
       case 'T': fs.writeFileSync(`${state}/sync-token`, a || ''); break;
       case 'K': restart(); break;
       case 'B': mark(`ack:${a}`); break;

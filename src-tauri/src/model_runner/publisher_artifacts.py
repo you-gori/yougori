@@ -303,6 +303,8 @@ def publisher_get(handler):
 
 def publisher_handle_post(handler):
     if handler.path == "/v1/yougori/publishing" and handler.authorized():
+        if not handler.admin_authorized():
+            return handler.reply(403, {"error": {"message": "Only the local Yougori engine can change publishing"}})
         return publisher_post(handler)
     if STATE.get("sourceOnly") and handler.authorized():
         return handler.reply(503, {"error": {"message": "Source files only: no weights were supplied. Chat and inference API are unavailable."}})

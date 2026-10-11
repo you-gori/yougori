@@ -124,6 +124,12 @@ pub async fn status(app: &AppHandle) -> Result<Value, String> {
     ));
     Ok(value)
 }
+/// The broker reports `desktop: false` when it does not recognize this process
+/// as Yougori Desktop (older brokers omit the field).
+#[cfg(windows)]
+pub(crate) fn unregistered(status: &Value) -> bool {
+    status["desktop"] == false
+}
 #[cfg(windows)]
 async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), String> {
     use yougori_vault::{client, platform, protocol::Request};
@@ -134,7 +140,22 @@ async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), Strin
     }
     if !update_required {
         for _ in 0..5 {
-            if client::call(&Request::Status {}).await.is_ok() { return Ok(()); }
+            if let Ok(status) = client::call(&Request::Status {}).await {
+                if !unregistered(&status) { return Ok(()); }
+                // An unsigned development broker accepts Desktop requests only
+                // from Desktop paths registered by an elevated install.
+                if !allow_install {
+                    return Err("Register this Yougori with Personal Vault: open Personal Vault MCP and select Update vault.".into());
+                }
+                tokio::task::spawn_blocking(platform::register_desktop)
+                    .await
+                    .map_err(|_| "Could not register Yougori with Personal Vault")??;
+                for _ in 0..20 {
+                    if client::call(&Request::Status {}).await.is_ok_and(|status| !unregistered(&status)) { return Ok(()); }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                return Err("Personal Vault did not recognize this Yougori after registration. Restart Yougori and retry.".into());
+            }
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
     }
@@ -294,7 +315,9 @@ pub async fn vault_bootstrap(app: AppHandle, window: crate::WebviewWindow, inter
     {
         if !interactive.unwrap_or(false) {
             let bundled = crate::vault::bundled_broker(&app)?;
-            if yougori_vault::platform::update_required(&bundled)? || !yougori_vault::platform::installed_binary()?.exists() {
+            if yougori_vault::platform::update_required(&bundled)? || !yougori_vault::platform::installed_binary()?.exists()
+                || yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await.is_ok_and(|status| unregistered(&status))
+            {
                 return Ok(json!({"created":true,"ready":false,"updateRequired":true}));
             }
         }

@@ -17,7 +17,7 @@ import (
 )
 
 func prepareContainerStoreContext(ctx context.Context) error {
-	if _, err := os.Stat("/etc/opendock-cuda-runtime"); err != nil {
+	if _, err := os.Stat("/etc/yougori-cuda-runtime"); err != nil {
 		boot, err := readBootConfiguration()
 		if err != nil {
 			return errors.New("container storage preparation requires a Yougori container runtime")

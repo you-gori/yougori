@@ -120,6 +120,19 @@ impl RuntimeManager {
         )
         .await
     }
+    /// Serializes PC-folder preparation and deletion of one workload. Lock order:
+    /// this per-workload lock, then `appliance_operations`, then `workload_shares`.
+    pub(super) async fn workload_bind_mutex(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.workload_binds.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(id).and_then(std::sync::Weak::upgrade) {
+            return lock;
+        }
+        let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(id.to_owned(), std::sync::Arc::downgrade(&lock));
+        lock
+    }
+
     pub async fn prepare_workload_binds(&self, id: &str) -> Result<serde_json::Value, String> {
         if let Some(engine) = self.storage_runtime(id)? {
             return Box::pin(engine.prepare_workload_binds(id)).await;
@@ -127,21 +140,23 @@ impl RuntimeManager {
         let options = self.workload_options(id)?;
         let mut value = serde_json::to_value(&options).map_err(|e| e.to_string())?;
         crate::projects::secrets::inject(&mut value, &options.secret_environment)?;
+        let bind_lock = self.workload_bind_mutex(id).await;
+        let _bind_guard = bind_lock.lock().await;
         if options.binds.is_empty() {
             self.workload_shares.lock().await.remove(id);
             return Ok(value);
         }
         self.container_endpoint(id).await?;
-        let mut retained = self.workload_shares.lock().await;
         let cuda = self.container_provider(id)? == crate::models::RuntimeProviderKind::YougoriCuda;
-        let mut servers = Vec::new();
         // Reuse live servers but always restore guest mounts after an engine restart.
         let fingerprint = serde_json::to_string(&options.binds).map_err(|e| e.to_string())?;
-        if let Some((old_key, old)) = retained.remove(id) {
-            if old_key == fingerprint {
-                servers = old
-            }
-        }
+        // Never hold workload_shares across agent calls: deletion holds the
+        // appliance_operations writer before taking it, and agent_post waits for
+        // a reader lease. The per-workload lock keeps this entry exclusive.
+        let mut servers = match self.workload_shares.lock().await.remove(id) {
+            Some((old_key, old)) if old_key == fingerprint => old,
+            _ => Vec::new(),
+        };
         let result=async {
             for (index,bind) in options.binds.iter().enumerate(){
                 let root=std::path::Path::new(&bind.source).canonicalize().map_err(|e|format!("PC volume {}: {e}",bind.source))?;
@@ -154,7 +169,7 @@ impl RuntimeManager {
                 value["binds"][index]["source"]=slot.into();
             }Ok(value)
         }.await;
-        retained.insert(id.to_owned(), (fingerprint, servers));
+        self.workload_shares.lock().await.insert(id.to_owned(), (fingerprint, servers));
         result
     }
     pub fn save_workload_options(&self, id: &str, options: &Options) -> Result<(), String> {

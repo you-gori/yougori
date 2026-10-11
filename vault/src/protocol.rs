@@ -47,7 +47,8 @@ pub enum Request {
     Mcp { message: Value },
 }
 
-pub async fn read<R: AsyncRead + Unpin>(stream: &mut R) -> Result<Vec<u8>, String> {
+/// Frames can carry credentials; the buffer is wiped when dropped.
+pub async fn read<R: AsyncRead + Unpin>(stream: &mut R) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
     let length = stream
         .read_u32()
         .await
@@ -55,7 +56,7 @@ pub async fn read<R: AsyncRead + Unpin>(stream: &mut R) -> Result<Vec<u8>, Strin
     if length == 0 || length > MAX_FRAME {
         return Err("Invalid vault frame size".into());
     }
-    let mut bytes = vec![0; length];
+    let mut bytes = zeroize::Zeroizing::new(vec![0; length]);
     stream
         .read_exact(&mut bytes)
         .await
@@ -63,7 +64,7 @@ pub async fn read<R: AsyncRead + Unpin>(stream: &mut R) -> Result<Vec<u8>, Strin
     Ok(bytes)
 }
 pub async fn write<W: AsyncWrite + Unpin>(stream: &mut W, value: &Value) -> Result<(), String> {
-    let bytes = serde_json::to_vec(value).map_err(|_| "Invalid vault response")?;
+    let bytes = zeroize::Zeroizing::new(serde_json::to_vec(value).map_err(|_| "Invalid vault response")?);
     if bytes.len() > MAX_FRAME {
         return Err("Vault response exceeds size limit".into());
     }
@@ -79,6 +80,17 @@ pub async fn write<W: AsyncWrite + Unpin>(stream: &mut W, value: &Value) -> Resu
         .flush()
         .await
         .map_err(|_| "Vault connection closed".into())
+}
+
+/// Overwrites every string in a message before it is dropped. serde_json does
+/// not wipe its buffers, so values that carried credentials are cleared here.
+pub fn wipe(value: &mut Value) {
+    match value {
+        Value::String(text) => zeroize::Zeroize::zeroize(text),
+        Value::Array(items) => items.iter_mut().for_each(wipe),
+        Value::Object(fields) => fields.values_mut().for_each(wipe),
+        _ => (),
+    }
 }
 
 pub fn tool_catalog() -> Value {
@@ -115,6 +127,12 @@ mod tests {
         assert!(serde_json::from_value::<Request>(
             serde_json::json!({"method":"approve","request":"request-id","approved":true})
         ).is_err());
+    }
+    #[test]
+    fn wipe_clears_nested_strings_in_place() {
+        let mut value = serde_json::json!({"value":"secret","list":["token"],"nested":{"key":"private"},"count":2});
+        wipe(&mut value);
+        assert_eq!(value, serde_json::json!({"value":"","list":[""],"nested":{"key":""},"count":2}));
     }
     #[tokio::test]
     async fn framing_limits_and_truncation_fail_closed() {

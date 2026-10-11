@@ -10,7 +10,7 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 }
 
 $escapedWorkspace = $workspace.Replace("'", "''")
-$command = "Set-Location -LiteralPath '$escapedWorkspace'; & npm.cmd run desktop:dev; `$openDockExitCode = `$LASTEXITCODE; if (`$openDockExitCode -ne 0) { Write-Host ''; Write-Host 'Yougori development exited with an error.' -ForegroundColor Red; Read-Host 'Press Enter to close this window' }; exit `$openDockExitCode"
+$command = "Set-Location -LiteralPath '$escapedWorkspace'; & npm.cmd run desktop:dev; `$yougoriExitCode = `$LASTEXITCODE; if (`$yougoriExitCode -ne 0) { Write-Host ''; Write-Host 'Yougori development exited with an error.' -ForegroundColor Red; Read-Host 'Press Enter to close this window' }; exit `$yougoriExitCode"
 $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
 
 Write-Host 'Requesting administrator access for Yougori development...'

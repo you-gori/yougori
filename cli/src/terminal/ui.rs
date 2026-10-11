@@ -39,14 +39,12 @@ pub(super) struct Context {
 
 impl Context {
     pub fn new(env: &Value) -> Self {
-        let provider = env["provider"].as_str().unwrap_or("");
-        let local = matches!(provider, "yougoriOci" | "yougoriCuda")
-            && !env["runtime"]
-                .as_str()
-                .is_some_and(|s| s.starts_with("cloud://") || s.starts_with("shared://"));
+        // Local containers and microVMs; installers support only Yougori's built-in microVM guest.
+        let local = crate::sandbox_stop::is_local_sandbox(env);
+        let microvm = env["kind"] == "microVm";
         let cpu = env["resourcePolicy"]["cpu"]["preferred"].as_f64();
         let memory = env["resourcePolicy"]["memoryGb"]["preferred"].as_f64();
-        let mut details = vec![clean(env["runtime"].as_str().unwrap_or("Guest shell"))];
+        let mut details = vec![if microvm { "microVM".into() } else { clean(env["runtime"].as_str().unwrap_or("Guest shell")) }];
         if let Some(cpu) = cpu {
             details.push(format!("{cpu} CPU"));
         }
@@ -57,8 +55,8 @@ impl Context {
             id: env["id"].as_str().unwrap_or("").into(),
             name: clean(env["name"].as_str().unwrap_or("Environment")),
             local_shell: local,
-            installable: local && env["networkAccess"] != false,
-            sandbox_controls: crate::sandbox_stop::is_local_sandbox(env),
+            installable: local && env["networkAccess"] != false && (!microvm || env["runtime"] == "builtin:alpine"),
+            sandbox_controls: local,
             details: details.join(" · "),
         }
     }
@@ -137,7 +135,7 @@ impl Context {
     async fn install(&self, input: &mut InputReader) -> Result<(), String> {
         if !self.installable {
             return Err(
-                "Tool installers need a local container with Internet access enabled.".into(),
+                "Tool installers need a local container or built-in microVM with Internet access enabled.".into(),
             );
         }
         let mut choices = vec!["Back"];
@@ -150,7 +148,7 @@ impl Context {
         }
         let tool = choices[index];
         line(&format!(
-            "Installing {tool} in {}. Sign in inside the container when you launch it.",
+            "Installing {tool} in {}. Sign in inside the sandbox when you launch it.",
             self.name
         ))?;
         // A separate owned PTY cannot inject an installer into a busy shell.
@@ -531,6 +529,11 @@ pub(super) fn filter_input(
             interrupts.escape.push(*byte);
             return true;
         }
+        // A lone Escape followed by a control key is two key presses, not one
+        // escape sequence: Ctrl+C after Esc still opens the stop menu.
+        if interrupts.escape.len() == 1 && *byte < 0x20 {
+            interrupts.escape.clear();
+        }
         if !interrupts.escape.is_empty() {
             interrupts.escape.push(*byte);
             if interrupts.escape == b"\x1b]" {
@@ -702,5 +705,19 @@ mod tests {
         let mut bytes = vec![3];
         assert!(!filter_input(&mut bytes, &mut Interrupts::default(), false, false).stop);
         assert_eq!(bytes, [3]);
+    }
+    #[test]
+    fn ctrl_c_after_a_lone_escape_still_opens_the_stop_menu() {
+        let mut interrupts = Interrupts::default();
+        let mut escape = vec![27];
+        assert!(!filter_input(&mut escape, &mut interrupts, true, true).stop);
+        assert_eq!(escape, [27]);
+        let mut bytes = vec![3];
+        assert!(filter_input(&mut bytes, &mut interrupts, true, true).stop);
+        assert!(bytes.is_empty());
+        // Escape sequences such as arrow keys are unaffected.
+        let mut arrow = b"\x1b[A".to_vec();
+        assert!(!filter_input(&mut arrow, &mut interrupts, true, true).stop);
+        assert_eq!(arrow, b"\x1b[A");
     }
 }

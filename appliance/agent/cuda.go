@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-func cudaMode() bool { return os.Getenv("OPENDOCK_CUDA_MODE") == "1" }
+func cudaMode() bool { return os.Getenv("YOUGORI_CUDA_MODE") == "1" }
 
 func cudaCapacity() (int, uint64) {
 	var info syscall.Sysinfo_t
@@ -56,11 +56,11 @@ func initializeAgentStorage() error {
 }
 
 func cudaBootConfiguration() (bootConfiguration, error) {
-	token := os.Getenv("OPENDOCK_CUDA_TOKEN")
+	token := os.Getenv("YOUGORI_CUDA_TOKEN")
 	if _, err := hex.DecodeString(token); err != nil || len(token) != 64 {
 		return bootConfiguration{}, fmt.Errorf("invalid CUDA runtime token")
 	}
-	if _, err := os.Stat("/etc/opendock-cuda-runtime"); err != nil {
+	if _, err := os.Stat("/etc/yougori-cuda-runtime"); err != nil {
 		return bootConfiguration{}, fmt.Errorf("not a Yougori CUDA distribution")
 	}
 	return bootConfiguration{token: token}, nil
@@ -70,7 +70,7 @@ func agentListenAddress() (string, error) {
 	if !cudaMode() {
 		return listenAddress, nil
 	}
-	address := os.Getenv("OPENDOCK_CUDA_LISTEN")
+	address := os.Getenv("YOUGORI_CUDA_LISTEN")
 	host, port, err := net.SplitHostPort(address)
 	n, parseError := strconv.Atoi(port)
 	if err != nil || parseError != nil || host != "127.0.0.1" || n < 1024 || n > 65535 {
@@ -82,7 +82,7 @@ func agentListenAddress() (string, error) {
 func cudaDeviceArguments(enabled bool) ([]string, error) {
 	// Override requests embedded in CUDA images. runc remains the default;
 	// only explicit CDI injection grants a container the driver and devices.
-	args := []string{"--env", "NVIDIA_VISIBLE_DEVICES=void", "--mount", "type=bind,src=/usr/local/sbin/opendock-cuda-probe,dst=/opendock/bin/cuda-check,ro"}
+	args := []string{"--env", "NVIDIA_VISIBLE_DEVICES=void", "--mount", "type=bind,src=/usr/local/sbin/yougori-cuda-probe,dst=/yougori/bin/cuda-check,ro"}
 	if !enabled {
 		return args, nil
 	}
@@ -122,7 +122,7 @@ func (s *server) verifyCUDA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "Start the CUDA container before testing its GPU.")
 		return
 	}
-	output, err := runAllowExit(ctx, "nerdctl", "--namespace", namespace, "exec", "--user", "65534:65534", request.ID, "/opendock/bin/cuda-check")
+	output, err := runAllowExit(ctx, "nerdctl", "--namespace", namespace, "exec", "--user", "65534:65534", request.ID, "/yougori/bin/cuda-check")
 	if err != nil {
 		writeError(w, 500, "Could not run the CUDA check: "+err.Error())
 		return

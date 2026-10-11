@@ -85,14 +85,24 @@ fn save_record(runtime:&RuntimeManager,k:&str,record:&Record)->Result<(),String>
 fn key(path: &Path) -> String {
     format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()))
 }
+/// Project-relative inputs must resolve, after links, inside the project folder.
+fn within_project(base: &Path, relative: &str, what: &str) -> Result<PathBuf, String> {
+    let path = base
+        .join(relative)
+        .canonicalize()
+        .map_err(|e| format!("{what} {relative}: {e}"))?;
+    if !path.starts_with(base) {
+        return Err(format!("{what} {relative} must stay inside the project folder"));
+    }
+    Ok(path)
+}
 fn resolve_spec(mut p: Project, root: &Path) -> Result<Project, String> {
+    let base = root.canonicalize().map_err(|e| format!("Project folder: {e}"))?;
     for spec in p.environments.values_mut() {
         if let Some(source) = &spec.source {
             if source != "builtin:alpine" && !Path::new(source).is_absolute() {
                 spec.source = Some(
-                    root.join(source)
-                        .canonicalize()
-                        .map_err(|e| format!("Boot source: {e}"))?
+                    within_project(&base, source, "Boot source")?
                         .to_string_lossy()
                         .into_owned(),
                 )
@@ -124,8 +134,9 @@ fn resolve_spec(mut p: Project, root: &Path) -> Result<Project, String> {
                 })
             }
         }
+        // Copied files enter the image, so unlike visible PC folders they never leave the project.
         for source in &mut spec.files {
-            source.source=root.join(&source.source).canonicalize().map_err(|e|format!("Project file source {}: {e}",source.source))?.to_string_lossy().into_owned();
+            source.source=within_project(&base,&source.source,"Project file source")?.to_string_lossy().into_owned();
         }
         if let Some(cloud) = &mut spec.cloud {
             if let Some(file) = cloud["identityFile"].as_str() {
@@ -134,7 +145,17 @@ fn resolve_spec(mut p: Project, root: &Path) -> Result<Project, String> {
                 if !Path::new(file).is_absolute()
                     && crate::runtime::cloud::public_identity(file)?.is_none()
                 {
-                    cloud["identityFile"] = root.join(file).to_string_lossy().into_owned().into()
+                    // A relative key stays inside the project; a key elsewhere must be named by
+                    // its absolute path so the plan review shows exactly which file is used.
+                    let outside = || format!("Cloud identityFile {file} must stay inside the project folder; use an absolute path for a key elsewhere");
+                    if Path::new(file).components().any(|part| !matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
+                        return Err(outside());
+                    }
+                    let path = root.join(file);
+                    if path.canonicalize().is_ok_and(|real| !real.starts_with(&base)) {
+                        return Err(outside());
+                    }
+                    cloud["identityFile"] = path.to_string_lossy().into_owned().into()
                 }
             }
         }
@@ -155,12 +176,33 @@ fn load(path: &str) -> Result<(PathBuf, Project), String> {
     )?;
     Ok((path, p))
 }
+/// Every host path and credential reference a plan would use, so review never relies on counts.
+fn host_access(e: &Spec) -> Value {
+    let mut folders = e.volumes.iter().filter(|m| m.bind).map(|m| json!({"path":m.source,"target":m.target,"readOnly":m.read_only})).collect::<Vec<_>>();
+    folders.extend(e.pc_access.iter().filter(|pc| pc.target.is_none()).map(|pc| json!({"path":pc.path,"target":null,"readOnly":pc.read_only})));
+    let mut secrets = e.secrets.iter().map(|(variable, reference)| json!({"variable":variable,"reference":reference})).collect::<Vec<_>>();
+    if let Some(reference) = e.health.as_ref().and_then(|h| h.bearer_secret.as_ref()) {
+        secrets.push(json!({"variable":null,"reference":reference,"use":"healthCheck"}));
+    }
+    json!({
+        "pcFolders": folders,
+        "projectFiles": e.files.iter().map(|f| json!({"source":f.source,"target":f.target})).collect::<Vec<_>>(),
+        "secrets": secrets,
+        "bootSource": e.source.as_deref().filter(|s| *s != "builtin:alpine"),
+    })
+}
 fn summary(p: &Project, record: Option<&Record>, path: &Path) -> Value {
-    let services=p.environments.iter().map(|(name,e)|json!({"name":name,"type":e.kind,"image":e.image,"cpu":e.cpu,"memoryGb":manifest::gib(&e.memory).unwrap_or(0.0),"gpu":e.gpu||e.kind=="gpu","ports":e.ports,"pcAccess":e.pc_access.len()+e.volumes.iter().filter(|m|m.bind).count(),"editPc":e.permissions.edit,"variables":e.environment.keys().collect::<Vec<_>>(),"action":match record.and_then(|r|r.applied.get(name)){None=>"create",Some(old)if old==e=>"unchanged",Some(_)=>"update"}})).collect::<Vec<_>>();
+    let services=p.environments.iter().map(|(name,e)|{let mut v=json!({"name":name,"type":e.kind,"image":e.image,"cpu":e.cpu,"memoryGb":manifest::gib(&e.memory).unwrap_or(0.0),"gpu":e.gpu||e.kind=="gpu","ports":e.ports,"editPc":e.permissions.edit,"variables":e.environment.keys().collect::<Vec<_>>(),"action":match record.and_then(|r|r.applied.get(name)){None=>"create",Some(old)if old==e=>"unchanged",Some(_)=>"update"}});let access=host_access(e);v["pcAccess"]=json!(access["pcFolders"].as_array().map_or(0,Vec::len));for field in ["pcFolders","projectFiles","secrets","bootSource"]{v[field]=access[field].clone();}v}).collect::<Vec<_>>();
     json!({"path":path,"project":p.project,"environments":services,"connections":p.connections.len(),"publications":p.publish.len(),"notice":"Apply preserves removed environments and data. Image/type changes create a replacement and keep the old environment stopped. down stops project workloads without deleting volumes."})
 }
+// Project files name host folders, copies and secrets: only the dashboard and the
+// same-user CLI (which calls the unchecked functions) may open them.
 #[tauri::command]
-pub async fn inspect_project(path: String, app: AppHandle) -> Result<Value, String> {
+pub async fn inspect_project(path: String, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
+    crate::host_terminal::require_dashboard(window.label())?;
+    inspect_project_file(path, app).await
+}
+pub(crate) async fn inspect_project_file(path: String, app: AppHandle) -> Result<Value, String> {
     let (path, p) = load(&path)?;
     let r = registry(&app.state::<RuntimeManager>())?;
     Ok(summary(&p, r.projects.get(&key(&path)), &path))
@@ -221,6 +263,16 @@ pub async fn discover_projects(app: AppHandle) -> Result<Value, String> {
 }
 #[tauri::command]
 pub async fn import_compose(
+    path: String,
+    write: bool,
+    project: Option<Project>,
+    app: AppHandle,
+    window: crate::WebviewWindow,
+) -> Result<Value, String> {
+    crate::host_terminal::require_dashboard(window.label())?;
+    import_compose_file(path, write, project, app).await
+}
+pub(crate) async fn import_compose_file(
     path: String,
     write: bool,
     project: Option<Project>,
@@ -417,7 +469,11 @@ async fn startup_intent(app:&AppHandle,p:&Project,record:&Record)->Result<(),Str
 }
 
 #[tauri::command]
-pub async fn deployment_status(path:String,app:AppHandle)->Result<Value,String>{
+pub async fn deployment_status(path:String,app:AppHandle,window:crate::WebviewWindow)->Result<Value,String>{
+    crate::host_terminal::require_dashboard(window.label())?;
+    project_deployment_status(path,app).await
+}
+pub(crate) async fn project_deployment_status(path:String,app:AppHandle)->Result<Value,String>{
     let(path,p)=load(&path)?;
     let runtime=app.state::<RuntimeManager>();
     let record=registry(&runtime)?.projects.get(&key(&path)).cloned();
@@ -448,7 +504,11 @@ async fn cancellable_deployment_report(app:&AppHandle,p:&Project,record:&Record)
 }
 
 #[tauri::command]
-pub async fn project_action(path: String, action: String, app: AppHandle) -> Result<Value, String> {
+pub async fn project_action(path: String, action: String, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
+    crate::host_terminal::require_dashboard(window.label())?;
+    run_project_action(path, action, app).await
+}
+pub(crate) async fn run_project_action(path: String, action: String, app: AppHandle) -> Result<Value, String> {
     let result=Box::pin(reconcile_project_action(path,action,app)).await;
     if let Err(error)=&result{
         if crate::automation::context::current().is_some_and(|operation|operation.cancellation.is_cancelled()){

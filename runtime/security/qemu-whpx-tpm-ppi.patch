@@ -6,7 +6,7 @@ index f0c3429..e040bf4 100644
                    hwaddr addr, Object *obj)
  {
      size_t host_page_size = qemu_real_host_page_size();
-+    /* OpenDock: WHPX requires complete host pages for RAM device mappings.
++    /* Yougori: WHPX requires complete host pages for RAM device mappings.
 +     * Reserve/zero the already-allocated padding too; do not expose heap bytes
 +     * to the guest. The ACPI PPI operation region remains its specified size. */
 +    size_t mapping_size = ROUND_UP(TPM_PPI_ADDR_SIZE, host_page_size);

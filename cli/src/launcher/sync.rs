@@ -47,15 +47,50 @@ pub type Manifest = BTreeMap<String, (u64, i64)>;
 /// A version change asks for checksum reconciliation of the existing workspace.
 pub const COPY_VERSION: u32 = 1;
 
+/// Folders that tools manage separately on each computer: version-control metadata,
+/// installed dependencies and interpreter caches. Two-way sync never exchanges them.
+/// Their changes are invisible to a code review (`git diff`), yet hooks, package
+/// binaries and bytecode in them run on this computer.
+pub const HOST_ONLY: [&str; 7] = [".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__"];
+
+/// A filename as case-insensitive filesystems compare it (NTFS, APFS, HFS+): ignoring
+/// letter case, trailing dots and spaces (Windows) and the zero-width characters HFS+
+/// ignores. The container helper (assets/two-way.cjs) folds names the same way.
+pub fn folded(name: &str) -> String {
+    let visible: String = name
+        .chars()
+        .filter(|c| !matches!(c, '\u{200c}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{206a}'..='\u{206f}' | '\u{feff}'))
+        .collect();
+    visible.trim_end_matches(['.', ' ']).to_uppercase()
+}
+
+/// Whether a path component names a HOST_ONLY folder, in any spelling this computer
+/// may resolve to the same folder.
+pub fn host_only(name: &str) -> bool {
+    let name = folded(name);
+    HOST_ONLY.iter().any(|protected| name == protected.to_uppercase())
+}
+
+fn env_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == ".env" || name.starts_with(".env.")
+}
+
 /// Launch copies all project files regardless of ignore files. Only the user's .env
-/// choice and transient sync protocol files are omitted.
+/// choice and transient sync protocol files are omitted. Two-way sync additionally
+/// keeps HOST_ONLY folders on each side.
 pub struct Filter {
     env_files: bool,
+    two_way: bool,
 }
 
 impl Filter {
     pub fn load(_folder: &Path, env_files: bool) -> Result<Self, String> {
-        Ok(Self { env_files })
+        Ok(Self { env_files, two_way: false })
+    }
+    pub fn two_way(mut self) -> Self {
+        self.two_way = true;
+        self
     }
     pub fn copies_env_files(&self) -> bool {
         self.env_files
@@ -63,7 +98,8 @@ impl Filter {
     pub fn excluded(&self, relative: &str, _folder: bool) -> bool {
         relative.split('/').any(|part| {
             part.is_empty() || part.starts_with(".yougori-sync-")
-                || (!self.env_files && (part == ".env" || part.starts_with(".env.")))
+                || (!self.env_files && env_name(part))
+                || (self.two_way && host_only(part))
         })
     }
 }
@@ -124,15 +160,21 @@ pub fn has_env_files(folder: &Path) -> bool {
     false
 }
 
+/// Symlinks and junctions. On Windows these are name-surrogate reparse points; other
+/// reparse points, such as OneDrive/cloud-files placeholders and deduplicated files,
+/// are ordinary files and folders whose contents can be read.
 pub(super) fn linked(meta: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if meta.file_attributes() & 0x400 != 0 {
-            return true;
-        }
-    }
     meta.file_type().is_symlink()
+}
+
+/// Whether the path, or a folder above it, is now a link on this computer. Such paths
+/// are not followed, and their earlier contents are not treated as deletions.
+pub fn under_link(root: &Path, relative: &str) -> bool {
+    let mut path = root.to_path_buf();
+    relative.split('/').any(|part| {
+        path.push(part);
+        fs::symlink_metadata(&path).is_ok_and(|meta| linked(&meta))
+    })
 }
 
 fn stamp(meta: &fs::Metadata) -> (u64, i64) {
@@ -150,6 +192,7 @@ fn walk(
     relative: &str,
     filter: &Filter,
     out: &mut Manifest,
+    links: &mut BTreeSet<String>,
     depth: usize,
 ) -> Result<(), String> {
     if depth > 128 {
@@ -179,11 +222,13 @@ fn walk(
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("Cannot inspect {path}: {e}")),
         };
-        if linked(&meta) || filter.excluded(&path, meta.is_dir()) {
+        if filter.excluded(&path, meta.is_dir()) {
             continue;
         }
-        if meta.is_dir() {
-            walk(root, &path, filter, out, depth + 1)?;
+        if linked(&meta) {
+            links.insert(path);
+        } else if meta.is_dir() {
+            walk(root, &path, filter, out, links, depth + 1)?;
         } else if meta.is_file() {
             out.insert(path, stamp(&meta));
         }
@@ -192,9 +237,15 @@ fn walk(
 }
 
 pub fn scan(root: &Path, filter: &Filter) -> Result<Manifest, String> {
+    Ok(scan_links(root, filter)?.0)
+}
+
+/// The project's files, and the links found instead of files or folders.
+pub fn scan_links(root: &Path, filter: &Filter) -> Result<(Manifest, BTreeSet<String>), String> {
     let mut manifest = Manifest::new();
-    walk(root, "", filter, &mut manifest, 0)?;
-    Ok(manifest)
+    let mut links = BTreeSet::new();
+    walk(root, "", filter, &mut manifest, &mut links, 0)?;
+    Ok((manifest, links))
 }
 
 pub fn directories(root: &Path, filter: &Filter) -> Result<BTreeSet<String>, String> {
@@ -447,6 +498,48 @@ mod tests {
         for path in ["node_modules/package/a.js", ".git/config", ".yougori/preferences", ".venv/lib/a", "ignored/a", "private.txt", "generated/a", "dist/a", "backup.key"] {
             assert!(!with_env.excluded(path, false), "{path}");
         }
+    }
+
+    #[test]
+    fn two_way_keeps_host_only_folders_in_every_spelling() {
+        let root = tempfile::tempdir().unwrap();
+        let one_way = Filter::load(root.path(), true).unwrap();
+        let two_way = Filter::load(root.path(), true).unwrap().two_way();
+        for path in [
+            ".git/hooks/pre-commit", ".GIT/config", "packages/web/node_modules/.bin/vite",
+            "Node_Modules/x.js", ".venv/Scripts/python.exe", "venv/bin/activate", "src/__pycache__/a.cpython-312.pyc",
+            ".hg/hgrc", ".svn/entries", ".g\u{200c}it/hooks/post-checkout", ".g\u{131}t/config", ".git. /config",
+        ] {
+            assert!(two_way.excluded(path, false), "{path}");
+        }
+        for path in [".gitignore", ".github/workflows/ci.yml", ".gitmodules", "src/node_modules.ts", "git/hooks.md"] {
+            assert!(!two_way.excluded(path, false), "{path}");
+        }
+        // The first copy and one-way sync still include dependencies and Git metadata.
+        assert!(!one_way.excluded(".git/config", false) && !one_way.excluded("node_modules/a.js", false));
+        let without_env = Filter::load(root.path(), false).unwrap().two_way();
+        assert!(without_env.excluded(".ENV", false) && without_env.excluded("server/.Env.local", false));
+    }
+
+    #[test]
+    fn links_are_reported_instead_of_followed() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/app.js"), "1").unwrap();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("outside.js"), "x").unwrap();
+        #[cfg(unix)]
+        let linked_folder = std::os::unix::fs::symlink(target.path(), root.path().join("lib")).is_ok();
+        #[cfg(windows)]
+        let linked_folder = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(root.path().join("lib")).arg(target.path())
+            .output().is_ok_and(|output| output.status.success());
+        let (files, links) = scan_links(root.path(), &Filter::load(root.path(), false).unwrap()).unwrap();
+        assert_eq!(files.keys().cloned().collect::<Vec<_>>(), ["src/app.js"]);
+        if linked_folder {
+            assert_eq!(links.into_iter().collect::<Vec<_>>(), ["lib"]);
+            assert!(under_link(root.path(), "lib/outside.js"));
+        }
+        assert!(!under_link(root.path(), "src/app.js"));
     }
 
     fn refresh(

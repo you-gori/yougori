@@ -8,7 +8,7 @@ param(
 # Only run in a disposable Windows VM/CI machine. Never erase existing app data.
 $ErrorActionPreference = 'Stop'
 if (-not $DisposableMachine) { throw 'This installs and uninstalls Yougori. Run only in a disposable Windows machine with -DisposableMachine.' }
-foreach ($existing in @("$env:APPDATA\com.yougori.desktop", "$env:APPDATA\com.opendock.desktop", "$env:USERPROFILE\Yougori", "$env:USERPROFILE\OpenDock")) {
+foreach ($existing in @("$env:APPDATA\com.yougori.desktop", "$env:USERPROFILE\Yougori")) {
     if (Test-Path -LiteralPath $existing) { throw "This is not a clean test profile: $existing" }
 }
 if (Get-Command yougori -ErrorAction SilentlyContinue) { throw 'An existing Yougori CLI was found. Use a clean VM.' }

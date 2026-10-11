@@ -1,17 +1,17 @@
 [
   {
     "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-    "sha256": "13b01cf3466f838b53d753327dbbfc2275ea34601b6fc5c67b336f17cb8e9b60",
-    "bytes": 180811776
+    "sha256": "970db0178d5593670f07ec1cb208ff5b529fa977571297062e18ad6ad40d1fb8",
+    "bytes": 179387392
   },
   {
     "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-    "sha256": "d560fd2d7ef9429a8f70f6f5733d93b415f84a19acf56d3608faa10ff87494d9",
-    "bytes": 94062900
+    "sha256": "748d47eff5ed05671a18ca4f3d827bd61880e5f4a7308d7ae995a0d7125c44e6",
+    "bytes": 94082023
   },
   {
     "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-    "sha256": "ed1895184ea0a99861d277280b45fb6a780a82ca5ae03b509f0ffd31aa70a003",
+    "sha256": "6d3d0bcf1566e667611ecea41ebb4d5b0edabb414db79941ec533bb79b2709ee",
     "bytes": 247
   },
   {
@@ -31,8 +31,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/appliance/storage-notices/SOURCES.md",
-    "sha256": "8df7a9e1b5bc4f1275ee4cb7cd8d3dad186f717aab1adb6b42cf8a0bfef5f53d",
-    "bytes": 1314
+    "sha256": "475cecf6f4d88462910b80e8c887b079e8055b0f81538c30a9f1aae4d7c6d245",
+    "bytes": 1312
   },
   {
     "path": "src-tauri/resources/runtime/appliance/vmlinuz-virt",
@@ -41,33 +41,33 @@
   },
   {
     "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-amd64",
-    "sha256": "39115657eae61e356a6c6cd629b899cfb775b0a358057383539a57b70ec1f23a",
+    "sha256": "51837ea6991eddd579a5c946d18b416004083d6b06de5f8e19e3796fb2786001",
     "bytes": 7131260
   },
   {
     "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-arm64",
-    "sha256": "303af9dc4706521cfae68de0d60199f8f714931baa3ccdc66b659d7b30f09157",
+    "sha256": "c8845efa6837106e1a1e4f2a551833532e068bfca310acb64501e540325ddb9a",
     "bytes": 6553724
   },
   {
-    "path": "src-tauri/resources/runtime/cuda/opendock-agent",
-    "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90",
-    "bytes": 15347836
+    "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
+    "sha256": "896aa4ff9414d536edb9f73b1d9185bfd8a55b1e6dc146ee65bb7bdd06aafcc9",
+    "bytes": 684
   },
   {
-    "path": "src-tauri/resources/runtime/cuda/opendock-cuda-probe",
-    "sha256": "35ab669ca6bb226d88180334cac07c4bf59910bef7dd02ae11b16ca220741bd4",
+    "path": "src-tauri/resources/runtime/cuda/yougori-agent",
+    "sha256": "2f2447c7d9b564b41152bedc504171c6cf4f0a1724d9d596520c7284ef596090",
+    "bytes": 15392892
+  },
+  {
+    "path": "src-tauri/resources/runtime/cuda/yougori-cuda-probe",
+    "sha256": "51d314dd385f3e7e5a032fdb09276e8ba57fd8b517db1135ad4779a22a7db26d",
     "bytes": 14472
   },
   {
-    "path": "src-tauri/resources/runtime/cuda/opendock-mount-helper",
-    "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1",
+    "path": "src-tauri/resources/runtime/cuda/yougori-mount-helper",
+    "sha256": "76e3bc0283459dec23b29d31eb7f530a1c4258343c03362cf70213607b14e424",
     "bytes": 51120
-  },
-  {
-    "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-    "sha256": "312ae6178652df75b684809c12583989ea302262abe973089736e6fc53fba985",
-    "bytes": 687
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-nvidia-cdi-linux-amd64.manifest.json",
@@ -81,8 +81,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.manifest.json",
-    "sha256": "fe3f79540154ef8b05d0093d7c1f869e3a69789b89089c2d9cb385882eba50e1",
-    "bytes": 25040
+    "sha256": "e9f63b7c5123ed29cb31e66c44b1359425e7af135a0d4ea4fde6bd9b9dca6158",
+    "bytes": 25013
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.tar.gz",
@@ -111,8 +111,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu/GPU-BRIDGE-LICENSE.txt",
-    "sha256": "a6e26e86b27dde8b21738ada1414cccb46f3af77532ee341e7f07449047b78e6",
-    "bytes": 513
+    "sha256": "ed19db67d8fac1aa4666657415e964bc0d0837af53f403d5bdd34f6a33722de3",
+    "bytes": 509
   },
   {
     "path": "src-tauri/resources/runtime/qemu/libbrotlicommon.dll",
@@ -136,7 +136,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu/libEGL.dll",
-    "sha256": "43076136e5df61281273865d364ddc4f18f4493c51515e75e1e489ed7d1bcfa0",
+    "sha256": "0133723ec308416dbea37b3a15ae4a17991a1b97c9e19dcbdf71da1e4e4fd501",
     "bytes": 179200
   },
   {
@@ -400,6 +400,11 @@
     "bytes": 25967
   },
   {
+    "path": "src-tauri/resources/runtime/qemu/licenses/gn/LICENSE",
+    "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+    "bytes": 1559
+  },
+  {
     "path": "src-tauri/resources/runtime/qemu/licenses/headers/COPYING",
     "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
     "bytes": 2326
@@ -650,23 +655,18 @@
     "bytes": 1549
   },
   {
-    "path": "src-tauri/resources/runtime/qemu/opendock-gpu-probe.exe",
-    "sha256": "579f884cfbc32bd627c43ef672a18be147116fcbc0a553499e7338435f8f6cc0",
-    "bytes": 139776
-  },
-  {
     "path": "src-tauri/resources/runtime/qemu/PACKAGES.txt",
-    "sha256": "0edd970215b6e6d314d2c5d773663ab856bb9bcfb0418e525c44a662cfb0f786",
-    "bytes": 23139
+    "sha256": "450952c360815e3dbbc4b6de78964ce97ca89c041bbfa81721c38a9e128dc67f",
+    "bytes": 23165
   },
   {
     "path": "src-tauri/resources/runtime/qemu/qemu-img.exe",
-    "sha256": "179f6fbc6c4fb5fb95f770d2ab802b3d7557a53372fc950dcdd6c17ad34383df",
+    "sha256": "0175cea0d90c4bb6504393e9d8c9a0d7862d3bdcd5a9e764c994e44b47d45d98",
     "bytes": 1899520
   },
   {
     "path": "src-tauri/resources/runtime/qemu/qemu-system-x86_64.exe",
-    "sha256": "91c97f488ad768e11ef302362c25348fb4babf60da7c9b047905c3b7d23963fb",
+    "sha256": "5c533727c1859497c427037e606b9689be50e3b2fd371c04491c7251eca17893",
     "bytes": 25112064
   },
   {
@@ -676,8 +676,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu/SHA256SUMS",
-    "sha256": "61259ae08543a222a257ea4bac53cb92d3b45283d9b92dbd80e1b8cbda644bcb",
-    "bytes": 12460
+    "sha256": "0a360c3bdb81472bff8a5d53350f15a37432f271c6edbf6c1ae31f72e08ca95b",
+    "bytes": 12546
   },
   {
     "path": "src-tauri/resources/runtime/qemu/share/bios-256k.bin",
@@ -771,8 +771,13 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu/SOURCE_BUILD.json",
-    "sha256": "5b6718603ecf2cacca6ed5cd4faf9ba812300077a4386663a4454610b675b574",
-    "bytes": 1417
+    "sha256": "6b02e65c4b968abcb8ac2e94e6defee2c8343cfc71b77c8dd9ce265c4d49b1b8",
+    "bytes": 1578
+  },
+  {
+    "path": "src-tauri/resources/runtime/qemu/yougori-gpu-probe.exe",
+    "sha256": "fa15e16a09ff0f84a8ecec35110d9b95c9f3c180985a04dc383cee4cf99f66de",
+    "bytes": 139776
   },
   {
     "path": "src-tauri/resources/runtime/qemu/zlib1.dll",
@@ -806,8 +811,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/GPU-BRIDGE-LICENSE.txt",
-    "sha256": "a6e26e86b27dde8b21738ada1414cccb46f3af77532ee341e7f07449047b78e6",
-    "bytes": 513
+    "sha256": "ed19db67d8fac1aa4666657415e964bc0d0837af53f403d5bdd34f6a33722de3",
+    "bytes": 509
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/libbrotlicommon.dll",
@@ -836,7 +841,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/libEGL.dll",
-    "sha256": "a0655d055da73d0273a7708bfc31d673a114429e59a47eb9efee6a10671e5962",
+    "sha256": "ac2eb76abe92e91ee51e90c25460f0357338f41aa90b4dcf0d90b17a85a3c3da",
     "bytes": 179200
   },
   {
@@ -1105,6 +1110,11 @@
     "bytes": 25967
   },
   {
+    "path": "src-tauri/resources/runtime/qemu-secure/licenses/gn/LICENSE",
+    "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+    "bytes": 1559
+  },
+  {
     "path": "src-tauri/resources/runtime/qemu-secure/licenses/headers/COPYING",
     "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
     "bytes": 2326
@@ -1360,39 +1370,14 @@
     "bytes": 1549
   },
   {
-    "path": "src-tauri/resources/runtime/qemu-secure/opendock-gpu-probe.exe",
-    "sha256": "f04850ec4032573e4d55d1ce82e8d96fdb1ecfd1bcea66c2c7ea5e16dfcd86e0",
-    "bytes": 139776
-  },
-  {
-    "path": "src-tauri/resources/runtime/qemu-secure/opendock-tpm-init.exe",
-    "sha256": "ebee62274b6394d69895d146b64f47ff31c3bdc67a4c00b233dc2cef6fa1ca90",
-    "bytes": 14848
-  },
-  {
-    "path": "src-tauri/resources/runtime/qemu-secure/OPENDOCK-TPM-LICENSE.txt",
-    "sha256": "0be24bd5994c74a0e8862f6c24fcf8ddbbe5412f9f06cf6eb26e92609f87c8e0",
-    "bytes": 1552
-  },
-  {
-    "path": "src-tauri/resources/runtime/qemu-secure/opendock-tpm-worker.exe",
-    "sha256": "e6ad54bad62429edbacc8bc40f0105bf0c1aa0d00c368a47e3ae23b7ae32086d",
-    "bytes": 15360
-  },
-  {
-    "path": "src-tauri/resources/runtime/qemu-secure/opendock-tpm.dll",
-    "sha256": "2dc77f3d9207cac3398d8bde8b6c2bafc6253fa0d658e632d5f8af1c946db121",
-    "bytes": 347648
-  },
-  {
     "path": "src-tauri/resources/runtime/qemu-secure/OVMF.qemuvars.fd",
     "sha256": "0560499828d771c02ecf2bcf112e42deee9de504c763833a3b00c4854202b406",
     "bytes": 4194304
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/PACKAGES.txt",
-    "sha256": "4aea522440dfc7a86de73713f21af817a5b91edd31d1788b2a2920eaed09e21e",
-    "bytes": 24007
+    "sha256": "e73c6469f47b14aeec4a04754af41806636a1214e21b98c574960ccf76277d15",
+    "bytes": 24033
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/QEMU-LICENSE.txt",
@@ -1401,12 +1386,12 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/qemu-system-x86_64.exe",
-    "sha256": "16cc67411ed6d644a1d1c7787c51df77c1a1d50607229a80e503b4ca289de6e1",
+    "sha256": "16cd6270a3784d0c21415499d25faf75e1585a1fc81990e13ece6b9bee7f8dac",
     "bytes": 25112064
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/secure-vars.json",
-    "sha256": "c0025f01ff9bc53aab2297a0b7821f665120e529e14b15348b98aaa73252d747",
+    "sha256": "6065bae5a92a3794f39e0f83d6ee2944c5a81ccd4c51027dd3a360ebc3077330",
     "bytes": 50901
   },
   {
@@ -1416,23 +1401,48 @@
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/SHA256SUMS",
-    "sha256": "28ebd4a3f7919f5010517c6ae87cec3b71148e05955c7a8eaf1784430af51d49",
-    "bytes": 12084
+    "sha256": "ca8b9736fd2cbe624dca937d59a9f982891a4b3437aedb1f8c642e7daca45415",
+    "bytes": 12167
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/SOURCE_BUILD.json",
-    "sha256": "711ab4d1887da7c343b48010520b170ba075b7168255d25e0926bb2bd0759c7f",
-    "bytes": 1547
+    "sha256": "b5f569593190a1b4b7f923578122fc051b1ac434e175a3ed5e1f4a954c780e38",
+    "bytes": 1708
   },
   {
-    "path": "src-tauri/resources/runtime/qemu-secure/SOURCES.md",
-    "sha256": "a178796c0f78bd3079ca75ac518fd9767b02539749bed57f5bf1a504cb5d2ebf",
-    "bytes": 5686
+    "path": "src-tauri/resources/runtime/qemu-secure/SOURCES.txt",
+    "sha256": "1227f762da862e2089e363c56ff3fb2226b670efcfaa5063c8f2c1f5660c39ac",
+    "bytes": 5682
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/TPM-LICENSE.txt",
     "sha256": "a8557055f0a650bceb11d088f40e041d8c5614cff5a45b016d7bf534d9467858",
     "bytes": 1705
+  },
+  {
+    "path": "src-tauri/resources/runtime/qemu-secure/yougori-gpu-probe.exe",
+    "sha256": "63cf507885c8d48c92a31dd70b387963139f259af28f4df857b6a2318f854d8b",
+    "bytes": 139776
+  },
+  {
+    "path": "src-tauri/resources/runtime/qemu-secure/yougori-tpm-init.exe",
+    "sha256": "0b28f3e831bb7c4654f5f2cc2560f23ea63dda4b35c1113c6c7359a112b18597",
+    "bytes": 14848
+  },
+  {
+    "path": "src-tauri/resources/runtime/qemu-secure/YOUGORI-TPM-LICENSE.txt",
+    "sha256": "8833a005fc83b09db53d78724e5c4bf8031bfe8d77ffe75d10469e7af0edcdf5",
+    "bytes": 1550
+  },
+  {
+    "path": "src-tauri/resources/runtime/qemu-secure/yougori-tpm-worker.exe",
+    "sha256": "160d1bd94dce2481e0d904ddc1daf758d318cbf75f18d74c235de7fceb734064",
+    "bytes": 15360
+  },
+  {
+    "path": "src-tauri/resources/runtime/qemu-secure/yougori-tpm.dll",
+    "sha256": "42d2eec8180fdbbf81de6c6e7228839acab02f58794e656f454266b83fd60fb9",
+    "bytes": 347648
   },
   {
     "path": "src-tauri/resources/runtime/qemu-secure/zlib1.dll",
@@ -1441,7 +1451,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/SHA256SUMS",
-    "sha256": "97018be3085645602641f49979371159c1b085c5bbd0bfcb052754d6378c6b2f",
-    "bytes": 27858
+    "sha256": "429bd9cf2f2ff2b27b4b37b173866663168f1a37c0fc5f4043cb0ecff8a23a1b",
+    "bytes": 28687
   }
 ]

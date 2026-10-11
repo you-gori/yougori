@@ -13,6 +13,7 @@ pub(super) fn x86_accelerators(os: &str, arch: &str, micro: bool) -> &'static [&
     }
 }
 
+/// Homebrew QEMU, for macOS development builds without a runtime from `npm run macos:runtime`.
 pub(super) fn macos_qemu_prefix(arch: &str) -> PathBuf {
     PathBuf::from(if arch == "aarch64" { "/opt/homebrew/opt/qemu" } else { "/usr/local/opt/qemu" })
 }

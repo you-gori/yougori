@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright 2026 Yougori LLC
+// Copyright 2026 Yougori
 // Yougori's Windows EGL bridge. All non-intercepted exports forward unchanged
 // to the bundled ANGLE library. No registry settings or host driver changes.
 #define COBJMACROS
@@ -37,7 +37,7 @@ static FARPROC real_proc(const char *name) {
 // -1 is malformed (fail closed), 0 Automatic, 1 an exact adapter LUID.
 static int selection(LUID *luid) {
     char value[32], extra; unsigned high, low;
-    DWORD n = GetEnvironmentVariableA("OPENDOCK_GPU_LUID", value, sizeof(value));
+    DWORD n = GetEnvironmentVariableA("YOUGORI_GPU_LUID", value, sizeof(value));
     if (!n) return 0;
     if (n >= sizeof(value) || sscanf_s(value, "%8x:%8x%c", &high, &low, &extra, 1) != 2 || (!high && !low)) return -1;
     luid->HighPart = (LONG)high; luid->LowPart = low;
@@ -59,7 +59,7 @@ static void descriptor(FILE *file, const DXGI_ADAPTER_DESC *desc) {
 
 static void report(const DXGI_ADAPTER_DESC *desc, const char *error) {
     WCHAR path[32768];
-    DWORD length = GetEnvironmentVariableW(L"OPENDOCK_GPU_REPORT", path, 32768);
+    DWORD length = GetEnvironmentVariableW(L"YOUGORI_GPU_REPORT", path, 32768);
     if (!length || length >= 32768) return;
     FILE *file = NULL;
     if (_wfopen_s(&file, path, L"wb") || !file) return;
@@ -149,7 +149,7 @@ FARPROC WINAPI eglGetProcAddress(const char *name) {
     return fn ? fn(name) : NULL;
 }
 
-#ifdef OPENDOCK_GPU_PROBE
+#ifdef YOUGORI_GPU_PROBE
 int main(void) {
     IDXGIFactory1 *factory = NULL;
     if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&factory))) return 1;

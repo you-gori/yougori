@@ -12,13 +12,13 @@ func TestFirmwareBootCredentialIsBoundedAndNeverFallsBackToKernel(t *testing.T) 
 	if firmwareProbeTimeout(false) != 5*time.Second || firmwareProbeTimeout(true) != 2*time.Minute {
 		t.Fatal("firmware probe must have a bounded provider-specific deadline")
 	}
-	cfg, err := parseBootConfiguration("root=/dev/vda opendock.token-source=fwcfg opendock.emulated=1")
+	cfg, err := parseBootConfiguration("root=/dev/vda yougori.token-source=fwcfg yougori.emulated=1")
 	if err != nil || !cfg.firmwareToken || !cfg.emulated || cfg.token != "" {
 		t.Fatal("firmware marker not preserved", err)
 	}
 	for _, command := range []string{
-		"opendock.token-source=fwcfg opendock.token=" + strings.Repeat("a", 64),
-		"opendock.token-source=invalid", "opendock.token-source=", "opendock.token-source=fwcfg opendock.token-source=fwcfg",
+		"yougori.token-source=fwcfg yougori.token=" + strings.Repeat("a", 64),
+		"yougori.token-source=invalid", "yougori.token-source=", "yougori.token-source=fwcfg yougori.token-source=fwcfg",
 	} {
 		if _, err := parseBootConfiguration(command); err == nil {
 			t.Fatal("accepted ambiguous credential source")

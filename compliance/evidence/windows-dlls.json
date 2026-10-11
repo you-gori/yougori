@@ -45,7 +45,7 @@
   },
   {
     "file": "src-tauri/resources/runtime/qemu/libEGL.dll",
-    "sha256": "43076136e5df61281273865d364ddc4f18f4493c51515e75e1e489ed7d1bcfa0",
+    "sha256": "0133723ec308416dbea37b3a15ae4a17991a1b97c9e19dcbdf71da1e4e4fd501",
     "provenance": "local-gpu-bridge",
     "source": "runtime/gpu/egl-bridge.c"
   },
@@ -419,7 +419,7 @@
   },
   {
     "file": "src-tauri/resources/runtime/qemu-secure/libEGL.dll",
-    "sha256": "a0655d055da73d0273a7708bfc31d673a114429e59a47eb9efee6a10671e5962",
+    "sha256": "ac2eb76abe92e91ee51e90c25460f0357338f41aa90b4dcf0d90b17a85a3c3da",
     "provenance": "local-gpu-bridge",
     "source": "runtime/gpu/egl-bridge.c"
   },
@@ -726,8 +726,8 @@
     "provenance": "matched-local-package-by-sha256"
   },
   {
-    "file": "src-tauri/resources/runtime/qemu-secure/opendock-tpm.dll",
-    "sha256": "2dc77f3d9207cac3398d8bde8b6c2bafc6253fa0d658e632d5f8af1c946db121",
+    "file": "src-tauri/resources/runtime/qemu-secure/yougori-tpm.dll",
+    "sha256": "42d2eec8180fdbbf81de6c6e7228839acab02f58794e656f454266b83fd60fb9",
     "provenance": "local-tpm-build",
     "source": "runtime/security/SOURCES.txt"
   },

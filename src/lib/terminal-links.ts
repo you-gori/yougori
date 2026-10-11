@@ -10,22 +10,36 @@ export function normalizeTerminalLink(value: string): string | null {
   } catch { return null }
 }
 
+// Remove surrounding prose punctuation without damaging balanced URL paths.
+function trimLinkCandidate(value: string) {
+  let candidate = value, previous
+  do {
+    previous = candidate
+    candidate = candidate.replace(/[.,;!]+$/, "")
+    for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]] as const) {
+      while (candidate.endsWith(close) && candidate.split(close).length > candidate.split(open).length) candidate = candidate.slice(0, -1)
+    }
+  } while (candidate !== previous)
+  return candidate
+}
+
+/** Links in plain terminal text, with the source position and length each one occupies. */
+export function terminalLinkRanges(text: string): { url: string; start: number; length: number }[] {
+  // eslint-disable-next-line no-control-regex -- never include terminal control bytes in a URL
+  return [...text.matchAll(/(?:https?:\/\/|www\.)[^\s<>"'`\x00-\x1f]+/gi)].flatMap(match => {
+    const candidate = trimLinkCandidate(match[0])
+    const url = normalizeTerminalLink(candidate)
+    return url ? [{ url, start: match.index, length: candidate.length }] : []
+  })
+}
+
 export function extractTerminalLinks(text: string): string[] {
   const links: string[] = []
   // Input from xterm is already ANSI-decoded. Bound other console callers too.
   // Serial consoles may still contain ANSI styling (xterm callers do not).
   // eslint-disable-next-line no-control-regex -- strip terminal CSI control sequences
   const plain = text.slice(-65536).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-  // eslint-disable-next-line no-control-regex -- never include terminal control bytes in a URL
-  for (const match of plain.matchAll(/(?:https?:\/\/|www\.)[^\s<>"'`\x00-\x1f]+/gi)) {
-    let candidate = match[0].replace(/[.,;!]+$/, "")
-    // Remove surrounding prose punctuation without damaging balanced URL paths.
-    for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]] as const) {
-      while (candidate.endsWith(close) && candidate.split(close).length > candidate.split(open).length) candidate = candidate.slice(0, -1)
-    }
-    const url = normalizeTerminalLink(candidate)
-    if (url && !links.includes(url)) links.push(url)
-  }
+  for (const { url } of terminalLinkRanges(plain)) if (!links.includes(url)) links.push(url)
   return links.slice(-MAX_TERMINAL_LINKS)
 }
 

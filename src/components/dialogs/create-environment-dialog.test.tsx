@@ -15,7 +15,6 @@ vi.mock("@/api/gpu-api", () => ({ gpuApi: { cudaStatus: vi.fn(), installCuda: vi
 vi.mock("@/api/platform-api", () => ({ platformApi: { getStorageAllocation: vi.fn() } }))
 // Resource drag gestures have their own tests; keep these tests focused on
 // category selection, compatibility, and the submitted native request.
-vi.mock("@/components/dialogs/creation-resource-sliders", () => ({ CreationResourceSliders: () => null }))
 
 beforeEach(() => {
   vi.stubGlobal("PointerEvent", MouseEvent)

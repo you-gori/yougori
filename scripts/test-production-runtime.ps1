@@ -57,7 +57,7 @@ try {
         )
         cuda = @(
             'runtime::cuda_tests::cuda_storage_reclamation_preserves_peer',
-            # The test requires OPENDOCK_CUDA_TEST_ROOT and refuses all paths
+            # The test requires YOUGORI_CUDA_TEST_ROOT and refuses all paths
             # except the explicitly prepared build/cuda/integration-runtime.
             'runtime::cuda_tests::cuda_application_lifecycle_files_and_real_kernel'
         )

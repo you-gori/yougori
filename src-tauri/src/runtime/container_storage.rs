@@ -19,9 +19,9 @@ mod tests {
     use std::path::Path;
 
     #[tokio::test]
-    #[ignore = "requires OPENDOCK_LEGACY_INITRAMFS; migrates real legacy root, volume, and metadata in a disposable appliance"]
+    #[ignore = "requires YOUGORI_LEGACY_INITRAMFS; migrates real legacy root, volume, and metadata in a disposable appliance"]
     async fn container_storage_migrates_legacy_files_and_private_volumes() -> Result<(), String> {
-        let old = std::env::var_os("OPENDOCK_LEGACY_INITRAMFS").ok_or("Set OPENDOCK_LEGACY_INITRAMFS to the previous release's initramfs")?;
+        let old = std::env::var_os("YOUGORI_LEGACY_INITRAMFS").ok_or("Set YOUGORI_LEGACY_INITRAMFS to the previous release's initramfs")?;
         let data = tempfile::tempdir().unwrap();
         let mut runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path())?;
         let updated = runtime.layout.appliance_initramfs.clone();

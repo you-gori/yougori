@@ -138,7 +138,7 @@ async fn pc_guest(
     );
     let root = runtime.data_root.join("environments").join(&env.id);
     let mut args = vec!["-name".into(), "Yougori import test".into(), "-machine".into(), "q35".into(), "-accel".into(), "tcg,thread=multi".into(), "-cpu".into(), "max".into(), "-m".into(), "512".into(), "-nodefaults".into(), "-display".into(), "none".into(), "-monitor".into(), "none".into(), "-serial".into(), "stdio".into(),
-        "-kernel".into(), runtime.layout.appliance_kernel.to_string_lossy().into_owned(), "-initrd".into(), runtime.layout.appliance_initramfs.to_string_lossy().into_owned(), "-append".into(), format!("root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,ext4 softlevel=microvm opendock.mode=microvm opendock.token={token}"),
+        "-kernel".into(), runtime.layout.appliance_kernel.to_string_lossy().into_owned(), "-initrd".into(), runtime.layout.appliance_initramfs.to_string_lossy().into_owned(), "-append".into(), format!("root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,ext4 softlevel=microvm yougori.mode=microvm yougori.token={token}"),
         "-blockdev".into(), json!({"driver":"qcow2","node-name":"guest-disk","file":{"driver":"file","filename":disk}}).to_string(), "-device".into(), "virtio-blk-pci,drive=guest-disk".into(),
         "-netdev".into(), format!("user,id=net0,hostfwd=tcp:127.0.0.1:{control}-:7443"), "-device".into(), "virtio-net-pci,netdev=net0".into(),
         "-device".into(), "qemu-xhci,p2=15,p3=15".into(), "-qmp".into(), format!("tcp:127.0.0.1:{qmp},server=on,wait=off")];

@@ -1,6 +1,7 @@
 # Yougori CLI and engine installer for Windows. Download the desktop app separately.
 #   powershell -c "irm https://yougori.com/install.ps1 | iex"
-# Downloads the current signed release, checks its SHA-256 and publisher signature, installs it for
+# Downloads the current signed release, checks its SHA-256 and the publisher signature of every
+# Yougori executable in it (the third-party runtime is checked against its SHA256SUMS), installs it for
 # this user (no administrator rights), puts `yougori` on PATH and runs `yougori doctor`.
 # Environment overrides: YOUGORI_ENGINE_ONLY=0 (opt into the desktop bundle),
 # YOUGORI_RELEASES_URL (HTTPS manifest), YOUGORI_AUTOSTART=1 (start the engine in the background
@@ -40,6 +41,22 @@ function Assert-Signed($path) {
   if ($allowUnsigned) { Write-Host "Warning: $([IO.Path]::GetFileName($path)) is not signed by the Yougori publisher ($($signature.Status)); installing a test build." -ForegroundColor Yellow; return }
   Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
   Fail "$([IO.Path]::GetFileName($path)) is not signed by the Yougori publisher ($($signature.Status)). Nothing was installed."
+}
+
+# The release signs every Yougori-built executable in an engine archive. Only the third-party
+# runtime folder is exempt: the engine checks it against its own SHA256SUMS before use.
+function Get-SignedPayloads($root) {
+  # TEMP may be a short 8.3 path; Get-ChildItem reports long names.
+  $root = (Get-Item -LiteralPath $root).FullName
+  $items = @(Get-ChildItem -LiteralPath $root -Recurse -Force)
+  if (@($items | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count) {
+    Fail 'the engine archive contains links. Nothing was installed.'
+  }
+  $runtime = (Join-Path $root 'runtime') + '\'
+  @($items | Where-Object {
+    -not $_.PSIsContainer -and $_.Extension -in @('.exe', '.dll', '.sys', '.msi') -and
+    -not $_.FullName.StartsWith($runtime, [StringComparison]::OrdinalIgnoreCase)
+  } | ForEach-Object { $_.FullName } | Sort-Object)
 }
 
 function Stop-InstalledEngine($running) {
@@ -90,16 +107,15 @@ $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $download).Hash
 if ($hash -ne $asset.sha256.ToUpperInvariant()) { Remove-Item -Recurse -Force $folder; Fail 'the download does not match the published SHA-256. Nothing was installed.' }
 
 if ($engineOnly) {
-  # The engine and CLI without the desktop app: unpack, check both signatures, then move into place.
+  # The engine and CLI without the desktop app: unpack, check every signature, then move into place.
   $staged = Join-Path $folder 'unpacked'
   New-Item -ItemType Directory -Path $staged | Out-Null
   & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $download -C $staged
   if ($LASTEXITCODE) { Fail 'cannot unpack the engine archive. Nothing was installed.' }
   foreach ($binary in @('yougori-engine.exe', 'cli\yougori.exe')) {
-    $path = Join-Path $staged $binary
-    if (-not (Test-Path -LiteralPath $path)) { Fail "the engine archive has no $binary. Nothing was installed." }
-    Assert-Signed $path
+    if (-not (Test-Path -LiteralPath (Join-Path $staged $binary))) { Fail "the engine archive has no $binary. Nothing was installed." }
   }
+  foreach ($path in Get-SignedPayloads $staged) { Assert-Signed $path }
   $target = Join-Path $env:LOCALAPPDATA 'Yougori Engine'
   $running = Join-Path $target 'cli\yougori.exe'
   if (Test-Path -LiteralPath $running) { Stop-InstalledEngine $running }

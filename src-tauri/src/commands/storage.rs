@@ -7,7 +7,11 @@ pub fn get_storage_location(runtime: State<'_, RuntimeManager>) -> String { runt
 /// Select before creating/importing environments. Existing data is never moved or
 /// silently abandoned; use verified backup/export and restore to change its drive.
 #[tauri::command]
-pub async fn set_storage_location(path: String, app: AppHandle, store: State<'_, PlatformStore>, runtime: State<'_, RuntimeManager>) -> Result<(), String> {
+pub async fn set_storage_location(path: String, app: AppHandle, store: State<'_, PlatformStore>, runtime: State<'_, RuntimeManager>, window: crate::WebviewWindow) -> Result<(), String> {
+    crate::host_terminal::require_dashboard(window.label())?;
+    change_storage_location(path, app, store, runtime).await
+}
+pub(crate) async fn change_storage_location(path: String, app: AppHandle, store: State<'_, PlatformStore>, runtime: State<'_, RuntimeManager>) -> Result<(), String> {
     let mut _storage_guards = Vec::new();
     for provider in [RuntimeProviderKind::YougoriOci, RuntimeProviderKind::YougoriCuda] {
         _storage_guards.push(container_policy_lock(runtime.storage_root(), &provider).await.lock_owned().await);
@@ -54,6 +58,11 @@ pub async fn reclaim_storage(store: State<'_, PlatformStore>, runtime: State<'_,
         }
     }
     let current = store.snapshot()?;
+    // Folder baselines copy shared-folder text; remove those of deleted environments.
+    let live = current.environments.iter().map(|environment| environment.id.clone()).collect();
+    let (freed, warnings) = crate::changes::remove_orphans(&runtime, &live);
+    cleanup.reclaimed_cache_bytes = cleanup.reclaimed_cache_bytes.saturating_add(freed);
+    cleanup.warnings.extend(warnings);
     match runtime.garbage_collect_vm_bases(&referenced_vm_sources(&current)).await {
         Ok(bytes) => cleanup.reclaimed_cache_bytes = cleanup.reclaimed_cache_bytes.saturating_add(bytes),
         Err(error) => cleanup.warnings.push(format!("Unused VM images were kept: {error}")),

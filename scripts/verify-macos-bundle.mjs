@@ -1,24 +1,87 @@
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { readFile, readdir } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { basename, join, relative, resolve } from "node:path"
 import { assertMacCli } from "./release-preflight.mjs"
 
+// Checks a built Yougori.app: native binaries, the bundled QEMU runtime and every signature.
+// With --distribution it also requires Developer ID signatures, the hardened runtime and an
+// accepted, notarized and stapled app, as a public download needs.
 if (process.platform !== "darwin") throw new Error("Inspect the built .app on macOS")
-const app = resolve(process.argv[2] || "src-tauri/target/release/bundle/macos/Yougori.app")
+const args = process.argv.slice(2)
+const distribution = args.includes("--distribution")
+const app = resolve(args.find(arg => !arg.startsWith("--")) || "src-tauri/target/release/bundle/macos/Yougori.app")
 const contents = join(app, "Contents")
-for (const file of ["MacOS/yougori", "Resources/cli/yougori", "Resources/cli/yougori-cli", "Resources/cli/opendock-cli"]) {
-  assertMacCli(await readFile(join(contents, file)), process.arch)
+const runtime = join(contents, "Resources/runtime/qemu")
+
+function run(command, commandArgs) {
+  const result = spawnSync(command, commandArgs, { encoding: "utf8" })
+  if (result.error || result.status !== 0) throw new Error(`${command} ${commandArgs.join(" ")}: ${result.error?.message || result.stderr || result.stdout}`)
+  return `${result.stdout}${result.stderr}`
 }
-async function inspect(directory) {
+
+async function files(directory) {
+  const found = []
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
     if (entry.isSymbolicLink()) throw new Error(`Unexpected symlink in application resources: ${path}`)
-    if (entry.isDirectory()) await inspect(path)
-    else if (/\.(exe|dll)$/i.test(entry.name)) throw new Error(`Windows binary leaked into macOS package: ${path}`)
+    if (entry.isDirectory()) found.push(...await files(path))
+    else found.push(path)
+  }
+  return found
+}
+
+const executables = ["MacOS/yougori", "Resources/cli/yougori", "Resources/cli/yougori-cli",
+  "Resources/runtime/qemu/qemu-system-x86_64", "Resources/runtime/qemu/qemu-img"].map(file => join(contents, file))
+for (const file of executables) assertMacCli(await readFile(file), process.arch)
+for (const file of await files(join(contents, "Resources"))) {
+  if (/\.(exe|dll)$/i.test(file)) throw new Error(`Windows binary leaked into macOS package: ${file}`)
+}
+
+// The runtime holds exactly what its SHA256SUMS lists, which the app verifies before use.
+const listed = new Map((await readFile(join(runtime, "SHA256SUMS"), "utf8")).split("\n").filter(Boolean).map(line => {
+  const [hash, ...name] = line.trim().split(/\s+/)
+  return [name.join(" ").replace(/^\*/, ""), hash]
+}))
+const present = (await files(runtime)).map(file => relative(runtime, file).split("\\").join("/")).filter(file => file !== "SHA256SUMS")
+for (const file of present) {
+  const hash = createHash("sha256").update(await readFile(join(runtime, file))).digest("hex")
+  if (listed.get(file) !== hash) throw new Error(`Runtime file is not listed with its checksum: ${file}`)
+}
+for (const file of listed.keys()) if (!present.includes(file)) throw new Error(`Runtime file listed but missing: ${file}`)
+
+// Libraries load only from macOS itself or from the runtime's own lib folder.
+const libraries = present.filter(file => file.startsWith("lib/") && file.endsWith(".dylib")).map(file => join(runtime, file))
+for (const binary of [join(runtime, "qemu-system-x86_64"), join(runtime, "qemu-img"), ...libraries]) {
+  for (const line of run("/usr/bin/otool", ["-L", binary]).split("\n").slice(1)) {
+    const reference = line.trim().split(" (compatibility")[0]
+    if (!reference) continue
+    const name = basename(reference)
+    const own = reference === `@rpath/${basename(binary)}`
+    const bundled = [`@executable_path/lib/${name}`, `@loader_path/${name}`].includes(reference) && present.includes(`lib/${name}`)
+    if (!(own || bundled || reference.startsWith("/usr/lib/") || reference.startsWith("/System/Library/"))) {
+      throw new Error(`${relative(contents, binary)} loads ${reference} from outside macOS and the app`)
+    }
   }
 }
-await inspect(join(contents, "Resources"))
-const result = spawnSync("/usr/bin/plutil", ["-lint", join(contents, "Info.plist")], { encoding: "utf8" })
-if (result.error || result.status !== 0) throw new Error(result.error?.message || result.stdout || result.stderr)
-console.log(`macOS bundle layout and native ${process.arch} binaries verified: ${app}`)
-console.log("This is not a Gatekeeper/notarization check; follow docs/macos.md before public distribution.")
+
+// Every executable and library is signed; QEMU carries its hypervisor and JIT entitlements.
+for (const binary of [...executables, ...libraries]) run("/usr/bin/codesign", ["--verify", "--strict", binary])
+const entitlements = run("/usr/bin/codesign", ["-d", "--entitlements", "-", "--xml", join(runtime, "qemu-system-x86_64")])
+for (const key of ["com.apple.security.hypervisor", "com.apple.security.cs.allow-jit"]) {
+  if (!entitlements.includes(key)) throw new Error(`QEMU is missing the ${key} entitlement`)
+}
+run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app])
+if (distribution) {
+  for (const binary of [app, ...executables, ...libraries]) {
+    const details = run("/usr/bin/codesign", ["-dv", "--verbose=2", binary])
+    if (!details.includes("Authority=Developer ID Application:")) throw new Error(`${relative(contents, binary) || "Yougori.app"} is not signed with a Developer ID`)
+    if (!/flags=0x[0-9a-f]*\(.*runtime.*\)/.test(details)) throw new Error(`${relative(contents, binary) || "Yougori.app"} lacks the hardened runtime`)
+  }
+  const assessment = run("/usr/sbin/spctl", ["--assess", "--type", "execute", "-vv", app])
+  if (!/accepted/.test(assessment) || !/Notarized Developer ID/.test(assessment)) throw new Error(`Gatekeeper did not accept the notarized app: ${assessment}`)
+  run("/usr/bin/xcrun", ["stapler", "validate", app])
+}
+run("/usr/bin/plutil", ["-lint", join(contents, "Info.plist")])
+console.log(`macOS bundle verified (${process.arch}): native binaries, bundled QEMU runtime and signatures${distribution ? ", Developer ID, notarization and Gatekeeper" : ""}: ${app}`)
+if (!distribution) console.log("Not a distribution check: run with --distribution on the signed, notarized build.")

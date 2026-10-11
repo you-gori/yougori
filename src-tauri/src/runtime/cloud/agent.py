@@ -230,6 +230,31 @@ def stream_start(ident, sock):
         slots.release()
         raise
 
+def peer_uid(sock):
+    """Account owning the other end of a loopback connection, from /proc/net/tcp.
+
+    The SOCKS and file listeners have no credentials (existing tools and the
+    shipped share helper connect without them), so restrict them to this
+    account and the root-run share helper instead of every user on the server.
+    """
+    try:
+        client_ip, client_port = sock.getpeername()[:2]
+        server_ip, server_port = sock.getsockname()[:2]
+        def entry(ip, port): return '%08X:%04X' % (struct.unpack('=I', socket.inet_aton(ip))[0], port)
+        local, remote = entry(client_ip, client_port), entry(server_ip, server_port)
+        with open('/proc/net/tcp', encoding='ascii') as table:
+            next(table)
+            for line in table:
+                fields = line.split()
+                if len(fields) > 7 and fields[1] == local and fields[2] == remote:
+                    return int(fields[7])
+    except (OSError, ValueError, StopIteration, struct.error):
+        pass
+    return None
+
+def trusted_peer(sock):
+    return peer_uid(sock) in (0, os.getuid())
+
 def exact(sock, size):
     data = b''
     while len(data) < size:
@@ -267,6 +292,7 @@ def socks_client(sock):
 def accept_socks(listener):
     while True:
         sock, _ = listener.accept()
+        if not trusted_peer(sock): sock.close(); continue
         if not slots.acquire(False): sock.close(); continue
         def serve(sock=sock):
             try: socks_client(sock)
@@ -277,6 +303,7 @@ class Files(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def handle_request(self):
         try:
+            if not trusted_peer(self.connection): raise ValueError('Connection refused for this account')
             expected = '127.0.0.1:' + str(self.server.server_port)
             if self.headers.get('Host') != expected: raise ValueError('Invalid host')
             if self.headers.get('Origin') not in (None, 'http://' + expected):

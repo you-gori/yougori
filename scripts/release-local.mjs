@@ -123,6 +123,9 @@ async function main() {
   ] }
   const save = () => writeFile(join(output, "release-report.json"), JSON.stringify(report, null, 2) + "\n")
   const baseEnv = { ...process.env }
+  // Local candidates are unsigned by design (productionReady stays false); acknowledge it so
+  // payload bundling does not warn. A configured signing identity still signs them.
+  if (!baseEnv.YOUGORI_SIGN_CERT_SHA1) baseEnv.YOUGORI_ALLOW_UNSIGNED = "1"
   // Candidate source metadata must not inherit a different checkout's Git index.
   for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]) delete baseEnv[key]
   const unitEnv = { ...baseEnv }

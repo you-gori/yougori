@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -192,7 +192,8 @@ pub struct RemoteAccess {
     sessions: Mutex<HashMap<String, Session>>,
     live: Mutex<Option<Live>>,
     operations: Mutex<()>,
-    attempts: Mutex<VecDeque<(i64, String)>>,
+    /// Sign-in attempts in the last minute: (time, client address, share/user).
+    attempts: Mutex<VecDeque<(i64, String, String)>>,
     hashes: Arc<Semaphore>,
     bridge_slots: Arc<Semaphore>,
     terminal_slots: Arc<Semaphore>,
@@ -201,11 +202,20 @@ pub struct RemoteAccess {
 impl RemoteAccess {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         let path = root.join("remote-access.json");
-        let db = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| "Remote sharing state is unreadable; sharing was not enabled")?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Database::default(),
-            Err(_) => return Err("Cannot read remote sharing state".into()),
+        let db = match read_state(&path)? {
+            None => Database::default(),
+            Some(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(db) => db,
+                // A damaged file must not stop the app. Keep it for inspection and start
+                // with no shares: every recipient loses access rather than gaining any.
+                Err(_) => {
+                    let kept = root.join(format!("remote-access.json.unreadable-{}", now()));
+                    std::fs::rename(&path, &kept)
+                        .map_err(|_| "Remote sharing state is unreadable and could not be set aside")?;
+                    eprintln!("Remote sharing state was unreadable; it was kept at {} and sharing was reset", kept.display());
+                    Database::default()
+                }
+            },
         };
         Ok(Self {
             root,
@@ -238,13 +248,19 @@ impl RemoteAccess {
         push_audit(&mut db, id, event, success);
         let _ = self.save(&db);
     }
-    async fn rate_limit(&self, key: &str) -> Result<(), String> {
+    /// Limits guessing per recipient and per client. Every tunnel peer reaches the
+    /// gateway from loopback, so the client is the address Cloudflare reports. The
+    /// overall bound only caps memory and hashing work; one client cannot reach it.
+    async fn rate_limit(&self, client: &str, account: &str) -> Result<(), String> {
         let mut attempts = self.attempts.lock().await;
-        attempts.retain(|(at, _)| *at > now() - 60);
-        if attempts.len() >= 30 || attempts.iter().filter(|(_, k)| k == key).count() >= 5 {
+        attempts.retain(|(at, _, _)| *at > now() - 60);
+        if attempts.len() >= 600
+            || attempts.iter().filter(|(_, c, _)| c == client).count() >= 10
+            || attempts.iter().filter(|(_, _, a)| a == account).count() >= 5
+        {
             return Err("Too many sign-in attempts. Wait one minute before retrying.".into());
         }
-        attempts.push_back((now(), key.to_owned()));
+        attempts.push_back((now(), client.to_owned(), account.to_owned()));
         Ok(())
     }
     async fn invalidate(&self, app: &AppHandle, grant: Option<&str>) {
@@ -334,7 +350,7 @@ pub async fn create_remote_share(
         if request.permission == Permission::Control {
             return Err("Unrestricted PC commands and desktop control are unavailable: they could reach local engine or vault approval channels. Choose folder-only access.".into());
         }
-        files::validate_pc_root(request.folder.as_deref().unwrap(), &manager.root)?;
+        files::validate_pc_root(request.folder.as_deref().unwrap(), &files::yougori_roots(&app))?;
     } else {
         let env = target(&app, &request.target_id)?;
         if request.folder.is_some() && env.kind == EnvironmentKind::FullVm {
@@ -618,6 +634,24 @@ async fn serve(listener: TcpListener, app: AppHandle) {
         }
     }
 }
+/// Retries brief sharing violations (antivirus, backup tools) before giving up.
+fn read_state(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    for attempt in 0..5 {
+        match std::fs::read(path) {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) if attempt < 4 => std::thread::sleep(Duration::from_millis(200)),
+            Err(_) => {}
+        }
+    }
+    Err("Cannot read remote sharing state".into())
+}
+/// The sign-in client: Cloudflare's reported peer for tunnel traffic, or the local caller.
+fn client_address(headers: &str) -> String {
+    header(headers, "cf-connecting-ip")
+        .and_then(|value| value.parse::<std::net::IpAddr>().ok())
+        .map_or_else(|| "direct".into(), |ip| ip.to_string())
+}
 fn header<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
     headers
         .lines()
@@ -639,7 +673,7 @@ async fn http(app: &AppHandle, headers: &str, body: &[u8]) -> Result<Value, Stri
     let first = headers.lines().next().unwrap_or_default();
     let params: Value = serde_json::from_slice(body).map_err(|_| "Invalid request")?;
     if first == "POST /remote/login HTTP/1.1" {
-        return login(app, params).await;
+        return login(app, params, &client_address(headers)).await;
     }
     if first != "POST /remote/rpc HTTP/1.1" {
         return Err("Unknown remote endpoint".into());
@@ -716,14 +750,14 @@ async fn http(app: &AppHandle, headers: &str, body: &[u8]) -> Result<Value, Stri
     }
     result
 }
-async fn login(app: &AppHandle, params: Value) -> Result<Value, String> {
+async fn login(app: &AppHandle, params: Value, client: &str) -> Result<Value, String> {
     let manager = app.state::<RemoteAccess>();
     let id = params["shareId"]
         .as_str()
         .filter(|s| s.len() <= 64)
         .ok_or("Invalid credentials or unavailable share")?;
-    manager.rate_limit(id).await?;
     let name = username(params["username"].as_str().unwrap_or_default()).unwrap_or_default();
+    manager.rate_limit(client, &format!("{id}\n{name}")).await?;
     let password = params["password"]
         .as_str()
         .filter(|s| s.len() <= 256)

@@ -3,9 +3,9 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 import { StrictMode, type ReactNode } from "react"
 import { vaultApi } from "@/api/vault-api"
-import { useVaultStartup } from "./use-vault-startup"
+import { useVaultStartup, VAULT_STARTUP_NOTICE_MS } from "./use-vault-startup"
 vi.mock("@/api/vault-api", () => ({ vaultApi: { bootstrap: vi.fn() } }))
-afterEach(() => { cleanup(); vi.clearAllMocks() })
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers() })
 it("waits for the platform, then keeps startup blocked until the container is ready", async () => {
   let resolve!: (result: { created: boolean; ready: boolean }) => void
   vi.mocked(vaultApi.bootstrap).mockReturnValue(new Promise(done => { resolve = done }))
@@ -43,6 +43,21 @@ it("opens the app for an explicit vault update instead of prompting at launch", 
   vi.mocked(vaultApi.bootstrap).mockResolvedValue({ created: true, ready: false, updateRequired: true })
   const hook = renderHook(() => useVaultStartup(true))
   await waitFor(() => expect(hook.result.current.ready).toBe(true))
+  expect(hook.result.current.error).toBeNull()
+})
+
+it("offers to continue when startup is slow without starting a second bootstrap", async () => {
+  vi.useFakeTimers()
+  let resolve!: (result: { created: boolean; ready: boolean }) => void
+  vi.mocked(vaultApi.bootstrap).mockReturnValue(new Promise(done => { resolve = done }))
+  const hook = renderHook(() => useVaultStartup(true))
+  act(() => vi.advanceTimersByTime(VAULT_STARTUP_NOTICE_MS))
+  expect(hook.result.current.error).toContain("taking longer than expected")
+  expect(hook.result.current.ready).toBe(false)
+  act(() => hook.result.current.retry())
+  expect(vaultApi.bootstrap).toHaveBeenCalledOnce()
+  await act(async () => resolve({ created: true, ready: true }))
+  expect(hook.result.current.ready).toBe(true)
   expect(hook.result.current.error).toBeNull()
 })
 

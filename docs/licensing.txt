@@ -87,8 +87,8 @@ python scripts/collect-compliance.py inventory
 python scripts/collect-compliance.py alpine
 python scripts/collect-compliance.py local
 python scripts/collect-compliance.py msys
-python scripts/collect-compliance.py go
 python scripts/compliance-oci-sources.py
+python scripts/collect-compliance.py go
 python scripts/collect-compliance.py notices
 python scripts/compliance-qemu-notices.py
 python scripts/compliance-runtime-notices.py
@@ -96,6 +96,10 @@ node scripts/compliance-inspect-runtime.mjs
 python scripts/collect-compliance.py report
 npm run compliance:archives
 ```
+
+`compliance-oci-sources.py` refreshes the retired nerdctl-full release evidence;
+`go` must run after it because it records the actual rebuilt OCI inputs and their
+notices in the same files.
 
 Collectors do not execute downloaded APKBUILD or PKGBUILD scripts. Alpine recipes
 are selected by the exact revision in the shipped package database, and distfiles

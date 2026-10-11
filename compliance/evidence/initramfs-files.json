@@ -36,13 +36,13 @@
   },
   {
     "path": "etc/init.d/containerd",
-    "bytes": 624,
-    "sha256": "2b65f8a122f579ab061faed6441762d530e6b5b482bb8a548bcce5b0e814714d"
+    "bytes": 623,
+    "sha256": "7d4e5cdb78508140c7c6f75387563ab54f7ca8e2a13eac81c2db1f897c190c42"
   },
   {
-    "path": "etc/init.d/opendock-agent",
-    "bytes": 649,
-    "sha256": "98c326f90869dd16dddfa1dc1b90e1b592de39813e9fa0bb2827d48435e1a5a7"
+    "path": "etc/init.d/yougori-agent",
+    "bytes": 644,
+    "sha256": "121806f600e96e125083a48d49ab799493c82759cbe9a2223880a74b1aa56158"
   },
   {
     "path": "etc/mdev.conf",
@@ -1215,19 +1215,19 @@
     "sha256": "024903897c8b2aa8844019cbbbfc966d05b77faf7bcf95b8a8e2131fa2951104"
   },
   {
-    "path": "usr/local/sbin/opendock-agent",
-    "bytes": 15347836,
-    "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90"
+    "path": "usr/local/sbin/yougori-agent",
+    "bytes": 15392892,
+    "sha256": "2f2447c7d9b564b41152bedc504171c6cf4f0a1724d9d596520c7284ef596090"
   },
   {
-    "path": "usr/local/sbin/opendock-mount-helper",
+    "path": "usr/local/sbin/yougori-mount-helper",
     "bytes": 51120,
-    "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1"
+    "sha256": "76e3bc0283459dec23b29d31eb7f530a1c4258343c03362cf70213607b14e424"
   },
   {
     "path": "usr/local/sbin/yougori-upgrade-root",
-    "bytes": 9149,
-    "sha256": "599f1f144b4a75d2b58258f0be732bf58d480207ac6377351e1a123e4dbf748a"
+    "bytes": 11850,
+    "sha256": "81ba2c46b782a9619e51b10822d30d59fef69e80d262ac5ca903583d51fb1cbb"
   },
   {
     "path": "usr/sbin/apk",

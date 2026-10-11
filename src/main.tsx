@@ -2,11 +2,13 @@
 // React, the graph, styles and native platform state are being prepared.
 // Move browser preferences before any UI module reads them. Keep a newer
 // Yougori value if both generations exist.
+import { PREFERENCE_PREFIX } from "./lib/legacy-names"
+
 try {
   for (let index = localStorage.length - 1; index >= 0; index--) {
     const previous = localStorage.key(index)
-    if (!previous?.startsWith("opendock.")) continue
-    const current = `yougori.${previous.slice("opendock.".length)}`
+    if (!previous?.startsWith(PREFERENCE_PREFIX)) continue
+    const current = `yougori.${previous.slice(PREFERENCE_PREFIX.length)}`
     if (localStorage.getItem(current) === null) {
       const value = localStorage.getItem(previous)
       if (value !== null) localStorage.setItem(current, value)

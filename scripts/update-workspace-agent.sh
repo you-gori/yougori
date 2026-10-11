@@ -17,38 +17,38 @@ trap cleanup EXIT
 mkdir "$task_directory/root"
 (
   cd "$repo_root/appliance/agent"
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' -o "$task_directory/opendock-agent-update" .
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' -o "$task_directory/yougori-agent-update" .
 )
 (
   cd "$task_directory/root"
   gzip -dc "$appliance/initramfs-virt" | cpio -idm --quiet
-  install -m 0755 "$task_directory/opendock-agent-update" opendock-agent-update
-  install -m 0755 "$repo_root/appliance/rootfs/etc/init.d/containerd" opendock-containerd-service
-  mkdir -p opendock-storage-tools
-  cp -a "$storage_tools/." opendock-storage-tools/
+  install -m 0755 "$task_directory/yougori-agent-update" yougori-agent-update
+  install -m 0755 "$repo_root/appliance/rootfs/etc/init.d/containerd" yougori-containerd-service
+  mkdir -p yougori-storage-tools
+  cp -a "$storage_tools/." yougori-storage-tools/
   # Idempotent: replace the existing updater block if this script ran before.
-  sed '/# OPENDOCK_AGENT_UPDATE_BEGIN/,/# OPENDOCK_AGENT_UPDATE_END/d' init > init.clean
+  sed '/# YOUGORI_AGENT_UPDATE_BEGIN/,/# YOUGORI_AGENT_UPDATE_END/d' init > init.clean
   awk '
     index($0, "cat \"$ROOT\"/proc/mounts") {
-      print "# OPENDOCK_AGENT_UPDATE_BEGIN"
-      print "if [ -d /opendock-storage-tools ]; then"
+      print "# YOUGORI_AGENT_UPDATE_BEGIN"
+      print "if [ -d /yougori-storage-tools ]; then"
       # Grow from initramfs before installing updates: the old root may be full.
       # The private tool and its libraries are already in RAM, outside that root.
       print "  if grep -q \"^/dev/vda $sysroot ext4 \" /proc/mounts; then"
-      print "    mount -o remount,rw \"$sysroot\" && /opendock-storage-tools/ld-musl-x86_64.so.1 --library-path /opendock-storage-tools /opendock-storage-tools/resize2fs /dev/vda || echo \"Yougori early storage expansion failed\""
+      print "    mount -o remount,rw \"$sysroot\" && /yougori-storage-tools/ld-musl-x86_64.so.1 --library-path /yougori-storage-tools /yougori-storage-tools/resize2fs /dev/vda || echo \"Yougori early storage expansion failed\""
       print "  fi"
-      print "  mount -o remount,rw \"$sysroot\" && mkdir -p \"$sysroot/usr/local/lib/opendock-storage\" && cp -a /opendock-storage-tools/. \"$sysroot/usr/local/lib/opendock-storage/\" || echo \"Yougori storage tools update failed\""
+      print "  mount -o remount,rw \"$sysroot\" && mkdir -p \"$sysroot/usr/local/lib/yougori-storage\" && cp -a /yougori-storage-tools/. \"$sysroot/usr/local/lib/yougori-storage/\" || echo \"Yougori storage tools update failed\""
       print "fi"
-      print "if [ -x /opendock-agent-update ]; then"
+      print "if [ -x /yougori-agent-update ]; then"
       print "  mkdir -p \"$sysroot/usr/local/sbin\""
-      print "  if ! cmp -s /opendock-agent-update \"$sysroot/usr/local/sbin/opendock-agent\"; then"
-      print "    mount -o remount,rw \"$sysroot\" && cp /opendock-agent-update \"$sysroot/usr/local/sbin/opendock-agent.new\" && chmod 755 \"$sysroot/usr/local/sbin/opendock-agent.new\" && mv \"$sysroot/usr/local/sbin/opendock-agent.new\" \"$sysroot/usr/local/sbin/opendock-agent\" || echo \"Yougori guest agent update failed\""
+      print "  if ! cmp -s /yougori-agent-update \"$sysroot/usr/local/sbin/yougori-agent\"; then"
+      print "    mount -o remount,rw \"$sysroot\" && cp /yougori-agent-update \"$sysroot/usr/local/sbin/yougori-agent.new\" && chmod 755 \"$sysroot/usr/local/sbin/yougori-agent.new\" && mv \"$sysroot/usr/local/sbin/yougori-agent.new\" \"$sysroot/usr/local/sbin/yougori-agent\" || echo \"Yougori guest agent update failed\""
       print "  fi"
       print "fi"
-      print "if [ -x /opendock-containerd-service ]; then"
-      print "  cp /opendock-containerd-service \"$sysroot/etc/init.d/containerd\" && chmod 755 \"$sysroot/etc/init.d/containerd\" || echo \"Yougori container storage service update failed\""
+      print "if [ -x /yougori-containerd-service ]; then"
+      print "  cp /yougori-containerd-service \"$sysroot/etc/init.d/containerd\" && chmod 755 \"$sysroot/etc/init.d/containerd\" || echo \"Yougori container storage service update failed\""
       print "fi"
-      print "# OPENDOCK_AGENT_UPDATE_END"
+      print "# YOUGORI_AGENT_UPDATE_END"
     }
     { print }
   ' init.clean > init

@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "7d8cf856fcb76bf315afe24439372bff620362a0",
+  "sourceCommit": "3d2ecdb5e4741cff4405ef1be75e72775c398a11",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
     {
       "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-      "sha256": "13b01cf3466f838b53d753327dbbfc2275ea34601b6fc5c67b336f17cb8e9b60",
-      "bytes": 180811776
+      "sha256": "970db0178d5593670f07ec1cb208ff5b529fa977571297062e18ad6ad40d1fb8",
+      "bytes": 179387392
     },
     {
       "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-      "sha256": "d560fd2d7ef9429a8f70f6f5733d93b415f84a19acf56d3608faa10ff87494d9",
-      "bytes": 94062900
+      "sha256": "748d47eff5ed05671a18ca4f3d827bd61880e5f4a7308d7ae995a0d7125c44e6",
+      "bytes": 94082023
     },
     {
       "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-      "sha256": "ed1895184ea0a99861d277280b45fb6a780a82ca5ae03b509f0ffd31aa70a003",
+      "sha256": "6d3d0bcf1566e667611ecea41ebb4d5b0edabb414db79941ec533bb79b2709ee",
       "bytes": 247
     },
     {
@@ -36,8 +36,8 @@
     },
     {
       "path": "src-tauri/resources/runtime/appliance/storage-notices/SOURCES.md",
-      "sha256": "8df7a9e1b5bc4f1275ee4cb7cd8d3dad186f717aab1adb6b42cf8a0bfef5f53d",
-      "bytes": 1314
+      "sha256": "475cecf6f4d88462910b80e8c887b079e8055b0f81538c30a9f1aae4d7c6d245",
+      "bytes": 1312
     },
     {
       "path": "src-tauri/resources/runtime/appliance/vmlinuz-virt",
@@ -46,33 +46,33 @@
     },
     {
       "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-amd64",
-      "sha256": "39115657eae61e356a6c6cd629b899cfb775b0a358057383539a57b70ec1f23a",
+      "sha256": "51837ea6991eddd579a5c946d18b416004083d6b06de5f8e19e3796fb2786001",
       "bytes": 7131260
     },
     {
       "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-arm64",
-      "sha256": "303af9dc4706521cfae68de0d60199f8f714931baa3ccdc66b659d7b30f09157",
+      "sha256": "c8845efa6837106e1a1e4f2a551833532e068bfca310acb64501e540325ddb9a",
       "bytes": 6553724
     },
     {
-      "path": "src-tauri/resources/runtime/cuda/opendock-agent",
-      "sha256": "4940e4ce94720b8db6775ec827a17827bddffa15b53b4b4dc40ba33c0749bd90",
-      "bytes": 15347836
+      "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
+      "sha256": "896aa4ff9414d536edb9f73b1d9185bfd8a55b1e6dc146ee65bb7bdd06aafcc9",
+      "bytes": 684
     },
     {
-      "path": "src-tauri/resources/runtime/cuda/opendock-cuda-probe",
-      "sha256": "35ab669ca6bb226d88180334cac07c4bf59910bef7dd02ae11b16ca220741bd4",
+      "path": "src-tauri/resources/runtime/cuda/yougori-agent",
+      "sha256": "2f2447c7d9b564b41152bedc504171c6cf4f0a1724d9d596520c7284ef596090",
+      "bytes": 15392892
+    },
+    {
+      "path": "src-tauri/resources/runtime/cuda/yougori-cuda-probe",
+      "sha256": "51d314dd385f3e7e5a032fdb09276e8ba57fd8b517db1135ad4779a22a7db26d",
       "bytes": 14472
     },
     {
-      "path": "src-tauri/resources/runtime/cuda/opendock-mount-helper",
-      "sha256": "9a7e549cf2ad6a34f1f41e5a9fb4e32233d1bd2e4e3a9f8f4a3d8a6e81bf89f1",
+      "path": "src-tauri/resources/runtime/cuda/yougori-mount-helper",
+      "sha256": "76e3bc0283459dec23b29d31eb7f530a1c4258343c03362cf70213607b14e424",
       "bytes": 51120
-    },
-    {
-      "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-      "sha256": "312ae6178652df75b684809c12583989ea302262abe973089736e6fc53fba985",
-      "bytes": 687
     },
     {
       "path": "src-tauri/resources/runtime/cuda/yougori-nvidia-cdi-linux-amd64.manifest.json",
@@ -86,8 +86,8 @@
     },
     {
       "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.manifest.json",
-      "sha256": "fe3f79540154ef8b05d0093d7c1f869e3a69789b89089c2d9cb385882eba50e1",
-      "bytes": 25040
+      "sha256": "e9f63b7c5123ed29cb31e66c44b1359425e7af135a0d4ea4fde6bd9b9dca6158",
+      "bytes": 25013
     },
     {
       "path": "src-tauri/resources/runtime/cuda/yougori-oci-runtime-linux-amd64.tar.gz",
@@ -116,8 +116,8 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu/GPU-BRIDGE-LICENSE.txt",
-      "sha256": "a6e26e86b27dde8b21738ada1414cccb46f3af77532ee341e7f07449047b78e6",
-      "bytes": 513
+      "sha256": "ed19db67d8fac1aa4666657415e964bc0d0837af53f403d5bdd34f6a33722de3",
+      "bytes": 509
     },
     {
       "path": "src-tauri/resources/runtime/qemu/libbrotlicommon.dll",
@@ -141,7 +141,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu/libEGL.dll",
-      "sha256": "43076136e5df61281273865d364ddc4f18f4493c51515e75e1e489ed7d1bcfa0",
+      "sha256": "0133723ec308416dbea37b3a15ae4a17991a1b97c9e19dcbdf71da1e4e4fd501",
       "bytes": 179200
     },
     {
@@ -405,6 +405,11 @@
       "bytes": 25967
     },
     {
+      "path": "src-tauri/resources/runtime/qemu/licenses/gn/LICENSE",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "bytes": 1559
+    },
+    {
       "path": "src-tauri/resources/runtime/qemu/licenses/headers/COPYING",
       "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
       "bytes": 2326
@@ -655,23 +660,18 @@
       "bytes": 1549
     },
     {
-      "path": "src-tauri/resources/runtime/qemu/opendock-gpu-probe.exe",
-      "sha256": "579f884cfbc32bd627c43ef672a18be147116fcbc0a553499e7338435f8f6cc0",
-      "bytes": 139776
-    },
-    {
       "path": "src-tauri/resources/runtime/qemu/PACKAGES.txt",
-      "sha256": "0edd970215b6e6d314d2c5d773663ab856bb9bcfb0418e525c44a662cfb0f786",
-      "bytes": 23139
+      "sha256": "450952c360815e3dbbc4b6de78964ce97ca89c041bbfa81721c38a9e128dc67f",
+      "bytes": 23165
     },
     {
       "path": "src-tauri/resources/runtime/qemu/qemu-img.exe",
-      "sha256": "179f6fbc6c4fb5fb95f770d2ab802b3d7557a53372fc950dcdd6c17ad34383df",
+      "sha256": "0175cea0d90c4bb6504393e9d8c9a0d7862d3bdcd5a9e764c994e44b47d45d98",
       "bytes": 1899520
     },
     {
       "path": "src-tauri/resources/runtime/qemu/qemu-system-x86_64.exe",
-      "sha256": "91c97f488ad768e11ef302362c25348fb4babf60da7c9b047905c3b7d23963fb",
+      "sha256": "5c533727c1859497c427037e606b9689be50e3b2fd371c04491c7251eca17893",
       "bytes": 25112064
     },
     {
@@ -681,8 +681,8 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu/SHA256SUMS",
-      "sha256": "61259ae08543a222a257ea4bac53cb92d3b45283d9b92dbd80e1b8cbda644bcb",
-      "bytes": 12460
+      "sha256": "0a360c3bdb81472bff8a5d53350f15a37432f271c6edbf6c1ae31f72e08ca95b",
+      "bytes": 12546
     },
     {
       "path": "src-tauri/resources/runtime/qemu/share/bios-256k.bin",
@@ -776,8 +776,13 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu/SOURCE_BUILD.json",
-      "sha256": "5b6718603ecf2cacca6ed5cd4faf9ba812300077a4386663a4454610b675b574",
-      "bytes": 1417
+      "sha256": "6b02e65c4b968abcb8ac2e94e6defee2c8343cfc71b77c8dd9ce265c4d49b1b8",
+      "bytes": 1578
+    },
+    {
+      "path": "src-tauri/resources/runtime/qemu/yougori-gpu-probe.exe",
+      "sha256": "fa15e16a09ff0f84a8ecec35110d9b95c9f3c180985a04dc383cee4cf99f66de",
+      "bytes": 139776
     },
     {
       "path": "src-tauri/resources/runtime/qemu/zlib1.dll",
@@ -811,8 +816,8 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/GPU-BRIDGE-LICENSE.txt",
-      "sha256": "a6e26e86b27dde8b21738ada1414cccb46f3af77532ee341e7f07449047b78e6",
-      "bytes": 513
+      "sha256": "ed19db67d8fac1aa4666657415e964bc0d0837af53f403d5bdd34f6a33722de3",
+      "bytes": 509
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/libbrotlicommon.dll",
@@ -841,7 +846,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/libEGL.dll",
-      "sha256": "a0655d055da73d0273a7708bfc31d673a114429e59a47eb9efee6a10671e5962",
+      "sha256": "ac2eb76abe92e91ee51e90c25460f0357338f41aa90b4dcf0d90b17a85a3c3da",
       "bytes": 179200
     },
     {
@@ -1110,6 +1115,11 @@
       "bytes": 25967
     },
     {
+      "path": "src-tauri/resources/runtime/qemu-secure/licenses/gn/LICENSE",
+      "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+      "bytes": 1559
+    },
+    {
       "path": "src-tauri/resources/runtime/qemu-secure/licenses/headers/COPYING",
       "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f",
       "bytes": 2326
@@ -1365,39 +1375,14 @@
       "bytes": 1549
     },
     {
-      "path": "src-tauri/resources/runtime/qemu-secure/opendock-gpu-probe.exe",
-      "sha256": "f04850ec4032573e4d55d1ce82e8d96fdb1ecfd1bcea66c2c7ea5e16dfcd86e0",
-      "bytes": 139776
-    },
-    {
-      "path": "src-tauri/resources/runtime/qemu-secure/opendock-tpm-init.exe",
-      "sha256": "ebee62274b6394d69895d146b64f47ff31c3bdc67a4c00b233dc2cef6fa1ca90",
-      "bytes": 14848
-    },
-    {
-      "path": "src-tauri/resources/runtime/qemu-secure/OPENDOCK-TPM-LICENSE.txt",
-      "sha256": "0be24bd5994c74a0e8862f6c24fcf8ddbbe5412f9f06cf6eb26e92609f87c8e0",
-      "bytes": 1552
-    },
-    {
-      "path": "src-tauri/resources/runtime/qemu-secure/opendock-tpm-worker.exe",
-      "sha256": "e6ad54bad62429edbacc8bc40f0105bf0c1aa0d00c368a47e3ae23b7ae32086d",
-      "bytes": 15360
-    },
-    {
-      "path": "src-tauri/resources/runtime/qemu-secure/opendock-tpm.dll",
-      "sha256": "2dc77f3d9207cac3398d8bde8b6c2bafc6253fa0d658e632d5f8af1c946db121",
-      "bytes": 347648
-    },
-    {
       "path": "src-tauri/resources/runtime/qemu-secure/OVMF.qemuvars.fd",
       "sha256": "0560499828d771c02ecf2bcf112e42deee9de504c763833a3b00c4854202b406",
       "bytes": 4194304
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/PACKAGES.txt",
-      "sha256": "4aea522440dfc7a86de73713f21af817a5b91edd31d1788b2a2920eaed09e21e",
-      "bytes": 24007
+      "sha256": "e73c6469f47b14aeec4a04754af41806636a1214e21b98c574960ccf76277d15",
+      "bytes": 24033
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/QEMU-LICENSE.txt",
@@ -1406,12 +1391,12 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/qemu-system-x86_64.exe",
-      "sha256": "16cc67411ed6d644a1d1c7787c51df77c1a1d50607229a80e503b4ca289de6e1",
+      "sha256": "16cd6270a3784d0c21415499d25faf75e1585a1fc81990e13ece6b9bee7f8dac",
       "bytes": 25112064
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/secure-vars.json",
-      "sha256": "c0025f01ff9bc53aab2297a0b7821f665120e529e14b15348b98aaa73252d747",
+      "sha256": "6065bae5a92a3794f39e0f83d6ee2944c5a81ccd4c51027dd3a360ebc3077330",
       "bytes": 50901
     },
     {
@@ -1421,23 +1406,48 @@
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/SHA256SUMS",
-      "sha256": "28ebd4a3f7919f5010517c6ae87cec3b71148e05955c7a8eaf1784430af51d49",
-      "bytes": 12084
+      "sha256": "ca8b9736fd2cbe624dca937d59a9f982891a4b3437aedb1f8c642e7daca45415",
+      "bytes": 12167
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/SOURCE_BUILD.json",
-      "sha256": "711ab4d1887da7c343b48010520b170ba075b7168255d25e0926bb2bd0759c7f",
-      "bytes": 1547
+      "sha256": "b5f569593190a1b4b7f923578122fc051b1ac434e175a3ed5e1f4a954c780e38",
+      "bytes": 1708
     },
     {
-      "path": "src-tauri/resources/runtime/qemu-secure/SOURCES.md",
-      "sha256": "a178796c0f78bd3079ca75ac518fd9767b02539749bed57f5bf1a504cb5d2ebf",
-      "bytes": 5686
+      "path": "src-tauri/resources/runtime/qemu-secure/SOURCES.txt",
+      "sha256": "1227f762da862e2089e363c56ff3fb2226b670efcfaa5063c8f2c1f5660c39ac",
+      "bytes": 5682
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/TPM-LICENSE.txt",
       "sha256": "a8557055f0a650bceb11d088f40e041d8c5614cff5a45b016d7bf534d9467858",
       "bytes": 1705
+    },
+    {
+      "path": "src-tauri/resources/runtime/qemu-secure/yougori-gpu-probe.exe",
+      "sha256": "63cf507885c8d48c92a31dd70b387963139f259af28f4df857b6a2318f854d8b",
+      "bytes": 139776
+    },
+    {
+      "path": "src-tauri/resources/runtime/qemu-secure/yougori-tpm-init.exe",
+      "sha256": "0b28f3e831bb7c4654f5f2cc2560f23ea63dda4b35c1113c6c7359a112b18597",
+      "bytes": 14848
+    },
+    {
+      "path": "src-tauri/resources/runtime/qemu-secure/YOUGORI-TPM-LICENSE.txt",
+      "sha256": "8833a005fc83b09db53d78724e5c4bf8031bfe8d77ffe75d10469e7af0edcdf5",
+      "bytes": 1550
+    },
+    {
+      "path": "src-tauri/resources/runtime/qemu-secure/yougori-tpm-worker.exe",
+      "sha256": "160d1bd94dce2481e0d904ddc1daf758d318cbf75f18d74c235de7fceb734064",
+      "bytes": 15360
+    },
+    {
+      "path": "src-tauri/resources/runtime/qemu-secure/yougori-tpm.dll",
+      "sha256": "42d2eec8180fdbbf81de6c6e7228839acab02f58794e656f454266b83fd60fb9",
+      "bytes": 347648
     },
     {
       "path": "src-tauri/resources/runtime/qemu-secure/zlib1.dll",
@@ -1446,38 +1456,44 @@
     },
     {
       "path": "src-tauri/resources/runtime/SHA256SUMS",
-      "sha256": "97018be3085645602641f49979371159c1b085c5bbd0bfcb052754d6378c6b2f",
-      "bytes": 27858
+      "sha256": "429bd9cf2f2ff2b27b4b37b173866663168f1a37c0fc5f4043cb0ecff8a23a1b",
+      "bytes": 28687
     },
     {
       "path": ".gitattributes",
-      "sha256": "a6511a92cebed961c623267bdf3c9457e858acfd6d6708bd5f50907ce3f0a5bd",
+      "sha256": "88d3bdee9764f6c9da2765ac896f4c14be31e75f4ed1891b34fe4e4fd50d273b",
       "normalization": "lf",
-      "bytes": 1832
+      "bytes": 1998
+    },
+    {
+      "path": ".github/workflows/linux.yml",
+      "sha256": "883f76907f0f7b0670de8e03835b74129469b0cd8134c4443db92427ad7265aa",
+      "normalization": "lf",
+      "bytes": 4159
     },
     {
       "path": "COMMERCIAL_LICENSE.txt",
-      "sha256": "1f8c443f8898a42685a236fbd7a4def5e476212850998f68ed95ebc797aa19d3",
+      "sha256": "6f9262ed3b36f57c1261d6b1d90328f741f41af5ee494ac5e32c11484605408c",
       "normalization": "lf",
-      "bytes": 2212
+      "bytes": 2351
     },
     {
       "path": "COPYING",
-      "sha256": "d8a6cc31abc16b6748c7a21f21611f5a1ec33f67d22ca23d7da1c19b95496bee",
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
       "normalization": "lf",
-      "bytes": 34020
+      "bytes": 34523
     },
     {
       "path": "LICENSE",
-      "sha256": "339f9c501c45075cc8e7a26e02496d0c42b57122346eb52095e9821bbca4d465",
+      "sha256": "2cc92e776005d4508c16d21bef855e36b4dc51144056da84dc77c5b59d38f612",
       "normalization": "lf",
-      "bytes": 1931
+      "bytes": 1962
     },
     {
       "path": "NOTICE",
-      "sha256": "bae65f81d0aa70c8fc632d1f08a12bec94b6e04632d719d01be2028cd272bccb",
+      "sha256": "472a48eb55916766f5050bd15f1ec7aa2a6373824747894c537e2c2a77cfb4c8",
       "normalization": "lf",
-      "bytes": 837
+      "bytes": 858
     },
     {
       "path": "Yoo-app.png",
@@ -1490,22 +1506,28 @@
       "bytes": 1646653
     },
     {
-      "path": "appliance/agent/apps.go",
-      "sha256": "35a891e35d2b51260c39f991022d0e70a2c8f1f5835746c8f99a539b6d5567ea",
+      "path": "appliance/agent/agent_limits_test.go",
+      "sha256": "b8fdf354857dba51b7faa26e3f2329142a9e3625d8261aab9d11300f63f5503f",
       "normalization": "lf",
-      "bytes": 15793
+      "bytes": 5905
+    },
+    {
+      "path": "appliance/agent/apps.go",
+      "sha256": "315ef53c5b114a2200a47707ff9c4446b96125203ba2134c820fb3e9ea41f051",
+      "normalization": "lf",
+      "bytes": 15785
     },
     {
       "path": "appliance/agent/apps_test.go",
-      "sha256": "7c9adcdae3e04cd573ceb7258ef767def8644d22f6abfe8bc1a0278e6b298fb1",
+      "sha256": "59fcb7ac037574a4fa451938cc8eb380e3dafb47acb1311fc5bfccfe8d38e248",
       "normalization": "lf",
-      "bytes": 5491
+      "bytes": 5487
     },
     {
       "path": "appliance/agent/async_exec.go",
-      "sha256": "8fdca0e6f374a765e5b56153c7d312f8f931b6f360069feb07f201e6f6632ccc",
+      "sha256": "86850b24d2388524803092515d7a6617dbc9643444f4264cdd39497cafe2bc57",
       "normalization": "lf",
-      "bytes": 15335
+      "bytes": 16444
     },
     {
       "path": "appliance/agent/async_exec_test.go",
@@ -1521,21 +1543,33 @@
     },
     {
       "path": "appliance/agent/boot_token_test.go",
-      "sha256": "2c0c5673f171e71fb91a21ed5a453ee5379f2c39e4abbd0688ef0cd405411f15",
+      "sha256": "5aee79e236fda486a33615c33cca7ca1694c135aa87ecffe47013ca82609109d",
       "normalization": "lf",
-      "bytes": 1784
+      "bytes": 1776
     },
     {
       "path": "appliance/agent/capacity.go",
-      "sha256": "a020c7dc9b840235659b87b56e4e2702127feeb419dbed3ffad312675ab924c8",
+      "sha256": "638d98dc6a6dcb26a09312cc50ebc8e9757d0e236269b432d9f7345edb3231cb",
       "normalization": "lf",
-      "bytes": 3627
+      "bytes": 3626
     },
     {
       "path": "appliance/agent/capacity_test.go",
       "sha256": "7ac72f2a352ef5a75a168104c6d595cdc2c79b8dffeda0bd48d882a8b0cb614d",
       "normalization": "lf",
       "bytes": 1747
+    },
+    {
+      "path": "appliance/agent/connection_addresses.go",
+      "sha256": "d9be819bb40c723f7e1bb8500c920087a681eb73a4bf0737493d4bfc053907b2",
+      "normalization": "lf",
+      "bytes": 2987
+    },
+    {
+      "path": "appliance/agent/connection_addresses_test.go",
+      "sha256": "f99c1ee8b336ff31737ecb4849f1f14265829f9fbf39b76521087e51f41443cd",
+      "normalization": "lf",
+      "bytes": 2150
     },
     {
       "path": "appliance/agent/container_apps.go",
@@ -1545,9 +1579,9 @@
     },
     {
       "path": "appliance/agent/container_apps_test.go",
-      "sha256": "e3103f31d3f9527bb6761761a6c5e0daa6b3b065a0d0071de8ea641124d5a0f3",
+      "sha256": "2d9235de0a528fbcd84b26758b03f85e3e08b4642b28aef5bd5dd56edf54c33f",
       "normalization": "lf",
-      "bytes": 3684
+      "bytes": 3685
     },
     {
       "path": "appliance/agent/container_delete.go",
@@ -1575,15 +1609,15 @@
     },
     {
       "path": "appliance/agent/container_quota.go",
-      "sha256": "11c6e565391266362cdb291c9ef4db721fe41476783a64f37b1d2b4538821b9b",
+      "sha256": "9958e57afca33c200b6339fe1c38cf848cda87423f7b2af3916283c940b57b8f",
       "normalization": "lf",
-      "bytes": 16071
+      "bytes": 17408
     },
     {
       "path": "appliance/agent/container_quota_test.go",
-      "sha256": "ef94231e585ab448b5e326ed5f72ddaf409760eb6b01f847dc8b34a8d327a4a0",
+      "sha256": "1d2b87f199e1058be537c0219221997297eb65a9a93cdb21b5960eaffd72d16c",
       "normalization": "lf",
-      "bytes": 649
+      "bytes": 694
     },
     {
       "path": "appliance/agent/container_security.go",
@@ -1593,21 +1627,21 @@
     },
     {
       "path": "appliance/agent/container_security_test.go",
-      "sha256": "d5ec7dd6ecd4ffe7f3e4969d67f664548ee598ed28184c4357db2ab52c8ae441",
+      "sha256": "90f9af8e8bac2716980672838698046a5e83fc562a7887dbc8157616fdae14d0",
       "normalization": "lf",
-      "bytes": 6577
+      "bytes": 6870
     },
     {
       "path": "appliance/agent/container_store.go",
-      "sha256": "bb9e99eb94ee40dec10982178f0ec6d20a1c40bc5cb62b87418bfc3a825b650f",
+      "sha256": "7912dcf216015746311ab9636930c839d68b331a626e090474a4536e896604e5",
       "normalization": "lf",
-      "bytes": 8925
+      "bytes": 8923
     },
     {
       "path": "appliance/agent/container_store_migrate.go",
-      "sha256": "f724893b328342691b04426259ae40fef67748ba2205a4f4e8f1f9174e334810",
+      "sha256": "fc6a9eb5df6740d45ef7310a4126b3b3a416da3e5aed8cb5f4e5d8fcfc2a03a9",
       "normalization": "lf",
-      "bytes": 9174
+      "bytes": 9173
     },
     {
       "path": "appliance/agent/container_store_migrate_test.go",
@@ -1616,16 +1650,28 @@
       "bytes": 2067
     },
     {
-      "path": "appliance/agent/cuda.go",
-      "sha256": "ee9479076a98a1ae670a27a7fc1f2380997e1c6581692ce0304aaf19df9d6831",
+      "path": "appliance/agent/control_token.go",
+      "sha256": "1a389ec844013c7863b919978c312b3f80794871dd287f6e5ba16cd407672ea0",
       "normalization": "lf",
-      "bytes": 4175
+      "bytes": 3681
+    },
+    {
+      "path": "appliance/agent/control_token_test.go",
+      "sha256": "1eb72664c78cbb9dd7c77858e81c19f0c974c3498345a59e1272554ffdffb57d",
+      "normalization": "lf",
+      "bytes": 5108
+    },
+    {
+      "path": "appliance/agent/cuda.go",
+      "sha256": "8cb97d33f74f120dea546eb8873b423b27ffa09b58232c161eb8b662337231a0",
+      "normalization": "lf",
+      "bytes": 4168
     },
     {
       "path": "appliance/agent/cuda_test.go",
-      "sha256": "4b60c89a0d2c21dca7e7fc5e73be895c8a3b9b34a4906865f9c0c7fc293396fb",
+      "sha256": "12ab84e64c5e100ffc93db5f3eb281f99ceaaf28625713d5ff99625867bcfbd7",
       "normalization": "lf",
-      "bytes": 907
+      "bytes": 902
     },
     {
       "path": "appliance/agent/fabric.go",
@@ -1671,9 +1717,9 @@
     },
     {
       "path": "appliance/agent/go.mod",
-      "sha256": "b6eb30edbe41a9ea4a733d61a42fffd06128659db12b8113ce3a034839fad98c",
+      "sha256": "35a701f1f1b19f5096f683f196ed3b3850a19b56a8701a4cfb0cbf829c4b63e4",
       "normalization": "lf",
-      "bytes": 747
+      "bytes": 746
     },
     {
       "path": "appliance/agent/go.sum",
@@ -1701,27 +1747,27 @@
     },
     {
       "path": "appliance/agent/host_relay_test.go",
-      "sha256": "f5a63b39c7ff485abde398bd8bc10f3ae188f2bb1704421318df3b0c4a022036",
+      "sha256": "130909eb12fea17dc1074b4ed5b6d09bb06498e52f17f4617c3d90c9a6c211be",
       "normalization": "lf",
-      "bytes": 4735
+      "bytes": 4732
     },
     {
       "path": "appliance/agent/host_shares.go",
-      "sha256": "1112fe1fb1c7b2c4f7dbe40e5689206ef7f47ac3268f5bf4428cef8529a330fe",
+      "sha256": "5e4eaf08467b1c2f495ecb01632d64297696897cd0f69d5533f4fe53210d5011",
       "normalization": "lf",
-      "bytes": 11158
+      "bytes": 12187
     },
     {
       "path": "appliance/agent/internet.go",
-      "sha256": "92fb8f07d436fad47ac65d4a898cf590ccd76818506c4ab80f5b0c2c8bb06d39",
+      "sha256": "e74b7870faf1ef3acfdfa34ef5722f8661deb11b4883ce2dc027b2b820d750d4",
       "normalization": "lf",
-      "bytes": 4036
+      "bytes": 4092
     },
     {
       "path": "appliance/agent/internet_test.go",
-      "sha256": "8d02e4f4e9f393497c42bb4a52116bdb3bfeefc9473838ba64ac5f9239db7339",
+      "sha256": "c908d367873ba70aa88392a96e6b8ae214a9fef30a7d1372121b6c0b9bb8b105",
       "normalization": "lf",
-      "bytes": 5074
+      "bytes": 5072
     },
     {
       "path": "appliance/agent/isolated_cli.go",
@@ -1730,28 +1776,34 @@
       "bytes": 7020
     },
     {
-      "path": "appliance/agent/main.go",
-      "sha256": "64d6c0e8a2623662210ead6cc655826d3c3d2a76c8a6aab028bc9d45cfa1b287",
+      "path": "appliance/agent/legacy_names.go",
+      "sha256": "b0f86b7103d763a4c24935a826e85d5117bed05b4255646aa5fa420cc4c59706",
       "normalization": "lf",
-      "bytes": 67999
+      "bytes": 1460
+    },
+    {
+      "path": "appliance/agent/main.go",
+      "sha256": "29b9ecd4b506b954090886b4ae990a1150abf6eb92b7b9c745626e28276c15f1",
+      "normalization": "lf",
+      "bytes": 71110
     },
     {
       "path": "appliance/agent/main_test.go",
-      "sha256": "80daa6da702d0deea281f2a04a37d9fe3542dcf0c5c3868a9d3765b774460c92",
+      "sha256": "119dc0043d12466fdbd99f3e0ff4154f78dd89a3c53ec207309975c8bb449739",
       "normalization": "lf",
-      "bytes": 11179
+      "bytes": 11175
     },
     {
       "path": "appliance/agent/microvm_workload.go",
-      "sha256": "2ccfab5b83f75f7157a532154fd2ed5cbab5993f009b5da125d449f544850b1e",
+      "sha256": "31c2e948ff5ccff161ae7c1b84171f5b9eaa4d877abc6229f845f4cbaf75a082",
       "normalization": "lf",
-      "bytes": 3638
+      "bytes": 3904
     },
     {
       "path": "appliance/agent/namespace_files.go",
-      "sha256": "90ba6b0feed868823d00f578fe4eb1db7b859de7262e569ea264c3c4d5cc60bb",
+      "sha256": "ab9fdce319e4b816ced30f8997b58bd09afce0e848bca4d567084b872a7a693e",
       "normalization": "lf",
-      "bytes": 3307
+      "bytes": 3418
     },
     {
       "path": "appliance/agent/namespace_files_test.go",
@@ -1790,6 +1842,18 @@
       "bytes": 4652
     },
     {
+      "path": "appliance/agent/restart_internet.go",
+      "sha256": "779e84f1ce2d5455734d3d8f2212a4d58ee6bbd9fa8b0a2be148f53f64ae8c26",
+      "normalization": "lf",
+      "bytes": 5294
+    },
+    {
+      "path": "appliance/agent/restart_internet_test.go",
+      "sha256": "0de55e7ac0ead3d97b26fb35b29e883af8f15dfbd7d5913f733d75e35d538c66",
+      "normalization": "lf",
+      "bytes": 2501
+    },
+    {
       "path": "appliance/agent/runtime_budget.go",
       "sha256": "6bb22b670ee7ca1457c58bf291694dd8f1a402234036c70f55f763b7e75e235d",
       "normalization": "lf",
@@ -1797,21 +1861,21 @@
     },
     {
       "path": "appliance/agent/runtime_budget_test.go",
-      "sha256": "8d6c8f1902d325f8f2546af87e90899d18e1504f6a862c4c73c3cbc64c8537e3",
+      "sha256": "da5a9007579328d8f3529fb69ad5551d51c8a925993c8171ea15ae8765664ae9",
       "normalization": "lf",
-      "bytes": 1028
+      "bytes": 1023
     },
     {
       "path": "appliance/agent/snapshot_configuration.go",
-      "sha256": "027a0d142e5836c9cb81d30a880eb1c29b705883e40907a11cb28dc1bc8b4f8e",
+      "sha256": "0d7d0e91b2903939333f6f9b814090e2a3078200a5e104c9b42203d261a8ce6d",
       "normalization": "lf",
-      "bytes": 4301
+      "bytes": 4308
     },
     {
       "path": "appliance/agent/snapshot_configuration_test.go",
-      "sha256": "ea83bd330fa9d7934322e7f86b4aa570fb042dd565d37eb8e2efd1dce0210d66",
+      "sha256": "52f367ce1474fc4ccb67cf02cfe0aae61e12a1ea43dcf68f9c6cb70e6ca0a57c",
       "normalization": "lf",
-      "bytes": 1935
+      "bytes": 1929
     },
     {
       "path": "appliance/agent/snapshot_export.go",
@@ -1838,6 +1902,18 @@
       "bytes": 2246
     },
     {
+      "path": "appliance/agent/snapshot_import.go",
+      "sha256": "cfa2c94151e1a223cd0862563292f3e07923cdec6cef21a73007f826d2b49e2d",
+      "normalization": "lf",
+      "bytes": 3042
+    },
+    {
+      "path": "appliance/agent/snapshot_import_test.go",
+      "sha256": "6db55cc3d1e3e573efce89705bb5bc6348c78c575f44fa67efa79c51f3428641",
+      "normalization": "lf",
+      "bytes": 3154
+    },
+    {
       "path": "appliance/agent/snapshot_volumes.go",
       "sha256": "f0d10ef8db3eb9606d881bdccb525049ff87618d20f3053d94099945fe434813",
       "normalization": "lf",
@@ -1845,15 +1921,15 @@
     },
     {
       "path": "appliance/agent/snapshot_volumes_test.go",
-      "sha256": "0aea98c638962e28bd7434625207e6487e34fe1368683cdf991790eb6892407e",
+      "sha256": "9f213854cd751a354bceb924ffe7a4dc2ecea24f104797c7eddef1b73792ed18",
       "normalization": "lf",
-      "bytes": 3138
+      "bytes": 3137
     },
     {
       "path": "appliance/agent/startup.go",
-      "sha256": "1728f1e33f0bc3e9a29cccccd18375a112d8545ab31de12478811b135736529e",
+      "sha256": "516dc2c6327392207f07ad484be31b40ac8baa96a78480cc44a0623bd37b68a6",
       "normalization": "lf",
-      "bytes": 4697
+      "bytes": 4926
     },
     {
       "path": "appliance/agent/startup_test.go",
@@ -1863,9 +1939,9 @@
     },
     {
       "path": "appliance/agent/storage.go",
-      "sha256": "71e9ece6a3e8d58f53c83659ae46f35f64c7d71cdbb74eba9995ec41d9b39180",
+      "sha256": "56cfecb71a60c595060c471761559abf34bcd451f044846731a38a405f3327fb",
       "normalization": "lf",
-      "bytes": 2829
+      "bytes": 2828
     },
     {
       "path": "appliance/agent/storage_copy.go",
@@ -1887,9 +1963,9 @@
     },
     {
       "path": "appliance/agent/storage_reclaim_test.go",
-      "sha256": "28368ce23b20bcc3f25f9e0a99d083316e2b00e4434b84def28a42431da9acd2",
+      "sha256": "56b17cbd4635737c5830a1fb168c90ad90d05cf6993076f35908a259fc8ae07e",
       "normalization": "lf",
-      "bytes": 1125
+      "bytes": 1124
     },
     {
       "path": "appliance/agent/storage_test.go",
@@ -1941,9 +2017,9 @@
     },
     {
       "path": "appliance/agent/volumes_test.go",
-      "sha256": "b2005b7ed2de6bd984f9ab11cc33e242129389addbd02a9a137d1918d7ebe7ce",
+      "sha256": "9d0677b7c73d4441125ff2283f4ec2c111f220cc8f68f1437f507b1866901b97",
       "normalization": "lf",
-      "bytes": 3926
+      "bytes": 3925
     },
     {
       "path": "appliance/agent/workload_catalog.go",
@@ -1953,15 +2029,15 @@
     },
     {
       "path": "appliance/agent/workload_mounts.go",
-      "sha256": "07b3340185bfc898247cb5355ac67c0793eb8797ef1bc53daff830e2daa393ce",
+      "sha256": "648262204539c4b6063fde4233e44199a1134cb17c772d0f2852398986404eea",
       "normalization": "lf",
-      "bytes": 3015
+      "bytes": 3191
     },
     {
       "path": "appliance/agent/workload_options.go",
-      "sha256": "48505e386c18f3e7ce3d5be277ac0ffa1c39bd3ed78ceb98dc1e3f2eb1271533",
+      "sha256": "91df92d483fbefbefbca7b61985cbd9d6486792c3b99d43e32216e02fa6811d1",
       "normalization": "lf",
-      "bytes": 9394
+      "bytes": 9747
     },
     {
       "path": "appliance/agent/workload_options_test.go",
@@ -1971,9 +2047,9 @@
     },
     {
       "path": "appliance/agent/workspace.go",
-      "sha256": "f7c6449624a3f1c6d96b3c3bde5efd31bb1af0055de54bebbbd0996651b72392",
+      "sha256": "0266be55ffccbfe4e7ca6afa3cdb820ab114d49175eaa1783756d6e76e6a51d9",
       "normalization": "lf",
-      "bytes": 15462
+      "bytes": 16545
     },
     {
       "path": "appliance/agent/workspace_test.go",
@@ -1983,27 +2059,27 @@
     },
     {
       "path": "appliance/boot/smoke_legacy_overlay.py",
-      "sha256": "27331e71a9dbe49f79981b3786303234e77717f61b92ffc389e4e6d0b1b3fe67",
+      "sha256": "82aa19e30db9c640668427738c349d7061e3f08c90596d437678a68b06c16d45",
       "normalization": "lf",
-      "bytes": 20262
+      "bytes": 20872
     },
     {
       "path": "appliance/boot/test_upgrade_root.py",
-      "sha256": "5bb20b7b6b728760fa77e7f3da99ca647b34072c6cb15e41f9109b02664c8c60",
+      "sha256": "c24965926788038fbfa4bbf8f2f1c3bc154836ae4e982552af83262ced6efd77",
       "normalization": "lf",
-      "bytes": 21137
+      "bytes": 24764
     },
     {
       "path": "appliance/boot/upgrade-root.sh",
-      "sha256": "599f1f144b4a75d2b58258f0be732bf58d480207ac6377351e1a123e4dbf748a",
+      "sha256": "81ba2c46b782a9619e51b10822d30d59fef69e80d262ac5ca903583d51fb1cbb",
       "normalization": "lf",
-      "bytes": 9149
+      "bytes": 11850
     },
     {
       "path": "appliance/mount-helper.c",
-      "sha256": "c0b2af407590ec564e69b5499ee0a71f58965dfbc89f548ea254dc86d19c367e",
+      "sha256": "1efb4477f7565d1687b500934990c2dfaac478d80dc279a70fc8cfd8ee4e1851",
       "normalization": "lf",
-      "bytes": 7536
+      "bytes": 7909
     },
     {
       "path": "appliance/rootfs/etc/containerd/config.toml",
@@ -2013,15 +2089,15 @@
     },
     {
       "path": "appliance/rootfs/etc/init.d/containerd",
-      "sha256": "2b65f8a122f579ab061faed6441762d530e6b5b482bb8a548bcce5b0e814714d",
+      "sha256": "7d4e5cdb78508140c7c6f75387563ab54f7ca8e2a13eac81c2db1f897c190c42",
       "normalization": "lf",
-      "bytes": 624
+      "bytes": 623
     },
     {
-      "path": "appliance/rootfs/etc/init.d/opendock-agent",
-      "sha256": "98c326f90869dd16dddfa1dc1b90e1b592de39813e9fa0bb2827d48435e1a5a7",
+      "path": "appliance/rootfs/etc/init.d/yougori-agent",
+      "sha256": "121806f600e96e125083a48d49ab799493c82759cbe9a2223880a74b1aa56158",
       "normalization": "lf",
-      "bytes": 649
+      "bytes": 644
     },
     {
       "path": "appliance/rootfs/etc/sysctl.d/90-yougori-security.conf",
@@ -2031,9 +2107,9 @@
     },
     {
       "path": "appliance/test_mount_helper.py",
-      "sha256": "ded80e25ac6d9a079de58d7b233ab11344ddb68d2d08bbeac74cd9b1c45b107d",
+      "sha256": "b2226846da1ce01263642b18fb55a4535f8276c14c43d74a6e0d49c63a26f7fb",
       "normalization": "lf",
-      "bytes": 13332
+      "bytes": 13737
     },
     {
       "path": "assets/yougori-icon.svg",
@@ -2043,27 +2119,27 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "d6eb35ad50ec26d30a8ca91b792dd507fde790ed0be0c884ffaae8f05010a1e2",
+      "sha256": "4ff69208bc61d0ff8165b8ace62628b931ecaccb6ac5967807226258164d9d1f",
       "normalization": "lf",
       "bytes": 89764
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "9fb1dd0687d7f3d5bcb6afba6958009a586c583e43c976178649ba59b1bd8489",
+      "sha256": "9ec7e5bbc691a73d42ba762ff2b33e1605f60cfef908b29491647cb41d90b63a",
       "normalization": "lf",
-      "bytes": 1229
+      "bytes": 1252
     },
     {
       "path": "compliance/engineering-review.json",
-      "sha256": "45827ca218902fda771ae799ad03f29480926f53b62b1e82f76f5b368d07cdc0",
+      "sha256": "67ce848ebf7a4190af98081fa1a2b011dd8ee00280dd6b9f1768f7fe763202e9",
       "normalization": "lf",
-      "bytes": 8359
+      "bytes": 9164
     },
     {
       "path": "compliance/evidence/all-guest-go-modules.json",
-      "sha256": "16a959aa38f8189c4418c5e1d2f1669e5bd19f4d92887b0083ac82feeb89df83",
+      "sha256": "76e91fe7d6dbda8a7ca3e57f214387f4dfd362fca71546ca1858e17c7e2091f5",
       "normalization": "lf",
-      "bytes": 158621
+      "bytes": 158565
     },
     {
       "path": "compliance/evidence/alpine-packages.json",
@@ -2085,15 +2161,15 @@
     },
     {
       "path": "compliance/evidence/angle-gpu-smoke.json",
-      "sha256": "f623d34b1574073d389b708cbd4f86a8cea15c8cce16a292c51413caa0257781",
+      "sha256": "dda98fc2e5fddfa6f580b80497d9468c0d58a1d4cb080d7b172d2757df435581",
       "normalization": "lf",
-      "bytes": 4981
+      "bytes": 4985
     },
     {
       "path": "compliance/evidence/angle-render-test.txt",
-      "sha256": "c8bb16ce56974da800efa09829d5072c6700e2c33ea0e60dade37af37977a4d1",
+      "sha256": "65997ccdc0e0daf4d24353bfa7f8defa30cd87d9fb8e6285303043179241596a",
       "normalization": "lf",
-      "bytes": 1167
+      "bytes": 1168
     },
     {
       "path": "compliance/evidence/angle-targets.json",
@@ -2115,15 +2191,15 @@
     },
     {
       "path": "compliance/evidence/application-dependencies.json",
-      "sha256": "caed2b9e01e867e00ac84db906b87df90cef8085f83dc33ec9a611a8f1a99596",
+      "sha256": "6f07a4d024c4d89dfa673041b78abdc0a0cbbafa4fdbe663df703c7599eb45c0",
       "normalization": "lf",
-      "bytes": 645659
+      "bytes": 637357
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "824232f3fc07a74bba8eeaf480c91cc8d025df100786aa7d7e4886519440fb47",
+      "sha256": "365b8233d05f7493e600d71da025d90ebd542da1f0c6d5cbdc0d71beb897b300",
       "normalization": "lf",
-      "bytes": 243589
+      "bytes": 249827
     },
     {
       "path": "compliance/evidence/firmware-provenance.json",
@@ -2133,49 +2209,49 @@
     },
     {
       "path": "compliance/evidence/frontend-dependencies.json",
-      "sha256": "fba6a855214611593e571c40cc82e7508301ac7356c6eea4bc54a0a3a85ed423",
+      "sha256": "6c4ce501ec1f990db1d85d6c16b8b83b7db806ed3bd23478fff4f84a13f500bf",
       "normalization": "lf",
-      "bytes": 35314
+      "bytes": 33999
     },
     {
       "path": "compliance/evidence/guest-go-modules.json",
-      "sha256": "3e6642c4960ead1dba58e338f88ca4fbcb56a1678a911deb689b0471d14fd49e",
+      "sha256": "be90e6ed81a5b207780d935cda92ff917e98bb918516ba421d923fec642e103a",
       "normalization": "lf",
-      "bytes": 5367
+      "bytes": 5339
     },
     {
       "path": "compliance/evidence/guest-main-modules.json",
-      "sha256": "c8d527b73fb9b6b47ec13fc5fb0b2fc3309d2b8aa959ffb9705c4491f9578f50",
+      "sha256": "b031d103c2acb38cb3082d0ce02ad7c6339ae2616072b269356c77782daf2b79",
       "normalization": "lf",
-      "bytes": 5428
+      "bytes": 5426
     },
     {
       "path": "compliance/evidence/initramfs-files.json",
-      "sha256": "100da6241f81a872ae0d60acbcd7af8c045931845c620c7650acf381d9c6f3a4",
+      "sha256": "3f13b8aa1b72b047c0a197f5738f1ad5d66fbaa7fc4e6311ea33b7f28ab96c71",
       "normalization": "lf",
-      "bytes": 45072
+      "bytes": 45070
     },
     {
       "path": "compliance/evidence/oci-native-libraries.json",
-      "sha256": "088ed5343f5c57089da6514cf39a08e20a1da5c0c7b449c2664863bf735992b2",
+      "sha256": "09b6aadcc7cd20322d067a950bd7db976694c83ee84cf820bf030ed5a9fcff90",
       "normalization": "lf",
-      "bytes": 18684
+      "bytes": 18657
     },
     {
       "path": "compliance/evidence/qemu-modification-notices.json",
-      "sha256": "a0db5c13351d920d68718e24c4baa241418463aa58c72f6e79dec82d136347b8",
+      "sha256": "6d8934b74f4373a631c140d656845109d5795dafd01f807c76a764acdfc3eea6",
       "normalization": "lf",
-      "bytes": 5096
+      "bytes": 5136
     },
     {
       "path": "compliance/evidence/runtime-files.json",
-      "sha256": "98d9583ef4856849b60fc1ef774407b545fb259c9f3d8f06bffa1a4ffbcf47e0",
+      "sha256": "a276b5156612a6d548f258ed1d0bb6264992b79560c4f6d85d2e58f9b7406ff8",
       "normalization": "lf",
-      "bytes": 53720
+      "bytes": 54073
     },
     {
       "path": "compliance/evidence/runtime-notices.json",
-      "sha256": "98787b8c099773a23c3c0ac06a2040e844db9f6471def7ef93833710306d3f2c",
+      "sha256": "f03f4cd6e51fad4f5a30e133e62cd675f6c7bae9d2cf6e87d0375e8a1acc0e6b",
       "normalization": "lf",
       "bytes": 197502
     },
@@ -2187,9 +2263,9 @@
     },
     {
       "path": "compliance/evidence/source-restoration.json",
-      "sha256": "e736ba0b83c0a94e28db2c3c02d82fe7cac7522508a61ded323042afb4e36bb7",
+      "sha256": "a2b03bc6481e06a00f2c50d8cbb46f7de1c30aed998c7764015f0bfd11e041af",
       "normalization": "lf",
-      "bytes": 3811
+      "bytes": 3510
     },
     {
       "path": "compliance/evidence/static-helper.json",
@@ -2211,15 +2287,15 @@
     },
     {
       "path": "compliance/evidence/windows-dlls.json",
-      "sha256": "7ce8a952897b7b878c9806d43f3eb5070e5348b8356ef7f06a3e04f80327a3ba",
+      "sha256": "67ab595ac5475d0210ab5bcaba1f362b0bd6960ca32b58d5d77cc9342ebe0a8f",
       "normalization": "lf",
-      "bytes": 30092
+      "bytes": 30091
     },
     {
       "path": "compliance/evidence/windows-pe-imports.json",
-      "sha256": "67554323700f4423cc9ea27e7f363d92fe481eb4a3fede12a99495000ed63478",
+      "sha256": "e4a541adcc4e08711b886f9155212a2e9050b79e3da44010fbd438697d039a13",
       "normalization": "lf",
-      "bytes": 48951
+      "bytes": 48946
     },
     {
       "path": "compliance/frontend.json",
@@ -2229,9 +2305,9 @@
     },
     {
       "path": "compliance/native.json",
-      "sha256": "550fd750a2ac150c565a1a364c0800e6eb6e63a820517308397ec69295e468e4",
+      "sha256": "495770b02624a08b9a0a88a98b778c9a09d5c648f1ec3f298f63f892d5e993f0",
       "normalization": "lf",
-      "bytes": 5815
+      "bytes": 5814
     },
     {
       "path": "compliance/notices/angle-third-party.txt",
@@ -2303,25 +2379,25 @@
     },
     {
       "path": "docs/licensing.txt",
-      "sha256": "a68afddaac0017306cc0bc0af7aa95816776815080d7369b9d449ec6f7c0f3bb",
+      "sha256": "f6f01f3d62814d9084655752ed588e6aaa0c20a1af48dbb4a114b7ff9813bb1c",
       "normalization": "lf",
-      "bytes": 13284
+      "bytes": 13607
     },
     {
       "path": "docs/rebuilding-third-party.txt",
-      "sha256": "9459740979dac40c7c68042de592f99a4709114555ab849ca3037ef345aa7433",
+      "sha256": "11aec81e49b8d9ba6220b4df15cc81807ce0f7fb6e2f977dcc614f105f663384",
       "normalization": "lf",
-      "bytes": 11263
+      "bytes": 11327
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "c8e9f08a203b010c48fcad094ad40216f2025590f56012f9c0a0c72c3ca5cb7c",
+      "sha256": "bc648ed146828adcbe198a966c01691ce800ec2af163e3bae6b10002145c4ba8",
       "normalization": "lf",
       "bytes": 194672
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "c684ccd46edc933aee07570e75fed4563b816452c7fb3c505fba8be2c02c4957",
+      "sha256": "6007d282ff474910aa9e7e297d70bd209464aacda9ac4209c6675f4ce17210bb",
       "normalization": "lf",
       "bytes": 691
     },
@@ -2343,21 +2419,21 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "6b56cc03211b8cab3357a939c1b9cd2703ef72f0b90162cbadf4434d2a946381",
+      "sha256": "96428a676d3153c648d504f49c9995cca6d7012df9ae437ec594cd71f77b3319",
       "normalization": "lf",
-      "bytes": 201307
+      "bytes": 193017
     },
     {
       "path": "package.json",
-      "sha256": "50daf6d4d21b8fd3c6ab697c7fe01eb7a5f74d60c53229c6722681ab30335702",
+      "sha256": "eeedc5b4b727dde02972531db3b0b0fbf12391afbe38f9f93c5f9302e610a79a",
       "normalization": "lf",
-      "bytes": 7270
+      "bytes": 7400
     },
     {
       "path": "runtime/cuda/cleanup.sh",
-      "sha256": "c87374be13b7cee2843c25a7e32eae04e4bc5d6e359b44a9ed0c28c606ead13c",
+      "sha256": "3c8629d6c5bbae1a608b700cd96d8f66c38713869ac878eb7b23420397253e5c",
       "normalization": "lf",
-      "bytes": 1576
+      "bytes": 1568
     },
     {
       "path": "runtime/cuda/host/Cargo.lock",
@@ -2367,9 +2443,9 @@
     },
     {
       "path": "runtime/cuda/host/Cargo.toml",
-      "sha256": "d455b13f27067c2df42df4ee836e59577dd5a66e6353364bde21c20a2992c708",
+      "sha256": "0fc8ffc8a5c61de09278179fb9e7d2ac964ed5ec76d9500a698f05302db2dac5",
       "normalization": "lf",
-      "bytes": 649
+      "bytes": 734
     },
     {
       "path": "runtime/cuda/host/src/compatibility.rs",
@@ -2379,9 +2455,9 @@
     },
     {
       "path": "runtime/cuda/host/src/lib.rs",
-      "sha256": "297f8f5970e004cc449e4d6234d4794159a3dab95bd39558750ace8df2f56c2b",
+      "sha256": "0958f5eaf4bdb8c15e06a6c2aa83a86d47cc0bf76a0107b0c21b90ef9a5fe62b",
       "normalization": "lf",
-      "bytes": 50457
+      "bytes": 62948
     },
     {
       "path": "runtime/cuda/host/src/storage.rs",
@@ -2391,27 +2467,27 @@
     },
     {
       "path": "runtime/cuda/install-oci.py",
-      "sha256": "1a5b8aed27491588ab7122d7b69952de96dc8623d778318ba4cd7a5a25d91541",
+      "sha256": "3606c000efc171b5943b8e2c9f9aea2c572b7862b36f21f1072b6c88ab0cffeb",
       "normalization": "lf",
-      "bytes": 8388
+      "bytes": 8386
     },
     {
       "path": "runtime/cuda/install.ps1",
-      "sha256": "6c9a113c63f7b4acf454e62b67e6376081e357e5f21c3ce38e9e697a0f83f32c",
+      "sha256": "ee6b60ea14867ac2f61df29480cbf8cecbb02365407bace6857310cedb461cf0",
       "normalization": "lf",
-      "bytes": 16036
+      "bytes": 16009
     },
     {
       "path": "runtime/cuda/kernel-probe.c",
-      "sha256": "9e7cfa46c5a063332f9ae2e064e4d6fbc5041d339748c0806960f617b5da800e",
+      "sha256": "36615dd2dec439b7141934b77871ff5c325e7b7ecf2d19de7fd5ee5cf78ece38",
       "normalization": "lf",
-      "bytes": 3246
+      "bytes": 3244
     },
     {
       "path": "runtime/cuda/kernel-probe.py",
-      "sha256": "18bbd9620396c7526e675e4867b7d8400b9464063c138d52ba59ee71eb80de59",
+      "sha256": "7fc2573fda3eb78954cbd8808e586d5a871058c7f6ae32213eec29d5b53d5125",
       "normalization": "lf",
-      "bytes": 2412
+      "bytes": 2410
     },
     {
       "path": "runtime/cuda/paths.ps1",
@@ -2420,22 +2496,28 @@
       "bytes": 721
     },
     {
-      "path": "runtime/cuda/setup.sh",
-      "sha256": "131a791c1021557b695bde984aa54f83fc2206a28413196afd581f463249a0bd",
+      "path": "runtime/cuda/rename-distribution.ps1",
+      "sha256": "66883f17c7220a2eddea89554f9d6799684621f4ba9dd63041814341f5b721d0",
       "normalization": "lf",
-      "bytes": 2351
+      "bytes": 2593
+    },
+    {
+      "path": "runtime/cuda/setup.sh",
+      "sha256": "b66926e944e671cb4b2d4dbc8459480e9d1220f7f8b228d988f094d00532a389",
+      "normalization": "lf",
+      "bytes": 2345
     },
     {
       "path": "runtime/cuda/start.sh",
-      "sha256": "a8cb3c22884c6fd39114b7ac780649250d45f3509803f1ec56676ce33fc0389f",
+      "sha256": "17973b19c531c2fb066bc0bd19dec14b878760ad919358f6206b9ac9ee8c4f83",
       "normalization": "lf",
-      "bytes": 1159
+      "bytes": 1149
     },
     {
       "path": "runtime/cuda/test-runtime.ps1",
-      "sha256": "b9a1fa74239c24dce33836fd96fd9220b45f740f83b21b3c85d4e5e63223101c",
+      "sha256": "01affe51a5ffeffb3e8d6b72614e82a49a43cb1de6fa245a921effab8e304c35",
       "normalization": "lf",
-      "bytes": 8393
+      "bytes": 8388
     },
     {
       "path": "runtime/cuda/test_install_oci.py",
@@ -2445,9 +2527,9 @@
     },
     {
       "path": "runtime/cuda/verify-owned.ps1",
-      "sha256": "8f7208588a51abd5deeba27ab0e11ed69ff6fb462aee6e23f1babe13930b4417",
+      "sha256": "c56b0ac3623c2d93d0491eebcdf3c7ef688c75899fbf36b9065e2b1776e7c147",
       "normalization": "lf",
-      "bytes": 2088
+      "bytes": 2087
     },
     {
       "path": "runtime/cuda/wsl.conf",
@@ -2457,9 +2539,9 @@
     },
     {
       "path": "runtime/gpu/LICENSE",
-      "sha256": "a6e26e86b27dde8b21738ada1414cccb46f3af77532ee341e7f07449047b78e6",
+      "sha256": "ed19db67d8fac1aa4666657415e964bc0d0837af53f403d5bdd34f6a33722de3",
       "normalization": "lf",
-      "bytes": 513
+      "bytes": 509
     },
     {
       "path": "runtime/gpu/angle-d3d11.gn",
@@ -2469,21 +2551,21 @@
     },
     {
       "path": "runtime/gpu/egl-bridge.c",
-      "sha256": "afd1bf726fe1112dc6e0128fa47a271b3f3632df347811ce335ebbd10b7ae65c",
+      "sha256": "7f00b860a385f1b8a0629f9f9b6a51cf6b16f0de398b501bb32e6b5ec9ed5a53",
       "normalization": "lf",
-      "bytes": 8040
+      "bytes": 8033
     },
     {
       "path": "runtime/security/LICENSE",
-      "sha256": "0be24bd5994c74a0e8862f6c24fcf8ddbbe5412f9f06cf6eb26e92609f87c8e0",
+      "sha256": "8833a005fc83b09db53d78724e5c4bf8031bfe8d77ffe75d10469e7af0edcdf5",
       "normalization": "lf",
-      "bytes": 1552
+      "bytes": 1550
     },
     {
       "path": "runtime/security/SOURCES.txt",
-      "sha256": "a178796c0f78bd3079ca75ac518fd9767b02539749bed57f5bf1a504cb5d2ebf",
+      "sha256": "1227f762da862e2089e363c56ff3fb2226b670efcfaa5063c8f2c1f5660c39ac",
       "normalization": "lf",
-      "bytes": 5686
+      "bytes": 5682
     },
     {
       "path": "runtime/security/edk2-svsm-probe.patch",
@@ -2511,9 +2593,9 @@
     },
     {
       "path": "runtime/security/ms-tpm-openssl3.patch",
-      "sha256": "b03cb033d0954831ccb9e0d2937196ead32a6c9ac8ad2dbc922512f3544c2d70",
+      "sha256": "a77c6c90811d88e6414bff4b1d1ad4fd76f0378f72c89ff5442da057060bd1e9",
       "normalization": "lf",
-      "bytes": 6010
+      "bytes": 6008
     },
     {
       "path": "runtime/security/qemu-license-notices.patch",
@@ -2529,15 +2611,15 @@
     },
     {
       "path": "runtime/security/qemu-whpx-tpm-ppi.patch",
-      "sha256": "f9d3e01f43ccc395806f208d427f5c1b34caecc1ae511344e8867761b69a60f0",
+      "sha256": "46ac95a8e3fbdc10ae24eb0d17332173a033669e2c64ec21357727fd13b78b14",
       "normalization": "lf",
-      "bytes": 1172
+      "bytes": 1171
     },
     {
       "path": "runtime/security/qemu-windows-tpm.patch",
-      "sha256": "66436c9beca2589e092ee7316245f04d26ee3b10849854584533680ca3959657",
+      "sha256": "5401a0c4654c106af95c98d8b49ad82e5ff41f247abb128e96df4c920818729c",
       "normalization": "lf",
-      "bytes": 3816
+      "bytes": 3802
     },
     {
       "path": "runtime/security/shipped/README.txt",
@@ -2547,9 +2629,9 @@
     },
     {
       "path": "runtime/security/shipped/tpm-qemu.c",
-      "sha256": "8d6d0a3b80cc9c49a54bb00d66f850f50208f34bd7a452a1fec78a52ffa54e92",
+      "sha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
       "normalization": "lf",
-      "bytes": 9880
+      "bytes": 9847
     },
     {
       "path": "runtime/security/test-tpm.c",
@@ -2559,15 +2641,15 @@
     },
     {
       "path": "runtime/security/tpm-api.h",
-      "sha256": "80a356ef7460c2da481ade73530ea3e3e1ea0e4b288f43456b82169ce31be2ca",
+      "sha256": "a5f7f321c594e14eefed01b58d8a21a36829486c0b4eebdc0127bb9ee6646a93",
       "normalization": "lf",
-      "bytes": 646
+      "bytes": 644
     },
     {
       "path": "runtime/security/tpm-init.c",
-      "sha256": "de2b73e6129ea840ab173bac613bf0ec11fc8d96cdcc04eaf05e99f5f8764a7e",
+      "sha256": "84adfc1a592ec66d3d924d61725dc294787f1453ca17a75facd0fa9a7d036def",
       "normalization": "lf",
-      "bytes": 1311
+      "bytes": 1310
     },
     {
       "path": "runtime/security/tpm-library.c",
@@ -2577,21 +2659,21 @@
     },
     {
       "path": "runtime/security/tpm-platform.c",
-      "sha256": "5c96a742c00a10188a03f5ba34d0276c3c9b65b7740352758c730b748fea0b80",
+      "sha256": "8d64fbdd9425feefde808a3c6c8777e13e26e32e93f3eb6d05e9fbade09b6d80",
       "normalization": "lf",
-      "bytes": 7370
+      "bytes": 7369
     },
     {
       "path": "runtime/security/tpm-qemu.c",
-      "sha256": "5d2bbf22f46ee16adb28f329f6e6cf1eb873a0a2e3e6207ba64a29605e8a198f",
+      "sha256": "2c578bddc6d377848d3a4d693984b041d7e57bea5d26ef547de8bbab45aaef57",
       "normalization": "lf",
-      "bytes": 9875
+      "bytes": 9847
     },
     {
       "path": "runtime/security/tpm-worker.c",
-      "sha256": "7a71abceba25069550a11bc59a083c5e955c8ebdf7e7a0ec33f87564522569e2",
+      "sha256": "2816df79353b5f7828b8c23d8b8b09c0b87003934cf84095a6fa2ce04697ef87",
       "normalization": "lf",
-      "bytes": 3621
+      "bytes": 3620
     },
     {
       "path": "scripts/benchmark-runtime.ps1",
@@ -2607,9 +2689,9 @@
     },
     {
       "path": "scripts/build-appliance.sh",
-      "sha256": "a3fb98592d90adf040aa4913aa73c98f9c5431dae5f1fb845904dffb7d8b6a6a",
+      "sha256": "2ee5ed002290364cf32529478e95f0a9b28b066cc3ceeab5ddba6f1a040e4c2f",
       "normalization": "lf",
-      "bytes": 9122
+      "bytes": 9107
     },
     {
       "path": "scripts/build-boot-helper.ps1",
@@ -2643,21 +2725,27 @@
     },
     {
       "path": "scripts/build-cuda.sh",
-      "sha256": "b7b8c151acca5acb5308e47c051b7268f515a8963c1cf9e3c3d9ff4d084c9f21",
+      "sha256": "446c84c9e95eadd4ba00a3215fb356ed6ebc4907ad8f06e61df43f9d72b0c4dc",
       "normalization": "lf",
-      "bytes": 2369
+      "bytes": 2363
     },
     {
       "path": "scripts/build-gpu-bridge.ps1",
-      "sha256": "1a1cebc6f0c63b0d4370b85fd1a8aefe34e223bc446affe6ce87a7f6f7b3c752",
+      "sha256": "37280bc937ca1bb93aef5c552e11c16f094f4f36db812525236201bbccc5dcc4",
       "normalization": "lf",
-      "bytes": 3455
+      "bytes": 3452
+    },
+    {
+      "path": "scripts/build-macos-runtime.sh",
+      "sha256": "c335733360c54c1f16ad5f8ac33a58da5692cf6789a219be42187055144c1bca",
+      "normalization": "lf",
+      "bytes": 7317
     },
     {
       "path": "scripts/build-macos.sh",
-      "sha256": "bc8ecfd7a67575c7079aa158b961b80853c94924096a8f6f873e294ac35328c2",
+      "sha256": "1cc905a4868a4db9e1ce09b17fb1f98ede8adb03cd5d04c0808c3408950bfba9",
       "normalization": "lf",
-      "bytes": 1669
+      "bytes": 2687
     },
     {
       "path": "scripts/build-secure-firmware.sh",
@@ -2673,9 +2761,9 @@
     },
     {
       "path": "scripts/build-secure-runtime.ps1",
-      "sha256": "20222d265f874fe6b0e16df271ed4d664b0b399ad838e37371f534d385a7367f",
+      "sha256": "f68abc32fe2a54d4c4a8d4f42294920c3367a15f32cf6bfeaec13aea6b084bc2",
       "normalization": "lf",
-      "bytes": 6489
+      "bytes": 6507
     },
     {
       "path": "scripts/build-secure-vars.sh",
@@ -2685,9 +2773,9 @@
     },
     {
       "path": "scripts/build-signed-windows.ps1",
-      "sha256": "2b9327215d916bee1c67326849c317da9bfaef82319dcca1a42bdc5020c53814",
+      "sha256": "325e807126690f49dfd404cca915393778148f46340fcf8061ae789f29107674",
       "normalization": "lf",
-      "bytes": 1211
+      "bytes": 2776
     },
     {
       "path": "scripts/build-storage-tools.sh",
@@ -2697,9 +2785,9 @@
     },
     {
       "path": "scripts/build-tpm-library.sh",
-      "sha256": "d9b5a00147ba67eda9bee0c47824c8718ede375a2124100a2c4a9aea58d1d6a1",
+      "sha256": "d3deb6f95d85276b17ba823825ae63d434c9c1d5588f69a47e05b1e65e558b56",
       "normalization": "lf",
-      "bytes": 2500
+      "bytes": 2496
     },
     {
       "path": "scripts/build-windows-setup-probe.ps1",
@@ -2709,9 +2797,9 @@
     },
     {
       "path": "scripts/bundle-cli.mjs",
-      "sha256": "ba99618fd9165f00721f37741ec862cfeab1431a22f27b7c6e45c81328a504de",
+      "sha256": "28fc9aa617e5bc03ac8fd871e37e60bb8fa8d55ac797f39d5bedf0ddb091fba8",
       "normalization": "lf",
-      "bytes": 3080
+      "bytes": 3046
     },
     {
       "path": "scripts/bundle-vault.mjs",
@@ -2775,9 +2863,9 @@
     },
     {
       "path": "scripts/collect-compliance.py",
-      "sha256": "f00399fa93e9d1f28df5aa336e59d6509810e475feb36d72609839a0e897e402",
+      "sha256": "9fa226bb318c80971c8934c9291c2e7144fd682c4f4eb59c34f8f2fcbd1bd664",
       "normalization": "lf",
-      "bytes": 87652
+      "bytes": 88605
     },
     {
       "path": "scripts/compliance-angle.py",
@@ -2835,9 +2923,9 @@
     },
     {
       "path": "scripts/compliance-inspect-runtime.mjs",
-      "sha256": "032d6fe43011d5910f4f7e93facf89f8effe97686b707c5acd832beec5a02ad3",
+      "sha256": "b5d6ccc68591d61df597328b8a249d35f0049f0589c4e178a6a72f5935110ce6",
       "normalization": "lf",
-      "bytes": 1648
+      "bytes": 1647
     },
     {
       "path": "scripts/compliance-map-stock.py",
@@ -2865,15 +2953,15 @@
     },
     {
       "path": "scripts/compliance-qemu-notices.py",
-      "sha256": "52a0dd2a04f77ed5478a3be3462e5b84eced97c149ec74bf73522c64764abcb9",
+      "sha256": "5f97f08362097d18dd8e8c7e05d89ca28636f7f93d3cccab24e4d61240ad2ac5",
       "normalization": "lf",
-      "bytes": 4987
+      "bytes": 7951
     },
     {
       "path": "scripts/compliance-runtime-notices.py",
-      "sha256": "15db8aaa329cc6f53cea4536ac184cb9f78236b640047df21c59c234597645fd",
+      "sha256": "9fa7149e70bac2a5bdaa4b239d8271ba353a94e50db37c160bcbd37b2ac310f3",
       "normalization": "lf",
-      "bytes": 9688
+      "bytes": 9687
     },
     {
       "path": "scripts/confidential-collector.test.py",
@@ -2889,15 +2977,15 @@
     },
     {
       "path": "scripts/cuda-setup.test.mjs",
-      "sha256": "9c5e1315aedd08b1c77a489710db6655a1a752bf135d52a3fc5a5dcfd403fa76",
+      "sha256": "536dc08c6d406f8ee08073f713ae7f25b16accf44c765e7a7251a0e3ee9c21e6",
       "normalization": "lf",
-      "bytes": 16482
+      "bytes": 16458
     },
     {
       "path": "scripts/cuda-wsl-preflight-native.test.mjs",
-      "sha256": "4d261f36d2d6128a780c27e00f029dc693e909943ddbc8e0138ba78ade03410f",
+      "sha256": "495ec05938c45130b496fbcbc9a9bdcacd9edf4d7cb76bd475855f2dfad0132b",
       "normalization": "lf",
-      "bytes": 7819
+      "bytes": 7817
     },
     {
       "path": "scripts/desktop-dev.mjs",
@@ -2943,9 +3031,9 @@
     },
     {
       "path": "scripts/generate-installer-branding.mjs",
-      "sha256": "5e2ce9671e35d87911791b7a9a3d0157b95efc09bdbb51df13ffb29419061519",
+      "sha256": "12707df9385506649f85804bad86c0ec7936dd7fb4799aad655f007428e8e711",
       "normalization": "lf",
-      "bytes": 6762
+      "bytes": 6758
     },
     {
       "path": "scripts/inspect-dev-runtime.ps1",
@@ -2973,33 +3061,33 @@
     },
     {
       "path": "scripts/install-unix.test.mjs",
-      "sha256": "e10ec91af8eea04a69d80b147101dcba3ff595c164818f0d2fda18f9c507ab28",
+      "sha256": "0a28132bec867fd1c9431990a9ccec7cb9f512b0aee0aa1ddd0f17d9423e2540",
       "normalization": "lf",
-      "bytes": 10788
+      "bytes": 12585
     },
     {
       "path": "scripts/install-windows.test.mjs",
-      "sha256": "1dd536fed7b8d3c6c0183c4258463befac77664f8cb0e1fcd83730bda097b229",
+      "sha256": "1249667a0e36c0f6a61bd7e8dbcf6f87b0017b64a6ed20c1b293e223a6d0314c",
       "normalization": "lf",
-      "bytes": 9680
+      "bytes": 11448
     },
     {
       "path": "scripts/install/install.ps1",
-      "sha256": "cb3dba2813ce2d44bc7bc7f5a63f5068c278020b1fe259778f10f3d3b6e7caad",
+      "sha256": "491772936f4643d80a54347a92624fd2c9b83f1bae4f1d50243ca99a80fad1ba",
       "normalization": "lf",
-      "bytes": 8879
+      "bytes": 9879
     },
     {
       "path": "scripts/install/install.sh",
-      "sha256": "a5560f9452507041af987344102cf478780c34789727ab2d234985a4fda3e72b",
+      "sha256": "501178798f441bac270a56215811b8053d998403ef6b985d2dfb9c26d7b8a34f",
       "normalization": "lf",
-      "bytes": 9319
+      "bytes": 10287
     },
     {
       "path": "scripts/installer-branding.test.mjs",
-      "sha256": "233083ae9b309dec9dafee4f0fc50967d7b6e6bde4b17077c5624847865919dc",
+      "sha256": "2a75a1106eac933a01fe1ceef50167686538b136a598ea95d4976ab83f29aff4",
       "normalization": "lf",
-      "bytes": 5970
+      "bytes": 5966
     },
     {
       "path": "scripts/installer-lock.test.py",
@@ -3033,9 +3121,9 @@
     },
     {
       "path": "scripts/launcher-two-way.test.mjs",
-      "sha256": "e8fc7239f57ecd6430f33826d02ce5be28bb511388e4cd6f1bd2325a227028d9",
+      "sha256": "f93e7eaeb5c29da4294b3f5ba19953a9306680f18ce8e6eeb38409cc12b0b2a5",
       "normalization": "lf",
-      "bytes": 19208
+      "bytes": 23398
     },
     {
       "path": "scripts/lib/bounded-test-process.ps1",
@@ -3044,10 +3132,52 @@
       "bytes": 8537
     },
     {
-      "path": "scripts/macos-setup.mjs",
-      "sha256": "5c06ef8aceade1b7b14a8ba5365f2d2b6aedb4eec2e5f34ec03be7af37d7c7f4",
+      "path": "scripts/macos-payload-signing.mjs",
+      "sha256": "6ce83151944979997653c4077e12d64e820b3dfd9e9ac945930e7a4ff78d53f8",
       "normalization": "lf",
-      "bytes": 4786
+      "bytes": 1408
+    },
+    {
+      "path": "scripts/macos-payload-signing.test.mjs",
+      "sha256": "b998e7d37264bbc503d17016ceec8cf862d96e7efadea3b812371c1ac35ab592",
+      "normalization": "lf",
+      "bytes": 1403
+    },
+    {
+      "path": "scripts/macos-runtime/bundle_dylibs.py",
+      "sha256": "a9b9173442135bccb38088d8ab584b2974e1a5bca7851e3a7d7a2db8a7278743",
+      "normalization": "lf",
+      "bytes": 3640
+    },
+    {
+      "path": "scripts/macos-runtime/collect_notices.py",
+      "sha256": "b3f912d7aceed796187d1d84e3a91c74c69488ffaad83e746886c1add2c846c3",
+      "normalization": "lf",
+      "bytes": 2879
+    },
+    {
+      "path": "scripts/macos-runtime/fetch.py",
+      "sha256": "d4027e1f488600122ce3df1037116dcf8ae976d8a3a37634c9f8e7afd348e99f",
+      "normalization": "lf",
+      "bytes": 1732
+    },
+    {
+      "path": "scripts/macos-runtime/inputs.json",
+      "sha256": "f250a7f825c8b8a6aae744f917d50b4b0cf5c002a8ec1090510c926ff83c952a",
+      "normalization": "lf",
+      "bytes": 2300
+    },
+    {
+      "path": "scripts/macos-runtime/qemu.entitlements",
+      "sha256": "9bb9b540ffc96d06056086629b4d71815a4ef2089f9788c64598843abe50e78c",
+      "normalization": "lf",
+      "bytes": 443
+    },
+    {
+      "path": "scripts/macos-setup.mjs",
+      "sha256": "9d90510f1564696917d3eab8a1768fc03f3e0be69b32fcefeb84446007f83cc7",
+      "normalization": "lf",
+      "bytes": 4026
     },
     {
       "path": "scripts/model-chat-client.test.py",
@@ -3069,9 +3199,9 @@
     },
     {
       "path": "scripts/model-server.test.py",
-      "sha256": "aeb674caab5accd04733124e5bc05546017931478a6d94822916083d32e9270d",
+      "sha256": "ccab188901d0f2c28aa0f01cdabb1fcde60afe3591b8d0015aac6211b242ccfe",
       "normalization": "lf",
-      "bytes": 53375
+      "bytes": 54571
     },
     {
       "path": "scripts/novnc-viewport.test.mjs",
@@ -3087,9 +3217,9 @@
     },
     {
       "path": "scripts/package-engine.mjs",
-      "sha256": "f5cf5ee22b21a016139713e6e0e7c4af48c7ba05fd9879854890e5dbda9ebe10",
+      "sha256": "44e61724f3290bc9bb57d7f96c1137d7ee06fe75718e8325bbe1c28c283749c6",
       "normalization": "lf",
-      "bytes": 6148
+      "bytes": 6279
     },
     {
       "path": "scripts/package-engine.test.mjs",
@@ -3099,15 +3229,15 @@
     },
     {
       "path": "scripts/patch-novnc.mjs",
-      "sha256": "aa47df0afcab637a6e9008a198f06475d1d8e8dbd79c3fc2370173ed29fb46d3",
+      "sha256": "157ef2527b458e0065f7ccae2f70175bb0e8fd11260138087b82cfd22cf3c801",
       "normalization": "lf",
-      "bytes": 2747
+      "bytes": 927
     },
     {
       "path": "scripts/prepare-appliance-initramfs.py",
-      "sha256": "1cc12d398e05846b0227e66d0160b300718e130044a00b0f92eeebcac19959ca",
+      "sha256": "c9f6a8914013dfc289e6d3bdebde84ab1cc430215ce48ec14a2567cdfdaa6c10",
       "normalization": "lf",
-      "bytes": 9826
+      "bytes": 9823
     },
     {
       "path": "scripts/prepare-dev.mjs",
@@ -3117,15 +3247,15 @@
     },
     {
       "path": "scripts/prepare-release-checkout.py",
-      "sha256": "2e1438887153bef1f086c094b1340b1c549557d8d7b8c8957fc1de95183b9252",
+      "sha256": "d0ea7b3357a521e7095bb080a245fe869a3e28a197239f837c6b124c0abdff60",
       "normalization": "lf",
-      "bytes": 5439
+      "bytes": 6797
     },
     {
       "path": "scripts/prepare-release-checkout.test.py",
-      "sha256": "1f856a98cd24f6414bf550c08d8204b369467b2cc59d4b784ce2413d0c8b408d",
+      "sha256": "1b8ff0b5f5d6e5603cab7e650ff417844f8f0e7549c69aa3f18dc9922985d2db",
       "normalization": "lf",
-      "bytes": 4867
+      "bytes": 6474
     },
     {
       "path": "scripts/python-shortcut.test.py",
@@ -3135,9 +3265,9 @@
     },
     {
       "path": "scripts/release-local.mjs",
-      "sha256": "30695507691e11b685a83c1837098d8770076f2d351262839ae65b94ca49d3ba",
+      "sha256": "21b18c21a5a75fe4c0fcd240c77d81fad013b8fa76f6be45b6c7c91c0c5a5066",
       "normalization": "lf",
-      "bytes": 16705
+      "bytes": 16960
     },
     {
       "path": "scripts/release-local.test.mjs",
@@ -3147,27 +3277,27 @@
     },
     {
       "path": "scripts/release-manifest.mjs",
-      "sha256": "e8c7f3257a54af57b4beab64d0c49a05d4afff8f8d6fc272b5919bf4c4f43038",
+      "sha256": "604e35d6f3c86ead9ccd7432bd31dcebf57e358fa08caafd9ef9f7ae8104cdf0",
       "normalization": "lf",
-      "bytes": 6494
+      "bytes": 9894
     },
     {
       "path": "scripts/release-manifest.test.mjs",
-      "sha256": "343a8c79b38c178066aab731f94f834c8c78a82d085ad920dc0482e1ebab66f4",
+      "sha256": "89f52567861d65d055a0133f5ff50359dc44e36aabcefa02af51874c14d47dac",
       "normalization": "lf",
-      "bytes": 4378
+      "bytes": 7273
     },
     {
       "path": "scripts/release-preflight.mjs",
-      "sha256": "2c36be302dbaf4498d3e880d9e25095e708cee4393e7b8e2b599426f85690858",
+      "sha256": "870de16dcab800103d0e60d02352f7285046c86d9944816cb390455afb2f9427",
       "normalization": "lf",
-      "bytes": 11766
+      "bytes": 11760
     },
     {
       "path": "scripts/release-preflight.test.mjs",
-      "sha256": "18458211c0df0d208f969a785a23702d3329adeda5dc888c5599f2411c25faec",
+      "sha256": "6e1b2d829e0ebe869f89ca69ca67664f6dff08865359488900d1fd8f2fb0a825",
       "normalization": "lf",
-      "bytes": 10693
+      "bytes": 11382
     },
     {
       "path": "scripts/restore-compliance-sources.py",
@@ -3182,6 +3312,12 @@
       "bytes": 1804
     },
     {
+      "path": "scripts/sign-macos-runtime.sh",
+      "sha256": "a703e5759e9a572d79cac9498c66d0d4f702ef4bc380c0bded1aab5d66d22230",
+      "normalization": "lf",
+      "bytes": 1357
+    },
+    {
       "path": "scripts/sign-windows-release.ps1",
       "sha256": "4a29c08347d7d323c39e78b86f084bb4d1e40aad742f1dcf84c9ad3a93c2f1a6",
       "normalization": "lf",
@@ -3189,9 +3325,9 @@
     },
     {
       "path": "scripts/stage-secure-runtime.ps1",
-      "sha256": "e8b823a56a9f89370a2c6d0e371ae263f4f384c002a1f9c9343b88411059cf9a",
+      "sha256": "2395c724e6bae14b08542f96cb38675b759daf5602fbd5d84b0ad89b492482bf",
       "normalization": "lf",
-      "bytes": 7052
+      "bytes": 7048
     },
     {
       "path": "scripts/stage-windows-qemu.ps1",
@@ -3201,15 +3337,27 @@
     },
     {
       "path": "scripts/start-desktop-dev-admin.ps1",
-      "sha256": "7ce3faa08634d927d0ff3328059ec7dad7ea74218855ac1ba3d3a177545cf582",
+      "sha256": "7f466dc1258a2f90743524eca8268944a061358f78106666ca3a9c16c67127df",
       "normalization": "lf",
-      "bytes": 1241
+      "bytes": 1238
+    },
+    {
+      "path": "scripts/swarm-model-tools.test.py",
+      "sha256": "50e1353aa3c082c6fd1f5041dc743259091e82afaab26a18274bb5d36fb6e13a",
+      "normalization": "lf",
+      "bytes": 10076
+    },
+    {
+      "path": "scripts/swarm-opencode-smoke.py",
+      "sha256": "ddf2613eb1c1caedff65cbb047dbb5a69d1c621e3bb9c60b09e8cc33a3a98901",
+      "normalization": "lf",
+      "bytes": 15985
     },
     {
       "path": "scripts/test-angle-runtime.py",
-      "sha256": "6a0648ab136c9e90420ceda858185e2646ce4cd170664718d19c15de104b14f2",
+      "sha256": "f76d157caee90aee936f49de1f436c1453eaae89d9d8c74a54d2b2d2fbf83341",
       "normalization": "lf",
-      "bytes": 4518
+      "bytes": 4514
     },
     {
       "path": "scripts/test-bounded-test-process.ps1",
@@ -3225,39 +3373,39 @@
     },
     {
       "path": "scripts/test-macos-runtime.sh",
-      "sha256": "03d8dd91b4a372e676660d8ec502ab0f917b22551a1ff59c2ad600aaccbc1dc0",
+      "sha256": "4323d82b8a1aee9125003a272f7461a2fcdcfafc7fdc546e9a3db01cf14b7414",
       "normalization": "lf",
-      "bytes": 873
+      "bytes": 1152
     },
     {
       "path": "scripts/test-production-runtime.ps1",
-      "sha256": "180e2750c9d5fd6d53bf819960e56be2f3f76300347728cf82ba5096e2e58610",
+      "sha256": "6083f8601bc7f66240a44e9e2718c6d2eb06b7c13de1f7773e949d4e4c947528",
       "normalization": "lf",
-      "bytes": 9017
+      "bytes": 9016
     },
     {
       "path": "scripts/test-tpm-worker.py",
-      "sha256": "9fb082dc313383b6e539072e5a2aa4a30fd4310f854f0b0bce7a03a8e031e070",
+      "sha256": "ed39bc08f7058bd66cce52842f0f8acd41ab358242a0e116bbd6ee082d467aa7",
       "normalization": "lf",
-      "bytes": 10565
+      "bytes": 10562
     },
     {
       "path": "scripts/test-windows-installer.ps1",
-      "sha256": "3275bd1e814ace08d942ae6364653f1ab97b036cde9eac944b44d729e1d50181",
+      "sha256": "fa7dbbbb3f428f1a5b03d459f6ff44153d9304ef3d7ff85638749b8030d549bc",
       "normalization": "lf",
-      "bytes": 6317
+      "bytes": 6251
     },
     {
       "path": "scripts/test-windows-setup.ps1",
-      "sha256": "7a487e66ab0f598ff1d9fb203149c1170af89b7bb02f0c5aca1d457347cf923b",
+      "sha256": "8de14ac3671bec6d32af70a0688eb0d9f22f8295b4fac80cedb7ffbd278f2daf",
       "normalization": "lf",
-      "bytes": 2190
+      "bytes": 2176
     },
     {
       "path": "scripts/update-workspace-agent.sh",
-      "sha256": "feb7dcfbf935efa831b1461047fa44df4402bdd16e4abdd60c9919f4558581d0",
+      "sha256": "2bc7ff0946ca57a62ac7ebce33033c59dd2b61df96b19799c80dd0cb5b0715cf",
       "normalization": "lf",
-      "bytes": 3570
+      "bytes": 3543
     },
     {
       "path": "scripts/vendor-nvidia-build/README.txt",
@@ -3429,9 +3577,9 @@
     },
     {
       "path": "scripts/vendor-oci-build/smoke-alpine.py",
-      "sha256": "5fce3d9fda71df165985fb121c2fe3d66a1c8ffb8a2c34aa3eefb525867e90b2",
+      "sha256": "dbe44ce004be8b89781fb55556b404e1d3fdbc513212db985f116cee458db0d5",
       "normalization": "lf",
-      "bytes": 4559
+      "bytes": 4556
     },
     {
       "path": "scripts/vendor-oci-build/verify.py",
@@ -3447,9 +3595,9 @@
     },
     {
       "path": "scripts/verify-macos-bundle.mjs",
-      "sha256": "a0a21ccad59e7227eb38f806dbadf36c9e55e72dd149bcf1fe76e4462e030ec6",
+      "sha256": "b9c5455eb05d8983139b64b9ebddb83ab06f9ee945de673fd6c3e951f26f615e",
       "normalization": "lf",
-      "bytes": 1500
+      "bytes": 5537
     },
     {
       "path": "scripts/vite-watch.test.mjs",
@@ -3459,9 +3607,9 @@
     },
     {
       "path": "scripts/wait-for-vnc.mjs",
-      "sha256": "707dac005f9062559063aed71d7ccdacb49fe8937afaf705838ef47e8d05c710",
+      "sha256": "1348b0ffcffc9cf9064d2e9a02f31287afedfec9fae55274358444008a5d1f12",
       "normalization": "lf",
-      "bytes": 2414
+      "bytes": 2505
     },
     {
       "path": "scripts/wait-for-vnc.test.mjs",
@@ -3471,31 +3619,31 @@
     },
     {
       "path": "scripts/windows-payload-signing.mjs",
-      "sha256": "4e7852ee97a3a5a38c7b191f0ff6424a738d04d7251efa55776710a0ae4a3fca",
+      "sha256": "ce3d7f7da903345853d51af7b7c0a9732449f06a51cebc50fca3a05f30bfd2e3",
       "normalization": "lf",
-      "bytes": 607
+      "bytes": 1415
     },
     {
       "path": "scripts/windows-payload-signing.test.mjs",
-      "sha256": "6ccc5bec4546e124cf0a8f0532555f367867600564a09aa90e280952c0d608d1",
+      "sha256": "05e642a49f35f697928ce1a04358afeff5b3d3af2d6f049f821afc779a8b826e",
       "normalization": "lf",
-      "bytes": 1028
+      "bytes": 1714
     },
     {
       "path": "scripts/windows-setup-probe.c",
-      "sha256": "ad9c453b3fbe9801bc4ebd430092f11ac954c15f83c13349d8fdedee6f5321fc",
+      "sha256": "e02c9142ce58f7776970c614c027d6d320f223c06f0a42662ff229cc9184ce71",
       "normalization": "lf",
-      "bytes": 3251
+      "bytes": 3250
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "16e29351e35c9ab1b8a59bc554118ead4a802d015bbd8eec9bf2a47f7f02a8d6",
+      "sha256": "3eeea4bc4a1f07a5cadc42b6958f74d9112ca7fdc45bf46f18ff9452aa5ba4b2",
       "normalization": "lf",
       "bytes": 197107
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "42b7d743f0aa8f5d7275406c806d0bdb7a0cee82140a05f7b08ec274cfe8199b",
+      "sha256": "0ee8aef8d4e99f051046fda7c0fc9fddc1b9f7b239df4fa7561d18a9dc15fe4e",
       "normalization": "lf",
       "bytes": 3255
     },
@@ -3768,21 +3916,21 @@
     },
     {
       "path": "src-tauri/resources/APPLICATION_LICENSES.txt",
-      "sha256": "199dab45893eabe60d169da3b7c4f81447f79f5f31dd25a2430ebddbb6078c2e",
+      "sha256": "9862898310680a1fccf4b33b7776a388135379e6bf970ec7912b8b1a7271bb01",
       "normalization": "lf",
-      "bytes": 8242469
+      "bytes": 8221383
     },
     {
       "path": "src-tauri/resources/RUNTIME_LICENSES.txt",
-      "sha256": "a546b176ec3790355486314e3f5d073283553d62c7e84b506d563fca14ad8928",
+      "sha256": "8bd0e80cace6485116408cc15a12238132df188c06e813f6aa998d5d40c0a949",
       "normalization": "lf",
-      "bytes": 7337708
+      "bytes": 7337726
     },
     {
       "path": "src-tauri/resources/THIRD_PARTY_NOTICES.txt",
-      "sha256": "d4d13188a627ea725c23928694a9e5f8caa4462ca321edb14aa7019adc10549f",
+      "sha256": "0c81fbb0457cb56eadc390a22ae44b3c798ff1f2cbe90d945767e6b919cdb42e",
       "normalization": "lf",
-      "bytes": 11418
+      "bytes": 11295
     },
     {
       "path": "src-tauri/resources/WORKSPACE_LICENSES.txt",
@@ -3792,21 +3940,21 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "a3fad0a3c2b98e64fbde83a6c4bdf0f86366d4f2a6af443b0d58140dd0572554",
+      "sha256": "e91ef2fc03ed4a14bca2ae8c3deddeab2740b75cb360105e216f062961886cea",
       "normalization": "lf",
-      "bytes": 1700
+      "bytes": 1692
     },
     {
       "path": "src-tauri/tauri.linux.conf.json",
-      "sha256": "914536643b4662872be4a59a8779a5222220d6206bfc8d8f29c7c7ca2bf2caab",
+      "sha256": "5d5108785ccc2069cc03cf8a6b97bea5720b46be67087b64dace86b1cf94461c",
       "normalization": "lf",
-      "bytes": 1593
+      "bytes": 1537
     },
     {
       "path": "src-tauri/tauri.macos.conf.json",
-      "sha256": "b52b0df64ae5d1701e2c24b4a5098f38eed576d7206333c3485e7df46b4d5ef0",
+      "sha256": "b6c626f2935f6719d7f3c9196c7036274fe42b75470105c3bf8cb3376562143e",
       "normalization": "lf",
-      "bytes": 1525
+      "bytes": 1524
     },
     {
       "path": "src-tauri/tauri.preview.conf.json",
@@ -3816,15 +3964,15 @@
     },
     {
       "path": "src-tauri/tauri.windows.conf.json",
-      "sha256": "7571c6f87273e3d04f34352e9b9550871344c0d74151e2fc0cae4fcaf7f5c600",
+      "sha256": "dc0795d14546ced6d5e425e6df5cd72cb5c6c0f00c182e7baf8c90d040c1ab09",
       "normalization": "lf",
-      "bytes": 1950
+      "bytes": 1886
     },
     {
       "path": "src/api/cloud-api.ts",
-      "sha256": "c710779a224979cd73aa7268edcfe78483c6a95fa460c8cf9f155433842fce87",
+      "sha256": "d7398a68b34562b0b8e06c851660ce2687f38acda48bf61c256e849506b9c1e8",
       "normalization": "lf",
-      "bytes": 4284
+      "bytes": 3482
     },
     {
       "path": "src/api/duplication-api.ts",
@@ -3888,9 +4036,9 @@
     },
     {
       "path": "src/api/local-backup-api.ts",
-      "sha256": "ec473c00b744adb988c4f6977ec00c1b1c8afd92954fb66ef3c89307462043fc",
+      "sha256": "f9f61312d85c76adb26fc10c2dcd4f8c880fc6dac21a3be487a65d725a1458cc",
       "normalization": "lf",
-      "bytes": 1427
+      "bytes": 1487
     },
     {
       "path": "src/api/market-api.ts",
@@ -3912,15 +4060,15 @@
     },
     {
       "path": "src/api/platform-api.test.ts",
-      "sha256": "4e11d073bea91c7ba19373795eec60f442d21a76a6adca61223aa50ead71f70e",
+      "sha256": "e5aa0aa603fce5a3d7ab645f3a244d28776284df83131960e8daee46c3a6fb96",
       "normalization": "lf",
-      "bytes": 26824
+      "bytes": 26823
     },
     {
       "path": "src/api/platform-api.ts",
-      "sha256": "f7e7fc42e0c2b70b93d93538048aaf23b84b4e7b54547eb09ac8538855b7c05c",
+      "sha256": "0a82e90c9860a90890d601b6ff87f5364a806d839b925b15688e5ac2c924c532",
       "normalization": "lf",
-      "bytes": 45531
+      "bytes": 44081
     },
     {
       "path": "src/api/production-adapter.test.ts",
@@ -3929,10 +4077,16 @@
       "bytes": 1057
     },
     {
-      "path": "src/api/projects-api.ts",
-      "sha256": "a0603d291d644838733bf633decff045935a50168e06265f579bfca931c9809c",
+      "path": "src/api/projects-api.test.ts",
+      "sha256": "3e9874489de7e74639687afc1fe55a809e444d3cd4bf97fa31f0ee089c92780e",
       "normalization": "lf",
-      "bytes": 9822
+      "bytes": 1650
+    },
+    {
+      "path": "src/api/projects-api.ts",
+      "sha256": "3b7aa1c0dfa1609312489d9768dfa52b1d2793f3660bc59e8460c05c27778116",
+      "normalization": "lf",
+      "bytes": 10216
     },
     {
       "path": "src/api/release-api.test.ts",
@@ -3957,12 +4111,6 @@
       "sha256": "a29f72bb07644d2e33bed501b496329a68b260faa4b6c5eb998787c68e1582f8",
       "normalization": "lf",
       "bytes": 8502
-    },
-    {
-      "path": "src/api/sharing-api.ts",
-      "sha256": "7a1fec229ac48ec98fe45ad4d87ea46ddb1d1687cc75f590a15b799d68b28f67",
-      "normalization": "lf",
-      "bytes": 919
     },
     {
       "path": "src/api/startup-api.ts",
@@ -3990,9 +4138,9 @@
     },
     {
       "path": "src/app.tsx",
-      "sha256": "3a2a3e50c4411349d7942bacfbe1971de440bae1148120ab7e0a13ece4bee644",
+      "sha256": "b00f06ca7e7e1569b1d5bc0758b181b3f47a0f71d78306b33d7a9f978bda06dc",
       "normalization": "lf",
-      "bytes": 9461
+      "bytes": 10476
     },
     {
       "path": "src/assets/yougori-wordmark.svg",
@@ -4041,12 +4189,6 @@
       "sha256": "395ef8e4969ab4ce8285d235edfca13b14dd585b514458ad070ce325cd7ffe81",
       "normalization": "lf",
       "bytes": 3071
-    },
-    {
-      "path": "src/components/cloud-deployment-card.tsx",
-      "sha256": "7cac4141fcb4fef4baa9b9297c665636582c31d977f4a91266133bf56a10c47c",
-      "normalization": "lf",
-      "bytes": 3260
     },
     {
       "path": "src/components/cloud-deployment-warning.tsx",
@@ -4163,18 +4305,6 @@
       "bytes": 6408
     },
     {
-      "path": "src/components/dialogs/cloud-deployment-dialog.test.tsx",
-      "sha256": "ab44a2dcdaed1df81b643a8bf072dd477dd7066237d00cca0818d4da370b2bdf",
-      "normalization": "lf",
-      "bytes": 4878
-    },
-    {
-      "path": "src/components/dialogs/cloud-deployment-dialog.tsx",
-      "sha256": "796b463643c41ecb7d1ab389b0cfe1d48cf8e09fef2863f8ae4ba3123f9e60d5",
-      "normalization": "lf",
-      "bytes": 10027
-    },
-    {
       "path": "src/components/dialogs/cloud-duplicate-dialog.tsx",
       "sha256": "c9b1adb1f93eeaf488157284ded193a0057cea3ed413f1b3c9200afb209951dc",
       "normalization": "lf",
@@ -4218,9 +4348,9 @@
     },
     {
       "path": "src/components/dialogs/create-environment-dialog.test.tsx",
-      "sha256": "58e4a52fc8427712b8a013497c1ab7b5c3a7c6ef769f05df3401f6a55b0b08f6",
+      "sha256": "8644a72cee40313fb0d049ea1b983c01a161a423a9ce960472b0eb68f37af6b9",
       "normalization": "lf",
-      "bytes": 7322
+      "bytes": 7215
     },
     {
       "path": "src/components/dialogs/create-environment-dialog.tsx",
@@ -4233,12 +4363,6 @@
       "sha256": "8471ff9939bf2d9d0eebff451c5499259be2081b1e44c7a175c9a0f9f9a70963",
       "normalization": "lf",
       "bytes": 3792
-    },
-    {
-      "path": "src/components/dialogs/creation-resource-sliders.tsx",
-      "sha256": "ef3b4af795e47513f516187b4968f8167bfd38e6884902271f02eb8c5890043d",
-      "normalization": "lf",
-      "bytes": 2042
     },
     {
       "path": "src/components/dialogs/cuda-runtime-panel.css",
@@ -4499,12 +4623,6 @@
       "bytes": 4476
     },
     {
-      "path": "src/components/graph-workspace-controls.tsx",
-      "sha256": "d8c7445ce0977aa7758fed5d1a5fd9405b0a8447aeb30c3d03a8600e1af8abec",
-      "normalization": "lf",
-      "bytes": 3293
-    },
-    {
       "path": "src/components/graph-workspace-dialogs.test.tsx",
       "sha256": "5cfa631f684932a1bf0bdccb728296764d735b10c67e47b3442c42a1bc1e9d0c",
       "normalization": "lf",
@@ -4529,10 +4647,16 @@
       "bytes": 9606
     },
     {
-      "path": "src/components/guest-app-view.tsx",
-      "sha256": "673b92ae40c141c10ad416e6a5584992e105d0aaa05727f79ea244ae0998d5b0",
+      "path": "src/components/guest-app-view.test.tsx",
+      "sha256": "26384d41ee513f93c4a3c1c7691dfb53d2836be4f972d1f51ad641690146f5bf",
       "normalization": "lf",
-      "bytes": 2987
+      "bytes": 1890
+    },
+    {
+      "path": "src/components/guest-app-view.tsx",
+      "sha256": "9e889b51aadef566db6382ea31b1fd355d4dd13f65ac94c46cc9eba70d593970",
+      "normalization": "lf",
+      "bytes": 3573
     },
     {
       "path": "src/components/guest-browser.tsx",
@@ -4572,21 +4696,27 @@
     },
     {
       "path": "src/components/guest-terminal.test.tsx",
-      "sha256": "7761e4f92567af54195f232f9a28516b3883e06cb35f1d8817cf639e7f87a539",
+      "sha256": "5bf512283ca9aab2c7acceadd2453b7bf1db2075823b2902b0e17931760ee427",
       "normalization": "lf",
-      "bytes": 5874
+      "bytes": 7994
     },
     {
       "path": "src/components/guest-terminal.tsx",
-      "sha256": "2612b612926e5629ef8bade99187db600a9295ad437aa2dc5547559390498e29",
+      "sha256": "32b6cfebcb13a5017bb8d4c483854b8aba7233f01872316d1575d654daf5e795",
       "normalization": "lf",
-      "bytes": 12719
+      "bytes": 14279
+    },
+    {
+      "path": "src/components/guest-workspace.test.tsx",
+      "sha256": "48b860e7a1b059f7374c0e28519931f7501b2a54573d7659c5c6188f5fb2c7cc",
+      "normalization": "lf",
+      "bytes": 3894
     },
     {
       "path": "src/components/guest-workspace.tsx",
-      "sha256": "9d1c38d1129c72eaf0f4d6f1b9e7127aa54622ba592447ceeeb566558a37b4af",
+      "sha256": "b34186e3bed8b7762ea46c3067247907e700ad1030924214821a80a43d562cdf",
       "normalization": "lf",
-      "bytes": 33395
+      "bytes": 33989
     },
     {
       "path": "src/components/host-cli-view.tsx",
@@ -4602,27 +4732,15 @@
     },
     {
       "path": "src/components/host-terminal-canvas.tsx",
-      "sha256": "2e1c669d780e11a3f9be3b1100de3a7964ded15c17c59182afa84eb5d55868d0",
+      "sha256": "6986528638b8ec619745a3dd77011b609ef4ac1ecc298eafed4b8b693d4e3ae5",
       "normalization": "lf",
-      "bytes": 8498
+      "bytes": 8468
     },
     {
       "path": "src/components/host-terminal-dock.css",
       "sha256": "4a4ab922bc7b080d5842fdb982743b72f37ac3b8c3db36645bf9fdf5bb3ebc49",
       "normalization": "lf",
       "bytes": 8961
-    },
-    {
-      "path": "src/components/host-terminal-dock.test.tsx",
-      "sha256": "ada2c74a27af8a762ec1e2470aa1900212741594b485728c0e7bc8096991a918",
-      "normalization": "lf",
-      "bytes": 9176
-    },
-    {
-      "path": "src/components/host-terminal-dock.tsx",
-      "sha256": "1451a3a22d1116848b783d293b7f81d2fd14ce45bc8a3561609e644271b7374e",
-      "normalization": "lf",
-      "bytes": 14654
     },
     {
       "path": "src/components/huggingface-access.test.tsx",
@@ -4632,9 +4750,9 @@
     },
     {
       "path": "src/components/huggingface-access.tsx",
-      "sha256": "7bf3a0621a773d0e292afc35ee72c038627d250df387c9c032fe4f155d1e5e63",
+      "sha256": "70af7b4e93b80414382ce017037bbb1e54a6eeae6a7ea9a5b433a5d63dc0721e",
       "normalization": "lf",
-      "bytes": 1986
+      "bytes": 2059
     },
     {
       "path": "src/components/imported-files-drives.tsx",
@@ -4665,18 +4783,6 @@
       "sha256": "6581ac35af1645e6f43662263302a54345b01e32b860c4ece8d7dc44e152916f",
       "normalization": "lf",
       "bytes": 17665
-    },
-    {
-      "path": "src/components/isolated-cli-view.test.tsx",
-      "sha256": "29154533b19e4d7a41172e8c8ffc4e77dc0c676c200c3906a4b5d5b0404c3f46",
-      "normalization": "lf",
-      "bytes": 8255
-    },
-    {
-      "path": "src/components/isolated-cli-view.tsx",
-      "sha256": "635fe0e73f0ebf18af0f9d092d6271d4d9d18b7d9b972c2e1d3d9a447655ea11",
-      "normalization": "lf",
-      "bytes": 9446
     },
     {
       "path": "src/components/modal-section.test.tsx",
@@ -4746,9 +4852,9 @@
     },
     {
       "path": "src/components/model-gpu-optimizer.tsx",
-      "sha256": "6a7e47dd65046da103dd2f1a11be646b1b831a1604a12c2628d9482b36cb6883",
+      "sha256": "cb4e4e62fac089c720ab629c9fb0cd48837f55d18c1cb1745ea26f0d19fa016f",
       "normalization": "lf",
-      "bytes": 3136
+      "bytes": 3750
     },
     {
       "path": "src/components/model-library.test.tsx",
@@ -4812,9 +4918,9 @@
     },
     {
       "path": "src/components/neocloud-deployment-card.tsx",
-      "sha256": "8ad2ca4c5a5d874c29de63fb8009fbfbea2a3107b1484d1158b2b9561fd00e48",
+      "sha256": "81707198aba35e6eefff39b5660ecdf16822a22790621e937afd012056c167da",
       "normalization": "lf",
-      "bytes": 7096
+      "bytes": 7169
     },
     {
       "path": "src/components/neocloud-node-card.test.tsx",
@@ -4860,21 +4966,21 @@
     },
     {
       "path": "src/components/personal-vault.test.tsx",
-      "sha256": "1dbdd72bb636b31bf60fa02ef346d393c656b412d0fed4f7605c4428e7f8a3b3",
+      "sha256": "222a30b6fe239fd028c476d00225700fa2f68b9425e9205249b71e2298a09cdb",
       "normalization": "lf",
-      "bytes": 17163
+      "bytes": 18685
     },
     {
       "path": "src/components/personal-vault.tsx",
-      "sha256": "feea457deeb5399ced310a6df67ed31ac24c9bb27087db548342199239162174",
+      "sha256": "ae36d25e48c27d73facf47a1674a6c994255f713cd5bd3978f782ced3dca78d4",
       "normalization": "lf",
-      "bytes": 24372
+      "bytes": 25190
     },
     {
       "path": "src/components/project-manager.tsx",
-      "sha256": "f18d498d43eac7eaf420ea4dede8b0336fc2e3d919d83e15c22e99ab3f587de8",
+      "sha256": "b0b0e986aa79fd883a6e129c396a64620ae80672801aa676e97a8eab27c95d62",
       "normalization": "lf",
-      "bytes": 8272
+      "bytes": 9757
     },
     {
       "path": "src/components/project-workflows.test.tsx",
@@ -4884,15 +4990,15 @@
     },
     {
       "path": "src/components/public-access-presets.test.tsx",
-      "sha256": "d04ebac7ce23b96133546c22224758bb4dd62961739e799553cfc0f358bbc0e6",
+      "sha256": "93836a88d7a07267dee1e341b618c044877cbc401a69b7d7930e315bc997a39f",
       "normalization": "lf",
-      "bytes": 5894
+      "bytes": 4393
     },
     {
       "path": "src/components/public-access-presets.tsx",
-      "sha256": "9cb6b32266e36ed6343f7257ca26af8b09a5dcf1b0452760b1e1a4ea05d97f7a",
+      "sha256": "ba09a894e0a941703bde1442dd9de4a192456808ec266459c8123aa91cffcf10",
       "normalization": "lf",
-      "bytes": 20859
+      "bytes": 17959
     },
     {
       "path": "src/components/release-update.test.tsx",
@@ -4913,10 +5019,16 @@
       "bytes": 1616
     },
     {
-      "path": "src/components/remote-display.tsx",
-      "sha256": "3cf1a375fb43919503238da589d28f7933494c5ba28ac2ba406dedf86a95bb21",
+      "path": "src/components/remote-display.test.tsx",
+      "sha256": "52bcffeb3d58c5871c98888875fb7d0e0069fcee2c55365d1f6bb146b930bb33",
       "normalization": "lf",
-      "bytes": 2173
+      "bytes": 1037
+    },
+    {
+      "path": "src/components/remote-display.tsx",
+      "sha256": "086e97e33d971dd4b456e29881499964d06eb720bcabde7b9018ae65f9c0827b",
+      "normalization": "lf",
+      "bytes": 2319
     },
     {
       "path": "src/components/remote-environment-details.test.tsx",
@@ -4950,9 +5062,9 @@
     },
     {
       "path": "src/components/remote-workspace.tsx",
-      "sha256": "0c9e622ede0e58155be0d50ca6460cc72915606bf574aae3af4ab7b3d4a587e2",
+      "sha256": "ff06c0b4bf50a22540a1d7140f6732ad643a1a70c6f87583c2a9e83975d81e3d",
       "normalization": "lf",
-      "bytes": 17095
+      "bytes": 17162
     },
     {
       "path": "src/components/resource-policy-editor.test.tsx",
@@ -4985,28 +5097,28 @@
       "bytes": 2762
     },
     {
-      "path": "src/components/shared/loading-screen.test.tsx",
-      "sha256": "7fc5d3f34789702358366e72ac1fd6096c0cb798f1a10b6ca792a4d10759fe28",
+      "path": "src/components/shared/external-link.test.tsx",
+      "sha256": "33b3775920c21e2b752c3d9ae5047b7d77831663d449a0a2ed62a23d4b743dec",
       "normalization": "lf",
-      "bytes": 2196
+      "bytes": 1646
+    },
+    {
+      "path": "src/components/shared/external-link.tsx",
+      "sha256": "2e64b194d5c7685928cf1fcf45a9102fa2b3f6a00b643cbe621843f19d92da03",
+      "normalization": "lf",
+      "bytes": 1067
+    },
+    {
+      "path": "src/components/shared/loading-screen.test.tsx",
+      "sha256": "3cb3a66e4be683dfd41fc4ca6440d6721e06da785bc4a6b55a8914dc728e7ff3",
+      "normalization": "lf",
+      "bytes": 2913
     },
     {
       "path": "src/components/shared/loading-screen.tsx",
-      "sha256": "e0c9d034822495dbf330842cd6003b6c2f01858f5e3ff4adb4cac6160b494f98",
+      "sha256": "b41a27670fe0bcfad7a7ed5736e32aa30e9dbbcbdee6a34c3c3bb030a527203c",
       "normalization": "lf",
-      "bytes": 2000
-    },
-    {
-      "path": "src/components/shared/sparkline.test.tsx",
-      "sha256": "16343d72e9a092b7ae35fd9045e85735974a6616ae547c5d3b12abb0b14042dc",
-      "normalization": "lf",
-      "bytes": 1733
-    },
-    {
-      "path": "src/components/shared/sparkline.tsx",
-      "sha256": "6730c7296f12301acc14a2892d8d8e4ec8a9d79cf154b89b60021d2f179b5d11",
-      "normalization": "lf",
-      "bytes": 2045
+      "bytes": 2489
     },
     {
       "path": "src/components/shared/status.tsx",
@@ -5028,9 +5140,9 @@
     },
     {
       "path": "src/components/sharing-panel.test.tsx",
-      "sha256": "590d7c5e7792c2404d45bc052dd9140e67f254cfbc93b171f29f81731e858563",
+      "sha256": "4b9fa61a6715441868a290990923e1d553fc793db7c9b4887e5adb1c236ac6f9",
       "normalization": "lf",
-      "bytes": 8132
+      "bytes": 8321
     },
     {
       "path": "src/components/sharing-panel.tsx",
@@ -5088,9 +5200,9 @@
     },
     {
       "path": "src/components/ui/LICENSE.txt",
-      "sha256": "c7c93f45c0a1ca73efc98b252007e707d679956b34519551890d956994c8794b",
+      "sha256": "504df99ec4baefbce51d47aafbaa4f80016f9a84975f96f460ebcc5f710056b1",
       "normalization": "lf",
-      "bytes": 2157
+      "bytes": 2169
     },
     {
       "path": "src/components/ui/alert-dialog.tsx",
@@ -5219,12 +5331,6 @@
       "bytes": 3211
     },
     {
-      "path": "src/components/use-capability-connections.ts",
-      "sha256": "57456ae28d80688d5f2ad4e82b8f06b9c20c89c1f828fdd1183d8c686c97167f",
-      "normalization": "lf",
-      "bytes": 17054
-    },
-    {
       "path": "src/components/use-network.ts",
       "sha256": "370124b77d75ca93a24298fe307f5b5715db364658743243b2f095c20c7d9334",
       "normalization": "lf",
@@ -5244,15 +5350,15 @@
     },
     {
       "path": "src/components/use-vault-startup.test.tsx",
-      "sha256": "cd5f0a8a09169ca6872cb41f8d9c02f6178bd8bd4f395aa5f8087bc08dacc3db",
+      "sha256": "214205653b63405cc280c04be0ec31bcaa01f892f9106f71b80105c1677599f3",
       "normalization": "lf",
-      "bytes": 3307
+      "bytes": 4126
     },
     {
       "path": "src/components/use-vault-startup.ts",
-      "sha256": "45c2d0aabb0e587f68ac229aa6249e972f8331618b621e3840be80d983b0ec00",
+      "sha256": "c32fc5f1f86739365b85dc6a5b0ad34fbd543c63ca4b975a8a05263afa30d2e6",
       "normalization": "lf",
-      "bytes": 1129
+      "bytes": 1817
     },
     {
       "path": "src/components/use-workspace-features.test.tsx",
@@ -5286,15 +5392,15 @@
     },
     {
       "path": "src/context/platform-context.test.tsx",
-      "sha256": "1af3a25b0d6941eea1f3e26b147445102e923c879457a77ee9ada2067744c7aa",
+      "sha256": "4683363dd11a75e3c7675b4a23159e297e86089128e522da7cb11ec24364bcf7",
       "normalization": "lf",
-      "bytes": 13481
+      "bytes": 14624
     },
     {
       "path": "src/context/platform-context.tsx",
-      "sha256": "26f5fd07f1807bcdc3c45af5cd0085265c1ab7048dd76658c96c7f78404fd627",
+      "sha256": "b6568dfb8249b42df241d35a9edef1b32e4b857a24dce67d1164a4995a22f6a0",
       "normalization": "lf",
-      "bytes": 22963
+      "bytes": 22953
     },
     {
       "path": "src/data/container-purposes.test.ts",
@@ -5346,9 +5452,9 @@
     },
     {
       "path": "src/lib/branding.test.ts",
-      "sha256": "14acf11ffdec09e725599c0982bbd0998c80559400f6a8bffdbb7745eedbf185",
+      "sha256": "f1708fbda07d960443aabd84fe0edd4d008001adf808784ddc25e1bc38984232",
       "normalization": "lf",
-      "bytes": 1720
+      "bytes": 3316
     },
     {
       "path": "src/lib/cloud-profile-draft.ts",
@@ -5495,18 +5601,6 @@
       "bytes": 927
     },
     {
-      "path": "src/lib/graph-connection-paths.test.ts",
-      "sha256": "202ed5203f1d30255765c601ae4aab43e60a053c558a26bf79d539c07221b578",
-      "normalization": "lf",
-      "bytes": 1395
-    },
-    {
-      "path": "src/lib/graph-connection-paths.ts",
-      "sha256": "e9131fce66d9176cc8f4d6d39a6a423df3ab0d8dddbf68d29c9a4c4b7dfeab88",
-      "normalization": "lf",
-      "bytes": 3152
-    },
-    {
       "path": "src/lib/guest-display-sizing.test.ts",
       "sha256": "5af249cda7e4ef4113fd084f8229db102103efa0cae88ce90cc6be06f5221356",
       "normalization": "lf",
@@ -5573,6 +5667,12 @@
       "bytes": 9919
     },
     {
+      "path": "src/lib/legacy-names.ts",
+      "sha256": "dc217f90f77d43cb0ac1d0b4185a95771b13a2ff8a51e66859c0d7f8d29cd004",
+      "normalization": "lf",
+      "bytes": 552
+    },
+    {
       "path": "src/lib/model-api-skill.ts",
       "sha256": "3a752eff2dedba6ad95e2367d146afd82b6e87a98d563234770a3cd92b72622c",
       "normalization": "lf",
@@ -5625,18 +5725,6 @@
       "sha256": "503afb47265548f347203ca0a4ebd92f045ab01e08659099991c14a7221f0666",
       "normalization": "lf",
       "bytes": 5841
-    },
-    {
-      "path": "src/lib/neocloud-catalog.test.ts",
-      "sha256": "dcc5296e3d83859993cee45effc2999ad60a92f84966849109fcf60905baebc1",
-      "normalization": "lf",
-      "bytes": 2281
-    },
-    {
-      "path": "src/lib/neocloud-catalog.ts",
-      "sha256": "3693b6de70e498d76a3c43744cef6129a8da18e1b4f771ae473a295095df656d",
-      "normalization": "lf",
-      "bytes": 1724
     },
     {
       "path": "src/lib/neocloud-providers.json",
@@ -5742,9 +5830,9 @@
     },
     {
       "path": "src/lib/terminal-clipboard.ts",
-      "sha256": "f8827dd1d16e71c8e0342d8b46b20bf13111a468b154ef28b58e0c8c308b3ed7",
+      "sha256": "9bc56a2c0b8918f1e8d847d121b16ce69585a2814f0d44e04459abea0dcdc012",
       "normalization": "lf",
-      "bytes": 2136
+      "bytes": 2219
     },
     {
       "path": "src/lib/terminal-installers.fixture.sh",
@@ -5754,9 +5842,9 @@
     },
     {
       "path": "src/lib/terminal-installers.test.ts",
-      "sha256": "1721a12b9a3d106cd939b69b0016b528e68bee6e5278fa3c2b109d38e4d1a25b",
+      "sha256": "61928cc8daf4d33148f6a874f38509aa274a615b839971ac3b11f5230b7ad11d",
       "normalization": "lf",
-      "bytes": 12496
+      "bytes": 12618
     },
     {
       "path": "src/lib/terminal-installers.ts",
@@ -5766,15 +5854,15 @@
     },
     {
       "path": "src/lib/terminal-links.test.ts",
-      "sha256": "6744ab0a663d3a077bd0768e193a9866fcda35153af8923d3f80673e114bc70f",
+      "sha256": "6d9a74deba0caafa807e72e772bec62091dac9500fd6ceec26244c6a4bf75e77",
       "normalization": "lf",
-      "bytes": 1749
+      "bytes": 2138
     },
     {
       "path": "src/lib/terminal-links.ts",
-      "sha256": "69ccec8db10d7b38047c982a357eab743d0c32605ed4a62ceec8cdcecec66649",
+      "sha256": "bf7c1d9b73636a5364386929540b6dd4cf1227c71462c4719574d69f460e7dc8",
       "normalization": "lf",
-      "bytes": 2206
+      "bytes": 2738
     },
     {
       "path": "src/lib/terminal-qr.test.ts",
@@ -5856,9 +5944,9 @@
     },
     {
       "path": "src/main.tsx",
-      "sha256": "abd92717c5d87a40a2e21d36069c0a16a80276f1af38a477ecac17977048a73a",
+      "sha256": "3760236635f9272f553f1ed8e35c538b7e4ab462b77edad9882d0cc463bcd050",
       "normalization": "lf",
-      "bytes": 1260
+      "bytes": 1328
     },
     {
       "path": "src/pages/overview-page.tsx",
@@ -5886,21 +5974,21 @@
     },
     {
       "path": "src/types/platform.ts",
-      "sha256": "9b3c5540af0274b643fdcd7898f6cacc78b52e6bce5c26db3360d5ed96adf982",
+      "sha256": "10fafa92d39ce6d99dd32adb18d2c25a1c6fcbbbc3e99000a68754e9fa93aa8f",
       "normalization": "lf",
-      "bytes": 8664
+      "bytes": 8780
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "1c60c58575f0bf4b54cdb2b66deaf1d7b6eb6fefdc9a38600dc3b58ec0b5a1b8",
+      "sha256": "e443cb49abb7f79785504d860655d59f158d4add7c36eba334ea5c03b2041074",
       "normalization": "lf",
       "bytes": 80515
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "f15b3adf0e85763e847a85dba24ef79f66ba981e7ed3b043bc1bb2b3c826c4fa",
+      "sha256": "1986ff4a8ce75c67c2440c5d8db47ea2baf085425c9bd859ae39ac13a0a0362d",
       "normalization": "lf",
-      "bytes": 1750
+      "bytes": 1876
     },
     {
       "path": "vendor/glib/Cargo.lock",
@@ -5916,9 +6004,9 @@
     },
     {
       "path": "vite.config.ts",
-      "sha256": "274ac67211fcccd1fb601e911b97bebce033720544c7bd0898a7ecc438219fbc",
+      "sha256": "e49a40a08310a4f446f87a9ce9e3a9dfe4054f07a8d230071d2b36520a039b2a",
       "normalization": "lf",
-      "bytes": 2739
+      "bytes": 2657
     },
     {
       "path": "yougori1.png",
@@ -5929,37 +6017,37 @@
   "archives": [
     {
       "file": "alpine-alpine-base-0934530484bb.tar.gz",
-      "sha256": "17695ae48a6d1699dc1cbcf534d9ff456b1d6fe9e571ec9edc2ec05b0a165248",
-      "bytes": 884
+      "sha256": "6fef8b86ad7a043f7ebd1f6e2754664492c20227463b551b027b0041af440028",
+      "bytes": 890
     },
     {
       "file": "alpine-alpine-baselayout-60a7585bbab2.tar.gz",
-      "sha256": "d5ce7d981242bd1eb5b182538cff34f3aefd1d1bbb6c06329e54b5e29f9f9ae4",
-      "bytes": 17423
+      "sha256": "e22b7abbda99f8e0c850af8116165dc89f64836eb6456d8e801a58e9118fc368",
+      "bytes": 17430
     },
     {
       "file": "alpine-alpine-keys-b9f23becced4.tar.gz",
-      "sha256": "45b04581063cf7f0ed68a0b5bfce19bf4851d721708de859fff4d163ee483a0d",
-      "bytes": 10474
+      "sha256": "a4ec815dc5ee0bd93133f67c4f7eee2ecede51ad57ba83e4f0c3a7ea76cdc693",
+      "bytes": 10480
     },
     {
       "file": "alpine-apk-tools-1403ea7a8ae3.tar.gz",
-      "sha256": "e18cbc4d552f775746ccb1ad47197fffdb230546d69dabd67a3f3c457580166b",
-      "bytes": 393527
+      "sha256": "51375dad3ce5fedca8c71d55d4b24ce676c636633119994879e2edb5fc1eddb2",
+      "bytes": 393534
     },
     {
       "file": "alpine-bridge-8bac74716d06.tar.gz",
-      "sha256": "85d6cbf287a40d1bd4eca73567811c9fb1247118173ef0255187b87fb61e201b",
-      "bytes": 1736
+      "sha256": "41c67d430c111a9f5d08be8b51c536124e2e6a948468b1770a18275a6ccf5913",
+      "bytes": 1740
     },
     {
       "file": "alpine-busybox-c3ef5d10e6ef.tar.gz",
-      "sha256": "94754b5163d5cbff21ed60d873f413c5209cbe46da552a37422d8a0f5f9719e5",
-      "bytes": 2605849
+      "sha256": "fa8cfe63e41ee6ed7cd29134b9c8f5f060585a763a89ad2f3078b1b1306ed542",
+      "bytes": 2605862
     },
     {
       "file": "alpine-ca-certificates-e41cbd2ae991.tar.gz",
-      "sha256": "1d97a2accb603d238308ad9f927d530ee853b6e85583fa7332a1cc3850801cbd",
+      "sha256": "aa4c6e127d9c7dffb2d2f37a75f2a062c1396181f8c8cc95a0dcda0dcd280b33",
       "bytes": 226977
     },
     {
@@ -5969,73 +6057,73 @@
     },
     {
       "file": "alpine-cryptsetup-d2f0440960e6.tar.gz",
-      "sha256": "3e99aa6dc0dcb2ee8f0481d789215fa94597cc32bbee0b06e4e53543dc745af6",
-      "bytes": 13368232
+      "sha256": "8c39bfb5435be9c2cef99eb072a0f5645f08bed5fbdddc6edceea302a55e56e0",
+      "bytes": 13368240
     },
     {
       "file": "alpine-device-mapper-a9f462dee63c.tar.gz",
-      "sha256": "983f5a52634c32bfcad048e0c587448ae8cc8ae18645a41a52bf5f27e87b0a33",
-      "bytes": 2943427
+      "sha256": "8038b68def68e6e2d53a7881c31eaf2f6efbba1700a27aea0e61617b7afb3db9",
+      "bytes": 2943432
     },
     {
       "file": "alpine-e2fsprogs-8683a6972cb2.tar.gz",
-      "sha256": "81e6f8478bfa2dca71e148c409a53978f891c6023770e9ac5a3b94afd43c740a",
-      "bytes": 10133475
+      "sha256": "1c78693d0e02e1c11b2aec13741153bc8bfe70c24ab68ca5adc584b39cec571e",
+      "bytes": 10133477
     },
     {
       "file": "alpine-elfutils-8f1329420688.tar.gz",
-      "sha256": "c31fdfc3a5414e5064092edc497fd13cdbab769a2e540fd8226bf34ef7d8660e",
-      "bytes": 12029777
+      "sha256": "133f26641aaaa2a18b09484fe92ec2b1570868d90eded9add0084ec8853388c9",
+      "bytes": 12029780
     },
     {
       "file": "alpine-ifupdown-ng-2c26ffc5e83f.tar.gz",
-      "sha256": "f7e35e9d45e6be62284a6b948a65af118bdf4f7fe5dda5bdd713a57b8aa3236d",
-      "bytes": 87397
+      "sha256": "ae9eebee5b295817ffe231190272e288f188b9014a7f23da2dd982749577c65d",
+      "bytes": 87396
     },
     {
       "file": "alpine-iproute2-3ee752ad0c84.tar.gz",
-      "sha256": "3f7075d2b38e553f3dc9b0e02205b169963a223409c5e9f0887b95e019537370",
-      "bytes": 964072
+      "sha256": "e6c3ec5219fa2807d640ba1f170f7ba5e475a573abf4720be59000a337edd3f8",
+      "bytes": 964074
     },
     {
       "file": "alpine-iptables-8848fb97f5ec.tar.gz",
-      "sha256": "84e1f3dca9dc43a5f737c25ed5e8f58f4a2f3bfae1e9f8ff4cc1c1a0adb64e28",
-      "bytes": 658657
+      "sha256": "90bcf12ab37484ba575710807e03dfefa9ae801d4357d94445c5d90502ac3652",
+      "bytes": 658661
     },
     {
       "file": "alpine-json-c-8e0faa63c91a.tar.gz",
-      "sha256": "5c56607fd7072f6da2cafa05616b17695a1fa6bc6b4d2d242222440f99b0396a",
-      "bytes": 402187
+      "sha256": "0aaed7af1903279b17f3394a74f0a9d6c0ea3d4894ec32749a9cf43fabe3ceaa",
+      "bytes": 402190
     },
     {
       "file": "alpine-kmod-206e7b39f788.tar.gz",
-      "sha256": "f0da27d658dc41764149be6c38fca4aeca2a911c02ab3dfb82855695181b43a9",
-      "bytes": 445312
+      "sha256": "78a48fa54f7a0dc0b299c52e7be635ca6f78332cf827f1fdf364ea6e1a245f60",
+      "bytes": 445317
     },
     {
       "file": "alpine-lddtree-007305e7880a.tar.gz",
-      "sha256": "803b69c376d236ebd9847da155b414e9c489e8084bb2a09456deb75b5092d477",
-      "bytes": 2174148
+      "sha256": "e6265bd90e8f0cefb4a6d227323a08e1aa2aa68d0192d1c58a20cfc690023119",
+      "bytes": 2174155
     },
     {
       "file": "alpine-libcap-0c35848136c4.tar.gz",
-      "sha256": "5bf752695a0d331b871aa9c43b219f07dfad3d06baa2f2b89f7e17d7565a2702",
-      "bytes": 202615
+      "sha256": "41fc0daa8c9c56dfb5f3a8326ab5a6082873ec41b4a02431c6bcf1e5811c0456",
+      "bytes": 202619
     },
     {
       "file": "alpine-libeconf-62db33049768.tar.gz",
-      "sha256": "072b6c6744226b047ba7ae0f665121a6d494e744e7dc65dd155de6761c91250e",
-      "bytes": 269720
+      "sha256": "8dea899a5c9e4ad96f3a9d82d0f8ba594c1291a843c9dd30c86a4a53341d3bdd",
+      "bytes": 269722
     },
     {
       "file": "alpine-libmnl-fc95c5999828.tar.gz",
-      "sha256": "91395a0de761c69b34b1765ff4e9870a69665fb1d057c81c434b0bc55552d374",
-      "bytes": 316061
+      "sha256": "bd474a1818a40f17151f6c91ea50713392e9a45e8e8097415b70504c6dfefa59",
+      "bytes": 316064
     },
     {
       "file": "alpine-libnftnl-80fae26950fd.tar.gz",
-      "sha256": "44e2752978044ca0f0af7e8b50cf4ddf291aebd222b2e1329a5ea2c030679b4c",
-      "bytes": 350413
+      "sha256": "4eec68c436bc405d5e00162c2e8ceb9eac0951a49e3e15a54d25b2ff1564bb7a",
+      "bytes": 350416
     },
     {
       "file": "alpine-linux-lts-52fae6d7d56f.tar.gz",
@@ -6044,8 +6132,8 @@
     },
     {
       "file": "alpine-mdev-conf-203310a84fe3.tar.gz",
-      "sha256": "6ffed08e8805b8c7cfbed71dc271c5595ddece576daeddf4f6489242c47138aa",
-      "bytes": 8309
+      "sha256": "117859e39e6881ce2d8a527ff5b873252cd6826e5f851de8564b403c773c4933",
+      "bytes": 8310
     },
     {
       "file": "alpine-mkinitfs-0baaf041a1e4.tar.gz",
@@ -6054,43 +6142,43 @@
     },
     {
       "file": "alpine-musl-f5640d3a10f6.tar.gz",
-      "sha256": "19cefa8a5dbe5595c90489c4bf583836ea916a97043b1c70359a56aa85b994f1",
-      "bytes": 1096666
+      "sha256": "30a5ae8fa5eac8298686f38dcefdc55e7609cef578e8b6691be6a56733668605",
+      "bytes": 1096673
     },
     {
       "file": "alpine-ncurses-2cee8a7328d0.tar.gz",
-      "sha256": "6e981024569dfb86d8743b8c59b8153988c8d5cc038d160cd27821e80e559c18",
-      "bytes": 3796031
+      "sha256": "7009c775e0296baf6c396a5fe80b31d3535684ceb21b697ab5c549d3d1598a31",
+      "bytes": 3796036
     },
     {
       "file": "alpine-openrc-30c61338b7a0.tar.gz",
-      "sha256": "8a82a2d7e6780aea946528ad489927d3f53f42047ce5b8215664e6dcfe0de5c0",
-      "bytes": 287314
+      "sha256": "899921b42c65c2356e3009dcf8e923121dbcc0aa94d3e53130a0addd78f8bc0e",
+      "bytes": 287323
     },
     {
       "file": "alpine-openssl-4a4352d83ab0.tar.gz",
-      "sha256": "9811106a18806b39d550c058de1698f059c78e6281e7fdc05b0eed9d3c9edad9",
-      "bytes": 53135640
+      "sha256": "4cd6d9890826d3b56e8b3b07614202fb212664c7a2fb9ffe7cbb438ddd62f8c4",
+      "bytes": 53135644
     },
     {
       "file": "alpine-pax-utils-c61801eeacb3.tar.gz",
-      "sha256": "9fe0f657f8312953cfa57e4ecc9baf5625fb0715688da62122af59364e72eba4",
-      "bytes": 125085
+      "sha256": "3ed364f411ef5c06d7a49cf8b07974178732df9838761658e116ede4d9c26227",
+      "bytes": 125088
     },
     {
       "file": "alpine-skalibs-f148233038fa.tar.gz",
-      "sha256": "d3409c3ed55bc4f91fe8ee766c432101a5a3ce4f20a5de003c5ab0aa05ffa3bc",
-      "bytes": 268114
+      "sha256": "d095b37b7b982d18ca88f688ee805b762ac315b180543d8ee9c4d1cc94bc54a6",
+      "bytes": 268118
     },
     {
       "file": "alpine-util-linux-d98c55af5905.tar.gz",
-      "sha256": "3e8a1945e125f31b0b4965d3c045bbc1f397a57e6938bdaa759a3a6ebce1f7d3",
-      "bytes": 10730848
+      "sha256": "c01333d8149fa7198d7e1128352e55a2c88538055f3fc9e58d1305688571484d",
+      "bytes": 10730855
     },
     {
       "file": "alpine-utmps-900a4ecef77a.tar.gz",
-      "sha256": "87afe05770592e0fe05d36cc8e2da287388c9622ebadfa498948a29c54f5063d",
-      "bytes": 39438
+      "sha256": "47a38fd800ccdaf4c81fa6d82db312262ade729326a9a68546ef3731e8f09425",
+      "bytes": 39446
     },
     {
       "file": "alpine-xz-0c088d609f9f.tar.gz",
@@ -6099,13 +6187,13 @@
     },
     {
       "file": "alpine-zlib-f248b33b5943.tar.gz",
-      "sha256": "e3c9c14f1b7d163e6829d60b8ba0e3b4e261823aeee191da2b04af4e22c78b59",
-      "bytes": 1504184
+      "sha256": "4cd1c8c1a86f153a82f0ff6ea01149f53382cfd2038a01353cdb8f664c7152eb",
+      "bytes": 1504187
     },
     {
       "file": "alpine-zstd-3c6e2ee2b16f.tar.gz",
-      "sha256": "ebcaf55ddd8bacce538c3bbef22682dd42baa54bf59941d462c45e1286751e66",
-      "bytes": 2451533
+      "sha256": "c76d81bea7813b7f30cb5f05ae936ff15927be97bd75152127fb52bb0304b503",
+      "bytes": 2451540
     },
     {
       "file": "cni-v1.9.1-adc3e6b5b581.tar.gz",
@@ -7314,8 +7402,8 @@
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-brotli-1.2.0-1.tar.gz",
-      "sha256": "872dfc130adbacacf4113196d4cca84c52d4b3bf7b1c2d051efcb199223fb476",
-      "bytes": 646504
+      "sha256": "d9d9ace463b6b99016042e0eed0c504f222679115e9dc8ddbb937214afe2a561",
+      "bytes": 646560
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-bzip2-1.0.8-4.tar.gz",
@@ -7324,33 +7412,33 @@
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-gcc-libs-16.2.0-3.tar.gz",
-      "sha256": "58c49fd7a49d423c48c29ed20660d569772202b406e14f90505a9c1138e91cb4",
-      "bytes": 107261309
+      "sha256": "da0e816530c44b3dea302b674f547d2d42babc154dfd19ccf574e6069948c1ed",
+      "bytes": 107261431
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-gettext-runtime-1.0-1.tar.gz",
-      "sha256": "aa2effaa3a7a3d136335343967819331183773944613c30df192169e63a013c6",
-      "bytes": 10272386
+      "sha256": "8e91f2aa068cff6fa757bc749fa57d55311dd132f1cb1a0f168a54fa2b92f07e",
+      "bytes": 10272498
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-glib2-2.88.3-1.tar.gz",
-      "sha256": "def30f15d560e62d41ed89146056a4a4e0f6394deab87ca7cc52452c97acb0c1",
-      "bytes": 5803719
+      "sha256": "ca309464651cdb13a6b9e3fa4a328a21288c39b2d18dfcf533a8f9e447af0933",
+      "bytes": 5803922
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-gmp-6.3.0-2.tar.gz",
-      "sha256": "9d0545d2c60f95c0e3e06481c90625de36c3160a7acd6be1620984f9284282a0",
-      "bytes": 2099505
+      "sha256": "07ab190d47b6eb26522bc75d63804260d383deccb8f8a4aac2d2ad96a3a87861",
+      "bytes": 2099616
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-gnutls-3.8.13-3.tar.gz",
-      "sha256": "9c17a1908a75c24566469361ce33722be768291ab3a8c82502478243d14e630f",
-      "bytes": 7283801
+      "sha256": "ac29e95470d5450e738c51911c004e7351ca8661ac755241ce128097765bf794",
+      "bytes": 7283917
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libepoxy-1.5.10-7.tar.gz",
-      "sha256": "2b515487ee80141fe95d985dcf465c3a1816fc882e8fd87cecf946d38f6d4d95",
-      "bytes": 337020
+      "sha256": "8ad8e8070d2be6ae7a1691dab1cf6e74d52575c67b6c34d14fe7e3df6bd9a0f3",
+      "bytes": 337065
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libffi-3.8.0-1.tar.gz",
@@ -7359,38 +7447,38 @@
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libiconv-1.19-1.tar.gz",
-      "sha256": "16e56a5643d0ee5e5b6ee7b0b28360895ca20f65dd667590617c78c55c265f67",
-      "bytes": 5186865
+      "sha256": "3233521461011573901334d50e01ccd54d2f1ecc71b2d37553bfcc13f3041cba",
+      "bytes": 5186955
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libidn2-2.3.8-4.tar.gz",
-      "sha256": "accc58e2683b5b6455748359b1933e30c69380cf4249c393bfbd370911dbea11",
-      "bytes": 2221328
+      "sha256": "dbe3dd2289fdabffc0d6f257bc7e81e2a63ea34ab3ba74d967cba1172ea7f3e3",
+      "bytes": 2221458
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libjpeg-turbo-3.2.0-1.tar.gz",
-      "sha256": "384cf956f9441bb15e7063270c417da5a5e5c8f04f04dceaa40c3a34e518bb98",
-      "bytes": 2539244
+      "sha256": "0f1e71752ea729a7ef6f038e47bed5e0361b5c7f733ab11aa35c6955885af628",
+      "bytes": 2539355
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libpng-1.6.58-1.tar.gz",
-      "sha256": "51c935a346eb06b1f5f5c09566fe90d1b45c2f098beeb8033a9023223a2d694e",
-      "bytes": 1085061
+      "sha256": "03c333cdb3d96cc70dd9d9f4a9a08d31e0191c6606e055cb71d7c950c572f3cd",
+      "bytes": 1085178
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libslirp-4.9.3-1.tar.gz",
-      "sha256": "c0d4ddc143598e0bbb23b74add12f0070b294736017c0ead7869c55ebf2f30d4",
-      "bytes": 137533
+      "sha256": "787ed207279ae38791d6e36e20da711ef14808be48ffe9473a8364140fafb327",
+      "bytes": 137589
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libtasn1-4.21.0-1.tar.gz",
-      "sha256": "01674e1a28013774055bec0e967931503d4a064adbfe4e73666ff9a776ad2a45",
-      "bytes": 1814800
+      "sha256": "23f4ba1539a4a92b521057e65c2cd4e15519f3ceeaace2b06890954b3223bf77",
+      "bytes": 1814915
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libunistring-1.4.2-1.tar.gz",
-      "sha256": "3905fb434ab01abd52e6acdda57ad97de9fd5b246828ad0eef43179af70417af",
-      "bytes": 4801581
+      "sha256": "58daf4b7064dccda32fe3dd105d6f7c4221b287d55749b5c677f6efe8f39881a",
+      "bytes": 4801691
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-libwinpthread-14.0.0.r353.g6df76fa52-2.tar.gz",
@@ -7399,8 +7487,8 @@
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-nettle-4.0-1.tar.gz",
-      "sha256": "03e5cd02e8b0f51b9db207c94a22604d13fe9db97908dff68c37df33b22971c2",
-      "bytes": 2632119
+      "sha256": "a81def33b5446b3ba4bcab1d2e24a1aae6849a43fee466637491cf02350fcd14",
+      "bytes": 2632222
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-openssl-3.6.4-1.tar.gz",
@@ -7409,8 +7497,8 @@
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-p11-kit-0.26.5-1.tar.gz",
-      "sha256": "4c40880b2b6d083bce602c3f8e81381bddf37b7d5fff848db9b8812d3962f072",
-      "bytes": 1096826
+      "sha256": "4ba2d92041684ecb0dedd5d20d3172e69aebc7dc275a7819931945e6492f6824",
+      "bytes": 1096948
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-pcre2-10.48-3.tar.gz",
@@ -7419,13 +7507,13 @@
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-pixman-0.46.4-3.tar.gz",
-      "sha256": "da7eff54ea2b9505f6353d3fe666a6a59d73122186a71626ecb29daf4729dbbb",
-      "bytes": 664486
+      "sha256": "131db8ec8b2129b533deb302442bfec6750a55fcf4f9e6f3533e743087e784b8",
+      "bytes": 664590
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-virglrenderer-1.3.0-1.tar.gz",
-      "sha256": "1380f9fe2b2a26c93c74b86c5b1460dd0b33881cc9ad978fb2fe73a7e12fbebc",
-      "bytes": 908946
+      "sha256": "c4c65e33c6a39c3a31ec4742c418bc33feb858085a7ecbbe53a2a0fee7b06131",
+      "bytes": 908990
     },
     {
       "file": "msys-mingw-w64-ucrt-x86_64-zlib-1.3.2-2.tar.gz",
@@ -7469,8 +7557,8 @@
     },
     {
       "file": "oci-patched-build-provenance.tar.gz",
-      "sha256": "e5becd97cfa67d9364fea82ecf6c666c613d97cc83ef087c1faf93ddcdced0c2",
-      "bytes": 228665
+      "sha256": "7b8d2a22c090a9e19f20b6a5e568883986bc358ab702caf7331e0cc0c1f81b11",
+      "bytes": 3056212
     },
     {
       "file": "qemu-dtc-b6910bec1161.tar.gz",
@@ -7486,61 +7574,6 @@
       "file": "qemu-secure-src-84f07211cc5b.tar.gz",
       "sha256": "6628129109d69acb43cb0be93284e1d7649afdce8836bfb2646cfbd665b8cf49",
       "bytes": 41387978
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2-4dfdca63a934.tar.gz",
-      "sha256": "65bfa9481615560017d6e5e3e1cde3b00c5e5db39131f0bb2a584b8046193726",
-      "bytes": 17215540
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_BaseTools_Source_C_BrotliCompress_brotli-f4153a09f87c.tar.gz",
-      "sha256": "0d2cede94f563513d48502e5766ab6380ca4a0ca2dceb765fce28d3f62e903d3",
-      "bytes": 493141
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_CryptoPkg_Library_MbedTlsLib_mbedtls-8c89224991ad.tar.gz",
-      "sha256": "a7f13085b534b6177553a3fda634716edfdba68e26dc4c7f7a04d1d9745e9b88",
-      "bytes": 4525138
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_CryptoPkg_Library_OpensslLib_openssl-de90e54bbe82.tar.gz",
-      "sha256": "6314c30e365ae23cd8e3d1f2b76b45f95234aa14a6c1af3f21fdd55505b6250e",
-      "bytes": 15179691
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_MdeModulePkg_Library_BrotliCustomDecompressLib_brotli-f4153a09f87c.tar.gz",
-      "sha256": "0d2cede94f563513d48502e5766ab6380ca4a0ca2dceb765fce28d3f62e903d3",
-      "bytes": 493141
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_MdePkg_Library_BaseFdtLib_libfdt-cfff805481bd.tar.gz",
-      "sha256": "294d99e094b94316b3657d6ec7da1ecfd3ee1ab7a141ea7181813dfc191f8f57",
-      "bytes": 49298
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_MdePkg_Library_MipiSysTLib_mipisyst-370b5944c046.tar.gz",
-      "sha256": "c5fd6dd4bc34720b2ac1f6a43f0e6386b8230623520954bb8354a378d7ef7dcd",
-      "bytes": 376233
-    },
-    {
-      "file": "qemu-secure-src-roms_edk2_SecurityPkg_DeviceSecurity_SpdmLib_libspdm-50924a4c8145.tar.gz",
-      "sha256": "81d14487ed5936859053a8efea97c0e93ad2c5fce9de8f419fc58c7b6ff38782",
-      "bytes": 1932565
-    },
-    {
-      "file": "qemu-secure-src-roms_ipxe-4bd064de239d.tar.gz",
-      "sha256": "2b8e2885260f276d7d2ac140d8193dace98675efbcc267213660d629128f3eaf",
-      "bytes": 3843557
-    },
-    {
-      "file": "qemu-secure-src-roms_qboot-8ca302e86d68.tar.gz",
-      "sha256": "dde412fb55a3a90991e6ed8f53cb6fc62d3719754011d5541e61d50919813889",
-      "bytes": 32244
-    },
-    {
-      "file": "qemu-secure-src-roms_seabios-b52ca86e094d.tar.gz",
-      "sha256": "049fa576e3c94c816ccacf738bcedd7b9f54aa316a20be6d812db5ac6faacf83",
-      "bytes": 610330
     },
     {
       "file": "runc-v1.5.1-8f2685a471d3.tar.gz",
@@ -7574,13 +7607,13 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "020027035958db5f44c8f39f527534f53890f8bb3d074d3b3ee5394bc184eeab",
-      "bytes": 15498309
+      "sha256": "863cc7c133d6a146bc7e0304a13a815092075498365b6f1df41cc281e82cd633",
+      "bytes": 15726935
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "3b3038fe0abfe6eb50c83c49e6190619357d8e22671f7b163fbed2a37e1c99af",
-      "bytes": 11587332
+      "sha256": "744e5bb2ca27522624f536f7122f6c16d34528f286cefbb4790a42b29f988011",
+      "bytes": 11610582
     }
   ],
   "components": [
@@ -7591,116 +7624,6 @@
       "file": "qemu-secure-src-84f07211cc5b.tar.gz",
       "sha256": "6628129109d69acb43cb0be93284e1d7649afdce8836bfb2646cfbd665b8cf49",
       "bytes": 41387978
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2",
-      "revision": "4dfdca63a93497203f197ec98ba20e2327e4afe4",
-      "mountAt": "roms/edk2",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2-4dfdca63a934.tar.gz",
-      "sha256": "65bfa9481615560017d6e5e3e1cde3b00c5e5db39131f0bb2a584b8046193726",
-      "bytes": 17215540
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/BaseTools/Source/C/BrotliCompress/brotli",
-      "revision": "f4153a09f87cbb9c826d8fc12c74642bb2d879ea",
-      "mountAt": "roms/edk2/BaseTools/Source/C/BrotliCompress/brotli",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_BaseTools_Source_C_BrotliCompress_brotli-f4153a09f87c.tar.gz",
-      "sha256": "0d2cede94f563513d48502e5766ab6380ca4a0ca2dceb765fce28d3f62e903d3",
-      "bytes": 493141
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/CryptoPkg/Library/MbedTlsLib/mbedtls",
-      "revision": "8c89224991adff88d53cd380f42a2baa36f91454",
-      "mountAt": "roms/edk2/CryptoPkg/Library/MbedTlsLib/mbedtls",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_CryptoPkg_Library_MbedTlsLib_mbedtls-8c89224991ad.tar.gz",
-      "sha256": "a7f13085b534b6177553a3fda634716edfdba68e26dc4c7f7a04d1d9745e9b88",
-      "bytes": 4525138
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/CryptoPkg/Library/OpensslLib/openssl",
-      "revision": "de90e54bbe82e5be4fb9608b6f5c308bb837d355",
-      "mountAt": "roms/edk2/CryptoPkg/Library/OpensslLib/openssl",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_CryptoPkg_Library_OpensslLib_openssl-de90e54bbe82.tar.gz",
-      "sha256": "6314c30e365ae23cd8e3d1f2b76b45f95234aa14a6c1af3f21fdd55505b6250e",
-      "bytes": 15179691
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/MdeModulePkg/Library/BrotliCustomDecompressLib/brotli",
-      "revision": "f4153a09f87cbb9c826d8fc12c74642bb2d879ea",
-      "mountAt": "roms/edk2/MdeModulePkg/Library/BrotliCustomDecompressLib/brotli",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_MdeModulePkg_Library_BrotliCustomDecompressLib_brotli-f4153a09f87c.tar.gz",
-      "sha256": "0d2cede94f563513d48502e5766ab6380ca4a0ca2dceb765fce28d3f62e903d3",
-      "bytes": 493141
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/MdePkg/Library/BaseFdtLib/libfdt",
-      "revision": "cfff805481bdea27f900c32698171286542b8d3c",
-      "mountAt": "roms/edk2/MdePkg/Library/BaseFdtLib/libfdt",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_MdePkg_Library_BaseFdtLib_libfdt-cfff805481bd.tar.gz",
-      "sha256": "294d99e094b94316b3657d6ec7da1ecfd3ee1ab7a141ea7181813dfc191f8f57",
-      "bytes": 49298
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/MdePkg/Library/MipiSysTLib/mipisyst",
-      "revision": "370b5944c046bab043dd8b133727b2135af7747a",
-      "mountAt": "roms/edk2/MdePkg/Library/MipiSysTLib/mipisyst",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_MdePkg_Library_MipiSysTLib_mipisyst-370b5944c046.tar.gz",
-      "sha256": "c5fd6dd4bc34720b2ac1f6a43f0e6386b8230623520954bb8354a378d7ef7dcd",
-      "bytes": 376233
-    },
-    {
-      "id": "qemu-secure-src/roms/edk2/SecurityPkg/DeviceSecurity/SpdmLib/libspdm",
-      "revision": "50924a4c8145fc721e17208f55814d2b38766fe6",
-      "mountAt": "roms/edk2/SecurityPkg/DeviceSecurity/SpdmLib/libspdm",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_edk2_SecurityPkg_DeviceSecurity_SpdmLib_libspdm-50924a4c8145.tar.gz",
-      "sha256": "81d14487ed5936859053a8efea97c0e93ad2c5fce9de8f419fc58c7b6ff38782",
-      "bytes": 1932565
-    },
-    {
-      "id": "qemu-secure-src/roms/ipxe",
-      "revision": "4bd064de239dab2426b31c9789a1f4d78087dc63",
-      "mountAt": "roms/ipxe",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_ipxe-4bd064de239d.tar.gz",
-      "sha256": "2b8e2885260f276d7d2ac140d8193dace98675efbcc267213660d629128f3eaf",
-      "bytes": 3843557
-    },
-    {
-      "id": "qemu-secure-src/roms/qboot",
-      "revision": "8ca302e86d685fa05b16e2b208888243da319941",
-      "mountAt": "roms/qboot",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_qboot-8ca302e86d68.tar.gz",
-      "sha256": "dde412fb55a3a90991e6ed8f53cb6fc62d3719754011d5541e61d50919813889",
-      "bytes": 32244
-    },
-    {
-      "id": "qemu-secure-src/roms/seabios",
-      "revision": "b52ca86e094d19b58e2304417787e96b940e39c6",
-      "mountAt": "roms/seabios",
-      "parent": "qemu-secure-src",
-      "status": "collected",
-      "file": "qemu-secure-src-roms_seabios-b52ca86e094d.tar.gz",
-      "sha256": "049fa576e3c94c816ccacf738bcedd7b9f54aa316a20be6d812db5ac6faacf83",
-      "bytes": 610330
     },
     {
       "id": "qemu-secure-src/subprojects/dtc",
@@ -7817,6 +7740,13 @@
       "bytes": 166179195
     },
     {
+      "id": "local-build-material",
+      "status": "collected",
+      "file": "yougori-runtime-build-material.tar.gz",
+      "sha256": "744e5bb2ca27522624f536f7122f6c16d34528f286cefbb4790a42b29f988011",
+      "bytes": 11610582
+    },
+    {
       "id": "novnc",
       "version": "1.7.0",
       "status": "collected",
@@ -7825,21 +7755,14 @@
       "bytes": 151801
     },
     {
-      "id": "local-build-material",
-      "status": "collected",
-      "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "3b3038fe0abfe6eb50c83c49e6190619357d8e22671f7b163fbed2a37e1c99af",
-      "bytes": 11587332
-    },
-    {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "020027035958db5f44c8f39f527534f53890f8bb3d074d3b3ee5394bc184eeab",
-      "bytes": 15498309,
+      "sha256": "863cc7c133d6a146bc7e0304a13a815092075498365b6f1df41cc281e82cd633",
+      "bytes": 15726935,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "824232f3fc07a74bba8eeaf480c91cc8d025df100786aa7d7e4886519440fb47",
-      "fileCount": 1290
+      "manifestSha256": "365b8233d05f7493e600d71da025d90ebd542da1f0c6d5cbdc0d71beb897b300",
+      "fileCount": 1324
     },
     {
       "id": "alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f",
@@ -7924,8 +7847,8 @@
       "recipeRevision": "60a7585bbab2fa0f762504eb617dbca90216e31f",
       "status": "collected",
       "file": "alpine-alpine-baselayout-60a7585bbab2.tar.gz",
-      "sha256": "d5ce7d981242bd1eb5b182538cff34f3aefd1d1bbb6c06329e54b5e29f9f9ae4",
-      "bytes": 17423
+      "sha256": "e22b7abbda99f8e0c850af8116165dc89f64836eb6456d8e801a58e9118fc368",
+      "bytes": 17430
     },
     {
       "id": "alpine/alpine-keys/b9f23becced4d7b3ccc0fa0f28530243ccd314a0",
@@ -8017,8 +7940,8 @@
       "recipeRevision": "b9f23becced4d7b3ccc0fa0f28530243ccd314a0",
       "status": "collected",
       "file": "alpine-alpine-keys-b9f23becced4.tar.gz",
-      "sha256": "45b04581063cf7f0ed68a0b5bfce19bf4851d721708de859fff4d163ee483a0d",
-      "bytes": 10474
+      "sha256": "a4ec815dc5ee0bd93133f67c4f7eee2ecede51ad57ba83e4f0c3a7ea76cdc693",
+      "bytes": 10480
     },
     {
       "id": "alpine/alpine-base/0934530484bbcde7498e2c694c710a49616a450e",
@@ -8037,8 +7960,8 @@
       "recipeRevision": "0934530484bbcde7498e2c694c710a49616a450e",
       "status": "collected",
       "file": "alpine-alpine-base-0934530484bb.tar.gz",
-      "sha256": "17695ae48a6d1699dc1cbcf534d9ff456b1d6fe9e571ec9edc2ec05b0a165248",
-      "bytes": 884
+      "sha256": "6fef8b86ad7a043f7ebd1f6e2754664492c20227463b551b027b0041af440028",
+      "bytes": 890
     },
     {
       "id": "alpine/apk-tools/1403ea7a8ae3fb8e5a11207ddb1ff536eb8de912",
@@ -8079,8 +8002,8 @@
       "recipeRevision": "1403ea7a8ae3fb8e5a11207ddb1ff536eb8de912",
       "status": "collected",
       "file": "alpine-apk-tools-1403ea7a8ae3.tar.gz",
-      "sha256": "e18cbc4d552f775746ccb1ad47197fffdb230546d69dabd67a3f3c457580166b",
-      "bytes": 393527
+      "sha256": "51375dad3ce5fedca8c71d55d4b24ce676c636633119994879e2edb5fc1eddb2",
+      "bytes": 393534
     },
     {
       "id": "alpine/bridge/8bac74716d06c84627ab02d101fd9d2bafd0a34c",
@@ -8104,8 +8027,8 @@
       "recipeRevision": "8bac74716d06c84627ab02d101fd9d2bafd0a34c",
       "status": "collected",
       "file": "alpine-bridge-8bac74716d06.tar.gz",
-      "sha256": "85d6cbf287a40d1bd4eca73567811c9fb1247118173ef0255187b87fb61e201b",
-      "bytes": 1736
+      "sha256": "41c67d430c111a9f5d08be8b51c536124e2e6a948468b1770a18275a6ccf5913",
+      "bytes": 1740
     },
     {
       "id": "alpine/busybox/c3ef5d10e6ef6528852c51f0564963e2f8c1be19",
@@ -8452,8 +8375,8 @@
       "recipeRevision": "c3ef5d10e6ef6528852c51f0564963e2f8c1be19",
       "status": "collected",
       "file": "alpine-busybox-c3ef5d10e6ef.tar.gz",
-      "sha256": "94754b5163d5cbff21ed60d873f413c5209cbe46da552a37422d8a0f5f9719e5",
-      "bytes": 2605849
+      "sha256": "fa8cfe63e41ee6ed7cd29134b9c8f5f060585a763a89ad2f3078b1b1306ed542",
+      "bytes": 2605862
     },
     {
       "id": "alpine/ca-certificates/eb7078df3a16d666e8f7723f94bb92e00d4b9236",
@@ -8502,7 +8425,7 @@
       "recipeRevision": "e41cbd2ae991adfe8df298ba8e8e777e90bd0e03",
       "status": "collected",
       "file": "alpine-ca-certificates-e41cbd2ae991.tar.gz",
-      "sha256": "1d97a2accb603d238308ad9f927d530ee853b6e85583fa7332a1cc3850801cbd",
+      "sha256": "aa4c6e127d9c7dffb2d2f37a75f2a062c1396181f8c8cc95a0dcda0dcd280b33",
       "bytes": 226977
     },
     {
@@ -8535,8 +8458,8 @@
       "recipeRevision": "d2f0440960e65952ee22c6b840faecb14d9f0173",
       "status": "collected",
       "file": "alpine-cryptsetup-d2f0440960e6.tar.gz",
-      "sha256": "3e99aa6dc0dcb2ee8f0481d789215fa94597cc32bbee0b06e4e53543dc745af6",
-      "bytes": 13368232
+      "sha256": "8c39bfb5435be9c2cef99eb072a0f5645f08bed5fbdddc6edceea302a55e56e0",
+      "bytes": 13368240
     },
     {
       "id": "alpine/device-mapper/a9f462dee63c7d522585e53f5c04b71eab563ec7",
@@ -8564,8 +8487,8 @@
       "recipeRevision": "a9f462dee63c7d522585e53f5c04b71eab563ec7",
       "status": "collected",
       "file": "alpine-device-mapper-a9f462dee63c.tar.gz",
-      "sha256": "983f5a52634c32bfcad048e0c587448ae8cc8ae18645a41a52bf5f27e87b0a33",
-      "bytes": 2943427
+      "sha256": "8038b68def68e6e2d53a7881c31eaf2f6efbba1700a27aea0e61617b7afb3db9",
+      "bytes": 2943432
     },
     {
       "id": "alpine/e2fsprogs/8683a6972cb245fbbdb535dad6435a9930bb9374",
@@ -8616,8 +8539,8 @@
       "recipeRevision": "8683a6972cb245fbbdb535dad6435a9930bb9374",
       "status": "collected",
       "file": "alpine-e2fsprogs-8683a6972cb2.tar.gz",
-      "sha256": "81e6f8478bfa2dca71e148c409a53978f891c6023770e9ac5a3b94afd43c740a",
-      "bytes": 10133475
+      "sha256": "1c78693d0e02e1c11b2aec13741153bc8bfe70c24ab68ca5adc584b39cec571e",
+      "bytes": 10133477
     },
     {
       "id": "alpine/ifupdown-ng/2c26ffc5e83fc3bc626f2516235b465e67606bf9",
@@ -8650,8 +8573,8 @@
       "recipeRevision": "2c26ffc5e83fc3bc626f2516235b465e67606bf9",
       "status": "collected",
       "file": "alpine-ifupdown-ng-2c26ffc5e83f.tar.gz",
-      "sha256": "f7e35e9d45e6be62284a6b948a65af118bdf4f7fe5dda5bdd713a57b8aa3236d",
-      "bytes": 87397
+      "sha256": "ae9eebee5b295817ffe231190272e288f188b9014a7f23da2dd982749577c65d",
+      "bytes": 87396
     },
     {
       "id": "alpine/iproute2/3ee752ad0c8445c8105177cd5cebdd730789bcd8",
@@ -8675,8 +8598,8 @@
       "recipeRevision": "3ee752ad0c8445c8105177cd5cebdd730789bcd8",
       "status": "collected",
       "file": "alpine-iproute2-3ee752ad0c84.tar.gz",
-      "sha256": "3f7075d2b38e553f3dc9b0e02205b169963a223409c5e9f0887b95e019537370",
-      "bytes": 964072
+      "sha256": "e6c3ec5219fa2807d640ba1f170f7ba5e475a573abf4720be59000a337edd3f8",
+      "bytes": 964074
     },
     {
       "id": "alpine/iptables/8848fb97f5ec1aa887b836cf412d88eaabe312b6",
@@ -8742,8 +8665,8 @@
       "recipeRevision": "8848fb97f5ec1aa887b836cf412d88eaabe312b6",
       "status": "collected",
       "file": "alpine-iptables-8848fb97f5ec.tar.gz",
-      "sha256": "84e1f3dca9dc43a5f737c25ed5e8f58f4a2f3bfae1e9f8ff4cc1c1a0adb64e28",
-      "bytes": 658657
+      "sha256": "90bcf12ab37484ba575710807e03dfefa9ae801d4357d94445c5d90502ac3652",
+      "bytes": 658661
     },
     {
       "id": "alpine/json-c/8e0faa63c91abd41feb359ce5fe4299a88a57ef1",
@@ -8771,8 +8694,8 @@
       "recipeRevision": "8e0faa63c91abd41feb359ce5fe4299a88a57ef1",
       "status": "collected",
       "file": "alpine-json-c-8e0faa63c91a.tar.gz",
-      "sha256": "5c56607fd7072f6da2cafa05616b17695a1fa6bc6b4d2d242222440f99b0396a",
-      "bytes": 402187
+      "sha256": "0aaed7af1903279b17f3394a74f0a9d6c0ea3d4894ec32749a9cf43fabe3ceaa",
+      "bytes": 402190
     },
     {
       "id": "alpine/kmod/206e7b39f7884d62a174aba4d33a42454518c1c2",
@@ -8805,8 +8728,8 @@
       "recipeRevision": "206e7b39f7884d62a174aba4d33a42454518c1c2",
       "status": "collected",
       "file": "alpine-kmod-206e7b39f788.tar.gz",
-      "sha256": "f0da27d658dc41764149be6c38fca4aeca2a911c02ab3dfb82855695181b43a9",
-      "bytes": 445312
+      "sha256": "78a48fa54f7a0dc0b299c52e7be635ca6f78332cf827f1fdf364ea6e1a245f60",
+      "bytes": 445317
     },
     {
       "id": "alpine/lddtree/007305e7880a70d5c804019aa3da115da732776b",
@@ -8830,8 +8753,8 @@
       "recipeRevision": "007305e7880a70d5c804019aa3da115da732776b",
       "status": "collected",
       "file": "alpine-lddtree-007305e7880a.tar.gz",
-      "sha256": "803b69c376d236ebd9847da155b414e9c489e8084bb2a09456deb75b5092d477",
-      "bytes": 2174148
+      "sha256": "e6265bd90e8f0cefb4a6d227323a08e1aa2aa68d0192d1c58a20cfc690023119",
+      "bytes": 2174155
     },
     {
       "id": "alpine/util-linux/d98c55af59055e6ca60fbe36e171546918709965",
@@ -8971,8 +8894,8 @@
       "recipeRevision": "d98c55af59055e6ca60fbe36e171546918709965",
       "status": "collected",
       "file": "alpine-util-linux-d98c55af5905.tar.gz",
-      "sha256": "3e8a1945e125f31b0b4965d3c045bbc1f397a57e6938bdaa759a3a6ebce1f7d3",
-      "bytes": 10730848
+      "sha256": "c01333d8149fa7198d7e1128352e55a2c88538055f3fc9e58d1305688571484d",
+      "bytes": 10730855
     },
     {
       "id": "alpine/libcap/0c35848136c4c16a1b1672cb812efa88fffef1c2",
@@ -8996,8 +8919,8 @@
       "recipeRevision": "0c35848136c4c16a1b1672cb812efa88fffef1c2",
       "status": "collected",
       "file": "alpine-libcap-0c35848136c4.tar.gz",
-      "sha256": "5bf752695a0d331b871aa9c43b219f07dfad3d06baa2f2b89f7e17d7565a2702",
-      "bytes": 202615
+      "sha256": "41fc0daa8c9c56dfb5f3a8326ab5a6082873ec41b4a02431c6bcf1e5811c0456",
+      "bytes": 202619
     },
     {
       "id": "alpine/openssl/4a4352d83ab03720965454a8c7b30b1b6a996c84",
@@ -9034,8 +8957,8 @@
       "recipeRevision": "4a4352d83ab03720965454a8c7b30b1b6a996c84",
       "status": "collected",
       "file": "alpine-openssl-4a4352d83ab0.tar.gz",
-      "sha256": "9811106a18806b39d550c058de1698f059c78e6281e7fdc05b0eed9d3c9edad9",
-      "bytes": 53135640
+      "sha256": "4cd6d9890826d3b56e8b3b07614202fb212664c7a2fb9ffe7cbb438ddd62f8c4",
+      "bytes": 53135644
     },
     {
       "id": "alpine/libeconf/62db33049768522f381410614d59c7d732f72c3a",
@@ -9063,8 +8986,8 @@
       "recipeRevision": "62db33049768522f381410614d59c7d732f72c3a",
       "status": "collected",
       "file": "alpine-libeconf-62db33049768.tar.gz",
-      "sha256": "072b6c6744226b047ba7ae0f665121a6d494e744e7dc65dd155de6761c91250e",
-      "bytes": 269720
+      "sha256": "8dea899a5c9e4ad96f3a9d82d0f8ba594c1291a843c9dd30c86a4a53341d3bdd",
+      "bytes": 269722
     },
     {
       "id": "alpine/elfutils/8f13294206888f3dd44ed74a8eb3dd9934499e81",
@@ -9104,8 +9027,8 @@
       "recipeRevision": "8f13294206888f3dd44ed74a8eb3dd9934499e81",
       "status": "collected",
       "file": "alpine-elfutils-8f1329420688.tar.gz",
-      "sha256": "c31fdfc3a5414e5064092edc497fd13cdbab769a2e540fd8226bf34ef7d8660e",
-      "bytes": 12029777
+      "sha256": "133f26641aaaa2a18b09484fe92ec2b1570868d90eded9add0084ec8853388c9",
+      "bytes": 12029780
     },
     {
       "id": "alpine/libmnl/fc95c59998285564fbcb0bfb2443898c62e10171",
@@ -9133,8 +9056,8 @@
       "recipeRevision": "fc95c59998285564fbcb0bfb2443898c62e10171",
       "status": "collected",
       "file": "alpine-libmnl-fc95c5999828.tar.gz",
-      "sha256": "91395a0de761c69b34b1765ff4e9870a69665fb1d057c81c434b0bc55552d374",
-      "bytes": 316061
+      "sha256": "bd474a1818a40f17151f6c91ea50713392e9a45e8e8097415b70504c6dfefa59",
+      "bytes": 316064
     },
     {
       "id": "alpine/ncurses/2cee8a7328d061418336ad327b512d96bcd7bc5e",
@@ -9171,8 +9094,8 @@
       "recipeRevision": "2cee8a7328d061418336ad327b512d96bcd7bc5e",
       "status": "collected",
       "file": "alpine-ncurses-2cee8a7328d0.tar.gz",
-      "sha256": "6e981024569dfb86d8743b8c59b8153988c8d5cc038d160cd27821e80e559c18",
-      "bytes": 3796031
+      "sha256": "7009c775e0296baf6c396a5fe80b31d3535684ceb21b697ab5c549d3d1598a31",
+      "bytes": 3796036
     },
     {
       "id": "alpine/libnftnl/80fae26950fd406b1645cfa15aa6eba0b850ecef",
@@ -9196,8 +9119,8 @@
       "recipeRevision": "80fae26950fd406b1645cfa15aa6eba0b850ecef",
       "status": "collected",
       "file": "alpine-libnftnl-80fae26950fd.tar.gz",
-      "sha256": "44e2752978044ca0f0af7e8b50cf4ddf291aebd222b2e1329a5ea2c030679b4c",
-      "bytes": 350413
+      "sha256": "4eec68c436bc405d5e00162c2e8ceb9eac0951a49e3e15a54d25b2ff1564bb7a",
+      "bytes": 350416
     },
     {
       "id": "alpine/linux-lts/52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
@@ -9330,8 +9253,8 @@
       "recipeRevision": "203310a84fe34bc9b8dad2c97cba2f5189303415",
       "status": "collected",
       "file": "alpine-mdev-conf-203310a84fe3.tar.gz",
-      "sha256": "6ffed08e8805b8c7cfbed71dc271c5595ddece576daeddf4f6489242c47138aa",
-      "bytes": 8309
+      "sha256": "117859e39e6881ce2d8a527ff5b873252cd6826e5f851de8564b403c773c4933",
+      "bytes": 8310
     },
     {
       "id": "alpine/mkinitfs/0baaf041a1e43e98a7381cfcaf0895a9204ab3d9",
@@ -9429,8 +9352,8 @@
       "recipeRevision": "f5640d3a10f664c9119720c60515265d3d6f6d01",
       "status": "collected",
       "file": "alpine-musl-f5640d3a10f6.tar.gz",
-      "sha256": "19cefa8a5dbe5595c90489c4bf583836ea916a97043b1c70359a56aa85b994f1",
-      "bytes": 1096666
+      "sha256": "30a5ae8fa5eac8298686f38dcefdc55e7609cef578e8b6691be6a56733668605",
+      "bytes": 1096673
     },
     {
       "id": "alpine/openrc/30c61338b7a04d3c94509eabba5210b7bf81151a",
@@ -9563,8 +9486,8 @@
       "recipeRevision": "30c61338b7a04d3c94509eabba5210b7bf81151a",
       "status": "collected",
       "file": "alpine-openrc-30c61338b7a0.tar.gz",
-      "sha256": "8a82a2d7e6780aea946528ad489927d3f53f42047ce5b8215664e6dcfe0de5c0",
-      "bytes": 287314
+      "sha256": "899921b42c65c2356e3009dcf8e923121dbcc0aa94d3e53130a0addd78f8bc0e",
+      "bytes": 287323
     },
     {
       "id": "alpine/pax-utils/c61801eeacb3ffcd9c2025b09e402153bb93fb39",
@@ -9588,8 +9511,8 @@
       "recipeRevision": "c61801eeacb3ffcd9c2025b09e402153bb93fb39",
       "status": "collected",
       "file": "alpine-pax-utils-c61801eeacb3.tar.gz",
-      "sha256": "9fe0f657f8312953cfa57e4ecc9baf5625fb0715688da62122af59364e72eba4",
-      "bytes": 125085
+      "sha256": "3ed364f411ef5c06d7a49cf8b07974178732df9838761658e116ede4d9c26227",
+      "bytes": 125088
     },
     {
       "id": "alpine/skalibs/f148233038fa9b35932a7996df29f110b32c2160",
@@ -9613,8 +9536,8 @@
       "recipeRevision": "f148233038fa9b35932a7996df29f110b32c2160",
       "status": "collected",
       "file": "alpine-skalibs-f148233038fa.tar.gz",
-      "sha256": "d3409c3ed55bc4f91fe8ee766c432101a5a3ce4f20a5de003c5ab0aa05ffa3bc",
-      "bytes": 268114
+      "sha256": "d095b37b7b982d18ca88f688ee805b762ac315b180543d8ee9c4d1cc94bc54a6",
+      "bytes": 268118
     },
     {
       "id": "alpine/utmps/900a4ecef77ae677eab8243b99f2c40cbf8ea35b",
@@ -9670,8 +9593,8 @@
       "recipeRevision": "900a4ecef77ae677eab8243b99f2c40cbf8ea35b",
       "status": "collected",
       "file": "alpine-utmps-900a4ecef77a.tar.gz",
-      "sha256": "87afe05770592e0fe05d36cc8e2da287388c9622ebadfa498948a29c54f5063d",
-      "bytes": 39438
+      "sha256": "47a38fd800ccdaf4c81fa6d82db312262ade729326a9a68546ef3731e8f09425",
+      "bytes": 39446
     },
     {
       "id": "alpine/xz/0c088d609f9fe69eedd6b4c7f4b99cdad847c20a",
@@ -9720,8 +9643,8 @@
       "recipeRevision": "f248b33b5943c7dc69bf691031d7612ab2e8ed93",
       "status": "collected",
       "file": "alpine-zlib-f248b33b5943.tar.gz",
-      "sha256": "e3c9c14f1b7d163e6829d60b8ba0e3b4e261823aeee191da2b04af4e22c78b59",
-      "bytes": 1504184
+      "sha256": "4cd1c8c1a86f153a82f0ff6ea01149f53382cfd2038a01353cdb8f664c7152eb",
+      "bytes": 1504187
     },
     {
       "id": "alpine/zstd/3c6e2ee2b16f403d53eab39c4426eb61f003c322",
@@ -9745,8 +9668,8 @@
       "recipeRevision": "3c6e2ee2b16f403d53eab39c4426eb61f003c322",
       "status": "collected",
       "file": "alpine-zstd-3c6e2ee2b16f.tar.gz",
-      "sha256": "ebcaf55ddd8bacce538c3bbef22682dd42baa54bf59941d462c45e1286751e66",
-      "bytes": 2451533
+      "sha256": "c76d81bea7813b7f30cb5f05ae936ff15927be97bd75152127fb52bb0304b503",
+      "bytes": 2451540
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-angleproject/2.1.r25748.890b5d8f-6",
@@ -9892,8 +9815,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-brotli-1.2.0-1.tar.gz",
-      "sha256": "872dfc130adbacacf4113196d4cca84c52d4b3bf7b1c2d051efcb199223fb476",
-      "bytes": 646504
+      "sha256": "d9d9ace463b6b99016042e0eed0c504f222679115e9dc8ddbb937214afe2a561",
+      "bytes": 646560
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-bzip2/1.0.8-4",
@@ -10016,8 +9939,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-gcc-libs-16.2.0-3.tar.gz",
-      "sha256": "58c49fd7a49d423c48c29ed20660d569772202b406e14f90505a9c1138e91cb4",
-      "bytes": 107261309
+      "sha256": "da0e816530c44b3dea302b674f547d2d42babc154dfd19ccf574e6069948c1ed",
+      "bytes": 107261431
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-gettext-runtime/1.0-1",
@@ -10062,8 +9985,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-gettext-runtime-1.0-1.tar.gz",
-      "sha256": "aa2effaa3a7a3d136335343967819331183773944613c30df192169e63a013c6",
-      "bytes": 10272386
+      "sha256": "8e91f2aa068cff6fa757bc749fa57d55311dd132f1cb1a0f168a54fa2b92f07e",
+      "bytes": 10272498
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-glib2/2.88.3-1",
@@ -10104,8 +10027,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-glib2-2.88.3-1.tar.gz",
-      "sha256": "def30f15d560e62d41ed89146056a4a4e0f6394deab87ca7cc52452c97acb0c1",
-      "bytes": 5803719
+      "sha256": "ca309464651cdb13a6b9e3fa4a328a21288c39b2d18dfcf533a8f9e447af0933",
+      "bytes": 5803922
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-gmp/6.3.0-2",
@@ -10134,8 +10057,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-gmp-6.3.0-2.tar.gz",
-      "sha256": "9d0545d2c60f95c0e3e06481c90625de36c3160a7acd6be1620984f9284282a0",
-      "bytes": 2099505
+      "sha256": "07ab190d47b6eb26522bc75d63804260d383deccb8f8a4aac2d2ad96a3a87861",
+      "bytes": 2099616
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-gnutls/3.8.13-3",
@@ -10172,8 +10095,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-gnutls-3.8.13-3.tar.gz",
-      "sha256": "9c17a1908a75c24566469361ce33722be768291ab3a8c82502478243d14e630f",
-      "bytes": 7283801
+      "sha256": "ac29e95470d5450e738c51911c004e7351ca8661ac755241ce128097765bf794",
+      "bytes": 7283917
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libepoxy/1.5.10-7",
@@ -10206,8 +10129,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libepoxy-1.5.10-7.tar.gz",
-      "sha256": "2b515487ee80141fe95d985dcf465c3a1816fc882e8fd87cecf946d38f6d4d95",
-      "bytes": 337020
+      "sha256": "8ad8e8070d2be6ae7a1691dab1cf6e74d52575c67b6c34d14fe7e3df6bd9a0f3",
+      "bytes": 337065
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libffi/3.8.0-1",
@@ -10262,8 +10185,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libiconv-1.19-1.tar.gz",
-      "sha256": "16e56a5643d0ee5e5b6ee7b0b28360895ca20f65dd667590617c78c55c265f67",
-      "bytes": 5186865
+      "sha256": "3233521461011573901334d50e01ccd54d2f1ecc71b2d37553bfcc13f3041cba",
+      "bytes": 5186955
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libidn2/2.3.8-4",
@@ -10284,8 +10207,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libidn2-2.3.8-4.tar.gz",
-      "sha256": "accc58e2683b5b6455748359b1933e30c69380cf4249c393bfbd370911dbea11",
-      "bytes": 2221328
+      "sha256": "dbe3dd2289fdabffc0d6f257bc7e81e2a63ea34ab3ba74d967cba1172ea7f3e3",
+      "bytes": 2221458
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libjpeg-turbo/3.2.0-1",
@@ -10314,8 +10237,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libjpeg-turbo-3.2.0-1.tar.gz",
-      "sha256": "384cf956f9441bb15e7063270c417da5a5e5c8f04f04dceaa40c3a34e518bb98",
-      "bytes": 2539244
+      "sha256": "0f1e71752ea729a7ef6f038e47bed5e0361b5c7f733ab11aa35c6955885af628",
+      "bytes": 2539355
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libpng/1.6.58-1",
@@ -10336,8 +10259,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libpng-1.6.58-1.tar.gz",
-      "sha256": "51c935a346eb06b1f5f5c09566fe90d1b45c2f098beeb8033a9023223a2d694e",
-      "bytes": 1085061
+      "sha256": "03c333cdb3d96cc70dd9d9f4a9a08d31e0191c6606e055cb71d7c950c572f3cd",
+      "bytes": 1085178
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libslirp/4.9.3-1",
@@ -10354,8 +10277,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libslirp-4.9.3-1.tar.gz",
-      "sha256": "c0d4ddc143598e0bbb23b74add12f0070b294736017c0ead7869c55ebf2f30d4",
-      "bytes": 137533
+      "sha256": "787ed207279ae38791d6e36e20da711ef14808be48ffe9473a8364140fafb327",
+      "bytes": 137589
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libtasn1/4.21.0-1",
@@ -10376,8 +10299,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libtasn1-4.21.0-1.tar.gz",
-      "sha256": "01674e1a28013774055bec0e967931503d4a064adbfe4e73666ff9a776ad2a45",
-      "bytes": 1814800
+      "sha256": "23f4ba1539a4a92b521057e65c2cd4e15519f3ceeaace2b06890954b3223bf77",
+      "bytes": 1814915
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libunistring/1.4.2-1",
@@ -10398,8 +10321,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-libunistring-1.4.2-1.tar.gz",
-      "sha256": "3905fb434ab01abd52e6acdda57ad97de9fd5b246828ad0eef43179af70417af",
-      "bytes": 4801581
+      "sha256": "58daf4b7064dccda32fe3dd105d6f7c4221b287d55749b5c677f6efe8f39881a",
+      "bytes": 4801691
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-libwinpthread/14.0.0.r353.g6df76fa52-2",
@@ -10443,8 +10366,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-nettle-4.0-1.tar.gz",
-      "sha256": "03e5cd02e8b0f51b9db207c94a22604d13fe9db97908dff68c37df33b22971c2",
-      "bytes": 2632119
+      "sha256": "a81def33b5446b3ba4bcab1d2e24a1aae6849a43fee466637491cf02350fcd14",
+      "bytes": 2632222
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-openssl/3.6.4-1",
@@ -10539,8 +10462,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-p11-kit-0.26.5-1.tar.gz",
-      "sha256": "4c40880b2b6d083bce602c3f8e81381bddf37b7d5fff848db9b8812d3962f072",
-      "bytes": 1096826
+      "sha256": "4ba2d92041684ecb0dedd5d20d3172e69aebc7dc275a7819931945e6492f6824",
+      "bytes": 1096948
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-pcre2/10.48-3",
@@ -10583,8 +10506,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-pixman-0.46.4-3.tar.gz",
-      "sha256": "da7eff54ea2b9505f6353d3fe666a6a59d73122186a71626ecb29daf4729dbbb",
-      "bytes": 664486
+      "sha256": "131db8ec8b2129b533deb302442bfec6750a55fcf4f9e6f3533e743087e784b8",
+      "bytes": 664590
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-virglrenderer/1.3.0-1",
@@ -10609,8 +10532,8 @@
         }
       ],
       "file": "msys-mingw-w64-ucrt-x86_64-virglrenderer-1.3.0-1.tar.gz",
-      "sha256": "1380f9fe2b2a26c93c74b86c5b1460dd0b33881cc9ad978fb2fe73a7e12fbebc",
-      "bytes": 908946
+      "sha256": "c4c65e33c6a39c3a31ec4742c418bc33feb858085a7ecbbe53a2a0fee7b06131",
+      "bytes": 908990
     },
     {
       "id": "msys/mingw-w64-ucrt-x86_64-zlib/1.3.2-2",
@@ -13370,12 +13293,12 @@
       },
       "scope": "Pinned recipes, module/source patches and actual inline manifests; raw logs included when retained",
       "file": "oci-patched-build-provenance.tar.gz",
-      "sha256": "e5becd97cfa67d9364fea82ecf6c666c613d97cc83ef087c1faf93ddcdced0c2",
-      "bytes": 228665
+      "sha256": "7b8d2a22c090a9e19f20b6a5e568883986bc358ab702caf7331e0cc0c1f81b11",
+      "bytes": 3056212
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "9379f342af4b2790225ec87e7743dc9edb09830274f92b0b8990e7c40f71cafa",
+  "reviewFingerprint": "149e4efd687e3aa1f85b0d903ccce186b2338b61fdade8eebaf73c09967e22f2",
   "review": {
     "status": "pending",
     "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",
@@ -13384,7 +13307,7 @@
     "evidence": "docs/compliance-status.md; compliance/evidence; docs/rebuilding-third-party.txt",
     "scope": "Historical staging source/notices and exact runtime reviewed on 2026-09-14. The current appliance and application changes are not yet approved for distribution.",
     "decisions": [
-      "Original Yougori code uses the owner's selected AGPL-3.0-only plus NOTICE, with a separate paid commercial option limited to rights Yougori LLC can grant. Third-party licenses remain valid. This license choice does not establish compatibility of an otherwise incompatible combination.",
+      "Original Yougori code uses the owner's selected AGPL-3.0-only plus NOTICE, with a separate paid commercial option limited to rights its identified licensor can grant. Third-party licenses remain valid. This license choice does not establish compatibility of an otherwise incompatible combination.",
       "QEMU is built from the supplied pinned upstream source and GPL-compatible local modifications; the retired JACK/Berkeley DB import chain is absent.",
       "QEMU exchanges TPM wire commands with a separate BSD helper; no QEMU internal objects or OpenSSL library are linked into QEMU through that helper.",
       "GMP, Nettle and libunistring use their upstream GPL-2.0-or-later library option; original license declarations and full GPLv2 text are retained.",
@@ -13407,7 +13330,8 @@
       "Twenty JavaScript compliance regressions and thirteen Python collector/native-source regressions passed; source/archive, full payload and staging CI results are recorded with the remediation evidence.",
       "The AGPL/commercial change affects licensing text, package metadata and corresponding-source records. Native executable and DLL bytes are unchanged; paid terms cannot remove third-party GPL/LGPL/MPL obligations. A commercial license requires a separate written agreement and sufficient ownership/contributor rights.",
       "Application source delivery now includes the tracked frontend, Rust backend, CLI, manifests/lockfiles, assets and scripts in a separate indexed application archive. The packaging gate verifies the current file manifest and actual archive entries, including omissions after archive rehashing. This extends the prior checker coverage; zero recorded blockers is not a blanket legal certification.",
-      "The unresolved September 10 installer download links were removed from staging README. COPYING is the installer license display file, and an extracted/installed-resource checker compares notices with the reviewed checkout. Actual new installer inspection is deferred until those installers are built; historical source gaps remain unresolved."
+      "The unresolved September 10 installer download links were removed from staging README. COPYING is the installer license display file, and an extracted/installed-resource checker compares notices with the reviewed checkout. Actual new installer inspection is deferred until those installers are built; historical source gaps remain unresolved.",
+      "2026-10-11: the Windows QEMU, secure QEMU/TPM, GPU bridge and boot-helper rebuilds after the product rename were reviewed against the previously reviewed PE inventory. Five helpers were only renamed (opendock-* to yougori-*) with identical import tables; both qemu-system-x86_64, qemu-img and both libEGL bridges were rebuilt from recorded sources with unchanged import tables; no DLL was added or removed, every DLL has collected source provenance, and runtime inspection found no JACK/Berkeley DB/TPM/OpenSSL import chain in QEMU. compliance/native.json records that inventory. The appliance, CUDA payload and cloud-share binaries were rebuilt from the renamed sources with the pinned Go 1.27.2 and private musl toolchains. This is an engineering review, not a distribution approval."
     ],
     "currentAudit": {
       "date": "2026-09-29",

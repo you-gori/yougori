@@ -10,10 +10,10 @@ import sys
 import tarfile
 
 PAYLOAD_FILES = (
-    "/usr/local/sbin/opendock-agent",
-    "/usr/local/sbin/opendock-mount-helper",
+    "/usr/local/sbin/yougori-agent",
+    "/usr/local/sbin/yougori-mount-helper",
     "/usr/local/sbin/yougori-upgrade-root",
-    "/etc/init.d/opendock-agent",
+    "/etc/init.d/yougori-agent",
     "/etc/init.d/containerd",
     "/etc/containerd/config.toml",
     "/etc/sysctl.d/90-yougori-security.conf",

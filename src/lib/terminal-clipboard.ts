@@ -19,9 +19,10 @@ const osc52Gesture = 2000, osc52Limit = 1024 * 1024
 
 /**
  * Text a guest program asked to copy with OSC 52 (`Pc;base64`), or null. TUIs such
- * as Codex copy their own mouse selections this way. Only writes are honoured, and
+ * as Codex copy their own mouse selections this way. Only writes are considered, and
  * only right after the user clicked or typed in that focused terminal, so background
- * output cannot replace the clipboard. Clipboard reads (`?`) are never answered.
+ * output cannot replace the clipboard. The terminal still asks the user before the
+ * first copy reaches the clipboard. Clipboard reads (`?`) are never answered.
  */
 export function osc52CopyText(data: string, sinceGestureMs: number, focused: boolean): string | null {
   if (!focused || sinceGestureMs < 0 || sinceGestureMs > osc52Gesture || data.length > osc52Limit) return null

@@ -24,7 +24,6 @@ import { guestFileFixture } from "@/lib/guest-file-fixture"
 
 const STORAGE_KEY = "yougori.platform.v1"
 const BUILTIN_MICRO_VM_SOURCE = "builtin:alpine"
-const CLI_ENVIRONMENT_NAME = "Yougori CLI"
 
 export interface InstalledSkills {
   environmentId: string
@@ -70,6 +69,7 @@ function readBrowserState(): PlatformState {
 
 function writeBrowserState(state: PlatformState) {
   enableAutomaticAllocation(state)
+  state.stateRevision = (state.stateRevision ?? 0) + 1
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
   } catch {
@@ -223,35 +223,6 @@ export const platformApi = {
     return run<boolean>("open_environment_window", { environmentId }, () => false)
   },
 
-  // The CLI itself runs inside a microVM. The browser preview models the same
-  // environment so its permissions behave like every other guest; real grants
-  // and guest commands still require the desktop runtime.
-  openIsolatedCli() {
-    return run<string>("open_isolated_cli", {}, async () => {
-      const existing = readBrowserState().environments.find(environment => environment.name === CLI_ENVIRONMENT_NAME)
-      const created = existing ?? (await platformApi.createEnvironment({
-        name: CLI_ENVIRONMENT_NAME,
-        kind: "microVm",
-        provider: "qemu",
-        runtime: BUILTIN_MICRO_VM_SOURCE,
-        networkAccess: true,
-        description: "Isolated Yougori CLI. No PC access by default. Grant selected PC folders and environment control explicitly.",
-        resourcePolicy: { cpu: { min: 1, preferred: 1, max: 2 }, memoryGb: { min: 0.5, preferred: 0.5, max: 2 }, priority: "normal", dynamic: true },
-      })).environments.find(environment => environment.name === CLI_ENVIRONMENT_NAME)
-      if (!created) throw new Error("CLI environment was not created")
-      const next = await platformApi.setEnvironmentStatus(created.id, "running")
-      next.cliEnvironmentId = created.id
-      writeBrowserState(next)
-      return created.id
-    })
-  },
-
-  grantIsolatedCliEnvironment(environmentId: string, permission: string) {
-    return run<{ grant: { id: string }; command: string }>("grant_isolated_cli_environment", { environmentId, permission }, () => {
-      throw new Error("Granting an environment to the isolated CLI requires Yougori Desktop")
-    })
-  },
-
   closeEnvironmentWindow() {
     return run<void>("close_environment_window", undefined, () => { window.close() })
   },
@@ -259,7 +230,8 @@ export const platformApi = {
   resetPlatform() {
     return run<PlatformState>("reset_platform_state", undefined, () => {
       Object.keys(localStorage).filter(key => key.startsWith(`${STORAGE_KEY}.disk.`)).forEach(key => localStorage.removeItem(key))
-      return writeBrowserState(cloneSeed())
+      // Keep revisions increasing so open windows accept the reset state.
+      return writeBrowserState({ ...cloneSeed(), stateRevision: readBrowserState().stateRevision })
     })
   },
 

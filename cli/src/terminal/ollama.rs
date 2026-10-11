@@ -18,7 +18,7 @@ fn session_id(id: &str) -> String {
 }
 fn server_command() -> String {
     format!(
-        "{TOOL_ENV}; export OLLAMA_HOST=http://127.0.0.1:11434; cd /workspace && exec ollama serve"
+        "{TOOL_ENV}; export OLLAMA_HOST=http://127.0.0.1:11434; mkdir -p /workspace && cd /workspace && exec ollama serve"
     )
 }
 fn model(entry: &str) -> Result<String, String> {
@@ -242,6 +242,8 @@ mod tests {
         let command = server_command();
         assert!(command.contains("OLLAMA_HOST=http://127.0.0.1:11434"));
         assert!(!command.contains("3000"));
+        // A new sandbox has no /workspace until something creates it.
+        assert!(command.contains("mkdir -p /workspace && cd /workspace && "));
         assert!(command.ends_with("exec ollama serve"));
     }
     #[test]

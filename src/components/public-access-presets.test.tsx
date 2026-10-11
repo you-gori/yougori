@@ -2,38 +2,15 @@
 import "@testing-library/jest-dom/vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
-import { PublicAccessPresets, SavedSetupCard } from "./public-access-presets"
+import { PublicAccessPresets } from "./public-access-presets"
 import { workspaceApi, type SetupTunnelConnection } from "@/api/workspace-api"
-import type { PublicAccessPreset } from "@/lib/public-access-presets"
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks() })
-
-it("hides each saved domain until its eye button is pressed", () => {
-  const onManage = vi.fn()
-  const clickEndpoint = vi.fn()
-  const preset = { id: "a92e7be0-285b-413e-bf58-dc43ad13b790", hostname: "private.example.com", port: 3000, hostPort: 45000, credentialEnvironmentId: "presets" } as PublicAccessPreset
-  render(<SavedSetupCard preset={preset} onManage={onManage} wiring={{ active: null, hovered: null, clickEndpoint, pointerDown: vi.fn() }} />)
-
-  expect(screen.queryByText("private.example.com")).not.toBeInTheDocument()
-  expect(screen.getByText(":3000")).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Manage saved setup, app port 3000" })).not.toHaveAttribute("title", expect.stringContaining(preset.hostname))
-
-  fireEvent.click(screen.getByRole("button", { name: "Show domain for port 3000" }))
-  expect(screen.getByText("private.example.com")).toBeInTheDocument()
-  expect(onManage).not.toHaveBeenCalled()
-
-  fireEvent.click(screen.getByRole("button", { name: "Hide domain for port 3000" }))
-  expect(screen.queryByText("private.example.com")).not.toBeInTheDocument()
-
-  fireEvent.click(screen.getByRole("button", { name: "Connect saved setup for app port 3000" }))
-  expect(clickEndpoint).toHaveBeenCalledWith({ kind: "preset", id: preset.id })
-  expect(onManage).not.toHaveBeenCalled()
-})
 
 const setup = { id: "a92e7be0-285b-413e-bf58-dc43ad13b790", hostname: "app.example.com", port: 3000, hostPort: 45000, credentialEnvironmentId: "public-presets" }
 function openSetups() {
   localStorage.setItem("yougori.public-access-presets.v1", JSON.stringify([setup]))
-  render(<PublicAccessPresets environments={[]} refresh={vi.fn()} wiring={{ active: null, hovered: null, clickEndpoint: vi.fn(), pointerDown: vi.fn() }} />)
+  render(<PublicAccessPresets environments={[]} refresh={vi.fn()} />)
   act(() => window.dispatchEvent(new Event("yougori-open-public-presets-manager")))
 }
 

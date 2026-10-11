@@ -48,6 +48,33 @@ fn path(runtime: &RuntimeManager, id: &str) -> Result<PathBuf, String> {
         .join("changes")
         .join(format!("{id}.json")))
 }
+/// The environment's baseline file, resolved before deletion removes its storage route.
+pub(crate) fn baseline_path(runtime: &RuntimeManager, id: &str) -> Result<PathBuf, String> {
+    path(runtime, id)
+}
+
+/// Baselines hold copies of shared-folder text, so none may outlive its environment.
+/// Files written in the last ten minutes are left for an environment still being created.
+/// Returns the bytes freed and any files that could not be removed.
+pub(crate) fn remove_orphans(runtime: &RuntimeManager, live: &BTreeSet<String>) -> (u64, Vec<String>) {
+    let (mut freed, mut warnings) = (0, Vec::new());
+    for root in runtime.storage_pool_roots() {
+        let Ok(entries) = std::fs::read_dir(root.join("changes")) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".json").filter(|id| id.starts_with("env-")) else { continue };
+            let Ok(metadata) = entry.metadata() else { continue };
+            let fresh = metadata.modified().ok().and_then(|at| at.elapsed().ok()).is_none_or(|age| age < Duration::from_secs(600));
+            if live.contains(id) || !metadata.is_file() || fresh { continue; }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => freed += metadata.len(),
+                Err(error) => warnings.push(format!("Remove the change baseline of deleted {id}: {error}")),
+            }
+        }
+    }
+    (freed, warnings)
+}
+
 fn load(path: &Path) -> Result<Option<Baseline>, String> {
     if !path.try_exists().map_err(|e| e.to_string())? {
         return Ok(None);
@@ -488,5 +515,26 @@ mod tests {
         let b = BTreeMap::from([("TOKEN".into(), "new-secret".into())]);
         let diff = map_changes(&a, &b, true);
         assert!(!serde_json::to_string(&diff).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn baselines_of_deleted_environments_are_removed() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        let changes = runtime.storage_root().join("changes");
+        std::fs::create_dir_all(&changes).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for name in ["env-live.json", "env-gone.json", "env-new.json", "notes.txt"] {
+            std::fs::write(changes.join(name), b"{}").unwrap();
+            if name != "env-new.json" {
+                std::fs::File::options().write(true).open(changes.join(name)).unwrap().set_modified(old).unwrap();
+            }
+        }
+        let live = BTreeSet::from(["env-live".to_string()]);
+        let (freed, warnings) = remove_orphans(&runtime, &live);
+        assert_eq!((freed, warnings.len()), (2, 0));
+        assert!(!changes.join("env-gone.json").exists(), "deleted environment's copy of folder text is gone");
+        assert!(changes.join("env-live.json").exists() && changes.join("env-new.json").exists() && changes.join("notes.txt").exists());
+        assert_eq!(baseline_path(&runtime, "env-live").unwrap(), changes.join("env-live.json"));
     }
 }

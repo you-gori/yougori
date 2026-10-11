@@ -85,7 +85,7 @@ impl PerfSpan {
             name,
             started: Instant::now(),
             enabled: std::env::var_os("YOUGORI_PERF_TRACE").is_some()
-                || std::env::var_os("OPENDOCK_PERF_TRACE").is_some(),
+                || std::env::var_os("YOUGORI_PERF_TRACE").is_some(),
         }
     }
 }
@@ -105,6 +105,10 @@ impl Drop for PerfSpan {
 #[derive(Debug, Clone)]
 struct RuntimeLayout {
     root: PathBuf,
+    /// QEMU shipped with Yougori and listed in its own SHA256SUMS: runtime/qemu on Windows
+    /// and in the macOS app. None when Linux packages or, for macOS development, Homebrew
+    /// provide it.
+    bundled_qemu: Option<PathBuf>,
     qemu_system: PathBuf,
     qemu_img: PathBuf,
     appliance_base: PathBuf,
@@ -181,6 +185,7 @@ pub struct RuntimeManager {
     settings_root: PathBuf,
     volumes: volumes::Volumes,
     workload_shares: Mutex<HashMap<String, (String, Vec<crate::host_files::HostFolderServer>)>>,
+    workload_binds: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     pub cloud: cloud::Cloud,
     cuda: yougori_cuda_runtime::CudaRuntime,
     fabric: fabric::Fabric,
@@ -223,6 +228,12 @@ impl RuntimeManager {
     }
     pub fn storage_root(&self) -> &Path { &self.data_root }
 
+    /// Status reads must not queue behind a boot, live growth or recovery that
+    /// can hold the shared appliance for minutes. `None` means it is busy.
+    async fn appliance_peek(&self) -> Option<tokio::sync::MutexGuard<'_, Option<ApplianceProcess>>> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), self.appliance.lock()).await.ok()
+    }
+
     pub fn new(resource_directory: &Path, app_data_directory: &Path) -> Result<Self, String> {
         let layout = RuntimeLayout::discover(resource_directory)?;
         Self::new_with_layout(resource_directory, app_data_directory, layout)
@@ -257,7 +268,10 @@ impl RuntimeManager {
             .map_err(|error| format!("create Yougori snapshot directory: {error}"))?;
         fs::create_dir_all(data_root.join("bases"))
             .map_err(|error| format!("create Yougori base image directory: {error}"))?;
+        // Every runtime endpoint is a private loopback agent. Never send its
+        // bearer token to an HTTP(S)_PROXY/ALL_PROXY from the environment.
         let client = Client::builder()
+            .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(35 * 60))
             .user_agent(concat!("Yougori/", env!("CARGO_PKG_VERSION")))
@@ -268,6 +282,7 @@ impl RuntimeManager {
             settings_root: data_root.clone(),
             volumes: volumes::Volumes::new(&data_root)?,
             workload_shares: Mutex::new(HashMap::new()),
+            workload_binds: Mutex::new(HashMap::new()),
             cloud: cloud::Cloud::new(data_root.join("cloud")),
             cuda: yougori_cuda_runtime::CudaRuntime::new(cuda::cuda_directory(&data_root)?)?,
             fabric: fabric::Fabric::default(),
@@ -302,7 +317,7 @@ impl RuntimeManager {
                 name: "Yougori OCI Runtime".into(),
                 kind: ProviderKind::Container,
                 status: ProviderAvailability::Ready,
-                detail: if cfg!(target_os = "macos") { "macOS preview · x86-64 container appliance · Homebrew QEMU required; no GPU/CUDA" } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) { "Linux ARM64 · x86-64 container appliance through QEMU software emulation; no GPU/CUDA" } else if cfg!(target_os = "linux") { "Bundled containerd appliance · Linux QEMU/KVM" } else { "Bundled containerd appliance · no external runtime required" }.into(),
+                detail: if cfg!(all(target_os = "macos", target_arch = "aarch64")) { "Bundled containerd appliance · x86-64 guests through QEMU software emulation on Apple Silicon; no GPU/CUDA" } else if cfg!(target_os = "macos") { "Bundled containerd appliance · Apple Hypervisor framework; no GPU/CUDA" } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) { "Linux ARM64 · x86-64 container appliance through QEMU software emulation; no GPU/CUDA" } else if cfg!(target_os = "linux") { "Bundled containerd appliance · Linux QEMU/KVM" } else { "Bundled containerd appliance · no external runtime required" }.into(),
             },
             ProviderStatus {
                 id: "provider-yougori-qemu".into(),
@@ -364,9 +379,11 @@ impl Drop for RuntimeManager {
 
 impl RuntimeLayout {
     fn qemu_data(&self) -> PathBuf {
-        if cfg!(target_os = "linux") { PathBuf::from("/usr/share/qemu") }
-        else if cfg!(target_os = "macos") { host_platform::macos_qemu_prefix(std::env::consts::ARCH).join("share/qemu") }
-        else { self.root.join("qemu/share") }
+        match &self.bundled_qemu {
+            Some(directory) => directory.join("share"),
+            None if cfg!(target_os = "macos") => host_platform::macos_qemu_prefix(std::env::consts::ARCH).join("share/qemu"),
+            None => PathBuf::from("/usr/share/qemu"),
+        }
     }
 
     fn discover(resource_directory: &Path) -> Result<Self, String> {
@@ -400,6 +417,7 @@ impl RuntimeLayout {
             ""
         };
         let mut layout = Self {
+            bundled_qemu: Some(root.join("qemu")),
             qemu_system: root
                 .join("qemu")
                 .join(format!("qemu-system-x86_64{executable_suffix}")),
@@ -419,13 +437,26 @@ impl RuntimeLayout {
             layout.qemu_img = PathBuf::from("/usr/bin/qemu-img");
             layout.uefi_code = PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd");
             layout.uefi_vars = PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd");
+            layout.bundled_qemu = None;
         }
         if cfg!(target_os = "macos") {
-            let prefix = host_platform::macos_qemu_prefix(std::env::consts::ARCH);
-            layout.qemu_system = prefix.join("bin/qemu-system-x86_64");
-            layout.qemu_img = prefix.join("bin/qemu-img");
-            layout.uefi_code = prefix.join("share/qemu/edk2-x86_64-code.fd");
-            layout.uefi_vars = prefix.join("share/qemu/edk2-i386-vars.fd");
+            // The app's own runtime. A development build may name one built by
+            // `npm run macos:runtime`, or use a native Homebrew QEMU.
+            let bundled = std::env::var_os("YOUGORI_MACOS_QEMU_DIR").map(PathBuf::from).unwrap_or_else(|| layout.root.join("qemu"));
+            if bundled.join("qemu-system-x86_64").is_file() {
+                layout.qemu_system = bundled.join("qemu-system-x86_64");
+                layout.qemu_img = bundled.join("qemu-img");
+                layout.uefi_code = bundled.join("share/edk2-x86_64-code.fd");
+                layout.uefi_vars = bundled.join("share/edk2-i386-vars.fd");
+                layout.bundled_qemu = Some(bundled);
+            } else {
+                let prefix = host_platform::macos_qemu_prefix(std::env::consts::ARCH);
+                layout.qemu_system = prefix.join("bin/qemu-system-x86_64");
+                layout.qemu_img = prefix.join("bin/qemu-img");
+                layout.uefi_code = prefix.join("share/qemu/edk2-x86_64-code.fd");
+                layout.uefi_vars = prefix.join("share/qemu/edk2-i386-vars.fd");
+                layout.bundled_qemu = None;
+            }
         }
         Ok(layout)
     }
@@ -441,8 +472,10 @@ impl RuntimeLayout {
             &self.uefi_vars,
         ] {
             if !path.is_file() {
-                let help = if cfg!(target_os = "macos") {
-                    "On macOS, install native Homebrew QEMU with 'brew install qemu' (not under Rosetta), then reopen Yougori. See docs/macos.md."
+                let help = if self.bundled_qemu.is_some() || cfg!(windows) {
+                    "Reinstall Yougori to restore its runtime files."
+                } else if cfg!(target_os = "macos") {
+                    "This development build uses Homebrew QEMU: run 'brew install qemu' natively (not under Rosetta), or set YOUGORI_MACOS_QEMU_DIR to a runtime from 'npm run macos:runtime'. See docs/macos.md."
                 } else if cfg!(target_os = "linux") {
                     "On Linux, install qemu-system-x86, qemu-utils and ovmf using your package manager."
                 } else { "Reinstall Yougori to restore its runtime files." };
@@ -473,12 +506,10 @@ impl RuntimeLayout {
             "appliance",
             appliance_cache,
         )?;
-        let qemu = if cfg!(any(target_os = "linux", target_os = "macos")) { None } else { Some(verify_checksum_manifest(
-            &self.root.join("qemu"),
-            &self.root.join("qemu/SHA256SUMS"),
-            "qemu",
-            qemu_cache,
-        )?) };
+        let qemu = match &self.bundled_qemu {
+            Some(directory) => Some(verify_checksum_manifest(directory, &directory.join("SHA256SUMS"), "qemu", qemu_cache)?),
+            None => None,
+        };
         let appliance_base_digest = appliance
             .files
             .iter()

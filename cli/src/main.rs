@@ -61,7 +61,18 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
             println!("{}", yougori_cli::bounty::HELP);
         } else if let Some(result) = yougori_cli::bounty::run(&args).await? {
-            println!("{}", wire_json(result));
+            // People get readable views; scripts and pipes keep the JSON contract.
+            let terminal = output::stdout_terminal();
+            let action = if args[0] == "bounty" { args.get(1).map(String::as_str) } else { None };
+            if terminal && result["detached"] == true {
+                // The interactive view already closed with its own summary.
+            } else if terminal && result["cancelled"] == true {
+                println!("{}", presentation::text("Cancelled. Nothing else was changed."));
+            } else if let Some(view) = action.filter(|_| terminal).and_then(|action| output::bounty(action, &result, output::stdout_color())) {
+                print!("{}", presentation::text(&view));
+            } else {
+                println!("{}", wire_json(result));
+            }
         }
         return Ok(0);
     }
@@ -97,10 +108,12 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
     if args.first().is_some_and(|s| s == "vault") {
         return yougori_cli::vault::run(&args[1..]).await;
     }
+    // Words after `--` belong to the guest command, never to Yougori's own help.
+    let own = &args[..args.iter().position(|a| a == "--").unwrap_or(args.len())];
     if matches!(args[0].as_str(), "help" | "--help" | "-h")
-        || (args[0] == "model" && args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")))
+        || (args[0] == "model" && own.iter().any(|a| matches!(a.as_str(), "--help" | "-h")))
         || (args.len() <= 4
-            && args
+            && own
                 .last()
                 .is_some_and(|s| matches!(s.as_str(), "--help" | "-h")))
     {
@@ -348,15 +361,17 @@ Refreshing every 2 seconds * Ctrl+C to leave
         }
     } else { None };
     let invocation = parse::parse(&parsed_args, input)?;
+    // A dry run of quit is validated by the engine like any other request.
+    let quit = invocation.request.method == "app_quit" && !invocation.request.dry_run;
     let mut result = launcher::command_progress(&args, async {
-        let mut result = if invocation.request.method == "app_quit" {
+        let mut result = if quit {
             client::quit().await?
         } else {
             client::call(&invocation.request).await?
         };
         let explicit_wait = args.starts_with(&["jobs".into(), "wait".into()]);
         // A quit's job ends with the engine, so there is nothing left to wait on.
-        if invocation.request.method == "app_quit" {
+        if quit {
             // client::quit preserves verified cleanup stages and explicit
             // uncertainty; do not replace them with an unconditional success.
         } else if !invocation.no_wait && (result["accepted"] == true || explicit_wait) {

@@ -89,10 +89,12 @@ func changeHostEntry(pid int, id, entry string) error {
 	if err != nil {
 		return err
 	}
-	marker := "# opendock:" + id
+	marker := "# yougori:" + id
+	legacyMarker := legacyHostsMarkerPrefix + id
 	filtered := make([]string, 0)
 	for _, line := range strings.Split(string(contents), "\n") {
-		if !strings.HasSuffix(strings.TrimSpace(line), marker) {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasSuffix(trimmed, marker) && !strings.HasSuffix(trimmed, legacyMarker) {
 			filtered = append(filtered, line)
 		}
 	}

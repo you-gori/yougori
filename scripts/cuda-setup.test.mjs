@@ -98,15 +98,15 @@ $ErrorActionPreference = 'Stop'
 . $Helper
 if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected the Windows PowerShell used by packaged setup' }
 $normalized = Get-CudaWindowsPath $Candidate
-$sibling = Join-Path ([IO.Path]::GetDirectoryName($normalized)) 'opendock-mount-helper'
+$sibling = Join-Path ([IO.Path]::GetDirectoryName($normalized)) 'yougori-mount-helper'
 @{ path = $normalized; sibling = $sibling } | ConvertTo-Json -Compress
 `)
     // GitHub's Windows TEMP can contain an 8.3 alias such as RUNNER~1.
     // Keep that spelling as input; .NET Framework expands it to the long path.
     const canonicalRoot = await realpath(root)
-    const unc = "\\\\server\\share\\CUDA files\\opendock-agent"
+    const unc = "\\\\server\\share\\CUDA files\\yougori-agent"
     for (const [candidate, expected] of [
-      [join(root, "CUDA [files] & spaces", "opendock-agent"), join(canonicalRoot, "CUDA [files] & spaces", "opendock-agent")],
+      [join(root, "CUDA [files] & spaces", "yougori-agent"), join(canonicalRoot, "CUDA [files] & spaces", "yougori-agent")],
       [unc, unc],
     ]) {
       const prefixed = candidate.startsWith("\\\\") ? `\\\\?\\UNC\\${candidate.slice(2)}` : extended(candidate)
@@ -116,7 +116,7 @@ $sibling = Join-Path ([IO.Path]::GetDirectoryName($normalized)) 'opendock-mount-
         assert.equal(result.status, 0, result.stderr)
         const output = JSON.parse(result.stdout.trim())
         assert.equal(output.path, expected)
-        assert.equal(output.sibling, expected.replace(/opendock-agent$/, "opendock-mount-helper"))
+        assert.equal(output.sibling, expected.replace(/yougori-agent$/, "yougori-mount-helper"))
       }
     }
     for (const candidate of ["relative\\agent", "C:agent", "\\agent"]) {
@@ -138,7 +138,7 @@ test("packaged CUDA update stages every helper from canonical paths and reports 
     const payload = join(root, "Bundled payload")
     await Promise.all([mkdir(data), mkdir(assets), mkdir(payload)])
     for (const name of ["install.ps1", "paths.ps1", "wsl.conf", "setup.sh", "start.sh", "install-oci.py"]) await cp(join(runtime, name), join(assets, name))
-    const payloadNames = ["opendock-agent", "opendock-mount-helper", "opendock-cuda-probe", "yougori-oci-runtime-linux-amd64.tar.gz", "yougori-oci-runtime-linux-amd64.manifest.json", "yougori-nvidia-cdi-linux-amd64.tar.gz", "yougori-nvidia-cdi-linux-amd64.manifest.json"]
+    const payloadNames = ["yougori-agent", "yougori-mount-helper", "yougori-cuda-probe", "yougori-oci-runtime-linux-amd64.tar.gz", "yougori-oci-runtime-linux-amd64.manifest.json", "yougori-nvidia-cdi-linux-amd64.tar.gz", "yougori-nvidia-cdi-linux-amd64.manifest.json"]
     for (const name of payloadNames) await writeFile(join(payload, name), name)
     await writeFile(join(payload, "SHA256SUMS"), payloadNames.map(name => `${createHash("sha256").update(name).digest("hex")}  ${name}\n`).join(""))
     await writeFile(join(data, "installed.json"), "existing manifest must survive")
@@ -147,7 +147,7 @@ test("packaged CUDA update stages every helper from canonical paths and reports 
     await writeFile(join(data, "distribution/ext4.vhdx"), "existing CUDA disk")
     // The installer derives ownership after expanding short path components.
     const digest = createHash("sha256").update((await realpath(data)).toLowerCase()).digest("hex")
-    const distro = `OpenDock-CUDA-${digest.slice(0, 12)}`
+    const distro = `Yougori-CUDA-${digest.slice(0, 12)}`
     const harness = join(root, "stage.ps1")
     // Stub external WSL, registry and download calls. The real install script
     // stages real files and must stop before launching a distribution.
@@ -175,14 +175,14 @@ function global:Get-ItemProperty {
 }
 function global:tar.exe {
     $staging = $args[3]
-    foreach ($name in @('opendock-agent', 'opendock-mount-helper', 'opendock-cuda-probe')) {
+    foreach ($name in @('yougori-agent', 'yougori-mount-helper', 'yougori-cuda-probe')) {
         if ([IO.File]::ReadAllText((Join-Path $staging ('usr/local/sbin/' + $name))) -cne $name) { throw ('Incorrect staged helper: ' + $name) }
     }
     foreach ($name in @('yougori-oci-runtime-linux-amd64.tar.gz', 'yougori-oci-runtime-linux-amd64.manifest.json', 'yougori-nvidia-cdi-linux-amd64.tar.gz', 'yougori-nvidia-cdi-linux-amd64.manifest.json')) {
         if ([IO.File]::ReadAllText((Join-Path $staging ('usr/local/share/yougori-oci-runtime/' + $name))) -cne $name) { throw ('Incorrect staged vendor payload: ' + $name) }
     }
-    if (!(Test-Path -LiteralPath (Join-Path $staging 'usr/local/sbin/opendock-cuda-install-oci.py'))) { throw 'Missing verified vendor installer' }
-    if (!(Test-Path -LiteralPath (Join-Path $staging 'etc/opendock-cuda-runtime'))) { throw 'Missing ownership marker' }
+    if (!(Test-Path -LiteralPath (Join-Path $staging 'usr/local/sbin/yougori-cuda-install-oci.py'))) { throw 'Missing verified vendor installer' }
+    if (!(Test-Path -LiteralPath (Join-Path $staging 'etc/yougori-cuda-runtime'))) { throw 'Missing ownership marker' }
     [IO.File]::WriteAllText((Join-Path $global:FixtureData 'staging-passed'), 'all helpers staged')
     throw 'STAGING_COMPLETE: simulated archive failure'
 }
@@ -190,7 +190,7 @@ function global:tar.exe {
 exit $LASTEXITCODE
 `)
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness,
-      join(assets, "install.ps1"), extended(data), extended(join(payload, "opendock-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
+      join(assets, "install.ps1"), extended(data), extended(join(payload, "yougori-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
     assert.ifError(result.error)
     assert.equal(result.status, 1, result.stderr)
     assert.match(result.stdout, /YOUGORI_CUDA_SETUP_ERROR: STAGING_COMPLETE: simulated archive failure/)
@@ -202,27 +202,27 @@ exit $LASTEXITCODE
 
     await writeFile(join(payload, "yougori-oci-runtime-linux-amd64.tar.gz"), "tampered")
     const tampered = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness,
-      join(assets, "install.ps1"), extended(data), extended(join(payload, "opendock-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
+      join(assets, "install.ps1"), extended(data), extended(join(payload, "yougori-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
     assert.ifError(tampered.error)
     assert.equal(tampered.status, 1)
     assert.match(tampered.stdout, /YOUGORI_CUDA_SETUP_ERROR: CUDA payload checksum mismatch/)
     assert.equal(await readFile(join(data, "distribution/ext4.vhdx"), "utf8"), "existing CUDA disk")
     await writeFile(join(payload, "yougori-oci-runtime-linux-amd64.tar.gz"), "yougori-oci-runtime-linux-amd64.tar.gz")
 
-    await rm(join(payload, "opendock-mount-helper"))
+    await rm(join(payload, "yougori-mount-helper"))
     const missing = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness,
-      join(assets, "install.ps1"), extended(data), extended(join(payload, "opendock-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
+      join(assets, "install.ps1"), extended(data), extended(join(payload, "yougori-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
     assert.ifError(missing.error)
     assert.equal(missing.status, 1)
-    assert.match(missing.stdout, /YOUGORI_CUDA_SETUP_ERROR: CUDA setup file is missing: .*opendock-mount-helper/)
+    assert.match(missing.stdout, /YOUGORI_CUDA_SETUP_ERROR: CUDA setup file is missing: .*yougori-mount-helper/)
     assert.equal(await readFile(join(data, "installed.json"), "utf8"), "existing manifest must survive")
 
-    await writeFile(join(payload, "opendock-mount-helper"), "opendock-mount-helper")
+    await writeFile(join(payload, "yougori-mount-helper"), "yougori-mount-helper")
     await rm(join(data, "distribution/ext4.vhdx"))
     for (const removeDirectory of [false, true]) {
       if (removeDirectory) await rm(join(data, "distribution"), { recursive: true })
       const missingDisk = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness,
-        join(assets, "install.ps1"), extended(data), extended(join(payload, "opendock-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
+        join(assets, "install.ps1"), extended(data), extended(join(payload, "yougori-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
       assert.ifError(missingDisk.error)
       assert.equal(missingDisk.status, 1, missingDisk.stderr)
       assert.match(missingDisk.stdout, /YOUGORI_CUDA_SETUP_ERROR: WSL still lists .* but its CUDA disk is missing: .*ext4.vhdx/)
@@ -234,7 +234,7 @@ exit $LASTEXITCODE
     await rm(join(data, "installed.json"))
     await rm(join(data, "saved-container-marker"))
     const emptyRegistration = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", harness,
-      join(assets, "install.ps1"), extended(data), extended(join(payload, "opendock-agent")), extended(assets), distro, "-AllowRecovery"], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
+      join(assets, "install.ps1"), extended(data), extended(join(payload, "yougori-agent")), extended(assets), distro, "-AllowRecovery"], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
     assert.ifError(emptyRegistration.error)
     assert.equal(emptyRegistration.status, 1, emptyRegistration.stderr)
     assert.match(emptyRegistration.stdout, /YOUGORI_CUDA_SETUP_ERROR: Unexpected CUDA runtime download/)

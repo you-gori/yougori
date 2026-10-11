@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+
+name="Yougori appliance agent"
+description="Private control plane for the bundled Yougori OCI runtime"
+command="/usr/local/sbin/yougori-agent"
+command_background="yes"
+pidfile="/run/yougori-agent.pid"
+output_log="/var/log/yougori-agent.log"
+error_log="/var/log/yougori-agent.log"
+
+start_pre() {
+  umask 077
+  if [ -f "$output_log" ] && [ "$(wc -c < "$output_log")" -gt 1048576 ]; then
+    tail -c 262144 "$output_log" > "$output_log.trimmed"
+    mv -f "$output_log.trimmed" "$output_log"
+  fi
+}
+
+depend() {
+  if ! grep -qw 'yougori.mode=microvm' /proc/cmdline 2>/dev/null; then
+    need containerd
+  fi
+  after networking
+}

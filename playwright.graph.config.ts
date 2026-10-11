@@ -14,7 +14,7 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:1421",
     // Existing feature tests represent returning users. First-launch tests
     // explicitly override this with a fresh profile.
-    storageState: { cookies: [], origins: [{ origin: "http://127.0.0.1:1421", localStorage: [{ name: "opendock.instructions.seen.v1", value: "1" }] }] },
+    storageState: { cookies: [], origins: [{ origin: "http://127.0.0.1:1421", localStorage: [{ name: "yougori.instructions.seen.v1", value: "1" }] }] },
     screenshot: "off",
     trace: "off",
     video: "off",

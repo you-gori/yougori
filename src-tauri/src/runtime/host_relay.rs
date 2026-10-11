@@ -230,7 +230,7 @@ impl RuntimeManager {
             .lines()
             .find_map(|line| {
                 line.split_once(':')
-                    .filter(|(key, _)| key.eq_ignore_ascii_case("yougori-port") || key.eq_ignore_ascii_case("opendock-port"))
+                    .filter(|(key, _)| key.eq_ignore_ascii_case("yougori-port") || key.eq_ignore_ascii_case(yougori_cli::legacy_names::PORT_HEADER))
                     .and_then(|(_, value)| value.trim().parse::<u16>().ok())
             })
             .filter(|p| *p > 0)

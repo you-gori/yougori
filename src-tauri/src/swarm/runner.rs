@@ -68,6 +68,7 @@ pub(crate) async fn run(
             worker.lease = Value::Null;
             worker.session_id = None;
             write(app, worker.clone()).await?;
+            update(app, id, |w| w.review_reports.clear()).await?;
         }
         if worker.state == "preparing_bounty" {
             if !execution_authorized(&state, &worker) {
@@ -112,8 +113,12 @@ pub(crate) async fn run(
             if worker.state != "paused" {
                 guest::abort_agent(app, &worker).await?;
                 worker.state = "paused".into();
-                worker.stage =
-                    "Investigation paused. Review authorization, deadline, and budget.".into();
+                worker.stage = if consent_changed(&state, &worker) {
+                    "Investigation stopped: the bounty's objective, commands, rules or shared visibility changed after you accepted it. Review and accept a new version to continue."
+                } else {
+                    "Investigation paused. Review authorization, deadline, and budget."
+                }
+                .into();
                 write(app, worker.clone()).await?;
             }
             // Keep the control connection alive, but never generate while paused.
@@ -216,6 +221,22 @@ pub(crate) async fn run(
 
 async fn sleep(cancel: &CancellationToken, duration: Duration) {
     tokio::select! {_=cancel.cancelled()=>{},_=tokio::time::sleep(duration)=>{}}
+}
+/// The draft in a report receipt that waits for the participant (report policy `review`).
+fn review_draft(receipt: &Value) -> Option<String> {
+    receipt["report"]["id"]
+        .as_str()
+        .filter(|report| receipt["awaitingHumanReview"] == true && identifier(report))
+        .map(str::to_owned)
+}
+/// Lists a draft once; beyond 32 the oldest entry drops out.
+fn add_review_draft(worker: &mut Worker, draft: String) {
+    if !worker.review_reports.contains(&draft) {
+        if worker.review_reports.len() >= 32 {
+            worker.review_reports.remove(0);
+        }
+        worker.review_reports.push(draft);
+    }
 }
 fn bounded_events(events: &Value) -> Value {
     let Some(events) = events.as_array() else {
@@ -370,6 +391,22 @@ mod task_tests {
         let (_, _, changed) = next_task(&worker, &memory).unwrap().unwrap();
         assert_ne!(changed, conditions);
         assert!(!changed.contains("PRIVATE"));
+    }
+    #[test]
+    fn only_review_policy_drafts_wait_for_the_participant() {
+        let draft = |id: &str, review: bool| json!({"report":{"id":id,"state":if review {"draft"} else {"complete_received"}},"awaitingHumanReview":review});
+        assert_eq!(review_draft(&draft("report_1", true)).as_deref(), Some("report_1"));
+        assert_eq!(review_draft(&draft("report_1", false)), None, "automatic submission");
+        assert_eq!(review_draft(&draft("../report_1", true)), None);
+        assert_eq!(review_draft(&json!({"awaitingHumanReview":true})), None);
+        let mut worker: Worker = serde_json::from_value(json!({"id":"worker-a","name":"Test","model":"owner/model","state":"running","stage":"Ready","site":"https://example.test","gpu":"cpu","resources":{"cpu":4,"memoryGb":8},"quotaGb":20,"keepResident":true})).unwrap();
+        for index in 0..40 {
+            add_review_draft(&mut worker, format!("report_{index}"));
+        }
+        add_review_draft(&mut worker, "report_39".into());
+        assert_eq!(worker.review_reports.len(), 32);
+        assert_eq!((worker.review_reports[0].as_str(), worker.review_reports[31].as_str()), ("report_8", "report_39"));
+        assert_eq!(worker.view()["state"], "awaiting_review");
     }
 }
 
@@ -669,37 +706,34 @@ async fn process_tool(
                 guest::respond_tool(app,worker,id,&json!({"error":"This task already has a recorded result; no further checks were executed."})).await?;
                 return Ok(false);
             }
-            agent(app,worker,Method::POST,"/api/swarm/agent/tasks/renew",Some(json!({"leaseId":worker.lease["leaseId"],"generation":worker.lease["generation"],"idempotencyKey":format!("check-reservation-{id}")}))).await?;
-            let index = params["index"]
-                .as_u64()
-                .filter(|i| *i <= 2)
-                .ok_or("Choose one of the company's declared check commands")?;
-            guest::run_check(app, worker, index as usize, cancel).await
+            // Invalid agent input is answered as a tool error; it must not abort the turn.
+            match params["index"].as_u64().filter(|i| *i <= 1) {
+                None => Err("Choose one of the company's declared check commands: 0 is setup, 1 is tests".into()),
+                Some(index) => {
+                    agent(app,worker,Method::POST,"/api/swarm/agent/tasks/renew",Some(json!({"leaseId":worker.lease["leaseId"],"generation":worker.lease["generation"],"idempotencyKey":format!("check-reservation-{id}")}))).await?;
+                    guest::run_check(app, worker, index as usize, cancel).await
+                }
+            }
         }
-        "report" => {
+        "report" => 'report: {
             let mut evidence_ids = Vec::new();
-            let evidence = params["evidence"]
-                .as_array()
-                .ok_or("A report needs evidence")?;
-            if evidence.is_empty() || evidence.len() > 8 {
-                return guest::respond_tool(
-                    app,
-                    worker,
-                    id,
-                    &json!({"error":"Provide 1–8 evidence records"}),
-                )
-                .await
-                .map(|_| false);
+            let evidence = match params["evidence"].as_array() {
+                Some(evidence) if (1..=8).contains(&evidence.len()) => evidence,
+                _ => break 'report Err("Provide 1–8 evidence records".into()),
+            };
+            // Check every record before uploading any, so a bad attachment leaves no partial report.
+            if evidence.iter().any(|file| {
+                STANDARD
+                    .decode(file["contentBase64"].as_str().unwrap_or_default())
+                    .map_or(true, |bytes| bytes.is_empty() || bytes.len() > 4 * 1024 * 1024)
+            }) {
+                break 'report Err("Each evidence record needs non-empty base64 content of at most 4 MiB".into());
             }
             for (i, file) in evidence.iter().enumerate() {
-                let bytes = STANDARD
-                    .decode(file["contentBase64"].as_str().unwrap_or_default())
-                    .map_err(|_| "Invalid report evidence")?;
-                if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
-                    return Err("Report evidence is empty or too large".into());
+                match agent(app,worker,Method::POST,"/api/swarm/agent/evidence",Some(json!({"name":file["name"],"contentBase64":file["contentBase64"],"idempotencyKey":format!("tool-{id}-evidence-{i}")}))).await {
+                    Ok(result) => evidence_ids.push(result["evidence"]["id"].clone()),
+                    Err(error) => break 'report Err(error),
                 }
-                let result=agent(app,worker,Method::POST,"/api/swarm/agent/evidence",Some(json!({"name":file["name"],"contentBase64":file["contentBase64"],"idempotencyKey":format!("tool-{id}-evidence-{i}")}))).await?;
-                evidence_ids.push(result["evidence"]["id"].clone());
             }
             let body = json!({"title":params["title"],"sourceRevision":worker.policy["sourceRevision"],"component":params["component"],"reproduction":params["reproduction"],"observed":params["observed"],"expected":params["expected"],"impact":params["impact"],"limitations":params["limitations"].as_str().unwrap_or_default(),"evidenceIds":evidence_ids,"attemptIds":params["attemptIds"].as_array().cloned().unwrap_or_default(),"idempotencyKey":format!("tool-{id}-report")});
             match agent(
@@ -713,6 +747,11 @@ async fn process_tool(
             {
                 Ok(value) => {
                     worker.summary=if value["awaitingHumanReview"]==true{"A report draft is ready for your review. It has not claimed submission priority."}else{"A complete report was submitted privately for review. No reward is claimed until verification."}.into();
+                    // The draft stays private until the participant submits it; until then
+                    // the worker is shown as awaiting review.
+                    if let Some(draft) = review_draft(&value) {
+                        update(app, &worker.id, |w| add_review_draft(w, draft)).await?;
+                    }
                     Ok(value)
                 }
                 Err(e) => Err(e),

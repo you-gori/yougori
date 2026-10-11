@@ -48,11 +48,11 @@ pub async fn exchange(stream: &mut NamedPipeClient, request: &Request) -> Result
             }
         }
     }
-    protocol::write(
-        stream,
-        &serde_json::to_value(request).map_err(|e| e.to_string())?,
-    )
-    .await?;
+    // Added items carry credentials: wipe the serialized copy after sending.
+    let mut message = serde_json::to_value(request).map_err(|e| e.to_string())?;
+    let written = protocol::write(stream, &message).await;
+    protocol::wipe(&mut message);
+    written?;
     let timeout = if matches!(request, Request::Manage {}) {
         480
     } else {

@@ -72,7 +72,7 @@ func growBundledRoot() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, "resize2fs", "/dev/vda")
-	const tools = "/usr/local/lib/opendock-storage"
+	const tools = "/usr/local/lib/yougori-storage"
 	if _, err := os.Stat(tools + "/ld-musl-x86_64.so.1"); err == nil {
 		command = exec.CommandContext(ctx, tools+"/ld-musl-x86_64.so.1", "--library-path", tools, tools+"/resize2fs", "/dev/vda")
 	}

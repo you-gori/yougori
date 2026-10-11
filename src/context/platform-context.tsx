@@ -5,11 +5,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { EnvironmentAction } from "@/lib/environment-actions"
 import { toastManager } from "@/components/ui/toast"
 import { platformApi } from "@/api/platform-api"
-import { cloudApi, type CloudProfile, type CloudDeployRequest } from "@/api/cloud-api"
+import { cloudApi, type CloudProfile } from "@/api/cloud-api"
 import { Button } from "@/components/ui/button"
 import { AlertDialog, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { localBackupApi } from "@/api/local-backup-api"
-import { sharingApi, type SharingInvitation } from "@/api/sharing-api"
 import { applySavedDomains, migrateSavedDomains } from "@/lib/public-access-presets"
 import type {
   AddDestinationRequest,
@@ -23,9 +22,7 @@ import type {
 
 interface PlatformContextValue {
   state: PlatformState | null
-  importSharedEnvironment(invitation:SharingInvitation):Promise<void>
   refreshPlatform():Promise<void>
-  deployCloudEnvironment(request:CloudDeployRequest,riskAcknowledged:boolean):Promise<void>
   configureCloudEnvironment(id:string,profile:CloudProfile):Promise<void>
   loading: boolean
   error: string | null
@@ -75,12 +72,21 @@ async function publishPlatformState(state: PlatformState) {
 
 export function PlatformProvider({ children, pollHostMetrics = true }: { children: ReactNode; pollHostMetrics?: boolean }) {
   const [state, commitState] = useState<PlatformState | null>(null)
+  // Counts applied updates so an in-flight background read cannot replace a newer one.
   const stateRevision = useRef(0)
+  // Highest engine revision applied. Replies, polls and other windows' events can arrive
+  // out of order; an older engine state must never roll back a newer one.
+  const engineRevision = useRef(-1)
   const setState = useCallback((next: PlatformState) => {
+    if (typeof next.stateRevision === "number") {
+      if (next.stateRevision < engineRevision.current) return false
+      engineRevision.current = next.stateRevision
+    }
     stateRevision.current += 1
     commitState(next)
     // Saved domains are engine state shared with the CLI.
     if (next.savedDomains) applySavedDomains(next.savedDomains)
+    return true
   }, [])
   useEffect(() => { migrateSavedDomains().catch(() => undefined) }, [])
   const [loading, setLoading] = useState(true)
@@ -201,8 +207,7 @@ export function PlatformProvider({ children, pollHostMetrics = true }: { childre
       const revision = stateRevision.current
       platformApi.refreshHostMetrics()
         .then((nextState) => {
-          if (!disposed && revision === stateRevision.current) {
-            setState(nextState)
+          if (!disposed && revision === stateRevision.current && setState(nextState)) {
             void publishPlatformState(nextState).catch(() => undefined)
           }
         })
@@ -230,9 +235,9 @@ export function PlatformProvider({ children, pollHostMetrics = true }: { childre
   ) => {
     try {
       const nextState = await action()
-      setState(nextState)
       setError(null)
-      void publishPlatformState(nextState).catch(() => undefined)
+      // The event carries this state's engine revision, so other windows can order it too.
+      if (setState(nextState)) void publishPlatformState(nextState).catch(() => undefined)
       if (successTitle) toastManager.add({ title: successTitle, description: successDescription })
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
@@ -398,9 +403,7 @@ export function PlatformProvider({ children, pollHostMetrics = true }: { childre
       const patch = Object.fromEntries(Object.entries(settings).filter(([key, value]) => JSON.stringify(state?.settings[key as keyof AppSettings]) !== JSON.stringify(value))) as Partial<AppSettings>
       return perform(() => platformApi.patchSettings(patch, state?.settingsRevision ?? 0), "Settings saved")
     },
-    importSharedEnvironment:invitation=>perform(()=>sharingApi.import(invitation),"Shared environment added"),
     refreshPlatform,
-    deployCloudEnvironment:(request,riskAcknowledged)=>perform(()=>cloudApi.deploy(request,riskAcknowledged),"Cloud deployment recorded","Inspect its power state, then configure verified SSH access."),
     configureCloudEnvironment:(id,profile)=>perform(()=>cloudApi.configure(id,profile),"Cloud SSH configured"),
     resetPlatform: () => perform(() => platformApi.resetPlatform(), "Local data reset"),
   }), [refreshPlatform, confirmRecovery, environmentActions, error, loading, perform, runEnvironmentAction, setState, state])

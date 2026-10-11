@@ -7,6 +7,9 @@ use std::{
     io::{Read, Write},
 };
 
+/// NTFS, and APFS/HFS+ as normally formatted, resolve names regardless of letter case.
+pub(super) const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
+
 #[derive(Debug, PartialEq)]
 enum Change {
     Same,
@@ -43,52 +46,52 @@ fn skipped_links(reply: &Value, batch: &[String]) -> Result<BTreeSet<String>, St
     Ok(skipped)
 }
 
-fn validate(relative: &str) -> Result<(), String> {
-    if relative.is_empty()
-        || relative.len() > 4096
-        || relative
-            .chars()
-            .any(|c| c.is_control() || c == '\\' || c == ':')
-        || relative.split('/').any(|part| {
-            part.is_empty()
-                || part == "."
-                || part == ".."
-                || part.starts_with(".yougori-sync-")
-                || part.ends_with(['.', ' '])
-                || matches!(
-                    part.split('.')
-                        .next()
-                        .unwrap_or("")
-                        .to_ascii_uppercase()
-                        .as_str(),
-                    "CON"
-                        | "PRN"
-                        | "AUX"
-                        | "NUL"
-                        | "COM1"
-                        | "COM2"
-                        | "COM3"
-                        | "COM4"
-                        | "COM5"
-                        | "COM6"
-                        | "COM7"
-                        | "COM8"
-                        | "COM9"
-                        | "LPT1"
-                        | "LPT2"
-                        | "LPT3"
-                        | "LPT4"
-                        | "LPT5"
-                        | "LPT6"
-                        | "LPT7"
-                        | "LPT8"
-                        | "LPT9"
-                )
-        })
-    {
-        return Err(format!("Unsupported sync path: {}", clean(relative)));
+/// How this computer's filesystem identifies a path.
+pub(super) fn identity(path: &str) -> String {
+    if CASE_INSENSITIVE {
+        path.split('/').map(sync::folded).collect::<Vec<_>>().join("/")
+    } else {
+        path.to_owned()
     }
-    Ok(())
+}
+
+fn windows_device(part: &str) -> bool {
+    let base = part.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+    matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || ["COM", "LPT"].iter().any(|device| {
+            base.strip_prefix(device).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
+        })
+}
+
+/// Why this computer cannot store a path, if it cannot. Windows rules apply only on Windows.
+fn unsupported(relative: &str) -> Option<&'static str> {
+    if relative.is_empty() || relative.len() > 4096 || relative.split('/').count() > 128 {
+        return Some("too long or nested too deeply");
+    }
+    if relative.chars().any(|c| c.is_control() || c == '\\') {
+        return Some("control characters or backslashes");
+    }
+    for part in relative.split('/') {
+        if part.is_empty() || part == "." || part == ".." || part.starts_with(".yougori-sync-") {
+            return Some("an empty or reserved name");
+        }
+        if cfg!(windows) {
+            if part.ends_with(['.', ' ']) || part.contains(['<', '>', ':', '"', '|', '?', '*']) {
+                return Some("characters Windows filenames cannot contain");
+            }
+            if windows_device(part) {
+                return Some("a name Windows reserves for devices");
+            }
+        }
+    }
+    None
+}
+
+fn validate(relative: &str) -> Result<(), String> {
+    match unsupported(relative) {
+        Some(reason) => Err(format!("Unsupported sync path ({reason}): {}", clean(relative))),
+        None => Ok(()),
+    }
 }
 
 pub(super) fn destination(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -107,6 +110,37 @@ pub(super) fn destination(root: &Path, relative: &str) -> Result<PathBuf, String
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("Cannot inspect {}: {e}", clean(relative))),
         }
+    }
+    Ok(path)
+}
+
+/// Where to write or delete a container path on this computer. Every existing
+/// component must be stored under exactly the requested name: letter case,
+/// Windows short (8.3) names and characters HFS+ ignores could otherwise redirect
+/// the path to a different file here, such as one in .git. Host-only folders
+/// are never written.
+pub(super) fn host_target(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let path = destination(root, relative)?;
+    if relative.split('/').any(sync::host_only) {
+        return Err(format!("Two-way sync does not write {}", clean(relative)));
+    }
+    let mut parent = root.to_path_buf();
+    for part in relative.split('/') {
+        let next = parent.join(part);
+        match fs::symlink_metadata(&next) {
+            Ok(_) => {
+                let stored = fs::read_dir(&parent)
+                    .map_err(|e| format!("Cannot inspect {}: {e}", clean(relative)))?
+                    .flatten()
+                    .any(|entry| entry.file_name().to_str() == Some(part));
+                if !stored {
+                    return Err(format!("{} names a differently spelled file on this computer", clean(relative)));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("Cannot inspect {}: {e}", clean(relative))),
+        }
+        parent = next;
     }
     Ok(path)
 }
@@ -149,6 +183,163 @@ fn expect_local(root: &Path, relative: &str, expected: Option<&str>) -> Result<P
         ));
     }
     destination(root, relative)
+}
+
+/// Renames a file in place when only the letter case of its name changed.
+fn rename_case(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let (parent, from_name) = from.rsplit_once('/').unwrap_or(("", from));
+    let (to_parent, to_name) = to.rsplit_once('/').unwrap_or(("", to));
+    if parent != to_parent || sync::folded(from_name) != sync::folded(to_name) {
+        return Err("Only a change of letter case is renamed here".into());
+    }
+    validate(to)?;
+    host_target(root, from)?;
+    let folder = if parent.is_empty() { root.to_path_buf() } else { host_target(root, parent)? };
+    let taken = fs::read_dir(&folder)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .any(|entry| entry.file_name().to_str() == Some(to_name));
+    if taken {
+        return Err(format!("{} already exists", clean(to)));
+    }
+    fs::rename(folder.join(from_name), folder.join(to_name)).map_err(|e| e.to_string())
+}
+
+/// Paths whose names differ only by letter case, on a filesystem that cannot store both.
+#[derive(Debug, PartialEq)]
+enum CasePlan {
+    /// Both copies use the new spelling; keep the shared checksum under it.
+    Agree { from: String, to: String },
+    /// This computer renamed `from` to `to`: rename it in the container too.
+    Push { from: String, to: String },
+    /// The container renamed the file `from` to `to` in the same folder.
+    Pull { from: String, to: String },
+    /// Leave every copy untouched until the spellings match again.
+    Hold(Vec<String>),
+}
+
+fn case_plans(
+    local: &BTreeMap<String, String>,
+    remote: &BTreeMap<String, String>,
+    common: &BTreeMap<String, String>,
+) -> Vec<CasePlan> {
+    let mut groups: BTreeMap<String, BTreeSet<&String>> = BTreeMap::new();
+    for path in local.keys().chain(remote.keys()).chain(common.keys()) {
+        groups.entry(identity(path)).or_default().insert(path);
+    }
+    // At most one spelling per side; two would be ambiguous.
+    let one = |map: &BTreeMap<String, String>, names: &BTreeSet<&String>| -> Option<Option<String>> {
+        let mut found = names.iter().filter(|name| map.contains_key(name.as_str()));
+        let first = found.next().map(|name| (*name).clone());
+        found.next().is_none().then_some(first)
+    };
+    let parent = |path: &str| path.rsplit_once('/').map_or("", |(parent, _)| parent).to_owned();
+    groups
+        .into_values()
+        .filter(|names| names.len() > 1)
+        .map(|names| {
+            let hold = || CasePlan::Hold(names.iter().map(|name| (*name).clone()).collect());
+            let (Some(l), Some(r), Some(c)) = (one(local, &names), one(remote, &names), one(common, &names)) else {
+                return hold();
+            };
+            match (l, r, c) {
+                (Some(l), Some(r), Some(c)) if l == r && c != l => CasePlan::Agree { from: c, to: l },
+                (Some(l), Some(r), Some(c)) if c == r && l != r && remote[&r] == common[&c] => {
+                    CasePlan::Push { from: r, to: l }
+                }
+                (Some(l), Some(r), Some(c))
+                    if c == l && l != r && local[&l] == common[&c] && parent(&l) == parent(&r) =>
+                {
+                    CasePlan::Pull { from: l, to: r }
+                }
+                _ => hold(),
+            }
+        })
+        .collect()
+}
+
+/// The shortest leading paths whose spellings differ, such as `src` and `Src` for
+/// `src/a.js` and `Src/a.js`.
+fn spelled_differently(names: &[String]) -> Vec<String> {
+    let parts: Vec<Vec<&str>> = names.iter().map(|name| name.split('/').collect()).collect();
+    let depth = parts.iter().map(Vec::len).min().unwrap_or(0);
+    let first = (0..depth).find(|&i| parts.iter().any(|p| p[i] != parts[0][i])).unwrap_or(depth.saturating_sub(1));
+    let mut prefixes: Vec<String> = parts.iter().map(|p| p[..=first].join("/")).collect();
+    prefixes.sort();
+    prefixes.dedup();
+    prefixes
+}
+
+/// The container's workspace, classified for this computer.
+#[derive(Debug, Default)]
+struct Inventory {
+    /// Regular files and their change stamps in the container.
+    files: Vec<(String, String)>,
+    directories: BTreeSet<String>,
+    databases: BTreeSet<String>,
+    /// Never transferred this pass; the warning explains why.
+    held: Vec<(String, Option<String>)>,
+}
+
+fn beneath(held: &BTreeSet<String>, identity: &str) -> bool {
+    held.contains(identity) || identity.match_indices('/').any(|(end, _)| held.contains(&identity[..end]))
+}
+
+fn classify(entries: &[Value], filter: &sync::Filter) -> Result<Inventory, String> {
+    let mut parsed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let (Some(path), Some(kind)) = (entry["path"].as_str(), entry["kind"].as_str()) else {
+            return Err("Invalid sync inventory".into());
+        };
+        if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+            return Err("Invalid sync inventory path".into());
+        }
+        if !filter.excluded(path, kind == "dir") {
+            parsed.push((path, kind, entry));
+        }
+    }
+    let mut inventory = Inventory::default();
+    let mut held = BTreeSet::new();
+    let mut spellings: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    // Entries arrive parents first, so a held folder also covers everything below it.
+    for (path, _, entry) in &parsed {
+        let id = identity(path);
+        if beneath(&held, &id) {
+            continue;
+        }
+        let warning = if entry["pruned"] == true {
+            Some(format!("{} in the container could not be inspected; it was left unchanged", clean(path)))
+        } else {
+            unsupported(path).map(|reason| format!("{} in the container cannot be stored on this computer ({reason}); it stays in the container", clean(path)))
+        };
+        if warning.is_some() {
+            held.insert(id);
+            inventory.held.push(((*path).to_owned(), warning));
+        } else {
+            spellings.entry(id).or_default().push(*path);
+        }
+    }
+    for (id, paths) in &spellings {
+        if paths.len() > 1 && !beneath(&held, id) {
+            held.insert(id.clone());
+            let names = paths.iter().map(|path| clean(path)).collect::<Vec<_>>().join(" / ");
+            inventory.held.push((paths[0].to_owned(), Some(format!("The container has names that differ only by letter case: {names}. This computer cannot store both; rename one in the container"))));
+        }
+    }
+    for (path, kind, entry) in &parsed {
+        if beneath(&held, &identity(path)) {
+            continue;
+        }
+        match *kind {
+            "dir" => { inventory.directories.insert((*path).to_owned()); }
+            "sqlite" => { inventory.databases.insert((*path).to_owned()); }
+            "file" => inventory.files.push(((*path).to_owned(), entry["stamp"].as_str().ok_or("Missing sync file stamp")?.to_owned())),
+            // Linux dependencies create symlinks after installation. Do not follow
+            // them or let one block unrelated file edits.
+            _ => inventory.held.push(((*path).to_owned(), None)),
+        }
+    }
+    Ok(inventory)
 }
 
 impl Session {
@@ -209,6 +400,25 @@ impl Session {
 }
 
 impl Live {
+    pub(super) fn warn_once(&mut self, message: String) {
+        if self.warned.insert(message.clone()) {
+            ui::warn(&message);
+        }
+    }
+
+    pub(super) fn hold(&mut self, path: &str, warning: Option<String>) {
+        self.held.insert(identity(path));
+        if let Some(message) = warning {
+            self.warn_once(message);
+        }
+    }
+
+    /// Links, unsupported names and unresolved letter-case differences: never
+    /// transferred and never mistaken for deletions, including paths beneath them.
+    pub(super) fn is_held(&self, path: &str) -> bool {
+        !self.held.is_empty() && beneath(&self.held, &identity(path))
+    }
+
     /// Recover an interrupted/missing checkpoint without replacing the workspace.
     /// Only host files and previously tracked deletions are candidates; guest-only
     /// runtime data must survive a reconnect.
@@ -282,96 +492,143 @@ impl Live {
         self.push_file(path, Some(&local), reply["hash"].as_str()).await
     }
 
+    /// One paged inventory of the container's workspace. Host-only folders are not
+    /// entered. Files whose change stamp is unchanged reuse their earlier checksum.
     async fn remote_hashes(
         &mut self,
         filter: &sync::Filter,
         progress: &ui::Task,
-    ) -> Result<(BTreeMap<String, String>, BTreeSet<String>), String> {
-        let mut folders = vec![String::new()];
-        self.remote_directories.clear();
-        let mut paths = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut skipped = BTreeSet::new();
-        while let Some(folder) = folders.pop() {
-            progress.copy_status(&format!("Finding container files · {} found", paths.len()));
-            progress.detail(&clean(&folder));
-            let mut offset = 0;
-            loop {
-                let reply = self
-                    .receiver
-                    .rpc(json!({"op":"list","path":folder,"offset":offset}))
-                    .await?;
-                for entry in reply["entries"]
-                    .as_array()
-                    .ok_or("Invalid sync directory reply")?
-                {
-                    let name = entry["name"].as_str().ok_or("Missing sync filename")?;
-                    let path = if folder.is_empty() {
-                        name.to_owned()
-                    } else {
-                        format!("{folder}/{name}")
-                    };
-                    let dir = entry["kind"] == "dir";
-                    if filter.excluded(&path, dir) {
-                        continue;
-                    }
-                    validate(&path)?;
-                    if name.contains('/') || path.split('/').count() > 128 {
-                        return Err("Invalid or too deeply nested sync path".into());
-                    }
-                    // Windows filenames are case-insensitive. A Linux project containing
-                    // both Foo and foo cannot be safely reconciled onto that filesystem.
-                    let identity = if cfg!(windows) {
-                        path.to_lowercase()
-                    } else {
-                        path.clone()
-                    };
-                    if !seen.insert(identity) {
-                        return Err(format!("Conflicting filename casing: {}", clean(&path)));
-                    }
-                    if dir {
-                        self.remote_directories.insert(path.clone());
-                        folders.push(path);
-                    } else if entry["kind"] == "sqlite" {
-                        self.database_files.insert(path);
-                    } else if entry["kind"] == "file" {
-                        paths.push(path);
-                    } else {
-                        // Linux dependencies create symlinks after installation.
-                        // Do not follow them or let one block unrelated file edits.
-                        skipped.insert(path);
-                    }
-                }
-                match reply["next"].as_u64() {
-                    Some(next) if next > offset => offset = next,
-                    Some(_) => return Err("Invalid sync directory offset".into()),
-                    None => break,
-                }
-            }
-        }
-        let mut hashes = BTreeMap::new();
-        paths.retain(|p| !sync::database_member(p, &self.database_files));
-        progress.progress("Checking container files", 0, paths.len() as u64, "files");
-        let mut completed = 0;
-        for batch in paths.chunks(32) {
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut entries = Vec::new();
+        let (mut cursor, mut offset) = (Value::Null, 0u64);
+        loop {
+            progress.copy_status(&format!("Finding container files · {} found", entries.len()));
             let reply = self
                 .receiver
-                .rpc(json!({"op":"hashes","paths":batch}))
+                .rpc(json!({"op":"tree","cursor":cursor,"offset":offset,"prune":sync::HOST_ONLY}))
                 .await?;
-            for path in batch {
-                if let Some(hash) = reply[path].as_str() {
-                    if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
-                        return Err("Invalid sync checksum".into());
+            entries.extend(reply["entries"].as_array().ok_or("Invalid sync inventory")?.iter().cloned());
+            cursor = reply["cursor"].clone();
+            match reply["next"].as_u64() {
+                Some(next) if next > offset => offset = next,
+                Some(_) => return Err("Invalid sync inventory offset".into()),
+                None => break,
+            }
+            self.pump().await?;
+        }
+        let inventory = classify(&entries, filter)?;
+        drop(entries);
+        for (path, warning) in inventory.held {
+            self.hold(&path, warning);
+        }
+        self.remote_directories = inventory.directories;
+        self.database_files.extend(inventory.databases);
+        let mut hashes = BTreeMap::new();
+        let mut stamps = BTreeMap::new();
+        let mut unknown = Vec::new();
+        for (path, stamp) in inventory.files {
+            if sync::database_member(&path, &self.database_files) {
+                continue;
+            }
+            match self.remote_stamps.remove(&path) {
+                Some((known, hash)) if known == stamp => {
+                    hashes.insert(path.clone(), hash.clone());
+                    stamps.insert(path, (stamp, hash));
+                }
+                _ => unknown.push((path, stamp)),
+            }
+        }
+        progress.progress("Checking container files", 0, unknown.len() as u64, "files");
+        let mut completed = 0;
+        for batch in unknown.chunks(32) {
+            let paths: Vec<String> = batch.iter().map(|(path, _)| path.clone()).collect();
+            let reply = self
+                .receiver
+                .rpc(json!({"op":"hashes","paths":paths,"skipLinks":true}))
+                .await?;
+            let skipped = skipped_links(&reply, &paths)?;
+            for (path, stamp) in batch {
+                if skipped.contains(path) {
+                    self.hold(path, None);
+                    continue;
+                }
+                match reply["hashes"].get(path) {
+                    Some(Value::String(hash)) if hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()) => {
+                        hashes.insert(path.clone(), hash.clone());
+                        stamps.insert(path.clone(), (stamp.clone(), hash.clone()));
                     }
-                    hashes.insert(path.clone(), hash.into());
-                } else if !reply.get(path).is_some_and(Value::is_null) {
-                    return Err("Missing sync checksum".into());
+                    // Deleted after the inventory: absent from the container now.
+                    Some(Value::Null) => {}
+                    _ => return Err("Invalid sync checksum".into()),
                 }
             }
             completed += batch.len() as u64;
-            progress.progress("Checking container files", completed, paths.len() as u64, "files");
+            progress.progress("Checking container files", completed, unknown.len() as u64, "files");
+            self.pump().await?;
         }
-        Ok((hashes, skipped))
+        self.remote_stamps = stamps;
+        Ok(hashes)
+    }
+
+    /// Applies unambiguous letter-case renames and holds every other case difference.
+    async fn reconcile_case(
+        &mut self,
+        local: &mut BTreeMap<String, String>,
+        remote: &mut BTreeMap<String, String>,
+        direction: sync::Direction,
+    ) -> Result<(), String> {
+        let visible = |map: &BTreeMap<String, String>| -> BTreeMap<String, String> {
+            map.iter().filter(|(path, _)| !self.is_held(path)).map(|(p, h)| (p.clone(), h.clone())).collect()
+        };
+        let plans = case_plans(&visible(local), &visible(remote), &visible(&self.saved.common));
+        for plan in plans {
+            match plan {
+                CasePlan::Agree { from, to } => {
+                    if let Some(hash) = self.saved.common.remove(&from) {
+                        self.saved.common.insert(to, hash);
+                    }
+                }
+                CasePlan::Push { from, to } if direction.sends() => {
+                    let (hash, previous) = (local[&to].clone(), remote[&from].clone());
+                    let renamed = async {
+                        self.push_file(&to, Some(&hash), None).await?;
+                        self.receiver.rpc(json!({"op":"delete","path":from,"expected":previous})).await.map(|_| ())
+                    }
+                    .await;
+                    match renamed {
+                        Ok(()) => {
+                            self.saved.common.remove(&from);
+                            self.saved.common.insert(to.clone(), hash.clone());
+                            remote.remove(&from);
+                            remote.insert(to, hash);
+                        }
+                        Err(error) => self.hold(&to, Some(format!("Could not rename {} to {} in the container: {}. Both copies were kept", clean(&from), clean(&to), clean(&error)))),
+                    }
+                }
+                CasePlan::Pull { from, to } if direction.receives() => {
+                    let base = self.saved.common[&from].clone();
+                    match expect_local(&self.folder, &from, Some(&base)).and_then(|_| rename_case(&self.folder, &from, &to)) {
+                        Ok(()) => {
+                            self.saved.common.remove(&from);
+                            self.saved.common.insert(to.clone(), base.clone());
+                            local.remove(&from);
+                            local.insert(to, base);
+                            self.local_hashes.remove(&from);
+                        }
+                        Err(error) => self.hold(&to, Some(format!("Could not rename {} to {} on this computer: {}. Both copies were kept", clean(&from), clean(&to), clean(&error)))),
+                    }
+                }
+                // A one-directional sync leaves the rename for a sync the other way.
+                CasePlan::Push { to, .. } | CasePlan::Pull { to, .. } => self.hold(&to, None),
+                CasePlan::Hold(names) => {
+                    // A folder spelled two ways holds everything beneath it, with one warning.
+                    let spelled = spelled_differently(&names);
+                    let spellings = spelled.iter().map(|name| clean(name)).collect::<Vec<_>>().join(" / ");
+                    self.hold(&spelled[0], Some(format!("Names differ only by letter case: {spellings}. Both copies were kept; give them the same name to resume syncing them")));
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn pull_file(
@@ -380,7 +637,8 @@ impl Live {
         local: Option<&str>,
         remote: Option<&str>,
     ) -> Result<(), String> {
-        let destination = expect_local(&self.folder, path, local)?;
+        expect_local(&self.folder, path, local)?;
+        let destination = host_target(&self.folder, path)?;
         let Some(hash) = remote else {
             if local.is_some() {
                 // Recheck remote deletion before deleting the unchanged local file.
@@ -388,8 +646,8 @@ impl Live {
                 if !reply["hash"].is_null() {
                     return Err("Remote file changed during sync; retrying".into());
                 }
-                let destination = expect_local(&self.folder, path, local)?;
-                fs::remove_file(destination).map_err(|e| e.to_string())?;
+                expect_local(&self.folder, path, local)?;
+                fs::remove_file(host_target(&self.folder, path)?).map_err(|e| e.to_string())?;
             }
             return Ok(());
         };
@@ -436,6 +694,7 @@ impl Live {
             if data.is_empty() {
                 return Err("Sync file read made no progress".into());
             }
+            self.pump().await?;
         }
         if format!("{:x}", digest.finalize()) != hash {
             return Err(format!("{} changed during download; retrying", clean(path)));
@@ -444,7 +703,8 @@ impl Live {
         if reply["hash"] != hash {
             return Err("Remote file changed during download; retrying".into());
         }
-        let destination = expect_local(&self.folder, path, local)?;
+        expect_local(&self.folder, path, local)?;
+        let destination = host_target(&self.folder, path)?;
         temp.as_file().sync_all().map_err(|e| e.to_string())?;
         temp.persist(destination).map_err(|e| e.to_string())?;
         if let Some(progress) = progress { progress.clear(); }
@@ -486,6 +746,7 @@ impl Live {
                     .await?;
                 completed += n as u64;
                 if let Some(progress) = &progress { progress.progress("Uploading file", completed, total, "bytes"); }
+                self.pump().await?;
             }
             expect_local(&self.folder, path, local)?;
             self.receiver
@@ -508,7 +769,8 @@ impl Live {
     pub(super) async fn sync_direction(&mut self, env_files: bool, direction: sync::Direction) -> Result<usize, String> {
         self.env_files = env_files;
         let progress = ui::task("Checking project changes");
-        let filter = sync::Filter::load(&self.folder, env_files)?;
+        let filter = sync::Filter::load(&self.folder, env_files)?.two_way();
+        let checkpoint = (self.saved.two_way, self.saved.environment.clone(), self.saved.common.clone());
         if self.saved.environment != self.receiver.environment || !self.saved.two_way {
             self.saved.common.clear();
         }
@@ -517,16 +779,28 @@ impl Live {
         self.saved
             .common
             .retain(|path, _| !filter.excluded(path, false));
-        let manifest = sync::scan(&self.folder, &filter)?;
+        self.held.clear();
+        let (manifest, links) = sync::scan_links(&self.folder, &filter)?;
+        // A folder replaced by a link here is not followed, and its earlier
+        // files are not deletions either.
+        for link in &links {
+            self.hold(link, None);
+        }
         self.discover_databases(&manifest);
         self.database_files.extend(self.saved.databases.keys().cloned());
         let mut local = BTreeMap::new();
         self.local_hashes
             .retain(|path, _| manifest.contains_key(path));
-        let paths: Vec<_> = manifest.iter().filter(|(path, _)| !sync::database_member(path, &self.database_files)).collect();
+        let paths: Vec<_> = manifest.iter()
+            .filter(|(path, _)| !sync::database_member(path, &self.database_files))
+            .map(|(path, stamp)| (path.clone(), *stamp))
+            .collect();
         progress.progress("Checking local files", 0, paths.len() as u64, "files");
         for (index, (path, stamp)) in paths.iter().enumerate() {
-            let (path, stamp) = (*path, *stamp);
+            if let Some(reason) = unsupported(path) {
+                self.hold(path, Some(format!("{} cannot be synced ({reason}); it stays on this computer", clean(path))));
+                continue;
+            }
             progress.detail(&clean(path));
             if let Some((_, hash)) = self.local_hashes.get(path).filter(|(old, _)| old == stamp) {
                 local.insert(path.clone(), hash.clone());
@@ -536,8 +810,12 @@ impl Live {
                 local.insert(path.clone(), hash);
             }
             progress.progress("Checking local files", index as u64 + 1, paths.len() as u64, "files");
+            self.pump().await?;
         }
-        let (remote, skipped) = self.remote_hashes(&filter, &progress).await?;
+        let mut remote = self.remote_hashes(&filter, &progress).await?;
+        if CASE_INSENSITIVE {
+            self.reconcile_case(&mut local, &mut remote, direction).await?;
+        }
         self.find_folder_conflicts(&local, &remote)?;
         let paths: BTreeSet<_> = local
             .keys()
@@ -547,55 +825,58 @@ impl Live {
             .collect();
         let mut changed = Vec::new();
         let mut conflicts = BTreeSet::new();
-        for path in paths {
-            if sync::database_member(&path, &self.database_files) { continue; }
-            // A skipped directory link also protects all previously tracked children
-            // from being mistaken for remote deletions.
-            if skipped.iter().any(|p| path == *p || path.starts_with(&format!("{p}/"))) {
-                continue;
-            }
-            let local_hash = local.get(&path).map(String::as_str);
-            let remote_hash = remote.get(&path).map(String::as_str);
-            let ordinary = change(
-                self.saved.common.get(&path).map(String::as_str),
-                local_hash,
-                remote_hash,
-            );
-            let action = prioritized(if ordinary != Change::Same && self.folder_conflict(&path) { Change::Conflict } else { ordinary }, self.priority);
-            // Do not advance the common checkpoint for deferred changes. A later
-            // handoff in the other direction must still see them, even after restart.
-            if (action == Change::Push && !direction.sends()) || (action == Change::Pull && !direction.receives()) { continue; }
-            if action != Change::Same {
-                progress.detail(&clean(&path));
-            }
-            let hash = match action {
-                Change::Conflict => {
-                    if !self.conflicts.contains(&path) {
-                        ui::warn(&format!("Sync conflict: {} — both versions kept. Make the two copies match to resume syncing this file.", clean(&path)));
+        let reconciled: Result<(), String> = async {
+            for path in paths {
+                if sync::database_member(&path, &self.database_files) || self.is_held(&path) { continue; }
+                let local_hash = local.get(&path).map(String::as_str);
+                let remote_hash = remote.get(&path).map(String::as_str);
+                let ordinary = change(
+                    self.saved.common.get(&path).map(String::as_str),
+                    local_hash,
+                    remote_hash,
+                );
+                let action = prioritized(if ordinary != Change::Same && self.folder_conflict(&path) { Change::Conflict } else { ordinary }, self.priority);
+                // Do not advance the common checkpoint for deferred changes. A later
+                // handoff in the other direction must still see them, even after restart.
+                if (action == Change::Push && !direction.sends()) || (action == Change::Pull && !direction.receives()) { continue; }
+                if action != Change::Same {
+                    progress.detail(&clean(&path));
+                }
+                let hash = match action {
+                    Change::Conflict => {
+                        if !self.conflicts.contains(&path) {
+                            ui::warn(&format!("Sync conflict: {} — both versions kept. Make the two copies match to resume syncing this file.", clean(&path)));
+                        }
+                        conflicts.insert(path);
+                        continue;
                     }
-                    conflicts.insert(path);
-                    continue;
+                    Change::Same => local_hash,
+                    Change::Push => {
+                        self.push_file(&path, local_hash, remote_hash).await?;
+                        changed.push(path.clone());
+                        local_hash
+                    }
+                    Change::Pull => {
+                        self.pull_file(&path, local_hash, remote_hash).await?;
+                        changed.push(path.clone());
+                        remote_hash
+                    }
+                };
+                if let Some(hash) = hash {
+                    self.saved.common.insert(path, hash.into());
+                } else {
+                    self.saved.common.remove(&path);
                 }
-                Change::Same => local_hash,
-                Change::Push => {
-                    self.push_file(&path, local_hash, remote_hash).await?;
-                    changed.push(path.clone());
-                    local_hash
-                }
-                Change::Pull => {
-                    self.pull_file(&path, local_hash, remote_hash).await?;
-                    changed.push(path.clone());
-                    remote_hash
-                }
-            };
-            if let Some(hash) = hash {
-                self.saved.common.insert(path, hash.into());
-            } else {
-                self.saved.common.remove(&path);
+                self.pump().await?;
             }
-            if action != Change::Same {
-                self.saved.save(&self.state_path)?;
-            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = reconciled {
+            // Completed transfers stay recorded. Anything else is safe to retry:
+            // copies that already match become their common version next pass.
+            let _ = self.saved.save(&self.state_path);
+            return Err(error);
         }
         if !conflicts.is_empty() {
             ui::dash(|d| {
@@ -606,8 +887,12 @@ impl Live {
             });
         }
         self.conflicts = conflicts;
-        self.saved.files = sync::scan(&self.folder, &filter)?;
-        self.saved.save(&self.state_path)?;
+        let files = if changed.is_empty() { manifest } else { sync::scan(&self.folder, &filter)? };
+        // One checkpoint per pass, and none when nothing changed.
+        if self.saved.files != files || (self.saved.two_way, &self.saved.environment, &self.saved.common) != (checkpoint.0, &checkpoint.1, &checkpoint.2) {
+            self.saved.files = files;
+            self.saved.save(&self.state_path)?;
+        }
         let restart = direction.sends() && !changed.is_empty()
             && (self.crashed
                 || changed.iter().any(|p| sync::needs_install(p))
@@ -944,15 +1229,18 @@ mod tests {
         for path in [
             "../escape",
             "/absolute",
-            "C:/file",
             "a\\b",
             "a/../b",
-            "CON",
-            "a.",
+            "line\nbreak",
             ".yougori-sync-temp",
         ] {
             assert!(destination(root.path(), path).is_err(), "{path}");
         }
+        // Names Windows cannot store are only unsupported on Windows.
+        for path in ["C:/file", "CON", "aux.js", "com1.txt", "LPT\u{b9}", "a.", "b ", "app-12:00.log", "what?.md"] {
+            assert_eq!(destination(root.path(), path).is_err(), cfg!(windows), "{path}");
+        }
+        assert!(unsupported("console.log").is_none() && unsupported("COM10").is_none() && unsupported("src/con-fig.js").is_none());
         fs::write(root.path().join("file.txt"), "first").unwrap();
         let hash = local_hash(root.path(), "file.txt").unwrap().unwrap();
         fs::write(root.path().join("file.txt"), "second").unwrap();
@@ -962,5 +1250,113 @@ mod tests {
             "second"
         );
         assert!(expect_local(root.path(), "file.txt", None).is_err());
+    }
+
+    fn entry(path: &str, kind: &str) -> Value {
+        json!({"path":path,"kind":kind,"stamp":"1:2:3:4"})
+    }
+
+    #[test]
+    fn container_inventory_holds_what_this_computer_cannot_store_without_stopping() {
+        let filter = sync::Filter::load(Path::new("."), false).unwrap().two_way();
+        let entries = vec![
+            entry("src", "dir"), entry("src/app.js", "file"), entry("src/data.db", "sqlite"),
+            entry("node_modules", "dir"), entry("node_modules/x.js", "file"),
+            json!({"path":".git","kind":"dir","pruned":true}),
+            json!({"path":"deep","kind":"dir","pruned":true}),
+            entry("deep/a.js", "file"),
+            entry("bin", "link"), entry(".env", "file"),
+            entry("logs", "dir"), entry("logs/app-12:00.log", "file"), entry("logs/aux.txt", "file"),
+            entry("Docs", "dir"), entry("Docs/a.md", "file"), entry("docs", "dir"), entry("docs/b.md", "file"),
+        ];
+        let inventory = classify(&entries, &filter).unwrap();
+        let files: Vec<_> = inventory.files.iter().map(|(path, _)| path.as_str()).collect();
+        let held: BTreeMap<_, _> = inventory.held.iter().map(|(path, warning)| (path.as_str(), warning.is_some())).collect();
+        // Host-only folders are not inventoried at all; a folder that could not be
+        // inspected protects everything beneath it.
+        assert!(!files.iter().any(|path| path.starts_with("node_modules") || path.starts_with("deep/")));
+        assert_eq!(held.get("deep"), Some(&true));
+        assert_eq!(held.get("bin"), Some(&false));
+        assert!(!files.contains(&".env"));
+        assert!(inventory.databases.contains("src/data.db"));
+        assert!(files.contains(&"src/app.js"));
+        if cfg!(windows) {
+            assert_eq!(held.get("logs/app-12:00.log"), Some(&true));
+            assert_eq!(held.get("logs/aux.txt"), Some(&true));
+        } else {
+            assert!(files.contains(&"logs/app-12:00.log") && files.contains(&"logs/aux.txt"));
+        }
+        if CASE_INSENSITIVE {
+            assert_eq!(held.get("Docs"), Some(&true));
+            assert!(!files.iter().any(|path| path.ends_with(".md")));
+            assert!(!inventory.directories.contains("docs"));
+        } else {
+            assert!(files.contains(&"Docs/a.md") && files.contains(&"docs/b.md"));
+        }
+        assert!(classify(&[json!({"path":"../escape","kind":"file","stamp":"x"})], &filter).is_err());
+    }
+
+    fn map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries.iter().map(|(path, hash)| (path.to_string(), hash.to_string())).collect()
+    }
+
+    #[test]
+    fn letter_case_renames_are_applied_once_or_held() {
+        if !CASE_INSENSITIVE {
+            assert!(case_plans(&map(&[("A.md", "1")]), &map(&[("a.md", "1")]), &map(&[("a.md", "1")])).is_empty());
+            return;
+        }
+        // Renamed on this computer, unchanged in the container: rename it there.
+        assert_eq!(
+            case_plans(&map(&[("README.md", "2")]), &map(&[("readme.md", "1")]), &map(&[("readme.md", "1")])),
+            [CasePlan::Push { from: "readme.md".into(), to: "README.md".into() }]
+        );
+        // Renamed in the container, unchanged here: rename the file in place.
+        assert_eq!(
+            case_plans(&map(&[("src/app.JS", "1")]), &map(&[("src/app.js", "3")]), &map(&[("src/app.JS", "1")])),
+            [CasePlan::Pull { from: "src/app.JS".into(), to: "src/app.js".into() }]
+        );
+        // A renamed container folder is left for the user to match.
+        assert!(matches!(
+            case_plans(&map(&[("src/a.js", "1")]), &map(&[("Src/a.js", "1")]), &map(&[("src/a.js", "1")]))[..],
+            [CasePlan::Hold(_)]
+        ));
+        // Both sides already agree on the new spelling.
+        assert_eq!(
+            case_plans(&map(&[("Src/a.js", "1")]), &map(&[("Src/a.js", "1")]), &map(&[("src/a.js", "1")])),
+            [CasePlan::Agree { from: "src/a.js".into(), to: "Src/a.js".into() }]
+        );
+        // Edited in the container while renamed here, or created on both sides with
+        // different spellings: keep both copies.
+        for (local, remote, common) in [
+            (map(&[("README.md", "2")]), map(&[("readme.md", "9")]), map(&[("readme.md", "1")])),
+            (map(&[("Notes.md", "1")]), map(&[("notes.md", "2")]), map(&[])),
+        ] {
+            assert!(matches!(case_plans(&local, &remote, &common)[..], [CasePlan::Hold(_)]));
+        }
+        assert!(case_plans(&map(&[("a.md", "1")]), &map(&[("a.md", "1")]), &map(&[("a.md", "1")])).is_empty());
+        // One warning names the folder rather than every file beneath it.
+        assert_eq!(spelled_differently(&["Src/app/a.js".into(), "src/app/a.js".into()]), ["Src", "src"]);
+        assert_eq!(spelled_differently(&["docs/README.md".into(), "docs/readme.md".into()]), ["docs/README.md", "docs/readme.md"]);
+    }
+
+    #[test]
+    fn container_paths_never_write_through_another_spelling() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join(".git/hooks")).unwrap();
+        fs::create_dir_all(root.path().join("Docs")).unwrap();
+        fs::write(root.path().join("Docs/readme.md"), "x").unwrap();
+        assert!(host_target(root.path(), ".git/hooks/pre-commit").is_err());
+        assert!(host_target(root.path(), "Docs/new.md").is_ok());
+        assert!(host_target(root.path(), "Docs/readme.md").is_ok());
+        let insensitive = root.path().join("docs").exists();
+        assert_eq!(host_target(root.path(), "docs/new.md").is_err(), insensitive);
+        assert_eq!(host_target(root.path(), "Docs/README.md").is_err(), insensitive);
+        if insensitive {
+            rename_case(root.path(), "Docs/readme.md", "Docs/README.md").unwrap();
+            let names: Vec<_> = fs::read_dir(root.path().join("Docs")).unwrap().flatten().map(|e| e.file_name().into_string().unwrap()).collect();
+            assert_eq!(names, ["README.md"]);
+            assert!(rename_case(root.path(), "Docs/README.md", "Other/README.md").is_err());
+        }
     }
 }

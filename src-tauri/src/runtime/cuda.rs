@@ -7,6 +7,14 @@ use std::{fs, io::Write, path::{Path, PathBuf}};
 
 pub(super) fn cuda_directory(data_root: &Path) -> Result<PathBuf, String> {
     let current = data_root.join("cuda");
+    // A failed rename must not stop startup; it is retried on the next launch.
+    #[cfg(windows)]
+    if let Err(error) = yougori_cuda_runtime::CudaRuntime::rename_legacy_distribution(
+        &current,
+        yougori_cli::legacy_names::CUDA_DISTRIBUTION_PREFIX,
+    ) {
+        eprintln!("Yougori CUDA runtime: {error}");
+    }
     #[cfg(windows)]
     if data_root.file_name().and_then(|name| name.to_str()) == Some("runtime")
         && data_root.parent().and_then(|path| path.file_name()).and_then(|name| name.to_str()) == Some("com.yougori.desktop")
@@ -14,9 +22,12 @@ pub(super) fn cuda_directory(data_root: &Path) -> Result<PathBuf, String> {
         if yougori_cuda_runtime::CudaRuntime::has_owned_installation(&current) { return Ok(current); }
         let original = data_root.parent().and_then(Path::parent)
             .ok_or("Cannot find the previous CUDA storage location")?
-            .join("com.opendock.desktop/runtime/cuda");
+            .join(yougori_cli::legacy_names::APP_DATA_FOLDER).join("runtime").join("cuda");
+        let legacy_prefix = yougori_cli::legacy_names::CUDA_DISTRIBUTION_PREFIX;
         if !original.exists() {
-            yougori_cuda_runtime::CudaRuntime::restore_relocated_installation(&current, &original)?;
+            yougori_cuda_runtime::CudaRuntime::restore_relocated_installation(&current, &original, legacy_prefix)?;
+        } else if let Err(error) = yougori_cuda_runtime::CudaRuntime::rename_legacy_distribution(&original, legacy_prefix) {
+            eprintln!("Yougori CUDA runtime: {error}");
         }
         if yougori_cuda_runtime::CudaRuntime::has_owned_installation(&original) { return Ok(original); }
     }
@@ -228,9 +239,9 @@ impl RuntimeManager {
             .lines().find_map(|line| {
                 let mut parts = line.split_whitespace();
                 let hash = parts.next()?;
-                (parts.next()? == "opendock-agent").then_some(hash)
+                (parts.next()? == "yougori-agent").then_some(hash)
             }).ok_or("CUDA cleanup helper checksum is missing")?;
-        let agent = tokio::fs::read(self.layout.root.join("cuda/opendock-agent")).await
+        let agent = tokio::fs::read(self.layout.root.join("cuda/yougori-agent")).await
             .map_err(|e| format!("Read CUDA cleanup helper: {e}. Reinstall Yougori; container data was kept."))?;
         if hex::encode(Sha256::digest(&agent)) != expected {
             return Err("CUDA cleanup helper verification failed; container data was kept. Reinstall Yougori.".into());
@@ -329,7 +340,7 @@ impl RuntimeManager {
 
     pub async fn install_cuda(&self) -> Result<yougori_cuda_runtime::Status, String> {
         // Separate payload: never replace the initramfs or DLLs of a running VM.
-        let agent = self.layout.root.join("cuda/opendock-agent");
+        let agent = self.layout.root.join("cuda/yougori-agent");
         if !agent.is_file() {
             return Err(
                 "The CUDA guest agent is missing. Rebuild the CUDA payload or reinstall Yougori."
@@ -338,9 +349,9 @@ impl RuntimeManager {
         }
         use sha2::{Digest, Sha256};
         for name in [
-            "opendock-agent",
-            "opendock-mount-helper",
-            "opendock-cuda-probe",
+            "yougori-agent",
+            "yougori-mount-helper",
+            "yougori-cuda-probe",
             "yougori-oci-runtime-linux-amd64.tar.gz",
             "yougori-oci-runtime-linux-amd64.manifest.json",
             "yougori-nvidia-cdi-linux-amd64.tar.gz",
