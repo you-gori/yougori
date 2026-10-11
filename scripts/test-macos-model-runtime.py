@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import secrets
 import socket
 import subprocess
@@ -43,8 +44,11 @@ def acceptance(report):
         raise RuntimeError("Native runtime manifest is incomplete")
     report["runtimeRevision"] = (RUNTIME / "REVISION").read_text().strip()
     listing = subprocess.run([str(RUNTIME / "llama-server"), "--list-devices"], capture_output=True, text=True, check=True, timeout=30)
-    metal = any(line.lstrip().startswith("Metal") for line in listing.stdout.splitlines())
+    metal_device = next((line.split(":", 1)[0].strip() for line in listing.stdout.splitlines()
+                         if re.match(r"^(?:MTL|Metal)\d+:\s", line.strip())), None)
+    metal = metal_device is not None
     report["metal"] = "not_run" if metal else "not_available"
+    report["metalDevice"] = metal_device
     report["devices"] = listing.stdout.strip()
     with tempfile.TemporaryDirectory(prefix="yougori-native-qa-") as folder:
         weight = Path(folder) / "stories.gguf"
@@ -61,7 +65,7 @@ def acceptance(report):
             env = {"PATH": "/usr/bin:/bin", "LLAMA_API_KEY": key}
             command = [str(RUNTIME / "yougori-supervise"), str(RUNTIME / "llama-server"), "-m", str(weight),
                        "--host", "127.0.0.1", "--port", str(port), "--no-webui", "--device",
-                       "Metal0" if backend == "metal" else "none", "-ngl", "all" if backend == "metal" else "0",
+                       metal_device if backend == "metal" else "none", "-ngl", "all" if backend == "metal" else "0",
                        "-c", "512", "-t", "2", "--poll", "0"]
             report[backend] = "failed"
             log = tempfile.TemporaryFile(mode="w+b")
