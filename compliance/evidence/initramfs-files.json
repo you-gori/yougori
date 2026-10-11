@@ -1222,7 +1222,7 @@
   {
     "path": "usr/local/sbin/yougori-mount-helper",
     "bytes": 51120,
-    "sha256": "76e3bc0283459dec23b29d31eb7f530a1c4258343c03362cf70213607b14e424"
+    "sha256": "eaca353827ed1ac0eb501b9584ed279fca0a256842af14524f3e345358f68811"
   },
   {
     "path": "usr/local/sbin/yougori-upgrade-root",

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "scope": "Mount helper fix: only usr/local/sbin/yougori-mount-helper changed in the appliance base, its verified initramfs and the CUDA payload; no user disk, package or other executable changed",
+  "reason": "Agents from 1.0.16 serve PC-folder and connection shares from /var/lib/yougori/host-shares/, which the helper's source allowlist did not include, so every share mount was refused.",
+  "mountHelper": {
+    "old": {
+      "sha256": "76e3bc0283459dec23b29d31eb7f530a1c4258343c03362cf70213607b14e424",
+      "bytes": 51120
+    },
+    "new": {
+      "sha256": "eaca353827ed1ac0eb501b9584ed279fca0a256842af14524f3e345358f68811",
+      "bytes": 51120
+    },
+    "build": "scripts/vendor-oci-build/native-compiler.py with the verified private patched musl 1.2.6-r2 toolchain: -static-pie -Os -s -fstack-protector-strong -Wl,-z,relro,-z,now,-z,noexecstack -Wall -Wextra -Werror, as in scripts/build-appliance.sh and build-cuda.sh",
+    "reproducibility": "The previous source rebuilt with the same command and toolchain reproduced the old helper byte for byte"
+  },
+  "oldBase": {
+    "sha256": "e7115d9adbfa04722329256890bf26e15abe4da3ca5f42fe0fb66d3cde1f5043",
+    "bytes": 185809920
+  },
+  "newBase": {
+    "sha256": "a92f5141824831336db568fbe6a22ee4927b8c3a5dc398c5845c005899915772",
+    "bytes": 185809920
+  },
+  "oldInitramfs": {
+    "sha256": "7899164772409fa456abfdcc0b15bd9d7c919b3f36dab77aee4d3a2cd5b0d23a",
+    "bytes": 94082641
+  },
+  "newInitramfs": {
+    "sha256": "011bd1cfb359d0b2c46f739cc686735b445397c2488516773b2a436785597a61",
+    "bytes": 94082660
+  },
+  "filesystemEntries": 2744,
+  "initramfsEntries": 343,
+  "onlyChangedPaths": [
+    "usr/local/sbin/yougori-mount-helper"
+  ],
+  "unchangedFilesystemFingerprint": "991cbd34e66d7669b223d95b2f3049e7f736166373ce4169b2b5b941efbecee4",
+  "unchangedAPKDatabase": "c1ef249c58e36ad2d8abd43c6e78d854288d7f7484d6c8be0ecf0c7aace72ff3"
+}

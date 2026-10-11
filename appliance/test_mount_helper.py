@@ -242,6 +242,25 @@ int main(int argc, char **argv) {
         self.assertEqual(list(self.root.iterdir()), [])
         self.assert_outside_unchanged()
 
+    def test_cli_accepts_each_agent_share_source_and_nothing_beside_them(self):
+        # Exit 1 is the missing process, reached only after the paths are accepted.
+        destination = "/yougori/shared/my-pc/share-slot"
+        for source, expected in [
+            ("/var/lib/yougori/shares/slot", 1),
+            ("/var/lib/yougori/secrets/slot", 1),
+            ("/var/lib/yougori/host-shares/" + "0" * 32, 1),
+            ("/var/lib/yougori/host-shares", 2),
+            ("/var/lib/yougori/host-shares-other/slot", 2),
+            ("/var/lib/yougori/host-shares/../shares/slot", 2),
+        ]:
+            with self.subTest(source=source):
+                result = subprocess.run([str(self.helper), "2147483647", source,
+                                         destination, "false"], capture_output=True,
+                                        text=True, timeout=10)
+                self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertEqual(list(self.root.iterdir()), [])
+        self.assert_outside_unchanged()
+
     def test_cli_unmount_of_missing_process_is_idempotent(self):
         self.assertFalse(Path("/proc/2147483647").exists())
         result = subprocess.run([str(self.helper), "2147483647", "--unmount",

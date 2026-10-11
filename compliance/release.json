@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "5e0b6e45840f8e28cd36c103cf1265b2ef4a42a1",
+  "sourceCommit": "4bfddd28a013946e2e31ec34200565893688583e",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
     {
       "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-      "sha256": "e7115d9adbfa04722329256890bf26e15abe4da3ca5f42fe0fb66d3cde1f5043",
+      "sha256": "a92f5141824831336db568fbe6a22ee4927b8c3a5dc398c5845c005899915772",
       "bytes": 185809920
     },
     {
       "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-      "sha256": "7899164772409fa456abfdcc0b15bd9d7c919b3f36dab77aee4d3a2cd5b0d23a",
-      "bytes": 94082641
+      "sha256": "011bd1cfb359d0b2c46f739cc686735b445397c2488516773b2a436785597a61",
+      "bytes": 94082660
     },
     {
       "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-      "sha256": "f5d70db2038dfb19aa03ffb36cb0a138ccc7c8b5bfd96ec7aad00195785b6fdb",
+      "sha256": "0f78cc026671dd8ae49e1e44faa04213b7da2f23e44db64476243676ddf30686",
       "bytes": 247
     },
     {
@@ -56,7 +56,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-      "sha256": "c272e4d81bf921b25232ab4b3b332f15432638d4244bdf5bc7418775b3acea8b",
+      "sha256": "a278bf1ce211c0ec47327cbe393f422ab1e1bbab519bd70539576569ecf5696b",
       "bytes": 684
     },
     {
@@ -71,7 +71,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/cuda/yougori-mount-helper",
-      "sha256": "76e3bc0283459dec23b29d31eb7f530a1c4258343c03362cf70213607b14e424",
+      "sha256": "eaca353827ed1ac0eb501b9584ed279fca0a256842af14524f3e345358f68811",
       "bytes": 51120
     },
     {
@@ -1456,7 +1456,7 @@
     },
     {
       "path": "src-tauri/resources/runtime/SHA256SUMS",
-      "sha256": "9975aba3c9ba8f94f1e6d160d3fd6cf5fcfa6e7b32192dbd66bf80ae112098cf",
+      "sha256": "983351e77fd5f8b8002bf9394b888cac18d43fb489982de546f929a204e42843",
       "bytes": 28687
     },
     {
@@ -1750,6 +1750,12 @@
       "sha256": "5e4eaf08467b1c2f495ecb01632d64297696897cd0f69d5533f4fe53210d5011",
       "normalization": "lf",
       "bytes": 12187
+    },
+    {
+      "path": "appliance/agent/host_shares_test.go",
+      "sha256": "2f88684345c11b3e72620e91f7545ef5e9f1e2a8c5254d66a200adc48e1ae446",
+      "normalization": "lf",
+      "bytes": 685
     },
     {
       "path": "appliance/agent/internet.go",
@@ -2071,9 +2077,9 @@
     },
     {
       "path": "appliance/mount-helper.c",
-      "sha256": "1efb4477f7565d1687b500934990c2dfaac478d80dc279a70fc8cfd8ee4e1851",
+      "sha256": "d56d665fd8a7d5a3033d1050f42a399d11b68e0c9e6d05a33438c3f8e32c3767",
       "normalization": "lf",
-      "bytes": 7909
+      "bytes": 8128
     },
     {
       "path": "appliance/rootfs/etc/containerd/config.toml",
@@ -2101,9 +2107,9 @@
     },
     {
       "path": "appliance/test_mount_helper.py",
-      "sha256": "b2226846da1ce01263642b18fb55a4535f8276c14c43d74a6e0d49c63a26f7fb",
+      "sha256": "0a17fce1fe1df611a6e02f93ae803618de66921fad2352dd2a10e005c2663b2f",
       "normalization": "lf",
-      "bytes": 13737
+      "bytes": 14785
     },
     {
       "path": "assets/yougori-icon.svg",
@@ -2113,13 +2119,13 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "8192c31cc9de1998e3311282d84438f58e9cbc11a277b1bc5c9fcd7376740027",
+      "sha256": "675bf6872983f8bc6f711d2bcedc867f092870854fb19524294565be9ec30a65",
       "normalization": "lf",
       "bytes": 89764
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "cbad78394507fbaac209309b45b41c96434355b6d74deb12dead8ec5d40f59be",
+      "sha256": "f7b15886745bcf9b346c3a9b67e0dd0e854ea567a32cb53257f1bcdf752f87bc",
       "normalization": "lf",
       "bytes": 1252
     },
@@ -2190,6 +2196,12 @@
       "bytes": 3462
     },
     {
+      "path": "compliance/evidence/appliance-mount-helper-refresh.json",
+      "sha256": "1536584d031b0f559cc6d8529332c30488f025b3e18bd8635200998d2d6495a9",
+      "normalization": "lf",
+      "bytes": 1949
+    },
+    {
       "path": "compliance/evidence/application-dependencies.json",
       "sha256": "6f07a4d024c4d89dfa673041b78abdc0a0cbbafa4fdbe663df703c7599eb45c0",
       "normalization": "lf",
@@ -2197,9 +2209,9 @@
     },
     {
       "path": "compliance/evidence/application-source.json",
-      "sha256": "39f7131e4a0e34566dd98c799baa27ff970af6853c7c5acacef7a6a3c4694612",
+      "sha256": "6120707b179d491bd75454bb1de3bb9beec10cce33680a5a1f0f9c48078fa67c",
       "normalization": "lf",
-      "bytes": 250030
+      "bytes": 250427
     },
     {
       "path": "compliance/evidence/firmware-provenance.json",
@@ -2227,7 +2239,7 @@
     },
     {
       "path": "compliance/evidence/initramfs-files.json",
-      "sha256": "0661db6bf2e88445dd97b251ec498e18586ba0e6d9ed7d781f6f3717645b0239",
+      "sha256": "6319d400a7b9254f9e069d4466a82a56cd40fccbf2dcc018536c5e5ae8d9da3e",
       "normalization": "lf",
       "bytes": 45070
     },
@@ -2245,7 +2257,7 @@
     },
     {
       "path": "compliance/evidence/runtime-files.json",
-      "sha256": "d26f43840920297e8f1642371aa4ba15866eaa4d4d8a59999f0313ef20277bf7",
+      "sha256": "18374dd93e23aa840b630f2d1d82c1cd8f5f766de1a0e5aea750019a159b6f15",
       "normalization": "lf",
       "bytes": 54073
     },
@@ -2391,13 +2403,13 @@
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "017319681e33346187a4792a9c3059a0cc76c3f52b257363216f6bb8ca5504df",
+      "sha256": "8596b39b43c0a0d210dce579422948932eec7c7f5efacaf0bc8f5794fdc1d36b",
       "normalization": "lf",
       "bytes": 194672
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "20a17863037156db4f20cc8c759f49c32b3e6d182fa7b092c982ea1d18039bca",
+      "sha256": "95c22394deaa9a40d17501501e00798f77b32ab46fe906dda19bc4cb4a411afb",
       "normalization": "lf",
       "bytes": 691
     },
@@ -2419,13 +2431,13 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "f8d3a182a369a9c7a4d5635feee81d1599a6d6d9f8af58190fa4a098f54b9cdc",
+      "sha256": "db13f42b1de082ada179ad1fe0b9b3b1382d68ab35c5e206cf98cc40c3bf8dbe",
       "normalization": "lf",
       "bytes": 193017
     },
     {
       "path": "package.json",
-      "sha256": "61b3ac18c718eae0d8d4005610b12e35bdfd49ddf9b72e09864be4e1188faa79",
+      "sha256": "cd9bbe0a48c48248c3a8369413197f79656c08f6d0db9e966eaae4c418e4f41c",
       "normalization": "lf",
       "bytes": 7400
     },
@@ -3637,13 +3649,13 @@
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "43755bcf800dc0e0c720f71b5aaeaa6acba1f1a9bc6364c9fa8e9d5b797f53c4",
+      "sha256": "982a312b73600204af0c9f3676043823c327212162383626b8c2aa330783565d",
       "normalization": "lf",
       "bytes": 197107
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "2854081219bb205537c1badb155f2565c9cfa01bc18897d270054b03f615ad39",
+      "sha256": "2b1c614c4716c964918bd4bc8f10212fbb648c40b09f840b4cc82fe54abf7c3b",
       "normalization": "lf",
       "bytes": 3255
     },
@@ -3940,7 +3952,7 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "b62fe943b40c67e7447ace1e6502e1ca697684c10b50e223edeaecd0d0ecd71d",
+      "sha256": "fca8132b42d870e9bd15f4d856d65a09c45aeb65bcfa2da434f8ebec4f91653c",
       "normalization": "lf",
       "bytes": 1692
     },
@@ -5980,13 +5992,13 @@
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "81d14ce9a33ad066ce27bae9409435de1a3fc8f1932fa2eb0fdf8d3cd94ee30c",
+      "sha256": "8fb69122ccbdc308eccc212727144c4d7bed86fc8977749bf26055b06f1b3bff",
       "normalization": "lf",
       "bytes": 80515
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "117b006592acdd0898521cee2ee10445dd58e3dc27f939c84e39e743cc03d217",
+      "sha256": "7e1d0cbe0c2cef136de91294fc471c5130e475f53e1cceb14b5a35edd73259b5",
       "normalization": "lf",
       "bytes": 1876
     },
@@ -7607,13 +7619,13 @@
     },
     {
       "file": "yougori-application-source.tar.gz",
-      "sha256": "dd46eea01df37380dfd6c4bdf009789aada50d13be5acaf1705716af4371b2cf",
-      "bytes": 15729192
+      "sha256": "a4e75b1e28bfc843af64bdf007cef9c51dbd303028f66c0ecf48193153808e93",
+      "bytes": 15730686
     },
     {
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "be0887d6b63661c4719275e042a5e87a4cc9998b2e38875517e79c044a22de70",
-      "bytes": 11611668
+      "sha256": "ba9ceb14e75f20da540e30303bd3fce1edea1e2d1bc14f14ba52e35a29aa71cd",
+      "bytes": 11612033
     }
   ],
   "components": [
@@ -7751,18 +7763,18 @@
       "id": "local-build-material",
       "status": "collected",
       "file": "yougori-runtime-build-material.tar.gz",
-      "sha256": "be0887d6b63661c4719275e042a5e87a4cc9998b2e38875517e79c044a22de70",
-      "bytes": 11611668
+      "sha256": "ba9ceb14e75f20da540e30303bd3fce1edea1e2d1bc14f14ba52e35a29aa71cd",
+      "bytes": 11612033
     },
     {
       "id": "yougori-application-source",
       "status": "collected",
       "file": "yougori-application-source.tar.gz",
-      "sha256": "dd46eea01df37380dfd6c4bdf009789aada50d13be5acaf1705716af4371b2cf",
-      "bytes": 15729192,
+      "sha256": "a4e75b1e28bfc843af64bdf007cef9c51dbd303028f66c0ecf48193153808e93",
+      "bytes": 15730686,
       "manifest": "compliance/evidence/application-source.json",
-      "manifestSha256": "39f7131e4a0e34566dd98c799baa27ff970af6853c7c5acacef7a6a3c4694612",
-      "fileCount": 1325
+      "manifestSha256": "6120707b179d491bd75454bb1de3bb9beec10cce33680a5a1f0f9c48078fa67c",
+      "fileCount": 1327
     },
     {
       "id": "alpine/alpine-baselayout/60a7585bbab2fa0f762504eb617dbca90216e31f",
@@ -13298,7 +13310,7 @@
     }
   ],
   "blockers": [],
-  "reviewFingerprint": "7c917805c45b84427f91336e72541b7d7270875e004670911605932f8c538e0d",
+  "reviewFingerprint": "7d279938e2715affbdb4dadb9053885cb458e0e86f45b7ac7ab6c740cfd3404b",
   "review": {
     "status": "pending",
     "pendingReason": "The security implementation and actual guest media were reviewed on 2026-10-10. Fresh final platform packages, installation/GPU acceptance and verified public matching-source delivery remain release gates. Trusted signing, native macOS acceptance and historical installer source coverage remain outstanding.",

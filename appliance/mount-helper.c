@@ -139,8 +139,11 @@ int main(int argc, char **argv) {
   const char *source = argv[2];
   const char *destination = shared_alias ? "/yougori/shared" : argv[3];
   bool read_only = !unmount_only && !shared_alias && strcmp(argv[4], "true") == 0;
+  // Allowed sources: in-VM connection folders and secrets, and the agent's
+  // FUSE mounts of host-served folders (My PC and cross-runtime connections).
   if (!shared_alias && ((!unmount_only && !starts_with(source, "/var/lib/yougori/shares/") &&
-       !starts_with(source, "/var/lib/yougori/secrets/")) ||
+       !starts_with(source, "/var/lib/yougori/secrets/") &&
+       !starts_with(source, "/var/lib/yougori/host-shares/")) ||
       (!starts_with(destination, "/yougori/shared/") &&
        !starts_with(destination, "/yougori/secrets/")) ||
       strstr(source, "..") != NULL || strstr(destination, "..") != NULL)) {
