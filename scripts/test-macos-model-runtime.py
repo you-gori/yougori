@@ -42,6 +42,21 @@ def acceptance(report):
         verified.add(name)
     if not {"llama-server", "yougori-supervise", "REVISION"}.issubset(verified):
         raise RuntimeError("Native runtime manifest is incomplete")
+    # Hosted runners contain Homebrew libraries that an end-user Mac may lack.
+    # Bundled executables must load only Apple's system libraries/frameworks.
+    report["libraries"] = {}
+    for binary in ["llama-server", "yougori-supervise"]:
+        path = str(RUNTIME / binary)
+        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", path], check=True, capture_output=True, timeout=30)
+        architecture = subprocess.run(["/usr/bin/lipo", "-archs", path], check=True, capture_output=True, text=True, timeout=30)
+        if architecture.stdout.strip() != platform.machine():
+            raise RuntimeError(f"Native runtime architecture mismatch: {binary}")
+        linkage = subprocess.run(["/usr/bin/otool", "-L", path], check=True, capture_output=True, text=True, timeout=30)
+        libraries = [line.strip().split(" (compatibility", 1)[0] for line in linkage.stdout.splitlines()[1:] if line.strip()]
+        report["libraries"][binary] = libraries
+        for library in libraries:
+            if not library.startswith(("/usr/lib/", "/System/Library/")):
+                raise RuntimeError(f"Native runtime requires an unbundled library: {library}")
     report["runtimeRevision"] = (RUNTIME / "REVISION").read_text().strip()
     listing = subprocess.run([str(RUNTIME / "llama-server"), "--list-devices"], capture_output=True, text=True, check=True, timeout=30)
     metal_device = next((line.split(":", 1)[0].strip() for line in listing.stdout.splitlines()
