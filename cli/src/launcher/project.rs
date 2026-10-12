@@ -15,7 +15,9 @@ const ROOT: &str = "/yougori/launch";
 mod cloud;
 const BOOT: &str =
     "trap 'exit 0' TERM INT; mkdir -p /yougori/launch; while :; do sleep 3600 & wait $!; done";
-const NODE_AUTOSTART: &str = "exec bash /yougori/launch/dev.sh";
+/// Started outside the launcher, the container runs the dev server once a launch has installed
+/// its helpers. A first launch stopped before that leaves it waiting, as [`BOOT`] does.
+const NODE_AUTOSTART: &str = "if [ -f /yougori/launch/dev.sh ]; then exec bash /yougori/launch/dev.sh; fi; trap 'exit 0' TERM INT; mkdir -p /yougori/launch; while :; do sleep 3600 & wait $!; done";
 const HINT: &str = "yougori launch starts this project again · yougori launch --change edits settings · yougori opens the menu";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1088,6 +1090,23 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
 
 const STOPPING: &str = "Stopping the launch… Press Ctrl+C again to quit now.";
 
+/// A Ctrl+C that arrived as a signal: the first stops the launch, and a new press after that
+/// quits at once. A held key repeats its signal, which never counts as a new press.
+fn quits(stopping: &AtomicBool, presses: &mut ui::Presses, now: Instant) -> bool {
+    let new = presses.press(now);
+    stopping.swap(true, Ordering::SeqCst) && new
+}
+
+/// The exit code of a launch that got going. Stopped part way, with Ctrl+C or by leaving a
+/// question, it exits 130 as any cancelled command does; quitting the running project exits 0.
+fn ended(result: Result<(), String>, interrupted: bool) -> Result<i32, String> {
+    match result {
+        Ok(()) => Ok(0),
+        Err(_) if interrupted => Ok(130),
+        Err(error) => Err(error),
+    }
+}
+
 /// Ctrl+C during a launch: the first stops it, at once and visibly, followed by the usual
 /// cleanup; a second quits right away. While the launch works, keys are read here, so Ctrl+C is
 /// noticed wherever it is and typing never disturbs the display. Questions and the dev server's
@@ -1106,8 +1125,9 @@ impl Stop {
         // Ctrl+C arrives as a signal while nothing reads keys.
         let pressed = flag.clone();
         let signal = tokio::spawn(async move {
+            let mut presses = ui::Presses::new(false);
             while tokio::signal::ctrl_c().await.is_ok() {
-                if pressed.swap(true, Ordering::SeqCst) {
+                if quits(&pressed, &mut presses, Instant::now()) {
                     ui::force_exit();
                 }
             }
@@ -1804,7 +1824,7 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             engine.clear();
             drop(stop);
             ui::outro("Cancelled");
-            return Ok(0);
+            return Ok(130);
         }
         state => state?,
     };
@@ -1868,10 +1888,9 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     drop(stop);
     ui::outro(if project.is_python() { HINT } else { "npm run yougori starts this project again · npm run yougori-change edits settings · yougori opens the menu" });
     drop(lock);
-    match (result, cleanup) {
-        (_, Err(e)) => Err(format!("Could not confirm the project container stopped: {e}. Check yougori ps and stop it there.")),
-        (Err(e), _) if !interrupted => Err(e),
-        _ => Ok(0),
+    match cleanup {
+        Err(e) => Err(format!("Could not confirm the project container stopped: {e}. Check yougori ps and stop it there.")),
+        Ok(()) => ended(result, interrupted),
     }
 }
 
@@ -2308,6 +2327,58 @@ mod tests {
         assert!(!stop.requested());
         assert_eq!(stop.ask(|| Err::<(), _>(ui::CANCELLED.to_string())), Err(ui::CANCELLED.into()));
         assert!(stop.requested(), "leaving a question in the middle of a launch stops it");
+    }
+
+    #[test]
+    fn a_held_ctrl_c_never_quits_at_once_and_a_new_press_does() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let stopping = AtomicBool::new(false);
+        let mut presses = ui::Presses::new(false);
+        assert!(!quits(&stopping, &mut presses, at(0)));
+        assert!(stopping.load(Ordering::SeqCst), "the first Ctrl+C stops the launch");
+        // Held down, the key repeats after a pause, then quickly, for seconds.
+        for ms in (500..4000).step_by(35) {
+            assert!(!quits(&stopping, &mut presses, at(ms)), "repeat at {ms} ms");
+        }
+        // Let go, then pressed again.
+        assert!(quits(&stopping, &mut presses, at(4400)));
+        // The key watcher or a question stopped the launch: a signal right after that may still
+        // be the same key held down; a new press quits.
+        let stopping = AtomicBool::new(true);
+        let mut presses = ui::Presses::new(false);
+        assert!(!quits(&stopping, &mut presses, at(0)));
+        assert!(!quits(&stopping, &mut presses, at(40)));
+        assert!(quits(&stopping, &mut presses, at(1500)));
+    }
+
+    #[test]
+    fn a_launch_stopped_part_way_exits_130_and_quitting_the_project_exits_0() {
+        assert_eq!(ended(Ok(()), false), Ok(0));
+        // Ctrl+C in the running project's view quits it, as q does.
+        assert_eq!(ended(Ok(()), true), Ok(0));
+        assert_eq!(ended(Err("Launch cancelled.".into()), true), Ok(130));
+        assert_eq!(ended(Err(ui::CANCELLED.into()), true), Ok(130), "left a question in the middle of the launch");
+        assert_eq!(ended(Err("Copy failed".into()), false), Err("Copy failed".into()));
+    }
+
+    #[test]
+    fn a_container_whose_first_launch_stopped_early_waits_when_started_instead_of_failing() {
+        assert!(NODE_AUTOSTART.ends_with(BOOT), "without the helpers it waits as a new container does");
+        let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "bash" };
+        // Waiting ends when the container stops; here the first wait asks for that itself.
+        let fixture = r#"
+root=$(mktemp -d)
+script=${AUTOSTART//\/yougori\/launch/$root}
+start() { bash --noprofile --norc -c "sleep() { echo waiting; kill -TERM \$\$; }; $script"; echo "exit $?"; }
+start
+printf 'echo dev server; exit 3\n' > "$root/dev.sh"
+start
+rm -rf "$root"
+"#;
+        let output = std::process::Command::new(bash).args(["--noprofile", "--norc", "-c", fixture]).env("AUTOSTART", NODE_AUTOSTART)
+            .output().expect("Bash is required for the startup command test");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "waiting\nexit 0\ndev server\nexit 3\n", "{}", String::from_utf8_lossy(&output.stderr));
     }
 
     #[test]

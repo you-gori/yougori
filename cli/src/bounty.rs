@@ -37,7 +37,7 @@ pub const HELP: &str = r#"Swarm Mining — your model, your worker, your choice 
   yougori bounty delete WORKER --yes
   yougori bounty reports|rewards [WORKER]
   yougori bounty doctor [WORKER]
-  yougori bounty practice WORKER
+  yougori bounty practice WORKER [--stop]
   yougori bounty memory WORKER release|keep
 
 WORKER is the short name Yougori gives each worker, such as keen-heron. Every hint
@@ -57,7 +57,7 @@ Without options, start bounty reconnects to the worker set up last on this compu
 and reuses its downloaded model and sandbox. A worker whose preparation failed asks
 before retrying. --change, --model or another creation option (--cpu, --memory,
 --gpu, --storage-drive, --workspace-quota, --name, --quant, --release-memory,
---keep-loaded) sets up a new worker instead.
+--keep-loaded, --platform-url) sets up a new worker instead.
 
 The model loads only for work: an accepted bounty, your chat, or the practice. While
 the worker waits it is unloaded, so it holds no GPU or model memory; the next job
@@ -67,8 +67,9 @@ bounty practice WORKER, or T in the waiting view, opens a live console where the
 worker's own model investigates a planted flaw in a safe offline example. Its work
 streams as it happens; type guidance to steer it, or /stop to end it. Yougori checks
 each report and returns its feedback, without the answer, until one qualifies.
-Nothing is paid. Press L (or Enter) in the waiting view to watch an accepted bounty
-the same way; there /stop pauses or leaves it.
+Nothing is paid. Without a terminal the practice stops after 5 rejected reports or
+30 minutes; --stop ends a running practice. Press L (or Enter) in the waiting view
+to watch an accepted bounty the same way; there /stop pauses or leaves it.
 
 Without --gpu, native Mac builds probe Metal first. Other hosts use an NVIDIA GPU only when this PC passes the CUDA
 checks of yougori gpu status; otherwise the processor runs the model.
@@ -405,6 +406,8 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
             "--yes" => yes = true,
             "--no-wait" if action == "start" => no_wait = true,
             "--change" if action == "start" => change = true,
+            // Ends a practice that runs in the engine, such as one a stopped script left.
+            "--stop" if action == "practice" => request["action"] = "practiceStop".into(),
             "--release-memory" | "--keep-loaded" if action == "start" => {
                 if request["keepResident"].is_boolean() {
                     return Err("Choose either --release-memory or --keep-loaded".into());
@@ -643,6 +646,8 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
 }
 
 /// Settings that describe a new worker, so `start bounty` does not reconnect to the saved one.
+/// A platform URL is one too: a worker keeps the platform it was prepared for, and only a new
+/// worker's preparation checks the URL.
 fn creation_options(request: &Value) -> bool {
     request["model"].is_string()
         || request["resources"].is_object()
@@ -651,6 +656,7 @@ fn creation_options(request: &Value) -> bool {
         || request["quant"].is_string()
         || request["workspaceQuotaGb"].is_number()
         || request["keepResident"].is_boolean()
+        || request["platformUrl"].is_string()
 }
 
 /// Publisher and server text becomes one plain line: newlines and other controls could fake
@@ -765,6 +771,37 @@ pub fn worker_names(workers: &[&Value]) -> Vec<String> {
         .collect()
 }
 
+/// Whether another worker in a `workers` listing has the short name of the worker `id`.
+fn handle_shared(id: &str, listed: &Value) -> bool {
+    let handle = worker_handle(id);
+    listed["workers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|worker| worker["id"].as_str())
+        .any(|other| other != id && worker_handle(other) == handle)
+}
+
+/// What to type for the worker `id` in a command, as [`worker_names`] picks it: its short
+/// name, or its full ID when another worker in the `workers` listing has the same one.
+pub fn typed_name(id: &str, listed: &Value) -> String {
+    if handle_shared(id, listed) {
+        safe(id)
+    } else {
+        worker_handle(id)
+    }
+}
+
+/// [`typed_name`] from the engine's current listing, for a command printed as a hint. The
+/// short name when the listing does not come at once, such as after Ctrl+C stopped a slow
+/// request.
+async fn typed(id: &str) -> String {
+    match tokio::time::timeout(Duration::from_secs(2), dispatch(json!({"action":"workers"}))).await {
+        Ok(Ok(listed)) => typed_name(id, &listed),
+        _ => worker_handle(id),
+    }
+}
+
 /// Workers listed for people to choose from: what to type, with each one's name and state.
 fn worker_choices(workers: &[&Value]) -> String {
     workers
@@ -846,14 +883,20 @@ async fn resolve(request: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Adds the short name of each worker in an engine result, next to its ID.
-fn with_handles(result: &mut Value) {
-    fn add(worker: &mut Value) {
-        let handle = worker["id"].as_str().map(worker_handle);
-        if let (Some(handle), Some(worker)) = (handle, worker.as_object_mut()) {
-            worker.insert("handle".into(), handle.into());
+/// Adds the short name of each worker in an engine result, next to its ID. A worker that
+/// shares it with another worker in the `listed` workers is marked `handleShared`: commands
+/// name that one by its ID.
+fn with_handles(result: &mut Value, listed: &Value) {
+    let add = |worker: &mut Value| {
+        let Some(id) = worker["id"].as_str().map(str::to_owned) else { return };
+        let shared = handle_shared(&id, listed);
+        if let Some(worker) = worker.as_object_mut() {
+            worker.insert("handle".into(), worker_handle(&id).into());
+            if shared {
+                worker.insert("handleShared".into(), true.into());
+            }
         }
-    }
+    };
     if let Some(result) = result.as_object_mut() {
         if let Some(worker) = result.get_mut("worker") {
             add(worker);
@@ -865,12 +908,12 @@ fn with_handles(result: &mut Value) {
 }
 
 /// The command that opens this worker again: plain `start bounty` when it picks this worker,
-/// otherwise with the worker's short name.
+/// otherwise with the name to type for it.
 fn reconnect_command(id: &str, listed: &Value, environments: &[Value]) -> String {
     if saved_worker(listed, environments).is_some_and(|saved| saved["id"] == id) {
         "yougori start bounty".into()
     } else {
-        format!("yougori start bounty --worker {}", worker_handle(id))
+        format!("yougori start bounty --worker {}", typed_name(id, listed))
     }
 }
 
@@ -935,16 +978,21 @@ async fn activity(label: &str, request: Value) -> Result<Value, String> {
 /// still finish a request it received, so the person is told where to check instead of
 /// hearing that nothing changed.
 async fn change(label: &str, request: Value) -> Result<Value, String> {
-    let check = match request["workerId"].as_str() {
-        Some(id) => format!("yougori bounty status {}", worker_handle(id)),
-        None => "yougori bounty workers".into(),
-    };
+    let worker = request["workerId"].as_str().map(str::to_owned);
     match activity(label, request).await {
         Err(error) if error == ui::CANCELLED => {
             ui::take_interrupt();
-            Err(stopped_waiting(&check))
+            Err(stopped_waiting(&status_command(worker.as_deref()).await))
         }
         result => result,
+    }
+}
+
+/// The command that shows what became of a change to this worker, or of the workers.
+async fn status_command(worker: Option<&str>) -> String {
+    match worker {
+        Some(id) => format!("yougori bounty status {}", typed(id).await),
+        None => "yougori bounty workers".into(),
     }
 }
 
@@ -978,22 +1026,29 @@ fn prepared_state(state: &str, bounty: bool) -> bool {
     }
 }
 
-async fn preparation_interrupt(worker: &str) -> Result<bool, String> {
+/// What Ctrl+C offers during a preparation. An accepted bounty's preparation runs inside the
+/// waiting view, so leaving it goes back there; a worker's setup ends the command instead.
+fn preparation_choices(bounty: bool) -> [ui::Choice; 3] {
+    [
+        ui::Choice::new("Cancel", "return to preparation; keep it running"),
+        ui::Choice::new(
+            "Stop preparation",
+            "stop this worker's setup; preserve downloaded files",
+        ),
+        if bounty {
+            ui::Choice::new("Back to the waiting view", "keep preparing the bounty in the engine")
+        } else {
+            ui::Choice::new("Back to terminal", "detach; keep setup running in the engine")
+        },
+    ]
+}
+
+async fn preparation_interrupt(worker: &str, bounty: bool) -> Result<bool, String> {
     ui::take_interrupt();
     let selected = ui::select_required(
         "What would you like to do?",
         &["Preparation belongs to this worker. Saved downloads can be resumed.".into()],
-        &[
-            ui::Choice::new("Cancel", "return to preparation; keep it running"),
-            ui::Choice::new(
-                "Stop preparation",
-                "stop this worker's setup; preserve downloaded files",
-            ),
-            ui::Choice::new(
-                "Back to terminal",
-                "detach; keep setup running in the engine",
-            ),
-        ],
+        &preparation_choices(bounty),
     )?;
     if selected == 0 {
         return Ok(false);
@@ -1001,6 +1056,8 @@ async fn preparation_interrupt(worker: &str) -> Result<bool, String> {
     if selected == 1 {
         change("Stopping preparation", json!({"action":"cancelPrepare","workerId":worker})).await?;
         ui::info("Preparation stopped. Saved downloads remain available for retry.");
+    } else if bounty {
+        ui::info("Preparation continues in the engine.");
     } else {
         ui::info(&format!("Preparation continues. {}", reconnect_line(worker).await));
     }
@@ -1041,8 +1098,9 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
                 .or(result["error"].as_str())
                 .map(safe)
                 .unwrap_or_else(|| "Preparation failed.".into());
+            let name = typed(worker).await;
             return Err(format!(
-                "{reason}\nCheck it: yougori bounty doctor {handle}\nTry again: yougori start bounty --worker {handle}\nChoose another model or drive: yougori start bounty --change"
+                "{reason}\nCheck it: yougori bounty doctor {name}\nTry again: yougori start bounty --worker {name}\nChoose another model or drive: yougori start bounty --change"
             ));
         }
         if state == "paused" && data["error"].is_string() {
@@ -1063,7 +1121,8 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
         if tokio::time::Instant::now() >= deadline {
             task.done("Preparation continues in the engine");
             ui::info(&format!(
-                "The terminal stopped waiting after 60 minutes. Inspect: yougori bounty status {handle}"
+                "The terminal stopped waiting after 60 minutes. Inspect: {}",
+                status_command(Some(worker)).await
             ));
             return Ok(false);
         }
@@ -1073,7 +1132,7 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
                 match event::read().map_err(|e| e.to_string())? {
                     Event::Key(key) => match key_action(key) {
                         WorkerKey::Interrupt => {
-                            if preparation_interrupt(worker).await? {
+                            if preparation_interrupt(worker, bounty).await? {
                                 task.done("Left preparation view");
                                 return Ok(false);
                             }
@@ -1121,7 +1180,8 @@ fn state_sentence(name: &str, state: &str) -> String {
 }
 
 /// What the participant can do next when a worker waits for them: work that an engine
-/// restart paused, or a report draft to read and send. `id` is the worker's short name.
+/// restart paused, or a report draft to read and send. `id` is what to type for the worker
+/// ([`typed_name`]).
 fn state_hint(worker: &Value, id: &str) -> Option<String> {
     let id = safe(id);
     if worker["state"] == "paused" && worker["restored"] == true {
@@ -1279,8 +1339,10 @@ fn choose_drive(request: &Value, host: &Value, preflight: &Value, preferred: Opt
 }
 
 /// When a worker's environments were created, standing in for the creation time that older
-/// releases did not record: its sandboxes first, then its model. Environments deleted since
-/// count for nothing, so a worker whose files are gone ranks below one that still has them.
+/// releases did not record: its agent sandbox first, then its model. The test sandbox is made
+/// when the worker accepts its first bounty, long after setup, so it stands in only for a
+/// worker that records no agent sandbox. Environments deleted since count for nothing, so a
+/// worker whose files are gone ranks below one that still has them.
 fn environments_created<'a>(worker: &Value, environments: &'a [Value]) -> (&'a str, &'a str) {
     let created = |key: &str| {
         worker[key]
@@ -1289,7 +1351,12 @@ fn environments_created<'a>(worker: &Value, environments: &'a [Value]) -> (&'a s
             .and_then(|environment| environment["createdAt"].as_str())
             .unwrap_or("")
     };
-    (created("environmentId").max(created("testEnvironmentId")), created("modelEnvironmentId"))
+    let sandbox = if worker["environmentId"].is_string() {
+        created("environmentId")
+    } else {
+        created("testEnvironmentId")
+    };
+    (sandbox, created("modelEnvironmentId"))
 }
 
 /// The worker `start bounty` reconnects to: the newest. Workers from releases without a
@@ -1321,6 +1388,26 @@ fn saved_model(saved: &Value) -> Option<String> {
         None => name,
     })
     .ok()
+}
+
+/// A suggested model with the variant `quant` (--quant) in place of its own :QUANT. A
+/// --quant that is no GGUF label leaves the suggestion without one; --quant still applies.
+fn with_variant(suggested: String, quant: Option<&str>) -> String {
+    let Some(quant) = quant else { return suggested };
+    let repository = match suggested.rsplit_once(':') {
+        Some((repository, label)) if !label.contains('/') => repository.to_owned(),
+        _ => suggested,
+    };
+    model(&format!("{repository}:{quant}")).unwrap_or(repository)
+}
+
+/// The model question's check of an answer, against the command line's request `base`.
+fn model_entry(base: &Value, value: &str) -> Result<String, String> {
+    let chosen = model(value)?;
+    let mut request = base.clone();
+    request["model"] = chosen.as_str().into();
+    normalize_selection(&mut request)?;
+    Ok(chosen)
 }
 
 /// The saved worker as `start bounty` introduces it before reconnecting.
@@ -1484,6 +1571,31 @@ where
     rpc("swarm_dispatch", json!({"request":request}))
         .await
         .map_err(engine_error)
+}
+
+/// [`start_detached`] for a setup's request. A worker the engine already prepares or runs is
+/// returned as it is, never restarted: a resume request would restart its preparation or its
+/// agent's turn. `saved` is the listed worker plain `start bounty` reconnects to; a worker
+/// named with --worker is looked up first.
+async fn start_scripted<F, Fut>(request: Value, saved: &Value, mut rpc: F) -> Result<Value, String>
+where
+    F: FnMut(&'static str, Value) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    if request["action"] == "resume" {
+        let current = if saved.is_object() && request["workerId"] == saved["id"] {
+            json!({"worker":saved})
+        } else {
+            let status = json!({"action":"status","workerId":request["workerId"]});
+            rpc("swarm_dispatch", json!({"request":status}))
+                .await
+                .map_err(engine_error)?
+        };
+        if active_state(worker_value(&current)["state"].as_str().unwrap_or("")) {
+            return Ok(current);
+        }
+    }
+    start_detached(request, rpc).await
 }
 
 /// Registering a new worker needs the account. Scripts stop here; people can sign in now.
@@ -1830,26 +1942,27 @@ impl Setup {
         Ok(asked)
     }
 
-    /// The model question, prefilled with the last answer, the given model, the saved worker's
-    /// model or the suggested one. A :QUANT that conflicts with --quant is refused here.
-    fn ask_model(&mut self) -> Result<(), String> {
+    /// What the model question starts with: the last answer, the given model, or the saved
+    /// worker's model or the suggested one. --quant without --model chooses the variant, so a
+    /// suggestion carries that variant instead of its own.
+    fn model_prefill(&self) -> String {
         let given = self.given["model"].as_str().map(|model| match self.given["quant"].as_str() {
             Some(quant) => format!("{model}:{quant}"),
             None => model.to_owned(),
         });
-        let initial = self
-            .model
-            .clone()
-            .or(given)
-            .or_else(|| saved_model(&self.saved))
-            .unwrap_or_else(|| DEFAULT_MODEL.into());
+        self.model.clone().or(given).unwrap_or_else(|| {
+            let suggested = saved_model(&self.saved).unwrap_or_else(|| DEFAULT_MODEL.into());
+            with_variant(suggested, self.given["quant"].as_str())
+        })
+    }
+
+    /// The model question, prefilled by [`Setup::model_prefill`]. A :QUANT that conflicts with
+    /// --quant is refused here.
+    fn ask_model(&mut self) -> Result<(), String> {
+        let initial = self.model_prefill();
         let base = self.entry_base();
         let answer = ui::input_noted(MODEL_QUESTION, &note_lines(MODEL_NOTE), &initial, &|value| {
-            let chosen = model(value)?;
-            let mut request = base.clone();
-            request["model"] = chosen.as_str().into();
-            normalize_selection(&mut request)?;
-            Ok(chosen)
+            model_entry(&base, value)
         })?;
         if self.model.as_ref() != Some(&answer) {
             self.checked = false;
@@ -2139,7 +2252,7 @@ async fn reopen(invocation: &Invocation) -> Result<Option<Value>, String> {
         if !resume {
             ui::info(&format!(
                 "The worker stays paused. Press P in its view, or run: yougori bounty resume {}",
-                worker_handle(&worker)
+                typed(&worker).await
             ));
             return Ok(Some(current));
         }
@@ -2207,7 +2320,7 @@ async fn setup(invocation: &mut Invocation) -> Result<Option<Value>, String> {
         ui::info(&format!(
             "This sets up a new worker. {} keeps running until you stop it: yougori bounty stop {}",
             field(&saved, "name", "Your current worker"),
-            worker_handle(saved["id"].as_str().unwrap_or_default())
+            typed_name(saved["id"].as_str().unwrap_or_default(), &listed)
         ));
     }
     if !resume && setup.reopen.is_none() {
@@ -2232,11 +2345,7 @@ async fn setup(invocation: &mut Invocation) -> Result<Option<Value>, String> {
         if !resume {
             sign_in(interactive).await?;
         }
-        // A saved worker the engine already runs is returned as it is, never restarted.
-        if resume && invocation.request["workerId"] == saved["id"] && active_state(saved["state"].as_str().unwrap_or("")) {
-            return Ok(Some(json!({"worker":saved})));
-        }
-        return start_detached(invocation.request.clone(), call)
+        return start_scripted(invocation.request.clone(), &saved, call)
             .await
             .map(Some);
     }
@@ -2926,27 +3035,89 @@ fn stream_tail(stream: &str, columns: usize) -> Vec<String> {
     wrapped[start..].to_vec()
 }
 
+/// The console's key line. Opened from the waiting view (`nested`), Ctrl+] goes back to it;
+/// opened on its own, Ctrl+] ends the command and leaves the engine working.
+fn console_hint(practice: bool, nested: bool) -> &'static str {
+    match (practice, nested) {
+        (true, true) => "Type guidance for your worker · /stop ends the practice · Ctrl+] goes back",
+        (true, false) => "Type guidance for your worker · /stop ends the practice · Ctrl+] detaches",
+        (false, true) => "Type to message your agent · /stop pauses or leaves the bounty · Ctrl+] goes back",
+        (false, false) => "Type to message your agent · /stop pauses or leaves the bounty · Ctrl+] detaches",
+    }
+}
+
+/// What Ctrl+] leaves on screen when the console returns to the waiting view.
+fn back_to_waiting_view(practice: bool) -> &'static str {
+    if practice {
+        "Back to the waiting view; the practice keeps running in the engine."
+    } else {
+        "Back to the waiting view; your agent keeps working in the engine."
+    }
+}
+
+/// How long a practice console waits for the end line of a practice that no longer runs. The
+/// engine releases the model before it records the end; one that restarted lost the record.
+const PRACTICE_END_WAIT: Duration = Duration::from_secs(30);
+
+/// Tells a practice console when the newest practice is over. The log keeps earlier practices
+/// too, each starting with a `practice` event. The engine records how a practice ended only
+/// once it released the model, so that end line can even come after the next practice started.
+#[derive(Default)]
+struct PracticeEnd {
+    /// The newest practice's end line is on screen.
+    ended: bool,
+    /// Since when no practice runs and the log brings nothing new.
+    quiet: Option<Instant>,
+}
+
+impl PracticeEnd {
+    /// One event the console read.
+    fn event(&mut self, kind: &str) {
+        match kind {
+            "practice" => self.ended = false,
+            "practiceEnd" => self.ended = true,
+            _ => {}
+        }
+    }
+
+    /// After one read of the log, which brought `new` events while a practice was `practicing`
+    /// or not: whether the console is done. It is once the end line is on screen with nothing
+    /// newer to show, or once no practice has run for [`PRACTICE_END_WAIT`].
+    fn done(&mut self, new: bool, practicing: bool, now: Instant) -> bool {
+        if practicing {
+            // An end line read while a practice runs is an earlier practice's.
+            self.ended = false;
+        }
+        if practicing || new {
+            self.quiet = None;
+            return false;
+        }
+        let quiet = *self.quiet.get_or_insert(now);
+        self.ended || now.saturating_duration_since(quiet) >= PRACTICE_END_WAIT
+    }
+}
+
 /// A live console over a worker's activity log, like a coding agent's: the agent's actions and
 /// the model's output stream in as they happen, and you can type guidance or a command. Used by
-/// practice (which loops until a report qualifies) and by an accepted bounty's work.
-pub(crate) async fn console(worker: &str, practice: bool) -> Result<Value, String> {
+/// practice (which loops until a report qualifies) and by an accepted bounty's work. `nested`:
+/// opened from the waiting view, which opens again when the console ends.
+pub(crate) async fn console(worker: &str, practice: bool, nested: bool) -> Result<Value, String> {
     let _raw = ui::Raw::on()?;
     let block = ui::block();
     let mut after = 0u64;
     let mut input = String::new();
     let mut stream = String::new();
-    let hint = if practice {
-        "Type guidance for your worker · /stop ends the practice · Ctrl+] detaches"
-    } else {
-        "Type to message your agent · /stop pauses or leaves the bounty · Ctrl+] detaches"
-    };
+    let hint = console_hint(practice, nested);
+    let mut end = PracticeEnd::default();
     loop {
         let log = dispatch(json!({"action":"activity","workerId":worker,"after":after})).await?;
         for event in log["events"].as_array().into_iter().flatten() {
             if let Some(seq) = event["seq"].as_u64() {
                 after = seq;
             }
-            match event["kind"].as_str().unwrap_or_default() {
+            let kind = event["kind"].as_str().unwrap_or_default();
+            end.event(kind);
+            match kind {
                 "text" | "arguments" => stream.push_str(event["text"].as_str().unwrap_or_default()),
                 "attempt" | "turn" => stream.clear(),
                 "input" => continue, // Echoed locally when you send it.
@@ -2959,9 +3130,10 @@ pub(crate) async fn console(worker: &str, practice: bool) -> Result<Value, Strin
                 }
             }
         }
-        let practicing = log["practicing"] == true;
+        let new = log["events"].as_array().is_some_and(|events| !events.is_empty());
+        let done = end.done(new, log["practicing"] == true, Instant::now());
         let state = log["worker"]["state"].as_str().unwrap_or("").to_owned();
-        if practice && !practicing && log["events"].as_array().is_none_or(|events| events.is_empty()) {
+        if practice && done {
             return Ok(json!({"practice":true,"workerId":worker}));
         }
         if !practice && matches!(state.as_str(), "stopped" | "failed") {
@@ -2991,7 +3163,11 @@ pub(crate) async fn console(worker: &str, practice: bool) -> Result<Value, Strin
                                 }
                                 KeyCode::Char(']') => {
                                     drop(block);
-                                    ui::info(&format!("Detached. {}", reconnect_line(worker).await));
+                                    if nested {
+                                        ui::info(back_to_waiting_view(practice));
+                                    } else {
+                                        ui::info(&format!("Detached. {}", reconnect_line(worker).await));
+                                    }
                                     return Ok(json!({"workerId":worker,"detached":true}));
                                 }
                                 _ => {}
@@ -3001,7 +3177,7 @@ pub(crate) async fn console(worker: &str, practice: bool) -> Result<Value, Strin
                                 KeyCode::Enter => {
                                     let entered = input.trim().to_owned();
                                     input.clear();
-                                    if !entered.is_empty() && console_submit(worker, practice, &entered, &block).await? {
+                                    if !entered.is_empty() && console_submit(worker, practice, hint, &entered, &block).await? {
                                         return Ok(json!({"workerId":worker,"stopped":true}));
                                     }
                                     break;
@@ -3024,17 +3200,14 @@ pub(crate) async fn console(worker: &str, practice: bool) -> Result<Value, Strin
 }
 
 /// Handles a typed line. Returns true when the worker should be left (work `/stop` → leave).
-async fn console_submit(worker: &str, practice: bool, entered: &str, block: &ui::Block) -> Result<bool, String> {
+/// `/help` repeats the console's key line, `hint`.
+async fn console_submit(worker: &str, practice: bool, hint: &str, entered: &str, block: &ui::Block) -> Result<bool, String> {
     block.set(Vec::new());
     if entered.eq_ignore_ascii_case("/stop") {
         return console_stop(worker, practice, block).await;
     }
     if entered == "/help" {
-        ui::info(if practice {
-            "Type guidance to steer your worker. /stop ends the practice. Ctrl+] detaches."
-        } else {
-            "Type to message your agent. /stop pauses or leaves the bounty. Ctrl+] detaches."
-        });
+        ui::info(hint);
         return Ok(false);
     }
     if entered.starts_with('/') {
@@ -3074,7 +3247,7 @@ async fn console_stop(worker: &str, practice: bool, block: &ui::Block) -> Result
     match choice {
         1 => {
             change("Pausing worker", json!({"action":"pause","workerId":worker})).await?;
-            ui::info(&format!("Paused. Resume with: yougori bounty resume {handle}"));
+            ui::info(&format!("Paused. Resume with: yougori bounty resume {}", typed(worker).await));
             Ok(false)
         }
         2 => {
@@ -3112,7 +3285,7 @@ async fn interrupt(worker: &str) -> Result<bool, String> {
         // Leave the view: it cannot tell what the engine finished.
         Err(error) if error == ui::CANCELLED => {
             ui::take_interrupt();
-            ui::warn(&stopped_waiting(&format!("yougori bounty status {}", worker_handle(worker))));
+            ui::warn(&stopped_waiting(&status_command(Some(worker)).await));
             Ok(true)
         }
         Err(error) => Err(error),
@@ -3156,8 +3329,25 @@ fn key_action(key: KeyEvent) -> WorkerKey {
     }
 }
 
+/// How many offers wait for the worker `id`, whose status is `state`. Offers come from the
+/// worker's registration, so a worker whose setup never finished (paused, or preparing again)
+/// has none and is not asked: the engine would refuse.
+async fn count_offers<F, Fut>(id: &str, state: &Value, rpc: F) -> Result<usize, String>
+where
+    F: FnOnce(Value) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    if !state["serverId"].is_string() {
+        return Ok(0);
+    }
+    let result = rpc(json!({"action":"offers","workerId":id})).await?;
+    Ok(result["offers"].as_array().map_or(0, Vec::len))
+}
+
 async fn dashboard(worker: &str) -> Result<(), String> {
     let handle = worker_handle(worker);
+    // Hints name the worker as commands must: by its ID when another worker shares its name.
+    let name = typed(worker).await;
     // The live map lists the keys; this stays in the log above it.
     ui::info(
         "Ctrl+C opens lifecycle choices. Ctrl+] detaches; the engine keeps your worker running.",
@@ -3181,7 +3371,7 @@ async fn dashboard(worker: &str) -> Result<(), String> {
         // The map shows the details; the log keeps one plain line per change, and the exact
         // command when the worker waits for the participant.
         let sentence = state_sentence(&field(state, "name", &handle), state["state"].as_str().unwrap_or(""));
-        let hint = state_hint(state, &handle);
+        let hint = state_hint(state, &name);
         let snapshot = format!("{sentence}\n{}", hint.as_deref().unwrap_or_default());
         if last_snapshot != snapshot {
             ui::step(&sentence);
@@ -3190,8 +3380,7 @@ async fn dashboard(worker: &str) -> Result<(), String> {
             }
             last_snapshot = snapshot;
         }
-        let result = dispatch(json!({"action":"offers","workerId":worker})).await?;
-        let count = result["offers"].as_array().map_or(0, Vec::len);
+        let count = count_offers(worker, state, dispatch).await?;
         screen.offers(count);
         if count != offer_count {
             offer_count = count;
@@ -3293,7 +3482,7 @@ async fn dashboard(worker: &str) -> Result<(), String> {
                     }
                     // Watch the agent work the accepted bounty live; /stop pauses or leaves it.
                     screen.show(false);
-                    match console(worker, false).await {
+                    match console(worker, false, true).await {
                         Err(e) if e == ui::CANCELLED => {
                             if ui::take_interrupt() && interrupt(worker).await? {
                                 return Ok(());
@@ -3399,7 +3588,8 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
         } else if invocation.request["action"] == "practice" {
             let worker = invocation.request["workerId"].as_str().unwrap_or_default();
             if ui::can_prompt() {
-                crate::bounty_practice::walkthrough(worker).await
+                let summary = crate::bounty_practice::walkthrough(worker, false).await?;
+                Ok(practice_shown(summary, worker))
             } else {
                 crate::bounty_practice::headless(worker).await
             }
@@ -3417,6 +3607,16 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
         Ok(v) => Ok(Some(v)),
         Err(e) => Err(e),
     }
+}
+
+/// The result of a practice run in the terminal. Its console already ended with the outcome,
+/// so the result is marked as shown (`detached`) and nothing is printed after it; the summary
+/// keeps the worker's ID and adds its short name.
+fn practice_shown(mut summary: Value, worker: &str) -> Value {
+    summary["workerId"] = worker.into();
+    summary["handle"] = worker_handle(worker).into();
+    summary["detached"] = true.into();
+    summary
 }
 
 /// What a one-line `bounty` command shows while the engine works on it.
@@ -3440,6 +3640,7 @@ fn waiting_label(action: &str) -> &'static str {
         "accept" => "Accepting the bounty",
         "skip" => "Skipping the offer",
         "chat" => "Sending your message",
+        "practiceStop" => "Stopping the practice",
         _ => "Updating your worker",
     }
 }
@@ -3458,12 +3659,12 @@ async fn one_shot(mut request: Value) -> Result<Value, String> {
         action.as_str(),
         "workers" | "status" | "doctor" | "offers" | "details" | "bounties" | "messages" | "reports" | "rewards"
     );
-    let check = match request["workerId"].as_str() {
-        Some(id) if action != "delete" => format!("yougori bounty status {}", worker_handle(id)),
-        _ => "yougori bounty workers".to_owned(),
-    };
+    let worker = request["workerId"].as_str().map(str::to_owned);
     let mut result = match ui::busy(waiting_label(&action), dispatch(request)).await {
-        Err(error) if error == ui::CANCELLED && !reads => return Err(stopped_waiting(&check)),
+        Err(error) if error == ui::CANCELLED && !reads => {
+            let check = status_command(worker.as_deref().filter(|_| action != "delete")).await;
+            return Err(stopped_waiting(&check));
+        }
         result => result?,
     };
     if action == "rewards" {
@@ -3477,7 +3678,24 @@ async fn one_shot(mut request: Value) -> Result<Value, String> {
             result["paymentStatusLabels"] = json!(lines);
         }
     }
-    with_handles(&mut result);
+    // `bounty practice WORKER --stop` answers for the worker it names.
+    if let (Some(id), Some(stopped)) = (worker.as_deref().filter(|_| action == "practiceStop"), result.as_object_mut()) {
+        stopped.insert("workerId".into(), id.into());
+        stopped.insert("handle".into(), worker_handle(id).into());
+    }
+    // Workers that share a short name with another one are marked, so views name them by ID.
+    let listed = if result["workers"].is_array() {
+        result.clone()
+    } else if result["worker"]["id"].is_string() {
+        tokio::time::timeout(Duration::from_secs(2), dispatch(json!({"action":"workers"})))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    with_handles(&mut result, &listed);
     Ok(result)
 }
 
@@ -3879,11 +4097,15 @@ mod tests {
             ("start bounty --storage-drive D:\\", false),
             ("start bounty --release-memory", false),
             ("start bounty --worker worker-1", false),
+            // A worker keeps the platform it was prepared for; only a new one checks the URL.
+            ("start bounty --platform-url http://127.0.0.1:3000", false),
         ] {
             let shown = run(&words(&format!("{args} --dry-run"))).await.unwrap().unwrap();
             assert_eq!(shown["reuseSavedWorker"], reuse, "{args}");
         }
+        assert!(parse(&words("start bounty --worker worker-1 --platform-url http://127.0.0.1:3000")).is_err());
         assert!(HELP.contains("--change") && HELP.contains("reconnects to the worker set up last"));
+        assert!(HELP.contains("--keep-loaded, --platform-url) sets up a new worker instead"));
     }
 
     #[test]
@@ -3932,6 +4154,28 @@ mod tests {
         ]});
         assert_eq!(saved_worker(&machine, &environments).unwrap()["id"], "worker-latest");
         assert_eq!(saved_worker(&machine, &environments[1..]).unwrap()["id"], "worker-earlier");
+        // A test sandbox is made when a worker accepts its first bounty, long after its setup: a
+        // worker set up first that accepted a bounty later is still the older one.
+        let environments = [
+            json!({"id":"env-first","createdAt":"2026-09-20T10:00:00+00:00"}),
+            json!({"id":"env-first-test","createdAt":"2026-10-10T10:00:00+00:00"}),
+            json!({"id":"env-second","createdAt":"2026-10-05T10:00:00+00:00"}),
+        ];
+        let accepted_later = json!({"workers":[
+            {"id":"worker-first","state":"ready_waiting","environmentId":"env-first","testEnvironmentId":"env-first-test"},
+            {"id":"worker-second","state":"ready_waiting","environmentId":"env-second"},
+        ]});
+        assert_eq!(saved_worker(&accepted_later, &environments).unwrap()["id"], "worker-second");
+        let deleted = json!({"workers":[
+            {"id":"worker-first","state":"ready_waiting","environmentId":"env-deleted","testEnvironmentId":"env-first-test"},
+            {"id":"worker-second","state":"ready_waiting","environmentId":"env-second"},
+        ]});
+        assert_eq!(saved_worker(&deleted, &environments).unwrap()["id"], "worker-second", "a deleted sandbox counts for nothing");
+        let unrecorded = json!({"workers":[
+            {"id":"worker-first","state":"ready_waiting","testEnvironmentId":"env-first-test"},
+            {"id":"worker-second","state":"ready_waiting","environmentId":"env-second"},
+        ]});
+        assert_eq!(saved_worker(&unrecorded, &environments).unwrap()["id"], "worker-first", "the test sandbox stands in for none");
         let live = json!({"workers":[{"id":"worker-a","state":"failed"},{"id":"worker-b","state":"paused"},{"id":"worker-c","state":"preparing"}]});
         assert_eq!(saved_worker(&live, &[]).unwrap()["id"], "worker-c");
         assert!(saved_worker(&json!({"workers":[]}), &[]).is_none());
@@ -4015,17 +4259,43 @@ mod tests {
         let shown = started(&result).unwrap();
         assert_eq!((shown["worker"]["id"].as_str(), shown["worker"]["state"].as_str(), shown["background"].as_bool()), (Some("worker-new"), Some("preparing"), Some(true)));
         assert!(shown["next"].as_str().unwrap().contains("yougori bounty status worker-new"), "{shown}");
-        // Reconnecting a saved worker sends only its resume request.
-        let script = parse(&words("start bounty --worker worker-old --yes --no-wait")).unwrap().unwrap();
-        let mut actions = Vec::new();
-        let result = start_detached(script.request, |_, params| {
-            actions.push(params["request"]["action"].clone());
-            std::future::ready(Ok(json!({"worker":{"id":"worker-old","state":"ready_waiting"}})))
+        // --worker resumes a worker that is not running: its status first, then one resume.
+        for state in ["stopped", "paused", "failed"] {
+            let script = parse(&words("start bounty --worker worker-old --yes --no-wait")).unwrap().unwrap();
+            let mut actions = Vec::new();
+            let result = start_scripted(script.request, &Value::Null, |_, params| {
+                actions.push(params["request"]["action"].clone());
+                let state = if params["request"]["action"] == "resume" { "preparing" } else { state };
+                std::future::ready(Ok(json!({"worker":{"id":"worker-old","state":state}})))
+            })
+            .await
+            .unwrap();
+            assert_eq!(actions, [json!("status"), json!("resume")], "{state}");
+            assert!(started(&result).unwrap()["next"].as_str().unwrap().contains("bounty status worker-old"));
+        }
+        // One the engine already prepares or runs is returned as it is: a resume would restart it.
+        for state in ["preparing", "preparing_bounty", "ready_waiting", "running", "awaiting_review"] {
+            let script = parse(&words("start bounty --worker worker-old --yes --no-wait")).unwrap().unwrap();
+            let mut actions = Vec::new();
+            let result = start_scripted(script.request, &Value::Null, |_, params| {
+                actions.push(params["request"]["action"].clone());
+                std::future::ready(Ok(json!({"worker":{"id":"worker-old","state":state}})))
+            })
+            .await
+            .unwrap();
+            assert_eq!(actions, [json!("status")], "{state} is never resumed");
+            assert_eq!(result["worker"]["state"], state);
+        }
+        // The saved worker plain `start bounty` reconnects to is listed already: no request.
+        let saved = json!({"id":"worker-old","state":"running"});
+        let result = start_scripted(json!({"action":"resume","workerId":"worker-old"}), &saved, |_, _| {
+            panic!("a running saved worker needs no request");
+            #[allow(unreachable_code)]
+            std::future::ready(Ok(Value::Null))
         })
         .await
         .unwrap();
-        assert_eq!(actions, [json!("resume")]);
-        assert!(started(&result).unwrap()["next"].as_str().unwrap().contains("bounty status worker-old"));
+        assert_eq!(result, json!({"worker":saved}));
         let paused = started(&json!({"worker":{"id":"worker-old","state":"paused"}})).unwrap();
         assert!(paused["next"].as_str().unwrap().contains("yougori bounty resume worker-old") && paused["background"].is_null());
         assert!(started(&json!({"background":true})).is_err(), "a result without a worker ID is an error");
@@ -4167,13 +4437,14 @@ mod tests {
     #[test]
     fn results_and_hints_name_workers_by_their_short_names() {
         let mut result = json!({"worker":{"id":"worker-1","state":"paused"},"workers":[{"id":"worker-2"},{"name":"no id"}]});
-        with_handles(&mut result);
+        with_handles(&mut result, &Value::Null);
         assert_eq!(result["worker"]["handle"], "happy-turtle");
         assert_eq!(result["workers"][0]["handle"], worker_handle("worker-2"));
         assert!(result["workers"][1]["handle"].is_null());
         assert_eq!(result["worker"]["id"], "worker-1", "IDs stay for scripts");
+        assert!(result["worker"]["handleShared"].is_null(), "only a shared name is marked");
         let mut list = json!(["worker-1"]);
-        with_handles(&mut list);
+        with_handles(&mut list, &Value::Null);
         assert_eq!(list, json!(["worker-1"]));
         let shown = started(&json!({"worker":{"id":"worker-1","state":"preparing"}})).unwrap();
         assert_eq!(shown["worker"]["handle"], "happy-turtle");
@@ -4303,5 +4574,155 @@ mod tests {
         let request = scripted.request().unwrap();
         assert_eq!(request["model"], "hf.co/owner/model");
         assert!(request["gpu"].is_null() && request["resources"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_waiting_view_asks_for_offers_only_once_the_worker_is_registered() {
+        // A worker whose setup never finished, such as a paused one plain `start bounty` opens,
+        // is not registered: the engine would refuse an offers request and end the view.
+        let mut asked = Vec::new();
+        for state in [json!({"id":"worker-1","state":"paused","serverId":null}), json!({"id":"worker-1","state":"preparing"})] {
+            let count = count_offers("worker-1", &state, |request| {
+                asked.push(request);
+                std::future::ready(Err::<Value, String>("Worker registration has not completed".into()))
+            })
+            .await;
+            assert_eq!(count, Ok(0), "{state}");
+        }
+        assert!(asked.is_empty(), "{asked:?}");
+        let registered = json!({"id":"worker-1","state":"ready_waiting","serverId":"server-1"});
+        let count = count_offers("worker-1", &registered, |request| {
+            asked.push(request);
+            std::future::ready(Ok(json!({"offers":[{"id":"offer-1"},{"id":"offer-2"}]})))
+        })
+        .await;
+        assert_eq!(count, Ok(2));
+        assert_eq!(asked, [json!({"action":"offers","workerId":"worker-1"})]);
+    }
+
+    #[test]
+    fn a_quant_given_without_a_model_becomes_the_suggested_variant() {
+        let flagged = setup(parse(&words("start bounty --quant iq4_xs")).unwrap().unwrap().request);
+        let prefill = flagged.model_prefill();
+        assert_eq!(prefill, "hf.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF:IQ4_XS");
+        assert_eq!(model_entry(&flagged.entry_base(), &prefill), Ok(prefill.clone()), "Enter accepts the suggestion");
+        assert!(model_entry(&flagged.entry_base(), "hf.co/owner/model:Q8_0").is_err(), "a typed conflicting variant is still refused");
+        let mut saved = setup(parse(&words("start bounty --quant Q8_0")).unwrap().unwrap().request);
+        saved.saved = json!({"model":"owner/model","quant":"Q4_K_M"});
+        assert_eq!(saved.model_prefill(), "hf.co/owner/model:Q8_0", "the saved worker's model too");
+        assert!(model_entry(&saved.entry_base(), &saved.model_prefill()).is_ok());
+        // Without --quant the suggestion keeps its variant, and a given model keeps its own.
+        assert_eq!(setup(parse(&words("start bounty")).unwrap().unwrap().request).model_prefill(), DEFAULT_MODEL);
+        let given = setup(parse(&words("start bounty --model hf.co/owner/model --quant Q5_K_M")).unwrap().unwrap().request);
+        assert_eq!(given.model_prefill(), "hf.co/owner/model:Q5_K_M");
+        // A --quant that is no GGUF label leaves the suggestion without one, so Enter still works.
+        let odd = setup(json!({"action":"prepare","quant":"Q4 K"}));
+        assert_eq!(odd.model_prefill(), "hf.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF");
+        assert!(model_entry(&odd.entry_base(), &odd.model_prefill()).is_ok());
+    }
+
+    #[test]
+    fn leaving_a_console_or_a_preparation_inside_the_waiting_view_goes_back_to_it() {
+        for practice in [true, false] {
+            assert!(console_hint(practice, true).ends_with("Ctrl+] goes back"));
+            assert!(console_hint(practice, false).ends_with("Ctrl+] detaches"));
+            let back = back_to_waiting_view(practice);
+            assert!(back.starts_with("Back to the waiting view") && !back.contains("Reconnect"), "{back}");
+        }
+        assert!(back_to_waiting_view(true).contains("practice keeps running"));
+        assert!(back_to_waiting_view(false).contains("agent keeps working"));
+        let labels = |bounty: bool| preparation_choices(bounty).map(|choice| choice.label);
+        assert_eq!(labels(true), ["Cancel", "Stop preparation", "Back to the waiting view"]);
+        assert_eq!(labels(false), ["Cancel", "Stop preparation", "Back to terminal"]);
+    }
+
+    #[test]
+    fn a_practice_console_ends_on_the_practice_s_own_end_line() {
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        // The engine stops counting the practice as running before it records how it ended.
+        let mut end = PracticeEnd::default();
+        end.event("practice");
+        assert!(!end.done(true, true, at(0)));
+        assert!(!end.done(false, true, at(1)), "a practice that still runs");
+        assert!(!end.done(false, false, at(5)), "the end line is still to come");
+        end.event("practiceEnd");
+        assert!(!end.done(true, false, at(6)), "newer events are shown first");
+        assert!(end.done(false, false, at(7)));
+        // An engine that restarted lost the end.
+        let mut lost = PracticeEnd::default();
+        assert!(!lost.done(false, false, at(0)));
+        assert!(lost.done(false, false, at(0) + PRACTICE_END_WAIT));
+        // An earlier practice's end can be recorded after this one started: it is not this one's.
+        let mut late = PracticeEnd::default();
+        for kind in ["practice", "verdict", "practice", "practiceEnd"] {
+            late.event(kind);
+        }
+        assert!(!late.done(true, true, at(0)));
+        assert!(!late.done(false, true, at(1)));
+        assert!(!late.done(false, false, at(2)), "this practice's own end line is still to come");
+        late.event("practiceEnd");
+        assert!(!late.done(true, false, at(3)));
+        assert!(late.done(false, false, at(4)));
+    }
+
+    #[test]
+    fn a_practice_in_the_terminal_prints_no_json_after_its_console() {
+        let id = "worker-bd89af264d434eb286e5dad338db9512";
+        let shown = practice_shown(json!({"practice":true,"workerId":id,"exampleProject":"practice-login"}), id);
+        assert_eq!(shown["detached"], true, "main prints nothing after a detached result");
+        assert_eq!((shown["workerId"].as_str(), shown["handle"].as_str()), (Some(id), Some("apt-whale")));
+        assert_eq!((shown["practice"].as_bool(), shown["exampleProject"].as_str()), (Some(true), Some("practice-login")));
+    }
+
+    #[test]
+    fn a_running_practice_can_be_stopped_from_a_script() {
+        let stop = parse(&words("bounty practice worker-1 --stop")).unwrap().unwrap();
+        assert_eq!(stop.request, json!({"action":"practiceStop","workerId":"worker-1"}));
+        assert!(!stop.interactive_start);
+        for args in ["bounty practice --stop", "bounty status worker-1 --stop", "bounty practice worker-1 --stop --stop", "start bounty --stop"] {
+            assert!(parse(&words(args)).is_err(), "{args}");
+        }
+        assert_eq!(waiting_label("practiceStop"), "Stopping the practice");
+        assert!(HELP.contains("yougori bounty practice WORKER [--stop]"));
+        // The help states the limits a practice without a terminal stops at.
+        let (attempts, minutes) = (crate::bounty_practice::MAX_ATTEMPTS, crate::bounty_practice::SCRIPT_MINUTES);
+        assert!(HELP.contains(&format!("stops after {attempts} rejected reports")) && HELP.contains(&format!("{minutes} minutes; --stop ends a running practice")));
+    }
+
+    #[test]
+    fn hints_name_a_worker_by_its_id_when_another_shares_its_short_name() {
+        let mut seen = std::collections::BTreeMap::new();
+        let (first, second) = (0..100_000)
+            .map(|n| format!("worker-{n:032x}"))
+            .find_map(|id| seen.insert(worker_handle(&id), id.clone()).map(|earlier| (earlier, id)))
+            .unwrap();
+        let third = "worker-1";
+        let twins = json!({"workers":[
+            {"id":first,"name":"One","state":"paused","createdAt":100},
+            {"id":second,"name":"Two","state":"ready_waiting","createdAt":200},
+            {"id":third,"name":"Three","state":"ready_waiting","createdAt":50}]});
+        assert_eq!(typed_name(&first, &twins), first);
+        assert_eq!(typed_name(&second, &twins), second);
+        assert_eq!(typed_name(third, &twins), worker_handle(third), "a name no other worker has");
+        assert_eq!(typed_name(&first, &Value::Null), worker_handle(&first), "without a listing, the short name");
+        // The same choice as the workers table.
+        let listed: Vec<&Value> = twins["workers"].as_array().unwrap().iter().collect();
+        assert_eq!(worker_names(&listed), [first.clone(), second.clone(), worker_handle(third)]);
+        // Reconnect commands for any worker but the newest, which plain `start bounty` opens.
+        assert_eq!(reconnect_command(&first, &twins, &[]), format!("yougori start bounty --worker {first}"));
+        assert_eq!(reconnect_command(&second, &twins, &[]), "yougori start bounty");
+        assert_eq!(reconnect_command(third, &twins, &[]), format!("yougori start bounty --worker {}", worker_handle(third)));
+        // The waiting view's hint is given the typed name.
+        let restored = json!({"state":"paused","restored":true});
+        assert!(state_hint(&restored, &typed_name(&first, &twins)).unwrap().ends_with(&format!("yougori bounty resume {first}")));
+        // Results mark a shared name, so the status card names that worker by its ID.
+        let mut status = json!({"worker":{"id":first,"state":"paused"}});
+        with_handles(&mut status, &twins);
+        assert_eq!((status["worker"]["handle"].as_str(), status["worker"]["handleShared"].as_bool()), (Some(worker_handle(&first).as_str()), Some(true)));
+        let mut listing = twins.clone();
+        with_handles(&mut listing, &twins);
+        let marked: Vec<bool> = listing["workers"].as_array().unwrap().iter().map(|worker| worker["handleShared"] == true).collect();
+        assert_eq!(marked, [true, true, false]);
     }
 }

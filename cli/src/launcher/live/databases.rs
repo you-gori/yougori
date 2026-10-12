@@ -112,12 +112,17 @@ fn directed(action: Action, direction: sync::Direction) -> Action {
 }
 
 impl Live {
-    pub(super) fn discover_databases(&mut self, manifest: &sync::Manifest) {
+    /// Finds the SQLite databases among new and changed files. The first pass of a launch reads
+    /// the header of every file, which takes a while in a large project.
+    pub(super) async fn discover_databases(&mut self, manifest: &sync::Manifest) {
         self.database_probes.retain(|path, _| manifest.contains_key(path));
+        let mut probed = 0;
         for (path, stamp) in manifest {
             if stamp.0 >= 16 && self.database_probes.get(path) != Some(stamp) {
                 if sync::sqlite_file(&self.folder.join(path)) { self.database_files.insert(path.clone()); }
                 self.database_probes.insert(path.clone(), *stamp);
+                probed += 1;
+                breathe(probed).await;
             }
         }
     }
@@ -330,6 +335,30 @@ mod tests {
         assert!(error.contains("Local SQLite helper stopped"), "{error}");
         assert!(helper.as_ref().unwrap().failed);
         assert_eq!(local_request(&mut helper, &root, request).unwrap()["database"], false);
+    }
+
+    #[test]
+    fn a_long_database_search_gives_a_waiting_launch_a_turn() {
+        use std::{future::Future, task::{Context, Waker}};
+        let folder = tempfile::tempdir().unwrap();
+        for i in 0..100 {
+            fs::write(folder.path().join(format!("file-{i}.txt")), "an ordinary text file").unwrap();
+        }
+        let mut database = b"SQLite format 3\0".to_vec();
+        database.extend([0; 84]);
+        fs::write(folder.path().join("app.db"), database).unwrap();
+        let manifest = sync::scan(folder.path(), &sync::Filter::load(folder.path(), false).unwrap()).unwrap();
+        let mut live = Live::offline(folder.path());
+        let mut cx = Context::from_waker(Waker::noop());
+        {
+            let mut search = std::pin::pin!(live.discover_databases(&manifest));
+            assert!(search.as_mut().poll(&mut cx).is_pending(), "a launch waiting for the search notices Ctrl+C meanwhile");
+            while search.as_mut().poll(&mut cx).is_pending() {}
+        }
+        assert_eq!(live.database_files.iter().collect::<Vec<_>>(), ["app.db"]);
+        assert_eq!(live.database_probes.len(), 101);
+        // Later passes read only the files that changed since.
+        assert!(std::pin::pin!(live.discover_databases(&manifest)).poll(&mut cx).is_ready());
     }
 
     #[test]

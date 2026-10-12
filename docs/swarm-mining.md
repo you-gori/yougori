@@ -24,9 +24,12 @@ work streams into the console as it happens. The report qualifies only when it n
 `auth.js`, the line of the hardcoded password and a login that uses it. A rejected
 report goes back to the model with the verifier's reason and, from the second
 rejection, a growing hint; the line number and password are never given. It keeps
-trying until a report qualifies. Type a line to steer the model — a suggestion that
+trying until a report qualifies (a practice started from a script stops after 5
+rejected reports, 30 minutes or Ctrl+C; `yougori bounty practice WORKER --stop`
+ends a running one). Type a line to steer the model — a suggestion that
 cannot change the scope, read at its next attempt; type `/stop` to end it, or press
-**Ctrl+]** to detach and leave it running. A qualifying report earns a no-value
+**Ctrl+]** to detach and leave it running (opened from the waiting view, it returns
+there). A qualifying report earns a no-value
 practice award. The practice does not run OpenCode or the sandboxes, and uses no
 server, reward or payment; nothing is uploaded. It runs only while the worker is
 waiting, not while it is paused or working an accepted bounty. It is a
@@ -237,7 +240,8 @@ yougori bounty accept WORKER OFFER --version 2 --terms-digest EXACT_DIGEST \
 ```
 
 Use `--platform-url http://127.0.0.1:PORT` only with the matching local development
-platform/account configuration. Remote platforms must use an HTTPS origin.
+platform/account configuration. It sets up a new worker, like the other creation
+options, and cannot be combined with `--worker`. Remote platforms must use an HTTPS origin.
 CLI/account and worker-channel credentials are never accepted through command
 arguments. An environment named `bounty` remains accessible through
 `yougori env start bounty` or `yougori start --environment bounty`.

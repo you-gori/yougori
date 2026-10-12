@@ -341,8 +341,24 @@ pub fn bounty(action: &str, result: &Value, color: bool) -> Option<String> {
         "status" | "memory" if result["worker"].is_object() => Some(bounty_worker(&result["worker"], color)),
         "offers" => Some(bounty_offers(&result["offers"], color)),
         "doctor" if result["worker"].is_object() => Some(bounty_doctor(result, color)),
+        "practice" if result["practice"] == true || result["stopped"].is_boolean() => Some(bounty_practice(result, color)),
         _ => None,
     }
+}
+
+/// How a practice without a console ended, or what `bounty practice WORKER --stop` did.
+fn bounty_practice(result: &Value, color: bool) -> String {
+    let line = if result["practice"] == true {
+        text(&result["message"])
+    } else if result["stopped"] == true {
+        "Practice stopped. Your worker is waiting for offers.".into()
+    } else {
+        "No practice was running.".into()
+    };
+    let mut output = section("Practice bounty", color);
+    output.push_str(&format!("{}\n", safe(&line)));
+    output.push_str(&format!("{}\n", styled(&format!("Worker: {}", safe(&text(&result["handle"]))), MUTED, color)));
+    output
 }
 
 fn bounty_doctor(result: &Value, color: bool) -> String {
@@ -431,8 +447,9 @@ fn bounty_workers(workers: &Value, color: bool) -> String {
 }
 
 fn bounty_worker(worker: &Value, color: bool) -> String {
-    // Commands name the worker by its short name; the ID stays in the card for reference.
-    let handle = worker_handle(worker);
+    // Commands name the worker by its short name, or by its ID when another worker shares that
+    // name (`handleShared`); the ID stays in the card for reference.
+    let handle = if worker["handleShared"] == true { text(&worker["id"]) } else { worker_handle(worker) };
     let state = worker_state(worker);
     let resources = &worker["resources"];
     let mut runs = vec![match worker["gpu"].as_str() {
@@ -911,6 +928,26 @@ mod bounty_views {
         let view = bounty("workers", &workers, false).unwrap();
         assert!(view.contains(&first) && view.contains(&second) && view.contains(&handle("worker-3")), "{view}");
         assert!(view.contains(&format!("Resume One: yougori bounty resume {first}")), "{view}");
+        // A status card's commands do the same once the result marks the shared name.
+        let shared = json!({"worker":{"id":first,"name":"One","state":"paused","handle":handle(&first),"handleShared":true}});
+        let card = bounty("status", &shared, false).unwrap();
+        assert!(card.contains(&format!("Resume: yougori bounty resume {first}")) && !card.contains(&format!("resume {}", handle(&first))), "{card}");
+        let alone = json!({"worker":{"id":"worker-3","name":"Three","state":"stopped"}});
+        assert!(bounty("status", &alone, false).unwrap().contains(&format!("yougori start bounty --worker {}", handle("worker-3"))));
+    }
+
+    #[test]
+    fn a_practice_without_a_console_and_its_stop_read_as_sentences() {
+        let done = json!({"practice":true,"status":"gave_up","reportQualifies":false,"attempts":[],"handle":"apt-whale",
+            "message":"No report qualified after 5 attempts, so the practice was stopped.\u{1b}[2J"});
+        let view = bounty("practice", &done, false).unwrap();
+        assert!(view.contains("PRACTICE BOUNTY") && view.contains("No report qualified after 5 attempts") && view.contains("Worker: apt-whale"), "{view}");
+        assert!(!view.contains('\u{1b}'), "{view}");
+        let stopped = bounty("practice", &json!({"stopped":true,"workerId":"worker-1","handle":"happy-turtle"}), false).unwrap();
+        assert!(stopped.contains("Practice stopped") && stopped.contains("Worker: happy-turtle"), "{stopped}");
+        let idle = bounty("practice", &json!({"stopped":false,"workerId":"worker-1","handle":"happy-turtle"}), false).unwrap();
+        assert!(idle.contains("No practice was running"), "{idle}");
+        assert!(bounty("practice", &json!({"cancelled":true}), false).is_none());
     }
 }
 

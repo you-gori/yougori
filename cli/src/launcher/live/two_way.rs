@@ -146,6 +146,11 @@ pub(super) fn host_target(root: &Path, relative: &str) -> Result<PathBuf, String
 }
 
 fn local_hash(root: &Path, relative: &str) -> Result<Option<String>, String> {
+    local_hash_until(root, relative, &AtomicBool::new(false))
+}
+
+/// [`local_hash`] that ends at its next chunk once `stop` is set.
+fn local_hash_until(root: &Path, relative: &str, stop: &AtomicBool) -> Result<Option<String>, String> {
     let path = destination(root, relative)?;
     let meta = match fs::symlink_metadata(&path) {
         Ok(meta) => meta,
@@ -160,6 +165,9 @@ fn local_hash(root: &Path, relative: &str) -> Result<Option<String>, String> {
     let mut buffer = [0; 64 * 1024];
     let mut size = 0;
     loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(STOPPED.into());
+        }
         let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
@@ -173,6 +181,16 @@ fn local_hash(root: &Path, relative: &str) -> Result<Option<String>, String> {
         return Err(format!("{} changed during sync; retrying", clean(relative)));
     }
     Ok(Some(format!("{:x}", hash.finalize())))
+}
+
+/// [`local_hash`] in a pass a launch may be waiting for. A file of a megabyte or more is read off
+/// the runtime's thread, so Ctrl+C is noticed while it is read; a wait that is dropped ends it.
+async fn local_hash_beside(root: &Path, relative: &str, size: u64) -> Result<Option<String>, String> {
+    if size < 1024 * 1024 {
+        return local_hash(root, relative);
+    }
+    let (root, relative) = (root.to_owned(), relative.to_owned());
+    off_thread(move |stop| local_hash_until(&root, &relative, stop)).await
 }
 
 fn expect_local(root: &Path, relative: &str, expected: Option<&str>) -> Result<PathBuf, String> {
@@ -423,7 +441,7 @@ impl Live {
     /// Only host files and previously tracked deletions are candidates; guest-only
     /// runtime data must survive a reconnect.
     pub async fn reconcile_one_way(&mut self, manifest: &sync::Manifest) -> Result<(), String> {
-        self.discover_databases(manifest);
+        self.discover_databases(manifest).await;
         self.database_files.extend(self.saved.databases.keys().cloned());
         let paths: BTreeSet<_> = manifest.keys().chain(self.saved.files.keys())
             .chain(self.saved.pending.iter()).filter(|p| !sync::database_member(p, &self.database_files)).cloned().collect();
@@ -448,7 +466,7 @@ impl Live {
                 }
                 let hash = remote.get(path).ok_or("Missing recovery checksum")?;
                 if let Some(stamp) = manifest.get(path) {
-                    if local_hash(&self.folder, path)?.as_deref() == hash.as_str() {
+                    if local_hash_beside(&self.folder, path, stamp.0).await?.as_deref() == hash.as_str() {
                         baseline.insert(path.clone(), *stamp);
                     }
                 } else if !hash.is_null() {
@@ -766,6 +784,31 @@ impl Live {
         self.sync_direction(env_files, sync::Direction::Both).await
     }
 
+    /// This computer's checksum of each file, reusing those of files unchanged since the last
+    /// pass. Paths that cannot be synced stay on this computer, held with a warning.
+    async fn local_checksums(&mut self, paths: &[(String, (u64, i64))], progress: &ui::Task) -> Result<BTreeMap<String, String>, String> {
+        let mut local = BTreeMap::new();
+        progress.progress("Checking local files", 0, paths.len() as u64, "files");
+        for (index, (path, stamp)) in paths.iter().enumerate() {
+            if let Some(reason) = unsupported(path) {
+                self.hold(path, Some(format!("{} cannot be synced ({reason}); it stays on this computer", clean(path))));
+                continue;
+            }
+            progress.detail(&clean(path));
+            if let Some((_, hash)) = self.local_hashes.get(path).filter(|(old, _)| old == stamp) {
+                local.insert(path.clone(), hash.clone());
+            } else if let Some(hash) = local_hash_beside(&self.folder, path, stamp.0).await? {
+                self.local_hashes
+                    .insert(path.clone(), (*stamp, hash.clone()));
+                local.insert(path.clone(), hash);
+            }
+            progress.progress("Checking local files", index as u64 + 1, paths.len() as u64, "files");
+            self.pump().await?;
+            breathe(index + 1).await;
+        }
+        Ok(local)
+    }
+
     pub(super) async fn sync_direction(&mut self, env_files: bool, direction: sync::Direction) -> Result<usize, String> {
         self.env_files = env_files;
         let progress = ui::task("Checking project changes");
@@ -786,32 +829,15 @@ impl Live {
         for link in &links {
             self.hold(link, None);
         }
-        self.discover_databases(&manifest);
+        self.discover_databases(&manifest).await;
         self.database_files.extend(self.saved.databases.keys().cloned());
-        let mut local = BTreeMap::new();
         self.local_hashes
             .retain(|path, _| manifest.contains_key(path));
         let paths: Vec<_> = manifest.iter()
             .filter(|(path, _)| !sync::database_member(path, &self.database_files))
             .map(|(path, stamp)| (path.clone(), *stamp))
             .collect();
-        progress.progress("Checking local files", 0, paths.len() as u64, "files");
-        for (index, (path, stamp)) in paths.iter().enumerate() {
-            if let Some(reason) = unsupported(path) {
-                self.hold(path, Some(format!("{} cannot be synced ({reason}); it stays on this computer", clean(path))));
-                continue;
-            }
-            progress.detail(&clean(path));
-            if let Some((_, hash)) = self.local_hashes.get(path).filter(|(old, _)| old == stamp) {
-                local.insert(path.clone(), hash.clone());
-            } else if let Some(hash) = local_hash(&self.folder, path)? {
-                self.local_hashes
-                    .insert(path.clone(), (*stamp, hash.clone()));
-                local.insert(path.clone(), hash);
-            }
-            progress.progress("Checking local files", index as u64 + 1, paths.len() as u64, "files");
-            self.pump().await?;
-        }
+        let mut local = self.local_checksums(&paths, &progress).await?;
         let mut remote = self.remote_hashes(&filter, &progress).await?;
         if CASE_INSENSITIVE {
             self.reconcile_case(&mut local, &mut remote, direction).await?;
@@ -1222,6 +1248,54 @@ mod tests {
             change(Some("base"), Some("same"), Some("same")),
             Change::Same
         );
+    }
+    #[test]
+    fn hashing_many_local_files_gives_a_waiting_launch_a_turn() {
+        use std::{future::Future, task::{Context, Poll, Waker}};
+        let folder = tempfile::tempdir().unwrap();
+        fs::create_dir(folder.path().join("src")).unwrap();
+        for i in 0..100 {
+            fs::write(folder.path().join(format!("src/file-{i}.js")), format!("export const value = {i};")).unwrap();
+        }
+        let filter = sync::Filter::load(folder.path(), false).unwrap().two_way();
+        let paths: Vec<_> = sync::scan(folder.path(), &filter).unwrap().into_iter().collect();
+        let mut live = Live::offline(folder.path());
+        let progress = ui::task("Checking local files");
+        let mut cx = Context::from_waker(Waker::noop());
+        let local = {
+            let mut hashing = std::pin::pin!(live.local_checksums(&paths, &progress));
+            assert!(hashing.as_mut().poll(&mut cx).is_pending(), "a launch waiting for the pass notices Ctrl+C meanwhile");
+            loop {
+                if let Poll::Ready(local) = hashing.as_mut().poll(&mut cx) { break local.unwrap(); }
+            }
+        };
+        progress.clear();
+        assert_eq!(local.len(), 100);
+        assert_eq!(local["src/file-7.js"], format!("{:x}", Sha256::digest(b"export const value = 7;")));
+        assert_eq!(live.local_hashes.len(), 100, "the next pass reuses them");
+    }
+    #[tokio::test]
+    async fn a_large_local_file_is_read_beside_a_waiting_launch() {
+        use std::{future::Future, task::{Context, Waker}};
+        let folder = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..4 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        fs::write(folder.path().join("video.mp4"), &data).unwrap();
+        let filter = sync::Filter::load(folder.path(), false).unwrap().two_way();
+        let paths: Vec<_> = sync::scan(folder.path(), &filter).unwrap().into_iter().collect();
+        let mut live = Live::offline(folder.path());
+        let progress = ui::task("Checking local files");
+        let local = {
+            let mut hashing = std::pin::pin!(live.local_checksums(&paths, &progress));
+            // The only file is read on another thread: the first turn ends before it is read.
+            assert!(hashing.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending(), "a launch waiting for the pass notices Ctrl+C meanwhile");
+            hashing.await.unwrap()
+        };
+        progress.clear();
+        let expected = format!("{:x}", Sha256::digest(&data));
+        assert_eq!(local["video.mp4"], expected);
+        assert_eq!(local_hash(folder.path(), "video.mp4").unwrap().as_deref(), Some(expected.as_str()));
+        // A wait that is dropped ends the read at its next chunk.
+        assert_eq!(local_hash_until(folder.path(), "video.mp4", &AtomicBool::new(true)), Err(STOPPED.into()));
     }
     #[test]
     fn sync_paths_and_stale_local_writes_are_rejected() {

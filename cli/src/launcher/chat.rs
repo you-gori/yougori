@@ -5,6 +5,7 @@ use super::{api, call, clean, ui, Footer};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{json, Map, Value};
 use std::{
+    future::Future,
     io::{self, IsTerminal},
     time::{Duration, Instant},
 };
@@ -232,12 +233,17 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         ui::intro(&model, &format!("chat · {environment}"));
         ui::step(&super::timed("Engine ready", engine));
         if env["status"] != "running" || env["kind"] == "cloud" {
-            super::stage(
-                &format!("Starting {environment}"),
-                |_| format!("{environment} running"),
-                call("start_model", json!({"environmentId":id})),
-            )
-            .await?;
+            let label = format!("Starting {environment}");
+            let start = || super::stage(&label, |_| format!("{environment} running"), call("start_model", json!({"environmentId":id})));
+            if state["neocloudDeployments"][&id]["provider"] == "runpod" {
+                // The pod bills meanwhile: Ctrl+C opens its stop options, and Cancel starts the
+                // model again, which reuses the start already under way.
+                if wait_or_stop(&id, start).await?.is_none() {
+                    return Ok(0);
+                }
+            } else {
+                start().await?;
+            }
         }
         (id, model)
     } else if options.neocloud {
@@ -246,16 +252,25 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         let Some(env) = super::neocloud::target(&state, &candidates, options.environment.as_deref(), target).await? else {
             return Ok(0);
         };
-        let mut result = super::stage(
-            &format!("Starting {} on {}", short(target), clean(env["name"].as_str().unwrap_or("RunPod"))),
+        let pod = env["id"].as_str().ok_or("RunPod environment missing")?;
+        let label = format!("Starting {} on {}", short(target), clean(env["name"].as_str().unwrap_or("RunPod")));
+        // The pod bills meanwhile: Ctrl+C opens its stop options, and Cancel starts the model
+        // again, which reuses the start already under way.
+        let Some(mut result) = wait_or_stop(pod, || super::stage(
+            &label,
             |_| "Model started in Neocloud".into(),
-            call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":options.api_port})),
-        )
-        .await?;
+            call("run_neocloud_model", json!({"model":target,"environmentId":pod,"port":options.api_port})),
+        ))
+        .await? else {
+            return Ok(0);
+        };
         if options.api_port.is_some() {
             if let Some(mode) = options.share_mode {
                 let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
-                result["network"] = super::busy("Sharing this model on the Yougori Network", network::share_with_publication(&id, mode, options.listen, options.publish)).await?;
+                let Some(share) = wait_or_stop(&id, || super::busy("Sharing this model on the Yougori Network", network::share_with_publication(&id, mode, options.listen, options.publish))).await? else {
+                    return Ok(0);
+                };
+                result["network"] = share;
             }
             ui::outro("API configured; model weights may still be loading");
             // Keys are explicitly requested with --api, as with the scripted local runner.
@@ -355,10 +370,22 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         (id, short(target))
     };
     if let Some(mode) = options.share_mode {
-        match super::busy("Sharing this model on the Yougori Network", network::share_with_publication(&id, mode, options.listen, options.publish)).await {
-            Ok(share) => show_network_share(&share),
-            Err(error) if error == ui::CANCELLED => return Err(error),
-            Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
+        let id = id.as_str();
+        let share = move || async move {
+            match super::busy("Sharing this model on the Yougori Network", network::share_with_publication(id, mode, options.listen, options.publish)).await {
+                Ok(share) => show_network_share(&share),
+                Err(error) if error == ui::CANCELLED => return Err(error),
+                Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
+            }
+            Ok(())
+        };
+        if options.neocloud {
+            // The RunPod pod bills meanwhile: Ctrl+C opens its stop options; Cancel shares again.
+            if wait_or_stop(id, share).await?.is_none() {
+                return Ok(0);
+            }
+        } else {
+            share().await?;
         }
     }
     if options.listen { listen_session(&id, &name).await?; } else { session(&id, &name, options.fresh).await?; }
@@ -375,11 +402,17 @@ async fn listen_session(id: &str, name: &str) -> Result<(), String> {
             Err(_) => { ui::outro("Detached; model keeps running"); return Ok(()); }
         }}
     };
-    let share = super::busy("Checking the Yougori Network share", network::settled(id, Duration::from_secs(45))).await?
-        .ok_or("This model is not shared; recording is off")?;
+    // Ctrl+C opens the stop options here too, as it does while the model starts.
+    let Some(share) = wait_or_stop(id, || super::busy("Checking the Yougori Network share", network::settled(id, Duration::from_secs(45)))).await? else {
+        return Ok(());
+    };
+    let share = share.ok_or("This model is not shared; recording is off")?;
     show_network_share(&share);
     let status = if status["listen"]["enabled"] == true { status } else {
-        super::busy("Checking the recording", call("model_status",json!({"environmentId":id}))).await?
+        let Some(status) = wait_or_stop(id, || super::busy("Checking the recording", call("model_status",json!({"environmentId":id})))).await? else {
+            return Ok(());
+        };
+        status
     };
     if status["listen"]["enabled"] != true { return Err("Recording is off. Check the free share status; stop and rerun an older model runner with --nowfree --listen.".into()); }
     let path=status["listen"]["path"].as_str().ok_or("The runner did not return its recording path")?;
@@ -390,7 +423,14 @@ async fn listen_session(id: &str, name: &str) -> Result<(), String> {
 
 /// Waits for the model, then chats until the user leaves. The model keeps running.
 pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
-    let environment = super::tolerated(super::busy("Loading the model environment", call("get_platform_state", json!({}))).await)?
+    // Ctrl+C opens the stop options from the start, as it does while the model starts.
+    let Some(state) = wait_or_stop(id, || async {
+        super::tolerated(super::busy("Loading the model environment", call("get_platform_state", json!({}))).await)
+    })
+    .await? else {
+        return Ok(());
+    };
+    let environment = state
         .and_then(|state| {
             state["environments"]
                 .as_array()?
@@ -489,6 +529,36 @@ fn stop_request(state: &Value, id: &str, action: StopAction) -> Result<(&'static
             "confirmation":if action == StopAction::Delete {Some(name)} else {None}})))
     } else {
         Ok((if action == StopAction::Delete {"delete_environment"} else {"stop_model"}, json!({"environmentId":id})))
+    }
+}
+
+/// Runs `wait` for the model `id`. Ctrl+C meanwhile opens its stop options rather than leaving
+/// it running unseen (a RunPod pod keeps billing): `None` once it was stopped, while Cancel runs
+/// `wait` again.
+pub(super) async fn wait_or_stop<T, W>(id: &str, wait: impl FnMut() -> W) -> Result<Option<T>, String>
+where
+    W: Future<Output = Result<T, String>>,
+{
+    retry_or_stop(wait, || stop_choice(id)).await
+}
+
+/// [`wait_or_stop`] with the stop options passed in.
+async fn retry_or_stop<T, W, S>(mut wait: impl FnMut() -> W, mut stop: impl FnMut() -> S) -> Result<Option<T>, String>
+where
+    W: Future<Output = Result<T, String>>,
+    S: Future<Output = Result<bool, String>>,
+{
+    loop {
+        match wait().await {
+            Err(error) if error == ui::CANCELLED => {
+                // The stop options answer this press; a later wait must not open them again.
+                ui::take_interrupt();
+                if stop().await? {
+                    return Ok(None);
+                }
+            }
+            result => return result.map(Some),
+        }
     }
 }
 
@@ -1282,6 +1352,58 @@ mod tests {
         assert!(stop_request(&state, "missing", StopAction::Delete).is_err());
         let unknown = json!({"environments":[{"id":"cloud","kind":"cloud"}]});
         assert!(stop_request(&unknown, "cloud", StopAction::Delete).is_err());
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_in_a_wait_opens_the_stop_options_once_and_cancel_waits_again() {
+        use std::cell::Cell;
+        fn cancelled<T>() -> Result<T, String> {
+            Err(ui::CANCELLED.into())
+        }
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        // Cancel runs the wait again and keeps its answer. The stop options answer the press
+        // that stopped the wait, so the wait for SSH that follows does not open them again.
+        let (waits, stops, pending) = (Cell::new(0), Cell::new(0), Cell::new(true));
+        let answer = retry_or_stop(
+            || {
+                waits.set(waits.get() + 1);
+                let first = waits.get() == 1;
+                async move {
+                    if first {
+                        // As the key watcher records it while a wait is stopped.
+                        ui::note_interrupt(ctrl_c);
+                        cancelled()
+                    } else {
+                        Ok("ready")
+                    }
+                }
+            },
+            || {
+                stops.set(stops.get() + 1);
+                pending.set(ui::interrupt_pending());
+                async { Ok(false) }
+            },
+        )
+        .await;
+        assert_eq!(answer, Ok(Some("ready")));
+        assert_eq!((waits.get(), stops.get()), (2, 1));
+        assert!(!pending.get() && !ui::interrupt_pending());
+        // Stop, or Stop and delete, ends the wait for good.
+        waits.set(0);
+        let answer = retry_or_stop(|| { waits.set(waits.get() + 1); async { cancelled::<()>() } }, || async { Ok(true) }).await;
+        assert_eq!((answer, waits.get()), (Ok(None), 1));
+        // A stop that RunPod does not confirm is reported, not taken for Cancel.
+        let answer = retry_or_stop(|| async { cancelled::<()>() }, || async { Err("RunPod reports Running.".to_owned()) }).await;
+        assert_eq!(answer, Err("RunPod reports Running.".into()));
+        // Failures are not Ctrl+C: they come back as they are, without stop options.
+        stops.set(0);
+        let answer = retry_or_stop(
+            || async { Err::<&str, String>("Pod creation returned no environment.".into()) },
+            || { stops.set(stops.get() + 1); async { Ok(true) } },
+        )
+        .await;
+        assert_eq!((answer, stops.get()), (Err("Pod creation returned no environment.".into()), 0));
+        assert_eq!(retry_or_stop(|| async { Ok::<_, String>(7) }, || async { Ok(true) }).await, Ok(Some(7)));
     }
 
     #[test]

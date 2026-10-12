@@ -34,7 +34,9 @@ impl Live {
     }
 
     pub(super) async fn sync_folders_direction(&mut self, two_way: bool, direction: sync::Direction) -> Result<usize, String> {
-        let local = sync::directories(&self.folder, &self.folder_filter(two_way)?)?;
+        // One-way sync includes dependencies, whose folders take a while to walk.
+        let (root, filter) = (self.folder.clone(), self.folder_filter(two_way)?);
+        let local = off_thread(move |stop| sync::directories_until(&root, &filter, stop)).await?;
         let remote = if two_way { self.remote_directories.clone() } else { self.saved.directories.clone() };
         // On a case-insensitive computer, two spellings of a folder name one folder here.
         // Never create or remove it through the other spelling; file sync explains it.

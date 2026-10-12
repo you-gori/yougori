@@ -183,6 +183,26 @@ impl View {
 
 const STOPPED: &str = "Sync stopped because the project launcher is closing";
 
+/// Work on many local files gives the runtime a turn every 64 files. Nothing else runs on its
+/// single thread meanwhile, so a launch waiting for a sync pass would not notice Ctrl+C.
+async fn breathe(done: usize) {
+    if done.is_multiple_of(64) {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Runs a walk of the project's folders off the runtime's thread, for the same reason. A wait
+/// that is dropped sets the flag `work` gets, so the walk ends at its next folder.
+async fn off_thread<T: Send + 'static>(work: impl FnOnce(&AtomicBool) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    struct StopOnDrop(std::sync::Arc<AtomicBool>);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) { self.0.store(true, Ordering::Relaxed); }
+    }
+    let stop = StopOnDrop(Default::default());
+    let flag = stop.0.clone();
+    tokio::task::spawn_blocking(move || work(&flag)).await.map_err(|e| e.to_string())?
+}
+
 pub(super) fn container_command(container: Option<&str>, command: &str, terminal: bool) -> String {
     match container {
         Some(name) => format!("docker exec {} {} sh -c {}", if terminal { "-it" } else { "-i" }, shell(name), shell(command)),
@@ -492,7 +512,7 @@ impl Live {
 
     /// Sends the files that differ from the container's copy; returns how many changed.
     pub async fn sync_to(&mut self, manifest: sync::Manifest) -> Result<usize, String> {
-        self.discover_databases(&manifest);
+        self.discover_databases(&manifest).await;
         self.database_files.extend(self.saved.databases.keys().cloned());
         let (mut changed, mut removed) = self.saved.changes(&manifest);
         changed.retain(|p| !sync::database_member(p, &self.database_files));
@@ -1062,8 +1082,64 @@ fn open_browser(url: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+impl Live {
+    /// A session for tests of the work done on this computer; it never reaches a container.
+    fn offline(folder: &Path) -> Self {
+        Self {
+            receiver: Session { environment: "env-test".into(), id: "term-test".into(), offset: 0, stream: Stream::new("test", None, false).protocol() },
+            dev: None,
+            folder: folder.into(),
+            saved: Default::default(),
+            state_path: folder.join(".yougori-sync-test.json"),
+            nonce: "test".into(),
+            app_port: 3000,
+            custom_command: None,
+            crashed: false,
+            container: None,
+            service_port: proxy_port(3000),
+            conflicts: Default::default(),
+            local_hashes: Default::default(),
+            priority: Default::default(),
+            database_helper: None,
+            database_files: Default::default(),
+            database_probes: Default::default(),
+            database_versions: Default::default(),
+            initial_databases: Default::default(),
+            remote_directories: Default::default(),
+            folder_conflicts: Default::default(),
+            env_files: false,
+            held: Default::default(),
+            warned: Default::default(),
+            remote_stamps: Default::default(),
+            view: None,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_folder_walk_runs_beside_the_launch_and_ends_when_it_stops_waiting() {
+        let (ended, walk) = std::sync::mpsc::channel();
+        let work = off_thread(move |stop| {
+            while !stop.load(Ordering::Relaxed) { std::thread::sleep(Duration::from_millis(5)); }
+            ended.send(()).unwrap();
+            Ok(())
+        });
+        // The launch's own timer still runs while the walk goes on, and a stop drops the wait.
+        tokio::select! {
+            _ = work => panic!("the walk ends only when asked"),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+        walk.recv_timeout(Duration::from_secs(5)).expect("a dropped wait ends the walk");
+        let folder = tempfile::tempdir().unwrap();
+        fs::create_dir_all(folder.path().join("src/components")).unwrap();
+        let (root, filter) = (folder.path().to_owned(), sync::Filter::load(folder.path(), false).unwrap());
+        let folders = off_thread(move |stop| sync::directories_until(&root, &filter, stop)).await.unwrap();
+        assert_eq!(folders.into_iter().collect::<Vec<_>>(), ["src", "src/components"]);
+    }
 
     #[test]
     fn failures_explain_memory_evidence_limits_and_next_steps() {

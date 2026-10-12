@@ -14,6 +14,7 @@ use std::{collections::BTreeSet, time::Duration};
 use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
+use yougori_cli::workload::Options;
 
 const ROOT: &str = "/srv/yougori-swarm";
 const OPENCODE_VERSION: &str = "1.18.35";
@@ -267,49 +268,139 @@ fn create_request(
     serde_json::from_value(json!({"name":owned_name(worker,test,false),"kind":"container","provider":"yougoriOci","runtime":"ubuntu:24.04","containerCommand":"sleep 2147483647","networkAccess":true,"gpuAccess":false,"storageDrive":worker.resources["storageDrive"],"storageGb":if test{(worker.quota_gb-2.).max(2.)}else{2.},"description":owned_description(worker,test),"resourcePolicy":{"cpu":cpu,"memoryGb":memory,"priority":"normal","dynamic":false},"workload":workload})).map_err(|e|e.to_string())
 }
 
-/// Whether the agent's `swarm-model` name reaches this model. A model created again after
-/// the agent sandbox, or factory reset, has another private address.
-fn model_address_current(options: &yougori_cli::workload::Options, model_runtime_id: &str) -> bool {
+/// Whether the saved options send the agent's `swarm-model` name to this model. A model
+/// created again after the agent sandbox, or factory reset, has another private address.
+fn model_address_current(options: &Options, model_runtime_id: &str) -> bool {
     options.hosts.get("swarm-model") == Some(&crate::runtime::fabric::ip_text(model_runtime_id))
 }
 
-/// A reused agent sandbox keeps the address of a model removed outside Swarm. Point it at
-/// the current model while stopped; preparation starts it again.
-async fn follow_model(
-    app: &AppHandle,
-    environment: Environment,
-    model_runtime_id: &str,
-) -> Result<Environment, String> {
-    let runtime = app.state::<RuntimeManager>();
-    let previous = runtime.workload_options(rid(&environment))?;
-    if model_address_current(&previous, model_runtime_id) {
-        return Ok(environment);
+/// Whether a container's hosts file sends `swarm-model` only to this model. OpenCode
+/// resolves the name there.
+fn hosts_reach_model(hosts: &str, model_runtime_id: &str) -> bool {
+    let address = crate::runtime::fabric::ip_text(model_runtime_id);
+    let mut found = false;
+    for line in hosts.lines() {
+        let entry = line.split('#').next().unwrap_or_default();
+        let mut fields = entry.split_whitespace();
+        let Some(ip) = fields.next() else { continue };
+        if fields.any(|name| name.eq_ignore_ascii_case("swarm-model")) {
+            if ip != address {
+                return false;
+            }
+            found = true;
+        }
     }
-    if matches!(
-        environment.status,
-        EnvironmentStatus::Running | EnvironmentStatus::Paused
-    ) {
+    found
+}
+
+/// What following the model needs from a worker's sandbox. Tests stand in for the engine.
+trait Sandbox {
+    fn saved(&self) -> Result<Options, String>;
+    fn save(&mut self, options: &Options) -> Result<(), String>;
+    async fn stop(&mut self) -> Result<(), String>;
+    /// Creates the stopped container again from its saved options.
+    async fn recreate(&mut self) -> Result<(), String>;
+    async fn start(&mut self) -> Result<(), String>;
+    /// The running container's hosts file.
+    async fn hosts(&mut self) -> Result<String, String>;
+}
+
+/// A worker's sandbox in this engine.
+struct Owned<'a> {
+    app: &'a AppHandle,
+    environment: Environment,
+}
+
+impl Owned<'_> {
+    async fn power(&mut self, status: EnvironmentStatus) -> Result<(), String> {
         crate::commands::set_environment_status(
-            environment.id.clone(),
-            EnvironmentStatus::Stopped,
-            app.state(),
-            app.state(),
+            self.environment.id.clone(),
+            status,
+            self.app.state(),
+            self.app.state(),
         )
         .await?;
+        self.environment = env(self.app, &self.environment.id)?;
+        Ok(())
     }
+}
+
+impl Sandbox for Owned<'_> {
+    fn saved(&self) -> Result<Options, String> {
+        self.app
+            .state::<RuntimeManager>()
+            .workload_options(rid(&self.environment))
+    }
+    fn save(&mut self, options: &Options) -> Result<(), String> {
+        self.app
+            .state::<RuntimeManager>()
+            .save_workload_options(rid(&self.environment), options)
+    }
+    async fn stop(&mut self) -> Result<(), String> {
+        if matches!(
+            self.environment.status,
+            EnvironmentStatus::Running | EnvironmentStatus::Paused
+        ) {
+            self.power(EnvironmentStatus::Stopped).await?;
+        }
+        Ok(())
+    }
+    async fn recreate(&mut self) -> Result<(), String> {
+        self.environment = env(self.app, &self.environment.id)?;
+        self.app
+            .state::<RuntimeManager>()
+            .update_workload_configuration(&self.environment)
+            .await
+    }
+    async fn start(&mut self) -> Result<(), String> {
+        if self.environment.status != EnvironmentStatus::Running {
+            self.power(EnvironmentStatus::Running).await?;
+        }
+        Ok(())
+    }
+    async fn hosts(&mut self) -> Result<String, String> {
+        short(self.app, &self.environment, "cat /etc/hosts").await
+    }
+}
+
+/// Starts a reused agent sandbox with its `swarm-model` name on the current model. A
+/// sandbox that kept the address of a model removed outside Swarm changes while stopped.
+async fn follow_model(sandbox: &mut impl Sandbox, model_runtime_id: &str) -> Result<(), String> {
+    if !model_address_current(&sandbox.saved()?, model_runtime_id) {
+        point_at_model(sandbox, model_runtime_id).await?;
+    }
+    sandbox.start().await?;
+    if hosts_reach_model(&sandbox.hosts().await?, model_runtime_id) {
+        return Ok(());
+    }
+    // Saved options change before the container does, so a change cut short by shutdown or
+    // a crash leaves them on this model while the container keeps the old address.
+    point_at_model(sandbox, model_runtime_id).await?;
+    sandbox.start().await?;
+    if hosts_reach_model(&sandbox.hosts().await?, model_runtime_id) {
+        return Ok(());
+    }
+    Err("The agent sandbox does not point to this worker's model".into())
+}
+
+/// Creates the agent container again, stopped, with this model's address.
+async fn point_at_model(sandbox: &mut impl Sandbox, model_runtime_id: &str) -> Result<(), String> {
+    sandbox.stop().await?;
+    let previous = sandbox.saved()?;
     let mut options = previous.clone();
     options.hosts.insert(
         "swarm-model".into(),
         crate::runtime::fabric::ip_text(model_runtime_id),
     );
-    runtime.save_workload_options(rid(&environment), &options)?;
-    let environment = env(app, &environment.id)?;
-    if let Err(error) = runtime.update_workload_configuration(&environment).await {
-        // Saved options must match the container, so a retry applies the address again.
-        let _ = runtime.save_workload_options(rid(&environment), &previous);
+    sandbox.save(&options)?;
+    if let Err(error) = sandbox.recreate().await {
+        // Saved options must match the container.
+        sandbox.save(&previous).map_err(|restore| {
+            format!("{error}. Restoring the sandbox's saved settings also failed: {restore}")
+        })?;
         return Err(error);
     }
-    Ok(environment)
+    Ok(())
 }
 
 async fn create_owned(
@@ -386,20 +477,12 @@ async fn create_owned(
         stop_owned(app, worker, deleted).await?;
         return Err(error);
     }
-    let environment = match model_runtime_id {
-        Some(model) if !test => follow_model(app, environment, model).await?,
-        _ => environment,
-    };
-    if environment.status != EnvironmentStatus::Running {
-        crate::commands::set_environment_status(
-            environment.id.clone(),
-            EnvironmentStatus::Running,
-            app.state(),
-            app.state(),
-        )
-        .await?;
+    let mut sandbox = Owned { app, environment };
+    match model_runtime_id {
+        Some(model) if !test => follow_model(&mut sandbox, model).await?,
+        _ => sandbox.start().await?,
     }
-    env(app, &environment.id)
+    env(app, &sandbox.environment.id)
 }
 
 fn managed_config(worker: &Worker, model_api_key: &str, context: u64) -> Value {
@@ -1823,6 +1906,175 @@ mod tests {
             &Default::default(),
             "env-model-first"
         ));
+    }
+    #[test]
+    fn only_the_containers_own_hosts_entry_proves_its_model_address() {
+        let (first, second) = (
+            crate::runtime::fabric::ip_text("env-model-first"),
+            crate::runtime::fabric::ip_text("env-model-second"),
+        );
+        // As the container runtime writes it, with a connection entry appended by Yougori.
+        let hosts = format!(
+            "# <nerdctl>\n127.0.0.1\tlocalhost localhost.localdomain\n{first:<15} swarm-model\n\
+             # </nerdctl>\n{second} env-model-second # yougori:connection-1\n"
+        );
+        assert!(hosts_reach_model(&hosts, "env-model-first"));
+        assert!(!hosts_reach_model(&hosts, "env-model-second"));
+        assert!(hosts_reach_model(
+            &format!("{first}\tmodel SWARM-MODEL\n"),
+            "env-model-first"
+        ));
+        for hosts in [
+            String::new(),
+            format!("# {first} swarm-model\n"),
+            format!("{first} swarm-model-old\n"),
+            format!("{first} swarm-model\n{second} swarm-model\n"),
+        ] {
+            assert!(!hosts_reach_model(&hosts, "env-model-first"), "{hosts}");
+        }
+    }
+    /// Saved options and the container change separately, as in the engine.
+    struct FakeSandbox {
+        saved: Options,
+        /// The `swarm-model` address the container was created with.
+        container: String,
+        running: bool,
+        recreate_error: bool,
+        /// A container that never takes a new address.
+        stuck: bool,
+        saves_left: usize,
+        steps: Vec<&'static str>,
+    }
+    impl FakeSandbox {
+        fn new(saved_model: &str, container_model: &str) -> Self {
+            let mut saved = Options::default();
+            saved.hosts.insert(
+                "swarm-model".into(),
+                crate::runtime::fabric::ip_text(saved_model),
+            );
+            Self {
+                saved,
+                container: crate::runtime::fabric::ip_text(container_model),
+                running: false,
+                recreate_error: false,
+                stuck: false,
+                saves_left: usize::MAX,
+                steps: Vec::new(),
+            }
+        }
+    }
+    impl Sandbox for FakeSandbox {
+        fn saved(&self) -> Result<Options, String> {
+            Ok(self.saved.clone())
+        }
+        fn save(&mut self, options: &Options) -> Result<(), String> {
+            self.steps.push("save");
+            if self.saves_left == 0 {
+                return Err("The disk is full".into());
+            }
+            self.saves_left -= 1;
+            self.saved = options.clone();
+            Ok(())
+        }
+        async fn stop(&mut self) -> Result<(), String> {
+            self.steps.push("stop");
+            self.running = false;
+            Ok(())
+        }
+        async fn recreate(&mut self) -> Result<(), String> {
+            self.steps.push("recreate");
+            assert!(!self.running, "a running container is never recreated");
+            if self.recreate_error {
+                return Err("The container could not be changed".into());
+            }
+            if !self.stuck {
+                self.container = self.saved.hosts["swarm-model"].clone();
+            }
+            Ok(())
+        }
+        async fn start(&mut self) -> Result<(), String> {
+            self.steps.push("start");
+            self.running = true;
+            Ok(())
+        }
+        async fn hosts(&mut self) -> Result<String, String> {
+            self.steps.push("hosts");
+            assert!(self.running, "commands run only in a running container");
+            Ok(format!(
+                "# <nerdctl>\n127.0.0.1\tlocalhost\n{:<15} swarm-model\n# </nerdctl>\n",
+                self.container
+            ))
+        }
+    }
+    #[tokio::test]
+    async fn a_model_change_cut_short_by_shutdown_is_finished_by_the_next_preparation() {
+        // The engine saved the new address, then quit before the container was created again.
+        let mut sandbox = FakeSandbox::new("env-model-second", "env-model-first");
+        assert!(model_address_current(&sandbox.saved, "env-model-second"));
+        follow_model(&mut sandbox, "env-model-second")
+            .await
+            .unwrap();
+        assert_eq!(
+            sandbox.container,
+            crate::runtime::fabric::ip_text("env-model-second")
+        );
+        assert!(sandbox.running);
+        assert_eq!(
+            sandbox.steps,
+            ["start", "hosts", "stop", "save", "recreate", "start", "hosts"]
+        );
+    }
+    #[tokio::test]
+    async fn a_model_created_again_is_followed_before_the_agent_starts() {
+        let mut sandbox = FakeSandbox::new("env-model-first", "env-model-first");
+        follow_model(&mut sandbox, "env-model-second")
+            .await
+            .unwrap();
+        assert_eq!(
+            sandbox.container,
+            crate::runtime::fabric::ip_text("env-model-second")
+        );
+        assert_eq!(
+            sandbox.steps,
+            ["stop", "save", "recreate", "start", "hosts"]
+        );
+        // A sandbox already on the model is only started.
+        let mut sandbox = FakeSandbox::new("env-model-second", "env-model-second");
+        follow_model(&mut sandbox, "env-model-second")
+            .await
+            .unwrap();
+        assert_eq!(sandbox.steps, ["start", "hosts"]);
+    }
+    #[tokio::test]
+    async fn a_failed_model_change_restores_saved_options_or_reports_why_it_could_not() {
+        let mut sandbox = FakeSandbox::new("env-model-first", "env-model-first");
+        sandbox.recreate_error = true;
+        let error = follow_model(&mut sandbox, "env-model-second")
+            .await
+            .unwrap_err();
+        assert_eq!(error, "The container could not be changed");
+        assert!(model_address_current(&sandbox.saved, "env-model-first"));
+        let mut sandbox = FakeSandbox::new("env-model-first", "env-model-first");
+        sandbox.recreate_error = true;
+        sandbox.saves_left = 1;
+        let error = follow_model(&mut sandbox, "env-model-second")
+            .await
+            .unwrap_err();
+        assert!(
+            error.starts_with("The container could not be changed.")
+                && error.ends_with("also failed: The disk is full"),
+            "{error}"
+        );
+        // A container that never takes the address stops preparation instead of
+        // registering a worker whose turns would go to the old model.
+        let mut sandbox = FakeSandbox::new("env-model-first", "env-model-first");
+        sandbox.stuck = true;
+        let error = follow_model(&mut sandbox, "env-model-second")
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not point to this worker's model"));
+        let attempt = ["stop", "save", "recreate", "start", "hosts"];
+        assert_eq!(sandbox.steps, [attempt, attempt].concat());
     }
     #[test]
     fn managed_config_has_one_local_provider_and_denies_unmanaged_actions() {

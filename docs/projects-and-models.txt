@@ -430,7 +430,9 @@ CLI returns to the GPU list so another GPU can be chosen.
 Create and run provisions the pod, configures SSH and waits before starting the model.
 Model nodes are named RunPod/MODEL_NAME, for example RunPod/TinyLlama-1.1B-Chat-v1.0.
 Reusing a pod for another model updates its node name; duplicates get a number suffix.
-Ctrl+C during that wait opens Stop / Stop and delete for the newly created pod.
+Ctrl+C while the pod is created, during that wait or while the model starts opens
+Cancel / Stop / Stop and delete for the pod. Creation always finishes first, so a pod
+never bills unseen; Cancel keeps waiting.
 The wait distinguishes provider preparation from SSH connection failures. On Windows,
 host-key discovery falls back to an isolated, unauthenticated SSH probe if ssh-keyscan
 cannot negotiate; model connections still require the pinned server key.

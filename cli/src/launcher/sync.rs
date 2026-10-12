@@ -111,6 +111,7 @@ fn env_name(name: &str) -> bool {
 /// Launch copies all project files regardless of ignore files. Only the user's .env
 /// choice and transient sync protocol files are omitted. Two-way sync additionally
 /// keeps HOST_ONLY folders on each side.
+#[derive(Clone, Copy)]
 pub struct Filter {
     env_files: bool,
     two_way: bool,
@@ -295,7 +296,7 @@ pub fn directories(root: &Path, filter: &Filter) -> Result<BTreeSet<String>, Str
 }
 
 /// [`directories`] that ends with [`STAGING_STOPPED`] once `stop` is set.
-fn directories_until(root: &Path, filter: &Filter, stop: &AtomicBool) -> Result<BTreeSet<String>, String> {
+pub fn directories_until(root: &Path, filter: &Filter, stop: &AtomicBool) -> Result<BTreeSet<String>, String> {
     let mut result = BTreeSet::new();
     let mut pending = vec![(root.to_path_buf(), String::new())];
     while let Some((folder, relative)) = pending.pop() {
@@ -473,8 +474,13 @@ pub fn stage(root: &Path, manifest: &Manifest) -> Result<Staged, String> {
 /// Stages the project for its first copy, reporting progress (at most every 100 ms) to
 /// `progress`, which can stop it with an error. Setting `stop` ends it within moments, even in
 /// the middle of a large file or a database snapshot.
-pub fn stage_progress(root: &Path, manifest: &Manifest, stop: &AtomicBool, mut progress: impl FnMut(&serde_json::Value) -> Result<(), String>) -> Result<Staged, String> {
-    let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+pub fn stage_progress(root: &Path, manifest: &Manifest, stop: &AtomicBool, progress: impl FnMut(&serde_json::Value) -> Result<(), String>) -> Result<Staged, String> {
+    stage_into(tempfile::tempdir().map_err(|e| e.to_string())?, root, manifest, stop, progress, true)
+}
+
+/// [`stage_progress`] into `staging`, which staging that fails or stops removes. Without `links`
+/// every file is copied, as when the project and the staging folder are on different drives.
+fn stage_into(staging: tempfile::TempDir, root: &Path, manifest: &Manifest, stop: &AtomicBool, mut progress: impl FnMut(&serde_json::Value) -> Result<(), String>, links: bool) -> Result<Staged, String> {
     // The outer folder has no .yougoriignore: the engine must not re-filter the
     // launcher's manifest using the project's own ignore file.
     let target = staging.path().join("project/workspace");
@@ -509,7 +515,7 @@ pub fn stage_progress(root: &Path, manifest: &Manifest, stop: &AtomicBool, mut p
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        if fs::hard_link(&source, &destination).is_ok() {
+        if links && fs::hard_link(&source, &destination).is_ok() {
             bytes = bytes.saturating_add(*size);
             continue;
         }
@@ -857,19 +863,46 @@ mod tests {
         assert_eq!(last["phase"], "files");
         assert_eq!((last["bytes"].as_u64(), last["totalBytes"].as_u64()), (Some(60), Some(60)));
         assert_eq!(fs::read(staged.path().join("project/workspace/src/b.js")).unwrap().len(), 20);
-        // A stop during the copy ends staging with nothing returned.
+        // A stop while files are staged ends staging with nothing returned.
         let stop = AtomicBool::new(false);
+        let mut at = None;
         let stopped = stage_progress(root.path(), &manifest, &stop, |progress| {
-            if progress["phase"] == "files" { stop.store(true, Ordering::Relaxed); }
+            if let Some(path) = progress["path"].as_str() {
+                stop.store(true, Ordering::Relaxed);
+                at.get_or_insert(path.to_owned());
+            }
             Ok(())
         });
         assert_eq!(stopped.err().as_deref(), Some(STAGING_STOPPED));
+        assert_eq!(at.as_deref(), Some("a.txt"), "stopped at the first file, after the folders were made");
         let stop = AtomicBool::new(true);
         assert_eq!(stage_progress(root.path(), &manifest, &stop, |_| Ok(())).err().as_deref(), Some(STAGING_STOPPED));
         // The scan before staging stops too, at its next folder.
         let filter = Filter::load(root.path(), false).unwrap();
         assert_eq!(scan_until(root.path(), &filter, &AtomicBool::new(false)).unwrap(), manifest);
         assert_eq!(scan_until(root.path(), &filter, &stop).err().as_deref(), Some(STAGING_STOPPED));
+    }
+
+    #[test]
+    fn a_stop_in_the_middle_of_a_copied_file_ends_staging_and_removes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..CHUNK * 3).map(|i| (i % 251) as u8).collect();
+        fs::write(root.path().join("large.bin"), &data).unwrap();
+        let manifest = scan(root.path(), &Filter::load(root.path(), false).unwrap()).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        // Files are copied, not linked, as when the project is on another drive.
+        let staged = stage_into(tempfile::tempdir_in(parent.path()).unwrap(), root.path(), &manifest, &AtomicBool::new(false), |_| Ok(()), false).unwrap();
+        assert_eq!(fs::read(staged.path().join("project/workspace/large.bin")).unwrap(), data);
+        drop(staged);
+        // The stop comes as the copy of the only file starts: only the check between its
+        // chunks can end staging before the file is finished.
+        let stop = AtomicBool::new(false);
+        let stopped = stage_into(tempfile::tempdir_in(parent.path()).unwrap(), root.path(), &manifest, &stop, |progress| {
+            if progress["path"] == "large.bin" { stop.store(true, Ordering::Relaxed); }
+            Ok(())
+        }, false);
+        assert_eq!(stopped.err().as_deref(), Some(STAGING_STOPPED));
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0, "the partly staged project is removed");
     }
 
     #[test]

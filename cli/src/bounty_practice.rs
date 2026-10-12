@@ -11,6 +11,7 @@
 
 use crate::cli_ui as ui;
 use serde_json::{json, Value};
+use std::{future::Future, time::Duration};
 
 /// The example project a worker would receive. One planted flaw: the password is
 /// compared against a hardcoded literal in the source, so anyone reading the file
@@ -176,7 +177,8 @@ pub fn report_tool() -> Value {
     },"required":["title","file","line","reproduction","impact"],"additionalProperties":false}}})
 }
 
-/// Attempts until a report qualifies, the first included.
+/// Attempts until a report qualifies, the first included. A practice without a console is
+/// stopped after this many rejected reports.
 pub const MAX_ATTEMPTS: usize = 5;
 
 enum Verdict {
@@ -260,7 +262,12 @@ pub async fn offer_practice_when_waiting(worker: &str) -> Result<Value, String> 
 /// Declining, Esc, Ctrl+C or a practice failure all return to the waiting dashboard;
 /// none of them cancel the worker's start.
 pub async fn offer_practice(worker: &str) -> Result<Value, String> {
-    if !ui::can_prompt() {
+    offer_practice_with(worker, ui::can_prompt()).await
+}
+
+/// [`offer_practice`], told whether this terminal can ask (`interactive`).
+async fn offer_practice_with(worker: &str, interactive: bool) -> Result<Value, String> {
+    if !interactive {
         return Ok(json!({"practice": false, "offered": false}));
     }
     ui::gap();
@@ -282,9 +289,10 @@ pub async fn offer_practice(worker: &str) -> Result<Value, String> {
     practice(worker).await
 }
 
-/// Runs the practice and keeps a stop or failure from ending the caller's view.
+/// Runs the practice and keeps a stop or failure from ending the caller's view. The waiting
+/// view opens after it.
 pub async fn practice(worker: &str) -> Result<Value, String> {
-    match walkthrough(worker).await {
+    match walkthrough(worker, true).await {
         Err(error) if error == ui::CANCELLED => {
             ui::take_interrupt();
             ui::info("Practice stopped. Your worker is still online and waiting for offers.");
@@ -300,7 +308,8 @@ pub async fn practice(worker: &str) -> Result<Value, String> {
 
 /// The guided practice: the example and offer, a chance to look yourself, then a live console
 /// where the worker investigates until its report qualifies. Returns a machine-readable summary.
-pub async fn walkthrough(worker: &str) -> Result<Value, String> {
+/// `nested`: the waiting view opens after it, so the console's Ctrl+] goes back there.
+pub async fn walkthrough(worker: &str, nested: bool) -> Result<Value, String> {
     let directory = write_example()?;
     let path_text = directory.display().to_string();
     let offer = offer();
@@ -330,7 +339,7 @@ pub async fn walkthrough(worker: &str) -> Result<Value, String> {
         let _ = ui::select("Ready to continue?", &[], &choices, 0)?;
     }
     ui::gap();
-    live(worker, &path_text).await
+    live(worker, &path_text, nested).await
 }
 
 /// The waiting view's T key: start a live practice console straight away.
@@ -338,46 +347,164 @@ pub async fn practice_now(worker: &str) -> Result<Value, String> {
     let path_text = write_example()?.display().to_string();
     ui::step("Practice bounty: your worker investigates a safe offline example until its report qualifies.");
     ui::info(&format!("Example project: {path_text} · reward 0 PRACTICE, no money"));
-    live(worker, &path_text).await
+    live(worker, &path_text, true).await
 }
 
 /// Starts the engine's practice session, then opens the live console over its activity.
-async fn live(worker: &str, path_text: &str) -> Result<Value, String> {
+async fn live(worker: &str, path_text: &str, nested: bool) -> Result<Value, String> {
     crate::bounty::dispatch(json!({"action":"practiceStart","workerId":worker})).await?;
-    let mut summary = crate::bounty::console(worker, true).await?;
+    let mut summary = crate::bounty::console(worker, true, nested).await?;
     summary["practice"] = true.into();
     summary["exampleProject"] = path_text.into();
     Ok(summary)
 }
 
-/// For scripts: run the practice to the end without a console, returning every attempt.
+/// How long a practice may run without a console before it is stopped.
+pub const SCRIPT_MINUTES: u64 = 30;
+
+/// When a practice followed without a console gives up.
+struct Limits {
+    /// Rejected reports.
+    attempts: usize,
+    time: Duration,
+    /// Between reads of the activity log.
+    poll: Duration,
+}
+
+/// What a followed practice has shown so far.
+#[derive(Default)]
+struct Followed {
+    after: u64,
+    attempts: Vec<Value>,
+    outcome: Value,
+}
+
+/// Why following a practice ended.
+enum End {
+    /// The practice ended by itself; its `practiceEnd` event says how.
+    Finished,
+    /// A limit was reached while the practice runs, for this reason.
+    Limit(String),
+    /// Ctrl+C.
+    Interrupted,
+}
+
+/// For scripts: runs the practice to its end without a console, returning every attempt. A
+/// practice already running for this worker is followed instead. After MAX_ATTEMPTS rejected
+/// reports, SCRIPT_MINUTES or Ctrl+C the practice is stopped, so the model does not keep
+/// working once the script is gone; `bounty practice WORKER --stop` ends one a killed script
+/// left.
 pub async fn headless(worker: &str) -> Result<Value, String> {
-    let started = crate::bounty::dispatch(json!({"action":"practiceStart","workerId":worker})).await?;
-    if started["started"] != true {
-        return Err("A practice is already running for this worker".into());
+    let limits = Limits {
+        attempts: MAX_ATTEMPTS,
+        time: Duration::from_secs(SCRIPT_MINUTES * 60),
+        poll: Duration::from_secs(2),
+    };
+    let interrupted = async {
+        // Where Ctrl+C cannot be watched, the limits still end the practice.
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    follow(worker, crate::bounty::dispatch, &limits, interrupted).await
+}
+
+/// [`headless`] with the engine's requests, the limits and the interruption given.
+async fn follow<F, Fut>(worker: &str, mut rpc: F, limits: &Limits, interrupted: impl Future<Output = ()>) -> Result<Value, String>
+where
+    F: FnMut(Value) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    let mut seen = Followed::default();
+    let end = tokio::select! {
+        end = watch(worker, &mut rpc, limits, &mut seen) => end?,
+        () = interrupted => End::Interrupted,
+    };
+    let (status, message) = match end {
+        End::Finished => {
+            let message = crate::bounty::safe(seen.outcome["text"].as_str().unwrap_or_default());
+            return Ok(outcome(worker, seen.outcome["outcome"].clone(), message, seen.attempts));
+        }
+        End::Limit(reason) => ("gave_up", reason),
+        End::Interrupted => ("stopped", "Practice stopped. Your worker is waiting for offers.".to_owned()),
+    };
+    if let Err(error) = rpc(json!({"action":"practiceStop","workerId":worker})).await {
+        let listed = rpc(json!({"action":"workers"})).await.unwrap_or_default();
+        return Err(format!(
+            "{error}\nThe practice may still be running. Stop it with: yougori bounty practice {} --stop",
+            crate::bounty::typed_name(worker, &listed)
+        ));
     }
-    let mut after = 0u64;
-    let mut attempts: Vec<Value> = Vec::new();
-    let mut outcome = Value::Null;
+    Ok(outcome(worker, status.into(), message, seen.attempts))
+}
+
+/// Starts the practice, or finds the one already running, and reads the activity log until it
+/// ends or a limit is reached. The log keeps earlier practices too; each starts with a
+/// `practice` event, so only what follows the newest one counts.
+async fn watch<F, Fut>(worker: &str, rpc: &mut F, limits: &Limits, seen: &mut Followed) -> Result<End, String>
+where
+    F: FnMut(Value) -> Fut,
+    Fut: Future<Output = Result<Value, String>>,
+{
+    let deadline = tokio::time::Instant::now() + limits.time;
+    // One practice runs per worker; when one already runs (`started` false), it is followed.
+    rpc(json!({"action":"practiceStart","workerId":worker})).await?;
     loop {
-        let log = crate::bounty::dispatch(json!({"action":"activity","workerId":worker,"after":after})).await?;
-        for event in log["events"].as_array().into_iter().flatten() {
+        let log = rpc(json!({"action":"activity","workerId":worker,"after":seen.after})).await?;
+        let events = log["events"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let before = seen.after;
+        for event in events {
             if let Some(seq) = event["seq"].as_u64() {
-                after = seq;
+                seen.after = seq;
             }
             match event["kind"].as_str().unwrap_or_default() {
-                "verdict" => attempts.push(event.clone()),
-                "practiceEnd" => outcome = event.clone(),
+                "practice" => {
+                    seen.attempts.clear();
+                    seen.outcome = Value::Null;
+                }
+                "verdict" => seen.attempts.push(event.clone()),
+                "practiceEnd" => seen.outcome = event.clone(),
                 _ => {}
             }
         }
-        if !outcome.is_null() && log["events"].as_array().is_none_or(|events| events.is_empty()) {
-            let qualifies = outcome["outcome"] == "qualified";
-            return Ok(json!({"practice":true,"status":outcome["outcome"],"reportQualifies":qualifies,
-                "attempts":attempts,"reward":{"amount":"0","currency":"PRACTICE","monetaryValue":false}}));
+        // An end read before the newest events may be an earlier practice's: read on first.
+        if seen.after > before && log["latest"].as_u64().is_none_or(|latest| seen.after < latest) {
+            continue;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // So is an end read while a practice runs: the engine records an end once it released
+        // the model, which can be after the next practice started.
+        if log["practicing"] == true {
+            seen.outcome = Value::Null;
+        }
+        if !seen.outcome.is_null() {
+            return Ok(End::Finished);
+        }
+        let rejected = seen.attempts.iter().filter(|verdict| verdict["qualifies"] != true).count();
+        // A report that qualified ends the practice by itself; its end line follows once the
+        // engine released the model.
+        let qualified = seen.attempts.last().is_some_and(|verdict| verdict["qualifies"] == true);
+        if rejected >= limits.attempts && !qualified {
+            return Ok(End::Limit(format!(
+                "No report qualified after {rejected} attempts, so the practice was stopped. Your worker is waiting for offers."
+            )));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(End::Limit(format!(
+                "No report qualified within {} minutes, so the practice was stopped. Your worker is waiting for offers.",
+                limits.time.as_secs() / 60
+            )));
+        }
+        tokio::time::sleep(limits.poll).await;
     }
+}
+
+/// A script's practice summary: how it ended (`status`: the engine's qualified, stopped or
+/// error, or gave_up at a limit), a line saying so, every verdict and the no-value reward.
+fn outcome(worker: &str, status: Value, message: String, attempts: Vec<Value>) -> Value {
+    let qualifies = status == "qualified";
+    json!({"practice":true,"status":status,"reportQualifies":qualifies,"attempts":attempts,
+        "reward":{"amount":"0","currency":"PRACTICE","monetaryValue":false},
+        "message":message,"workerId":worker,"handle":crate::bounty::worker_handle(worker)})
 }
 
 fn text(value: &Value, key: &str) -> String {
@@ -410,10 +537,141 @@ mod tests {
 
     #[tokio::test]
     async fn offer_is_skipped_without_an_interactive_terminal() {
-        // Tests run without a TTY, so the practice is never auto-run.
-        let result = offer_practice("worker-test").await.unwrap();
+        // Told there is no terminal, whatever runs the tests, the practice is never auto-run.
+        let result = offer_practice_with("worker-test", false).await.unwrap();
         assert_eq!(result["practice"], false);
         assert_eq!(result["offered"], false);
+    }
+
+    fn event(seq: u64, kind: &str, rest: Value) -> Value {
+        let mut event = rest;
+        event["seq"] = seq.into();
+        event["kind"] = kind.into();
+        event
+    }
+
+    fn verdict(seq: u64, qualifies: bool) -> Value {
+        event(seq, "verdict", json!({"attempt":seq,"qualifies":qualifies,"reason":"checked"}))
+    }
+
+    /// Runs [`follow`] against a fake engine whose activity log returns `pages` in turn, then
+    /// nothing new. Returns the summary and every request the engine received.
+    async fn scripted(started: bool, pages: Vec<Value>, limits: Limits, interrupted: impl Future<Output = ()>) -> (Result<Value, String>, Vec<Value>) {
+        let mut requests = Vec::new();
+        let mut pages = pages.into_iter();
+        let mut latest = 0;
+        let result = follow("worker-1", |request: Value| {
+            requests.push(request.clone());
+            std::future::ready(Ok(match request["action"].as_str().unwrap_or_default() {
+                "practiceStart" => json!({"started":started,"practicing":true}),
+                "activity" => {
+                    let page = pages.next().unwrap_or_else(|| json!({"events":[],"latest":latest}));
+                    latest = page["latest"].as_u64().unwrap_or(latest);
+                    page
+                }
+                "practiceStop" => json!({"stopped":true}),
+                _ => json!({}),
+            }))
+        }, &limits, interrupted)
+        .await;
+        (result, requests)
+    }
+
+    fn limits(attempts: usize, time: Duration) -> Limits {
+        Limits { attempts, time, poll: Duration::ZERO }
+    }
+
+    fn actions(requests: &[Value]) -> Vec<&str> {
+        requests.iter().map(|request| request["action"].as_str().unwrap_or_default()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_script_follows_only_the_newest_practice_to_its_end() {
+        // The log still holds an earlier practice that ended; a full first page stops short of
+        // the newest events, so that earlier end is not taken for this practice's.
+        let pages = vec![
+            json!({"events":[event(1, "practice", json!({})), verdict(2, false), event(3, "practiceEnd", json!({"outcome":"stopped","text":"Practice stopped."}))],"latest":5}),
+            json!({"events":[event(4, "practice", json!({})), verdict(5, false)],"latest":5}),
+            json!({"events":[verdict(6, true), event(7, "practiceEnd", json!({"outcome":"qualified","text":"Your worker's report qualified after 2 attempts.\u{1b}[2J"}))],"latest":7}),
+        ];
+        let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
+        let summary = result.unwrap();
+        assert_eq!((summary["status"].as_str(), summary["reportQualifies"].as_bool()), (Some("qualified"), Some(true)));
+        assert_eq!(summary["attempts"].as_array().map(Vec::len), Some(2), "only this practice's verdicts: {summary}");
+        assert_eq!(summary["reward"]["monetaryValue"], false);
+        assert_eq!((summary["workerId"].as_str(), summary["handle"].as_str()), (Some("worker-1"), Some("happy-turtle")));
+        let message = summary["message"].as_str().unwrap();
+        assert!(message.starts_with("Your worker's report qualified") && !message.contains('\u{1b}'), "{message}");
+        assert!(!actions(&requests).contains(&"practiceStop"), "a finished practice needs no stop");
+        // An earlier practice's end can be recorded after this one started (the engine records
+        // it once that one released the model): while this one runs, it is not taken for its own.
+        let pages = vec![
+            json!({"events":[event(1, "practice", json!({})), verdict(2, false), event(3, "practice", json!({})),
+                event(4, "practiceEnd", json!({"outcome":"stopped","text":"Practice stopped."}))],"latest":4,"practicing":true}),
+            json!({"events":[verdict(5, true), event(6, "practiceEnd", json!({"outcome":"qualified","text":"Qualified."}))],"latest":6,"practicing":false}),
+        ];
+        let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
+        let summary = result.unwrap();
+        assert_eq!((summary["status"].as_str(), summary["attempts"].as_array().map(Vec::len)), (Some("qualified"), Some(1)), "{summary}");
+        assert!(!actions(&requests).contains(&"practiceStop"));
+        // One already running is followed instead of refused.
+        let pages = vec![json!({"events":[event(1, "practice", json!({})), verdict(2, true), event(3, "practiceEnd", json!({"outcome":"qualified","text":"Qualified."}))],"latest":3})];
+        let (result, _) = scripted(false, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
+        assert_eq!(result.unwrap()["status"], "qualified");
+        // The engine's error ends it too.
+        let pages = vec![json!({"events":[event(1, "practice", json!({})), event(2, "practiceEnd", json!({"outcome":"error","text":"The model failed 3 attempts in a row"}))],"latest":2})];
+        let (result, _) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
+        let summary = result.unwrap();
+        assert_eq!((summary["status"].as_str(), summary["message"].as_str()), (Some("error"), Some("The model failed 3 attempts in a row")));
+    }
+
+    #[tokio::test]
+    async fn a_script_stops_the_practice_at_its_limits_or_on_ctrl_c() {
+        // MAX_ATTEMPTS rejected reports: the practice is stopped in the engine, not left running.
+        let rejected: Vec<Value> = std::iter::once(event(1, "practice", json!({})))
+            .chain((2..2 + MAX_ATTEMPTS as u64).map(|seq| verdict(seq, false)))
+            .collect();
+        let last = 1 + MAX_ATTEMPTS as u64;
+        let pages = vec![json!({"events":rejected,"latest":last})];
+        let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
+        let summary = result.unwrap();
+        assert_eq!((summary["status"].as_str(), summary["reportQualifies"].as_bool()), (Some("gave_up"), Some(false)));
+        assert_eq!(summary["attempts"].as_array().map(Vec::len), Some(MAX_ATTEMPTS));
+        assert!(summary["message"].as_str().unwrap().contains(&format!("after {MAX_ATTEMPTS} attempts")), "{summary}");
+        assert_eq!(requests.last().unwrap(), &json!({"action":"practiceStop","workerId":"worker-1"}));
+        // A report that qualifies after them ends the practice by itself: its end line is awaited.
+        let mut qualified = rejected.clone();
+        qualified.push(verdict(last + 1, true));
+        let pages = vec![
+            json!({"events":qualified,"latest":last + 1}),
+            json!({"events":[event(last + 2, "practiceEnd", json!({"outcome":"qualified","text":"Qualified."}))],"latest":last + 2}),
+        ];
+        let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
+        assert_eq!(result.unwrap()["status"], "qualified");
+        assert!(!actions(&requests).contains(&"practiceStop"));
+        // Out of time: stopped as well.
+        let pages = vec![json!({"events":[event(1, "practice", json!({})), verdict(2, false)],"latest":2})];
+        let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::ZERO), std::future::pending()).await;
+        assert_eq!(result.unwrap()["status"], "gave_up");
+        assert_eq!(actions(&requests).last(), Some(&"practiceStop"));
+        // Ctrl+C while it runs: stopped, with the attempts so far.
+        let pages = vec![json!({"events":[event(1, "practice", json!({})), verdict(2, false)],"latest":2})];
+        let waiting = Limits { attempts: MAX_ATTEMPTS, time: Duration::from_secs(60), poll: Duration::from_secs(3600) };
+        let (result, requests) = scripted(true, pages, waiting, std::future::ready(())).await;
+        let summary = result.unwrap();
+        assert_eq!((summary["status"].as_str(), summary["message"].as_str()), (Some("stopped"), Some("Practice stopped. Your worker is waiting for offers.")));
+        assert_eq!(actions(&requests).last(), Some(&"practiceStop"));
+        // A stop the engine refuses says how to stop it later.
+        let error = follow("worker-1", |request: Value| {
+            std::future::ready(match request["action"].as_str() {
+                Some("practiceStop") => Err("Cannot reach Yougori".to_owned()),
+                Some("activity") => Ok(json!({"events":[],"latest":0})),
+                _ => Ok(json!({"started":true})),
+            })
+        }, &limits(MAX_ATTEMPTS, Duration::ZERO), std::future::pending())
+        .await
+        .unwrap_err();
+        assert!(error.contains("yougori bounty practice happy-turtle --stop"), "{error}");
     }
 
     #[test]

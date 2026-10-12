@@ -67,17 +67,29 @@ pub(super) async fn target(
             None => candidates[index].clone(),
         }
     };
-    let current = super::busy("Checking the RunPod pod", async {
-        let current = call("get_platform_state", json!({})).await?;
-        public::name_neocloud_model(&mut env, &current, model).await?;
-        Ok(current)
+    let id = env["id"].as_str().ok_or("RunPod environment missing")?.to_owned();
+    // The pod may bill already: Ctrl+C opens its stop options, as in the wait for SSH.
+    let Some((current, named)) = chat::wait_or_stop(&id, || {
+        let mut named = env.clone();
+        super::busy("Checking the RunPod pod", async move {
+            let current = call("get_platform_state", json!({})).await?;
+            public::name_neocloud_model(&mut named, &current, model).await?;
+            Ok((current, named))
+        })
     })
-    .await?;
-    let id = env["id"].as_str().ok_or("RunPod environment missing")?;
-    let pod = &current["neocloudDeployments"][id];
+    .await? else {
+        return Ok(None);
+    };
+    env = named;
+    let pod = &current["neocloudDeployments"][&id];
     // New pods and unfinished creations from an earlier run share the same wait.
     if pod["product"] == "pod" && pod["extra"]["sshReady"] != true {
-        return wait_for_ssh(id).await;
+        return wait_for_ssh(&id).await;
+    }
+    // A Ctrl+C pressed while RunPod created the pod opens its stop options here when no wait
+    // for SSH follows.
+    if ui::take_interrupt() && chat::stop_choice(&id).await? {
+        return Ok(None);
     }
     Ok(Some(env))
 }
@@ -413,7 +425,7 @@ async fn choose_offer(count: &mut u32, disk: u32, unavailable: &mut HashSet<(Str
 
 /// Rents the pod. Creation always finishes: walking away from it could leave a pod billing
 /// unseen. A Ctrl+C pressed meanwhile opens the stop options once the pod exists, in the
-/// wait for SSH that follows.
+/// wait for SSH that follows or, without one, right after the pod check in [`target`].
 async fn create_pod(name: &str, offer: &Offer, disk: u32) -> Result<Value, String> {
     let creating = ui::task("Creating RunPod GPU pod");
     creating.detail("Ctrl+C offers to stop it once RunPod has created it");
@@ -481,10 +493,17 @@ fn ready(state: &Value, id: &str) -> Result<Option<Value>, String> {
     Ok((pod["extra"]["sshReady"] == true || env["status"] == "running").then(|| env.clone()))
 }
 
+/// Waits until the pod accepts SSH. Ctrl+C opens its stop options: `None` once it was stopped,
+/// while Cancel keeps waiting.
 async fn wait_for_ssh(id: &str) -> Result<Option<Value>, String> {
-    let waiting = ui::task("Waiting for the RunPod pod and SSH");
     let started = Instant::now();
-    let mut next_poll = started;
+    chat::wait_or_stop(id, || ssh_ready(id, started)).await
+}
+
+/// The wait for SSH, until it is ready or Ctrl+C ends it with [`ui::CANCELLED`].
+async fn ssh_ready(id: &str, started: Instant) -> Result<Value, String> {
+    let waiting = ui::task("Waiting for the RunPod pod and SSH");
+    let mut next_poll = Instant::now();
     loop {
         while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
             if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
@@ -492,15 +511,14 @@ async fn wait_for_ssh(id: &str) -> Result<Option<Value>, String> {
             }
         }
         if ui::take_interrupt() {
-            drop(waiting);
-            chat::stop_choice(id).await?;
-            return Ok(None);
+            waiting.clear();
+            return Err(ui::CANCELLED.into());
         }
         if Instant::now() >= next_poll {
             let state = call("get_platform_state", json!({})).await?;
             if let Some(env) = ready(&state, id)? {
                 waiting.done("RunPod SSH ready");
-                return Ok(Some(env));
+                return Ok(env);
             }
             let pod = &state["neocloudDeployments"][id];
             let detail = pod["extra"]["sshNote"]

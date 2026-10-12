@@ -60,6 +60,15 @@ test "$(docker inspect -f '{{{{.HostConfig.PidsLimit}}}}' {name})" = 4096 || {{ 
 "#, cpu=setup.allocation[0], memory=setup.allocation[1], boot=shell(BOOT))
 }
 
+/// Present while the first copy fills the container's /workspace. A copy stopped part way is
+/// never taken for the project: the next launch copies it again.
+const COPYING: &str = "/yougori/launch/copy-incomplete";
+
+/// Prints "existing" when the container has the project: a /workspace whose copy finished.
+fn existing_workspace() -> String {
+    format!("if [ -d /workspace ] && [ -n \"$(ls -A /workspace)\" ] && [ ! -e {COPYING} ]; then printf existing; fi")
+}
+
 fn uploaded_project(destination: &str, container: &str) -> Result<String, String> {
     let leaf = destination.rsplit('/').next().unwrap_or("");
     let transfer = leaf.strip_prefix("yougori-import-").unwrap_or("");
@@ -67,8 +76,50 @@ fn uploaded_project(destination: &str, container: &str) -> Result<String, String
         || transfer.len() != 32 || !transfer.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Unexpected cloud upload destination; no files were removed".into());
     }
-    let clear = live::container_command(Some(container), "find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; rm -f /yougori/launch/installed-*", false);
-    Ok(format!("test \"$(dirname -- {})\" = \"$HOME\" || exit 1; {clear} && docker cp {} {} ; code=$?; rm -rf -- {}; exit \"$code\"", shell(destination), shell(&format!("{destination}/project/workspace/.")), shell(&format!("{container}:/workspace/")), shell(destination)))
+    let clear = live::container_command(Some(container), &format!(": > {COPYING} || exit 1; find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} +; rm -f /yougori/launch/installed-*"), false);
+    let finished = live::container_command(Some(container), &format!("rm -f {COPYING}"), false);
+    Ok(format!("test \"$(dirname -- {})\" = \"$HOME\" || exit 1; {clear} && docker cp {} {} && {finished}; code=$?; rm -rf -- {}; exit \"$code\"", shell(destination), shell(&format!("{destination}/project/workspace/.")), shell(&format!("{container}:/workspace/")), shell(destination)))
+}
+
+/// This project's routes on the server: those to the port Docker gave its container, which no
+/// other container holds while this one runs.
+fn routes_at(services: &Value, port: u16) -> impl Iterator<Item = &str> {
+    services["publications"].as_array().into_iter().flatten()
+        .filter(move |route| route["port"] == port)
+        .filter_map(|route| route["id"].as_str())
+}
+
+/// Publishes the project's routes on the server: the quick link or domain when chosen, then the
+/// forward to this computer. A request that started is waited for even after Ctrl+C, as the
+/// engine finishes it anyway: every route it creates is in `routes` for the cleanup to remove.
+/// Once the launch is stopping, nothing new starts. Returns the local port.
+async fn publish_routes<F: std::future::Future<Output = Result<Value, String>>>(
+    publish: impl Fn(Value) -> F,
+    stop: &AtomicBool,
+    network: &Network,
+    id: &str,
+    remote_port: u16,
+    local_port: u16,
+    routes: &mut Vec<String>,
+) -> Result<u16, String> {
+    if !matches!(network, Network::Computer | Network::Lan) {
+        if let Some(params) = publish_params(network, id, remote_port) {
+            let result = publish(params).await?;
+            if let Some(id) = result["id"].as_str() { routes.push(id.into()); }
+            for url in result["urls"].as_array().into_iter().flatten().filter_map(Value::as_str) { ui::info(&format!("public  {}", clean(url))); }
+        }
+    }
+    cancelled(stop)?;
+    let kind = if matches!(network, Network::Lan) { "local" } else { "loopback" };
+    let params = json!({"environmentId":id,"port":remote_port,"kind":kind});
+    let mut requested = params.clone();
+    requested["hostPort"] = json!(local_port);
+    let result = match publish(requested).await {
+        Err(error) if port_in_use(&error) && !stop.load(Ordering::Relaxed) => publish(params).await?,
+        result => result?,
+    };
+    if let Some(id) = result["id"].as_str() { routes.push(id.into()); }
+    result["hostPort"].as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0).ok_or_else(|| "Missing local port".into())
 }
 
 /// Resource and access questions for a server, asked on the first launch there and with
@@ -248,6 +299,7 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     stop.watch();
     let container = format!("yougori-project-{}", &key[..24]);
     let mut started = false;
+    let mut server_port = None;
     let mut publications = Vec::<String>::new();
     let mut uploads = Vec::<String>::new();
     let result = async {
@@ -265,12 +317,11 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
         let remote_port = busy("Checking project access on the server", async {
             let ports = exec(id, &format!("docker port {} {}/tcp", shell(&container), live::proxy_port(setup.guest_port))).await?;
             let remote_port = ports.trim().strip_prefix("127.0.0.1:").and_then(|s| s.parse::<u16>().ok()).filter(|p| *p > 0).ok_or("Docker did not return a private project port")?;
+            server_port = Some(remote_port);
             // Clear routes left by an interrupted previous run before starting the app.
             let services = call("list_environment_services", json!({"environmentId":id})).await?;
-            for publication in services["publications"].as_array().into_iter().flatten().filter(|p| p["port"] == remote_port) {
-                if let Some(id) = publication["id"].as_str() {
-                    call("unpublish_environment_service", json!({"publicationId":id})).await?;
-                }
+            for route in routes_at(&services, remote_port) {
+                call("unpublish_environment_service", json!({"publicationId":route})).await?;
             }
             Ok(remote_port)
         }).await?;
@@ -285,7 +336,7 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
         let mut saved = sync::Saved::load(&sync_path);
         let remote_token = stop.until(exec(id, &live::container_command(Some(&container), "cat /yougori/launch/sync-token 2>/dev/null || true", false))).await?;
         let reconcile = saved.needs_reconcile(id, &remote_token);
-        let copied = stop.until(exec(id, &live::container_command(Some(&container), "if [ -d /workspace ] && [ -n \"$(ls -A /workspace)\" ]; then printf existing; fi", false))).await?.trim() != "existing";
+        let copied = stop.until(exec(id, &live::container_command(Some(&container), &existing_workspace(), false))).await?.trim() != "existing";
         let mut initial_databases = std::collections::BTreeSet::new();
         if copied {
             syncing.detail(&format!("{} files · {}", manifest.len(), ui::bytes(manifest.values().map(|(size, _)| size).sum())));
@@ -324,23 +375,7 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             syncing.done(if setup.two_way { "Two-way sync checked" } else { "Project files up to date" });
             let publishing = ui::task("Setting up project access");
             let network = match setup.network.as_str() { "lan" => Network::Lan, "quick" => Network::Quick, "domain" => Network::Domain(setup.domain.clone().ok_or("Missing saved domain")?), _ => Network::Computer };
-            if !matches!(network, Network::Computer | Network::Lan) {
-                if let Some(params) = publish_params(&network, id, remote_port) {
-                    let result = stop.until(call("publish_environment_service", params)).await?;
-                    if let Some(id) = result["id"].as_str() { publications.push(id.into()); }
-                    for url in result["urls"].as_array().into_iter().flatten().filter_map(Value::as_str) { ui::info(&format!("public  {}", clean(url))); }
-                }
-            }
-            let kind = if matches!(network, Network::Lan) { "local" } else { "loopback" };
-            let params = json!({"environmentId":id,"port":remote_port,"kind":kind});
-            let mut requested = params.clone();
-            requested["hostPort"] = json!(setup.local_port);
-            let result = match stop.until(call("publish_environment_service", requested)).await {
-                Err(error) if !stop.requested() && port_in_use(&error) => stop.until(call("publish_environment_service", params)).await?,
-                result => result?,
-            };
-            if let Some(id) = result["id"].as_str() { publications.push(id.into()); }
-            setup.local_port = result["hostPort"].as_u64().and_then(|p| u16::try_from(p).ok()).filter(|p| *p > 0).ok_or("Missing local port")?;
+            setup.local_port = publish_routes(|params| call("publish_environment_service", params), &stop.flag, &network, id, remote_port, setup.local_port, &mut publications).await?;
             save(&path, &setup)?;
             publishing.done(&format!("Available at http://localhost:{}", setup.local_port));
             stop.check()?;
@@ -366,6 +401,17 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     stop.watch();
     let stopping = ui::task("Stopping cloud project session");
     let mut cleanup_errors = Vec::new();
+    // A route whose reply never came back is found by its port.
+    if let Some(port) = server_port {
+        match call("list_environment_services", json!({"environmentId":id})).await {
+            Ok(services) => {
+                for route in routes_at(&services, port) {
+                    if !publications.iter().any(|known| known == route) { publications.push(route.into()); }
+                }
+            }
+            Err(error) => cleanup_errors.push(error),
+        }
+    }
     for publication in publications {
         if let Err(error) = call("unpublish_environment_service", json!({"publicationId":publication})).await { cleanup_errors.push(error); }
     }
@@ -382,10 +428,7 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     if cleanup_errors.is_empty() { stopping.done("Project stopped; cloud environment stays connected"); }
     else { stopping.fail("Could not confirm project cleanup"); return Err(format!("Check container {container} on the server: {}", cleanup_errors.join("; "))); }
     ui::outro("npm run yougori-cloud starts again · npm run yougori-cloud -- --change edits this server's project settings");
-    match result {
-        Err(_) if interrupted => Ok(130),
-        result => result.map(|_| 0),
-    }
+    ended(result, interrupted)
 }
 
 #[cfg(test)]
@@ -407,6 +450,107 @@ mod tests {
         let script = uploaded_project("/home/me/yougori-import-0123456789abcdef0123456789abcdef", "container").unwrap();
         assert!(script.contains("container:/workspace/"));
         assert!(!script.contains("docker rm"));
+    }
+
+    #[test]
+    fn a_first_copy_stopped_part_way_is_copied_again_by_the_next_launch() {
+        let copy = uploaded_project("/fake-home/yougori-import-0123456789abcdef0123456789abcdef", "container").unwrap();
+        let probe = live::container_command(Some("container"), &existing_workspace(), false);
+        let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "bash" };
+        for (mode, finished) in [("complete", true), ("failed", false), ("killed", false)] {
+            // The container's folders live in a temporary folder; the upload is never removed.
+            let fixture = format!(r#"
+FAKE=$(mktemp -d)
+mkdir -p "$FAKE/yougori/launch" "$FAKE/workspace"
+printf 'earlier copy' > "$FAKE/workspace/old.txt"
+docker() {{
+  case "$1" in
+    exec)
+      set -- "${{6//\/yougori\//$FAKE/yougori/}}"
+      sh -c "${{1//\/workspace/$FAKE/workspace}}" ;;
+    cp)
+      printf partial > "$FAKE/workspace/app.js"
+      case "$MODE" in
+        failed) return 1 ;;
+        killed) kill -KILL $$ ;;
+      esac
+      printf ' and the rest' >> "$FAKE/workspace/app.js" ;;
+    *) return 1 ;;
+  esac
+}}
+rm() {{ case "$*" in *fake-home*) ;; *) command rm "$@" ;; esac; }}
+export -f docker rm
+export FAKE
+echo "before:$({probe})"
+HOME=/fake-home bash --noprofile --norc -c {copy}
+echo "copy:$?"
+echo "after:$({probe})"
+echo "files:$(ls "$FAKE/workspace")"
+command rm -rf "$FAKE"
+"#, copy = shell(&copy));
+            let output = std::process::Command::new(bash).args(["--noprofile", "--norc", "-c", &fixture]).env("MODE", mode)
+                .output().expect("Bash is required for the cloud copy test");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let context = format!("{mode}: {stdout}{}", String::from_utf8_lossy(&output.stderr));
+            let lines: Vec<&str> = stdout.lines().collect();
+            assert_eq!(lines.first(), Some(&"before:existing"), "a finished copy is the project: {context}");
+            let code = lines.get(1).and_then(|line| line.strip_prefix("copy:")).and_then(|code| code.parse::<i32>().ok());
+            assert_eq!(code.map(|code| code == 0), Some(finished), "{context}");
+            assert_eq!(lines.get(2), Some(&if finished { "after:existing" } else { "after:" }), "{context}");
+            assert_eq!(lines.get(3), Some(&"files:app.js"), "{context}");
+        }
+    }
+
+    #[test]
+    fn the_cleanup_finds_this_containers_routes_by_its_server_port() {
+        let services = json!({"publications":[
+            {"id":"route-quick","port":40123,"kind":"cloudflare"},
+            {"id":"route-local","port":40123,"kind":"loopback"},
+            {"id":"other-project","port":40999,"kind":"loopback"},
+            {"port":40123}
+        ]});
+        assert_eq!(routes_at(&services, 40123).collect::<Vec<_>>(), ["route-quick", "route-local"]);
+        assert_eq!(routes_at(&json!({}), 40123).count(), 0);
+    }
+
+    #[tokio::test]
+    async fn routes_requested_before_a_stop_are_kept_for_the_cleanup() {
+        use std::{cell::RefCell, time::Duration};
+        // Ctrl+C while the quick link starts: the engine still creates it, so its reply is
+        // waited for, and the forward to this computer never starts.
+        let stop = AtomicBool::new(false);
+        let requests = RefCell::new(Vec::new());
+        let mut routes = Vec::new();
+        let stopped = publish_routes(|params| {
+            requests.borrow_mut().push(params);
+            stop.store(true, Ordering::SeqCst);
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(json!({"id":"route-quick"}))
+            }
+        }, &stop, &Network::Quick, "env-cloud", 40123, 3000, &mut routes).await;
+        assert_eq!(stopped, Err("Launch cancelled.".into()));
+        assert_eq!(routes, ["route-quick"]);
+        assert_eq!(requests.borrow().len(), 1);
+        assert_eq!(requests.borrow()[0]["kind"], "cloudflare");
+        // A taken local port is replaced by a free one, unless the launch is stopping.
+        let in_use = || Err::<Value, String>("publish_environment_service: Cannot bind host port: Address already in use (os error 98)".into());
+        for stopping in [false, true] {
+            let stop = AtomicBool::new(false);
+            let mut routes = Vec::new();
+            let published = publish_routes(|params| {
+                stop.store(stopping, Ordering::SeqCst);
+                let reply = if params.get("hostPort").is_some() { in_use() } else { Ok(json!({"id":"route-local","hostPort":3001})) };
+                async move { reply }
+            }, &stop, &Network::Lan, "env-cloud", 40123, 3000, &mut routes).await;
+            if stopping {
+                assert!(port_in_use(&published.unwrap_err()));
+                assert!(routes.is_empty());
+            } else {
+                assert_eq!(published, Ok(3001));
+                assert_eq!(routes, ["route-local"]);
+            }
+        }
     }
 
     #[test]

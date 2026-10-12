@@ -208,3 +208,15 @@ fn own_agent_chat_accepts_complete_prompts_and_has_no_channel_interface() {
             .contains("Cannot reach"));
     }
 }
+
+#[test]
+fn a_practice_a_script_left_running_can_be_stopped_by_name() {
+    let output = cli(&["bounty", "practice", "worker", "--stop", "--dry-run"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    let request = &response(&output)["result"]["request"];
+    assert_eq!(request["action"], "practiceStop");
+    assert_eq!(request["workerId"], "worker");
+    let output = cli(&["bounty", "status", "worker", "--stop"]);
+    assert!(!output.status.success());
+    assert!(!response(&output)["error"].as_str().unwrap().contains("Cannot reach"));
+}
