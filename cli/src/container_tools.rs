@@ -51,8 +51,11 @@ logins and environment-only keys always require sign-in inside the tool. OpenCla
 keeps its sign-in with other data, so its Yes choice is unavailable. Anyone
 controlling the sandbox can read or use imported credentials. --no-credentials
 skips this question and copies nothing.
-Each question after the first offers Back (Esc or the Back row) and shows your
-last answer again. Starting Yougori and starting or creating the sandbox show a
+The questions come in two groups: before the sandbox exists (Ollama's GPU
+question, CPU and memory) and after the tool is installed (sign-in, public access,
+--share). In each group every question after the first offers Back (Esc or the
+Back row) and shows your last answer again; Esc on a group's first question
+cancels. Starting Yougori and starting or creating the sandbox show a
 spinner; Ctrl+C there stops waiting. Once the sandbox is in use, Ctrl+C opens
 Cancel / Stop sandbox / Stop and delete, with Cancel selected. Cancel resumes
 without interrupting the tool. Only Enter confirms a stop/delete.
@@ -543,8 +546,23 @@ async fn prepare(options: &mut Options, environments: &[Value], host: &Value) ->
 /// The shortest command that reconnects to this sandbox: the plain shortcut when that reuses
 /// it, else its name, or its ID when another sandbox answers to that name.
 fn reconnect_command(tool: &str, id: &str, environments: &[Value]) -> String {
-    let plain = Options::parse(&[tool.to_owned()]).ok();
-    if plain.and_then(|plain| plain.reused(environments)).is_some_and(|env| env["id"] == id) {
+    // Reuse prefers running sandboxes, so the plain shortcut must pick this one whether or not
+    // the others run: once this sandbox stops, a newer stopped one would win otherwise.
+    let stopped: Vec<Value> = environments
+        .iter()
+        .map(|env| {
+            let mut env = env.clone();
+            env["status"] = "stopped".into();
+            env
+        })
+        .collect();
+    let picks = |environments: &[Value]| {
+        Options::parse(&[tool.to_owned()])
+            .ok()
+            .and_then(|plain| plain.reused(environments).map(|env| env["id"] == id))
+            .unwrap_or(false)
+    };
+    if picks(environments) && picks(&stopped) {
         return format!("yougori {tool}");
     }
     let name = environments
@@ -842,6 +860,11 @@ mod tests {
         let environments = vec![older, newest, opted_out];
         assert_eq!(reconnect_command("codex", "env-newest", &environments), "yougori codex");
         assert_eq!(reconnect_command("codex", "env-older", &environments), "yougori codex --environment codex");
+        // Reuse prefers running sandboxes: once an older running one stops, the newer one wins.
+        let mut running_older = environments.clone();
+        running_older[0]["status"] = json!("running");
+        running_older[1]["status"] = json!("stopped");
+        assert_eq!(reconnect_command("codex", "env-older", &running_older), "yougori codex --environment codex");
         // `yougori codex` reuses microVMs only; the container needs its name.
         assert_eq!(reconnect_command("codex", "env-container", &environments), "yougori codex --environment codex-3");
         // A name another sandbox also answers to, or one a shell would need quoted, falls back to the ID.

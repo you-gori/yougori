@@ -411,38 +411,46 @@ async fn choose_offer(count: &mut u32, disk: u32, unavailable: &mut HashSet<(Str
     }
 }
 
-/// Rents the pod. Ctrl+C stops waiting, but RunPod may still create it.
+/// Rents the pod. Creation always finishes: walking away from it could leave a pod billing
+/// unseen. A Ctrl+C pressed meanwhile opens the stop options once the pod exists, in the
+/// wait for SSH that follows.
 async fn create_pod(name: &str, offer: &Offer, disk: u32) -> Result<Value, String> {
-    let started = Instant::now();
-    let result = match super::busy(
-        "Creating RunPod GPU pod",
-        call("runpod_create_pod", json!({"request":request(name, offer, disk)})),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) if error == ui::CANCELLED => {
-            ui::warn("RunPod may still create this pod, and it bills while it exists. Check it with yougori neocloud list.");
-            return Err(error);
+    let creating = ui::task("Creating RunPod GPU pod");
+    creating.detail("Ctrl+C offers to stop it once RunPod has created it");
+    let result = call("runpod_create_pod", json!({"request":request(name, offer, disk)})).await;
+    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+        if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
+            ui::note_interrupt(key);
         }
-        Err(error) if stock_changed(&error) => return Err(error),
+    }
+    let created = result.and_then(|result| {
+        result["environments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["name"] == name)
+            .cloned()
+            .ok_or_else(|| "Pod creation returned no environment. Check RunPod before retrying.".to_owned())
+    });
+    match created {
+        Ok(env) => {
+            creating.done(&format!("Created {name}"));
+            Ok(env)
+        }
+        // Nothing bills: a Ctrl+C pressed meanwhile simply ends here.
+        Err(_) if ui::take_interrupt() => {
+            creating.clear();
+            Err(ui::CANCELLED.into())
+        }
+        Err(error) if stock_changed(&error) => {
+            creating.clear();
+            Err(error)
+        }
         Err(error) => {
-            super::failed("Creating RunPod GPU pod");
-            return Err(error);
+            creating.fail("Creating RunPod GPU pod");
+            Err(error)
         }
-    };
-    let Some(env) = result["environments"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|e| e["name"] == name)
-        .cloned()
-    else {
-        super::failed("Creating RunPod GPU pod");
-        return Err("Pod creation returned no environment. Check RunPod before retrying.".into());
-    };
-    super::finished(&format!("Created {name}"), started);
-    Ok(env)
+    }
 }
 
 fn ready(state: &Value, id: &str) -> Result<Option<Value>, String> {

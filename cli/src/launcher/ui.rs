@@ -14,7 +14,7 @@ use std::{
 };
 
 pub const CANCELLED: &str =
-    "Cancelled. Any workload already created keeps running; use yougori ps to manage it.";
+    "Cancelled. Work Yougori already started keeps running; check it with yougori ps.";
 const RESET: &str = "\x1b[0m";
 const TICK: Duration = Duration::from_millis(70);
 const BANNER: Duration = Duration::from_millis(650);
@@ -35,14 +35,57 @@ static INPUT: Mutex<()> = Mutex::new(());
 /// Prompts open or about to open. The watcher stays away from the keyboard meanwhile, so a
 /// prompt never waits for it.
 static PROMPTS: AtomicUsize = AtomicUsize::new(0);
-/// The flag of the [`Interrupts`] watcher that is running, if any.
-static WATCHED: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+/// The flags of the [`Interrupts`] watchers that are running, newest last. Each watcher
+/// removes only its own entry, so watchers that end out of order never leave a stale one.
+static WATCHED: Mutex<Vec<(u64, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+static WATCHES: AtomicUsize = AtomicUsize::new(0);
 /// How long [`busy`] waits before showing its spinner, so quick answers do not flash one.
 const QUICK: Duration = Duration::from_millis(150);
 
 fn is_ctrl_c(key: KeyEvent) -> bool {
     key.kind != KeyEventKind::Release && key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
+/// Tells a new Ctrl+C from the same one held down, so key repeat never counts as the second
+/// press that quits at once. Where key releases are reported (Windows), a press is new after
+/// a release. Elsewhere it is new after a pause, at least a second after the first press:
+/// the first repeat of a held key comes after a similar pause.
+#[derive(Debug, Default)]
+pub struct Presses {
+    first: Option<Instant>,
+    last: Option<Instant>,
+    released: bool,
+    releases_reported: bool,
+}
+
+impl Presses {
+    /// Starts as if Ctrl+C were held when the flag it guards is already set, so a press still
+    /// repeating from before does not count.
+    pub fn new(already_pressed: bool) -> Self {
+        let now = already_pressed.then(Instant::now);
+        Self { first: now, last: now, ..Self::default() }
+    }
+    /// Records a Ctrl+C press; true when it is a new press after an earlier one.
+    pub fn press(&mut self, now: Instant) -> bool {
+        let new = match (self.first, self.last) {
+            (Some(first), Some(last)) => {
+                self.released
+                    || (!self.releases_reported
+                        && now.saturating_duration_since(last) >= Duration::from_millis(150)
+                        && now.saturating_duration_since(first) >= Duration::from_secs(1))
+            }
+            _ => false,
+        };
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+        self.released = false;
+        new
+    }
+    pub fn release(&mut self) {
+        self.releases_reported = true;
+        self.released = self.first.is_some();
+    }
+}
+
 pub fn note_interrupt(key: KeyEvent) {
     if is_ctrl_c(key) {
         CTRL_C.store(true, Ordering::Relaxed);
@@ -163,21 +206,23 @@ pub fn without_back<T>(prompts: impl FnOnce() -> T) -> T {
 pub struct Interrupts {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
-    previous: Option<Arc<AtomicBool>>,
+    registration: u64,
     _raw: Option<Raw>,
 }
 
 impl Interrupts {
     pub fn watch(flag: Arc<AtomicBool>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let previous = WATCHED.lock().unwrap_or_else(|p| p.into_inner()).replace(flag.clone());
+        let registration = WATCHES.fetch_add(1, Ordering::SeqCst) as u64;
+        WATCHED.lock().unwrap_or_else(|p| p.into_inner()).push((registration, flag.clone()));
         if !caps().live || !io::stdin().is_terminal() {
-            return Self { stop, thread: None, previous, _raw: None };
+            return Self { stop, thread: None, registration, _raw: None };
         }
         let raw = Raw::on().ok();
         let thread = std::thread::spawn({
             let stop = stop.clone();
             move || {
+                let mut presses = Presses::new(flag.load(Ordering::SeqCst));
                 while !stop.load(Ordering::Relaxed) {
                     if PROMPTS.load(Ordering::SeqCst) > 0 {
                         std::thread::sleep(Duration::from_millis(10));
@@ -186,7 +231,7 @@ impl Interrupts {
                     // Hold the keyboard only for one short poll, then let a prompt take it.
                     let read = {
                         let _input = INPUT.lock().unwrap_or_else(|p| p.into_inner());
-                        match event::poll(Duration::from_millis(30)) {
+                        match event::poll(Duration::from_millis(10)) {
                             Ok(true) if PROMPTS.load(Ordering::SeqCst) == 0 => Some(event::read()),
                             _ => None,
                         }
@@ -194,9 +239,15 @@ impl Interrupts {
                     match read {
                         Some(Ok(Event::Key(key))) if is_ctrl_c(key) => {
                             note_interrupt(key);
-                            if flag.swap(true, Ordering::SeqCst) {
+                            let new = presses.press(Instant::now());
+                            if flag.swap(true, Ordering::SeqCst) && new {
                                 force_exit();
                             }
+                        }
+                        Some(Ok(Event::Key(key)))
+                            if key.kind == KeyEventKind::Release && key.code == KeyCode::Char('c') =>
+                        {
+                            presses.release();
                         }
                         Some(Ok(Event::Resize(..))) => refresh(),
                         _ => {}
@@ -205,13 +256,13 @@ impl Interrupts {
                 }
             }
         });
-        Self { stop, thread: Some(thread), previous, _raw: raw }
+        Self { stop, thread: Some(thread), registration, _raw: raw }
     }
 }
 
 /// The flag of the watcher that is running now, if any.
 fn watched() -> Option<Arc<AtomicBool>> {
-    WATCHED.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    WATCHED.lock().unwrap_or_else(|p| p.into_inner()).last().map(|(_, flag)| flag.clone())
 }
 
 impl Drop for Interrupts {
@@ -220,7 +271,7 @@ impl Drop for Interrupts {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        *WATCHED.lock().unwrap_or_else(|p| p.into_inner()) = self.previous.take();
+        WATCHED.lock().unwrap_or_else(|p| p.into_inner()).retain(|(id, _)| *id != self.registration);
     }
 }
 
@@ -252,13 +303,24 @@ pub fn force_exit() -> ! {
 /// (the engine may still finish a request it already received). Inside an [`Interrupts`]
 /// watch, a new Ctrl+C there counts; one pressed before this wait does not, so cleanup runs.
 pub async fn busy<T>(label: &str, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    /// The spinner leaves no line, even when an outer wait that stopped drops this one.
+    struct Spinner(Option<Task>);
+    impl Drop for Spinner {
+        fn drop(&mut self) {
+            if let Some(task) = self.0.take() {
+                task.clear();
+            }
+        }
+    }
     let mut work = std::pin::pin!(work);
     let mut borrowed = watched();
-    let armed = borrowed.as_ref().is_none_or(|flag| !flag.load(Ordering::Relaxed));
+    let mut armed = borrowed.as_ref().is_none_or(|flag| !flag.load(Ordering::Relaxed));
     let own_flag = Arc::new(AtomicBool::new(false));
-    let mut own = None;
+    // Read keys from the start: in a cooked console an early Ctrl+C would otherwise end the
+    // process instead of stopping this wait. Only the spinner waits for a moment.
+    let mut own = borrowed.is_none().then(|| Interrupts::watch(own_flag.clone()));
     let started = Instant::now();
-    let mut spinner = None;
+    let mut spinner = Spinner(None);
     let result = loop {
         let cancelled = match &borrowed {
             Some(flag) => armed && flag.load(Ordering::Relaxed),
@@ -267,16 +329,22 @@ pub async fn busy<T>(label: &str, work: impl std::future::Future<Output = Result
         if cancelled {
             break Err(CANCELLED.to_owned());
         }
-        if spinner.is_none() && started.elapsed() >= QUICK {
-            spinner = Some(task(label));
+        if spinner.0.is_none() && started.elapsed() >= QUICK {
+            spinner.0 = Some(task(label));
         }
         // Someone must read Ctrl+C while the spinner shows: the watch this wait borrowed, as
-        // long as it runs (an inner wait may have started it and ended), or one of its own.
-        if spinner.is_some() && own.is_none() {
-            let running = borrowed.as_ref().is_some_and(|flag| watched().is_some_and(|now| Arc::ptr_eq(&now, flag)));
-            if !running {
-                borrowed = None;
-                own = Some(Interrupts::watch(own_flag.clone()));
+        // long as it runs (an inner wait may have started it and ended), a watch that started
+        // meanwhile (an outer wait's), or one of its own.
+        if spinner.0.is_some() && own.is_none() && !borrowed.as_ref().is_some_and(registered) {
+            match watched() {
+                Some(flag) => {
+                    armed = !flag.load(Ordering::Relaxed);
+                    borrowed = Some(flag);
+                }
+                None => {
+                    borrowed = None;
+                    own = Some(Interrupts::watch(own_flag.clone()));
+                }
             }
         }
         tokio::select! {
@@ -285,10 +353,13 @@ pub async fn busy<T>(label: &str, work: impl std::future::Future<Output = Result
         }
     };
     drop(own);
-    if let Some(spinner) = spinner {
-        spinner.clear();
-    }
+    drop(spinner);
     result
+}
+
+/// Whether the watch with this flag still runs.
+fn registered(flag: &Arc<AtomicBool>) -> bool {
+    WATCHED.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|(_, now)| Arc::ptr_eq(now, flag))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2547,6 +2618,30 @@ mod tests {
     }
 
     #[test]
+    fn a_held_ctrl_c_never_counts_as_the_second_press() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut presses = Presses::new(false);
+        assert!(!presses.press(at(0)), "the first press only stops");
+        // Key repeat arrives every few dozen milliseconds while the key stays down.
+        for ms in (500..2000).step_by(33) {
+            assert!(!presses.press(at(ms)), "repeat at {ms} ms");
+        }
+        // Released, then pressed again: a new press.
+        presses.release();
+        assert!(presses.press(at(2010)));
+        // Without release events, a pause tells a new press from a repeat.
+        let mut presses = Presses::new(false);
+        presses.press(at(0));
+        assert!(!presses.press(at(100)));
+        assert!(!presses.press(at(600)), "like the first repeat of a held key");
+        assert!(presses.press(at(1300)));
+        // A watch started after the first press treats a still-repeating key as held.
+        let mut armed = Presses::new(true);
+        assert!(!armed.press(Instant::now()));
+    }
+
+    #[test]
     fn wizard_back_returns_to_the_last_asked_step_and_leaves_from_the_first() {
         let _serial = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
         BACK_OFFERED.store(false, Ordering::Relaxed);
@@ -2599,7 +2694,7 @@ mod tests {
                 Ok::<_, String>("stopped")
             }).await, Ok("stopped"));
             drop(watch);
-            assert!(WATCHED.lock().unwrap().is_none());
+            assert!(watched().is_none());
             // A wait that borrowed a watch which then ended keeps Ctrl+C with a watch of its own.
             let borrowed = Arc::new(AtomicBool::new(false));
             let watch = Interrupts::watch(borrowed.clone());
@@ -2612,6 +2707,14 @@ mod tests {
             });
             assert_eq!(outlived.await, Ok(()));
             assert!(watched().is_none(), "its own watch ends with the wait");
+            // Watches that end out of order leave no stale flag behind.
+            let (first, second) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+            let earlier = Interrupts::watch(first.clone());
+            let later = Interrupts::watch(second.clone());
+            drop(earlier);
+            assert!(watched().is_some_and(|flag| Arc::ptr_eq(&flag, &second)));
+            drop(later);
+            assert!(watched().is_none());
         });
     }
 
