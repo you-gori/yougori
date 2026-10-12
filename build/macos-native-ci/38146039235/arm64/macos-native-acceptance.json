@@ -1,0 +1,12 @@
+{
+  "os": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "cpu": "passed_auth_inference_owner_loss",
+  "metal": "not_available",
+  "status": "passed",
+  "runtimeRevision": "e117148a41d8e9bedb72e4c6c3f003ab0fe7f857",
+  "devices": "Available devices:\n  MTL0: Apple Paravirtual device (4778 MiB, 4778 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)",
+  "diagnostics": {
+    "cpu": "0.00.110.596 I srv  llama_server: initializing ...\n0.00.110.715 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)\n0.00.111.863 I srv  init_listene: The UI is disabled\n0.00.111.882 I srv  init_listene: Use --ui/--no-ui (or deprecated --webui/--no-webui) to enable/disable\n0.00.123.105 I srv    load_model: loading model '/var/folders/nj/vtw8zd2j31d1gdrtntc5y4600000gn/T/yougori-native-qa-n3g81kt9/stories.gguf'\n0.00.134.718 W load: bad special token: 'tokenizer.ggml.seperator_token_id' = 4294967295, using default id -1\n0.00.134.779 W load: bad special token: 'tokenizer.ggml.padding_token_id' = 4294967295, using default id -1\n0.00.142.100 I cmn          init: llama threadpool init, n_threads = 2\n0.00.144.941 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 512, kv_unified = 'true'\n0.00.149.894 I srv  llama_server: model loaded\n0.00.149.927 I srv  llama_server: listening on http://127.0.0.1:49182\n0.00.315.854 W srv    operator(): unauthorized: Invalid API Key\n0.00.319.839 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1\n0.00.319.861 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0\n0.00.323.240 I slot print_timing: id  3 | task 0 | prompt eval time =       1.12 ms /     5 tokens (    0.22 ms per token,  4460.30 tokens per second)\n0.00.323.246 I slot print_timing: id  3 | task 0 |        eval time =       1.72 ms /     8 tokens (    0.25 ms per token,  4069.77 tokens per second)\n0.00.323.246 I slot print_timing: id  3 | task 0 |       total time =       2.84 ms /    13 tokens\n0.00.323.247 I slot print_timing: id  3 | task 0 |    graphs reused =          7\n0.00.323.257 I slot      release: id  3 | task 0 | stop processing: n_tokens = 12, truncated = 0\n0.00.324.183 I srv    operator(): operator(): cleaning up before exit...\n"
+  }
+}
