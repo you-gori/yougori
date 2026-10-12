@@ -1850,7 +1850,12 @@ func parseNameservers(contents string) []string {
 }
 
 func containerPID(ctx context.Context, id string) (int, error) {
-	output, err := run(ctx, "nerdctl", "--namespace", namespace, "inspect", "--format", "{{.State.Pid}}", id)
+	return namespacedPID(ctx, namespace, id)
+}
+
+// namespacedPID is the main process of a running container in a nerdctl namespace.
+func namespacedPID(ctx context.Context, containerNamespace, name string) (int, error) {
+	output, err := run(ctx, "nerdctl", "--namespace", containerNamespace, "inspect", "--format", "{{.State.Pid}}", name)
 	if err != nil {
 		return 0, err
 	}

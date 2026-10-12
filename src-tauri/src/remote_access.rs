@@ -288,6 +288,33 @@ impl RemoteAccess {
     }
 }
 fn push_audit(db: &mut Database, id: &str, event: &str, success: bool) {
+    // Mirror sharing changes, sign-ins and recipient activity into the engine's audit log.
+    // Terminal input and commands are recorded there by the terminal and exec hooks.
+    if !matches!(event, "terminal activity" | "command executed" | "file operation") {
+        let kind = match event {
+            "recipient created" => "share.remote.created",
+            "recipient revoked" => "share.remote.revoked",
+            "recipient removed" => "share.remote.removed",
+            "tunnel enabled" => "share.tunnel.started",
+            "remote users disconnected; tunnel stopped" => "share.tunnel.stopped",
+            "sign-in" => "share.remote.signin",
+            "denied remote action" => "share.remote.denied",
+            _ if event.starts_with("permissions") => "share.remote.updated",
+            _ => "share.remote.activity",
+        };
+        let mut record = crate::security::Event::new(kind).text("action", event).succeeded(success);
+        if !id.is_empty() {
+            record = record.text("share", id);
+        }
+        if let Some(grant) = db.grants.iter().find(|grant| grant.id == id) {
+            record = record.text("permission", &serde_json::to_value(&grant.permission).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default());
+            record = if grant.target_id == "my-pc" { record.text("target", "my-pc") } else { record.env(&grant.target_id) };
+            if let Some(folder) = &grant.folder {
+                record = record.path("folder", folder);
+            }
+        }
+        crate::security::record(record);
+    }
     db.audit.push_back(Audit {
         at: now(),
         share_id: id.to_owned(),
@@ -353,6 +380,7 @@ pub async fn create_remote_share(
         files::validate_pc_root(request.folder.as_deref().unwrap(), &files::yougori_roots(&app))?;
     } else {
         let env = target(&app, &request.target_id)?;
+        crate::security::ensure_open(&app.state::<PlatformStore>(), &request.target_id, "Sharing it remotely")?;
         if request.folder.is_some() && env.kind == EnvironmentKind::FullVm {
             return Err("File sharing needs a Yougori guest agent; this full VM currently supports lifecycle sharing only".into());
         }
@@ -725,7 +753,7 @@ async fn http(app: &AppHandle, headers: &str, body: &[u8]) -> Result<Value, Stri
             .await;
         return Ok(json!({"ok":true}));
     }
-    let result = tokio::select! {biased; _=cancel.cancelled()=>Err("Remote session was disconnected".into()), result=dispatch(app,&grant,&owner,cancel.clone(),method,args)=>result};
+    let result = tokio::select! {biased; _=cancel.cancelled()=>Err("Remote session was disconnected".into()), result=crate::security::acting_as("remote", dispatch(app,&grant,&owner,cancel.clone(),method,args))=>result};
     if !matches!(method, "inspect" | "console")
         && !(method == "terminal" && args["action"] == "read")
         && method != "desktop"
@@ -734,6 +762,14 @@ async fn http(app: &AppHandle, headers: &str, body: &[u8]) -> Result<Value, Stri
                 || (matches!(args["operation"].as_str(), Some("read" | "write"))
                     && args["offset"].as_u64().unwrap_or(0) > 0)))
     {
+        if method == "files" {
+            // Recipient file transfers: the operation and path inside the shared folder.
+            let mut event = crate::security::Event::new("share.remote.file").via("remote").text("share", &grant.id)
+                .text("operation", args["operation"].as_str().unwrap_or_default()).path("path", args["path"].as_str().unwrap_or_default())
+                .number("length", args["length"].as_u64().unwrap_or(0)).outcome(&result);
+            event = if grant.target_id == "my-pc" { event.text("target", "my-pc") } else { event.env(&grant.target_id) };
+            crate::security::record(event);
+        }
         manager
             .audit(
                 &grant.id,

@@ -14,6 +14,7 @@ mod appliance_capacity;
 pub(crate) mod gpu;
 mod branch;
 mod native_sandbox;
+mod native_model;
 mod guest_job;
 pub(crate) mod recovery;
 mod shutdown;
@@ -206,6 +207,7 @@ pub struct RuntimeManager {
     vms: Mutex<HashMap<String, VmProcess>>,
     vm_lifecycle: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     sandboxes: Mutex<HashMap<String, NativeSandboxProcess>>,
+    native_models: Mutex<HashMap<String, native_model::NativeModel>>,
     #[cfg(target_os = "windows")]
     branch_operations: Mutex<()>,
     network_samples: Mutex<HashMap<String, (u64, std::time::Instant)>>,
@@ -303,6 +305,7 @@ impl RuntimeManager {
             vms: Mutex::new(HashMap::new()),
             vm_lifecycle: Mutex::new(HashMap::new()),
             sandboxes: Mutex::new(HashMap::new()),
+            native_models: Mutex::new(HashMap::new()),
             #[cfg(target_os = "windows")]
             branch_operations: Mutex::new(()),
             network_samples: Mutex::new(HashMap::new()),

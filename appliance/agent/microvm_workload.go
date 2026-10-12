@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -14,7 +15,11 @@ import (
 const microWorkloadNamespace = "yougori-workload"
 const microWorkloadName = "app"
 
-func microWorkloadFile() string { return filepath.Join(dataRoot, "microvm-workload.json") }
+// Variables so tests can use a disposable workload record and process tree.
+var microWorkloadPath = filepath.Join(dataRoot, "microvm-workload.json")
+var procDirectory = "/proc"
+
+func microWorkloadFile() string { return microWorkloadPath }
 
 type microWorkload struct {
 	Image   string          `json:"image"`
@@ -125,3 +130,23 @@ func (s *server) microWorkload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ready": true, "image": q.Image, "isolation": "microvm"})
 }
 func microWorkloadExists() bool { _, e := os.Stat(microWorkloadFile()); return e == nil }
+
+// filesProcess is the /proc entry of the process whose root holds an
+// environment's files: its container, or the OCI workload that runs a
+// microVM's tool. A microVM without a workload keeps them in its own root ("").
+func (s *server) filesProcess(ctx context.Context, id string) (string, error) {
+	var pid int
+	var err error
+	switch {
+	case !s.microVM:
+		pid, err = containerPID(ctx, id)
+	case microWorkloadExists():
+		pid, err = namespacedPID(ctx, microWorkloadNamespace, microWorkloadName)
+	default:
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return procDirectory + "/" + strconv.Itoa(pid), nil
+}

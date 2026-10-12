@@ -1,4 +1,4 @@
-use super::{clean, ui};
+use super::{busy, clean, left, stage, ui};
 use std::{
     io::{self, IsTerminal},
     sync::atomic::{AtomicBool, Ordering},
@@ -16,13 +16,11 @@ pub(super) async fn offer(manual: bool) -> Result<(), String> {
         return Ok(());
     }
     let status = if manual {
-        let task = ui::task("Checking for updates");
-        let status = release_notice::check_cli(true).await?;
-        task.done("Release check complete");
-        status
+        stage("Checking for updates", |_| "Release check complete".into(), release_notice::check_cli(true)).await?
     } else {
-        match release_notice::check_cli(false).await {
+        match busy("Checking for updates", release_notice::check_cli(false)).await {
             Ok(status) => status,
+            Err(error) if error == ui::CANCELLED => return Err(error),
             Err(_) => return Ok(()), // Offline must not prevent the user's work.
         }
     };
@@ -70,7 +68,7 @@ pub(super) async fn offer(manual: bool) -> Result<(), String> {
             ));
             ui::info("Finish your work before running the installer. The CLI and engine update together.");
         }
-        Err(error) if error != ui::CANCELLED => return Err(error),
+        Err(error) if !left(&error) => return Err(error),
         _ => {}
     }
     // Opening the page or dismissing is not permission to install anything.

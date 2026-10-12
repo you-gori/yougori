@@ -35,6 +35,10 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const [view, setView] = useState<"chat" | "api" | "usage" | "network">("chat")
   const [sharing, setSharing] = useState<"off" | SharingMode>("off")
   const [quant, setQuant] = useState("")
+  const [backend, setBackend] = useState("auto")
+  const [memory, setMemory] = useState("")
+  const [compute, setCompute] = useState<{ os: string; backend: string; detail?: string } | null>(null)
+  useEffect(() => { if (open) void modelsApi.compute().then(setCompute).catch(() => setCompute(null)) }, [open])
   const [folder, setFolder] = useState("")
   const [closedWeights, setClosedWeights] = useState(false)
   const [target, setTarget] = useState<"local" | "neocloud">("local")
@@ -97,7 +101,7 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
     previousIds.current = new Set(state?.environments.map(e => e.id))
     lock.current = true; setBusy(true); setLaunching(true); setElapsed(0); setError(""); setOpen(false)
     try {
-      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined, folder || undefined)
+      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined, folder || undefined, backend, memory ? Number(memory) : undefined)
       setSelected(result.id); setView(result.sourceOnly ? "network" : "chat")
       if (sharing !== "off") {
         try { await marketApi.share(result.id, sharing, closedWeights); setView("network") }
@@ -142,9 +146,17 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
           <section className="model-card">
             <span className="model-label" id="hf-target-label">Where to run</span>
             <div className="model-targets" role="radiogroup" aria-labelledby="hf-target-label">
-              <button type="button" role="radio" aria-checked={target === "local"} disabled={busy} onClick={() => { setTarget("local"); setPreflight(null) }}><strong>This PC</strong><span>Your NVIDIA GPU</span></button>
+              <button type="button" role="radio" aria-checked={target === "local"} disabled={busy} onClick={() => { setTarget("local"); setPreflight(null) }}><strong>This computer</strong><span>{compute?.detail ?? "Local GPU or CPU"}</span></button>
               <button type="button" role="radio" aria-checked={target === "neocloud"} disabled={busy} onClick={() => { setTarget("neocloud"); setPreflight(null) }}><strong>Neo Cloud <code>--neocloud</code></strong><span>An existing RunPod GPU pod</span></button>
             </div>
+            {target === "local" ? <div>
+              <label className="model-label">Compute <select value={backend} disabled={busy} onChange={e => setBackend(e.target.value)}>
+                <option value="auto">Automatic</option><option value="cpu">CPU</option>
+                {compute?.os === "macos" ? <option value="metal">Apple Metal</option> : <option value="cuda">NVIDIA CUDA</option>}
+              </select></label>
+              <label className="model-label">Model memory (GB) <Input type="number" min="4" value={memory} disabled={busy} placeholder="Automatic" onChange={e => setMemory(e.target.value)} /></label>
+              {compute?.os === "macos" ? <p className="model-hint">Choose GGUF weights for native Mac inference. Apple Silicon uses Metal when available.</p> : null}
+            </div> : null}
             {target === "neocloud" ? <div className="model-neocloud">
               {pods.length ? <label className="model-pod"><span className="model-label">RunPod GPU pod</span>
                 <select value={pod} disabled={busy} onChange={e => setPod(e.target.value)}>{pods.map(env => <option key={env.id} value={env.id}>{env.name} · {env.status}</option>)}</select>

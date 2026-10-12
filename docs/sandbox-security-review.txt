@@ -268,6 +268,29 @@ side channels, physical attack, malicious host administrators or credential
 exfiltration over explicitly granted Internet access. Protected local logs are
 not claimed to be immutable remote audit or an eBPF anomaly detection service.
 
+Monitoring, audit log and kill switches (sections 4 and 6, 2026-10-11)
+
+The engine keeps an append-only, hash-chained audit log beside platform state,
+outside every guest and PC-folder share: each record carries the previous
+record's SHA-256, a head anchor exposes truncation, and rotation (16 x 1 MiB)
+records what it removed. It holds lifecycle, exec/terminal sessions (program
+name, length and salted hash only), file copies, credential imports, sharing and
+revocations, publications, Internet/GPU changes, blocked network attempts,
+alerts and kill-switch steps; never secrets, prompts, file contents or output.
+`yougori audit --verify` checks it. The same-user host can still rewrite it.
+
+The host packet filter now also counts what it already refused. MicroVMs and VMs
+get exact per-environment counters for attempts to reach PC ports, link-local
+or metadata addresses and the Internet while off, plus new outbound connections
+and bytes sent. Automatic kill switches act only on clear violations (a port or
+link-local scan within 60 s) and cut that environment's Internet; pause is an
+opt-in escalation. Connection rate, upload volume and CPU/memory saturation only
+alert. Shell use and /home writes are not signals. Nothing automatic stops,
+deletes, resets or restarts an environment; `yougori lockdown`/`unlock` is the
+manual panic switch. Containers are masqueraded and filtered inside their own
+network namespace, and the guest agent reports neither process-limit hits nor
+sent bytes, so those signals need a separately built and verified agent update.
+
 Verification and deployment evidence
 
 Meaningful regressions cover denied host control ports online/offline, spoofed

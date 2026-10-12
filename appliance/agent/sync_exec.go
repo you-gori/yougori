@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -38,17 +37,16 @@ func (s *server) runContainerExec(ctx context.Context, id, command string) (comm
 	}
 	receiptCtx, cancel := context.WithTimeout(ctx, s.guestReceiptTimeout())
 	defer cancel()
-	output.ExitCode, err = guestExitCode(receiptCtx, id, receipt)
+	output.ExitCode, err = guestExitCode(receiptCtx, execContainer{namespace, id}, receipt)
 	if err != nil {
 		return output, fmt.Errorf("guest execution outcome unknown: %w", err)
 	}
 	return output, nil
 }
 
-func guestExitCode(ctx context.Context, id, receipt string) (int, error) {
+func guestExitCode(ctx context.Context, container execContainer, receipt string) (int, error) {
 	script := `test -f "$1" || exit 1; status=$(head -c 4 "$1"); rm -f "$1"; printf '%s' "$status"`
-	command := exec.CommandContext(ctx, "nerdctl", "--namespace", namespace, "exec", id, "/bin/sh", "-c", script, "yougori", receipt)
-	value, err := command.Output()
+	value, err := container.command(ctx, "/bin/sh", "-c", script, "yougori", receipt).Output()
 	if err != nil {
 		return 1, fmt.Errorf("guest completion record unavailable")
 	}

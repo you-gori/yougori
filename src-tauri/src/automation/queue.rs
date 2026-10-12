@@ -45,6 +45,8 @@ pub(super) fn is_control_method(method: &str) -> bool {
             | "update_settings"
             | "get_settings_snapshot"
             | "get_startup_report"
+            | "security_lockdown"
+            | "security_unlock"
     )
 }
 
@@ -775,6 +777,12 @@ impl Control {
                 | "get_environment_log_window"
                 | "market_status"
                 | "swarm_dispatch"
+                // A kill switch must not wait behind an environment's long-running
+                // job lease; lockdown serializes per environment on its own.
+                | "security_monitor"
+                | "security_audit"
+                | "security_lockdown"
+                | "security_unlock"
         ) {
             return dispatch::dispatch(&app, method.name, &request.params).await;
         }
@@ -807,6 +815,7 @@ impl Control {
         let cancellation = self.shutdown.child_token();
         let waiting = Arc::new(StdMutex::new(None));
         let (progress, measurement) = tokio::sync::watch::channel(None);
+        let actor = crate::security::actor();
         let cancellable = matches!(
             method.name,
             "copy_files_to_environment"
@@ -912,12 +921,12 @@ impl Control {
                                     .into(),
                             );
                         }
-                        dispatch::dispatch_with_progress(
+                        crate::security::acting_as(actor, dispatch::dispatch_with_progress(
                             &task_app,
                             &request.method,
                             &request.params,
                             report,
-                        )
+                        ))
                         .await
                     }));
                     if cancellable {

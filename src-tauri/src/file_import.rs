@@ -564,7 +564,21 @@ pub(crate) async fn copy_files_into(
     progress: impl Fn(CopyProgress) + Send + Sync + 'static,
 ) -> Result<CopyResult, String> {
     let lease=transfers::begin(environment_id)?;
-    Box::pin(copy_files_into_reusing_lease(environment_id,paths,destination_folder,store,runtime,progress,lease)).await
+    let audited=(paths.clone(),destination_folder.clone());
+    let result=Box::pin(copy_files_into_reusing_lease(environment_id,paths,destination_folder,store,runtime,progress,lease)).await;
+    crate::security::record(transfer_event(environment_id,&audited.0,audited.1.as_deref(),&result));
+    result
+}
+
+/// Paths and byte counts only. The tool-credential importer stages into `.yougori-credentials-*`.
+fn transfer_event(environment_id:&str,paths:&[String],destination:Option<&str>,result:&Result<CopyResult,String>)->crate::security::Event{
+    let credential=destination.and_then(|folder|folder.trim_end_matches('/').rsplit('/').next()).is_some_and(|name|name.starts_with(".yougori-credentials-"));
+    let names:Vec<String>=paths.iter().map(|path|if credential{std::path::Path::new(path).file_name().map(|name|name.to_string_lossy().into_owned()).unwrap_or_default()}else{path.clone()}).collect();
+    let mut event=crate::security::Event::new(if credential{"credential.imported"}else{"transfer.in"}).env(environment_id)
+        .paths(if credential{"names"}else{"sources"},&names).number("count",paths.len() as u64).outcome(result);
+    if let Some(destination)=destination { event=event.path("destination",destination); }
+    if let Ok(copied)=result { event=event.number("bytes",copied.bytes).number("files",copied.files as u64).path("guestFolder",&copied.destination); }
+    event
 }
 
 /// Keep a between-copy target's cancellation lease registered across the export/import handoff.

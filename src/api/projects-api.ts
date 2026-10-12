@@ -60,7 +60,8 @@ export const modelsApi = {
   forgetHuggingfaceToken: () => run("delete_deployment_secret", { name: "huggingface-model-downloads" }, desktop),
   preflight: (model: string, quant?: string, folder?: string) => run<ModelPreflight>("model_preflight", { model, quant, folder }, desktop),
   api: (environmentId: string, port: number) => run<ModelRun>("model_api", { environmentId, port }, desktop),
-  run: (model: string, port: number | null, quant?: string, folder?: string) => run<ModelRun>("run_model", { model, port, quant, folder }, desktop),
+  compute: () => run<{ backend: string; os: string; architecture: string; available: boolean; detail?: string }>("model_compute_status", {}, desktop),
+  run: (model: string, port: number | null, quant?: string, folder?: string, backend?: string, memoryGb?: number) => run<ModelRun>("run_model", { model, port, quant, folder, backend, memoryGb }, desktop),
   runNeocloud: (model: string, environmentId: string, port: number | null) => run<ModelRun>("run_neocloud_model", { model, environmentId, port }, desktop),
   status: (environmentId: string) => run<ModelStatus>("model_status", { environmentId }, desktop),
   /** Conversations and chat settings shared with the CLI; null when none are saved. */

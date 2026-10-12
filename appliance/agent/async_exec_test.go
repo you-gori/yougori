@@ -270,6 +270,158 @@ func TestAsyncContainerPreservesGuestStatusDespiteLegacyNerdctlTransport(t *test
 	}
 }
 
+// useWorkloadExec saves the record of a microVM whose tool runs in an OCI
+// workload and installs a nerdctl adapter that logs the container each call
+// selects. A running workload runs the rest of the call locally with a marker
+// and, like the guest's older nerdctl, maps every nonzero status to transport
+// exit 1. A stopped workload refuses every call.
+func useWorkloadExec(t *testing.T, running bool) string {
+	t.Helper()
+	record := filepath.Join(t.TempDir(), "microvm-workload.json")
+	if err := os.WriteFile(record, []byte(`{"image":"ubuntu:24.04"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := microWorkloadPath
+	t.Cleanup(func() { microWorkloadPath = previous })
+	microWorkloadPath = record
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	adapter := "#!/bin/sh\nprintf '%s\\n' \"$1 $2 $3 $4\" >> '" + calls + "'\nshift 4\n"
+	if running {
+		adapter += "YOUGORI_TEST_RUNNER=workload \"$@\"\nstatus=$?\nif [ \"$status\" != 0 ]; then printf 'transport-fatal' >&2; exit 1; fi\n"
+	} else {
+		adapter += "printf 'container app is not running' >&2\nexit 1\n"
+	}
+	if err := os.WriteFile(filepath.Join(bin, "nerdctl"), []byte(adapter), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return calls
+}
+
+const workloadExec = "--namespace yougori-workload exec app\n"
+
+func finishedExecution(t *testing.T, item *asyncExecution) (int, string, string, string) {
+	t.Helper()
+	select {
+	case <-item.stopped:
+	case <-time.After(5 * time.Second):
+		item.stop()
+		t.Fatal("execution did not complete")
+	}
+	item.mu.Lock()
+	code, failure := item.exitCode, item.errorCode
+	item.mu.Unlock()
+	stdout, _, _, _ := item.stdout.read(0, asyncReadLimit)
+	stderr, _, _, _ := item.stderr.read(0, asyncReadLimit)
+	return code, failure, stdout, stderr
+}
+
+func TestAsyncMicroVMRunsCommandsInItsToolWorkload(t *testing.T) {
+	calls := useWorkloadExec(t, true)
+	execution := "exec-workload-status"
+	pidfile := "/tmp/.yougori-" + execution + ".pid"
+	defer os.Remove(pidfile)
+	defer os.Remove(pidfile + ".exit")
+	s := &server{microVM: true}
+	command := `printf '%s' "${YOUGORI_TEST_RUNNER-outer guest}"; printf actual-error >&2; exit 7`
+	item, err := s.startAsyncCommand(asyncExecRequest{ID: "microvm", ExecutionID: execution, Command: command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The guest status arrives through the workload's private receipt, not the
+	// provider's transport status.
+	if code, failure, stdout, stderr := finishedExecution(t, item); code != 7 || failure != "" || stdout != "workload" || stderr != "actual-error" {
+		t.Fatal(code, failure, stdout, stderr)
+	}
+	if logged, _ := os.ReadFile(calls); string(logged) != workloadExec+workloadExec {
+		t.Fatalf("the command or its receipt left the workload:\n%s", logged)
+	}
+	if _, err := os.Stat(pidfile + ".exit"); !os.IsNotExist(err) {
+		t.Fatal("completion record retained", err)
+	}
+	// A microVM without a workload still runs commands in its own guest.
+	if err := os.Remove(microWorkloadPath); err != nil {
+		t.Fatal(err)
+	}
+	item, err = s.startAsyncCommand(asyncExecRequest{ID: "microvm", ExecutionID: "exec-outer-guest", Command: command})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, failure, stdout, stderr := finishedExecution(t, item); code != 7 || failure != "" || stdout != "outer guest" || stderr != "actual-error" {
+		t.Fatal(code, failure, stdout, stderr)
+	}
+	if logged, _ := os.ReadFile(calls); string(logged) != workloadExec+workloadExec {
+		t.Fatalf("a microVM without a workload used one:\n%s", logged)
+	}
+}
+
+func TestAsyncMicroVMNeverFallsBackToItsOwnGuestWhenTheWorkloadIsStopped(t *testing.T) {
+	calls := useWorkloadExec(t, false)
+	marker := filepath.Join(t.TempDir(), "ran")
+	s := &server{microVM: true}
+	item, err := s.startAsyncCommand(asyncExecRequest{ID: "microvm", ExecutionID: "exec-workload-stopped", Command: "touch '" + marker + "'"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stdout, stderr := finishedExecution(t, item); code != 1 || stdout != "" || stderr != "container app is not running" {
+		t.Fatal(code, stdout, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("the command ran outside the stopped workload", err)
+	}
+	if logged, _ := os.ReadFile(calls); string(logged) != workloadExec {
+		t.Fatalf("unexpected nerdctl calls:\n%s", logged)
+	}
+}
+
+func TestAsyncMicroVMWorkloadCancellationStopsItsMarkedGroup(t *testing.T) {
+	calls := useWorkloadExec(t, true)
+	execution := "exec-workload-cancel"
+	pidfile := "/tmp/.yougori-" + execution + ".pid"
+	defer os.Remove(pidfile)
+	s := &server{microVM: true}
+	item, err := s.startAsyncCommand(asyncExecRequest{ID: "microvm", ExecutionID: execution, Command: `/bin/sh -c 'trap "" TERM; printf "child:%s\n" "$$"; while :; do sleep 1; done' & wait`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer item.stop()
+	s.asyncManager().entries[execution] = item
+	var child int
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		text, _, _, _ := item.stdout.read(0, asyncReadLimit)
+		if strings.HasPrefix(text, "child:") {
+			child, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(text, "child:")))
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if child <= 1 {
+		t.Fatal("marked child did not start")
+	}
+	defer syscall.Kill(child, syscall.SIGKILL)
+	reply := httptest.NewRecorder()
+	s.asyncExecCancel(reply, httptest.NewRequest("POST", "/v1/exec/cancel", strings.NewReader(`{"id":"microvm","executionId":"`+execution+`"}`)))
+	var value map[string]any
+	if err := json.Unmarshal(reply.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Code != 200 || value["ownershipReleased"] != true {
+		t.Fatal(reply.Code, value)
+	}
+	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(child) + "/stat"); err == nil {
+		fields := strings.Fields(string(stat[strings.LastIndex(string(stat), ") ")+2:]))
+		if len(fields) > 0 && fields[0] != "Z" {
+			t.Fatal("TERM-ignoring child survived workload cancellation", string(stat))
+		}
+	}
+	// The cleanup that verified the group's marker ran in the workload too.
+	if logged, _ := os.ReadFile(calls); string(logged) != workloadExec+workloadExec {
+		t.Fatalf("unexpected nerdctl calls:\n%s", logged)
+	}
+}
+
 func TestAsyncTimeoutDoesNotRewriteCompletedProcessWhileReadingReceipt(t *testing.T) {
 	root := t.TempDir()
 	// The command finishes immediately, but the provider takes time to fetch

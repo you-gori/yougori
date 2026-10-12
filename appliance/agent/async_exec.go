@@ -76,6 +76,7 @@ func (ring *execRing) length() uint64 { ring.mu.Lock(); defer ring.mu.Unlock(); 
 type asyncExecution struct {
 	environment     string
 	execution       string
+	container       execContainer
 	command         *exec.Cmd
 	stdout          execRing
 	stderr          execRing
@@ -207,11 +208,31 @@ func (s *server) asyncExecStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, map[string]any{"executionId": request.ExecutionID, "status": "running", "leaseSeconds": uint64(asyncLease.Seconds()), "outputLimitBytes": asyncOutputLimit})
 }
 
+// execContainer is the nerdctl container that runs an environment's commands.
+type execContainer struct{ namespace, name string }
+
+func (c execContainer) command(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "nerdctl", append([]string{"--namespace", c.namespace, "exec", c.name}, args...)...)
+}
+
+// commandContainer is the environment's own container or, in a microVM, the
+// OCI workload that runs its tool, where its terminals also run. A microVM
+// without a workload runs commands in its own guest and has none.
+func (s *server) commandContainer(id string) execContainer {
+	switch {
+	case !s.microVM:
+		return execContainer{namespace, id}
+	case microWorkloadExists():
+		return execContainer{microWorkloadNamespace, microWorkloadName}
+	}
+	return execContainer{}
+}
+
 func (s *server) startAsyncCommand(request asyncExecRequest) (*asyncExecution, error) {
 	ctx, stop := context.WithCancel(context.Background())
-	item := &asyncExecution{environment: request.ID, execution: request.ExecutionID, lastLease: time.Now(), stop: stop, stopped: make(chan struct{}), cleanupVerified: true}
+	item := &asyncExecution{environment: request.ID, execution: request.ExecutionID, container: s.commandContainer(request.ID), lastLease: time.Now(), stop: stop, stopped: make(chan struct{}), cleanupVerified: true}
 	var command *exec.Cmd
-	if s.microVM {
+	if item.container.name == "" {
 		command = exec.CommandContext(ctx, "/bin/sh", "-lc", request.Command)
 	} else {
 		// The guest PID file is private and the process group carries an initial
@@ -221,7 +242,7 @@ func (s *server) startAsyncCommand(request asyncExecRequest) (*asyncExecution, e
 		// cannot already be its inherited process-group ID, so even older BusyBox
 		// setsid succeeds without forking away from our waiter (-w is not portable).
 		wrapper := `command -v setsid >/dev/null || { printf '%s\n' 'async execution requires setsid in this image' >&2; exit 126; }; env YOUGORI_EXEC_ID="$3" setsid /bin/sh -c 'umask 077; printf "%s" "$$" > "$1"; /bin/sh -lc "$2"; status=$?; printf "%s" "$status" > "$1.exit"; rm -f "$1"; exit 0' yougori "$1" "$2" & child=$!; wait "$child"`
-		command = exec.CommandContext(ctx, "nerdctl", "--namespace", namespace, "exec", request.ID, "/bin/sh", "-c", wrapper, "yougori", pidfile, request.Command, request.ExecutionID)
+		command = item.container.command(ctx, "/bin/sh", "-c", wrapper, "yougori", pidfile, request.Command, request.ExecutionID)
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Stdout = &item.stdout
@@ -242,7 +263,7 @@ func (s *server) startAsyncCommand(request asyncExecRequest) (*asyncExecution, e
 		item.mu.Unlock()
 		exitCode := command.ProcessState.ExitCode()
 		outcomeUnknown := false
-		if !s.microVM && !cancelled && exitCode == 0 {
+		if item.container.name != "" && !cancelled && exitCode == 0 {
 			// Older nerdctl releases return 1 for every nonzero guest exit and
 			// append a fatal log to stderr. Our guest wrapper instead reports
 			// status through a private bounded file and exits its transport 0.
@@ -286,13 +307,13 @@ func (s *server) startAsyncCommand(request asyncExecRequest) (*asyncExecution, e
 func (s *server) asyncGuestExitCode(item *asyncExecution) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.guestReceiptTimeout())
 	defer cancel()
-	return guestExitCode(ctx, item.environment, "/tmp/.yougori-"+item.execution+".pid.exit")
+	return guestExitCode(ctx, item.container, "/tmp/.yougori-"+item.execution+".pid.exit")
 }
 func (s *server) stopAsyncProcesses(item *asyncExecution) {
 	if item.command == nil || item.command.Process == nil {
 		return
 	}
-	if !s.microVM {
+	if item.container.name != "" {
 		// Only the group created for this exact execution ID may be killed. Never
 		// stop the whole container or use a caller-provided PID/host path.
 		script := `pidfile=$1; execution=$2
@@ -325,7 +346,7 @@ fi
 for n in 0 1 2 3 4; do group_members; test "$found" = 0 && { rm -f "$pidfile"; exit 0; }; sleep 0.1; done
 exit 3`
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		cleanup := exec.CommandContext(ctx, "nerdctl", "--namespace", namespace, "exec", item.environment, "/bin/sh", "-c", script, "yougori", "/tmp/.yougori-"+item.execution+".pid", item.execution)
+		cleanup := item.container.command(ctx, "/bin/sh", "-c", script, "yougori", "/tmp/.yougori-"+item.execution+".pid", item.execution)
 		err := cleanup.Run()
 		item.mu.Lock()
 		item.cleanupVerified = err == nil

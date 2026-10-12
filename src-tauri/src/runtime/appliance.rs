@@ -38,6 +38,7 @@ pub struct ContainerTelemetry {
     pub running: bool,
     pub paused: bool,
     pub stats: ContainerStats,
+    pub pids_limit_hits: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +154,9 @@ struct StatsBatchEntry {
     cpu_percent: f64,
     memory_bytes: u64,
     network_rx_bytes: u64,
+    /// Running total of process-limit hits (cgroup `pids.events max`), once the agent reports it.
+    #[serde(default)]
+    pids_limit_hits: Option<u64>,
 }
 
 const APPLIANCE_OVERLAY_MARKER_VERSION: u32 = 1;
@@ -270,6 +274,7 @@ impl RuntimeManager {
             )
             .await?;
         if action == "stop" {
+            self.stop_native_model(id).await?;
             if let Some(process) = self.appliance.lock().await.as_mut() {
                 process.active_containers.remove(id);
             }
@@ -407,6 +412,7 @@ impl RuntimeManager {
             process.active_containers.remove(id);
         }
         self.network_samples.lock().await.remove(id);
+        self.stop_native_model(id).await?;
         self.workload_shares.lock().await.remove(id);
         let _=std::fs::remove_file(self.data_root.join("workload-options").join(format!("{id}.json")));
         Ok(())
@@ -761,6 +767,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                     0.0
                 };
                 ContainerTelemetry {
+                    pids_limit_hits: entry.pids_limit_hits,
                     id: entry.id,
                     running: entry.running,
                     paused: entry.paused,
@@ -894,7 +901,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         for gpu_enabled in if cfg!(target_os = "windows") { vec![true, false] } else { vec![false] } {
             if !gpu_enabled && gpu_launch.explicit() { break; }
             for accelerator in accelerators {
-                let internet = super::microvm_network::MicroVmNetwork::new(true, qmp_port).await?;
+                let internet = super::microvm_network::MicroVmNetwork::new(true, qmp_port, &format!("appliance:{}", self.data_root.display())).await?;
                 let (mut child, boot_token) = self.spawn_appliance(&endpoint, accelerator, gpu_enabled, &gpu_launch, capacity, max_memory_mib, qmp_port, internet.arguments())?;
                 let boot_timeout = super::host_platform::guest_boot_timeout();
                 let boot_started = Instant::now();

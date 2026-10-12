@@ -282,13 +282,12 @@ func (s *server) importFiles(w http.ResponseWriter, r *http.Request) {
 	defer finish()
 	guestRoot := "/"
 	uid, gid := 0, 0
-	if !s.microVM {
-		pid, err := containerPID(ctx, id)
-		if err != nil {
-			writeError(w, 409, "Start this container before copying files")
-			return
-		}
-		process := "/proc/" + strconv.Itoa(pid)
+	process, err := s.filesProcess(ctx, id)
+	if err != nil {
+		writeError(w, 409, "Start this environment before copying files")
+		return
+	}
+	if process != "" {
 		var stat unix.Stat_t
 		if err := unix.Stat(process, &stat); err != nil {
 			writeError(w, 500, err.Error())

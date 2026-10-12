@@ -23,6 +23,9 @@ const RULES: &str = include_str!("AGENTS.md");
 const SOURCE_LIMIT: usize = 64 * 1024 * 1024;
 const FILE_LIMIT: usize = 8 * 1024 * 1024;
 const RECENT_ATTEMPTS: usize = 50;
+pub(super) const TURN_TIMEOUT_SECONDS: u64 = 900;
+const MODEL_TIMEOUT_SECONDS: u64 = 330;
+const CHECK_TIMEOUT_SECONDS: u64 = 300;
 /// Every bounty starts with a fresh unprivileged test identity: no process, home file or file
 /// planted in shared temporary folders by an earlier publisher's commands affects its checks.
 const RESET_TEST_IDENTITY: &str = r#"import os,pwd,shutil,signal,stat,time
@@ -64,6 +67,12 @@ fn quote(value: &str) -> String {
 }
 fn rid(env: &Environment) -> &str {
     env.runtime_id.as_deref().unwrap_or(&env.id)
+}
+/// The sandbox name people see: the worker's short name, as the CLI shows it, or its full ID
+/// when `full_id` is set because another environment already has the short one.
+fn owned_name(worker: &Worker, test: bool, full_id: bool) -> String {
+    let worker_name = if full_id { worker.id.clone() } else { yougori_cli::bounty::worker_handle(&worker.id) };
+    format!("Swarm {} {worker_name}", if test { "test" } else { "agent" })
 }
 fn owned_description(worker: &Worker, test: bool) -> String {
     format!(
@@ -170,10 +179,20 @@ async fn stage_from(
     let parent = path.rsplit_once('/').ok_or("Invalid staging path")?.0;
     let mut start = 0;
     if append {
-        let existing = short(app, environment, &format!("if [ -f {0} ] && [ ! -L {0} ]; then wc -c < {0}; sha256sum < {0}; fi", quote(path))).await?;
+        let existing = short(
+            app,
+            environment,
+            &format!(
+                "if [ -f {0} ] && [ ! -L {0} ]; then wc -c < {0}; sha256sum < {0}; fi",
+                quote(path)
+            ),
+        )
+        .await?;
         let mut lines = existing.lines();
         if let (Some(size), Some(hash)) = (
-            lines.next().and_then(|size| size.trim().parse::<usize>().ok()),
+            lines
+                .next()
+                .and_then(|size| size.trim().parse::<usize>().ok()),
             lines.next().and_then(|line| line.split_whitespace().next()),
         ) {
             if size <= bytes.len() && format!("{:x}", Sha256::digest(&bytes[..size])) == hash {
@@ -201,7 +220,11 @@ for part in p.split('/')[1:]:
             quote(&format!("{ROOT}/.yougori/staging")),
             quote(&temp),
             if start > 0 {
-                format!("test ! -L {0}; cp -- {0} {1}; chmod 600 {1}", quote(path), quote(&temp))
+                format!(
+                    "test ! -L {0}; cp -- {0} {1}; chmod 600 {1}",
+                    quote(path),
+                    quote(&temp)
+                )
             } else {
                 format!(": > {}", quote(&temp))
             }
@@ -241,7 +264,52 @@ fn create_request(
             workload["secretEnvironment"]["OPENCODE_SERVER_PASSWORD"] = reference.clone().into();
         }
     }
-    serde_json::from_value(json!({"name":format!("Swarm {} {}",if test{"test"}else{"agent"},worker.id),"kind":"container","provider":"yougoriOci","runtime":"ubuntu:24.04","containerCommand":"sleep 2147483647","networkAccess":true,"gpuAccess":false,"storageDrive":worker.resources["storageDrive"],"storageGb":if test{(worker.quota_gb-2.).max(2.)}else{2.},"description":owned_description(worker,test),"resourcePolicy":{"cpu":cpu,"memoryGb":memory,"priority":"normal","dynamic":false},"workload":workload})).map_err(|e|e.to_string())
+    serde_json::from_value(json!({"name":owned_name(worker,test,false),"kind":"container","provider":"yougoriOci","runtime":"ubuntu:24.04","containerCommand":"sleep 2147483647","networkAccess":true,"gpuAccess":false,"storageDrive":worker.resources["storageDrive"],"storageGb":if test{(worker.quota_gb-2.).max(2.)}else{2.},"description":owned_description(worker,test),"resourcePolicy":{"cpu":cpu,"memoryGb":memory,"priority":"normal","dynamic":false},"workload":workload})).map_err(|e|e.to_string())
+}
+
+/// Whether the agent's `swarm-model` name reaches this model. A model created again after
+/// the agent sandbox, or factory reset, has another private address.
+fn model_address_current(options: &yougori_cli::workload::Options, model_runtime_id: &str) -> bool {
+    options.hosts.get("swarm-model") == Some(&crate::runtime::fabric::ip_text(model_runtime_id))
+}
+
+/// A reused agent sandbox keeps the address of a model removed outside Swarm. Point it at
+/// the current model while stopped; preparation starts it again.
+async fn follow_model(
+    app: &AppHandle,
+    environment: Environment,
+    model_runtime_id: &str,
+) -> Result<Environment, String> {
+    let runtime = app.state::<RuntimeManager>();
+    let previous = runtime.workload_options(rid(&environment))?;
+    if model_address_current(&previous, model_runtime_id) {
+        return Ok(environment);
+    }
+    if matches!(
+        environment.status,
+        EnvironmentStatus::Running | EnvironmentStatus::Paused
+    ) {
+        crate::commands::set_environment_status(
+            environment.id.clone(),
+            EnvironmentStatus::Stopped,
+            app.state(),
+            app.state(),
+        )
+        .await?;
+    }
+    let mut options = previous.clone();
+    options.hosts.insert(
+        "swarm-model".into(),
+        crate::runtime::fabric::ip_text(model_runtime_id),
+    );
+    runtime.save_workload_options(rid(&environment), &options)?;
+    let environment = env(app, &environment.id)?;
+    if let Err(error) = runtime.update_workload_configuration(&environment).await {
+        // Saved options must match the container, so a retry applies the address again.
+        let _ = runtime.save_workload_options(rid(&environment), &previous);
+        return Err(error);
+    }
+    Ok(environment)
 }
 
 async fn create_owned(
@@ -256,14 +324,15 @@ async fn create_owned(
         worker.environment_id.clone()
     };
     let description = owned_description(worker, test);
-    let found = if let Some(id) = existing {
-        Some(env(app, &id)?)
-    } else {
-        app.state::<PlatformStore>()
+    // A recorded sandbox removed outside Swarm is created again.
+    let found = match existing.and_then(|id| env(app, &id).ok()) {
+        Some(environment) => Some(environment),
+        None => app
+            .state::<PlatformStore>()
             .snapshot()?
             .environments
             .into_iter()
-            .find(|e| e.description == description)
+            .find(|e| e.description == description),
     };
     let environment = if let Some(e) = found {
         if e.description != description {
@@ -271,8 +340,15 @@ async fn create_owned(
         }
         e
     } else {
+        let mut request = create_request(worker, test, model_runtime_id)?;
+        // Short names can coincide; environment names must not.
+        let taken = app.state::<PlatformStore>().snapshot()?.environments.iter()
+            .any(|e| e.name.eq_ignore_ascii_case(&request.name));
+        if taken {
+            request.name = owned_name(worker, test, true);
+        }
         let state = crate::commands::create_environment(
-            create_request(worker, test, model_runtime_id)?,
+            request,
             app.clone(),
             app.state(),
             app.state(),
@@ -310,6 +386,10 @@ async fn create_owned(
         stop_owned(app, worker, deleted).await?;
         return Err(error);
     }
+    let environment = match model_runtime_id {
+        Some(model) if !test => follow_model(app, environment, model).await?,
+        _ => environment,
+    };
     if environment.status != EnvironmentStatus::Running {
         crate::commands::set_environment_status(
             environment.id.clone(),
@@ -323,7 +403,30 @@ async fn create_owned(
 }
 
 fn managed_config(worker: &Worker, model_api_key: &str, context: u64) -> Value {
-    json!({"$schema":"https://opencode.ai/config.json","model":format!("yougori/{}",worker.model),"small_model":format!("yougori/{}",worker.model),"enabled_providers":["yougori"],"share":"disabled","autoupdate":false,"snapshot":false,"lsp":false,"formatter":false,"mcp":{},"plugin":[],"instructions":[format!("{ROOT}/AGENTS.md")],"default_agent":"swarm","agent":{"swarm":{"description":"Review an authorized local bounty with bounded managed tools","mode":"primary","prompt":RULES,"steps":12}},"permission":{"*":"deny","read":{"*":"deny",format!("{ROOT}/project/**"):"allow",format!("{ROOT}/.yougori/bounty/**"):"allow"},"glob":"allow","grep":"allow","bounty_attempt":"allow","bounty_report":"allow","bounty_reply":"allow","bounty_check":"allow"},"provider":{"yougori":{"npm":"@ai-sdk/openai-compatible","name":"Yougori private local model","options":{"baseURL":"http://swarm-model:8000/v1","apiKey":model_api_key,"timeout":120000},"models":{&worker.model:{"name":worker.model,"tool_call":true,"limit":{"context":context,"output":1024.min(context/4)},"modalities":{"input":["text"],"output":["text"]}}}}}})
+    // Pinned OpenCode checks read paths relative to its worktree. Our verified
+    // snapshot has no .git, so that worktree is "/", not ROOT. Absolute rules
+    // silently deny every source/context read. Include the directory itself.
+    let relative = ROOT.trim_start_matches('/');
+    json!({
+        "$schema":"https://opencode.ai/config.json",
+        "model":format!("yougori/{}",worker.model),
+        "small_model":format!("yougori/{}",worker.model),
+        "enabled_providers":["yougori"],"share":"disabled","autoupdate":false,
+        "snapshot":false,"lsp":false,"formatter":false,"mcp":{},"plugin":[],
+        "instructions":[format!("{ROOT}/AGENTS.md")],"default_agent":"swarm",
+        "agent":{"swarm":{"description":"Review an authorized local bounty with bounded managed tools",
+            "mode":"primary","prompt":RULES,"steps":12}},
+        "permission":{"*":"deny","read":{"*":"deny",
+            format!("{relative}/project"):"allow",format!("{relative}/project/**"):"allow",
+            format!("{relative}/.yougori/bounty"):"allow",format!("{relative}/.yougori/bounty/**"):"allow"},
+            "glob":"allow","grep":"allow","bounty_attempt":"allow","bounty_report":"allow",
+            "bounty_reply":"allow","bounty_check":"allow"},
+        "provider":{"yougori":{"npm":"@ai-sdk/openai-compatible","name":"Yougori private local model",
+            "options":{"baseURL":"http://swarm-model:8000/v1","apiKey":model_api_key,"timeout":MODEL_TIMEOUT_SECONDS*1000},
+            "models":{&worker.model:{"name":worker.model,"tool_call":true,
+                "limit":{"context":context,"output":2048.min(context/4)},
+                "modalities":{"input":["text"],"output":["text"]}}}}}
+    })
 }
 
 pub(crate) fn tool_check(value: &Value) -> bool {
@@ -375,32 +478,43 @@ pub(crate) async fn prepare_agent(
         write(app, worker.clone()).await?;
     }
     let environment = create_owned(app, worker, false, Some(rid(&model_env))).await?;
-    // Python is required for checked ancestor staging; install it in this new,
-    // empty owned image before importing any source or agent instructions.
-    let init=job(app,&environment.id,"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3".into(),600,cancel).await?;
-    if init["exitCode"] != 0 {
-        return Err("Worker staging prerequisites could not be installed".into());
+    // Only preparation, before any bounty, reaches this sandbox. A retry keeps the pinned
+    // OpenCode it already installed; a new or incomplete sandbox downloads packages again.
+    let installed = short(app, &environment, &format!("test -x /usr/bin/python3 && test \"$(/home/yougori-agent/.opencode/bin/opencode --version 2>/dev/null)\" = {OPENCODE_VERSION} && grep -q '\"version\": \"{OPENCODE_VERSION}\"' {ROOT}/config/node_modules/@opencode-ai/plugin/package.json && echo installed || true")).await?.trim() == "installed";
+    if !installed {
+        if !environment.network_access {
+            // An earlier attempt closed installation access after its tool checks.
+            crate::commands::update_container_network(environment.id.clone(), true, app.state(), app.state()).await?;
+        }
+        // Python is required for checked ancestor staging; install it in this new,
+        // empty owned image before importing any source or agent instructions.
+        let init=job(app,&environment.id,"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3".into(),600,cancel).await?;
+        if init["exitCode"] != 0 {
+            return Err("Worker staging prerequisites could not be installed".into());
+        }
     }
     let bootstrap="set -eu; getent group yougori-agent >/dev/null || groupadd yougori-agent; id yougori-agent >/dev/null 2>&1 || useradd -m -g yougori-agent -s /bin/sh yougori-agent; usermod -a -G yougori-agent yougori-agent; mkdir -p /srv/yougori-swarm/.yougori/bounty /srv/yougori-swarm/project /srv/yougori-swarm/spool /srv/yougori-swarm/config/tools /etc/opencode; chmod 755 /srv/yougori-swarm /srv/yougori-swarm/.yougori /srv/yougori-swarm/.yougori/bounty /srv/yougori-swarm/config /srv/yougori-swarm/config/tools; chown yougori-agent:yougori-agent /srv/yougori-swarm/spool; chmod 700 /srv/yougori-swarm/spool";
     short(app, &environment, bootstrap).await?;
-    // Reuse the existing supported installer, selecting an explicit upstream
-    // version. It runs as the agent account before any company code is staged.
-    let script = format!(
-        "od_tool=opencode\nexport VERSION={OPENCODE_VERSION}\n{}",
-        INSTALLER.replace("\r\n", "\n")
-    );
-    stage(
-        app,
-        &environment,
-        &format!("{ROOT}/install.sh"),
-        script.as_bytes(),
-        "644",
-    )
-    .await?;
-    let command=format!("set -eu; DEBIAN_FRONTEND=noninteractive apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 nodejs npm curl ca-certificates bash git tar gzip; install -d -o yougori-agent -g yougori-agent /tmp/yougori-install.swarm; cp {ROOT}/install.sh /tmp/yougori-install.swarm/install.sh; chown yougori-agent:yougori-agent /tmp/yougori-install.swarm/install.sh; su -s /bin/sh yougori-agent -c 'sh /tmp/yougori-install.swarm/install.sh'; test \"$(/home/yougori-agent/.opencode/bin/opencode --version)\" = {OPENCODE_VERSION}; npm install --save-exact --ignore-scripts --no-audit --no-fund --prefix {ROOT}/config @opencode-ai/plugin@{OPENCODE_VERSION}");
-    let installed = job(app, &environment.id, command, 1200, cancel).await?;
-    if installed["exitCode"] != 0 {
-        return Err("OpenCode installation did not complete. Verified model files and this worker's setup are preserved.".into());
+    if !installed {
+        // Reuse the existing supported installer, selecting an explicit upstream
+        // version. It runs as the agent account before any company code is staged.
+        let script = format!(
+            "od_tool=opencode\nexport VERSION={OPENCODE_VERSION}\n{}",
+            INSTALLER.replace("\r\n", "\n")
+        );
+        stage(
+            app,
+            &environment,
+            &format!("{ROOT}/install.sh"),
+            script.as_bytes(),
+            "644",
+        )
+        .await?;
+        let command=format!("set -eu; DEBIAN_FRONTEND=noninteractive apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 nodejs npm curl ca-certificates bash git tar gzip; install -d -o yougori-agent -g yougori-agent /tmp/yougori-install.swarm; cp {ROOT}/install.sh /tmp/yougori-install.swarm/install.sh; chown yougori-agent:yougori-agent /tmp/yougori-install.swarm/install.sh; su -s /bin/sh yougori-agent -c 'sh /tmp/yougori-install.swarm/install.sh'; test \"$(/home/yougori-agent/.opencode/bin/opencode --version)\" = {OPENCODE_VERSION}; npm install --save-exact --ignore-scripts --no-audit --no-fund --prefix {ROOT}/config @opencode-ai/plugin@{OPENCODE_VERSION}");
+        let result = job(app, &environment.id, command, 1200, cancel).await?;
+        if result["exitCode"] != 0 {
+            return Err("OpenCode installation did not complete. Verified model files and this worker's setup are preserved.".into());
+        }
     }
     stage(
         app,
@@ -909,6 +1023,8 @@ async fn opencode_http(
 fn opencode_timeout(path: &str, has_body: bool) -> u64 {
     if path.ends_with("/abort") {
         5
+    } else if path.ends_with("/message") && has_body {
+        TURN_TIMEOUT_SECONDS + 30
     } else if path == "/config/providers" || path.starts_with("/experimental/tool?") {
         90
     } else if has_body {
@@ -1136,7 +1252,15 @@ pub(crate) async fn stage_memory(
         stage(app,&agent,&format!("{ROOT}/.yougori/bounty/{name}"),&bytes,"444").await?;
     }
     let journal = all.iter().map(|v| format!("{v}\n")).collect::<String>();
-    stage_from(app,&agent,&format!("{ROOT}/.yougori/bounty/ATTEMPTS.jsonl"),journal.as_bytes(),"444",true).await?;
+    stage_from(
+        app,
+        &agent,
+        &format!("{ROOT}/.yougori/bounty/ATTEMPTS.jsonl"),
+        journal.as_bytes(),
+        "444",
+        true,
+    )
+    .await?;
     Ok(())
 }
 
@@ -1276,8 +1400,14 @@ pub(crate) async fn run_check(
     );
     current(app, worker, cancel).await?;
     let stop = cancel.child_token();
-    let work = job(app, id, wrapper, 45, &stop);
-    let mut result = supervise_check(work, &stop, cancel, Duration::from_secs(2), || async {
+    let work = job(app, id, wrapper, CHECK_TIMEOUT_SECONDS, &stop);
+    let mut last_renew = tokio::time::Instant::now();
+    let mut result = supervise_check(work, &stop, cancel, Duration::from_secs(2), || {
+        let renew = last_renew.elapsed() >= Duration::from_secs(30);
+        if renew {
+            last_renew = tokio::time::Instant::now();
+        }
+        async move {
         current(app, worker, cancel).await?;
         let state = super::agent(
             app,
@@ -1287,7 +1417,18 @@ pub(crate) async fn run_check(
             None,
         )
         .await?;
-        Ok(super::execution_authorized(&state, worker))
+        if !super::execution_authorized(&state, worker) {
+            return Ok(false);
+        }
+        // The outer turn cannot renew while it is servicing this tool. A
+        // legitimate long check must retain its 120-second task reservation.
+        if renew {
+            super::agent(app, worker, reqwest::Method::POST, "/api/swarm/agent/tasks/renew",
+                Some(json!({"leaseId":worker.lease["leaseId"],"generation":worker.lease["generation"],
+                    "idempotencyKey":format!("check-renew-{}-{}",worker.lease["leaseId"].as_str().unwrap_or_default(),super::now()/30)}))).await?;
+        }
+        Ok(true)
+        }
     })
     .await?;
     for field in ["stdout", "stderr"] {
@@ -1482,7 +1623,10 @@ mod tests {
         );
         assert_eq!(opencode_timeout("/global/health", false), 10);
         assert_eq!(opencode_timeout("/session/session-test/abort", true), 5);
-        assert_eq!(opencode_timeout("/session/session-test/message", true), 180);
+        assert_eq!(
+            opencode_timeout("/session/session-test/message", true),
+            TURN_TIMEOUT_SECONDS + 30
+        );
     }
     #[tokio::test]
     async fn complete_http_receipts_do_not_wait_for_a_kept_open_proxy_stream() {
@@ -1641,6 +1785,10 @@ mod tests {
         worker.opencode_password_reference = Some("private-owner-reference".into());
         let test = create_request(&worker, true, None).unwrap();
         let agent = create_request(&worker, false, Some("model-runtime")).unwrap();
+        // People see the worker's short name, never its long ID.
+        let short = yougori_cli::bounty::worker_handle("worker-test");
+        assert_eq!((test.name.as_str(), agent.name.as_str()), (format!("Swarm test {short}").as_str(), format!("Swarm agent {short}").as_str()));
+        assert_eq!(owned_name(&worker, false, true), "Swarm agent worker-test");
         assert_eq!(
             test.resource_policy.cpu.max + agent.resource_policy.cpu.max,
             2.
@@ -1664,6 +1812,19 @@ mod tests {
         assert!(!agent_options.secret_environment.contains_key("SWARM_TOKEN"));
     }
     #[test]
+    fn agent_model_address_is_checked_against_the_current_model() {
+        let agent = create_request(&worker(), false, Some("env-model-first"))
+            .unwrap()
+            .workload
+            .unwrap();
+        assert!(model_address_current(&agent, "env-model-first"));
+        assert!(!model_address_current(&agent, "env-model-second"));
+        assert!(!model_address_current(
+            &Default::default(),
+            "env-model-first"
+        ));
+    }
+    #[test]
     fn managed_config_has_one_local_provider_and_denies_unmanaged_actions() {
         let config = managed_config(&worker(), "synthetic-private-key", 32768);
         assert_eq!(
@@ -1673,6 +1834,25 @@ mod tests {
         assert_eq!(config["enabled_providers"], json!(["yougori"]));
         assert_eq!(config["share"], "disabled");
         assert_eq!(config["permission"]["*"], "deny");
+        assert_eq!(
+            config["permission"]["read"],
+            json!({
+                "*":"deny", "srv/yougori-swarm/project":"allow", "srv/yougori-swarm/project/**":"allow",
+                "srv/yougori-swarm/.yougori/bounty":"allow", "srv/yougori-swarm/.yougori/bounty/**":"allow"
+            })
+        );
+        for tool in [
+            "bounty_attempt",
+            "bounty_report",
+            "bounty_reply",
+            "bounty_check",
+        ] {
+            assert_eq!(config["permission"][tool], "allow");
+        }
+        assert!(TOOLS.contains("Date.now() + 360000"));
+        assert!(CHECK_TIMEOUT_SECONDS + 45 < 360);
+        assert!(MODEL_TIMEOUT_SECONDS > 300); // Relay stream allowance.
+        assert!(TURN_TIMEOUT_SECONDS > MODEL_TIMEOUT_SECONDS + CHECK_TIMEOUT_SECONDS);
         assert_eq!(
             config["provider"]["yougori"]["options"]["baseURL"],
             "http://swarm-model:8000/v1"

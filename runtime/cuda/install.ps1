@@ -174,7 +174,8 @@ try {
         [IO.File]::WriteAllText((Join-Path $staging "usr/local/sbin/yougori-cuda-$script"), $contents, [Text.UTF8Encoding]::new($false))
     }
     $bundle = Join-Path $staging 'payload.tar'
-    & tar.exe -cf $bundle -C $staging etc usr
+    # Windows' own bsdtar (Git's GNU tar earlier on PATH would read C: as a remote host).
+    & (Join-Path $env:SystemRoot 'System32\tar.exe') -cf $bundle -C $staging etc usr
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare CUDA runtime payload.' }
     # Binary stdin avoids mounting the Windows drive or interpreting its paths in a shell.
     # Refuse redirected ancestors and aliased existing leaves before tar can

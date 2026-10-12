@@ -22,6 +22,8 @@ const MAX_ADDRESS_LOOKUPS_PER_SECOND: u32 = 256;
 pub(super) struct MicroVmNetwork {
     enabled: Arc<RwLock<bool>>,
     host: Arc<std::sync::Mutex<HostPolicy>>,
+    /// Allowed traffic and refused attempts, read by the security monitor.
+    stats: Arc<crate::security::network::FilterStats>,
     failed: Arc<AtomicBool>,
     connected: Arc<AtomicU8>,
     _address_monitor: host_address_inventory::Monitor,
@@ -36,7 +38,9 @@ impl Drop for MicroVmNetwork {
     }
 }
 impl MicroVmNetwork {
-    pub async fn new(enabled: bool, qmp_port: u16) -> Result<Self, String> {
+    /// `monitor_key` names this filter for monitoring: the VM's runtime ID, or
+    /// `appliance:<storage root>` for a container appliance.
+    pub async fn new(enabled: bool, qmp_port: u16, monitor_key: &str) -> Result<Self, String> {
         // Register before taking the initial snapshot; a simultaneous address
         // change invalidates the snapshot instead of leaving an unobserved IP.
         let address_monitor = host_address_inventory::Monitor::start()?;
@@ -49,6 +53,7 @@ impl MicroVmNetwork {
         let mut result = Self {
             enabled: Arc::new(RwLock::new(enabled)),
             host: Arc::new(std::sync::Mutex::new(host_policy)),
+            stats: crate::security::network::register(monitor_key),
             failed: Arc::new(AtomicBool::new(false)),
             connected: Arc::new(AtomicU8::new(0)),
             _address_monitor: address_monitor,
@@ -71,6 +76,7 @@ impl MicroVmNetwork {
             ]);
             let policy = result.enabled.clone();
             let host = result.host.clone();
+            let stats = result.stats.clone();
             let failed = result.failed.clone();
             let connected = result.connected.clone();
             // QEMU rx is guest -> backend; tx is backend -> guest.
@@ -100,13 +106,20 @@ impl MicroVmNetwork {
                         let enabled = policy.read().await;
                         let allowed = {
                             let mut host = host.lock().map_err(|_| "VM host policy unavailable")?;
-                            host.preflight_with(
+                            let allowed = host.preflight_with(
                                 &packet,
                                 direction == "rx",
                                 *enabled,
                                 Instant::now(),
                                 host_address_inventory::ipv4_addresses,
-                            ) && host.allows(&packet, direction == "rx", *enabled)
+                            ) && host.allows(&packet, direction == "rx", *enabled);
+                            // Observation only: the decision above is unchanged.
+                            if allowed {
+                                stats.allowed(&packet, direction == "rx", &host.host_addresses);
+                            } else if direction == "rx" {
+                                stats.denied(&packet, &host.host_addresses, *enabled);
+                            }
+                            allowed
                         };
                         if allowed {
                             tokio::time::timeout(Duration::from_secs(5), async {
@@ -852,8 +865,34 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn refused_and_forwarded_frames_feed_the_security_monitor() {
+        let network = MicroVmNetwork::new(true, 0, "test-filter-monitor").await.unwrap();
+        let mut sockets = Vec::new();
+        for argument in network.arguments().iter().filter(|value| value.starts_with("socket,")) {
+            let port: u16 = argument.rsplit("port=").next().unwrap().parse().unwrap();
+            sockets.push(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        }
+        let guest = [10, 0, 2, 15];
+        let mut dhcp = ipv4([0; 4], [255; 4]);
+        dhcp[34..38].copy_from_slice(&[0, 68, 0, 67]);
+        let frames = [tcp(guest, [10, 0, 2, 2], 40000, 4444, 2), tcp(guest, [169, 254, 169, 254], 40001, 80, 2), dhcp.clone()];
+        for frame in &frames {
+            sockets[0].write_u32(frame.len() as u32).await.unwrap();
+            sockets[0].write_all(frame).await.unwrap();
+        }
+        // The DHCP broadcast is forwarded; read it to know all three frames were judged.
+        let length = tokio::time::timeout(Duration::from_secs(5), sockets[1].read_u32()).await.unwrap().unwrap();
+        assert_eq!(length as usize, dhcp.len());
+        let window = network.stats.drain().window;
+        assert_eq!(window.attempts(crate::security::network::Denial::HostPort), 1);
+        assert_eq!(window.attempts(crate::security::network::Denial::Metadata), 1);
+        assert!(window.host_ports.contains(&4444));
+        assert!(crate::security::network::live().iter().any(|(key, _)| key == "test-filter-monitor"));
+    }
+
+    #[tokio::test]
     async fn explicit_host_grants_end_with_the_service_and_do_not_authorize_other_ports() {
-        let network = MicroVmNetwork::new(true, 0).await.unwrap();
+        let network = MicroVmNetwork::new(true, 0, "test-grants").await.unwrap();
         let active = Arc::new(AtomicBool::new(true));
         network
             .grant_host_service(12345, Arc::downgrade(&active))
@@ -877,7 +916,7 @@ mod tests {
     }
     #[tokio::test]
     async fn filter_failure_retains_redirect_sockets_and_rejects_policy_updates() {
-        let network = MicroVmNetwork::new(false, 0).await.unwrap();
+        let network = MicroVmNetwork::new(false, 0, "test-filter-failure").await.unwrap();
         let mut sockets = Vec::new();
         for argument in network
             .arguments()
@@ -1073,6 +1112,69 @@ mod tests {
         .await;
         runtime.shutdown_all().await;
         http.abort();
+        result
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "boots a disposable bundled MicroVM; a guest port scan must be counted and match the kill-switch rule"]
+    async fn guest_port_scan_is_counted_and_matches_the_kill_switch_rule() -> Result<(), String> {
+        use crate::models::{Priority, ResourcePolicy, ResourceRange};
+        use crate::runtime::RuntimeManager;
+        use crate::security::{monitor, network::Denial};
+        use std::path::Path;
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path())?;
+        let result = async {
+            let vm = runtime.provision_micro_vm("scan-test", "builtin:alpine").await?;
+            let policy = ResourcePolicy {
+                cpu: ResourceRange { min: 1., preferred: 1., max: 1., current: 0. },
+                memory_gb: ResourceRange { min: 0.5, preferred: 0.5, max: 0.5, current: 0. },
+                priority: Priority::Normal,
+                dynamic: true,
+            };
+            runtime.start_micro_vm_with_network("scan-test", &vm.disk_path, &vm.source_path, &policy, true).await?;
+            let stats = crate::security::network::live().into_iter().find(|(key, _)| key == "scan-test")
+                .map(|(_, stats)| stats).ok_or("the microVM's filter registered no monitoring counters")?;
+            // Normal work first: a web download and DNS are not violations.
+            let normal = runtime.execute_micro_vm_command("scan-test", "wget -T 5 -qO- http://example.com >/dev/null; echo done").await?;
+            let quiet = stats.drain();
+            if !normal.stdout.contains("done") || quiet.window.attempts(Denial::HostPort) != 0 || quiet.window.attempts(Denial::Metadata) != 0 {
+                return Err(format!("normal traffic was counted as a violation: {:?} {:?}", normal, quiet.window));
+            }
+            // What a compromised agent might try: 30 PC ports and the cloud metadata address.
+            let scan = runtime.execute_micro_vm_command("scan-test",
+                "command -v nc >/dev/null && command -v timeout >/dev/null || exit 42; \
+                 for p in $(seq 20001 20030); do (timeout 2 nc -w 1 10.0.2.2 $p </dev/null >/dev/null 2>&1 &); done; \
+                 for i in 1 2 3; do (timeout 2 nc -w 1 169.254.169.254 80 </dev/null >/dev/null 2>&1 &); done; sleep 4; echo scanned").await?;
+            if !scan.stdout.contains("scanned") {
+                return Err(format!("the scan did not run: {scan:?}"));
+            }
+            let window = stats.drain().window;
+            if window.host_ports.len() < 24 || window.attempts(Denial::Metadata) < 3 {
+                return Err(format!("the host filter counted {} PC ports and {} metadata attempts", window.host_ports.len(), window.attempts(Denial::Metadata)));
+            }
+            let mut tracker = monitor::Tracker::default();
+            tracker.record_network(1_000, monitor::NetworkTick {
+                host_port_attempts: window.attempts(Denial::HostPort),
+                host_ports: window.host_ports.iter().copied().collect(),
+                metadata_attempts: window.attempts(Denial::Metadata),
+                link_local: window.link_local.iter().copied().collect(),
+                ..monitor::NetworkTick::default()
+            });
+            let decisions = tracker.evaluate(1_000, &monitor::Settings::default(), monitor::Context { actions_supported: true, internet_cut: false, paused: false });
+            if !decisions.iter().any(|decision| decision.rule == monitor::Rule::HostPortProbe && decision.action == Some(monitor::Action::CutInternet)) {
+                return Err(format!("the scan did not trigger the kill switch: {decisions:?}"));
+            }
+            // The kill switch's first step really cuts this guest off.
+            runtime.update_vm_internet("scan-test", false).await?;
+            let blocked = runtime.execute_micro_vm_command("scan-test", "wget -T 3 -qO- http://example.com").await?;
+            if blocked.exit_code == 0 {
+                return Err("the Internet stayed reachable after the cut".into());
+            }
+            Ok(())
+        }
+        .await;
+        runtime.shutdown_all().await;
         result
     }
 }

@@ -42,15 +42,22 @@ keeps existing resources; use --new to create a sandbox with different settings.
 
 Installation and the tool run right in this terminal. Ctrl+] disconnects the
 session; the sandbox and installed files remain. Tool authentication and account
-setup happen inside the sandbox. In container sandboxes, every launch asks whether
-to copy this tool's supported credential files from this computer. Nothing is
-copied unless you choose Yes. Matching sandbox credentials are replaced; other
-settings stay unchanged. MicroVM sandboxes cannot receive copied credentials yet:
-sign in inside the tool. OS keychains, extension logins and environment-only keys
-always require sign-in inside the tool. Anyone controlling the sandbox can read or
-use imported credentials. --no-credentials skips this question and copies nothing.
-Ctrl+C opens Cancel / Stop sandbox / Stop and delete, with Cancel selected.
-Cancel resumes without interrupting the tool. Only Enter confirms a stop/delete.
+setup happen inside the sandbox. Every launch asks whether to use the tool's
+sign-in from this computer ("Use your Claude Code sign-in from this computer?").
+Nothing is copied unless you choose Yes; then the tool's supported credential
+files are copied into the sandbox, microVM or container. Matching sandbox
+credentials are replaced; other settings stay unchanged. OS keychains, extension
+logins and environment-only keys always require sign-in inside the tool. OpenClaw
+keeps its sign-in with other data, so its Yes choice is unavailable. Anyone
+controlling the sandbox can read or use imported credentials. --no-credentials
+skips this question and copies nothing.
+Each question after the first offers Back (Esc or the Back row) and shows your
+last answer again. Starting Yougori and starting or creating the sandbox show a
+spinner; Ctrl+C there stops waiting. Once the sandbox is in use, Ctrl+C opens
+Cancel / Stop sandbox / Stop and delete, with Cancel selected. Cancel resumes
+without interrupting the tool. Only Enter confirms a stop/delete.
+Before the tool opens, the reconnect command is printed: `yougori TOOL` when that
+reuses this sandbox, otherwise `yougori TOOL --environment NAME`.
 
 Ollama starts its model server quietly, then opens a ready menu to run a model or
 open a sandbox shell. OpenClaw opens `openclaw onboard`.
@@ -294,7 +301,29 @@ impl Options {
         // An explicit --environment keeps whatever isolation that sandbox has.
         let isolation = self.environment.is_none().then(|| self.isolation());
         let [cpu, memory] = self.resource_choices();
-        Ok(json!({"dryRun":true,"tool":self.tool,"isolation":isolation.map(Isolation::name),"request":if self.environment.is_none(){self.request(self.name.as_deref().unwrap_or(&self.tool))?}else{Value::Null},"environment":self.environment,"reuse":!self.fresh,"arguments":launch_arguments(&self.tool,&self.arguments),"terminal":"current","share":self.share,"gpuChoiceRequired":self.asks_gpu(),"resourceChoicesRequired":{"cpu":cpu,"memory":memory},"publicAccessPrompt":self.ask_public,"credentialImportPrompt":self.ask_credentials&&isolation!=Some(Isolation::MicroVm)}))
+        Ok(json!({"dryRun":true,"tool":self.tool,"isolation":isolation.map(Isolation::name),"request":if self.environment.is_none(){self.request(self.name.as_deref().unwrap_or(&self.tool))?}else{Value::Null},"environment":self.environment,"reuse":!self.fresh,"arguments":launch_arguments(&self.tool,&self.arguments),"terminal":"current","share":self.share,"gpuChoiceRequired":self.asks_gpu(),"resourceChoicesRequired":{"cpu":cpu,"memory":memory},"publicAccessPrompt":self.ask_public,"credentialImportPrompt":self.ask_credentials}))
+    }
+
+    /// The sandbox this command would reuse, taking the answer Ollama's GPU question preselects.
+    fn reused<'a>(&self, environments: &'a [Value]) -> Option<&'a Value> {
+        if self.asks_gpu() {
+            return self.preselected_gpu(environments).ok().flatten().map(|(env, _)| env);
+        }
+        self.existing(environments).ok().flatten()
+    }
+
+    /// Of the sandboxes each answer to Ollama's GPU question would reuse, the one reuse order
+    /// prefers, and whether it is the GPU answer's.
+    fn preselected_gpu<'a>(&self, environments: &'a [Value]) -> Result<Option<(&'a Value, bool)>, String> {
+        let mut found = Vec::new();
+        for gpu in [true, false] {
+            let mut answer = self.clone();
+            answer.desired_gpu = Some(gpu);
+            if let Some(env) = answer.existing(environments)? {
+                found.push((env, gpu));
+            }
+        }
+        Ok(found.into_iter().min_by_key(|&(env, _)| reuse_order(env)))
     }
 
     fn existing<'a>(&self, environments: &'a [Value]) -> Result<Option<&'a Value>, String> {
@@ -414,18 +443,19 @@ fn resource_sliders(options: &Options, host: &Value) -> Result<Vec<crate::cli_ui
     Ok(sliders)
 }
 
+/// CPU and memory for a new sandbox, unless both were given. Cancelling creates nothing.
 fn choose_resources(options: &mut Options, host: &Value) -> Result<bool, String> {
     use crate::cli_ui as ui;
     let mut sliders = resource_sliders(options, host)?;
     if sliders.is_empty() {
-        return Ok(true);
+        return Ok(false);
     }
     match ui::sliders("Size your sandbox", "Choose CPU cores and RAM before installation.", &mut sliders) {
         Ok(()) => {
             options.apply_resources(&sliders)?;
             Ok(true)
         }
-        Err(error) if error == ui::CANCELLED => Ok(false),
+        Err(error) if error == ui::CANCELLED => Err(crate::tool_sharing::ENDED.into()),
         Err(error) => Err(error),
     }
 }
@@ -449,22 +479,89 @@ fn gpu_question(options: &Options) -> (Vec<String>, [crate::cli_ui::Choice; 2]) 
 
 async fn choose_ollama_gpu(options: &mut Options,environments: &[Value]) -> Result<bool,String> {
     use crate::cli_ui as ui;
-    if !options.asks_gpu() { return Ok(true); }
-    // Each answer reuses its own sandbox. Preselect the one that would be reused.
-    let reusable = |gpu: bool| { let mut answer = options.clone(); answer.desired_gpu = Some(gpu); answer.existing(environments) };
-    let current = [reusable(true)?.map(|env| (env, 0_usize)), reusable(false)?.map(|env| (env, 1))]
-        .into_iter().flatten().min_by_key(|&(env, _)| reuse_order(env));
-    let initial = current.map_or(0, |(_, index)| index);
+    if !options.asks_gpu() { return Ok(false); }
+    // Each answer reuses its own sandbox. Preselect the one that would be reused, or the
+    // answer given before going back.
+    let current = options.preselected_gpu(environments)?;
+    let initial = match options.desired_gpu.or(current.map(|(_, gpu)| gpu)) { Some(false) => 1, _ => 0 };
     let (notes, choices) = gpu_question(options);
     let prompt = || ui::select("Want a GPU container for Ollama?",&notes,&choices,initial);
     let selected = if let Some(id) = current.and_then(|(env,_)|env["id"].as_str()) {
-        crate::tool_sharing::share_prompt(id,prompt).await?
+        crate::tool_sharing::step_prompt(id,prompt).await?
     } else {
-        match prompt() {Ok(value)=>Some(value),Err(error) if error==ui::CANCELLED=>None,Err(error)=>return Err(error)}
+        prompt().map_err(|error| if error==ui::CANCELLED {crate::tool_sharing::ENDED.into()} else {error})?
     };
-    let Some(selected)=selected else{return Ok(false)};
     options.desired_gpu=Some(selected==0);
     Ok(true)
+}
+
+/// Whether this command creates a sandbox, so CPU and memory are asked. A taken --name fails
+/// here, before the sliders rather than after them.
+fn creates(options: &Options, environments: &[Value]) -> Result<bool, String> {
+    if options.existing(environments)?.is_some() {
+        return Ok(false);
+    }
+    options.available_name(environments).map(|_| true)
+}
+
+/// Questions asked before anything is created: Ollama's GPU choice, then CPU and memory when no
+/// sandbox can be reused. The second offers Back to the first.
+async fn prepare(options: &mut Options, environments: &[Value], host: &Value) -> Result<(), String> {
+    use crate::cli_ui as ui;
+    // Asking again starts from the command line's own creation options.
+    let creation = options.creation.clone();
+    let mut kept_shown = false;
+    let mut steps = ui::Wizard::new();
+    loop {
+        let asked = match steps.step() {
+            0 => {
+                options.creation = creation.clone();
+                choose_ollama_gpu(options, environments).await
+            }
+            1 => {
+                options.creation = creation.clone();
+                match creates(options, environments) {
+                    Ok(true) => {
+                        if !std::mem::replace(&mut kept_shown, true) {
+                            if let Some(kept) = options.kept_container(environments) {
+                                let kept: String = kept["name"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+                                ui::info(&format!("Your container sandbox {kept} is kept. Reconnect to it with: yougori {} --isolation container", options.tool));
+                            }
+                        }
+                        choose_resources(options, host)
+                    }
+                    other => other,
+                }
+            }
+            _ => break,
+        };
+        steps.next(asked)?;
+    }
+    Ok(())
+}
+
+/// The shortest command that reconnects to this sandbox: the plain shortcut when that reuses
+/// it, else its name, or its ID when another sandbox answers to that name.
+fn reconnect_command(tool: &str, id: &str, environments: &[Value]) -> String {
+    let plain = Options::parse(&[tool.to_owned()]).ok();
+    if plain.and_then(|plain| plain.reused(environments)).is_some_and(|env| env["id"] == id) {
+        return format!("yougori {tool}");
+    }
+    let name = environments
+        .iter()
+        .find(|env| env["id"] == id)
+        .and_then(|env| env["name"].as_str())
+        .filter(|name| {
+            !name.is_empty()
+                && !name.starts_with('-')
+                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                && environments
+                    .iter()
+                    .filter(|env| env["id"] == **name || env["name"].as_str().is_some_and(|other| other.eq_ignore_ascii_case(name)))
+                    .count()
+                    == 1
+        });
+    format!("yougori {tool} --environment {}", name.unwrap_or(id))
 }
 
 fn validate_environment(environment: &Value) -> Result<(), String> {
@@ -505,7 +602,7 @@ pub fn launch_arguments(tool: &str, arguments: &[String]) -> Vec<String> {
 }
 
 pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
-    let mut options = Options::parse(args)?;
+    let options = Options::parse(args)?;
     if options.dry {
         return options.plan().map(Some);
     }
@@ -516,48 +613,60 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     let _raw = ui::Raw::on()?;
     let _session = ui::Session::start(&options.tool, "local sandbox · your tools and teammates");
     ui::intro("Tool sandbox", &options.tool);
-    crate::client::start(None).await?;
-    let state = call("get_platform_state", json!({})).await?;
+    match launch(options).await {
+        // A cancelled question or a stop action already shows on screen.
+        Err(error) if error == crate::tool_sharing::ENDED || error == ui::BACK => Ok(None),
+        // Ctrl+C while waiting: say what keeps running.
+        Err(error) if error == ui::CANCELLED => {
+            ui::outro(&ui::muted(&error));
+            Ok(None)
+        }
+        result => result,
+    }
+}
+
+async fn launch(mut options: Options) -> Result<Option<Value>, String> {
+    use crate::cli_ui as ui;
+    ui::busy("Starting Yougori engine", crate::client::start(None)).await?;
+    let state = ui::busy("Loading your sandboxes", call("get_platform_state", json!({}))).await?;
     let environments = state["environments"]
         .as_array()
         .ok_or("No environment state")?;
-    if !choose_ollama_gpu(&mut options,environments).await? {return Ok(None);}
+    prepare(&mut options, environments, &state["host"]).await?;
     let (id, name, isolation) = if let Some(environment) = options.existing(environments)? {
         let id = environment["id"]
             .as_str()
             .ok_or("Missing environment ID")?
             .to_owned();
         let isolation = Isolation::of(environment).ok_or("Unsupported sandbox isolation")?;
+        let name = environment["name"]
+            .as_str()
+            .unwrap_or(&options.tool)
+            .to_owned();
         if environment["status"] != "running" {
-            call(
-                "set_environment_status",
-                json!({"environmentId":id,"status":"running"}),
+            ui::busy(
+                &format!("Starting {name} sandbox"),
+                call(
+                    "set_environment_status",
+                    json!({"environmentId":id,"status":"running"}),
+                ),
             )
             .await?;
         }
-        (
-            id,
-            environment["name"]
-                .as_str()
-                .unwrap_or(&options.tool)
-                .to_owned(),
-            isolation,
-        )
+        (id, name, isolation)
     } else {
         let name = options.available_name(environments)?;
-        if let Some(kept) = options.kept_container(environments) {
-            let kept: String = kept["name"].as_str().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
-            ui::info(&format!("Your container sandbox {kept} is kept. Reconnect to it with: yougori {} --isolation container", options.tool));
-        }
-        if !choose_resources(&mut options, &state["host"])? { return Ok(None); }
         let isolation = options.isolation();
-        let task = ui::task(&format!("Creating {name} · {} · {}", isolation.label(), options.image_label()));
-        let result = call(
-            "run_workload",
-            json!({"request":options.request(&name)?,"start":true}),
+        let started = std::time::Instant::now();
+        let result = ui::busy(
+            &format!("Creating {name} · {} · {}", isolation.label(), options.image_label()),
+            call(
+                "run_workload",
+                json!({"request":options.request(&name)?,"start":true}),
+            ),
         )
         .await?;
-        task.done(&format!("{name} sandbox ready"));
+        ui::step(&format!("{name} sandbox ready  {}", ui::muted(&ui::clock(started.elapsed()))));
         (
             result["id"]
                 .as_str()
@@ -573,21 +682,26 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     if crate::terminal::setup_tool(&id, &options.tool).await? != crate::terminal::SessionExit::Completed {
         return Ok(None);
     }
-    if options.ask_credentials {
-        // Copied files would land outside a microVM's workload, so none are offered.
-        if isolation == Isolation::MicroVm {
-            ui::info("Copying this computer's sign-in into a microVM sandbox is not supported yet. Sign in inside the tool, or use --isolation container to copy it.");
-        } else if !crate::tool_credentials::configure(&id, &options.tool, options.share).await? {
-            return Ok(None);
+    {
+        // Each question after the first offers Back. Going back asks again and never undoes
+        // what an answer already did, such as a copied sign-in or a published link.
+        let mut copy = false;
+        let mut public = crate::tool_public_access::Answers::default();
+        let mut steps = ui::Wizard::new();
+        loop {
+            let asked = match steps.step() {
+                0 if options.ask_credentials => crate::tool_credentials::configure(&id, &options.tool, options.share, &mut copy).await,
+                1 if options.ask_public => crate::tool_public_access::configure(&id, &options.tool, &mut public).await,
+                2 if options.share => crate::tool_sharing::share(&id, &name).await,
+                0..=2 => Ok(false),
+                _ => break,
+            };
+            steps.next(asked)?;
         }
     }
-    if options.ask_public && !crate::tool_public_access::configure(&id,&options.tool).await? {return Ok(None);}
-    if options.share {
-        if !crate::tool_sharing::share(&id, &name).await? {
-            return Ok(None);
-        }
-    }
-    ui::info(&format!("Reconnect: yougori {} --environment {id}", options.tool));
+    let state = call("get_platform_state", json!({})).await.unwrap_or_default();
+    let environments = state["environments"].as_array().map_or(&[][..], Vec::as_slice);
+    ui::info(&format!("Reconnect: {}", reconnect_command(&options.tool, &id, environments)));
     if options.tool=="ollama" && (options.arguments.is_empty() || options.arguments==["serve"]) {
         crate::terminal::open_ollama(&id,&name).await?;
         return Ok(None);
@@ -692,23 +806,86 @@ mod tests {
         assert_eq!(mounted["workload"]["binds"].as_array().map(Vec::len), Some(1));
     }
     #[test]
-    fn dry_run_reports_isolation_and_only_offers_credential_import_where_it_works() {
+    fn dry_run_reports_isolation_and_offers_credential_import_for_both() {
         let plan = |command: &str| Options::parse(&words(command)).unwrap().plan().unwrap();
         let default = plan("codex --dry-run");
         assert_eq!(default["isolation"], "microvm");
         assert_eq!(default["request"]["kind"], "microVm");
-        assert_eq!(default["credentialImportPrompt"], false);
+        assert_eq!(default["credentialImportPrompt"], true);
         assert_eq!(default["publicAccessPrompt"], true);
         let opted_out = plan("codex --isolation container --dry-run");
         assert_eq!(opted_out["isolation"], "container");
         assert_eq!(opted_out["request"]["kind"], "container");
         assert_eq!(opted_out["credentialImportPrompt"], true);
-        assert_eq!(plan("codex --isolation container --no-credentials --dry-run")["credentialImportPrompt"], false);
+        for command in ["codex --no-credentials --dry-run", "codex --isolation container --no-credentials --dry-run"] {
+            assert_eq!(plan(command)["credentialImportPrompt"], false, "{command}");
+        }
         // An explicit target keeps its own isolation, which the offline plan cannot know.
         let target = plan("codex --environment saved --dry-run");
         assert!(target["isolation"].is_null() && target["request"].is_null());
+        assert_eq!(target["credentialImportPrompt"], true);
         assert_eq!(plan("ollama --dry-run")["gpuChoiceRequired"], true);
         assert_eq!(plan("ollama --isolation microvm --dry-run")["gpuChoiceRequired"], false);
+        // Every tool asks, OpenClaw too; it explains why its sign-in cannot be copied.
+        for tool in TOOLS {
+            assert_eq!(plan(&format!("{tool} --dry-run"))["credentialImportPrompt"], true, "{tool}");
+        }
+    }
+    #[test]
+    fn reconnect_hint_is_the_plain_shortcut_when_it_reuses_the_sandbox_else_its_name() {
+        let managed = Options::parse(&words("codex")).unwrap().description();
+        let mut older = microvm("env-older", "codex", &managed, "stopped");
+        older["createdAt"] = json!("2026-10-01T00:00:00Z");
+        let mut newest = microvm("env-newest", "codex-2", &managed, "running");
+        newest["createdAt"] = json!("2026-10-11T00:00:00Z");
+        let opted_out = container("env-container", "codex-3", &managed, "running");
+        let environments = vec![older, newest, opted_out];
+        assert_eq!(reconnect_command("codex", "env-newest", &environments), "yougori codex");
+        assert_eq!(reconnect_command("codex", "env-older", &environments), "yougori codex --environment codex");
+        // `yougori codex` reuses microVMs only; the container needs its name.
+        assert_eq!(reconnect_command("codex", "env-container", &environments), "yougori codex --environment codex-3");
+        // A name another sandbox also answers to, or one a shell would need quoted, falls back to the ID.
+        let mut shared = environments.clone();
+        shared.push(json!({"id":"env-other","name":"CODEX","kind":"container","status":"running"}));
+        assert_eq!(reconnect_command("codex", "env-older", &shared), "yougori codex --environment env-older");
+        let mut spaced = environments.clone();
+        spaced[0]["name"] = json!("my codex");
+        assert_eq!(reconnect_command("codex", "env-older", &spaced), "yougori codex --environment env-older");
+        assert_eq!(reconnect_command("codex", "env-gone", &[]), "yougori codex --environment env-gone");
+        for command in ["yougori codex --environment codex", "yougori codex --environment codex-3"] {
+            let args = shell_words::split(command).unwrap();
+            let target = Options::parse(&args[1..]).unwrap();
+            let resolved = target.existing(&environments).unwrap().unwrap()["id"].clone();
+            assert_eq!(reconnect_command("codex", resolved.as_str().unwrap(), &environments), command, "the hint resolves to the same sandbox");
+        }
+    }
+    #[test]
+    fn only_new_sandboxes_are_sized_and_a_taken_name_fails_before_the_sliders() {
+        let managed = Options::parse(&words("codex")).unwrap().description();
+        let environments = vec![
+            json!({"id":"env-site","name":"site","kind":"container","status":"running"}),
+            microvm("env-codex", "codex", &managed, "running"),
+        ];
+        let creates = |command: &str| creates(&Options::parse(&words(command)).unwrap(), &environments);
+        assert_eq!(creates("codex"), Ok(false), "a reused sandbox asks nothing");
+        assert_eq!(creates("codex --new"), Ok(true));
+        let taken = creates("codex --name SITE").unwrap_err();
+        assert!(taken.contains("already in use"), "{taken}");
+    }
+    #[test]
+    fn ollama_reconnects_with_the_plain_shortcut_when_its_preselected_answer_reuses_the_sandbox() {
+        let managed = Options::parse(&words("ollama")).unwrap().description();
+        let mut gpu = container("env-gpu", "ollama", &managed, "running");
+        gpu["provider"] = json!("yougoriCuda");
+        gpu["gpuAccess"] = json!(true);
+        let cpu = microvm("env-cpu", "ollama-2", &managed, "stopped");
+        let environments = vec![gpu, cpu];
+        let plain = Options::parse(&words("ollama")).unwrap();
+        let (preselected, uses_gpu) = plain.preselected_gpu(&environments).unwrap().unwrap();
+        assert_eq!((preselected["id"].as_str(), uses_gpu), (Some("env-gpu"), true), "running sandboxes come first");
+        assert_eq!(reconnect_command("ollama", "env-gpu", &environments), "yougori ollama");
+        assert_eq!(reconnect_command("ollama", "env-cpu", &environments), "yougori ollama --environment ollama-2");
+        assert!(Options::parse(&words("ollama")).unwrap().preselected_gpu(&[]).unwrap().is_none());
     }
     #[test]
     fn tool_arguments_are_separate_from_creation_flags() {

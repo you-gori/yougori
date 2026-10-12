@@ -23,10 +23,10 @@ fn tool_shortcuts_validate_offline_and_do_not_create_from_pipes() {
         let value = response(&dry);
         assert_eq!(value["result"]["tool"], tool);
         assert_eq!(value["result"]["terminal"], "current");
-        // New sandboxes are microVMs, which cannot receive copied credentials yet.
+        // New sandboxes are microVMs; both isolations can receive copied credentials.
         assert_eq!(value["result"]["isolation"], "microvm");
         assert_eq!(value["result"]["request"]["kind"], "microVm");
-        assert_eq!(value["result"]["credentialImportPrompt"], false);
+        assert_eq!(value["result"]["credentialImportPrompt"], true);
         let container = response(&cli(&[tool, "--isolation", "container", "--dry-run"]));
         assert_eq!(container["result"]["isolation"], "container");
         assert_eq!(container["result"]["credentialImportPrompt"], true);

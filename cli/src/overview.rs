@@ -72,16 +72,19 @@ pub async fn status() -> Result<Value, String> {
     };
     let state = call("get_platform_state", json!({})).await?;
     let envs = state["environments"].as_array().cloned().unwrap_or_default();
+    // Engines without the security monitor simply leave these fields out.
+    let monitor = call("security_monitor", json!({})).await.ok();
     let mut by_type = serde_json::Map::new();
     let mut list = Vec::new();
     for env in &envs {
         let kind = env_type(env);
         *by_type.entry(kind).or_insert(json!(0)) = json!(by_type.get(kind).and_then(Value::as_u64).unwrap_or(0) + 1);
         let links = if publishes(env) { published(&services(env).await) } else { Vec::new() };
+        let security = monitor.as_ref().and_then(|monitor| security_entry(monitor, &env["id"])).map(crate::security::label);
         list.push(json!({
             "id": env["id"], "name": env["name"], "type": kind, "status": env["status"],
             "cpuPercent": env["cpuUsage"], "memoryGb": env["memoryUsageGb"], "published": links,
-            "error": env["lastError"],
+            "error": env["lastError"], "security": security,
         }));
     }
     let running = envs.iter().filter(|e| e["status"] == "running").count();
@@ -96,7 +99,34 @@ pub async fn status() -> Result<Value, String> {
         "savedDomains": state["savedDomains"].as_array().map(|d| d.iter().map(|d| d["hostname"].clone()).collect::<Vec<_>>()).unwrap_or_default(),
         "connections": state["connections"].as_array().map(Vec::len).unwrap_or(0),
         "activeJobs": active_jobs,
+        "security": monitor.as_ref().map(security_summary),
     }))
+}
+
+fn security_entry<'a>(monitor: &'a Value, id: &Value) -> Option<&'a Value> {
+    monitor["environments"].as_array()?.iter().find(|entry| entry["id"] == *id)
+}
+
+/// Monitoring state, active alerts and contained environments, for `status`.
+pub fn security_summary(monitor: &Value) -> Value {
+    let environments = monitor["environments"].as_array().cloned().unwrap_or_default();
+    let alerts = environments.iter().chain(monitor["pools"].as_array().into_iter().flatten().map(|pool| &pool["summary"]))
+        .map(|entry| entry["alerts"].as_array().map(Vec::len).unwrap_or(0)).sum::<usize>();
+    let contained: Vec<Value> = environments.iter().filter(|entry| entry["containment"].is_object())
+        .map(|entry| json!({"id": entry["id"], "name": entry["name"], "level": entry["containment"]["level"], "since": entry["containment"]["since"]}))
+        .collect();
+    json!({"monitoring": monitor["monitoring"], "alerts": alerts, "contained": contained})
+}
+
+/// Adds blocked attempts (last 10 minutes) and the security label to `top` rows.
+pub fn add_security(snapshot: &mut Value, monitor: &Value) {
+    for row in snapshot["environments"].as_array_mut().into_iter().flatten() {
+        if let Some(entry) = security_entry(monitor, &row["id"]) {
+            row["blocked"] = entry["network"]["blockedLast10m"].clone();
+            row["security"] = crate::security::label(entry).into();
+        }
+    }
+    snapshot["security"] = security_summary(monitor);
 }
 
 /// A usage snapshot: this PC and every running environment, busiest first.
@@ -200,10 +230,21 @@ mod tests {
             {"id":"b","name":"busy","kind":"microVm","provider":"qemu","runtime":"x","status":"running","cpuUsage":80.0},
             {"id":"c","name":"off","kind":"container","provider":"yougoriOci","runtime":"x","status":"stopped","cpuUsage":0.0},
         ]});
-        let top = top(&state);
+        let mut top = top(&state);
         assert_eq!(top["environments"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect::<Vec<_>>(), ["busy", "idle"]);
         assert_eq!(top["environments"][0]["type"], "microvm");
         assert_eq!(top["host"]["cpus"], 16);
+        let monitor = json!({"monitoring": true, "environments": [
+            {"id":"b","name":"busy","network":{"blockedLast10m":31},"alerts":[{"rule":"hostPortProbe"}],"containment":{"level":"internetCut","since":"t"}},
+            {"id":"a","name":"idle","network":null,"alerts":[]},
+        ], "pools": [{"summary": {"alerts": [{"rule":"metadataProbe"}]}}]});
+        add_security(&mut top, &monitor);
+        assert_eq!(top["environments"][0]["blocked"], 31);
+        assert_eq!(top["environments"][0]["security"], "internet cut");
+        assert_eq!(top["environments"][1]["security"], "ok");
+        assert!(top["environments"][1]["blocked"].is_null());
+        assert_eq!(top["security"]["alerts"], 2);
+        assert_eq!(top["security"]["contained"][0]["name"], "busy");
     }
 
     #[test]

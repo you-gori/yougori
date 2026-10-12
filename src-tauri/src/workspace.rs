@@ -329,6 +329,8 @@ impl WorkspaceManager {
     pub async fn remove_share(&self, id: &str, runtime: &RuntimeManager) {
         let share = self.shares.lock().await.remove(id);
         if let Some(share) = share {
+            crate::security::record(crate::security::Event::new("share.folder.detached").env(&share.info.environment_id)
+                .text("share", id).path("path", &share.info.path));
             let env = share.environment.clone();
             let mounted = share.info.mount_path.is_some();
             // Revoke host access before waiting for the guest to unmount it.
@@ -368,6 +370,8 @@ impl WorkspaceManager {
             .collect::<Vec<_>>();
         for (session, lease) in sessions {
             self.terminals.lock().await.remove(&session);
+            crate::security::record(crate::security::Event::new("terminal.closed").env(&lease.environment.id)
+                .via(crate::security::terminal_actor(window)).text("session", &crate::security::session_label(&session)).text("reason", "window or session ended"));
             let env = lease.environment;
             let _ = runtime
                 .workspace_request(
@@ -501,6 +505,10 @@ pub(crate) async fn terminal_action_for_owner(
     }
     if action == "close" || (action == "create" && result.is_err()) {
         manager.terminals.lock().await.remove(&session_id);
+    }
+    if matches!(action.as_str(), "create" | "close") && (action == "close" || result.is_ok()) {
+        crate::security::record(crate::security::Event::new(if action == "create" { "terminal.opened" } else { "terminal.closed" })
+            .env(&environment_id).via(crate::security::terminal_actor(owner)).text("session", &crate::security::session_label(&session_id)));
     }
     result
 }
@@ -818,7 +826,21 @@ pub(crate) async fn publish_service(
     runtime: &RuntimeManager,
     manager: &WorkspaceManager,
 ) -> Result<Publication, String> {
-    publish_service_with_intent(environment_id, port, kind, host_port, cloudflare, store, runtime, manager, None, true).await
+    crate::security::ensure_open(store, &environment_id, "Publishing its ports")?;
+    let result = publish_service_with_intent(environment_id.clone(), port, kind, host_port, cloudflare, store, runtime, manager, None, true).await;
+    let mut event = crate::security::Event::new("port.published").env(&environment_id).number("port", u64::from(port)).outcome(&result);
+    if let Ok(publication) = &result {
+        event = event.text("publication", &publication.id).text("kind", &serde_json::to_value(&publication.kind).ok().and_then(|kind| kind.as_str().map(str::to_owned)).unwrap_or_default())
+            .number("hostPort", u64::from(publication.host_port));
+        // Own domains are public names; quick-tunnel links are private capabilities and stay out.
+        if publication.cloudflare_account {
+            if let Some(url) = publication.urls.first() {
+                event = event.text("url", url);
+            }
+        }
+    }
+    crate::security::record(event);
+    result
 }
 
 async fn publish_service_with_intent(
@@ -1105,8 +1127,17 @@ pub async fn unpublish_environment_service(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<(), String> {
-    manager.publications.lock().await.remove(&publication_id);
+    // The route is dropped (listener and tunnel stopped) at once, as before; keep only its labels.
+    let removed = manager.publications.lock().await.remove(&publication_id).map(|route| (route.info.environment_id.clone(), route.info.port));
+    let saved = store.snapshot()?.saved_environment_services.into_iter().find(|saved| saved.id == publication_id);
     store.mutate(|state| { state.saved_environment_services.retain(|saved| saved.id != publication_id); Ok(()) })?;
+    let environment = removed.as_ref().map(|(environment, _)| environment.clone()).or_else(|| saved.as_ref().map(|saved| saved.environment_id.clone()));
+    let port = removed.as_ref().map(|(_, port)| *port).or_else(|| saved.as_ref().map(|saved| saved.port));
+    let mut event = crate::security::Event::new("port.unpublished").env(environment.as_deref().unwrap_or_default()).text("publication", &publication_id);
+    if let Some(port) = port {
+        event = event.number("port", u64::from(port));
+    }
+    crate::security::record(event);
     manager.sync_local_ports(&store, &runtime).await
 }
 
@@ -1134,6 +1165,7 @@ pub(crate) async fn attach_folder(
     let lock={let mut locks=manager.folder_operations.lock().await;locks.retain(|_,lock|Arc::strong_count(lock)>1);locks.entry(environment_id.clone()).or_default().clone()};
     let _operation = lock.lock().await;
     let env = environment(&store, &environment_id)?;
+    crate::security::ensure_open(store, &environment_id, "Sharing PC folders with it")?;
     if env.kind == EnvironmentKind::Cloud { return Err("Cloud nodes use connection-owned shared folders, not direct My PC mounts".into()); }
     let folder = PathBuf::from(path)
         .canonicalize()
@@ -1187,6 +1219,8 @@ pub(crate) async fn attach_folder(
         manager.remove_share(&info.id, runtime).await;
         return Err(error);
     }
+    crate::security::record(crate::security::Event::new("share.folder.attached").env(&info.environment_id)
+        .text("share", &info.id).path("path", &info.path).flag("readOnly", info.read_only));
     Ok(info)
 }
 #[tauri::command]

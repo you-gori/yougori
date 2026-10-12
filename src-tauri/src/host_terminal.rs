@@ -663,12 +663,20 @@ pub(crate) async fn action_for_owner(
         None
     };
     let app = app.clone();
-    tokio::task::spawn_blocking(move || {
+    let (action, session) = (request.action.clone(), request.session_id.clone());
+    let via = if owner == "cli-host" { "cli" } else { "app" };
+    let result = tokio::task::spawn_blocking(move || {
         app.state::<HostTerminalManager>()
             .action(request, &owner, config)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    // Host shells are outside guest isolation: their opening and closing are audited.
+    if matches!(action.as_str(), "create" | "close") && (action == "close" || result.is_ok()) {
+        crate::security::record(crate::security::Event::new(if action == "create" { "host.terminal.opened" } else { "host.terminal.closed" })
+            .via(via).text("session", &crate::security::session_label(&session)).outcome(&result));
+    }
+    result
 }
 #[tauri::command]
 pub fn get_host_terminal_info(

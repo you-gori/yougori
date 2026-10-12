@@ -367,8 +367,26 @@ async fn copy_out_controlled(source: Source<'_>, path: &str, destination: &str, 
 }
 
 /// Copies a file or folder out of a running environment into a new folder on this PC.
+/// The audit log keeps the paths and byte count.
 #[tauri::command]
 pub async fn copy_files_from_environment(
+    environment_id: String,
+    path: String,
+    destination: String,
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+) -> Result<Value, String> {
+    let audited = (environment_id.clone(), path.clone(), destination.clone());
+    let result = copy_from_environment(environment_id, path, destination, store, runtime).await;
+    let mut event = crate::security::Event::new("transfer.out").env(&audited.0).path("source", &audited.1).path("destination", &audited.2).outcome(&result);
+    if let Ok(copied) = &result {
+        event = event.number("bytes", copied["bytes"].as_u64().unwrap_or(0)).number("entries", copied["entries"].as_u64().unwrap_or(0));
+    }
+    crate::security::record(event);
+    result
+}
+
+async fn copy_from_environment(
     environment_id: String,
     path: String,
     destination: String,
@@ -404,6 +422,23 @@ pub async fn copy_files_from_environment(
 /// import path creates a new folder, so an existing guest file is not replaced.
 #[tauri::command]
 pub async fn copy_files_between_environments(
+    source_id: String,
+    target_id: String,
+    path: String,
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+) -> Result<Value, String> {
+    let audited = (source_id.clone(), target_id.clone(), path.clone());
+    let result = copy_between_environments(source_id, target_id, path, store, runtime).await;
+    let mut event = crate::security::Event::new("transfer.between").env(&audited.0).text("target", &audited.1).path("source", &audited.2).outcome(&result);
+    if let Ok(copied) = &result {
+        event = event.number("bytes", copied["bytes"].as_u64().unwrap_or(0)).number("files", copied["files"].as_u64().unwrap_or(0));
+    }
+    crate::security::record(event);
+    result
+}
+
+async fn copy_between_environments(
     source_id: String,
     target_id: String,
     path: String,

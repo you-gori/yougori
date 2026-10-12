@@ -23,6 +23,19 @@ both skips the resource prompt. Reconnecting reuses the saved resources without
 prompting or resizing. Use `--new` to choose resources for a fresh sandbox.
 Cancelling this prompt creates nothing, and `--dry-run` never prompts.
 
+Every wait shows a spinner: starting Yougori, loading your sandboxes, starting a
+stopped sandbox and creating a new one. Ctrl+C stops waiting and ends the command;
+work Yougori already started keeps going, so check it with `yougori ps`. Keys
+typed while waiting are dropped and never answer a later question.
+
+Each question after the first offers Back: press Esc or choose the Back row, and
+the earlier question appears again with your last answer selected. Ollama's GPU
+question and the CPU and memory sliders form one group; the sign-in, public link
+and `--share` questions after installation form another. Going back never undoes
+what an answer already did: a copied sign-in stays copied, and a link or teammate
+access that was created stays. Asking about a public link again then defaults to
+keeping the link you have.
+
 ## One microVM per sandbox
 
 Each new sandbox is its own microVM: it boots its own kernel with minimal virtual
@@ -43,8 +56,10 @@ shared VM, which shares that VM's kernel with your other containers.
 |---|---|---|
 | Kernel | its own | shared with your other containers |
 | GPU (`--gpu nvidia`, Ollama's GPU answer) | not available | available |
-| PC folders (`--mount`) | not available yet | available |
-| Copy this computer's sign-in | not available yet; sign in inside the tool | asked on every launch |
+| PC folders at creation (`--mount`) | not available yet | available |
+| Copy this computer's sign-in | asked on every launch | asked on every launch |
+| `yougori exec` and `cp`, folders shared with teammates | the tool's container | the tool's container |
+| PC folders added later (`yougori share add`), connection folders | mounted in the tool's container | mounted in the tool's container |
 | Public project link, `--share`, Ctrl+C stop menu | available | available |
 
 Options that need a container fail with a message that names
@@ -53,9 +68,11 @@ matches isolation: `yougori codex` reuses a microVM sandbox and
 `yougori codex --isolation container` reuses a container sandbox. Existing
 sandboxes keep their isolation and are never converted. If the tool already has a
 container sandbox, the first microVM launch creates a new sandbox and prints how to
-reconnect to the container. `yougori cp` copies files into a microVM's outer
-guest, not into the tool's sandbox, so move project files with git or the tool
-itself for now.
+reconnect to the container. In a microVM, `yougori exec`, copied sign-ins,
+`yougori cp` in both directions and folders you share with teammates use the
+tool's container, where its terminal runs, not the microVM's own minimal guest.
+PC folders you add with `yougori share add` and folders from connections are
+mounted there too, under `/yougori/shared`.
 
 Tool setup shows an animated loading bar and elapsed time. Package-manager and
 download logs stay offscreen. Yougori verifies success and closes the separate
@@ -85,21 +102,26 @@ OpenClaw starts interactive `onboard`; complete its
 own account setup and permissions there. Other shortcuts start the tool's usual
 interactive interface.
 
-In container sandboxes, every interactive launch, including reconnects and
-`--share`, asks: "Do you want to use credentials from this computer?" No is
-selected by default. Choosing No keeps the sandbox's current sign-in. Choosing Yes
-copies only the selected tool's supported credential files and replaces matching
-files in the sandbox. Credentials are transferred as files, never printed or put
-in shell arguments, and installed with owner-only file permissions. Host originals
-stay unchanged; this is a copy, not ongoing synchronization. MicroVM sandboxes
-skip the question and say that copying is not supported yet: Yougori's file copy
-would place the files outside the tool's sandbox. Sign in inside the tool instead.
+Every interactive launch, including reconnects and `--share`, asks by the tool's
+name, for example "Use your Claude Code sign-in from this computer?" "No, sign in
+inside the sandbox" is selected by default and keeps the sandbox's current
+sign-in. "Yes, copy it into this sandbox" copies only the selected tool's
+supported credential files and replaces matching files in the sandbox. Credentials
+are transferred as files, never printed or put in shell arguments, and installed
+with owner-only file permissions. Host originals stay unchanged; this is a copy,
+not ongoing synchronization. MicroVM and container sandboxes work the same: the
+files land in the tool's own home directory. Ctrl+C while copying cancels the
+transfer, removes the staged copy and opens the stop menu; Cancel there asks
+again. If a copy fails, Yougori shows why and continues, so you can sign in
+inside the tool.
 
-File imports support Codex, Claude Code, Gemini CLI, OpenCode, Kilo CLI, and
+File imports support Codex, Claude Code, Gemini CLI, OpenCode, Kilo Code, and
 Ollama's cloud identity. OS keychains, VS Code extension storage, environment-only
-API keys, and OpenClaw's database credential store are not imported. Missing or
-expired credentials fall back to the tool's normal sign-in. Custom provider
-configuration is not copied. Local Ollama models do not require authentication.
+API keys, and OpenClaw's database credential store are not imported. OpenClaw is
+still asked, but explains why and offers only No; sign in during its onboarding.
+Missing or expired credentials fall back to the tool's normal sign-in. Custom
+provider configuration is not copied. Local Ollama models do not require
+authentication.
 
 Anyone controlling the sandbox, including existing recipients and teammates added
 with `--share`, can use or read imported credentials and consume that account's
@@ -129,15 +151,21 @@ after `--`. `--dry-run` reports the `isolation` it would use (`null` with
 
 Ctrl+] closes this terminal session and returns to your host terminal. The
 sandbox, files and sign-in remain; the attached program can stop when its
-terminal closes. Exiting the tool also returns to the host terminal. Run the
-shortcut again to reconnect, or `yougori stop ENV` to stop its sandbox.
-Ctrl+C opens Yougori's arrow-key menu with Cancel selected by default. Cancel
-returns to the same session without sending Ctrl+C to the tool. Stop sandbox
-disconnects everyone and keeps the sandbox and its data. Stop and delete first
-stops the sandbox, then permanently removes it and its managed data. Each action
-requires Enter; repeated Ctrl+C or Escape presses cannot confirm it. The menu
-works the same for microVM and container sandboxes, including during installation
-and sharing prompts. Remote/SSH shells keep their usual guest interrupt behavior.
+terminal closes. Exiting the tool also returns to the host terminal. Before the
+tool opens, Yougori prints the shortest reconnect command: `Reconnect: yougori
+codex` when the plain shortcut reuses this sandbox, otherwise `yougori codex
+--environment NAME` with the sandbox's name (its ID only when another sandbox
+answers to the same name). `yougori stop ENV` stops the sandbox.
+Once the sandbox is in use, Ctrl+C opens Yougori's arrow-key menu with Cancel
+selected by default. Cancel returns to the same session, question or wait without
+sending Ctrl+C to the tool. Stop sandbox disconnects everyone and keeps the
+sandbox and its data. Stop and delete first stops the sandbox, then permanently
+removes it and its managed data. Each action requires Enter; repeated Ctrl+C or
+Escape presses cannot confirm it. The menu works the same for microVM and
+container sandboxes, including during installation and the sign-in, public link
+and sharing questions. While a public link or teammate access is being created,
+the menu opens as soon as that finishes; a second Ctrl+C quits at once. Remote/SSH
+shells keep their usual guest interrupt behavior.
 Noninteractive calls require `--dry-run`, which validates without creating,
 installing or starting anything. `yougori TOOL --help` lists all options.
 
@@ -181,7 +209,8 @@ colors, progress display, masked password inputs and arrow-key menus.
 `--environment`. Yougori installs/checks the tool first, offers credential import
 and project public access, then asks how many
 teammates to add, their individual usernames and passwords, and an access expiry
-(24 hours, 7 days, or 1 hour). It uses the existing password-protected sharing
+(24 hours, 7 days, or 1 hour). Back keeps the answers already given; a password
+you go back to is typed again. It uses the existing password-protected sharing
 gateway. Each teammate gets their own grant and link with control of this sandbox,
 its files and any tool sign-in or connections available inside it.
 

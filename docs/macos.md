@@ -1,5 +1,70 @@
 # macOS
 
+## Native model implementation (app acceptance pending)
+
+The source now contains a native llama.cpp b11425 model runtime, compiled with
+Metal and Accelerate on Apple Silicon and Accelerate/CPU on Intel. `model compute`
+probes the installed binary and actual Metal devices; a hosted Mac without a GPU
+selects native CPU. `model run ... --backend auto|metal|cpu` selects compute.
+Use a GGUF repository or local GGUF folder. CUDA, Transformers, vLLM, MLX and
+Core ML are not provided by this native runtime. This is not full macOS feature
+parity or a validated release.
+
+Weights are pinned and SHA-256 verified in a persistent native-models cache on
+the selected drive. The native process rechecks them before each load and only
+executes the bundled verified runtime. A read-only mount supplies the existing
+Linux API frontend, preserving chat, tool calling, usage, recording and publishing.
+The private native service binds loopback, uses a separate random key, and gets
+a lifetime-scoped guest network grant. The supervised process exits when its
+engine-owned pipe closes. No model-repository Python runs on the host.
+
+Apple Metal bounty workers use the same private model frontend, tool readiness
+check and isolated agent/test containers. Idle memory release stops both the
+frontend and its native process. Grid and bounty registration identify the backend.
+The draft app runner uses a 32K context window, matching the Linux GGUF runner,
+so bounty rules, tool definitions and source do not compete for only 4K tokens.
+The containers still use the x86-64 appliance; ARM64 guest execution and full
+VM support remain separate unfinished work. Native process filesystem isolation,
+strict unified-memory accounting, model optimizer parity and Mac hardware
+acceptance also remain to be completed. Uploaded GGUF publications use the same
+native path; other uploaded formats still require their supported backend.
+
+Build with `bash scripts/build-macos-model-runtime.sh`; development engines may
+set `YOUGORI_MACOS_MODEL_DIR` to its `build/macos-model/runtime` output. The normal
+Mac build includes these binaries and their licenses in desktop and engine bundles.
+`python3 scripts/test-macos-model-runtime.py` checks verified tiny-model inference,
+authentication and owner-loss cleanup, reporting CPU and Metal results separately.
+The dedicated manual GitHub workflow runs this on Apple Silicon and Intel. A CPU
+pass does not establish Metal support. GitHub ARM runners cannot validate nested
+hardware virtualization, and ad-hoc CI signatures do not establish Gatekeeper or
+notarization acceptance.
+
+### Native CI evidence — 2026-10-11
+
+[Run 38146853917](https://github.com/you-gori/yougori/actions/runs/38146853917)
+passed on macOS 15.7.9 for both architectures at CI commit
+`2f3337f8207be59329f3a2077b220b0f600cfd9c`:
+
+- Apple Silicon: native CPU and Metal inference, using the runner's `MTL0`
+  Apple Paravirtual device.
+- Intel: native CPU inference with Accelerate; no Metal device was available.
+- Both: verified GGUF fixture, wrong-key rejection, token generation, owner-pipe
+  loss cleanup, runtime checksums, native binary architecture, valid ad-hoc
+  signatures, and dependency checks allowing only macOS system libraries.
+
+The run exposed and corrected the `MTL0` device-name detection and an unintended
+Homebrew OpenSSL dependency. The private loopback server now builds without
+OpenSSL, OpenMP, built-in subprocess tools or downloaded Web UI assets.
+
+This evidence covers the standalone native inference runtime. Desktop/engine
+integration, full grid/bounty workflows, large-model memory behavior, physical
+GPU performance and distribution acceptance remain unverified on macOS. The
+four-file CI branch is `codex/macos-native-validation-20261011`; the implementation
+changes have not been published with it. The repository's original disabled
+GitHub Actions setting was restored after the tests.
+
+## Existing guest runtime
+
 Yougori runs on macOS 14 or newer, natively on Apple Silicon and Intel, with nothing
 else to install. The app ships its own QEMU, built from pinned sources (see
 `scripts/macos-runtime/inputs.json`). It downloads Cloudflare Tunnel, pinned and

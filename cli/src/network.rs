@@ -77,17 +77,27 @@ pub async fn share_with_listen(environment_id: &str, mode: &str, listen: bool) -
 
 pub async fn share_with_publication(environment_id: &str, mode: &str, listen: bool, closed: bool) -> Result<Value,String> {
     validate_listen(Some(mode), listen)?;
-    if !listen { eprintln!("Network privacy: providers and the Yougori gateway can read prompts and replies during inference. Hardware-enforced host privacy is unavailable. https://yougori.com/privacy"); }
+    if !listen { notice("Network privacy: providers and the Yougori gateway can read prompts and replies during inference. Hardware-enforced host privacy is unavailable. https://yougori.com/privacy"); }
     let result = call("market_share_model", json!({"environmentId": environment_id, "mode": mode, "listen": listen, "publish": closed})).await?;
     if listen {
         if let Some(path) = result["listenPath"].as_str() {
-            eprintln!("Listening · prompts and replies saved in the model container: {path}");
-            eprintln!("View: yougori terminal {environment_id}, then tail -F {}", shell_words::quote(path));
+            notice(&format!("Listening · prompts and replies saved in the model container: {path}"));
+            notice(&format!("View: yougori terminal {environment_id}, then tail -F {}", shell_words::quote(path)));
         } else {
-            eprintln!("Listening requested · recording starts when the free model runner is ready; its container path will appear in model status.");
+            notice("Listening requested · recording starts when the free model runner is ready; its container path will appear in model status.");
         }
     }
     Ok(result)
+}
+
+/// A note beside the result: on stderr for scripts, as a line of an interactive screen,
+/// whose raw mode would otherwise leave the text stepping across the terminal.
+fn notice(text: &str) {
+    if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+        crate::cli_ui::info(text);
+    } else {
+        eprintln!("{text}");
+    }
 }
 
 /// Caller text is printed as JSON so terminal control sequences remain escaped.

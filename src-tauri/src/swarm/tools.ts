@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto"
 import { mkdir, writeFile, rename, readFile, lstat, unlink } from "node:fs/promises"
 
 const spool = "/srv/yougori-swarm/spool"
-const evidence = tool.schema.array(tool.schema.object({
+const evidenceFile = tool.schema.object({
   name: tool.schema.string().min(1).max(160),
-  contentBase64: tool.schema.string().max(49152),
-})).max(4).default([])
+  contentBase64: tool.schema.string().min(1).max(49152),
+})
+const evidence = tool.schema.array(evidenceFile).max(4).default([])
 
 function errorCode(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined
@@ -33,7 +34,8 @@ async function request(action: string, params: unknown, sessionID: string) {
   await writeFile(pending, bytes, { flag: "wx", mode: 0o600 })
   await rename(pending, `${spool}/${id}.request`)
   const reply = `${spool}/${id}.response`
-  const deadline = Date.now() + 90000
+  // Includes the owner's five-minute approved check and receipt publication.
+  const deadline = Date.now() + 360000
   while (Date.now() < deadline) {
     try {
       const stat = await lstat(reply)
@@ -62,7 +64,7 @@ async function request(action: string, params: unknown, sessionID: string) {
 }
 
 export const attempt = tool({
-  description: "Record an evidenced completed attempt under your current task lease. Never announce a guess as a solved bounty.",
+  description: "Record an evidenced completed attempt under your current task lease. This journals the result; it does not submit a report. If a candidate meets the published criteria, next call bounty_report with actual evidence and the returned attempt ID. No further checks may run after this attempt. Never announce a guess as a solved bounty.",
   args: {
     outcome: tool.schema.enum(["not_reproduced", "candidate", "inconclusive", "blocked", "interrupted"]),
     observations: tool.schema.string().min(1).max(8000),
@@ -77,7 +79,7 @@ export const report = tool({
     title: tool.schema.string().min(1).max(200), component: tool.schema.string().min(1).max(400),
     reproduction: tool.schema.string().min(1).max(12000), observed: tool.schema.string().min(1).max(8000),
     expected: tool.schema.string().min(1).max(8000), impact: tool.schema.string().min(1).max(8000),
-    limitations: tool.schema.string().max(4000), evidence,
+    limitations: tool.schema.string().max(4000), evidence: tool.schema.array(evidenceFile).min(1).max(4),
     attemptIds: tool.schema.array(tool.schema.string().max(100)).max(32).optional(),
   },
   execute: (args, context) => request("report", args, context.sessionID),

@@ -240,6 +240,12 @@ impl RuntimeManager {
         Ok(url)
     }
     pub(super) async fn grant_qemu_host_service(&self, id: &str, port: u16, lifetime: std::sync::Weak<std::sync::atomic::AtomicBool>, allow_appliance: bool) -> Result<(), String> {
+        // The fabric is shared across drives, but running VM/appliance owners
+        // belong to each drive's runtime. Grant access on that owner, never on
+        // an unrelated default-drive appliance (or a missing one).
+        if let Some(engine) = self.storage_runtime(id)? {
+            return Box::pin(engine.grant_qemu_host_service(id, port, lifetime, allow_appliance)).await;
+        }
         let processes = self.vms.lock().await;
         if let Some(process) = processes.get(id) {
             return process.internet.as_ref().ok_or("Restart the VM to enforce host service isolation")?.grant_host_service(port, lifetime);

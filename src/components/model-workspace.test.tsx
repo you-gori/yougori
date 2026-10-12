@@ -8,7 +8,7 @@ const { status, chat, run, preflight, stream, history, saveHistory, platform } =
 const market = vi.hoisted(() => ({ status: vi.fn(), signIn: vi.fn(), share: vi.fn(), listen: vi.fn(async () => () => {}) }))
 vi.mock("@/api/market-api", () => ({ marketApi: market }))
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => platform }))
-vi.mock("@/api/projects-api", () => ({ modelsApi: { status, chat, run, preflight, stream, history, saveHistory, huggingface: async () => ({ configured: false }) } }))
+vi.mock("@/api/projects-api", () => ({ modelsApi: { compute: async () => ({ backend: "cuda", os: "windows", available: true }), status, chat, run, preflight, stream, history, saveHistory, huggingface: async () => ({ configured: false }) } }))
 // An in-memory engine store for chat history.
 let savedHistory: unknown = null
 beforeEach(() => { savedHistory = null; history.mockImplementation(async () => savedHistory); saveHistory.mockImplementation(async (_id: string, value: unknown) => { savedHistory = value }); preflight.mockResolvedValue({supported:true,task:"text-generation",resources:{},downloads:{}}) })
@@ -25,6 +25,16 @@ it("source-only publishers show file availability instead of a chat composer", a
   expect(await screen.findByRole("region", { name: "Source-only model" })).toBeVisible()
   expect(screen.queryByRole("textbox", { name: /Message/ })).not.toBeInTheDocument()
   expect(chat).not.toHaveBeenCalled()
+})
+
+it("passes explicit native compute and memory through the ordinary model launch", async () => {
+  run.mockResolvedValue({ id: "native-model" })
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
+  fireEvent.change(screen.getByLabelText("Compute"), { target: { value: "cpu" } })
+  fireEvent.change(screen.getByLabelText("Model memory (GB)"), { target: { value: "12" } })
+  fireEvent.click(screen.getByRole("button", { name: "Run model" }))
+  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, undefined, "cpu", 12))
 })
 
 it("rejects an unsupported decision model before creating a chat environment", async () => {
@@ -66,7 +76,7 @@ it("passes GGUF quantization and shares the created model for free", async () =>
   fireEvent.change(await screen.findByLabelText("GGUF quantization (optional)"), { target: { value: "Q8_0" } })
   fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
   fireEvent.click(screen.getByRole("button", { name: "Run model" }))
-  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0", undefined))
+  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0", undefined, "auto", undefined))
   await waitFor(() => expect(market.share).toHaveBeenCalledWith("new-model", "free", false))
 })
 
@@ -250,7 +260,7 @@ it("mounts local model files and publishes closed weights from the same created 
   fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
   fireEvent.click(screen.getByRole("checkbox", { name: /Closed weights/ }))
   fireEvent.click(screen.getByRole("button", { name: "Run model" }))
-  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, "D:/Models/private"))
+  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, "D:/Models/private", "auto", undefined))
   expect(preflight).toHaveBeenCalledWith(expect.any(String), undefined, "D:/Models/private")
   await waitFor(() => expect(market.share).toHaveBeenCalledWith("local-model", "free", true))
 })

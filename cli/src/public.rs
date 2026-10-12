@@ -48,6 +48,10 @@ Public commands:
   yougori uninstall [--yes]        Turn off start at sign-in and quit the engine, then run the Windows
                                   desktop uninstaller (other installs: remove manually). Data stays
   yougori top [--once]             Live CPU, memory, storage and network per environment
+  yougori monitor [ENV] [--once]   Security monitor: blocked PC/metadata access, connections, uploads, alerts
+  yougori audit [ENV] [--since TIME] [--limit N] [--verify]  Tamper-evident activity log (--verify checks it)
+  yougori lockdown ENV|--all --yes  Kill switch: cut Internet and pause until unlock (never deletes)
+  yougori unlock ENV|--all --yes   Undo a lockdown or automatic kill switch
   Add --format json|table to status/ps/ports (table in a terminal, JSON when piped)
   yougori start|stop|restart ENV   Accepts an ID or a unique name in any letter case
   yougori start bounty            Prepare a private local Swarm Mining worker; model first
@@ -158,6 +162,22 @@ pub async fn call_with_progress(method: &str, params: Value, progress: impl FnMu
     let result = client::call(&req).await?;
     if result["accepted"] == true {
         client::wait_job_with_progress(result["jobId"].as_str().ok_or("Missing job ID")?, 86400, progress).await
+    } else {
+        Ok(result)
+    }
+}
+
+/// [`call_with_progress`] for work the person can stop with Ctrl+C: once `cancel` is set the
+/// engine is asked to cancel the job, and the call returns [`crate::cli_ui::CANCELLED`].
+pub async fn call_with_progress_cancellable(method: &str, params: Value, progress: impl FnMut(&Value), cancel: &std::sync::atomic::AtomicBool) -> Result<Value, String> {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(crate::cli_ui::CANCELLED.into());
+    }
+    let mut req = client::request(method, params);
+    req.confirmed = true;
+    let result = client::call(&req).await?;
+    if result["accepted"] == true {
+        client::wait_job_cancellable(result["jobId"].as_str().ok_or("Missing job ID")?, 86400, progress, cancel).await
     } else {
         Ok(result)
     }
@@ -1041,6 +1061,11 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return call("model_optimizer",params).await;
     }
     if action=="support" {return model_support(args).await;}
+    if action=="compute" {
+        if args.len()!=2 {return Err("Usage: yougori model compute".into());}
+        client::start(None).await?;
+        return call("model_compute_status",json!({})).await;
+    }
     if action == "auth" { return crate::model_auth::run(&args[2..]).await; }
     if action == "decide" {
         let (target,path)=match &args[2..] {
@@ -1097,6 +1122,11 @@ async fn model(args: &[String]) -> Result<Value, String> {
             "--closed-weights" | "--publish" if action == "run" && !publish => publish = true,
             "--folder" if action == "run" && !resources.contains_key("modelFolder") => {resources.insert("modelFolder".into(),model_folder(&value(args,&mut i,"--folder")?)?);}
             "--quant" if action == "run" => quant = Some(value(args, &mut i, "--quant")?),
+            "--backend" if action == "run" && !resources.contains_key("backend") => {
+                let backend = value(args, &mut i, "--backend")?;
+                if !matches!(backend.as_str(), "auto" | "cuda" | "metal" | "cpu") { return Err("--backend must be auto, cuda, metal or cpu".into()); }
+                resources.insert("backend".into(), backend.into());
+            }
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
             "--environment" if action == "run" => environment = Some(value(args, &mut i, "--environment")?),
@@ -1161,7 +1191,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         name_neocloud_model(&mut env, &state, target).await?;
         call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port)})).await?
     } else if action == "run" {
-        match find_model(target).await?.filter(|_| quant.is_none() && !resources.contains_key("modelFolder")) {
+        match find_model(target).await?.filter(|_| quant.is_none() && !resources.contains_key("modelFolder") && !resources.contains_key("backend")) {
             Some(env) => {
                 if storage_drive.is_some() {
                     let state=call("get_platform_state",json!({})).await?;

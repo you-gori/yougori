@@ -11,19 +11,32 @@ The local pilot is not a security certification or a guaranteed USDC payment.
 
 ## Practice bounty
 
-New to Swarm Mining? Once your worker is online and waiting for offers,
-`yougori start bounty` asks whether you want to try a safe, offline practice
-bounty while you wait. It is an offer, not a separate command; decline it to keep
-waiting for real offers.
+New to Swarm Mining? Once a newly prepared worker is online and waiting for
+offers, `yougori start bounty` asks whether you want to try a safe, offline
+practice bounty while you wait; `yougori bounty practice WORKER`, or **T** in the
+waiting view, runs it any time the worker waits. Decline it to keep waiting for real offers.
 
 If you accept, it writes a tiny, deliberately-flawed Node login service to a
-temporary folder, invites you to find the planted flaw yourself, then replays how
-a worker reviews the approved snapshot, records an evidenced report, and how that
-report is verified and credited as a no-value practice award. The practice itself
-does not use your model, the server, a reward or payment, and nothing is uploaded.
-The offer only appears while the worker is waiting, not while it is paused or
-working an accepted bounty. Declining, Esc or Ctrl+C returns to the waiting view.
-It is a defensive-research teaching fixture only.
+temporary folder and invites you to find the planted flaw yourself. Then a live
+console opens: your worker's own model, loaded for this job only, reviews the same
+numbered files and records a report through the `bounty_report` function, and its
+work streams into the console as it happens. The report qualifies only when it names
+`auth.js`, the line of the hardcoded password and a login that uses it. A rejected
+report goes back to the model with the verifier's reason and, from the second
+rejection, a growing hint; the line number and password are never given. It keeps
+trying until a report qualifies. Type a line to steer the model — a suggestion that
+cannot change the scope, read at its next attempt; type `/stop` to end it, or press
+**Ctrl+]** to detach and leave it running. A qualifying report earns a no-value
+practice award. The practice does not run OpenCode or the sandboxes, and uses no
+server, reward or payment; nothing is uploaded. It runs only while the worker is
+waiting, not while it is paused or working an accepted bounty. It is a
+defensive-research teaching fixture only.
+
+While the worker is working an accepted bounty, press **L** or **Enter** in the
+waiting view for the same live console: the agent's actions — files read, searches,
+declared checks, attempts and reports — stream in as they happen (its text and tool
+output stay private to the shared investigation). Type to message your agent, or
+`/stop` to pause the bounty or leave it.
 
 Swarm Mining connects a participant's private local model and OpenCode agent to
 explicitly accepted security bounties. The hosted service opens private submissions when explicitly enabled. The owner
@@ -34,15 +47,47 @@ hold or transfer new bounty funds. A promised reward is not verified funding.
 
 ```sh
 yougori start bounty
+yougori start bounty --change
 ```
 
-Paste `hf.co/OWNER/MODEL` first. After the model check, one screen shows the
+Once a worker exists, `yougori start bounty` reconnects to the worker set up last
+and reuses its downloaded model and OpenCode sandbox; nothing is downloaded again
+and the model question is not asked. A worker whose preparation failed asks first:
+**Retry** keeps its files, **Set up again** chooses the model and drive anew, and
+**Open** offers the newest worker that did not fail. `--change`, `--model` or any
+other creation option sets up a new worker; it suggests the current worker's
+model, and the current worker keeps running until you stop it.
+
+Each worker gets a short name derived from its ID, such as `keen-heron`. Hints,
+tables and the waiting view use it, and every `WORKER` argument and
+`--worker` accept it, as well as the worker's own name, its ID or the first digits
+of its ID. JSON results keep `id` and add `handle`. Because plain
+`yougori start bounty` reopens the newest worker, setup prints
+`Reconnect: yougori start bounty`; other workers get `--worker` and their short name.
+
+Setup asks one question at a time. Esc, or the **Back** row at the end of a list,
+returns to the previous question with its answer kept; Ctrl+C stops any wait.
+Each wait shows a spinner, so a slow engine start, worker lookup or account check
+never looks frozen. Leaving a preparation that continues in the engine prints the
+reconnect command.
+
+Workers run GGUF models (the llama.cpp format) that support tool calling. The
+model question asks for a Hugging Face GGUF repository and suggests
+`hf.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF:Q4_K_M`. Paste another
+`hf.co/OWNER/MODEL-GGUF[:QUANT]` to change it. The suffix selects the GGUF variant;
+conflicting `--quant` and suffix values are rejected. A repository without GGUF
+files, one that needs a Hugging Face sign-in, or a model too large for this PC's
+memory shows **This model needs attention** before anything downloads. After the
+model check, you choose the drive for the model download, its runtime and the worker's sandboxes,
+with free space shown; the fixed drive with the most free space is preselected
+(`--storage-drive PATH` answers it). Then one screen shows the
 recommended settings: your NVIDIA GPU only when this PC passes the CUDA checks of
 `yougori gpu status` (otherwise, including AMD and Intel graphics, the CPU),
-four CPU cores and eight GB RAM, the fixed drive with the most free space, a 20 GB
-workspace quota and the model kept loaded while waiting. Choose **Prepare**, or
+four CPU cores and memory estimated from the selected weights plus overhead and
+four GB for the agent/test sandboxes (at least eight GB), the chosen drive, a 20 GB
+workspace quota and the model loaded only for work. Choose **Prepare**, or
 **Customize** to answer the individual questions for local compute, CPU/RAM,
-storage, workspace quota, worker name and model memory. Any of these set on the
+workspace quota, worker name and model memory. Any of these set on the
 command line skips the one-screen summary. Review preparation before any worker
 is created. The engine verifies
 model compatibility and OpenCode readiness; an ordinary model greeting alone is
@@ -56,16 +101,36 @@ left by an earlier publisher's setup or test commands are removed first.
 The model API stays private and no Neo Grid listing or public
 tunnel is created. Waiting performs no agent inference.
 
-Choose **Release model memory while waiting** or `--release-memory` to release
-idle model memory. CPU mode stops its managed model container; NVIDIA mode uses
-the existing GPU optimizer to unload idle weights. The engine reloads the model
-when you accept work or send your own agent a prompt. Verified model files and
+Custom GGUF repositories, including models described as uncensored, use the same
+compatibility checks. The checkpoint must actually return valid function calls;
+its label does not guarantee tool quality, sufficient context, or that it will
+complete a finding. OpenCode automatically permits source/context reads and the
+four managed bounty tools. Its permissions use the pinned harness's non-Git
+worktree-relative paths. Accepted scope and participant controls still apply.
+Each investigation has a 15-minute turn limit and 12 model steps; an approved
+check can run for five minutes with continuing authorization checks and lease
+renewal. The participant's accepted work budget can stop either earlier.
+Recording an attempt journals the investigation; it does not submit a report.
+When actual evidence meets the published criteria, the agent is instructed to
+follow the attempt with an evidence-backed report in the same turn. A failed
+setup and a regression test that reproduces the defect are distinct outcomes.
+
+The model loads only for work: an accepted bounty, your chat with the agent, or the
+practice. While the worker waits, CPU mode stops its managed model container and
+NVIDIA mode uses the existing GPU optimizer to unload the weights, so the worker
+holds no GPU or model memory. The engine reloads the model for the next job, which
+adds its load time. Choose **Keep it loaded** or `--keep-loaded` for faster starts;
+`yougori bounty memory WORKER keep|release` changes this for an existing worker,
+and `release` unloads an idle model at once. Workers created before this release
+keep their earlier choice. Verified model files and
 caches remain on disk, so reloading does not require another download. A model
 shared by active workers, a pinned model, or a model used by another ordinary
 workload stays available. Stop and delete stop only an unused managed model;
 deleting a worker retains its model files and cache.
 New workers reuse a retained private Swarm model when its verified revision,
-quantization, CPU/GPU mode and resource allocation match the requested model.
+quantization, CPU/GPU mode, resource allocation and drive match the requested model.
+Retrying a worker's preparation keeps its sandbox and the pinned OpenCode already
+installed there; a sandbox or model removed outside Swarm is prepared again.
 
 Offers show the named publisher, objective, exact scope and source revision,
 written source authorization and its digest, promised reward, winning rules and
@@ -111,14 +176,17 @@ yougori bounty doctor WORKER
 
 The waiting view draws a dotted world map in the website's colours with your worker
 pulsing at an approximate home location: the Windows region's country centre, or the
-time-zone reference point on macOS and Linux. The location is only drawn locally and
-never sent. Pulses speed up while working, stop while paused and flash when offers
+time-zone reference point on macOS and Linux. That point is only drawn locally. While a
+worker waits for offers, it shares its IANA time zone (for example `Europe/Amsterdam`)
+with yougori.com, like a Neo Grid provider. The public Swarm Mining map shows ready
+workers at their time zone's reference point with a count; it never shows names,
+accounts, models or addresses. Pulses speed up while working, stop while paused and flash when offers
 arrive; set `YOUGORI_NO_ANIMATION=1` for a still view. In a terminal, `yougori
 bounty workers`, `status`, `offers` and `doctor WORKER` print readable views; pipes
 and scripts keep receiving JSON.
 
 The waiting view offers **O** to review offers, **C** to chat, **P** to pause or
-resume, **R** to refresh, and **Q** or **Ctrl+]** to detach. The engine continues
+resume, **T** to practice (while waiting), **L** or **Enter** to watch work live (while working), **R** to refresh, and **Q** or **Ctrl+]** to detach. The engine continues
 waiting or working after detachment. **Ctrl+C** opens a menu with **Cancel**
 selected. Pause checkpoints work; stop retains files. Delete requires a second
 explicit confirmation and affects only that worker's managed workspace. Submitted
@@ -142,12 +210,15 @@ yougori bounty delete WORKER --yes
 ```
 
 `yougori start bounty --worker WORKER` reconnects to a saved worker. A paused
-worker stays paused unless you choose **Resume** or add `--yes`. Every engine
+worker stays paused unless you choose **Resume** or add `--yes`. Reconnecting to a
+worker that is preparing, waiting or working only opens it; preparation is not
+restarted. Every engine
 restart pauses all workers, and nothing runs until you resume each one;
 `yougori bounty workers`, `yougori bounty status` and the waiting view show the
 exact `yougori bounty resume WORKER` command.
 
-For scripts, preparation requires a supplied model, `--yes`, and `--no-wait`.
+For scripts, preparation requires a supplied model, `--yes`, and `--no-wait`;
+without `--model`, `--yes --no-wait` reconnects to the saved worker instead.
 Authenticate with `yougori login` first. This prepares a worker, never accepts a
 bounty. `--no-wait` prints only the new worker's JSON (its ID and state
 `preparing`) as soon as preparation starts; follow it with
@@ -223,16 +294,106 @@ approval. Missing details keep production Swarm disabled. Development fixtures
 use synthetic local declarations and never send payments.
 
 Native checks run with `cargo test --locked --manifest-path src-tauri/Cargo.toml
---lib swarm::`. The optional real-runtime test requires the private website's
+--lib swarm::`. The optional real-runtime test currently uses the Windows desktop
+test build and requires the private website's
 `scripts/swarm-native-fixture.mjs` path in `YOUGORI_SWARM_FIXTURE_PATH`; run
 `swarm_real_local_model_opencode_bounty_journey` with `--ignored --nocapture
 --test-threads=1`. It uses disposable storage, a real small HF CPU model and
 pinned OpenCode, with an isolated local bounty service and simulated USDC.
+It requires a real failing approved-check receipt, a managed model attempt and a
+complete report before testing private chat, pause, publisher review and a
+synthetic external-payment award. Automatic inconclusive records cannot satisfy
+these requirements; missing any milestone by the deadline fails the test.
+Set `YOUGORI_SWARM_TEST_MODEL` to an `OWNER/REPOSITORY` to exercise
+another GGUF checkpoint; `YOUGORI_SWARM_TEST_QUANT` selects its quantization,
+`YOUGORI_SWARM_TEST_GPU` selects `cpu` or `nvidia` on that host, and
+`YOUGORI_SWARM_TEST_MEMORY_GB` sets the total worker memory (default eight GB).
 Ordinary server/browser tests do not download models or send payments.
 With the same fixture path, the optional
 `swarm_http_direct_payment_contract_without_model_runtime` test verifies the real
 HTTP/CLI/native consent and digest contract without containers or model downloads.
 Run it with `--ignored`; its reward commitments and credentials are synthetic.
+Registration uses the production request builder, including negotiated platform
+metadata; servers without `workerCapabilityFields` receive the legacy fields.
+
+For a deterministic harness check, run `scripts/swarm-opencode-smoke.py` with an
+extracted Linux OpenCode 1.18.35 binary and `--unprivileged --installer-umask-077
+--repair-readable --receipt-race --journey --boundaries`. It verifies source reading and the
+check/attempt/report tool sequence as the unprivileged agent, including delayed
+receipt ownership, plus rejection of external read/search requests while approved
+work continues. Its model and receipts are synthetic; it does not establish
+real-model research quality or native sandbox/service integration.
+
+## Validation record — 2026-10-11
+
+These checks ran against the working source checkout on Windows, with the private
+website's loopback fixture. They do not upgrade an installed app or deployed site.
+
+A subsequent installed 1.0.17 run with worker storage on `D:\` exposed a missed
+case: private network attachment looked for the OCI appliance on the default
+storage runtime, even though the worker's agent was running on the selected
+drive. It failed with `Start the environment before attaching a host service`.
+The host-service grant now follows the environment's saved storage route. A
+disposable regression reproduced that exact error before the fix; the corrected
+private-network test passed with two separate OCI pools on `D:\`, HTTP on the
+approved port, and denial after connection removal (60.08 seconds). The 161
+runtime unit tests and all-target native build check also passed. The earlier
+real-model run used one temporary storage root and did not cover this case.
+The same two-pool regression passed against an isolated 1.0.17 hotfix checkout
+in 60.44 seconds; its all-target check and release executable build also passed.
+That executable has been staged locally, not installed or published.
+This connection regression does not establish readiness of the user's selected
+Gemma E4B checkpoint or completion of a live bounty.
+
+| Layer | Result |
+| --- | --- |
+| Native Swarm | 48 unit tests passed, covering scope changes, cancellation, stale progress, model residency, private chat boundaries and capability negotiation |
+| CLI | 25 bounty unit tests, five command-line integration tests and 11 embedded-skill checks passed |
+| Model runtime | 15 model-server, seven tool-protocol, three Rust GPU-optimizer and 10 Python GPU-optimizer tests passed |
+| Private website | 38 server/fixture tests and seven Swarm browser tests passed |
+| OpenCode 1.18.35 | Synthetic provider checked approved source/context reads, three outside-workspace denials, and managed check/attempt/report receipts, including unprivileged execution and a receipt ownership race |
+| Native build | `npm run check:native` passed for all targets on this host |
+
+The ordinary website build encountered pre-existing broken `dist` and
+`public/downloads` junctions. The browser tests used a separate Vite output folder
+and the dedicated Swarm API fixture. No screenshots or videos were captured.
+
+The real-model acceptance test requires all three milestones: an actual failing
+approved check, a model-authored managed attempt, and a complete private report.
+It then verifies private participant chat, pause, synthetic publisher review and
+an award with no balance credit or transfer. A tool-calling readiness probe alone
+does not establish that a model can complete this workflow. Qwen3-0.6B reproduced
+the fixture failure but did not complete the required workflow. The initial Gemma
+GPU run exposed a missing GPU scheduler in the QA application bootstrap; the
+subsequent run reproduced the defect and recorded a correct candidate, but omitted
+the report. The task and tool instructions now explicitly distinguish attempt
+records from reports and require an evidence-backed qualifying report before the
+turn ends. The rerun passed in 933.43 seconds, including download/setup, an actual
+failing check, managed attempt, one complete report, private chat, pause, synthetic
+review/award and disposal of its runtime. The report identified the hardcoded
+`True` in `can_read`, cited the declared unittest failure, gave the correct
+observed/expected behavior, and linked its attempt and uploaded evidence. The
+trace included unsuccessful file lookups before the model recovered in a later
+turn. Afterwards, the instructions were clarified to give the exact context
+directory; that wording change is covered by the explicit-path harness check,
+not a further real-model rerun.
+
+The Gemma run uses an RTX 5090 Laptop GPU, a 16 GB total worker allocation,
+`thesamgodson/Gemma-4-12B-Hephaestus-GGUF` revision
+`00557876c5faef0a886b33c30d03767dd8b0aece`, and
+`gemma-4-12B-Hephaestus-Q4_K_M.gguf` (7,381,384,864 bytes; SHA-256
+`58ed40c100102dac7758c651260e1d16af49f08bc67238c6deee18d36a7c42e2`).
+The [publisher's model card](https://huggingface.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF)
+describes it as abliterated with restored tool calling; those labels do not
+replace the native workflow check.
+
+`HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF` at `IQ4_XS`
+was checked through preflight and CLI parsing, but its weights were not run in
+this acceptance test. Its MTP
+sidecar acceleration is not enabled or validated. Native Mac model CI passed
+separately; full macOS bounty/guest integration and the changed 32K context
+configuration have not had a native acceptance run. No result here guarantees
+zero bugs, model compliance on every task, an accepted real finding or payment.
 
 Read [the current risk-reduction review](swarm-risk-reduction-review.txt) for
 implemented boundaries, legal reasoning and remaining operational obligations.

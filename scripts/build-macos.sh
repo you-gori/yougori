@@ -21,6 +21,8 @@ identity=${YOUGORI_MAC_SIGNING_IDENTITY:--}
 # re-signed with this build's identity, which also refreshes its SHA256SUMS.
 if [[ ! -x build/macos-runtime/qemu/qemu-system-x86_64 ]]; then bash scripts/build-macos-runtime.sh; fi
 bash scripts/sign-macos-runtime.sh build/macos-runtime/qemu "$identity"
+bash scripts/build-macos-model-runtime.sh
+python3 scripts/test-macos-model-runtime.py
 # Fresh native packages: never copy Windows node_modules, target or CLI binaries.
 npm ci
 npm run lint

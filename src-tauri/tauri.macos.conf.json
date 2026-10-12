@@ -13,6 +13,7 @@
       "../node_modules/@novnc/novnc/": "third-party-sources/novnc/",
       "resources/runtime/appliance/": "runtime/appliance/",
       "../build/macos-runtime/qemu/": "runtime/qemu/",
+      "../build/macos-model/runtime/": "runtime/llama/",
       "resources/cli/yougori-cli": "cli/yougori-cli",
       "resources/THIRD_PARTY_NOTICES.txt": "THIRD_PARTY_NOTICES.txt",
       "resources/APPLICATION_LICENSES.txt": "APPLICATION_LICENSES.txt",

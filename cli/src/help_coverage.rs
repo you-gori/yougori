@@ -1,7 +1,7 @@
 //! `yougori help` and the agent guide (skills/yougori/references/cli.txt) must name
 //! every command the CLI accepts. Advanced routes are found by asking `parse` itself,
 //! so a new route fails these tests until both documents describe it.
-use crate::{bounty, container_tools, execution, logs, parse, public, terminal, GUIDE};
+use crate::{bounty, container_tools, execution, logs, parse, public, security, terminal, GUIDE};
 use std::collections::BTreeSet;
 
 /// The word choices at each position of one command, such as `[{env}, {start, stop}]`.
@@ -14,7 +14,7 @@ const ALIASES: &[(&str, &str)] = &[("environment", "env")];
 const MAIN_COMMANDS: &[&str] = &[
     "cli", "launch", "status", "top", "doctor", "update", "uninstall", "login", "logout", "account",
     "connect", "confidential", "vault", "bounty", "schema", "skills", "terminal", "download", "agent",
-    "app", "help",
+    "app", "help", "monitor", "audit", "lockdown", "unlock",
 ];
 
 /// Subcommands parsed outside `parse` (main.rs, public.rs and their helpers). Add new ones here.
@@ -42,11 +42,16 @@ const PUBLIC_SUBCOMMANDS: &[&[&str]] = &[
 /// `yougori bounty ACTION`, documented by `yougori bounty --help`. Add new actions here.
 const BOUNTY_ACTIONS: &[&str] = &[
     "workers", "bounties", "apply", "status", "offers", "details", "accept", "skip", "chat", "messages",
-    "submit", "leave", "pause", "resume", "stop", "delete", "reports", "rewards", "doctor",
+    "submit", "leave", "pause", "resume", "stop", "delete", "reports", "rewards", "doctor", "practice",
+    "memory",
 ];
 
 /// Public commands whose parsers name their options in a usage message.
-const USAGES: &[(&str, &str)] = &[("exec", execution::USAGE), ("logs", logs::USAGE), ("terminal", terminal::USAGE)];
+const USAGES: &[(&str, &str)] = &[
+    ("exec", execution::USAGE), ("logs", logs::USAGE), ("terminal", terminal::USAGE),
+    ("monitor", security::MONITOR_USAGE), ("audit", security::AUDIT_USAGE),
+    ("lockdown", security::LOCKDOWN_USAGE), ("unlock", security::UNLOCK_USAGE),
+];
 
 fn is_word(text: &str) -> bool {
     text.starts_with(|c: char| c.is_ascii_lowercase())

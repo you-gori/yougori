@@ -9,7 +9,7 @@ import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 cache = tempfile.TemporaryDirectory(prefix="yougori-model-test-")
@@ -19,6 +19,59 @@ import model_server as model
 
 
 class CudaDevicesTests(unittest.TestCase):
+    def test_llama_threads_fit_the_sandbox_quota_on_gpu_and_cpu(self):
+        quota = tempfile.NamedTemporaryFile("w", delete=False)
+        quota.write("200000 100000\n")
+        quota.close()
+        real_open = open
+        def fake_open(path, *args, **kwargs):
+            return real_open(quota.name, *args, **kwargs) if path == "/sys/fs/cgroup/cpu.max" else real_open(path, *args, **kwargs)
+        try:
+            with patch.dict(os.environ, {}, clear=False), patch("builtins.open", fake_open):
+                os.environ.pop("YOUGORI_MODEL_CPU_THREADS", None)
+                os.environ.pop("YOUGORI_MODEL_CPU", None)
+                # A GPU runner in a two-core quota gets two threads and no busy polling.
+                self.assertEqual(model.llama_cpu_options(), ["--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0"])
+                os.environ.update(YOUGORI_MODEL_CPU="1", YOUGORI_MODEL_CPU_THREADS="6")
+                self.assertEqual(model.llama_cpu_options()[:4], ["-ngl", "0", "--threads", "6"])
+                os.environ["YOUGORI_MODEL_CPU_THREADS"] = "invalid"
+                self.assertEqual(model.llama_threads(), 2, "an invalid setting falls back to the quota")
+        finally:
+            os.environ.pop("YOUGORI_MODEL_CPU", None)
+            os.environ.pop("YOUGORI_MODEL_CPU_THREADS", None)
+            os.unlink(quota.name)
+
+    def test_native_backend_keeps_verified_frontend_and_private_credentials(self):
+        previous = dict(model.LLAMA)
+        try:
+            for backend in ("metal", "cpu"):
+                with patch.dict(os.environ, {"YOUGORI_NATIVE_BACKEND": backend,
+                        "YOUGORI_NATIVE_TOKEN": "c" * 64, "YOUGORI_NATIVE_PORT": "12345"}), \
+                        patch.object(model, "verified_gguf") as verify, \
+                        patch.object(model, "llama_json", side_effect=[{}, {"default_generation_settings": {"n_ctx": 2048}}]), \
+                        patch.object(model.subprocess, "Popen") as spawn:
+                    model.load_gguf()
+                    verify.assert_called_once()
+                    spawn.assert_not_called()
+                    self.assertEqual(model.LLAMA["host"], "10.0.2.2")
+                    self.assertEqual(model.LLAMA["key"], "c" * 64)
+                    self.assertEqual(model.STATE["backend"], backend)
+                    self.assertEqual(model.STATE["gpuCount"], int(backend == "metal"))
+                    self.assertTrue(model.STATE["weightsVerified"])
+                    self.assertTrue(model.STATE["toolCalling"])
+            self.assertIn("YOUGORI_NATIVE_TOKEN", model.PRIVATE_ENVIRONMENT)
+        finally:
+            model.LLAMA.clear()
+            model.LLAMA.update(previous)
+
+    def test_native_backend_refuses_invalid_connection_before_loading(self):
+        for backend, token, port in [("cuda", "c" * 64, "12345"), ("metal", "bad", "12345"), ("cpu", "c" * 64, "0")]:
+            with patch.dict(os.environ, {"YOUGORI_NATIVE_BACKEND": backend, "YOUGORI_NATIVE_TOKEN": token, "YOUGORI_NATIVE_PORT": port}), \
+                    patch.object(model, "verified_gguf") as verify:
+                with self.assertRaisesRegex(RuntimeError, "Invalid native"):
+                    model.load_native_gguf()
+                verify.assert_not_called()
+
     def test_device_listing_works_without_old_startup_diagnostics(self):
         listing = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 5090 Laptop GPU (24462 MiB, 23119 MiB free)\n  CUDA1: NVIDIA RTX 4090 (24564 MiB, 22000 MiB free)\n"
         with patch.object(model.subprocess, "run", return_value=SimpleNamespace(stdout=listing, stderr="")) as run:
@@ -154,6 +207,23 @@ class ModelRelayTests(unittest.TestCase):
 
 
 class ModelDownloadTests(unittest.TestCase):
+    def test_cache_progress_and_completion_at_stall_boundary_are_accepted(self):
+        for events in ([{"kind": "cached", "files": ["weights.gguf"]},
+                        {"kind": "done", "root": "/snapshot"}],
+                       [{"kind": "done", "root": "/snapshot"}]):
+            process = Mock(stdin=io.StringIO(),
+                           stdout=io.StringIO("\n".join(json.dumps(event) for event in events)),
+                           returncode=0)
+            process.poll.return_value = 0
+            with self.subTest(events=events), patch.object(model.subprocess, "Popen", return_value=process) as spawn, \
+                 patch.object(model, "incomplete_downloads", return_value=set()), \
+                 patch.object(model, "DOWNLOAD_STALL_SECONDS", 1), \
+                 patch.object(model.time, "monotonic", side_effect=[0, 1.1, 1.2]):
+                self.assertEqual(model.download_snapshot("a" * 40, {"weights.gguf": 100}), "/snapshot")
+                self.assertEqual(model.STATE["download"]["receivedBytes"], 100)
+                spawn.assert_called_once()
+                process.terminate.assert_not_called()
+
     def test_auto_precision_fits_large_models_without_exceeding_free_gpu_memory(self):
         gib = 1024 ** 3
         torch = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda index: (24 * gib, 24 * gib)), bfloat16="bf16")
@@ -214,7 +284,7 @@ else:
     print(json.dumps({"kind": "done", "root": "/verified-snapshot"}), flush=True)
 '''
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, HF_HOME=directory), \
-             patch.object(model, "CACHE", directory), patch.object(model, "DOWNLOAD_WORKER", worker), patch.object(model, "DOWNLOAD_STALL_SECONDS", 0.1):
+             patch.object(model, "CACHE", directory), patch.object(model, "DOWNLOAD_WORKER", worker), patch.object(model, "DOWNLOAD_STALL_SECONDS", 1):
             root = os.path.join(directory, "hub", "models--" + model.MODEL.replace("/", "--"), "blobs")
             os.makedirs(root)
             with open(os.path.join(root, "aaaaaaaa.11111111.incomplete"), "wb") as file:

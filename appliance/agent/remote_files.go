@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -251,13 +250,13 @@ func (s *server) remoteFiles(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	guestRoot := "/"
-	if !s.microVM {
-		pid, e := containerPID(ctx, request.ID)
-		if e != nil {
-			writeError(w, 409, "start the environment before accessing files")
-			return
-		}
-		guestRoot = "/proc/" + strconv.Itoa(pid) + "/root"
+	process, err := s.filesProcess(ctx, request.ID)
+	if err != nil {
+		writeError(w, 409, "start the environment before accessing files")
+		return
+	}
+	if process != "" {
+		guestRoot = process + "/root"
 	}
 	root, err := unix.Open(guestRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {

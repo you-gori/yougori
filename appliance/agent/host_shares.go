@@ -266,6 +266,17 @@ func (n *hostFileNode) Setattr(ctx context.Context, _ fs.FileHandle, in *fuse.Se
 	return n.Getattr(ctx, nil, out)
 }
 
+// sharesPID is the process whose mount namespace receives an environment's
+// shared folders: its container, the OCI workload that runs a microVM's tool,
+// or a microVM without a workload. A stopped workload is an error, never the
+// microVM's own guest.
+func (s *server) sharesPID(ctx context.Context, id string) (int, error) {
+	if s.microVM && microWorkloadExists() {
+		return namespacedPID(ctx, microWorkloadNamespace, microWorkloadName)
+	}
+	return s.environmentPID(ctx, id)
+}
+
 func (s *server) attachHostShare(w http.ResponseWriter, r *http.Request) {
 	var request hostShareRequest
 	if !decodeRequest(w, r, &request) || !requireID(w, request.ID) || !requireID(w, request.ShareID) {
@@ -283,7 +294,7 @@ func (s *server) attachHostShare(w http.ResponseWriter, r *http.Request) {
 	if request.Connection {
 		destination = "/yougori/shared/" + request.ShareID
 	}
-	pid, err := s.environmentPID(r.Context(), request.ID)
+	pid, err := s.sharesPID(r.Context(), request.ID)
 	if err != nil {
 		writeError(w, 409, err.Error())
 		return

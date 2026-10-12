@@ -15,6 +15,32 @@ async fn cancelled_preparation_does_not_wait_for_another_workers_download() {
 fn worker() -> Worker {
     serde_json::from_value(json!({"id":"worker-abc","name":"Test worker","model":"owner/model","state":"ready_waiting","stage":"Ready","site":"https://yougori.com","gpu":"cpu","resources":{"cpu":4,"memoryGb":8},"quotaGb":20,"keepResident":true,"credentialReference":"swarm-secret","opencodePasswordReference":"opencode-secret"})).unwrap()
 }
+#[test]
+fn registration_negotiates_platform_fields_without_breaking_older_services() {
+    let mut worker = worker();
+    for backend in ["cpu", "nvidia", "metal"] {
+        worker.gpu = backend.into();
+        let old = registration_request(&worker, &json!({}));
+        assert_eq!(old["capabilities"], json!({"localOnly":true,"gpu":backend!="cpu","toolCalling":true}));
+        let new = registration_request(&worker, &json!({"workerCapabilityFields":["backend","os","architecture","unifiedMemory","unexpected"]}));
+        assert_eq!(new["capabilities"]["backend"], backend);
+        assert_eq!(new["capabilities"]["os"], std::env::consts::OS);
+        assert_eq!(new["capabilities"].as_object().unwrap().len(), 7);
+        let partial = registration_request(&worker, &json!({"workerCapabilityFields":["backend"]}));
+        assert_eq!(partial["capabilities"].as_object().unwrap().len(), 4);
+    }
+}
+#[test]
+fn time_zone_is_shared_only_with_services_that_accept_it() {
+    let worker = worker();
+    assert!(registration_request(&worker, &json!({})).get("timezone").is_none());
+    assert!(registration_request(&worker, &json!({"workerLocationFields":["other"]})).get("timezone").is_none());
+    assert_eq!(shared_timezone(&json!({"workerCapabilityFields":["timezone"]})), None);
+    let zone = iana_time_zone::get_timezone().ok();
+    assert_eq!(shared_timezone(&json!({"workerLocationFields":["timezone"]})), zone);
+    let request = registration_request(&worker, &json!({"workerLocationFields":["timezone"]}));
+    assert_eq!(request.get("timezone").and_then(Value::as_str), zone.as_deref());
+}
 fn authorized_policy() -> Value {
     let document = json!({"publisherLegalName":"Fixture publisher","publisherDisplayName":"Fixture display","signerName":"Fixture signer","signerCapacity":"Authorized maintainer","rightsStatement":"I authorize offline review of this supplied fixture snapshot","defensivePurpose":"Defensive source review","permittedOfflineTests":"Declared offline setup and test checks","thirdPartyExcluded":true,"liveSystemsExcluded":true,"noProductionSecrets":true,"sourceRevision":"snapshot-1","sourceDigest":"a".repeat(64),"termsVersion":1,"minimumRules":{"mode":"local_source_only","remoteTargetsAllowed":false,"thirdPartyRightsGranted":false,"sourceInspectionDoesNotVerifyOwnership":true,"productionSecretsAllowed":false,"purpose":"defensive_source_review"}});
     json!({"bountyId":"bounty-a","termsVersion":1,"termsDigest":"b".repeat(64),"sourceRevision":"snapshot-1","sourceDigest":"a".repeat(64),"authorizationDigest":yougori_cli::bounty::source_authorization_digest(&document).unwrap(),"authorization":document,"paymentMode":"publisher_direct_external","rewardFundingVerified":false,"prefunded":false,"rewardGuaranteed":false})
@@ -123,6 +149,45 @@ fn native_worker_view_excludes_credentials_and_channel_records() {
         assert!(!text.contains(secret));
     }
     assert_eq!(w.view()["id"], "worker-abc");
+}
+
+#[test]
+fn only_the_participant_changes_whether_the_model_stays_loaded() {
+    assert!(validate(&json!({"action":"memory","workerId":"worker-abc"})).is_err());
+    assert!(validate(&json!({"action":"memory","workerId":"worker-abc","keepResident":"no"})).is_err());
+    assert!(validate(&json!({"action":"memory","workerId":"worker-abc","keepResident":false})).is_ok());
+    assert!(validate(&json!({"action":"practice","workerId":"worker-abc"})).is_ok());
+    let rejected = json!({"file":"auth.js","line":6});
+    assert!(validate(&json!({"action":"practice","workerId":"worker-abc","previous":[rejected,null],"keepLoaded":true})).is_ok());
+    for invalid in [json!({"previous":"auth.js"}), json!({"previous":[1]}), json!({"previous":[null,null,null,null,null]}), json!({"keepLoaded":"yes"}),
+        json!({"previous":[{"reproduction":"x".repeat(9000)}]})] {
+        let mut request = invalid.clone();
+        request["action"] = "practice".into();
+        request["workerId"] = "worker-abc".into();
+        assert!(validate(&request).is_err(), "{invalid}");
+    }
+    let mut rows = Workers::default();
+    let mut released = worker();
+    released.keep_resident = false;
+    rows.rows.insert(released.id.clone(), released);
+    // A runner's progress copy from before the participant's choice keeps the model loaded.
+    let mut stale = worker();
+    stale.stage = "Waiting for bounty offers.".into();
+    apply_progress(&mut rows, stale).unwrap();
+    assert!(!rows.rows["worker-abc"].keep_resident);
+    assert_eq!(rows.rows["worker-abc"].stage, "Waiting for bounty offers.");
+}
+
+#[test]
+fn workers_from_earlier_releases_have_no_creation_time_and_views_show_the_variant() {
+    let mut w = worker();
+    assert_eq!(w.view()["createdAt"], 0, "the CLI then ranks this worker by state and progress");
+    w.created_at = 1_791_763_200;
+    w.quant = Some("Q4_K_M".into());
+    let view = w.view();
+    assert_eq!((view["createdAt"].as_i64(), view["quant"].as_str()), (Some(1_791_763_200), Some("Q4_K_M")));
+    let saved: Worker = serde_json::from_value(serde_json::to_value(&w).unwrap()).unwrap();
+    assert_eq!(saved.created_at, 1_791_763_200);
 }
 
 #[test]
@@ -344,4 +409,36 @@ fn an_engine_restart_pauses_active_workers_and_says_how_to_resume() {
     let mut resumed = rows["worker-a"].clone();
     resumed.state = "ready_waiting".into();
     assert_eq!(resumed.view()["restored"], false);
+}
+#[tokio::test]
+async fn a_worker_without_a_gpu_choice_uses_nvidia_only_when_the_cuda_checks_pass() {
+    let prepare = json!({"action":"prepare","model":"hf.co/owner/model"});
+    assert!(validate(&prepare).is_ok());
+    assert_eq!(worker_gpu(&prepare, std::future::ready(true)).await, "nvidia");
+    assert_eq!(worker_gpu(&prepare, std::future::ready(false)).await, "cpu");
+    // An explicit choice is kept, whatever the checks would say, and does not run them.
+    for gpu in ["nvidia", "cpu"] {
+        let mut request = prepare.clone();
+        request["gpu"] = gpu.into();
+        assert!(validate(&request).is_ok());
+        assert_eq!(worker_gpu(&request, async { panic!("an explicit gpu skips the CUDA checks") }).await, gpu);
+    }
+    for gpu in [json!("amd"), json!(""), json!(true), json!(1)] {
+        let mut request = prepare.clone();
+        request["gpu"] = gpu.clone();
+        assert!(validate(&request).is_err(), "{gpu}");
+    }
+}
+#[test]
+fn a_skipped_offer_stays_skipped_when_older_progress_is_saved() {
+    // The runner's copy was taken before the participant skipped the offer.
+    let mut copy = worker();
+    let mut skipped = copy.clone();
+    skipped.skipped_offers.push("offer_1:digest".into());
+    let mut rows = Workers::default();
+    rows.rows.insert(copy.id.clone(), skipped);
+    copy.stage = "Waiting for bounty offers".into();
+    apply_progress(&mut rows, copy.clone()).unwrap();
+    assert_eq!(rows.rows[&copy.id].skipped_offers, ["offer_1:digest"]);
+    assert_eq!(rows.rows[&copy.id].stage, "Waiting for bounty offers", "the progress itself is saved");
 }

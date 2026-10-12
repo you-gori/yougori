@@ -3,10 +3,48 @@
 use crate::{
     cli_ui::{self as ui, Choice},
     public::call,
-    tool_sharing::share_prompt,
+    tool_sharing::{step_prompt, ENDED},
 };
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
+
+/// The name people know each tool by.
+fn product(tool: &str) -> &str {
+    match tool {
+        "codex" => "Codex",
+        "claude" => "Claude Code",
+        "gemini" => "Gemini CLI",
+        "opencode" => "OpenCode",
+        "kilo" => "Kilo Code",
+        "ollama" => "Ollama",
+        "openclaw" => "OpenClaw",
+        _ => tool,
+    }
+}
+
+/// Whether the tool keeps its sign-in in files Yougori can copy. OpenClaw does not.
+fn offered(tool: &str) -> bool {
+    !candidates(tool, Path::new("/"), |_| None).is_empty()
+}
+
+fn question(tool: &str) -> String {
+    format!("Use your {} sign-in from this computer?", product(tool))
+}
+
+/// No is the default. Yes is unavailable for a tool whose sign-in cannot be copied.
+fn choices(tool: &str) -> [Choice; 2] {
+    let yes = Choice::new("Yes, copy it into this sandbox", "use the same account inside");
+    [
+        if offered(tool) { yes } else { yes.disabled() },
+        Choice::new("No, sign in inside the sandbox", "or keep the sign-in it already has"),
+    ]
+}
 
 struct Credential {
     source: PathBuf,
@@ -68,8 +106,11 @@ fn available(entries: Vec<Credential>) -> Vec<Credential> {
 }
 
 fn notes(tool: &str, sharing: bool) -> Vec<String> {
+    if !offered(tool) {
+        return vec![format!("{} keeps its sign-in in a database with other data, so Yougori cannot copy it yet. Sign in during its onboarding.", product(tool))];
+    }
     let mut notes = vec![
-        format!("Copy supported {tool} credential files into this sandbox; replace its matching credential files."),
+        format!("Yes copies the supported {} credential files into this sandbox, replacing its matching files.", product(tool)),
         "The copy stays in the sandbox. Anyone with sandbox control can use or read it and spend the account's credits.".into(),
         "OS keychains, extension logins and environment-only API keys are not imported. Missing or expired credentials may require sign-in.".into(),
     ];
@@ -80,9 +121,6 @@ fn notes(tool: &str, sharing: bool) -> Vec<String> {
     }
     if tool == "ollama" {
         notes.push("Local Ollama models need no login. This copies the Ollama identity used for cloud/private models.".into());
-    }
-    if tool == "openclaw" {
-        notes.push("Automatic OpenClaw credential import is not supported yet; use its onboarding sign-in.".into());
     }
     notes
 }
@@ -149,7 +187,10 @@ fn install_script(stage: &str, imported: &str, entries: &[Credential]) -> Result
     Ok(script)
 }
 
-async fn import(id: &str, entries: &[Credential]) -> Result<(), String> {
+/// Stages the files privately, then installs them. Once `cancel` is set the transfer stops
+/// and nothing is installed. The staged copy is always removed; if that fails after the
+/// install, the result says where it was left.
+async fn import(id: &str, entries: &[Credential], cancel: &AtomicBool) -> Result<Option<String>, String> {
     let result = command(
         id,
         "umask 077; mktemp -d \"$HOME/.yougori-credentials-XXXXXXXXXXXX\"",
@@ -160,64 +201,85 @@ async fn import(id: &str, entries: &[Credential]) -> Result<(), String> {
         return Err("Could not create a private credential transfer directory".into());
     }
     let outcome: Result<(), String> = async {
-        let copied = call("copy_files_to_environment", json!({
+        let copied = crate::public::call_with_progress_cancellable("copy_files_to_environment", json!({
             "environmentId": id, "paths": entries.iter().map(|e| &e.source).collect::<Vec<_>>(), "destination": stage
-        })).await.map_err(|_| "Could not transfer credential files. Sign in inside the tool or retry.")?;
+        }), |_| {}, cancel).await.map_err(|error| if error == ui::CANCELLED { error } else { "Could not transfer credential files. Sign in inside the tool or retry.".into() })?;
+        // A transfer that finished as Ctrl+C arrived is still not installed.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ui::CANCELLED.into());
+        }
         let imported = copied["destination"].as_str().ok_or("Missing credential transfer destination")?;
         command(id, &install_script(stage, imported, entries)?).await?;
         Ok(())
     }.await;
     let cleanup = command(id, &format!("rm -rf -- {}", shell_words::quote(stage))).await;
     outcome?;
-    cleanup.map(|_| ())
+    Ok(cleanup.err().map(|_| format!("The sign-in was copied, but its private transfer folder {stage} could not be removed. Remove it inside the sandbox.")))
 }
 
-pub(crate) async fn configure(id: &str, tool: &str, sharing: bool) -> Result<bool, String> {
-    let Some(choice) = share_prompt(id, || {
-        ui::select(
-            "Do you want to use credentials from this computer?",
-            &notes(tool, sharing),
-            &[
-                Choice::new(
-                    "Yes, copy this tool's credentials",
-                    "use the account from this computer",
-                ),
-                Choice::new(
-                    "No, continue without copying",
-                    "keep the sandbox's current sign-in or sign in inside the tool",
-                ),
-            ],
-            1,
-        )
-    })
-    .await?
-    else {
-        return Ok(false);
-    };
-    if choice != 0 {
-        return Ok(true);
-    }
-    // Do not inspect host credential files until the user opts in.
-    let home =
-        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
-    let entries = home
-        .filter(|p| p.is_absolute())
-        .map(|home| {
-            available(candidates(tool, &home, |name| {
-                std::env::var_os(name).map(PathBuf::from)
-            }))
+/// Asks whether to copy this computer's sign-in for the tool, defaulting to No or to the answer
+/// given before going back. Ctrl+C while copying cancels the transfer and opens the stop menu;
+/// Cancel there asks again. A failed copy is shown and the launch continues, so the person can
+/// sign in inside the tool.
+pub(crate) async fn configure(id: &str, tool: &str, sharing: bool, copy: &mut bool) -> Result<bool, String> {
+    let product = product(tool);
+    loop {
+        let choice = step_prompt(id, || {
+            ui::select(&question(tool), &notes(tool, sharing), &choices(tool), usize::from(!*copy))
         })
-        .unwrap_or_default();
-    if entries.is_empty()
-        || (tool == "ollama" && !entries.iter().any(|e| e.target == ".ollama/id_ed25519"))
-    {
-        ui::info("No supported credential files found. Continue with the tool's normal sign-in if needed.");
+        .await?;
+        *copy = choice == 0;
+        if !*copy {
+            return Ok(true);
+        }
+        // Do not inspect host credential files until the user opts in.
+        let home =
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+        let entries = home
+            .filter(|p| p.is_absolute())
+            .map(|home| {
+                available(candidates(tool, &home, |name| {
+                    std::env::var_os(name).map(PathBuf::from)
+                }))
+            })
+            .unwrap_or_default();
+        if entries.is_empty()
+            || (tool == "ollama" && !entries.iter().any(|e| e.target == ".ollama/id_ed25519"))
+        {
+            ui::info(&format!("No {product} sign-in found on this computer. Sign in inside the tool if it asks."));
+            return Ok(true);
+        }
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let outcome = {
+            let _keys = ui::Interrupts::watch(interrupted.clone());
+            let task = ui::task(&format!("Copying your {product} sign-in into the sandbox"));
+            let outcome = import(id, &entries, &interrupted).await;
+            match &outcome {
+                Ok(_) => task.done(&format!("{product} sign-in copied. The tool checks whether it is still valid.")),
+                Err(error) if error == ui::CANCELLED => task.fail("Sign-in copy cancelled. Nothing was installed."),
+                Err(_) => task.fail(&format!("Copying your {product} sign-in did not finish")),
+            }
+            outcome
+        };
+        let cancelled = outcome.as_ref().is_err_and(|error| error == ui::CANCELLED);
+        match &outcome {
+            Ok(Some(leftover)) => ui::warn(leftover),
+            Err(error) if !cancelled => {
+                ui::warn(error);
+                ui::info("Continuing without it. Sign in inside the tool if it asks.");
+            }
+            _ => {}
+        }
+        if interrupted.load(Ordering::Relaxed) {
+            if crate::sandbox_stop::menu(id).await? {
+                return Err(ENDED.into());
+            }
+            if cancelled {
+                continue;
+            }
+        }
         return Ok(true);
     }
-    let task = ui::task("Copying tool credentials into the sandbox");
-    import(id, &entries).await?;
-    task.done("Credential files copied. The tool will check whether the sign-in is still valid.");
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -277,6 +339,33 @@ mod tests {
         assert!(notes("codex", false)
             .iter()
             .any(|line| line.contains("Anyone with sandbox control")));
+    }
+
+    #[test]
+    fn every_tool_is_asked_by_its_own_name_and_only_copyable_sign_ins_offer_yes() {
+        for (tool, name) in [
+            ("codex", "Codex"),
+            ("claude", "Claude Code"),
+            ("gemini", "Gemini CLI"),
+            ("opencode", "OpenCode"),
+            ("kilo", "Kilo Code"),
+            ("ollama", "Ollama"),
+        ] {
+            assert_eq!(question(tool), format!("Use your {name} sign-in from this computer?"));
+            assert!(notes(tool, false)[0].contains(name), "{tool}");
+            let [yes, no] = choices(tool);
+            assert_eq!((yes.label.as_str(), yes.enabled), ("Yes, copy it into this sandbox", true));
+            assert_eq!((no.label.as_str(), no.enabled), ("No, sign in inside the sandbox", true));
+        }
+        // OpenClaw keeps its sign-in in a database with other data: the question says so and
+        // only No can be chosen.
+        assert_eq!(question("openclaw"), "Use your OpenClaw sign-in from this computer?");
+        let [yes, no] = choices("openclaw");
+        assert!(!yes.enabled && no.enabled);
+        let notes = notes("openclaw", true);
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("cannot copy") && notes[0].contains("onboarding"));
+        assert!(crate::container_tools::TOOLS.iter().all(|tool| offered(tool) == (*tool != "openclaw")));
     }
 
     #[test]

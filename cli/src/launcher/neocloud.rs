@@ -37,20 +37,42 @@ pub(super) async fn target(
             "Create a new RunPod pod",
             "choose a GPU and review its price",
         ));
-        let index = ui::select(
-            "Where do you want to run the model?",
-            &["Ctrl+C lets you stop the RunPod pod or stop and delete it.".into()],
-            &choices,
-            0,
-        )?;
-        if index == candidates.len() {
-            create(state, model).await?
-        } else {
-            candidates[index].clone()
+        // Back from the new pod's first question returns to this choice.
+        let mut index = 0;
+        let mut created = None;
+        let mut steps = ui::Wizard::new();
+        loop {
+            let asked = match steps.step() {
+                0 => ui::select(
+                    "Where do you want to run the model?",
+                    &["Ctrl+C lets you stop the RunPod pod or stop and delete it.".into()],
+                    &choices,
+                    index,
+                )
+                .map(|picked| {
+                    index = picked;
+                    true
+                }),
+                1 if index == candidates.len() => create(state, model).await.map(|env| {
+                    created = Some(env);
+                    true
+                }),
+                1 => Ok(false),
+                _ => break,
+            };
+            steps.next(asked)?;
+        }
+        match created {
+            Some(env) => env,
+            None => candidates[index].clone(),
         }
     };
-    let current = call("get_platform_state", json!({})).await?;
-    public::name_neocloud_model(&mut env, &current, model).await?;
+    let current = super::busy("Checking the RunPod pod", async {
+        let current = call("get_platform_state", json!({})).await?;
+        public::name_neocloud_model(&mut env, &current, model).await?;
+        Ok(current)
+    })
+    .await?;
     let id = env["id"].as_str().ok_or("RunPod environment missing")?;
     let pod = &current["neocloudDeployments"][id];
     // New pods and unfinished creations from an earlier run share the same wait.
@@ -226,33 +248,8 @@ fn choose_gpu_count(current: u32) -> Result<u32, String> {
     ], &choices, (current - 1) as usize).map(|index| index as u32 + 1)
 }
 
-async fn create(state: &Value, model: &str) -> Result<Value, String> {
-    let checking = ui::task("Checking RunPod account");
-    let mut status = call("runpod_status", json!({})).await?;
-    if status["installed"] != true {
-        checking.done("Setting up RunPod tools");
-        let installing = ui::task("Installing RunPod tools");
-        status = call("runpod_connect", json!({})).await?;
-        installing.done("RunPod tools ready");
-    } else {
-        checking.done("RunPod tools ready");
-    }
-    if status["connected"] != true {
-        let key = text("RunPod API key (hidden)", "", true)?;
-        let connecting = ui::task("Connecting RunPod account");
-        status = call("runpod_connect", json!({"apiKey":key})).await?;
-        if status["connected"] != true {
-            return Err(status["message"]
-                .as_str()
-                .unwrap_or("Could not connect to RunPod")
-                .into());
-        }
-        connecting.done("RunPod connected");
-    }
-    let mut unavailable = HashSet::new();
-    let mut count = choose_gpu_count(1)?;
-    // Check stock for the disk that will actually be requested.
-    let disk: u32 = ui::input("Pod disk size in GB", "40", false, &|entry| {
+fn disk_size(current: u32) -> Result<u32, String> {
+    ui::input("Pod disk size in GB", &current.to_string(), false, &|entry| {
         entry
             .parse::<u32>()
             .ok()
@@ -261,12 +258,110 @@ async fn create(state: &Value, model: &str) -> Result<Value, String> {
             .ok_or_else(|| "Enter a whole number from 5 to 4000 GB.".into())
     })?
     .parse()
-    .map_err(|_| "Invalid disk size")?;
+    .map_err(|_| "Invalid disk size".into())
+}
+
+/// Connects the RunPod account, then asks for the pod in turn: GPU count, disk, GPU offer and
+/// a last confirmation, each after the first with Back. As a [`ui::Wizard`] step, Back from the
+/// first question returns [`ui::BACK`].
+async fn create(state: &Value, model: &str) -> Result<Value, String> {
+    let mut status = super::stage(
+        "Checking RunPod account",
+        |status: &Value| if status["installed"] == true { "RunPod tools ready" } else { "Setting up RunPod tools" }.into(),
+        call("runpod_status", json!({})),
+    )
+    .await?;
+    if status["installed"] != true {
+        status = super::stage("Installing RunPod tools", |_| "RunPod tools ready".into(), call("runpod_connect", json!({}))).await?;
+    }
+    if status["connected"] != true {
+        let key = text("RunPod API key (hidden)", "", true)?;
+        super::stage("Connecting RunPod account", |_| "RunPod connected".into(), async {
+            let status = call("runpod_connect", json!({"apiKey":key})).await?;
+            if status["connected"] != true {
+                return Err(status["message"]
+                    .as_str()
+                    .unwrap_or("Could not connect to RunPod")
+                    .to_owned());
+            }
+            Ok(status)
+        })
+        .await?;
+    }
+    let mut unavailable = HashSet::new();
+    let mut count = 1;
+    // Check stock for the disk that will actually be requested.
+    let mut disk = 40;
+    let mut offer = None;
+    let mut steps = ui::Wizard::new();
     loop {
-        let loading = ui::task("Checking available GPUs and current prices");
-        let catalog = call("runpod_gpu_offers", json!({"containerDiskGb":disk,"gpuCount":count})).await?;
-        loading.done("RunPod GPU stock and prices ready");
-        let mut offers = offers(&catalog, count);
+        let asked = match steps.step() {
+            0 => choose_gpu_count(count).map(|picked| {
+                count = picked;
+                true
+            }),
+            1 => disk_size(disk).map(|picked| {
+                disk = picked;
+                true
+            }),
+            2 => choose_offer(&mut count, disk, &mut unavailable).await.map(|picked| {
+                offer = Some(picked);
+                true
+            }),
+            3 => {
+                let offer = offer.as_ref().ok_or("Choose a GPU first")?;
+                let name = pod_name(state, model);
+                match ui::select(
+                    "Create this RunPod pod and run the model?",
+                    &[
+                        format!("{} × {} · {} · {} GB disk", offer.count, offer.name, offer.cloud, disk),
+                        format!(
+                            "Compute: ${:.3}/hour (about ${:.2}/day), plus RunPod storage charges.",
+                            offer.total_hourly(),
+                            offer.total_hourly() * 24.0
+                        ),
+                        "Billing starts when created. Ctrl+C opens Cancel / Stop / Stop and delete.".into(),
+                    ],
+                    &[
+                        ui::Choice::new("Create and run", &name),
+                        ui::Choice::new("Cancel", ""),
+                    ],
+                    0,
+                ) {
+                    Ok(0) => match create_pod(&name, offer, disk).await {
+                        Ok(env) => return Ok(env),
+                        Err(error) if stock_changed(&error) => {
+                            ui::warn(&format!(
+                                "RunPod could not allocate {} × {} on {} Cloud. This offer is greyed out; try another offer or GPU count.",
+                                offer.count, offer.name, offer.cloud
+                            ));
+                            unavailable.insert(offer.key());
+                            // Back to the GPU choice, where this offer is now greyed out.
+                            Err(ui::BACK.into())
+                        }
+                        Err(error) => Err(error),
+                    },
+                    Ok(_) => Err(ui::CANCELLED.into()),
+                    Err(error) => Err(error),
+                }
+            }
+            _ => return Err("Choose a GPU first".into()),
+        };
+        steps.next(asked)?;
+    }
+}
+
+/// The GPU offer to rent, checked again on Refresh. Change GPU count asks here and returns to
+/// the offers; Cancel cancels.
+async fn choose_offer(count: &mut u32, disk: u32, unavailable: &mut HashSet<(String, &'static str, u32)>) -> Result<Offer, String> {
+    loop {
+        let catalog = super::stage(
+            "Checking available GPUs and current prices",
+            |_| "RunPod GPU stock and prices ready".into(),
+            call("runpod_gpu_offers", json!({"containerDiskGb":disk,"gpuCount":*count})),
+        )
+        .await?;
+        let mut offers = offers(&catalog, *count);
         for offer in &mut offers {
             if unavailable.contains(&offer.key()) {
                 offer.available = false;
@@ -301,63 +396,53 @@ async fn create(state: &Value, model: &str) -> Result<Value, String> {
             continue;
         }
         if index == offers.len() + 1 {
-            count = choose_gpu_count(count)?;
+            // Back from the count returns to these offers.
+            match choose_gpu_count(*count) {
+                Ok(picked) => *count = picked,
+                Err(error) if error == ui::BACK => {}
+                Err(error) => return Err(error),
+            }
             continue;
         }
         if index > offers.len() + 1 {
             return Err(ui::CANCELLED.into());
         }
-        let offer = &offers[index];
-        let name = pod_name(state, model);
-        let picked = ui::select(
-            "Create this RunPod pod and run the model?",
-            &[
-                format!("{} × {} · {} · {} GB disk", offer.count, offer.name, offer.cloud, disk),
-                format!(
-                    "Compute: ${:.3}/hour (about ${:.2}/day), plus RunPod storage charges.",
-                    offer.total_hourly(),
-                    offer.total_hourly() * 24.0
-                ),
-                "Billing starts when created. Ctrl+C opens Cancel / Stop / Stop and delete.".into(),
-            ],
-            &[
-                ui::Choice::new("Create and run", &name),
-                ui::Choice::new("Cancel", ""),
-            ],
-            0,
-        )?;
-        if picked != 0 {
-            return Err(ui::CANCELLED.into());
-        }
-        let creating = ui::task("Creating RunPod GPU pod");
-        let result = match call(
-            "runpod_create_pod",
-            json!({"request":request(&name, offer, disk)}),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(error) if stock_changed(&error) => {
-                creating.clear();
-                ui::warn(&format!(
-                    "RunPod could not allocate {} × {} on {} Cloud. This offer is greyed out; try another offer or GPU count.",
-                    offer.count, offer.name, offer.cloud
-                ));
-                unavailable.insert(offer.key());
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        let env = result["environments"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|e| e["name"] == name)
-            .cloned()
-            .ok_or("Pod creation returned no environment. Check RunPod before retrying.")?;
-        creating.done(&format!("Created {name}"));
-        return Ok(env);
+        return Ok(offers.swap_remove(index));
     }
+}
+
+/// Rents the pod. Ctrl+C stops waiting, but RunPod may still create it.
+async fn create_pod(name: &str, offer: &Offer, disk: u32) -> Result<Value, String> {
+    let started = Instant::now();
+    let result = match super::busy(
+        "Creating RunPod GPU pod",
+        call("runpod_create_pod", json!({"request":request(name, offer, disk)})),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) if error == ui::CANCELLED => {
+            ui::warn("RunPod may still create this pod, and it bills while it exists. Check it with yougori neocloud list.");
+            return Err(error);
+        }
+        Err(error) if stock_changed(&error) => return Err(error),
+        Err(error) => {
+            super::failed("Creating RunPod GPU pod");
+            return Err(error);
+        }
+    };
+    let Some(env) = result["environments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|e| e["name"] == name)
+        .cloned()
+    else {
+        super::failed("Creating RunPod GPU pod");
+        return Err("Pod creation returned no environment. Check RunPod before retrying.".into());
+    };
+    super::finished(&format!("Created {name}"), started);
+    Ok(env)
 }
 
 fn ready(state: &Value, id: &str) -> Result<Option<Value>, String> {

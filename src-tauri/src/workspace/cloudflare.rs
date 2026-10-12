@@ -529,7 +529,20 @@ fn setup_origin(listener: TcpListener) -> JoinHandle<()> {
     })
 }
 
+/// A saved domain's tunnel publishes its local port; starting and stopping it are audited.
 pub(crate) async fn start_domain_tunnel(
+    name: &str, store: &PlatformStore, manager: &WorkspaceManager,
+) -> Result<Value, String> {
+    let result = start_domain_tunnel_now(name, store, manager).await;
+    let mut event = crate::security::Event::new("share.tunnel.started").text("domain", name).outcome(&result);
+    if let Ok(value) = &result {
+        event = event.number("hostPort", value["hostPort"].as_u64().unwrap_or(0));
+    }
+    crate::security::record(event);
+    result
+}
+
+async fn start_domain_tunnel_now(
     name: &str, store: &PlatformStore, manager: &WorkspaceManager,
 ) -> Result<Value, String> {
     let _operation = manager.operations.lock().await;
@@ -580,7 +593,9 @@ pub async fn stop_saved_domain_tunnel(
 pub(crate) async fn stop_domain_tunnel(name: &str, store: &PlatformStore, manager: &WorkspaceManager) -> Result<(), String> {
     let _operation = manager.operations.lock().await;
     let domain = find_domain(store, name)?;
-    if let Some(setup) = manager.setup_tunnels.lock().await.remove(&domain.id) { setup.stop().await; }
+    let stopped = manager.setup_tunnels.lock().await.remove(&domain.id);
+    crate::security::record(crate::security::Event::new("share.tunnel.stopped").text("domain", &domain.hostname).flag("wasActive", stopped.is_some()));
+    if let Some(setup) = stopped { setup.stop().await; }
     Ok(())
 }
 

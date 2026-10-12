@@ -163,12 +163,23 @@ fn request_timeout(request: &Request) -> Duration {
     let guest_timeout = Duration::from_secs(if cfg!(target_arch = "aarch64") { 660 } else { 180 });
     match request.method.as_str() {
         "terminal_action" => guest_timeout,
+        // A kill switch pauses guests and may cover every environment.
+        "security_lockdown" | "security_unlock" => guest_timeout,
         "list_environment_services"
         | "model_status"
         | "model_api_status"
         | "get_storage_allocation"
         | "vault_summary"
         | "market_status" => guest_timeout,
+        // Practice loads the worker's model and waits for its report; releasing a model
+        // waits for its runtime.
+        "swarm_dispatch" if request.params["request"]["action"] == "practice" => Duration::from_secs(900),
+        "swarm_dispatch" if request.params["request"]["action"] == "memory" => guest_timeout,
+        // Pausing releases the model; stopping and deleting also stop and remove the
+        // worker's environments first.
+        "swarm_dispatch" if matches!(request.params["request"]["action"].as_str(), Some("pause" | "stop" | "leave" | "delete" | "cancelPrepare")) => guest_timeout,
+        // The model check reads Hugging Face, whose own requests may take 35 seconds.
+        "swarm_dispatch" if request.params["request"]["action"] == "doctor" => Duration::from_secs(90),
         "jobs_get" => {
             Duration::from_millis(20_000 + request.params["wait"].as_u64().unwrap_or(0).min(30_000))
         }
@@ -189,18 +200,29 @@ pub fn request(method: &str, params: Value) -> Request {
 }
 
 pub async fn wait_job_at(endpoint: &str, id: &str, seconds: u64) -> Result<Value, String> {
-    wait_job_observed(endpoint, id, seconds, 5000, |_| {}).await
+    wait_job_observed(endpoint, id, seconds, 5000, |_| {}, None).await
 }
 
 /// Observe measured job progress without changing the job result or timeout semantics.
 /// Engines without measurements still work, with an indeterminate display.
 pub async fn wait_job_with_progress(id: &str, seconds: u64, progress: impl FnMut(&Value)) -> Result<Value, String> {
-    wait_job_observed(&wire::endpoint().map_err(|e| e.to_string())?, id, seconds, 250, progress).await
+    wait_job_observed(&wire::endpoint().map_err(|e| e.to_string())?, id, seconds, 250, progress, None).await
 }
 
-async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mut progress: impl FnMut(&Value)) -> Result<Value, String> {
+/// [`wait_job_with_progress`] for work the person can stop. Once `cancel` is set the engine
+/// is asked to cancel the job, and the wait ends with [`crate::cli_ui::CANCELLED`] when it
+/// stops (or after a short grace period). A job that finished first returns its result.
+pub async fn wait_job_cancellable(id: &str, seconds: u64, progress: impl FnMut(&Value), cancel: &AtomicBool) -> Result<Value, String> {
+    wait_job_observed(&wire::endpoint().map_err(|e| e.to_string())?, id, seconds, 250, progress, Some(cancel)).await
+}
+
+/// Engine cancellation gives a transfer five seconds to clean up; stop waiting soon after.
+const CANCEL_GRACE: Duration = Duration::from_secs(12);
+
+async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mut progress: impl FnMut(&Value), cancel: Option<&AtomicBool>) -> Result<Value, String> {
     let started = Instant::now();
     let mut last_progress = Instant::now();
+    let mut cancel_requested: Option<Instant> = None;
     // The engine long-polls, answering the moment the job ends. An older engine rejects
     // `wait`; then poll quickly at first and back off, instead of a fixed half second.
     let mut long_poll = true;
@@ -228,6 +250,9 @@ async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mu
         }
         match job["status"].as_str() {
             Some("complete") => return Ok(job["result"].clone()),
+            Some("failed" | "cancelled" | "interrupted") if cancel_requested.is_some() => {
+                return Err(crate::cli_ui::CANCELLED.into());
+            }
             Some("failed" | "cancelled" | "interrupted") => {
                 let error = format!(
                     "{}: {} (job {id})",
@@ -246,6 +271,19 @@ async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mu
             }
             Some("running" | "queued") => {}
             _ => return Err("Invalid job status from Yougori".into()),
+        }
+        match cancel_requested {
+            Some(at) if at.elapsed() >= CANCEL_GRACE => return Err(crate::cli_ui::CANCELLED.into()),
+            Some(_) => {}
+            None if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) => {
+                let mut stop = request("jobs_cancel", json!({"jobId":id}));
+                stop.confirmed = true;
+                // A job that cannot stop part way finishes; the grace period still ends the wait.
+                let _ = call_at(endpoint, &stop).await;
+                cancel_requested = Some(Instant::now());
+                continue;
+            }
+            None => {}
         }
         if started.elapsed() >= Duration::from_secs(seconds) {
             return Err(error_cause(format!("Still running: {id}. The operation was NOT cancelled. Check 'yougori jobs get {id}' before retrying."), wire::ErrorDetails {
@@ -791,7 +829,7 @@ mod macos_path_tests {
                 }
             });
             let mut observed = Vec::new();
-            let result = tokio::time::timeout(Duration::from_secs(10), wait_job_observed(&endpoint, "copy-test", 5, 250, |progress| observed.push(progress.clone()))).await.unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(10), wait_job_observed(&endpoint, "copy-test", 5, 250, |progress| observed.push(progress.clone()), None)).await.unwrap();
             worker.await.unwrap();
             if mode == "failed" {
                 assert!(result.unwrap_err().contains("Disk full (job copy-test)"));
@@ -802,6 +840,43 @@ mod macos_path_tests {
                 assert_eq!(observed[1]["phase"], "finishing");
             } else { assert!(observed.is_empty()); }
         }
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn ctrl_c_cancels_a_running_copy_job_in_the_engine() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        use crate::wire::Response;
+        let endpoint = format!("{}-copy-cancel-{}", wire::endpoint().unwrap(), std::process::id());
+        let mut server = ServerOptions::new().first_pipe_instance(true).create(&endpoint).unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let address = endpoint.clone();
+        let pressed = cancel.clone();
+        let worker = tokio::spawn(async move {
+            let mut methods = Vec::new();
+            loop {
+                server.connect().await.unwrap();
+                let bytes = wire::read_frame(&mut server, wire::MAX_REQUEST).await.unwrap();
+                let req: Request = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(req.params["jobId"], "copy-test");
+                methods.push(req.method.clone());
+                // Ctrl+C arrives while the copy is running.
+                pressed.store(true, Ordering::Relaxed);
+                let response = match (req.method.as_str(), methods.iter().any(|m| m == "jobs_cancel")) {
+                    ("jobs_cancel", _) => { assert!(req.confirmed); Response::success(json!({"status":"running","cancelRequested":true})) }
+                    ("jobs_get", false) => Response::success(json!({"status":"running","progress":{"phase":"copying","completedBytes":1,"totalBytes":9}})),
+                    _ => Response::success(json!({"status":"cancelled","method":"copy_files_to_environment","error":"YOUGORI_OPERATION_CANCELLED"})),
+                };
+                let done = response.result.as_ref().is_some_and(|value| value["status"] == "cancelled");
+                let next = (!done).then(|| ServerOptions::new().create(&address).unwrap());
+                wire::write_frame(&mut server, &serde_json::to_vec(&response).unwrap(), wire::MAX_RESPONSE).await.unwrap();
+                let mut ack = [0];
+                let _ = tokio::io::AsyncReadExt::read(&mut server, &mut ack).await;
+                match next { Some(next) => server = next, None => return methods }
+            }
+        });
+        let result = tokio::time::timeout(Duration::from_secs(10), wait_job_observed(&endpoint, "copy-test", 60, 250, |_| {}, Some(&cancel))).await.unwrap();
+        assert_eq!(result, Err(crate::cli_ui::CANCELLED.into()));
+        assert_eq!(worker.await.unwrap(), ["jobs_get", "jobs_cancel", "jobs_get"]);
     }
     #[test]
     fn outdated_engine_errors_explain_restart_without_retrying_requests() {
@@ -826,6 +901,14 @@ mod macos_path_tests {
             request_timeout(&request("terminal_action", json!({"action":"write"})))
                 > Duration::from_secs(25)
         );
+        // A practice waits for the worker's model to load and answer; other Swarm calls stay short.
+        let swarm = |action: &str| request_timeout(&request("swarm_dispatch", json!({"request":{"action":action}})));
+        assert!(swarm("practice") >= Duration::from_secs(600));
+        for lifecycle in ["pause", "stop", "leave", "delete", "cancelPrepare"] {
+            assert!(swarm(lifecycle) >= Duration::from_secs(180), "{lifecycle}");
+        }
+        assert!(swarm("doctor") > Duration::from_secs(35));
+        assert_eq!(swarm("status"), Duration::from_secs(20));
     }
     #[test]
     fn finds_engine_in_relocated_bundle_with_spaces() {

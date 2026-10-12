@@ -54,8 +54,9 @@ fn reusable_model(
             environment.status,
             EnvironmentStatus::Running | EnvironmentStatus::Stopped | EnvironmentStatus::Error
         )
-        && (environment.provider == Some(RuntimeProviderKind::YougoriOci)) == (worker.gpu == "cpu")
-        && environment.gpu_access == (worker.gpu != "cpu")
+        && (environment.provider == Some(RuntimeProviderKind::YougoriOci)) == (worker.gpu != "nvidia")
+        && environment.gpu_access == (worker.gpu == "nvidia")
+        && (options.environment.get("YOUGORI_NATIVE_BACKEND").map(String::as_str) == Some("metal")) == (worker.gpu == "metal")
         && (options
             .environment
             .get("YOUGORI_MODEL_CPU")
@@ -524,6 +525,10 @@ fn may_stop_runtime(health: Option<&Value>, initial_setup: bool) -> bool {
 }
 
 pub(crate) async fn release_while_waiting(app: &AppHandle, worker: &Worker) -> Result<(), String> {
+    // A practice between attempts keeps its model; it releases the model when it ends.
+    if super::activity::practicing(&worker.id) {
+        return Ok(());
+    }
     let Some(id) = worker.model_environment_id.as_deref() else {
         return Ok(());
     };
@@ -557,7 +562,7 @@ pub(crate) async fn release_while_waiting(app: &AppHandle, worker: &Worker) -> R
     if !runtime_idle(&health) {
         return Ok(());
     }
-    if worker.gpu == "cpu" {
+    if worker.gpu != "nvidia" {
         crate::model_runner::stop_model(id.into(), app.clone()).await?;
     } else if health["optimizer"]["supported"] == true && health["optimizer"]["enabled"] == true {
         // This opt-in only changes this tagged model. The runner refuses to
@@ -607,7 +612,7 @@ pub(crate) async fn ensure_ready(
     }
     let lease = format!("swarm-{}", uuid::Uuid::new_v4().simple());
     let result = wait_ready(app, worker, &lease, cancel).await;
-    if worker.gpu != "cpu" {
+    if worker.gpu == "nvidia" {
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
             crate::model_runner::model_request(
@@ -661,7 +666,7 @@ async fn wait_ready(
                     .unwrap_or("The worker model could not load")
                     .to_owned());
             }
-            if worker.gpu != "cpu" && health["optimizer"]["enabled"] == true {
+            if worker.gpu == "nvidia" && health["optimizer"]["enabled"] == true {
                 // Prepare queues a renewable 20-second demand lease. Only the
                 // existing host scheduler may grant it; never directly evict
                 // another GPU model, change a pin, or disable optimization.

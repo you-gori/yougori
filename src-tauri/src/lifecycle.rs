@@ -151,14 +151,18 @@ fn validate_settings_limits(settings: &AppSettings, previous: &AppSettings) -> R
     if settings.snapshot_retention == 0 || settings.snapshot_retention > 365 { return Err("Snapshot retention must be between 1 and 365".into()); }
     if settings.data_directory != previous.data_directory { return Err("Use Storage settings to choose a location and restart the engine".into()); }
     if settings.bandwidth_limit_mbps > 100_000 { return Err("Backup bandwidth must be 0 (unlimited) or at most 100,000 Mbps".into()); }
-    Ok(())
+    settings.security_monitoring.validate()
 }
 
 #[tauri::command]
 pub async fn patch_settings(patch: Value, expected_revision: u64, store: State<'_, PlatformStore>, runtime: State<'_, RuntimeManager>, backup: State<'_, crate::backup::BackupManager>) -> Result<Value, String> {
     let previous = store.snapshot()?;
+    if let Some(policies) = patch.get("securityMonitoring") {
+        crate::security::monitor::check_fields(policies)?;
+    }
     let (settings, changed) = patched_settings(&previous.settings, &patch)?;
     let next = save_settings(settings, expected_revision, &store).await?;
+    crate::security::settings_changed(&previous.settings.security_monitoring, &next.settings.security_monitoring);
     let mut warnings = Vec::new();
     if changed.get("snapshotRetention").is_some() {
         if let Err(error) = commands::enforce_snapshot_retention(&store, &runtime, &backup).await { warnings.push(safe_diagnostic(&error)); }

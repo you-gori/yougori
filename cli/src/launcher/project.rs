@@ -202,19 +202,32 @@ pub(super) async fn offer_on_entry(folder: &Path) -> Result<(), String> {
     } else {
         format!("Run {}", offer.command)
     };
-    let selected = ui::select(
-        "Do you want to run this project?",
-        &[detail],
-        &[
-            ui::Choice::new(run, "inside its Yougori container"),
-            ui::Choice::new("Continue to main menu", ""),
-        ],
-        1,
-    );
-    match selected {
-        Ok(0) => { run_in(folder, false).await?; }
-        Err(e) if e != ui::CANCELLED => return Err(e),
-        _ => {},
+    // The launch follows this question: its first question offers Back, which asks this again.
+    let mut launching = false;
+    let mut steps = ui::Wizard::new();
+    loop {
+        let asked = match steps.step() {
+            0 => ui::select(
+                "Do you want to run this project?",
+                std::slice::from_ref(&detail),
+                &[
+                    ui::Choice::new(run.clone(), "inside its Yougori container"),
+                    ui::Choice::new("Continue to main menu", ""),
+                ],
+                usize::from(!launching),
+            )
+            .map(|selected| {
+                launching = selected == 0;
+                true
+            }),
+            1 if launching => run_in(folder, false).await.map(|_| true),
+            1 => Ok(false),
+            _ => break,
+        };
+        match steps.next(asked) {
+            Err(e) if e == ui::CANCELLED => break,
+            result => result?,
+        }
     }
     Ok(())
 }
@@ -363,89 +376,34 @@ fn recommended_storage(bytes: u64) -> Result<u32, String> {
     u32::try_from(gb).map_err(|_| "This project is too large to represent its recommended storage".into())
 }
 
-fn project_storage(folder: &Path) -> Result<(u64, u32), String> {
+fn project_storage(folder: &Path, stop: &AtomicBool) -> Result<(u64, u32), String> {
     // Measure every file the launcher can copy, including ignored data, dependencies and .env.
     // Only metadata is read; large databases do not need to be loaded or hashed.
-    let files = sync::scan(folder, &sync::Filter::load(folder, true)?)?;
+    let files = sync::scan_until(folder, &sync::Filter::load(folder, true)?, stop)?;
     let bytes = files.values().try_fold(0u64, |total, (size, _)| total.checked_add(*size))
         .ok_or("The project folder size is too large to measure")?;
     Ok((bytes, recommended_storage(bytes)?))
 }
 
-async fn configure(
-    folder: &Path,
-    _package: &Value,
-    state: &Value,
-    old: Option<&Setup>,
-) -> Result<Setup, String> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err("First launch and --change need an interactive terminal to choose project resources and access.".into());
+/// Runs a blocking scan off the main thread, behind a spinner once it takes a moment, so the
+/// display keeps moving and Ctrl+C stops the wait. A stopped scan is told to stop (through the
+/// flag it gets) and waited for: the CLI cannot exit while a scan still runs.
+async fn scanning<T: Send + 'static>(label: &str, scan: impl FnOnce(&AtomicBool) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let mut task = tokio::task::spawn_blocking(move || scan(&flag));
+    let result = busy(label, async { (&mut task).await.map_err(|e| e.to_string())? }).await;
+    if result.is_err() && !task.is_finished() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = task.await;
     }
-    let app_port = old.map_or(package::Project::load(folder)?.port, |s| s.guest_port);
-    let measuring = ui::task("Measuring project folder for recommended storage");
-    let source = folder.to_owned();
-    let measured = tokio::task::spawn_blocking(move || project_storage(&source)).await
-        .map_err(|e| format!("Cannot measure project folder: {e}"))?;
-    measuring.clear();
-    let (bytes, measured_storage) = measured?;
-    // Existing disks can grow, but changing recommendations must never shrink them.
-    let storage = measured_storage.max(old.map_or(1, |s| s.allocation[2]));
-    let selected = if old.is_none() {
-        let host = call("refresh_host_metrics", json!({})).await?["host"].take();
-        Some(super::storage::choose(&host, None, storage)?)
-    } else { None };
-    let host = if let Some(selected) = &selected {
-        selected.host.clone()
-    } else {
-        let id = old.and_then(|s|s.environment.as_deref()).ok_or("Project environment has no ID")?;
-        let env = state["environments"].as_array().and_then(|nodes|nodes.iter().find(|env|env["id"]==id)).ok_or("Project environment is unavailable")?;
-        super::storage::for_environment(&state["host"], env).await?
-    };
-    limits(&host, false, storage)?;
-    let suggested = [2, 4, storage];
-    let mut note = vec![format!("Project folder: {} · storage is 2× its size, rounded up to whole GB (minimum 1 GB).", ui::bytes(bytes))];
-    if storage > measured_storage {
-        note.push(format!("Keeping the existing {storage} GB storage; disks can only grow."));
-    }
-    let recommended = ui::select(
-        "Choose project resources",
-        &note,
-        &[
-            ui::Choice::new(
-                "Recommended",
-                format!("container · 2 CPU · 4 GB memory · {storage} GB storage"),
-            ),
-            ui::Choice::new("Customize", "GPU, resources and ports"),
-        ],
-        0,
-    )? == 0;
-    let gpu = !recommended
-        && choose(
-            "Run this project in",
-            &[
-                "Container — Linux".into(),
-                "GPU container — NVIDIA".into(),
-            ],
-        )? == 1;
-    let allocation = if recommended {
-        suggested
-    } else {
-        sliders(&host, false, storage, Some(old.map_or(suggested, |s| s.allocation)))?
-    };
-    let guest_port = if recommended {
-        app_port
-    } else {
-        port("Port your dev server listens on", app_port)?
-    };
-    // Recommended selects resources; access is always an explicit choice
-    // during first setup or --change, then saved for subsequent launches.
-    let network = network(false, old.and_then(|s| s.environment.as_deref()), Some(live::proxy_port(guest_port))).await?;
-    let local_port = if recommended {
-        guest_port
-    } else {
-        local_port(old.map_or(guest_port, |s| s.local_port))?
-    };
-    let (kind, domain) = match network {
+    result
+}
+
+/// The saved access for an answer to "Who can open your app?". A new domain is saved only here,
+/// once every question is answered, so going back never saves it twice.
+async fn access(network: Network, port: u16) -> Result<(&'static str, Option<String>), String> {
+    Ok(match network {
         Network::Computer => ("computer", None),
         Network::Lan => ("lan", None),
         Network::Quick => ("quick", None),
@@ -455,35 +413,411 @@ async fn configure(
             token,
             host_port,
         } => {
-            call(
-                "add_saved_domain",
-                json!({"hostname":hostname,"token":token,"hostPort":host_port,"port":guest_port}),
+            busy(
+                "Saving your domain",
+                call(
+                    "add_saved_domain",
+                    json!({"hostname":hostname,"token":token,"hostPort":host_port,"port":port}),
+                ),
             )
             .await?;
             ("domain", Some(hostname))
         }
-    };
-    Ok(Setup {
-        version: 1,
-        directory: folder.to_string_lossy().into(),
-        environment: old.and_then(|s| s.environment.clone()),
-        gpu,
-        allocation,
-        storage_drive: selected.and_then(|selection|selection.drive).or_else(||old.and_then(|s|s.storage_drive.clone())),
-        guest_port,
-        local_port,
-        network: kind.into(),
-        domain,
-        needs_update: old.is_some(),
-        ..old.cloned().unwrap_or_default()
     })
 }
 
-fn choose_sync(setup: &mut Setup, change: bool, folder: &Path) -> Result<(), String> {
-    if change || !setup.sync_timing_reviewed {
-        let measuring = ui::task("Measuring project folder for sync recommendation");
-        let (bytes, _) = project_storage(folder)?;
-        measuring.clear();
+/// Questions of a first launch and --change: storage drive, resources, ports and access. Answers
+/// stay while the person goes back and become the setup once every question is answered.
+struct Settings {
+    /// Host disks while the storage drive is still to be chosen (first launch only).
+    drives: Option<Value>,
+    host: Value,
+    storage: u32,
+    note: Vec<String>,
+    suggested: [u32; 3],
+    app_port: u16,
+    environment: Option<String>,
+    drive: Option<String>,
+    recommended: bool,
+    gpu: bool,
+    allocation: [u32; 3],
+    guest_port: u16,
+    local_port: Option<u16>,
+    network: Option<Network>,
+}
+
+impl Settings {
+    const STEPS: usize = 7;
+
+    /// Measures the project and its storage; also returns the project folder's size in bytes.
+    async fn prepare(folder: &Path, state: &Value, old: Option<&Setup>) -> Result<(Self, u64), String> {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err("First launch and --change need an interactive terminal to choose project resources and access.".into());
+        }
+        let app_port = old.map_or(package::Project::load(folder)?.port, |s| s.guest_port);
+        let source = folder.to_owned();
+        let (bytes, measured) = scanning("Measuring project folder for recommended storage", move |stop| project_storage(&source, stop)).await?;
+        // Existing disks can grow, but changing recommendations must never shrink them.
+        let storage = measured.max(old.map_or(1, |s| s.allocation[2]));
+        let (drives, host) = match old {
+            None => {
+                let host = busy("Checking storage drives", call("refresh_host_metrics", json!({}))).await?["host"].take();
+                (Some(host.clone()), host)
+            }
+            Some(old) => {
+                let id = old.environment.as_deref().ok_or("Project environment has no ID")?;
+                let env = state["environments"].as_array().and_then(|nodes|nodes.iter().find(|env|env["id"]==id)).ok_or("Project environment is unavailable")?;
+                (None, busy("Checking this project's storage", super::storage::for_environment(&state["host"], env)).await?)
+            }
+        };
+        let mut note = vec![format!("Project folder: {} · storage is 2× its size, rounded up to whole GB (minimum 1 GB).", ui::bytes(bytes))];
+        if storage > measured {
+            note.push(format!("Keeping the existing {storage} GB storage; disks can only grow."));
+        }
+        let suggested = [2, 4, storage];
+        let settings = Self {
+            drives,
+            host,
+            storage,
+            note,
+            suggested,
+            app_port,
+            environment: old.and_then(|s| s.environment.clone()),
+            drive: old.and_then(|s| s.storage_drive.clone()),
+            recommended: true,
+            gpu: old.is_some_and(|s| s.gpu),
+            allocation: old.map_or(suggested, |s| s.allocation),
+            guest_port: app_port,
+            local_port: old.map(|s| s.local_port),
+            network: None,
+        };
+        Ok((settings, bytes))
+    }
+
+    /// The port the dev server listens on with the resources chosen so far.
+    fn port(&self) -> u16 {
+        if self.recommended { self.app_port } else { self.guest_port }
+    }
+
+    /// Asks question `step`; returns whether it asked anything.
+    async fn ask(&mut self, step: usize) -> Result<bool, String> {
+        let custom = !self.recommended;
+        match step {
+            0 => {
+                let Some(drives) = &self.drives else { return Ok(false) };
+                let selection = super::storage::choose_with_previous(drives, self.storage, self.drive.as_deref())?;
+                self.host = selection.host;
+                self.drive = selection.drive;
+            }
+            1 => {
+                limits(&self.host, false, self.storage)?;
+                let storage = self.storage;
+                self.recommended = ui::select(
+                    "Choose project resources",
+                    &self.note,
+                    &[
+                        ui::Choice::new(
+                            "Recommended",
+                            format!("container · 2 CPU · 4 GB memory · {storage} GB storage"),
+                        ),
+                        ui::Choice::new("Customize", "GPU, resources and ports"),
+                    ],
+                    usize::from(!self.recommended),
+                )? == 0;
+            }
+            2 if custom => {
+                self.gpu = ui::select(
+                    "Run this project in",
+                    &[],
+                    &options(&[
+                        "Container — Linux".into(),
+                        "GPU container — NVIDIA".into(),
+                    ]),
+                    usize::from(self.gpu),
+                )? == 1;
+            }
+            3 if custom => self.allocation = sliders(&self.host, false, self.storage, Some(self.allocation))?,
+            4 if custom => self.guest_port = port("Port your dev server listens on", self.guest_port)?,
+            // Recommended selects resources; access is always an explicit choice
+            // during first setup or --change, then saved for subsequent launches.
+            5 => self.network = Some(network_with_previous(false, self.environment.as_deref(), Some(live::proxy_port(self.port())), self.network.as_ref()).await?),
+            6 if custom => self.local_port = Some(local_port(self.local_port.unwrap_or(self.guest_port))?),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Writes the answers into `setup` before the questions that follow them.
+    fn apply(&self, setup: &mut Setup) {
+        setup.gpu = !self.recommended && self.gpu;
+        setup.allocation = if self.recommended { self.suggested } else { self.allocation };
+        setup.guest_port = self.port();
+        setup.local_port = if self.recommended { self.app_port } else { self.local_port.unwrap_or(self.guest_port) };
+        setup.storage_drive = self.drive.clone();
+    }
+
+    async fn finish(self, setup: &mut Setup) -> Result<(), String> {
+        let port = self.port();
+        let (kind, domain) = access(self.network.ok_or("Choose who can open your app")?, port).await?;
+        setup.network = kind.into();
+        setup.domain = domain;
+        Ok(())
+    }
+}
+
+/// What the command check changed when it last asked, so going back to it asks again about the
+/// same command, with the earlier answer selected.
+struct Review {
+    before: (Option<String>, Option<String>, bool),
+    after: Option<String>,
+    picked: usize,
+}
+
+/// The questions after the resources, for local and cloud launches alike: the run command,
+/// .env files, the command check and sync. Each asks only what this launch needs.
+struct Questions {
+    folder: PathBuf,
+    project: package::Project,
+    cloud: bool,
+    command: bool,
+    env: bool,
+    timing: bool,
+    direction: bool,
+    priority: bool,
+    /// The person chose to type their own run command.
+    custom: bool,
+    /// The port given for a run command other than the project's own. It applies once every
+    /// question is answered, so going back to choose the project's command keeps the dev port.
+    command_port: Option<u16>,
+    choices: Option<Vec<plan::RunChoice>>,
+    /// The project folder's size, once measured.
+    bytes: Option<u64>,
+    review: Option<Review>,
+    /// What the command check already warned about; checking again after Back repeats nothing.
+    warned: std::collections::BTreeSet<String>,
+}
+
+impl Questions {
+    fn new(folder: &Path, project: &package::Project, setup: &Setup, change: bool, cloud: bool, bytes: Option<u64>) -> Self {
+        Self {
+            folder: folder.to_owned(),
+            project: project.clone(),
+            cloud,
+            command: change || !setup.command_reviewed,
+            env: (change || !setup.env_reviewed) && sync::has_env_files(folder),
+            timing: change || !setup.sync_timing_reviewed,
+            direction: change || !setup.sync_reviewed,
+            priority: change || setup.sync_priority.is_none(),
+            custom: false,
+            command_port: None,
+            choices: None,
+            bytes,
+            review: None,
+            warned: Default::default(),
+        }
+    }
+
+    /// Asks question `step`: whether it asked anything, or `None` after the last question.
+    async fn ask(&mut self, step: usize, setup: &mut Setup) -> Option<Result<bool, String>> {
+        Some(match step {
+            0 => self.run_command(setup).await,
+            1 => self.custom_command(setup),
+            2 => self.app_port(setup),
+            3 => self.env_files(setup),
+            4 => self.check(setup).await,
+            5 => self.sync_timing(setup).await,
+            6 => self.sync_direction(setup),
+            7 => self.sync_priority(setup),
+            _ => return None,
+        })
+    }
+
+    async fn run_command(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !self.command {
+            return Ok(false);
+        }
+        if self.choices.is_none() {
+            let (folder, project) = (self.folder.clone(), self.project.clone());
+            self.choices = Some(scanning("Reading your project's scripts", move |_| Ok(plan::run_choices(&folder, &project))).await?);
+        }
+        let commands = self.choices.as_deref().unwrap_or_default();
+        let previous = setup.custom_command.clone();
+        if commands.is_empty() {
+            setup.custom_command = Some(ui::input("How do you want to run it? Enter your app's command", previous.as_deref().unwrap_or(""), false, &validate_command)?);
+            self.custom = false;
+            setup.command_reviewed = true;
+            return Ok(true);
+        }
+        let default = self.project.command_label();
+        let mut choices: Vec<_> = commands.iter().map(|command| {
+            ui::Choice::new(clean(&command.command), clean(&command.detail)).recommended(command.recommended)
+        }).collect();
+        choices.push(ui::Choice::new("Custom command", "Enter your own command"));
+        let initial = previous.as_deref().map_or(0, |previous| commands.iter().position(|command| command.command == previous).unwrap_or(commands.len()));
+        let mut note = vec!["The command runs inside the container, in your project folder.".into()];
+        if !commands.iter().any(|command| command.recommended) {
+            note.push("No clear recommendation from these scripts. Choose the command that starts your app's services.".into());
+        }
+        let selected = ui::select(
+            "How do you want to run it?",
+            &note,
+            &choices,
+            initial,
+        )?;
+        self.custom = selected == commands.len();
+        if let Some(command) = commands.get(selected) {
+            setup.custom_command = (command.command != default).then(|| command.command.clone());
+        }
+        setup.command_reviewed = true;
+        Ok(true)
+    }
+
+    fn custom_command(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !self.command || !self.custom {
+            return Ok(false);
+        }
+        let default = self.project.command_label();
+        setup.custom_command = Some(ui::input(
+            "Run command",
+            setup.custom_command.as_deref().unwrap_or(&default),
+            false,
+            &validate_command,
+        )?);
+        Ok(true)
+    }
+
+    fn app_port(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !self.command || setup.custom_command.is_none() {
+            return Ok(false);
+        }
+        self.command_port = Some(port("Port your application listens on", self.command_port.unwrap_or(setup.guest_port))?);
+        Ok(true)
+    }
+
+    /// Writes the answers that apply once every question is answered.
+    fn finish(&self, setup: &mut Setup) {
+        if let (Some(port), Some(_)) = (self.command_port, &setup.custom_command) {
+            setup.guest_port = port;
+        }
+    }
+
+    fn env_files(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !self.env {
+            return Ok(false);
+        }
+        let (question, note, copy) = if self.cloud {
+            ("Copy .env files to this cloud project?", "These files can contain credentials. Selected files will be sent to the cloud server over SSH.", "Copy them into the cloud container")
+        } else {
+            ("Copy .env files into the container?", ".env files can contain credentials.", "Copy them into this container — the dev server can read them")
+        };
+        setup.env_files = ui::select(
+            question,
+            &[note.into()],
+            &options(&["Keep them on this computer".into(), copy.into()]),
+            usize::from(setup.env_files),
+        )? == 1;
+        setup.env_reviewed = true;
+        Ok(true)
+    }
+
+    /// Back to the command check: it asks again about the command it asked about before, unless
+    /// an earlier answer changed the command since. Returns the choice to select.
+    fn reopen(&mut self, setup: &mut Setup) -> usize {
+        match self.review.take() {
+            Some(review) if setup.custom_command == review.after => {
+                (setup.custom_command, setup.accepted_command, setup.command_reviewed) = review.before;
+                review.picked
+            }
+            _ => 0,
+        }
+    }
+
+    /// Reads the run command before anything starts. What cannot work on Linux (Windows programs,
+    /// scripts that don't exist) is stopped here, with replacement commands from the project's own
+    /// scripts; everything else it notices is shown as a warning.
+    async fn check(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        let picked = self.reopen(setup);
+        let before = (setup.custom_command.clone(), setup.accepted_command.clone(), setup.command_reviewed);
+        let reviewed = self.review_command(setup, picked).await;
+        match reviewed {
+            Ok(Some(picked)) => {
+                self.review = Some(Review { before, after: setup.custom_command.clone(), picked });
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(error) => {
+                // Going back leaves the command as it was before this question.
+                if error == ui::BACK {
+                    (setup.custom_command, setup.accepted_command, setup.command_reviewed) = before;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// The command check; returns the first choice made, or `None` when nothing was asked.
+    async fn review_command(&mut self, setup: &mut Setup, mut picked: usize) -> Result<Option<usize>, String> {
+        let mut current = self.project.clone();
+        let mut first = None;
+        for _ in 0..5 {
+            current.custom_command = setup.custom_command.clone();
+            let command = current.command_label();
+            let (folder, project, env_files) = (self.folder.clone(), current.clone(), setup.env_files);
+            let check = scanning("Checking the run command", move |_| Ok(plan::check(&folder, &project, env_files))).await?;
+            let blocking: Vec<String> = check.findings.iter().filter(|f| f.blocking).map(|f| clean(&f.text)).collect();
+            if blocking.is_empty() || setup.accepted_command.as_deref() == Some(command.as_str()) {
+                for finding in &check.findings {
+                    let text = clean(&finding.text);
+                    if self.warned.insert(text.clone()) {
+                        ui::warn(&text);
+                    }
+                }
+                return Ok(first);
+            }
+            let mut choices: Vec<ui::Choice> = check.alternatives.iter().map(|c| ui::Choice::new(clean(c), "from your project's scripts")).collect();
+            choices.push(ui::Choice::new("Enter another command", ""));
+            choices.push(ui::Choice::new(format!("Run {} anyway", clean(&command)), "it is likely to fail"));
+            // The list and a command typed instead are one question: Back from typing returns to the list.
+            let mut entered = None;
+            let mut steps = ui::Wizard::new();
+            loop {
+                let asked = match steps.step() {
+                    0 => ui::select("This command can't run in the Linux container", &blocking, &choices, picked)
+                        .map(|choice| { picked = choice; true }),
+                    1 if picked == check.alternatives.len() => ui::input("Run command", &command, false, &validate_command)
+                        .map(|typed| { entered = Some(typed); true }),
+                    1 => Ok(false),
+                    _ => break,
+                };
+                steps.next(asked)?;
+            }
+            first.get_or_insert(picked);
+            setup.custom_command = Some(match picked {
+                n if n < check.alternatives.len() => check.alternatives[n].clone(),
+                n if n == check.alternatives.len() => entered.ok_or("Enter a command on one line.")?,
+                _ => {
+                    setup.accepted_command = Some(command);
+                    return Ok(first);
+                }
+            });
+            setup.command_reviewed = true;
+            picked = 0;
+        }
+        Ok(first)
+    }
+
+    async fn sync_timing(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !self.timing {
+            return Ok(false);
+        }
+        let bytes = match self.bytes {
+            Some(bytes) => bytes,
+            None => {
+                let folder = self.folder.clone();
+                let (bytes, _) = scanning("Measuring project folder for sync recommendation", move |stop| project_storage(&folder, stop)).await?;
+                *self.bytes.insert(bytes)
+            }
+        };
         // Use the same GB unit as the folder-size display and storage chooser.
         let recommend_continuous = bytes < 5 * 1_073_741_824 / 2;
         let initial = if setup.sync_timing_reviewed { setup.continuous_sync } else { recommend_continuous };
@@ -499,8 +833,13 @@ fn choose_sync(setup: &mut Setup, change: bool, folder: &Path) -> Result<(), Str
             ], usize::from(initial),
         )? == 1;
         setup.sync_timing_reviewed = true;
+        Ok(true)
     }
-    if change || !setup.sync_reviewed {
+
+    fn sync_direction(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !self.direction {
+            return Ok(false);
+        }
         setup.two_way = ui::select(
             "Which directions can project changes sync?",
             &["Sync includes code, files, folders and supported SQLite database records. Two-way also brings container changes and deletions back to this computer. Your .env choice still applies.".into()],
@@ -511,8 +850,13 @@ fn choose_sync(setup: &mut Setup, change: bool, folder: &Path) -> Result<(), Str
             usize::from(setup.two_way),
         )? == 1;
         setup.sync_reviewed = true;
+        Ok(true)
     }
-    if setup.two_way && (change || setup.sync_priority.is_none()) {
+
+    fn sync_priority(&mut self, setup: &mut Setup) -> Result<bool, String> {
+        if !setup.two_way || !self.priority {
+            return Ok(false);
+        }
         let previous = match setup.sync_priority { Some(sync::Priority::Remote) => 1, Some(sync::Priority::KeepBoth) => 2, _ => 0 };
         setup.sync_priority = Some(match ui::select(
             "If both copies change, which one takes priority?",
@@ -523,14 +867,76 @@ fn choose_sync(setup: &mut Setup, change: bool, folder: &Path) -> Result<(), Str
                 ui::Choice::new("Keep both versions", "leave conflicts for you to resolve"),
             ], previous,
         )? { 0 => sync::Priority::Local, 1 => sync::Priority::Remote, _ => sync::Priority::KeepBoth });
+        Ok(true)
     }
-    Ok(())
+}
+
+/// Every question a launch asks before it starts: the settings of a first launch or --change,
+/// then the run command, .env files, the command check and sync. Each question after the first
+/// offers Back, which asks the one before it again with its answer selected.
+async fn ask_setup(
+    folder: &Path,
+    project: &package::Project,
+    state: &Value,
+    existing: Option<Setup>,
+    change: bool,
+    stop: &Stop,
+) -> Result<Setup, String> {
+    let (mut settings, mut setup, bytes) = match existing {
+        Some(old) if !change => (None, old, None),
+        old => {
+            let (settings, bytes) = Settings::prepare(folder, state, old.as_ref()).await?;
+            let setup = Setup {
+                version: 1,
+                directory: folder.to_string_lossy().into(),
+                needs_update: old.is_some(),
+                ..old.unwrap_or_default()
+            };
+            (Some(settings), setup, Some(bytes))
+        }
+    };
+    let mut questions = Questions::new(folder, project, &setup, change, false, bytes);
+    let mut steps = ui::Wizard::new();
+    loop {
+        if stop.requested() {
+            return Err(ui::CANCELLED.into());
+        }
+        let step = steps.step();
+        let asked = match (&mut settings, step) {
+            (Some(settings), step) if step < Settings::STEPS => settings.ask(step).await,
+            (settings, Settings::STEPS) => {
+                if let Some(settings) = settings {
+                    settings.apply(&mut setup);
+                }
+                Ok(false)
+            }
+            (_, step) if step < Settings::STEPS => Ok(false),
+            (_, step) => match questions.ask(step - Settings::STEPS - 1, &mut setup).await {
+                Some(asked) => asked,
+                None => break,
+            },
+        };
+        steps.next(asked)?;
+    }
+    questions.finish(&mut setup);
+    if let Some(settings) = settings {
+        settings.finish(&mut setup).await?;
+    }
+    Ok(setup)
 }
 
 fn snapshot_progress(task: &ui::Task, progress: &Value) {
+    let count = |name: &str| progress[name].as_u64().unwrap_or(0);
+    if progress["phase"] == "inspect" {
+        task.progress("Looking for SQLite databases", count("done"), count("total"), "files");
+        return;
+    }
     if progress["phase"] == "files" {
         task.detail(&clean(progress["path"].as_str().unwrap_or("")));
-        task.progress("Preparing project files", progress["done"].as_u64().unwrap_or(0), progress["total"].as_u64().unwrap_or(0), "files");
+        match progress["totalBytes"].as_u64() {
+            Some(total) => task.progress("Preparing project files", count("bytes"), total, "bytes"),
+            None => task.progress("Preparing project files", count("done"), count("total"), "files"),
+        }
         return;
     }
     task.detail(&format!("{} / {} · {}", progress["index"], progress["total"], clean(progress["path"].as_str().unwrap_or("database"))));
@@ -543,90 +949,46 @@ fn snapshot_progress(task: &ui::Task, progress: &Value) {
     } else { task.copy_status("Creating consistent database snapshot"); }
 }
 
-async fn stage_project(folder: &Path, manifest: &sync::Manifest, task: &ui::Task, cancel: &AtomicBool) -> Result<sync::Staged, String> {
-    let (folder, manifest) = (folder.to_path_buf(), manifest.clone());
-    let stopped = Arc::new(AtomicBool::new(false));
-    let flag = stopped.clone();
+/// Stages the project for its first copy in the background, with its progress on `task`.
+/// Ctrl+C stops it within moments, even in the middle of a large file.
+async fn stage_project(folder: &Path, manifest: &sync::Manifest, task: &ui::Task, stop: &Arc<AtomicBool>) -> Result<sync::Staged, String> {
+    let (folder, manifest, flag) = (folder.to_path_buf(), manifest.clone(), stop.clone());
     let (tx, rx) = std::sync::mpsc::channel();
-    let worker = tokio::task::spawn_blocking(move || sync::stage_progress(&folder, &manifest, |progress| {
-        if flag.load(Ordering::Relaxed) { return Err("Project preparation cancelled; both copies kept".into()); }
+    let worker = tokio::task::spawn_blocking(move || sync::stage_progress(&folder, &manifest, &flag, |progress| {
         tx.send(progress.clone()).map_err(|_| "Project preparation cancelled".into())
     }));
+    let mut stopping = false;
     loop {
-        if cancel.load(Ordering::Relaxed) { stopped.store(true, Ordering::Relaxed); }
-        if let Some(progress) = rx.try_iter().last() { snapshot_progress(task, &progress); }
+        if !stopping && stop.load(Ordering::Relaxed) {
+            stopping = true;
+            task.copy_status("Stopping…");
+        }
+        if let Some(progress) = rx.try_iter().last().filter(|_| !stopping) { snapshot_progress(task, &progress); }
         if worker.is_finished() { return worker.await.map_err(|e| e.to_string())?; }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 }
 
-fn choose_command(
-    folder: &Path,
-    project: &package::Project,
-    previous: Option<&str>,
-) -> Result<Option<String>, String> {
-    let default = project.command_label();
-    let commands = plan::run_choices(folder, project);
-    if commands.is_empty() {
-        return ui::input("How do you want to run it? Enter your app's command", previous.unwrap_or(""), false, &validate_command).map(Some);
-    }
-    let mut choices: Vec<_> = commands.iter().map(|command| {
-        ui::Choice::new(clean(&command.command), clean(&command.detail)).recommended(command.recommended)
-    }).collect();
-    choices.push(ui::Choice::new("Custom command", "Enter your own command"));
-    let initial = previous.map_or(0, |previous| commands.iter().position(|command| command.command == previous).unwrap_or(commands.len()));
-    let mut note = vec!["The command runs inside the container, in your project folder.".into()];
-    if !commands.iter().any(|command| command.recommended) {
-        note.push("No clear recommendation from these scripts. Choose the command that starts your app's services.".into());
-    }
-    let selected = ui::select(
-        "How do you want to run it?",
-        &note,
-        &choices,
-        initial,
-    )?;
-    if let Some(command) = commands.get(selected) {
-        return Ok((command.command != default).then(|| command.command.clone()));
-    }
-    ui::input(
-        "Run command",
-        previous.unwrap_or(&default),
-        false,
-        &validate_command,
-    ).map(Some)
-}
-
-/// Reads the run command before anything starts. What cannot work on Linux (Windows programs,
-/// scripts that don't exist) is stopped here, with replacement commands from the project's own
-/// scripts; everything else it notices is shown as a warning.
-fn review_command(folder: &Path, project: &package::Project, setup: &mut Setup) -> Result<(), String> {
-    let mut current = project.clone();
-    for _ in 0..5 {
-        current.custom_command = setup.custom_command.clone();
-        let command = current.command_label();
-        let check = plan::check(folder, &current, setup.env_files);
-        let blocking: Vec<String> = check.findings.iter().filter(|f| f.blocking).map(|f| clean(&f.text)).collect();
-        if blocking.is_empty() || setup.accepted_command.as_deref() == Some(command.as_str()) {
-            for finding in &check.findings {
-                ui::warn(&clean(&finding.text));
-            }
-            return Ok(());
+/// Copies files into the environment with their progress on `task`. Ctrl+C cancels the
+/// transfer in the engine, which never uses a partial copy.
+async fn copy_into(id: &str, params: Value, task: &ui::Task, stop: &Stop) -> Result<Value, String> {
+    let flag: &AtomicBool = &stop.flag;
+    let copy = public::call_with_progress_cancellable("copy_files_to_environment", params, |progress| {
+        if !flag.load(Ordering::Relaxed) { task.copy_progress(progress); }
+    }, flag);
+    let cancel = async {
+        while !flag.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let mut choices: Vec<ui::Choice> = check.alternatives.iter().map(|c| ui::Choice::new(clean(c), "from your project's scripts")).collect();
-        choices.push(ui::Choice::new("Enter another command", ""));
-        choices.push(ui::Choice::new(format!("Run {} anyway", clean(&command)), "it is likely to fail"));
-        let picked = ui::select("This command can't run in the Linux container", &blocking, &choices, 0)?;
-        setup.custom_command = Some(match picked {
-            n if n < check.alternatives.len() => check.alternatives[n].clone(),
-            n if n == check.alternatives.len() => ui::input("Run command", &command, false, &validate_command)?,
-            _ => {
-                setup.accepted_command = Some(command);
-                return Ok(());
-            }
-        });
-        setup.command_reviewed = true;
+        task.copy_status("Stopping the copy…");
+        // Best effort: the copy job itself is cancelled as well.
+        let _ = tokio::time::timeout(Duration::from_secs(5), call("cancel_file_transfer", json!({"environmentId":id}))).await;
+        std::future::pending::<Result<Value, String>>().await
+    };
+    tokio::select! {
+        result = copy => result,
+        result = cancel => result,
     }
-    Ok(())
 }
 
 fn validate_command(entry: &str) -> Result<String, String> {
@@ -724,6 +1086,108 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     }
 }
 
+const STOPPING: &str = "Stopping the launch… Press Ctrl+C again to quit now.";
+
+/// Ctrl+C during a launch: the first stops it, at once and visibly, followed by the usual
+/// cleanup; a second quits right away. While the launch works, keys are read here, so Ctrl+C is
+/// noticed wherever it is and typing never disturbs the display. Questions and the dev server's
+/// view read their own keys.
+struct Stop {
+    flag: Arc<AtomicBool>,
+    keys: Option<ui::Interrupts>,
+    signal: tokio::task::JoinHandle<()>,
+    notice: Option<std::thread::JoinHandle<()>>,
+    finished: Arc<AtomicBool>,
+}
+
+impl Stop {
+    fn new() -> Self {
+        let flag = Arc::new(AtomicBool::new(false));
+        // Ctrl+C arrives as a signal while nothing reads keys.
+        let pressed = flag.clone();
+        let signal = tokio::spawn(async move {
+            while tokio::signal::ctrl_c().await.is_ok() {
+                if pressed.swap(true, Ordering::SeqCst) {
+                    ui::force_exit();
+                }
+            }
+        });
+        // The acknowledgement shows under whatever runs, within moments of the first Ctrl+C.
+        let finished = Arc::new(AtomicBool::new(false));
+        let (done, stopping) = (finished.clone(), flag.clone());
+        let notice = std::thread::spawn(move || {
+            let mut shown = None;
+            while !done.load(Ordering::Relaxed) {
+                if shown.is_none() && stopping.load(Ordering::Relaxed) {
+                    let line = ui::block();
+                    line.set(vec![format!("{}  {}", ui::paint("▲", ui::AMBER), ui::paint(STOPPING, ui::AMBER))]);
+                    shown = Some(line);
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        });
+        Self { flag, keys: None, signal, notice: Some(notice), finished }
+    }
+
+    fn requested(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        cancelled(&self.flag)
+    }
+
+    /// Reads keys for Ctrl+C while the launch works.
+    fn watch(&mut self) {
+        if self.keys.is_none() {
+            self.keys = Some(ui::Interrupts::watch(self.flag.clone()));
+        }
+    }
+
+    /// Hands keys back, before something that reads them itself.
+    fn release(&mut self) {
+        self.keys = None;
+    }
+
+    /// Asks something in the middle of the launch, without Back. Leaving the question stops
+    /// the launch.
+    fn ask<T>(&mut self, question: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let watching = self.keys.take().is_some();
+        let answer = ui::without_back(question);
+        if answer.as_ref().is_err_and(|error| error == ui::CANCELLED) {
+            self.flag.store(true, Ordering::SeqCst);
+        }
+        if watching {
+            self.watch();
+        }
+        answer
+    }
+
+    /// Waits for `work` unless the launch is stopped first. The engine may still finish a
+    /// request it received; the cleanup after a stop covers what it changed.
+    async fn until<T>(&self, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+        let mut work = std::pin::pin!(work);
+        loop {
+            self.check()?;
+            tokio::select! {
+                result = &mut work => return result,
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+    }
+}
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        self.signal.abort();
+        self.keys = None;
+        self.finished.store(true, Ordering::Relaxed);
+        if let Some(notice) = self.notice.take() {
+            let _ = notice.join();
+        }
+    }
+}
+
 fn copy_storage_full(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     [
@@ -756,14 +1220,14 @@ fn growth_limits(allocation: &Value) -> Result<(u32, u32), String> {
 async fn offer_copy_storage(
     setup: &mut Setup,
     state_path: &Path,
-    cancel: &AtomicBool,
+    stop: &mut Stop,
 ) -> Result<bool, String> {
-    cancelled(cancel)?;
+    stop.check()?;
     let id = setup
         .environment
         .as_deref()
         .ok_or("Missing environment ID")?;
-    let allocation = call("get_storage_allocation", json!({"environmentId":id})).await?;
+    let allocation = stop.until(call("get_storage_allocation", json!({"environmentId":id}))).await?;
     let (current, maximum) = growth_limits(&allocation)?;
     let note = format!(
         "  The project copy ran out of storage ({current} GB limit).
@@ -771,14 +1235,14 @@ async fn offer_copy_storage(
 
 "
     );
-    if choose_with_note(
+    if stop.ask(|| choose_with_note(
         "Container storage is full",
         &note,
         &[
             "Increase storage and retry copying".into(),
             "Cancel launch (keep the container)".into(),
         ],
-    )? != 0
+    ))? != 0
     {
         return Ok(false);
     }
@@ -786,7 +1250,7 @@ async fn offer_copy_storage(
         .saturating_mul(2)
         .max(current.saturating_add(2))
         .min(maximum);
-    let capacity = loop {
+    let capacity = stop.ask(|| loop {
         let input = text(
             &format!("New storage limit in GB · {}–{maximum}", current + 1),
             &suggested.to_string(),
@@ -794,11 +1258,11 @@ async fn offer_copy_storage(
         )?;
         if let Ok(value) = input.parse::<u32>() {
             if value > current && value <= maximum {
-                break value;
+                break Ok(value);
             }
         }
-    };
-    cancelled(cancel)?;
+    })?;
+    stop.check()?;
     let growing = ui::task(&format!("Increasing storage from {current} GB to {capacity} GB"));
     call(
         "expand_environment_storage",
@@ -867,31 +1331,40 @@ fn local_replacements(publications: &[Value], mut params: Value) -> (Vec<String>
     (replaced, params)
 }
 
+/// This environment's quick link or domain routes at this port. "This computer" and "Local
+/// network" remove them: the engine saves each route and restores it when it restarts.
+fn public_routes(publications: &[Value], id: &str, port: u16) -> Vec<String> {
+    publications
+        .iter()
+        .filter(|p| p["environmentId"] == id && p["port"] == port && p["kind"] == "cloudflare")
+        .filter_map(|p| p["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 async fn publish_local(
     setup: &mut Setup,
     state_path: &Path,
-    cancel: &AtomicBool,
+    stop: &mut Stop,
 ) -> Result<(), String> {
     let id = setup
         .environment
         .as_deref()
         .ok_or("Missing environment ID")?;
-    let services = call("list_environment_services", json!({"environmentId":id})).await?;
+    let services = stop.until(call("list_environment_services", json!({"environmentId":id}))).await?;
     let (replaced, params) = local_replacements(
         services["publications"].as_array().map(Vec::as_slice).unwrap_or_default(),
         local_publication_params(id, &setup.network, setup.guest_port, setup.local_port),
     );
     for publication_id in replaced {
-        call(
+        stop.until(call(
             "unpublish_environment_service",
             json!({"publicationId":publication_id}),
-        )
+        ))
         .await?;
     }
-    let publication = match call("publish_environment_service", params.clone()).await {
+    let publication = match stop.until(call("publish_environment_service", params.clone())).await {
         Ok(publication) => publication,
-        Err(error) if port_in_use(&error) => {
-            cancelled(cancel)?;
+        Err(error) if !stop.requested() && port_in_use(&error) => {
             let note = format!(
                 "  Local port {} is already being used.
   Your project has been copied successfully.
@@ -899,21 +1372,21 @@ async fn publish_local(
 ",
                 setup.local_port
             );
-            if choose_with_note(
+            if stop.ask(|| choose_with_note(
                 "Choose another local port",
                 &note,
                 &[
                     "Use an available port and continue".into(),
                     "Cancel launch (keep the container)".into(),
                 ],
-            )? != 0
+            ))? != 0
             {
                 return Err(format!("Local port {} is in use. Stop the application using it or run yougori launch --change to choose another.", setup.local_port));
             }
-            cancelled(cancel)?;
+            stop.check()?;
             // An omitted hostPort asks the engine to bind a free port atomically.
             let automatic = local_publication_params(id, &setup.network, setup.guest_port, 0);
-            call("publish_environment_service", automatic).await?
+            stop.until(call("publish_environment_service", automatic)).await?
         }
         Err(error) => return Err(error),
     };
@@ -936,7 +1409,7 @@ async fn launch(
     _package: &Value,
     key: &str,
     change: bool,
-    cancel: &AtomicBool,
+    stop: &mut Stop,
 ) -> Result<live::Live, String> {
     let mut project = package::Project::load(folder)?;
     project.custom_command = setup.custom_command.clone();
@@ -944,8 +1417,8 @@ async fn launch(
         return Err(format!("This package belongs to a workspace. Launch from {} so workspace dependencies are copied too.", root.display()));
     }
     let remembered = setup.environment.take();
-    cancelled(cancel)?;
-    let state = call("get_platform_state", json!({})).await?;
+    stop.check()?;
+    let state = busy("Looking up this project's container", call("get_platform_state", json!({}))).await?;
     let marker = format!("Yougori launch · {key}");
     let environments = state["environments"]
         .as_array()
@@ -989,6 +1462,7 @@ async fn launch(
     if setup.environment.is_none() {
         container.detail("the first run downloads the runtime image");
     }
+    // Changes to an existing container are quick and finish before a stop takes effect.
     if let Some(id) = &setup.environment {
         if found.is_some_and(|env| env["name"] != name) {
             call(
@@ -1002,7 +1476,7 @@ async fn launch(
             json!({"environmentId":id,"status":"stopped"}),
         )
         .await?;
-        cancelled(cancel)?;
+        stop.check()?;
         if change || setup.needs_update {
             call(
                 "update_environment_gpu",
@@ -1020,8 +1494,11 @@ async fn launch(
     } else {
         let mut request = creation_request(setup, key, folder)?;
         request["name"] = json!(name);
-        let result = match call("run_workload", json!({"request":request,"start":false})).await {
+        let result = match stop.until(call("run_workload", json!({"request":request,"start":false}))).await {
             Ok(result) => result,
+            // The engine finishes creating the container, which stays stopped; the next
+            // launch finds it by its description.
+            Err(error) if stop.requested() => return Err(error),
             Err(error) => {
                 if let Ok(state) = call("get_platform_state", json!({})).await {
                     setup.environment = state["environments"]
@@ -1051,7 +1528,7 @@ async fn launch(
     .await?;
     setup.needs_update = false;
     save(state_path, setup)?;
-    cancelled(cancel)?;
+    stop.check()?;
     let id = setup
         .environment
         .as_deref()
@@ -1063,11 +1540,15 @@ async fn launch(
     )
     .await?;
     container.done(&format!("Container {} running", clean(&name)));
-    cancelled(cancel)?;
+    stop.check()?;
     let mut files = ui::task("Syncing project files");
-    exec(id, "mkdir -p /yougori/launch/imports").await?;
+    stop.until(exec(id, "mkdir -p /yougori/launch/imports")).await?;
     let filter = sync::Filter::load(folder, setup.env_files)?;
-    let manifest = sync::scan(folder, &filter)?;
+    let (source, flag) = (folder.to_owned(), stop.flag.clone());
+    // A stop ends the scan at its next folder; it is waited for, as the CLI cannot exit before.
+    let manifest = tokio::task::spawn_blocking(move || sync::scan_until(&source, &filter, &flag))
+        .await
+        .map_err(|e| e.to_string())??;
     let bytes: u64 = manifest.values().map(|(size, _)| size).sum();
     let total = format!(
         "{} files · {}",
@@ -1077,26 +1558,28 @@ async fn launch(
     files.detail(&total);
     let sync_path = state_path.with_extension("sync.json");
     let mut saved = sync::Saved::load(&sync_path);
-    let remote_token = exec(id, "cat /yougori/launch/sync-token 2>/dev/null || true").await?;
+    let remote_token = stop.until(exec(id, "cat /yougori/launch/sync-token 2>/dev/null || true")).await?;
     let id = id.to_owned();
     let installs = plan::installs(folder, &project, &manifest);
     let reconcile = saved.needs_reconcile(&id, &remote_token);
     // A missing checkpoint is not a missing workspace. Never replace an existing
     // project (and its runtime data) just to recover interrupted sync metadata.
-    let copied = exec(&id, "if [ -d /workspace ] && [ -n \"$(ls -A /workspace)\" ]; then printf existing; fi").await?.trim() != "existing";
+    let copied = stop.until(exec(&id, "if [ -d /workspace ] && [ -n \"$(ls -A /workspace)\" ]; then printf existing; fi")).await?.trim() != "existing";
     let mut initial_databases = std::collections::BTreeSet::new();
     if copied {
         files.set("Copying project into the container");
         files.copy_status("Preparing project files");
-        let staging = stage_project(folder, &manifest, &files, cancel).await?;
+        let staging = stage_project(folder, &manifest, &files, &stop.flag).await?;
+        files.detail(&total);
         let copy = loop {
-            cancelled(cancel)?;
-            exec(&id, CLEAN_IMPORTS).await?;
+            // Removing an abandoned copy can take a while; the next launch finishes it.
+            stop.until(exec(&id, CLEAN_IMPORTS)).await?;
             files.copy_status("Waiting for copy progress");
-            match public::call_with_progress("copy_files_to_environment", json!({"environmentId":id,"paths":[staging.path().join("project")],"destination":format!("{ROOT}/imports")}), |progress| files.copy_progress(progress)).await {
+            match copy_into(&id, json!({"environmentId":id,"paths":[staging.path().join("project")],"destination":format!("{ROOT}/imports")}), &files, stop).await {
                 Ok(copy) => break copy,
+                Err(error) if stop.requested() => return Err(error),
                 Err(error) if copy_storage_full(&error) => {
-                    if !offer_copy_storage(setup, state_path, cancel).await? { return Err("Project copy cancelled because storage is full.".into()); }
+                    if !offer_copy_storage(setup, state_path, stop).await? { return Err("Project copy cancelled because storage is full.".into()); }
                 }
                 Err(error) => return Err(error),
             }
@@ -1121,20 +1604,23 @@ async fn launch(
         saved.directories.clear();
         saved.save(&sync_path)?;
     }
-    let mut live =
-        live::Live::prepare(&id, folder, &project, &manifest, setup.two_way, setup.guest_port, &sync_path, saved).await?;
+    stop.check()?;
+    let mut live = stop.until(live::Live::prepare(&id, folder, &project, &manifest, setup.two_way, setup.guest_port, &sync_path, saved)).await?;
     live.priority = setup.sync_priority.unwrap_or_default();
     live.env_files = setup.env_files;
     live.initial_databases = initial_databases;
     if !setup.two_way && !copied && reconcile {
         files.set("Comparing project files to resume sync");
-        live.reconcile_one_way(&manifest).await?;
+        stop.until(live.reconcile_one_way(&manifest)).await?;
     }
+    // A stop between transfers leaves the sync journal for the next launch to recover.
     let changes = loop {
-        let result = if setup.two_way { live.sync_both(setup.env_files).await } else { live.sync_to(manifest.clone()).await };
+        let result = stop.until(async {
+            if setup.two_way { live.sync_both(setup.env_files).await } else { live.sync_to(manifest.clone()).await }
+        }).await;
         match result {
-            Err(error) if copy_storage_full(&error) => {
-                if !offer_copy_storage(setup, state_path, cancel).await? {
+            Err(error) if !stop.requested() && copy_storage_full(&error) => {
+                if !offer_copy_storage(setup, state_path, stop).await? {
                     return Err(error);
                 }
             }
@@ -1167,7 +1653,7 @@ async fn launch(
         _ => Network::Computer,
     };
     let domain_uses_local_port = if let Network::Domain(ref hostname) = network {
-        let domains = call("list_saved_domains", json!({})).await?;
+        let domains = stop.until(call("list_saved_domains", json!({}))).await?;
         let host_port = domains
             .as_array()
             .into_iter()
@@ -1175,16 +1661,16 @@ async fn launch(
             .find(|domain| domain["hostname"] == *hostname)
             .and_then(|domain| domain["hostPort"].as_u64());
         if let Some(host_port) = host_port {
-            let services = call("list_environment_services", json!({"environmentId":id})).await?;
+            let services = stop.until(call("list_environment_services", json!({"environmentId":id}))).await?;
             for publication in services["publications"].as_array().into_iter().flatten() {
                 if publication["kind"] == "loopback"
                     && publication["hostPort"].as_u64() == Some(host_port)
                 {
                     if let Some(publication_id) = publication["id"].as_str() {
-                        call(
+                        stop.until(call(
                             "unpublish_environment_service",
                             json!({"publicationId":publication_id}),
-                        )
+                        ))
                         .await?;
                     }
                 }
@@ -1198,7 +1684,7 @@ async fn launch(
         .then(|| publish_params(&network, &id, live::proxy_port(setup.guest_port)))
         .flatten()
     {
-        let publication = domains::publish(params).await.map_err(|error| {
+        let publication = stop.until(domains::publish(params)).await.map_err(|error| {
             if matches!(network, Network::Domain(_)) && port_in_use(&error) {
                 format!("The saved domain's local tunnel port is already in use. Change its port in Yougori's saved public access setup, then launch again. {error}")
             } else {
@@ -1213,13 +1699,27 @@ async fn launch(
         {
             public.push(clean(url));
         }
+    } else {
+        // This computer and Local network: remove a public link left by an earlier choice.
+        let services = stop.until(call("list_environment_services", json!({"environmentId":id}))).await?;
+        for publication_id in public_routes(
+            services["publications"].as_array().map(Vec::as_slice).unwrap_or_default(),
+            &id,
+            live::proxy_port(setup.guest_port),
+        ) {
+            stop.until(call(
+                "unpublish_environment_service",
+                json!({"publicationId":publication_id}),
+            ))
+            .await?;
+        }
     }
     // The local publication serves this PC and, unless "This computer" was chosen, its local network.
     if domain_uses_local_port {
         // Port zero asks the engine to allocate a free localhost port atomically.
         setup.local_port = 0;
     }
-    publish_local(setup, state_path, cancel).await?;
+    publish_local(setup, state_path, stop).await?;
     publishing.done(&format!(
         "Published at {}",
         ui::paint(&format!("http://127.0.0.1:{}", setup.local_port), ui::SKY)
@@ -1227,8 +1727,8 @@ async fn launch(
     for url in public {
         ui::info(&format!("public  {url}"));
     }
-    cancelled(cancel)?;
-    live.start().await?;
+    stop.check()?;
+    stop.until(live.start()).await?;
     ui::outro(&format!(
         "{} {}",
         ui::muted("$"),
@@ -1239,13 +1739,16 @@ async fn launch(
 }
 
 pub(super) async fn run(args: &[String]) -> Result<i32, String> {
-    if args.iter().any(|arg| arg == "--cloud") {
+    let result = if args.iter().any(|arg| arg == "--cloud") {
         let args: Vec<_> = args.iter().filter(|arg| arg.as_str() != "--cloud").cloned().collect();
         let change = changed(&args, std::env::var("npm_config_change").ok().as_deref())?;
-        return cloud::run_in(&std::env::current_dir().map_err(|e| e.to_string())?, change).await;
-    }
-    let change = changed(args, std::env::var("npm_config_change").ok().as_deref())?;
-    run_in(&std::env::current_dir().map_err(|e| e.to_string())?, change).await
+        cloud::run_in(&std::env::current_dir().map_err(|e| e.to_string())?, change).await
+    } else {
+        let change = changed(args, std::env::var("npm_config_change").ok().as_deref())?;
+        run_in(&std::env::current_dir().map_err(|e| e.to_string())?, change).await
+    };
+    // Run from the command line, no question comes before the first one: Back there cancels.
+    result.map_err(|error| if error == ui::BACK { ui::CANCELLED.into() } else { error })
 }
 
 pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
@@ -1289,65 +1792,57 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             project.runtime_label()
         ),
     );
-    let cancel = Arc::new(AtomicBool::new(false));
-    let flag = cancel.clone();
-    let signal = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            flag.store(true, Ordering::Relaxed);
-        }
-    });
+    let mut stop = Stop::new();
+    stop.watch();
+    // The engine step lasts until the engine has answered, so the launch never looks stuck.
     let engine = ui::task("Starting Yougori engine");
-    client::start(None).await?;
-    engine.done("Engine ready");
-    if cancel.load(Ordering::Relaxed) {
-        ui::outro("Cancelled");
-        return Ok(0);
-    }
-    let state = call("get_platform_state", json!({})).await?;
+    let state = match stop.until(async {
+        client::start(None).await?;
+        call("get_platform_state", json!({})).await
+    }).await {
+        Err(_) if stop.requested() => {
+            engine.clear();
+            drop(stop);
+            ui::outro("Cancelled");
+            return Ok(0);
+        }
+        state => state?,
+    };
     let had_settings = existing.is_some();
-    let existing = reconcile_saved_setup(&path, &key, existing, &state)?;
+    // The engine is ready even when the saved settings no longer match it.
+    let existing = reconcile_saved_setup(&path, &key, existing, &state);
+    engine.done("Engine ready");
+    let existing = existing?;
     if had_settings && existing.is_none() {
         ui::step("Previous node no longer exists — setting up this project again");
     }
-    let mut setup = if change || existing.is_none() {
-        configure(&folder, &package, &state, existing.as_ref()).await?
-    } else {
-        existing.unwrap()
-    };
-    if change || !setup.command_reviewed {
-        setup.custom_command = choose_command(&folder, &project, setup.custom_command.as_deref())?;
-        if setup.custom_command.is_some() {
-            setup.guest_port = port("Port your application listens on", setup.guest_port)?;
-        }
-        setup.command_reviewed = true;
-    }
-    if sync::has_env_files(&folder) && (change || !setup.env_reviewed) {
-        setup.env_reviewed = true;
-        setup.env_files = choose_with_note(
-            "Copy .env files into the container?",
-            ".env files can contain credentials.",
-            &[
-                "Keep them on this computer".into(),
-                "Copy them into this container — the dev server can read them".into(),
-            ],
-        )? == 1;
-    }
-    review_command(&folder, &project, &mut setup)?;
-    choose_sync(&mut setup, change, &folder)?;
+    // Questions read their own keys.
+    stop.release();
+    let mut setup = ask_setup(&folder, &project, &state, existing, change, &stop).await?;
     add_project_shortcut(&folder, &project)?;
     save(&path, &setup)?;
+    stop.watch();
     let result = async {
-        let mut live = launch(&mut setup, &path, &folder, &package, &key, change, &cancel).await?;
+        let mut live = launch(&mut setup, &path, &folder, &package, &key, change, &mut stop).await?;
+        // The dev server's view reads its own keys, Ctrl+C included.
+        stop.release();
         let result = live
-            .watch(&name, setup.local_port, setup.env_files, setup.two_way, setup.continuous_sync, setup.gpu, &cancel)
+            .watch(&name, setup.local_port, setup.env_files, setup.two_way, setup.continuous_sync, setup.gpu, &stop.flag)
             .await;
+        stop.watch();
         if result.is_ok() && setup.continuous_sync {
-            if let Err(error) = live.sync_current(setup.env_files, setup.two_way).await { ui::warn(&format!("Final sync incomplete: {}. Environment files are kept for the next launch.", clean(&error))); }
+            let syncing = ui::task("Syncing your latest changes");
+            let synced = live.sync_current(setup.env_files, setup.two_way).await;
+            syncing.clear();
+            if let Err(error) = synced { ui::warn(&format!("Final sync incomplete: {}. Environment files are kept for the next launch.", clean(&error))); }
         }
         live.close().await;
         result
     }
     .await;
+    // A Ctrl+C during the cleanup never hides an error the launch already had.
+    let interrupted = stop.requested();
+    stop.watch();
     let cleanup = if let Some(id) = setup.environment.as_deref() {
         let stopping = ui::task(&format!("Stopping {name}"));
         let stopped = call(
@@ -1355,26 +1850,27 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             json!({"environmentId":id,"status":"stopped"}),
         )
         .await;
-        match &stopped {
-            Ok(_) => stopping.done(&format!("Stopped {name}")),
-            Err(_) => stopping.fail("Could not confirm the container stopped"),
-        }
-        match stopped {
+        let saved = match &stopped {
             Ok(_) => match call("update_container_startup_command", json!({"environmentId":id,"command":NODE_AUTOSTART})).await {
                 Ok(_) => Ok(()),
                 Err(error) => Err(format!("The node stopped, but its website startup command could not be saved: {error}")),
             },
-            Err(error) => Err(error),
+            Err(_) => Ok(()),
+        };
+        match &stopped {
+            Ok(_) => stopping.done(&format!("Stopped {name}")),
+            Err(_) => stopping.fail("Could not confirm the container stopped"),
         }
+        stopped.map(|_| ()).and(saved)
     } else {
         Ok(())
     };
+    drop(stop);
     ui::outro(if project.is_python() { HINT } else { "npm run yougori starts this project again · npm run yougori-change edits settings · yougori opens the menu" });
-    signal.abort();
     drop(lock);
     match (result, cleanup) {
         (_, Err(e)) => Err(format!("Could not confirm the project container stopped: {e}. Check yougori ps and stop it there.")),
-        (Err(e), _) if !cancel.load(Ordering::Relaxed) => Err(e),
+        (Err(e), _) if !interrupted => Err(e),
         _ => Ok(0),
     }
 }
@@ -1410,8 +1906,10 @@ mod tests {
             expected += contents.len() as u64;
         }
         fs::write(root.path().join(".yougori-sync-temporary"), "transfer internals").unwrap();
-        assert_eq!(project_storage(root.path()).unwrap(), (expected, 1));
-        assert!(project_storage(&root.path().join("missing")).is_err());
+        let going = AtomicBool::new(false);
+        assert_eq!(project_storage(root.path(), &going).unwrap(), (expected, 1));
+        assert!(project_storage(&root.path().join("missing"), &going).is_err());
+        assert!(project_storage(root.path(), &AtomicBool::new(true)).is_err(), "a stopped measurement ends early");
     }
 
     #[test]
@@ -1545,7 +2043,7 @@ mod tests {
         let settings = tempfile::tempdir().unwrap();
         let path = settings.path().join("state.json");
         let key = directory_key(dir.path()).unwrap();
-        let cancel = AtomicBool::new(false);
+        let mut stop = Stop::new();
         let result: Result<(), String> = async {
             let mut live = launch(
                 &mut setup,
@@ -1554,7 +2052,7 @@ mod tests {
                 &package,
                 &key,
                 false,
-                &cancel,
+                &mut stop,
             )
             .await?;
             let id = setup.environment.clone().unwrap();
@@ -1598,7 +2096,7 @@ mod tests {
                         &package,
                         &key,
                         false,
-                        &cancel,
+                        &mut stop,
                     )
                     .await?;
                     assert_eq!(setup.environment.as_deref(), Some(id.as_str()));
@@ -1664,6 +2162,154 @@ mod tests {
         }
         result.unwrap();
     }
+    fn reviewed() -> Setup {
+        Setup {
+            command_reviewed: true,
+            env_reviewed: true,
+            sync_reviewed: true,
+            sync_timing_reviewed: true,
+            sync_priority: Some(sync::Priority::Local),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn questions_ask_what_the_saved_setup_lacks_and_everything_with_change() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let project = package::Project::load(folder.path()).unwrap();
+        let asks = |questions: &Questions| [questions.command, questions.env, questions.timing, questions.direction, questions.priority];
+        assert_eq!(asks(&Questions::new(folder.path(), &project, &reviewed(), false, false, None)), [false; 5]);
+        assert_eq!(asks(&Questions::new(folder.path(), &project, &reviewed(), true, false, None)), [true, false, true, true, true], "no .env file to ask about");
+        fs::write(folder.path().join(".env"), "KEY=value").unwrap();
+        assert_eq!(asks(&Questions::new(folder.path(), &project, &Setup::default(), false, false, None)), [true; 5]);
+        assert_eq!(asks(&Questions::new(folder.path(), &project, &reviewed(), true, true, None)), [true; 5]);
+    }
+
+    #[tokio::test]
+    async fn questions_the_saved_setup_answers_ask_nothing() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"},"devDependencies":{"vite":"7"}}"#).unwrap();
+        let project = package::Project::load(folder.path()).unwrap();
+        let mut setup = reviewed();
+        let mut questions = Questions::new(folder.path(), &project, &setup, false, false, None);
+        for step in 0..8 {
+            assert_eq!(questions.ask(step, &mut setup).await, Some(Ok(false)), "step {step}");
+        }
+        assert!(questions.ask(8, &mut setup).await.is_none());
+        assert!(questions.bytes.is_none(), "nothing was measured");
+    }
+
+    #[tokio::test]
+    async fn the_command_check_warns_once_however_often_going_back_runs_it() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"set NODE_ENV=development && vite"},"devDependencies":{"vite":"7"}}"#).unwrap();
+        let project = package::Project::load(folder.path()).unwrap();
+        let mut setup = reviewed();
+        let mut questions = Questions::new(folder.path(), &project, &setup, false, false, None);
+        assert_eq!(questions.ask(4, &mut setup).await, Some(Ok(false)), "a warning asks nothing");
+        let warned = questions.warned.clone();
+        assert!(warned.iter().any(|text| text.contains("`set NODE_ENV=development` is Windows cmd syntax")), "{warned:?}");
+        // Back past the check and forward again checks the command again without repeating it.
+        assert_eq!(questions.ask(4, &mut setup).await, Some(Ok(false)));
+        assert_eq!(questions.warned, warned);
+    }
+
+    #[tokio::test]
+    async fn a_port_given_for_another_command_applies_only_while_that_command_is_chosen() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let project = package::Project::load(folder.path()).unwrap();
+        let mut questions = Questions::new(folder.path(), &project, &Setup::default(), false, false, None);
+        // The port was given for a custom command; going back, the project's own command was chosen.
+        questions.command_port = Some(8080);
+        let mut setup = Setup { guest_port: 5173, ..Default::default() };
+        assert_eq!(questions.ask(2, &mut setup).await, Some(Ok(false)), "no port question without a command of their own");
+        questions.finish(&mut setup);
+        assert_eq!(setup.guest_port, 5173);
+        setup.custom_command = Some("node server.js".into());
+        questions.finish(&mut setup);
+        assert_eq!(setup.guest_port, 8080);
+    }
+
+    #[test]
+    fn going_back_to_the_command_check_asks_about_the_same_command_again() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let project = package::Project::load(folder.path()).unwrap();
+        let mut questions = Questions::new(folder.path(), &project, &Setup::default(), false, false, None);
+        let review = || Review { before: (Some("npm run production".into()), None, false), after: Some("npm run dev:full".into()), picked: 1 };
+        // The check replaced a Windows-only command with the second suggestion.
+        let mut setup = Setup { custom_command: Some("npm run dev:full".into()), command_reviewed: true, ..Default::default() };
+        questions.review = Some(review());
+        assert_eq!(questions.reopen(&mut setup), 1);
+        assert_eq!(setup.custom_command.as_deref(), Some("npm run production"));
+        assert!(!setup.command_reviewed);
+        assert!(questions.review.is_none());
+        // A command an earlier answer changed is checked afresh.
+        let mut setup = Setup { custom_command: Some("npm start".into()), ..Default::default() };
+        questions.review = Some(review());
+        assert_eq!(questions.reopen(&mut setup), 0);
+        assert_eq!(setup.custom_command.as_deref(), Some("npm start"));
+        assert_eq!(questions.reopen(&mut setup), 0, "nothing to reopen");
+    }
+
+    #[test]
+    fn resource_answers_become_the_setup_and_recommended_keeps_custom_answers_for_later() {
+        let mut settings = Settings {
+            drives: None,
+            host: json!({}),
+            storage: 6,
+            note: Vec::new(),
+            suggested: [2, 4, 6],
+            app_port: 3000,
+            environment: None,
+            drive: Some("D:\\".into()),
+            recommended: false,
+            gpu: true,
+            allocation: [8, 16, 40],
+            guest_port: 5173,
+            local_port: Some(8080),
+            network: None,
+        };
+        let mut setup = Setup::default();
+        settings.apply(&mut setup);
+        assert!(setup.gpu);
+        assert_eq!((setup.allocation, setup.guest_port, setup.local_port), ([8, 16, 40], 5173, 8080));
+        assert_eq!(setup.storage_drive.as_deref(), Some("D:\\"));
+        // Going back to choose Recommended keeps the custom answers for another change of mind.
+        settings.recommended = true;
+        settings.apply(&mut setup);
+        assert!(!setup.gpu);
+        assert_eq!((setup.allocation, setup.guest_port, setup.local_port), ([2, 4, 6], 3000, 3000));
+        assert_eq!((settings.allocation, settings.guest_port), ([8, 16, 40], 5173));
+        // Before its question, the local port follows the dev server's port.
+        settings.recommended = false;
+        settings.local_port = None;
+        settings.apply(&mut setup);
+        assert_eq!(setup.local_port, 5173);
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_stops_waiting_at_once_and_leaving_a_question_stops_the_launch() {
+        let stop = Stop::new();
+        assert_eq!(stop.until(async { Ok::<_, String>(7) }).await, Ok(7));
+        let flag = stop.flag.clone();
+        let started = std::time::Instant::now();
+        let waiting = stop.until(async {
+            flag.store(true, Ordering::SeqCst);
+            std::future::pending::<Result<(), String>>().await
+        });
+        assert_eq!(waiting.await, Err("Launch cancelled.".into()));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(stop.until(async { Ok::<_, String>(()) }).await.is_err(), "nothing new starts once stopped");
+        let mut stop = Stop::new();
+        assert_eq!(stop.ask(|| Ok::<_, String>(1)), Ok(1));
+        assert!(!stop.requested());
+        assert_eq!(stop.ask(|| Err::<(), _>(ui::CANCELLED.to_string())), Err(ui::CANCELLED.into()));
+        assert!(stop.requested(), "leaving a question in the middle of a launch stops it");
+    }
+
     #[test]
     fn detects_only_address_conflicts_for_port_recovery() {
         assert!(port_in_use(
@@ -1752,6 +2398,28 @@ mod tests {
                 local_publication_params("env-test", "lan", 3000, 0)
             )
         );
+    }
+
+    #[test]
+    fn this_computer_and_local_network_remove_an_earlier_public_link() {
+        let port = live::proxy_port(3000);
+        let publication = |id: &str, environment: &str, kind: &str, port: u16, status: &str| {
+            json!({"id":id,"environmentId":environment,"kind":kind,"port":port,"status":status})
+        };
+        let publications = [
+            publication("pub-quick", "env-test", "cloudflare", port, "active"),
+            // A saved domain whose node is stopped still comes back when the engine restarts.
+            publication("pub-domain", "env-test", "cloudflare", port, "stopped"),
+            publication("pub-local", "env-test", "local", port, "active"),
+            publication("pub-loopback", "env-test", "loopback", port, "active"),
+            publication("pub-other-port", "env-test", "cloudflare", port + 1, "active"),
+            publication("pub-other-node", "env-other", "cloudflare", port, "active"),
+        ];
+        assert_eq!(
+            public_routes(&publications, "env-test", port),
+            ["pub-quick", "pub-domain"]
+        );
+        assert!(public_routes(&publications[2..], "env-test", port).is_empty());
     }
 
     #[test]

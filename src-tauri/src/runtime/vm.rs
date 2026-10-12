@@ -1355,8 +1355,8 @@ impl RuntimeManager {
         for accelerator in accelerators {
             super::vm_memory::check_available(startup_memory, super::vm_memory::available_commit_bytes(), full_vm)?;
             let internet = match &profile {
-                VmLaunchProfile::Micro(_, enabled) => Some(super::microvm_network::MicroVmNetwork::new(*enabled, qmp_port).await?),
-                VmLaunchProfile::Full { network_access, .. } => Some(super::microvm_network::MicroVmNetwork::new(*network_access, qmp_port).await?),
+                VmLaunchProfile::Micro(_, enabled) => Some(super::microvm_network::MicroVmNetwork::new(*enabled, qmp_port, id).await?),
+                VmLaunchProfile::Full { network_access, .. } => Some(super::microvm_network::MicroVmNetwork::new(*network_access, qmp_port, id).await?),
             };
             let mut child = match &profile {
                 VmLaunchProfile::Full {

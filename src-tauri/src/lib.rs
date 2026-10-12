@@ -18,6 +18,7 @@ mod models;
 mod runtime;
 mod scheduler;
 mod lifecycle;
+mod security;
 mod shutdown;
 #[cfg(all(desktop, not(feature = "engine-only")))]
 mod tray;
@@ -431,6 +432,11 @@ pub fn run() {
             let resource_directory = resource_dir(app.handle()).map_err(std::io::Error::other)?;
             let store = PlatformStore::load(app_directory.join("platform-state.json"))
                 .map_err(std::io::Error::other)?;
+            // Open the audit log first so startup reconciliation is recorded too. A failure
+            // is reported and Yougori still starts; `yougori audit` then reports it unavailable.
+            if let Err(error) = security::init(&store) {
+                eprintln!("Security audit log unavailable: {}", lifecycle::safe_diagnostic(&error));
+            }
             let configured_storage = store.snapshot().map_err(std::io::Error::other)?.settings.data_directory;
             let configured_storage = if configured_storage.is_empty() {
                 configured_storage
@@ -572,7 +578,7 @@ pub fn run() {
                     run.last_error = Some("Yougori closed before this backup completed".into());
                 }
             }
-            store.replace(state).map_err(std::io::Error::other)?;
+            security::as_engine(|| store.replace(state)).map_err(std::io::Error::other)?;
             app.manage(store);
             app.manage(peer_sharing::Sharing::default());
             app.manage(remote_access::RemoteAccess::new(app_directory.clone()).map_err(std::io::Error::other)?);
@@ -601,6 +607,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             vault_notifications::start(app.handle());
             automation::start(app.handle(), headless).map_err(std::io::Error::other)?;
+            security::start(app.handle());
             #[cfg(all(desktop, not(feature = "engine-only")))]
             if !headless { tray::install(app.handle())?; }
             app.manage(lifecycle::StartupRecoveryCandidates(startup_recovery_candidates));
@@ -788,6 +795,7 @@ pub fn run() {
             projects::secrets::set_deployment_secret,
             projects::secrets::delete_deployment_secret,
             model_runner::preflight::model_preflight,
+            model_runner::model_compute_status,
             model_runner::preflight::model_support_task,
             model_runner::huggingface::model_huggingface_status,
             projects::readiness::get_environment_health_check,

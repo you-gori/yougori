@@ -17,6 +17,7 @@ async fn stage(
     json!({"stage":name,"status":if finished{"complete"}else{"deadline_exceeded"},"requiresReconciliation":!finished})
 }
 pub(crate) async fn run(app: &AppHandle) -> Value {
+    crate::security::record(crate::security::Event::new("engine.stopping").via("engine"));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(50);
     crate::lifecycle::cancel_startup(app);
     crate::file_import::cancel_all_transfers();
@@ -111,6 +112,7 @@ pub(crate) async fn run(app: &AppHandle) -> Value {
     ) {
         eprintln!("Shutdown report could not be flushed before its deadline; reconcile runtime ownership on next startup.");
     }
+    crate::security::flush();
     report
 }
 pub(crate) fn latest(store: &PlatformStore) -> Option<Value> {

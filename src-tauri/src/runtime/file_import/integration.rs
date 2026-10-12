@@ -83,6 +83,48 @@ async fn file_import_real_container_and_microvm_preserve_host_sources() -> Resul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "boots a disposable microVM whose tool runs in the default tool image (digest-pinned Ubuntu, pulled from Docker Hub) to verify copies in and out use that workload's files, not the microVM's own guest; copies only generated fixtures"]
+async fn workspace_microvm_workload_file_copies() -> Result<(), String> {
+    let data = tempfile::tempdir().unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path())?;
+    let store = PlatformStore::load(data.path().join("state.json"))?;
+    let fixture = data.path().join("auth.json");
+    fs::write(&fixture, "DISPOSABLE_WORKLOAD_COPY_FIXTURE").unwrap();
+    let env = environment("import-micro-workload", EnvironmentKind::MicroVm);
+    let result = async {
+        let provisioned = runtime.provision_micro_vm(&env.id, "builtin:alpine").await?;
+        // As run_workload does for a tool sandbox: provision, save the workload, then start.
+        runtime.save_micro_workload(&env.id, &json!({"image":yougori_cli::container_tools::DEFAULT_IMAGE,"options":{"args":["/bin/sh","-c","while :; do sleep 3600; done"],"entrypoint":[]}}))?;
+        runtime.start_micro_vm_with_network(&env.id, &provisioned.disk_path, &provisioned.source_path, &env.resource_policy, true).await?;
+        store.mutate(|state| { state.environments.push(env.clone()); Ok(()) })?;
+        // Credential import's private stage, created where the tool runs.
+        let stage = runtime.execute_micro_workload_command(&env.id, "umask 077; mktemp -d \"$HOME/.yougori-credentials-XXXXXXXXXXXX\"").await?;
+        if stage.exit_code != 0 { return Err(format!("Workload stage failed: {}", stage.stderr)); }
+        let copied = crate::file_import::copy_files_into(&env.id, vec![fixture.to_string_lossy().into_owned()], Some(stage.stdout.trim().to_owned()), &store, &runtime, |_| {}).await?;
+        let file = format!("{}/auth.json", copied.destination);
+        let inside = runtime.execute_micro_workload_command(&env.id, &format!("cat '{file}'")).await?;
+        if inside.exit_code != 0 || inside.stdout != "DISPOSABLE_WORKLOAD_COPY_FIXTURE" {
+            return Err(format!("The copy is not in the tool's workload: {} {}", inside.stdout, inside.stderr));
+        }
+        let outer = execute(&runtime, &env, &format!("test ! -e '{file}'")).await?;
+        if outer.exit_code != 0 { return Err("The copy reached the microVM's own guest".into()); }
+        // Copying out reads the workload's files too.
+        let created = runtime.execute_micro_workload_command(&env.id, "printf WORKLOAD_ONLY_EXPORT_FIXTURE > /root/workload-only.txt").await?;
+        if created.exit_code != 0 { return Err(format!("Workload fixture failed: {}", created.stderr)); }
+        let exports = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let exported = crate::file_export::copy_out(crate::file_export::Source::Guest(&runtime, &env), "root/workload-only.txt", &exports.path().to_string_lossy(), "workload-only.txt").await?;
+        let local = exported["file"].as_str().ok_or("Missing exported file")?;
+        if fs::read_to_string(local).map_err(|error| error.to_string())? != "WORKLOAD_ONLY_EXPORT_FIXTURE" {
+            return Err("Copying out did not read the tool's workload".into());
+        }
+        eprintln!("{}: copies in and out used the tool workload's files", env.id);
+        Ok(())
+    }.await;
+    runtime.shutdown_all().await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "creates 100,005 fixture files and imports them into a disposable container"]
 async fn file_import_real_large_folder_exceeds_previous_item_limit() -> Result<(), String> {
     let data = tempfile::tempdir().unwrap();

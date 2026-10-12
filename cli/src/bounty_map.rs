@@ -1,7 +1,8 @@
 //! The live Swarm Mining screen: a dotted world map in the website's dark map colours, with
 //! your worker pulsing at an approximate home location, its status and the keys that work.
 //! The home location comes from this computer's region (Windows) or time zone (macOS and
-//! Linux). It is only drawn here and is never sent anywhere.
+//! Linux). That point is only drawn here. Separately, a ready worker shares its IANA time zone
+//! with yougori.com, which shows ready workers by time zone on the public Swarm Mining map.
 
 use crate::cli_ui as ui;
 use serde_json::Value;
@@ -205,6 +206,8 @@ fn amount(value: f64) -> String {
 
 struct Live {
     name: String,
+    /// The short name people type for this worker, such as keen-heron.
+    handle: String,
     model: String,
     hardware: String,
     mood: Mood,
@@ -216,6 +219,8 @@ struct Live {
     restored: bool,
     /// Report drafts waiting for the participant's review.
     drafts: usize,
+    /// The model is unloaded while waiting and loads for work.
+    on_demand: bool,
     since: Instant,
     mood_since: Instant,
     bursts: Vec<Instant>,
@@ -224,9 +229,10 @@ struct Live {
 }
 
 impl Live {
-    fn new(name: &str, home: Option<(f64, f64)>, now: Instant) -> Self {
+    fn new(name: &str, handle: &str, home: Option<(f64, f64)>, now: Instant) -> Self {
         Self {
             name: crate::bounty::safe(name),
+            handle: crate::bounty::safe(handle),
             model: String::new(),
             hardware: String::new(),
             mood: Mood::Waiting,
@@ -236,6 +242,7 @@ impl Live {
             offers: 0,
             restored: false,
             drafts: 0,
+            on_demand: false,
             since: now,
             mood_since: now,
             bursts: Vec::new(),
@@ -266,6 +273,7 @@ impl Live {
         self.attempts = worker["completedAttempts"].as_u64().unwrap_or(0);
         self.restored = worker["restored"] == true;
         self.drafts = worker["reviewReports"].as_array().map_or(0, Vec::len);
+        self.on_demand = worker["keepResident"] == false;
         if worker["gpu"].is_null() && worker["resources"].is_null() {
             return;
         }
@@ -319,7 +327,11 @@ impl Live {
 
     fn rule(&self, width: usize, now: Instant, ascii: bool) -> String {
         let dash = if ascii { "-" } else { "─" };
-        let left = format!("{} {} ", ui::paint(&dash.repeat(2), RULE), ui::bold(&ui::paint(&self.name, INK)));
+        let mut title = ui::bold(&ui::paint(&self.name, INK));
+        if !self.handle.is_empty() && self.handle != self.name {
+            title.push_str(&ui::paint(&format!(" · {}", self.handle), MUTED));
+        }
+        let left = format!("{} {title} ", ui::paint(&dash.repeat(2), RULE));
         let right = format!(" {} {}", ui::paint(&format!("online {}", ui::clock(now - self.since)), MUTED), ui::paint(&dash.repeat(2), RULE));
         let fill = width.saturating_sub(ui::width(&left) + ui::width(&right));
         format!("{left}{}{right}", ui::paint(&dash.repeat(fill), RULE))
@@ -435,10 +447,16 @@ impl Live {
             _ if self.offers > 0 => format!(" {}", ui::paint(&format!("{} bounty offer{} waiting · press O to review",
                 self.offers, if self.offers == 1 { "" } else { "s" }), ACTIVE)),
             Mood::Paused => ui::paint(" Press P to resume. Nothing runs while paused.", MUTED),
+            _ if self.on_demand => ui::paint(" No offers yet · idle, no tokens · model unloaded until a job arrives", MUTED),
             _ => ui::paint(" No offers yet · your agent is idle and uses no tokens", MUTED),
         });
-        let keys = [("O", "offers"), ("C", "chat"), ("P", if self.mood == Mood::Paused { "resume" } else { "pause" }),
-            ("R", "refresh"), ("Q", "detach"), ("Ctrl+C", "more")];
+        let mut keys = vec![("O", "offers"), ("C", "chat"), ("P", if self.mood == Mood::Paused { "resume" } else { "pause" })];
+        if self.mood == Mood::Waiting {
+            keys.push(("T", "practice"));
+        } else if matches!(self.mood, Mood::Working | Mood::Preparing | Mood::Review) {
+            keys.push(("L", "watch"));
+        }
+        keys.extend([("R", "refresh"), ("Q", "detach"), ("Ctrl+C", "more")]);
         lines.push(keys.iter().map(|(key, label)| format!(" {} {}", ui::bold(&ui::paint(key, INK)), ui::paint(label, MUTED)))
             .collect::<Vec<_>>().join(" "));
         lines
@@ -483,8 +501,9 @@ pub struct Screen {
 }
 
 impl Screen {
-    pub fn start(worker: &str) -> Self {
-        let live = Arc::new(Mutex::new(Live::new(worker, home(), Instant::now())));
+    /// `name` titles the screen until the worker's own name arrives; `handle` is its short name.
+    pub fn start(name: &str, handle: &str) -> Self {
+        let live = Arc::new(Mutex::new(Live::new(name, handle, home(), Instant::now())));
         let scene = ui::can_prompt().then(|| {
             let live = live.clone();
             ui::scene(move |columns, rows, now| {
@@ -614,7 +633,7 @@ mod tests {
 
     fn live() -> Live {
         let now = Instant::now();
-        let mut live = Live::new("ToA", Some((51.2, 10.4)), now);
+        let mut live = Live::new("ToA", "keen-heron", Some((51.2, 10.4)), now);
         live.update(&json!({"name":"ToA","model":"hf.co/HauhauCS/Gemma-4-E4B","state":"ready_waiting","gpu":"nvidia","resources":{"cpu":4,"memoryGb":8}}), now);
         live
     }
@@ -682,6 +701,10 @@ mod tests {
         assert!(text.iter().any(|l| l.contains("HauhauCS/Gemma-4-E4B · GPU · 4 CPU · 8 GB")));
         assert!(text.iter().any(|l| l.contains("O offers") && l.contains("Q detach")));
         assert!(text.iter().any(|l| l.contains('⣿')), "land is drawn with braille dots");
+        assert!(text[0].contains("ToA · keen-heron") && text[0].contains("online"), "the title names the worker's short name: {}", text[0]);
+        // Before its own name arrives, the short name alone titles the screen.
+        let unnamed = Live::new("keen-heron", "keen-heron", None, now).frame(120, 40, now, false, false);
+        assert!(strip(&unnamed[0]).contains(" keen-heron ") && !strip(&unnamed[0]).contains('·'), "{}", strip(&unnamed[0]));
     }
 
     #[test]
@@ -734,7 +757,7 @@ mod preview {
     #[ignore]
     fn live_screen() {
         let _session = crate::cli_ui::Session::start("Swarm Mining", "preview of the live worker screen");
-        let screen = Screen::start("Preview");
+        let screen = Screen::start("Preview", "keen-heron");
         let show = |state: serde_json::Value, seconds| {
             screen.worker(&state);
             sleep(Duration::from_secs(seconds));

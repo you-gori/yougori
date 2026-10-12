@@ -147,6 +147,7 @@ impl RuntimeManager {
             return Ok(value);
         }
         self.container_endpoint(id).await?;
+        self.prepare_native_model(id).await?;
         let cuda = self.container_provider(id)? == crate::models::RuntimeProviderKind::YougoriCuda;
         // Reuse live servers but always restore guest mounts after an engine restart.
         let fingerprint = serde_json::to_string(&options.binds).map_err(|e| e.to_string())?;

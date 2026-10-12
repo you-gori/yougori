@@ -39,6 +39,7 @@ pub mod bounty;
 pub mod bounty_practice;
 pub mod legacy_names;
 pub mod bounty_map;
+pub mod security;
 #[cfg(test)]
 mod help_coverage;
 

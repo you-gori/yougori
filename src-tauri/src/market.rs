@@ -496,9 +496,18 @@ fn model_of(app: &AppHandle, environment_id: &str) -> Result<(String, Option<Str
     Ok((model, Some(if source_only {"file-publisher"} else if gguf { "llama.cpp" } else { "transformers" }.to_owned()), options.environment.get("YOUGORI_MODEL_QUANT").cloned()))
 }
 
-/// `--now` (automatic paid pricing) or `--nowfree` (free).
+/// `--now` (automatic paid pricing) or `--nowfree` (free). Sharing opens a public link
+/// to the model, so it is audited as a publication and refused while it is locked down.
 #[tauri::command]
 pub async fn market_share_model(environment_id: String, mode: String, listen: Option<bool>, publish: Option<bool>, app: AppHandle) -> Result<Value, String> {
+    crate::security::ensure_open(&app.state::<crate::store::PlatformStore>(), &environment_id, "Sharing it on the Yougori Network")?;
+    let result = share_model(environment_id.clone(), mode.clone(), listen, publish, app).await;
+    crate::security::record(crate::security::Event::new("port.published").env(&environment_id).text("kind", "yougoriNetwork")
+        .text("mode", &mode).flag("listen", listen.unwrap_or(false)).outcome(&result));
+    result
+}
+
+async fn share_model(environment_id: String, mode: String, listen: Option<bool>, publish: Option<bool>, app: AppHandle) -> Result<Value, String> {
     if !matches!(mode.as_str(), "paid" | "free") {
         return Err("Choose paid or free sharing".into());
     }
@@ -558,6 +567,12 @@ pub async fn market_share_model(environment_id: String, mode: String, listen: Op
 
 #[tauri::command]
 pub async fn market_unshare_model(environment_id: String, app: AppHandle) -> Result<Value, String> {
+    let result = unshare_model(environment_id.clone(), app).await;
+    crate::security::record(crate::security::Event::new("port.unpublished").env(&environment_id).text("kind", "yougoriNetwork").outcome(&result));
+    result
+}
+
+async fn unshare_model(environment_id: String, app: AppHandle) -> Result<Value, String> {
     ensure_loaded(&app).await;
     let market = app.state::<Market>();
     let _guard = market.sync.lock().await;
@@ -627,6 +642,7 @@ fn sharing_details(status: &str, health: &Value, runner: Option<&str>, quant: Op
         "revision": health["revision"], "precision": health["precision"],
         "appVersion": env!("CARGO_PKG_VERSION"), "gpu": health["gpu"],
         "gpuCount": health["gpuCount"], "context": health["context"],
+        "backend": health["backend"], "native": health["native"], "unifiedMemory": health["unifiedMemory"],
         "optimizer": health["optimizer"], "residency":health["status"],
         "sourceOnly": health["sourceOnly"], "inferenceAvailable": health["inferenceAvailable"],
     })

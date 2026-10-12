@@ -9,7 +9,7 @@ use crate::presentation;
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal, Write},
-    sync::{atomic::{AtomicBool, Ordering}, Mutex, Once, OnceLock},
+    sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex, Once, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -25,13 +25,271 @@ fn spinner(tick: usize) -> char {
 }
 static CTRL_C: AtomicBool = AtomicBool::new(false);
 
+/// What a prompt returns when the person chose Back or pressed Esc in a [`Wizard`] step that
+/// can go back. Wizards consume it, so it never reaches the terminal.
+pub const BACK: &str = "\u{1}yougori back";
+/// Whether open prompts offer Back: set for each [`Wizard`] step after the first one asked.
+static BACK_OFFERED: AtomicBool = AtomicBool::new(false);
+/// Prompts hold this while they read keys, so an [`Interrupts`] watcher never takes their keys.
+static INPUT: Mutex<()> = Mutex::new(());
+/// Prompts open or about to open. The watcher stays away from the keyboard meanwhile, so a
+/// prompt never waits for it.
+static PROMPTS: AtomicUsize = AtomicUsize::new(0);
+/// The flag of the [`Interrupts`] watcher that is running, if any.
+static WATCHED: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+/// How long [`busy`] waits before showing its spinner, so quick answers do not flash one.
+const QUICK: Duration = Duration::from_millis(150);
+
+fn is_ctrl_c(key: KeyEvent) -> bool {
+    key.kind != KeyEventKind::Release && key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
 pub fn note_interrupt(key: KeyEvent) {
-    if key.kind != KeyEventKind::Release && key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+    if is_ctrl_c(key) {
         CTRL_C.store(true, Ordering::Relaxed);
     }
 }
 pub fn interrupt_pending() -> bool { CTRL_C.load(Ordering::Relaxed) }
 pub fn take_interrupt() -> bool { CTRL_C.swap(false, Ordering::Relaxed) }
+
+thread_local! { static HOLDING_INPUT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+struct InputLock { _guard: Option<std::sync::MutexGuard<'static, ()>> }
+fn input_lock() -> InputLock {
+    PROMPTS.fetch_add(1, Ordering::SeqCst);
+    HOLDING_INPUT.with(|held| {
+        let guard = (held.get() == 0).then(|| INPUT.lock().unwrap_or_else(|p| p.into_inner()));
+        held.set(held.get() + 1);
+        InputLock { _guard: guard }
+    })
+}
+impl Drop for InputLock {
+    fn drop(&mut self) {
+        HOLDING_INPUT.with(|held| held.set(held.get().saturating_sub(1)));
+        PROMPTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Keys typed before a question appeared must not answer it, such as an Enter pressed while
+/// a step was still working. A Ctrl+C typed meanwhile still cancels where cancelling is allowed.
+fn drop_typed_ahead(allow_cancel: bool) -> Result<(), String> {
+    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+        if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
+            if allow_cancel && is_ctrl_c(key) {
+                note_interrupt(key);
+                return Err(CANCELLED.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Setup questions asked one after another, where any question after the first offers Back.
+/// Each step reports whether it asked something; Back returns to the last step that did, so
+/// questions skipped by earlier answers are skipped again. A wizard run inside another wizard's
+/// step offers Back on its first question too, which returns to the outer wizard.
+///
+/// ```ignore
+/// let mut steps = ui::Wizard::new();
+/// loop {
+///     let asked = match steps.step() {
+///         0 => ask_name(&mut setup).map(|_| true),
+///         1 if setup.custom => ask_port(&mut setup).map(|_| true),
+///         1 => Ok(false),
+///         _ => break,
+///     };
+///     steps.next(asked)?;
+/// }
+/// ```
+pub struct Wizard {
+    asked: Vec<usize>,
+    at: usize,
+    outer: bool,
+}
+
+impl Wizard {
+    pub fn new() -> Self {
+        Self { asked: Vec::new(), at: 0, outer: BACK_OFFERED.load(Ordering::Relaxed) }
+    }
+    /// The step to run now. Its prompts offer Back when there is somewhere to go back to.
+    pub fn step(&self) -> usize {
+        BACK_OFFERED.store(self.outer || !self.asked.is_empty(), Ordering::Relaxed);
+        self.at
+    }
+    /// Moves on after a step: `Ok(true)` when it asked something, `Ok(false)` when it was
+    /// skipped. Back from the first asked step leaves this wizard with [`BACK`].
+    pub fn next(&mut self, outcome: Result<bool, String>) -> Result<(), String> {
+        match outcome {
+            Ok(asked) => {
+                if asked {
+                    self.asked.push(self.at);
+                }
+                self.at += 1;
+                Ok(())
+            }
+            Err(error) if error == BACK => match self.asked.pop() {
+                Some(previous) => {
+                    self.at = previous;
+                    Ok(())
+                }
+                None => Err(error),
+            },
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Default for Wizard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Wizard {
+    fn drop(&mut self) {
+        BACK_OFFERED.store(self.outer, Ordering::Relaxed);
+    }
+}
+
+/// Runs prompts that must not offer Back, such as a choice that already has its own way back.
+pub fn without_back<T>(prompts: impl FnOnce() -> T) -> T {
+    let offered = BACK_OFFERED.swap(false, Ordering::Relaxed);
+    let result = prompts();
+    BACK_OFFERED.store(offered, Ordering::Relaxed);
+    result
+}
+
+/// While alive, reads keys whenever no prompt is open: Ctrl+C sets `flag`, a second Ctrl+C
+/// quits at once with [`force_exit`], and other keys are dropped so they neither echo into the
+/// live display nor answer a later prompt. Prompts opened meanwhile still get every key.
+pub struct Interrupts {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    previous: Option<Arc<AtomicBool>>,
+    _raw: Option<Raw>,
+}
+
+impl Interrupts {
+    pub fn watch(flag: Arc<AtomicBool>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let previous = WATCHED.lock().unwrap_or_else(|p| p.into_inner()).replace(flag.clone());
+        if !caps().live || !io::stdin().is_terminal() {
+            return Self { stop, thread: None, previous, _raw: None };
+        }
+        let raw = Raw::on().ok();
+        let thread = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if PROMPTS.load(Ordering::SeqCst) > 0 {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    // Hold the keyboard only for one short poll, then let a prompt take it.
+                    let read = {
+                        let _input = INPUT.lock().unwrap_or_else(|p| p.into_inner());
+                        match event::poll(Duration::from_millis(30)) {
+                            Ok(true) if PROMPTS.load(Ordering::SeqCst) == 0 => Some(event::read()),
+                            _ => None,
+                        }
+                    };
+                    match read {
+                        Some(Ok(Event::Key(key))) if is_ctrl_c(key) => {
+                            note_interrupt(key);
+                            if flag.swap(true, Ordering::SeqCst) {
+                                force_exit();
+                            }
+                        }
+                        Some(Ok(Event::Resize(..))) => refresh(),
+                        _ => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        });
+        Self { stop, thread: Some(thread), previous, _raw: raw }
+    }
+}
+
+/// The flag of the watcher that is running now, if any.
+fn watched() -> Option<Arc<AtomicBool>> {
+    WATCHED.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+impl Drop for Interrupts {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        *WATCHED.lock().unwrap_or_else(|p| p.into_inner()) = self.previous.take();
+    }
+}
+
+/// Quits right away after a second Ctrl+C, restoring the terminal. Work the engine already
+/// accepted keeps going there.
+pub fn force_exit() -> ! {
+    with(|p, out| {
+        p.items.clear();
+        p.held.clear();
+        p.paused = false;
+        p.erase(out);
+        if !p.line_start {
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"\x1b[?25h");
+        p.cursor_hidden = false;
+        out.extend_from_slice(presentation::text(&format!(
+            "{}  {}\r\n",
+            paint("■", RED),
+            "Stopped. Work Yougori already started keeps running; check it with yougori ps."
+        )).as_bytes());
+    });
+    let _ = terminal::disable_raw_mode();
+    std::process::exit(130)
+}
+
+/// Shows `label` with a spinner while `work` runs, once it takes a moment; the step leaves no
+/// line behind. Keys typed meanwhile are dropped, and Ctrl+C stops waiting with [`CANCELLED`]
+/// (the engine may still finish a request it already received). Inside an [`Interrupts`]
+/// watch, a new Ctrl+C there counts; one pressed before this wait does not, so cleanup runs.
+pub async fn busy<T>(label: &str, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    let mut work = std::pin::pin!(work);
+    let mut borrowed = watched();
+    let armed = borrowed.as_ref().is_none_or(|flag| !flag.load(Ordering::Relaxed));
+    let own_flag = Arc::new(AtomicBool::new(false));
+    let mut own = None;
+    let started = Instant::now();
+    let mut spinner = None;
+    let result = loop {
+        let cancelled = match &borrowed {
+            Some(flag) => armed && flag.load(Ordering::Relaxed),
+            None => own_flag.load(Ordering::Relaxed),
+        };
+        if cancelled {
+            break Err(CANCELLED.to_owned());
+        }
+        if spinner.is_none() && started.elapsed() >= QUICK {
+            spinner = Some(task(label));
+        }
+        // Someone must read Ctrl+C while the spinner shows: the watch this wait borrowed, as
+        // long as it runs (an inner wait may have started it and ended), or one of its own.
+        if spinner.is_some() && own.is_none() {
+            let running = borrowed.as_ref().is_some_and(|flag| watched().is_some_and(|now| Arc::ptr_eq(&now, flag)));
+            if !running {
+                borrowed = None;
+                own = Some(Interrupts::watch(own_flag.clone()));
+            }
+        }
+        tokio::select! {
+            result = &mut work => break result,
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+    };
+    drop(own);
+    if let Some(spinner) = spinner {
+        spinner.clear();
+    }
+    result
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -1251,13 +1509,13 @@ fn read_key() -> Result<KeyEvent, String> {
 }
 
 fn read_key_with_cancel(allow_cancel: bool) -> Result<KeyEvent, String> {
+    let back = back_offered(allow_cancel);
     loop {
         match event::read().map_err(|e| e.to_string())? {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if cancels_prompt(key, allow_cancel)
-                {
+                if let Some(leave) = leaves_prompt(key, allow_cancel, back) {
                     note_interrupt(key);
-                    return Err(CANCELLED.into());
+                    return Err(leave.into());
                 }
                 return Ok(key);
             }
@@ -1270,6 +1528,25 @@ fn read_key_with_cancel(allow_cancel: bool) -> Result<KeyEvent, String> {
 fn cancels_prompt(key: KeyEvent, allow_cancel: bool) -> bool {
     allow_cancel && (key.code == KeyCode::Esc ||
         (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)))
+}
+
+/// Whether this prompt offers Back. Prompts that cannot be cancelled cannot go back either.
+fn back_offered(allow_cancel: bool) -> bool {
+    allow_cancel && BACK_OFFERED.load(Ordering::Relaxed)
+}
+
+/// How a key leaves an open prompt: Esc goes back where Back is offered and cancels
+/// elsewhere; Ctrl+C always cancels.
+fn leaves_prompt(key: KeyEvent, allow_cancel: bool, back: bool) -> Option<&'static str> {
+    if !cancels_prompt(key, allow_cancel) {
+        return None;
+    }
+    Some(if back && key.code == KeyCode::Esc { BACK } else { CANCELLED })
+}
+
+/// The key hint for leaving a prompt.
+fn leave_hint(back: bool) -> &'static str {
+    if back { "esc back" } else { "esc cancel" }
 }
 
 fn asking(question: &str) -> String {
@@ -1297,6 +1574,12 @@ fn cancelled(question: &str) -> Vec<String> {
         format!("{}  {question}", paint("■", RED)),
         format!("{}  {}", rail(), muted("cancelled")),
     ]
+}
+
+/// What a left prompt leaves on screen. Going back leaves nothing: the earlier question
+/// is asked again below.
+fn left(question: &str, error: &str) -> Vec<String> {
+    if error == BACK { Vec::new() } else { cancelled(question) }
 }
 
 pub struct Choice {
@@ -1372,8 +1655,24 @@ fn selection_key(at: &mut usize, count: usize, key: KeyEvent) -> Option<usize> {
     None
 }
 
-fn choice_key(at: &mut usize, choices: &[Choice], key: KeyEvent) -> Option<usize> {
-    selection_key(at, choices.len(), key).filter(|index| choices[*index].enabled)
+/// The Back row a list shows under its choices when its step can go back.
+fn back_choice() -> Choice {
+    Choice::new("Back", "previous question")
+}
+
+/// Whether a list adds the Back row: only where Back is offered, and never next to a
+/// choice of its own that is already called Back.
+fn adds_back_row(choices: &[Choice], back: bool) -> bool {
+    back && !choices.iter().any(|choice| choice.label.eq_ignore_ascii_case("back"))
+}
+
+/// The answer a key gives in a list whose last row is Back when `back_row` is set.
+fn list_key(at: &mut usize, choices: &[Choice], back_row: bool, key: KeyEvent) -> Option<Result<usize, String>> {
+    let selected = selection_key(at, choices.len() + usize::from(back_row), key)?;
+    if selected == choices.len() {
+        return Some(Err(BACK.into()));
+    }
+    choices[selected].enabled.then_some(Ok(selected))
 }
 
 fn select_with_cancel(
@@ -1386,20 +1685,29 @@ fn select_with_cancel(
     if !choices.iter().any(|choice| choice.enabled) {
         return Err("There is nothing to choose from.".into());
     }
+    let _input = input_lock();
     let raw = Raw::on()?;
     let id = add(Item::Lines(Vec::new()));
-    let count = choices.len();
-    let mut at = initial.min(count - 1);
+    let back = back_offered(allow_cancel);
+    let back_row = adds_back_row(choices, back).then(back_choice);
+    let count = choices.len() + usize::from(back_row.is_some());
+    let mut at = initial.min(choices.len() - 1);
     if !choices[at].enabled {
         at = choices.iter().position(|choice| choice.enabled).unwrap();
     }
     let label_width = choices
         .iter()
+        .chain(back_row.as_ref())
         .map(|c| width(&c.label))
         .max()
         .unwrap_or(0)
         .min(36);
+    let hint = if allow_cancel { format!("↑↓ move · enter select · {}", leave_hint(back)) } else { "↑↓ move · enter select".into() };
+    let mut early = drop_typed_ahead(allow_cancel).err();
     let result = loop {
+        if let Some(error) = early.take() {
+            break Err(error);
+        }
         let window = size()
             .1
             .saturating_sub(note.len() + 7)
@@ -1413,7 +1721,7 @@ fn select_with_cancel(
         if !note.is_empty() {
             lines.push(open_rail());
         }
-        for (i, choice) in choices.iter().enumerate().skip(first).take(window) {
+        for (i, choice) in choices.iter().chain(back_row.as_ref()).enumerate().skip(first).take(window) {
             lines.push(choice_line(choice, i == at, label_width, size().0));
         }
         if count > window {
@@ -1423,12 +1731,12 @@ fn select_with_cancel(
                 muted(&format!("{} of {count}", at + 1))
             ));
         }
-        lines.push(keys_hint(if allow_cancel { "↑↓ move · enter select · esc cancel" } else { "↑↓ move · enter select" }));
+        lines.push(keys_hint(&hint));
         update(id, |item| *item = Item::Lines(lines));
         match read_key_with_cancel(allow_cancel) {
             Err(e) => break Err(e),
-            Ok(key) => if let Some(selected) = choice_key(&mut at, choices, key) {
-                break Ok(selected);
+            Ok(key) => if let Some(selected) = list_key(&mut at, choices, back_row.is_some(), key) {
+                break selected;
             },
         }
     };
@@ -1437,7 +1745,7 @@ fn select_with_cancel(
         id,
         match &result {
             Ok(i) => answered(question, &choices[*i].label),
-            Err(_) => cancelled(question),
+            Err(error) => left(question, error),
         },
     );
     result
@@ -1451,18 +1759,28 @@ pub fn input(
     secret: bool,
     check: &dyn Fn(&str) -> Result<String, String>,
 ) -> Result<String, String> {
-    input_with_initial(question,default,secret,"",check)
+    input_with_initial(question,&[],default,secret,"",check)
 }
 pub fn input_prefilled(question:&str,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
-    input_with_initial(question,"",false,initial,check)
+    input_with_initial(question,&[],"",false,initial,check)
 }
-fn input_with_initial(question:&str,default:&str,secret:bool,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+/// [`input_prefilled`] with explanatory lines under the question.
+pub fn input_noted(question:&str,note:&[String],initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    input_with_initial(question,note,"",false,initial,check)
+}
+fn input_with_initial(question:&str,note:&[String],default:&str,secret:bool,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    let _input = input_lock();
     let raw = Raw::on()?;
+    let back = back_offered(true);
     let id = add(Item::Lines(Vec::new()));
     let caret = if caps().color { "\x1b[7m \x1b[27m" } else { "_" };
     let mut value = zeroize::Zeroizing::new(initial.to_owned());
     let mut problem = String::new();
+    let mut early = drop_typed_ahead(true).err();
     let result = loop {
+        if let Some(error) = early.take() {
+            break Err(error);
+        }
         let room = size().0.saturating_sub(12);
         let shown = if value.is_empty() {
             format!("{caret}{}", muted(default))
@@ -1478,15 +1796,19 @@ fn input_with_initial(question:&str,default:&str,secret:bool,initial:&str,check:
             let tail: String = chars[chars.len().saturating_sub(room)..].iter().collect();
             format!("{tail}{caret}")
         };
-        let mut lines = vec![asking(question), format!("{}  {shown}", open_rail())];
+        let mut lines = vec![asking(question)];
+        for text in note {
+            lines.push(format!("{}  {}", open_rail(), muted(text)));
+        }
+        lines.push(format!("{}  {shown}", open_rail()));
         if !problem.is_empty() {
             lines.push(format!("{}  {}", paint("▲", AMBER), paint(&problem, AMBER)));
         }
-        lines.push(keys_hint(if default.is_empty() {
-            "enter confirm · esc cancel"
+        lines.push(keys_hint(&format!("{} · {}", if default.is_empty() {
+            "enter confirm"
         } else {
-            "enter confirm (empty keeps the default) · esc cancel"
-        }));
+            "enter confirm (empty keeps the default)"
+        }, leave_hint(back))));
         update(id, |item| *item = Item::Lines(lines));
         match read_key() {
             Err(e) => break Err(e),
@@ -1518,7 +1840,7 @@ fn input_with_initial(question:&str,default:&str,secret:bool,initial:&str,check:
         match &result {
             Ok(answer) if secret => answered(question, &format!("{} characters", answer.chars().count())),
             Ok(answer) => answered(question, answer),
-            Err(_) => cancelled(question),
+            Err(error) => left(question, error),
         },
     );
     result
@@ -1554,11 +1876,17 @@ fn gauge(fraction: f64, cells: usize, color: Rgb) -> String {
 }
 
 pub fn sliders(question: &str, note: &str, sliders: &mut [Slider]) -> Result<(), String> {
+    let _input = input_lock();
     let raw = Raw::on()?;
+    let back = back_offered(true);
     let id = add(Item::Lines(Vec::new()));
     let mut row = 0;
     let mut typed = String::new();
+    let mut early = drop_typed_ahead(true).err();
     let result = loop {
+        if let Some(error) = early.take() {
+            break Err(error);
+        }
         let mut lines = vec![asking(question)];
         for (i, s) in sliders.iter().enumerate() {
             let span = f64::from(s.max.saturating_sub(s.min).max(1));
@@ -1593,9 +1921,10 @@ pub fn sliders(question: &str, note: &str, sliders: &mut [Slider]) -> Result<(),
         if !note.is_empty() {
             lines.push(format!("{}  {}", open_rail(), muted(note)));
         }
-        lines.push(keys_hint(
-            "↑↓ choose · ←→ adjust (shift ×10) · type a number · d defaults · enter confirm",
-        ));
+        lines.push(keys_hint(&format!(
+            "↑↓ choose · ←→ adjust (shift ×10) · type a number · d defaults · enter confirm · {}",
+            leave_hint(back)
+        )));
         update(id, |item| *item = Item::Lines(lines));
         let key = match read_key() {
             Err(e) => break Err(e),
@@ -1651,7 +1980,7 @@ pub fn sliders(question: &str, note: &str, sliders: &mut [Slider]) -> Result<(),
         id,
         match &result {
             Ok(()) => answered(question, &summary),
-            Err(_) => cancelled(question),
+            Err(error) => left(question, error),
         },
     );
     result
@@ -2009,6 +2338,8 @@ mod tests {
         }
     }
     use super::*;
+    /// Tests that use the shared painter, the Back offer or the interrupt watcher run one at a time.
+    static PAINTER_TESTS: Mutex<()> = Mutex::new(());
 
     #[test]
     fn recommended_badge_stays_on_the_right_when_command_and_hint_are_long() {
@@ -2036,6 +2367,7 @@ mod tests {
 
     #[test]
     fn menu_command_activity_survives_waits_and_cleans_up_before_output() {
+        let _serial = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all().build().unwrap();
         runtime.block_on(async {
@@ -2178,11 +2510,109 @@ mod tests {
         let choices = [Choice::new("Available", ""), Choice::new("Out of stock", "").disabled(), Choice::new("Refresh", "")];
         let mut at = 0;
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        assert_eq!(choice_key(&mut at, &choices, key(KeyCode::Down)), None);
+        assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Down)), None);
         assert_eq!(at, 1);
-        assert_eq!(choice_key(&mut at, &choices, key(KeyCode::Enter)), None);
-        choice_key(&mut at, &choices, key(KeyCode::Down));
-        assert_eq!(choice_key(&mut at, &choices, key(KeyCode::Enter)), Some(2));
+        assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Enter)), None);
+        list_key(&mut at, &choices, false, key(KeyCode::Down));
+        assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Enter)), Some(Ok(2)));
+    }
+
+    #[test]
+    fn back_is_the_last_row_and_esc_goes_back_only_where_offered() {
+        let choices = [Choice::new("Recommended", ""), Choice::new("Customize", "")];
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // The Back row follows the choices, and the list wraps around it.
+        let mut at = 1;
+        assert_eq!(list_key(&mut at, &choices, true, key(KeyCode::Down)), None);
+        assert_eq!(at, 2);
+        assert_eq!(list_key(&mut at, &choices, true, key(KeyCode::Enter)), Some(Err(BACK.into())));
+        assert_eq!(list_key(&mut at, &choices, true, key(KeyCode::Down)), None);
+        assert_eq!(at, 0);
+        let mut at = 1;
+        list_key(&mut at, &choices, false, key(KeyCode::Down));
+        assert_eq!(at, 0, "no Back row without Back");
+        // A list that already has its own Back keeps only that one.
+        assert!(adds_back_row(&choices, true));
+        assert!(!adds_back_row(&choices, false));
+        assert!(!adds_back_row(&[Choice::new("Open", ""), Choice::new("Back", "")], true));
+        let escape = key(KeyCode::Esc);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(leaves_prompt(escape, true, true), Some(BACK));
+        assert_eq!(leaves_prompt(escape, true, false), Some(CANCELLED));
+        assert_eq!(leaves_prompt(ctrl_c, true, true), Some(CANCELLED));
+        assert_eq!(leaves_prompt(escape, false, true), None);
+        assert_eq!(leaves_prompt(key(KeyCode::Enter), true, true), None);
+        assert!(left("Port", BACK).is_empty(), "going back leaves no line");
+        assert!(!left("Port", CANCELLED).is_empty());
+    }
+
+    #[test]
+    fn wizard_back_returns_to_the_last_asked_step_and_leaves_from_the_first() {
+        let _serial = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+        BACK_OFFERED.store(false, Ordering::Relaxed);
+        let mut steps = Wizard::new();
+        assert_eq!(steps.step(), 0);
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed), "the first question cannot go back");
+        steps.next(Ok(true)).unwrap();
+        assert_eq!(steps.step(), 1);
+        steps.next(Ok(false)).unwrap(); // skipped
+        assert_eq!(steps.step(), 2);
+        assert!(BACK_OFFERED.load(Ordering::Relaxed));
+        steps.next(Err(BACK.into())).unwrap();
+        assert_eq!(steps.step(), 0, "back skips the step that asked nothing");
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed));
+        steps.next(Ok(true)).unwrap();
+        steps.next(Ok(true)).unwrap();
+        assert_eq!(steps.step(), 2);
+        assert_eq!(steps.next(Err(CANCELLED.into())), Err(CANCELLED.into()));
+        // A wizard inside a step offers Back on its first question and hands it outward.
+        {
+            let mut inner = Wizard::new();
+            assert_eq!(inner.step(), 0);
+            assert!(BACK_OFFERED.load(Ordering::Relaxed));
+            assert_eq!(inner.next(Err(BACK.into())), Err(BACK.into()));
+        }
+        assert!(BACK_OFFERED.load(Ordering::Relaxed), "dropping the inner wizard restores the outer step");
+        assert!(!without_back(|| BACK_OFFERED.load(Ordering::Relaxed)));
+        assert!(BACK_OFFERED.load(Ordering::Relaxed));
+        drop(steps);
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn busy_runs_cleanup_after_an_earlier_interrupt_and_stops_on_a_new_one() {
+        let _serial = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+            let watch = Interrupts::watch(flag.clone());
+            assert_eq!(busy("Loading", async { Ok::<_, String>(7) }).await, Ok(7));
+            let set = flag.clone();
+            let waiting = busy("Waiting", async {
+                set.store(true, Ordering::SeqCst);
+                std::future::pending::<Result<(), String>>().await
+            });
+            assert_eq!(waiting.await, Err(CANCELLED.into()), "a new Ctrl+C stops waiting");
+            // Cleanup after that Ctrl+C still runs to the end.
+            assert_eq!(busy("Stopping", async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok::<_, String>("stopped")
+            }).await, Ok("stopped"));
+            drop(watch);
+            assert!(WATCHED.lock().unwrap().is_none());
+            // A wait that borrowed a watch which then ended keeps Ctrl+C with a watch of its own.
+            let borrowed = Arc::new(AtomicBool::new(false));
+            let watch = Interrupts::watch(borrowed.clone());
+            let outlived = busy("Starting", async move {
+                drop(watch);
+                tokio::time::sleep(QUICK + Duration::from_millis(100)).await;
+                let own = watched().ok_or("no watch while the spinner shows")?;
+                assert!(!Arc::ptr_eq(&own, &borrowed));
+                Ok::<_, String>(())
+            });
+            assert_eq!(outlived.await, Ok(()));
+            assert!(watched().is_none(), "its own watch ends with the wait");
+        });
     }
 
     #[test]

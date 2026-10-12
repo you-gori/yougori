@@ -2,7 +2,9 @@
 //! terminal output, or the worker JSON file. No public inference route is created.
 mod guest;
 mod memory;
+pub(crate) mod activity;
 mod model_lifecycle;
+mod practice;
 #[cfg(all(test, windows, not(feature = "engine-only")))]
 mod real_tests;
 mod runner;
@@ -87,6 +89,8 @@ pub(crate) struct Worker {
     guidance: Vec<Value>,
     #[serde(default)]
     generation: u64,
+    /// Offers the participant skipped. Only `update` changes this list, so an older progress
+    /// copy cannot bring a skipped offer back.
     #[serde(default)]
     skipped_offers: Vec<String>,
     #[serde(default)]
@@ -97,6 +101,9 @@ pub(crate) struct Worker {
     /// `update` changes this list, so an older progress copy cannot restore a submitted draft.
     #[serde(default)]
     review_reports: Vec<String>,
+    /// `start bounty` reconnects to the newest worker. Workers from earlier releases have 0.
+    #[serde(default)]
+    created_at: i64,
 }
 /// The stage of a worker that the engine paused while starting; its view reports `restored`.
 const RESTORED: &str =
@@ -109,7 +116,7 @@ impl Worker {
         } else {
             &self.state
         };
-        json!({"id":self.id,"serverId":self.server_id,"name":self.name,"model":self.model,"state":state,"stage":self.stage,"restored":self.restored(),"reviewReports":self.review_reports,"environmentId":self.environment_id,"modelEnvironmentId":self.model_environment_id,"testEnvironmentId":self.test_environment_id,"gpu":self.gpu,"resources":self.resources,"workspaceQuotaGb":self.quota_gb,"keepResident":self.keep_resident,"error":self.error,"summary":self.summary,"completedAttempts":self.attempt_count,"bountyId":self.policy["bountyId"],"policyVersion":self.policy["termsVersion"],"cursor":self.cursor})
+        json!({"id":self.id,"serverId":self.server_id,"name":self.name,"model":self.model,"state":state,"stage":self.stage,"restored":self.restored(),"reviewReports":self.review_reports,"environmentId":self.environment_id,"modelEnvironmentId":self.model_environment_id,"testEnvironmentId":self.test_environment_id,"quant":self.quant,"createdAt":self.created_at,"gpu":self.gpu,"resources":self.resources,"workspaceQuotaGb":self.quota_gb,"keepResident":self.keep_resident,"error":self.error,"summary":self.summary,"completedAttempts":self.attempt_count,"bountyId":self.policy["bountyId"],"policyVersion":self.policy["termsVersion"],"cursor":self.cursor})
     }
     /// Paused by an engine restart rather than by the participant, the bounty or an error.
     fn restored(&self) -> bool {
@@ -260,14 +267,43 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
             | "bounties"
             | "apply"
             | "submitReport"
+            | "practice"
+            | "memory"
+            | "activity"
+            | "practiceStart"
+            | "practiceInput"
+            | "practiceStop"
     ) {
         return Err("Unknown Swarm Mining action".into());
     }
+    if action == "memory" && !request["keepResident"].is_boolean() {
+        return Err("Choose whether the model stays loaded while the worker waits".into());
+    }
+    if action == "activity" && !(request["after"].is_null() || request["after"].is_u64()) {
+        return Err("Read activity after a numbered event".into());
+    }
+    if action == "practiceInput"
+        && !request["content"].as_str().is_some_and(|text| {
+            !text.trim().is_empty() && text.len() <= 4000 && !text.chars().any(char::is_control)
+        })
+    {
+        return Err("Send one line of guidance of at most 4000 bytes".into());
+    }
+    if action == "practice" {
+        let previous = request["previous"].as_array().map(Vec::as_slice).unwrap_or_default();
+        if !(request["previous"].is_null() || request["previous"].is_array())
+            || previous.len() >= yougori_cli::bounty_practice::MAX_ATTEMPTS
+            || previous.iter().any(|report| !(report.is_null() || report.is_object()) || report.to_string().len() > 8192)
+            || !(request["keepLoaded"].is_null() || request["keepLoaded"].is_boolean())
+        {
+            return Err("Invalid practice attempt".into());
+        }
+    }
     if action == "prepare" {
         crate::model_runner::normalize_model(string(request, "model")?)?;
-        let gpu = request["gpu"].as_str().unwrap_or("nvidia");
-        if !matches!(gpu, "nvidia" | "cpu") {
-            return Err("Choose an NVIDIA GPU or CPU worker".into());
+        // Without `gpu`, preparation chooses from the CUDA checks (`worker_gpu`).
+        if !request["gpu"].is_null() && !matches!(request["gpu"].as_str(), Some("nvidia" | "metal" | "cpu")) {
+            return Err("Choose an NVIDIA, Apple Metal or CPU worker".into());
         }
         let r = &request["resources"];
         // Workers always download their reviewed Hugging Face revision; a local model folder or
@@ -458,6 +494,9 @@ fn apply_progress(inner: &mut Workers, mut worker: Worker) -> Result<(), String>
         worker.credential_expires_at = old.credential_expires_at;
     }
     worker.review_reports = old.review_reports.clone();
+    worker.skipped_offers = old.skipped_offers.clone();
+    // Changed only by the participant's `memory` request, never by a progress copy.
+    worker.keep_resident = old.keep_resident;
     inner.rows.insert(worker.id.clone(), worker);
     Ok(())
 }
@@ -714,21 +753,23 @@ pub(crate) fn launch(app: &AppHandle, id: String, setup: bool) {
             }
             runner::run(&app, &id, &cancel).await
         };
-        let result = tokio::select! { _=shutdown.cancelled()=>Err("Engine shutdown; worker progress was preserved".into()), result=work=>result};
+        // A shutdown keeps the saved state: the next engine start pauses the worker as restored.
+        let result = tokio::select! { _=shutdown.cancelled()=>Ok(()), result=work=>result};
         if let Err(error) = result {
             if read(&app, &id)
                 .await
                 .is_ok_and(|w| w.generation == generation)
             {
                 if let Ok(worker) = update(&app, &id, |w| {
-                    w.state = if setup { "failed" } else { "paused" }.into();
+                    // Only preparation fails a worker; a live worker's error pauses it.
+                    w.state = if setup && w.state == "preparing" { "failed" } else { "paused" }.into();
                     w.stage = "Worker needs attention".into();
                     w.error = Some(crate::lifecycle::safe_diagnostic(&error));
                 })
                 .await
                 {
                     let _ = guest::abort_agent(&app, &worker).await;
-                    if setup {
+                    if worker.state == "failed" {
                         model_lifecycle::schedule_unused_cleanup(&app, &worker);
                         let _ = model_lifecycle::stop_if_unused(&app, &worker).await;
                     } else {
@@ -757,6 +798,16 @@ async fn control_gate(app: &AppHandle, id: &str) -> Arc<Mutex<()>> {
     let manager = app.state::<Swarm>();
     let mut gates = manager.control_gates.lock().await;
     gates.entry(id.into()).or_default().clone()
+}
+/// A new worker without `gpu` uses the NVIDIA GPU only when this PC passes the CUDA checks
+/// behind `yougori gpu status`; otherwise the processor runs the model. An explicit choice
+/// is kept and skips the checks.
+async fn worker_gpu(request: &Value, cuda_supported: impl std::future::Future<Output = bool>) -> String {
+    match request["gpu"].as_str() {
+        Some(gpu) => gpu.into(),
+        None if cuda_supported.await => "nvidia".into(),
+        None => "cpu".into(),
+    }
 }
 
 #[tauri::command]
@@ -791,6 +842,13 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             return Err("Set YOUGORI_NETWORK_URL before starting Yougori to select a development website. Account credentials stay bound to that website.".into());
         }
         let id = format!("worker-{}", key());
+        let gpu = if request["gpu"].is_null() && cfg!(target_os="macos") {
+            let capabilities = crate::model_runner::model_compute_status(app.clone()).await?;
+            if capabilities["metalSupported"] == true { "metal".into() } else { "cpu".into() }
+        } else { worker_gpu(&request, async {
+            app.state::<crate::runtime::RuntimeManager>().cuda_status().await.supported
+        })
+        .await };
         let worker = Worker {
             id: id.clone(),
             name: request["name"].as_str().unwrap_or("Bounty worker").into(),
@@ -798,14 +856,15 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             state: "preparing".into(),
             stage: "Checking your model and resources".into(),
             site: crate::market::website(),
-            gpu: request["gpu"].as_str().unwrap_or("nvidia").into(),
+            gpu,
             resources: if request["resources"].is_object() {
                 request["resources"].clone()
             } else {
                 json!({"cpu":4,"memoryGb":8})
             },
             quota_gb: request["workspaceQuotaGb"].as_f64().unwrap_or(20.),
-            keep_resident: request["keepResident"].as_bool().unwrap_or(true),
+            // The model loads for work only unless the participant keeps it loaded.
+            keep_resident: request["keepResident"].as_bool().unwrap_or(false),
             environment_id: None,
             test_environment_id: None,
             model_environment_id: None,
@@ -832,6 +891,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             pending_replies: BTreeMap::new(),
             tool_results: BTreeMap::new(),
             review_reports: Vec::new(),
+            created_at: now(),
         };
         {
             let manager = app.state::<Swarm>();
@@ -886,6 +946,35 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
     let mut worker = read(&app, id).await?;
     if action == "status" {
         return Ok(json!({"worker":worker.view()}));
+    }
+    if action == "memory" {
+        let keep = request["keepResident"] == true;
+        worker = update(&app, id, |w| w.keep_resident = keep).await?;
+        // A kept model loads at its next job and stays; a released one is unloaded now
+        // unless work, a pin or another user still needs it.
+        if !keep && matches!(worker.state.as_str(), "ready_waiting" | "waiting" | "ready" | "paused") {
+            model_lifecycle::release_while_waiting(&app, &worker).await?;
+        }
+        return Ok(json!({"worker":worker.view()}));
+    }
+    if action == "activity" {
+        let mut log = activity::read(id, request["after"].as_u64().unwrap_or(0), 500);
+        log["worker"] = worker.view();
+        return Ok(log);
+    }
+    if action == "practiceStart" {
+        return practice::start(&app, &worker);
+    }
+    if action == "practiceInput" {
+        activity::add_input(id, request["content"].as_str().unwrap_or_default().trim())?;
+        return Ok(json!({"queued":true}));
+    }
+    if action == "practiceStop" {
+        return Ok(json!({"stopped":activity::stop_practice(id)}));
+    }
+    if action == "practice" {
+        let previous = request["previous"].as_array().cloned().unwrap_or_default();
+        return practice::run(&app, &worker, &previous, request["keepLoaded"] == true).await;
     }
     if action == "doctor" {
         let model = if let Some(model) = &worker.model_environment_id {
@@ -1021,6 +1110,8 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         return Ok(result);
     }
     if action == "accept" {
+        // Accepted work takes the model; a running practice ends first.
+        activity::stop_practice(id);
         if matches!(worker.state.as_str(), "running" | "preparing_bounty") {
             return Err("This worker is already working on a bounty. Pause and leave it before accepting another.".into());
         }
@@ -1260,6 +1351,11 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
     if cancel.is_cancelled() {
         return Ok(());
     }
+    // A model removed outside Swarm cannot be restarted; reuse another copy or download it again.
+    if worker.model_environment_id.as_deref().is_some_and(|model| app.state::<PlatformStore>().environment(model).is_err()) {
+        worker.model_environment_id = None;
+        worker.owned_model = false;
+    }
     write(app, worker.clone()).await?;
     let existing = if worker.model_environment_id.is_none() {
         model_lifecycle::find_reusable_model(app, &worker, &preflight).await?
@@ -1285,6 +1381,7 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
         resources.cpu = Some(resources.cpu.unwrap_or(4.) - 2.);
         resources.memory_gb = Some(resources.memory_gb.unwrap_or(8.) - 4.);
         resources.cpu_only = worker.gpu == "cpu";
+        resources.backend = Some(if worker.gpu == "nvidia" {"cuda"} else {&worker.gpu}.into());
         resources.agent_api = true;
         resources.model_folder = None;
         let result = crate::model_runner::run_model_with_resources(
@@ -1357,11 +1454,42 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
     worker.stage = "Preparing OpenCode and its private model connection".into();
     write(app, worker.clone()).await?;
     guest::prepare_agent(app, &mut worker, cancel).await?;
-    let result=crate::market::swarm_account_request(reqwest::Method::POST,"/api/swarm/workers",Some(&json!({"name":worker.name,"model":worker.model,"environmentId":worker.environment_id,"capabilities":{"localOnly":true,"gpu":worker.gpu=="nvidia","toolCalling":true},"idempotencyKey":format!("worker-register-{}",worker.id)}))).await?;
+    let result=crate::market::swarm_account_request(reqwest::Method::POST,"/api/swarm/workers",Some(&registration_request(&worker, &config))).await?;
     worker.server_id = Some(string(&result["worker"], "id")?.into());
     store_credential(&mut worker, &result)?;
     worker.state = "ready_waiting".into();
     worker.stage = "Worker ready. Waiting for bounty offers.".into();
     write(app, worker.clone()).await?;
     model_lifecycle::release_while_waiting(app, &worker).await
+}
+
+fn registration_request(worker: &Worker, config: &Value) -> Value {
+    let mut capabilities = json!({"localOnly":true,"gpu":worker.gpu!="cpu","toolCalling":true});
+    // Older services reject unknown capability fields. Advertise optional
+    // platform details only when the service explicitly supports each field.
+    for (name, value) in [
+        ("backend", json!(worker.gpu)), ("os", json!(std::env::consts::OS)),
+        ("architecture", json!(std::env::consts::ARCH)),
+        ("unifiedMemory", json!(cfg!(all(target_os="macos",target_arch="aarch64")))),
+    ] {
+        if config["workerCapabilityFields"].as_array().is_some_and(|fields|fields.iter().any(|field|field == name)) {
+            capabilities[name] = value;
+        }
+    }
+    let mut request = json!({"name":worker.name,"model":worker.model,"environmentId":worker.environment_id,
+        "capabilities":capabilities,"idempotencyKey":format!("worker-register-{}",worker.id)});
+    if let Some(zone) = shared_timezone(config) {
+        request["timezone"] = json!(zone);
+    }
+    request
+}
+
+/// The IANA time zone that places a ready worker on the website's public map, like Neo Grid
+/// providers. Sent only to services that list it, because older services reject unknown fields.
+pub(super) fn shared_timezone(config: &Value) -> Option<String> {
+    config["workerLocationFields"]
+        .as_array()
+        .is_some_and(|fields| fields.iter().any(|field| field == "timezone"))
+        .then(|| iana_time_zone::get_timezone().ok())
+        .flatten()
 }

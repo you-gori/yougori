@@ -52,6 +52,7 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
   download on ENV [--domain HOST] --yes  Temporary complete-copy link; keep this CLI open
   download list | off ENV_ID        Lifetime download counts / revoke a link
   gpu status|setup|test            NVIDIA CUDA runtime / actual kernel check
+  model compute                   Probe native Mac Metal/CPU and CUDA model capabilities
   terminal create|read|write|resize|close|install
   microvm apps|open                Built-in guest application sessions
   window list|focus|close|title|capture
@@ -289,6 +290,7 @@ fn route(group: &str, action: &str) -> Result<(&'static str, Option<&'static str
         ("ports", "preflight") => ("publication_preflight", Some("environmentId")),
         ("share", "credentials") => ("host_share_credentials", Some("shareId")),
         ("gpu", "status") => ("get_cuda_runtime_status", None),
+        ("model", "compute") => ("model_compute_status", None),
         ("gpu", "setup") => ("install_cuda_runtime", None),
         ("gpu", "test") => ("verify_environment_cuda", Some("environmentId")),
         ("terminal", "install") => ("install_terminal_tool", Some("environmentId")),

@@ -41,7 +41,7 @@ TOKEN = os.environ["YOUGORI_MODEL_TOKEN"]
 # shared with apps and the network; holding it must not change recording, downloads or usage.
 ADMIN_TOKEN = os.environ.get("YOUGORI_MODEL_ADMIN_TOKEN", "")
 # Engines and installers never receive the server's credentials.
-PRIVATE_ENVIRONMENT = ("YOUGORI_MODEL_TOKEN", "YOUGORI_MODEL_ADMIN_TOKEN", "YOUGORI_GPU_CONTROL_TOKEN")
+PRIVATE_ENVIRONMENT = ("YOUGORI_MODEL_TOKEN", "YOUGORI_MODEL_ADMIN_TOKEN", "YOUGORI_GPU_CONTROL_TOKEN", "YOUGORI_NATIVE_TOKEN")
 # GGUF uses llama.cpp, vLLM uses its pinned native/plugin implementation; other weights use Transformers.
 FORMAT = os.environ.get("YOUGORI_MODEL_FORMAT", "safetensors")
 STATE = {"status": "installing", "model": MODEL, "error": None}
@@ -185,7 +185,10 @@ def download_snapshot(revision, files):
                 now = time.monotonic()
                 kind = event.get("kind")
                 if kind == "cached":
-                    cached = sum(files.get(name, 0) for name in event["files"])
+                    available = sum(files.get(name, 0) for name in event["files"])
+                    if available > cached:
+                        last_progress = now
+                    cached = available
                 elif kind in ("transfer", "written"):
                     amount = max(0, event["bytes"])
                     if amount > (transfer if kind == "transfer" else written):
@@ -196,6 +199,9 @@ def download_snapshot(revision, files):
                         written = amount
                 elif kind == "done":
                     root = event["root"]
+                    # A completed download is not stalled, even when startup
+                    # or cache discovery used most of the inactivity window.
+                    break
                 elif kind == "exit":
                     break
                 received = min(total, cached + written)
@@ -830,7 +836,7 @@ def verified_gguf():
 
 def llama(path, body=None, timeout=30):
     """One request to the private llama.cpp server inside this container."""
-    connection = http.client.HTTPConnection("127.0.0.1", LLAMA["port"], timeout=timeout)
+    connection = http.client.HTTPConnection(LLAMA.get("host", "127.0.0.1"), LLAMA["port"], timeout=timeout)
     data = None if body is None else json.dumps(body).encode("utf-8")
     connection.request("GET" if body is None else "POST", path, data, {"Authorization": "Bearer " + LLAMA["key"], "Content-Type": "application/json"})
     return connection, connection.getresponse()
@@ -860,20 +866,34 @@ def llama_cuda_devices(binary, environment):
     return devices
 
 
-def llama_cpu_options():
-    if os.environ.get("YOUGORI_MODEL_CPU") != "1":
-        return []
+def llama_threads():
+    """CPU threads that fit this sandbox's CPU quota. By default llama.cpp starts one
+    busy-polling thread per host core; inside a two-core quota they are throttled so
+    hard that a GPU runner generates a few tokens per second while the GPU sits idle."""
     try:
-        threads = max(1, min(64, int(os.environ.get("YOUGORI_MODEL_CPU_THREADS", "2"))))
-    except ValueError:
-        threads = 2
-    # Respect the sandbox CPU quota instead of spawning a thread per host core.
+        return max(1, min(64, int(os.environ["YOUGORI_MODEL_CPU_THREADS"])))
+    except (KeyError, ValueError):
+        pass
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as handle:
+            quota, period = handle.read().split()[:2]
+        if quota != "max":
+            return max(1, min(64, math.ceil(int(quota) / int(period))))
+    except (OSError, ValueError):
+        pass
+    return max(1, min(64, os.cpu_count() or 2))
+
+
+def llama_cpu_options():
+    threads = str(llama_threads())
     # Polling threads also consume a constrained container's CPU budget.
-    return ["-ngl", "0", "--threads", str(threads), "--threads-batch", str(threads),
-            "--poll", "0", "--poll-batch", "0"]
+    options = ["--threads", threads, "--threads-batch", threads, "--poll", "0", "--poll-batch", "0"]
+    return (["-ngl", "0"] if os.environ.get("YOUGORI_MODEL_CPU") == "1" else []) + options
 
 
 def load_gguf():
+    if os.environ.get("YOUGORI_NATIVE_BACKEND"):
+        return load_native_gguf()
     if not any(os.path.exists(os.path.join(folder, "libgomp.so.1")) for folder in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu")):
         print("Installing the OpenMP runtime used by llama.cpp...", flush=True)
         quiet = {"stdout": subprocess.DEVNULL, "env": {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}}
@@ -931,6 +951,39 @@ def load_gguf():
                  revision=MODEL_REVISION, runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
 
 
+def load_native_gguf():
+    """The owner verified weights before starting the private host service.
+
+    Keep the ordinary publisher, usage, recording, tools and API authorization
+    in this sandbox. No arbitrary host address or executable is accepted here.
+    """
+    backend = os.environ["YOUGORI_NATIVE_BACKEND"]
+    key = os.environ.get("YOUGORI_NATIVE_TOKEN", "")
+    port = int(os.environ.get("YOUGORI_NATIVE_PORT", "0"))
+    if backend not in ("metal", "cpu") or not 0 < port < 65536 or len(key) != 64 or any(c not in string.hexdigits for c in key):
+        raise RuntimeError("Invalid native model connection")
+    LLAMA.update(host="10.0.2.2", port=port, key=key)
+    # Validate the read-only mount too, preserving publication integrity.
+    verified_gguf()
+    STATE["status"] = "loading"
+    deadline = time.monotonic() + 3600
+    while True:
+        try:
+            llama_json("/health")
+            break
+        except (OSError, ValueError, http.client.HTTPException):
+            if time.monotonic() > deadline:
+                raise RuntimeError("Native model did not become ready within an hour") from None
+            time.sleep(2)
+    settings = llama_json("/props").get("default_generation_settings") or {}
+    LLAMA["context"] = int(settings.get("n_ctx") or 4096)
+    STATE.update(status="ready", gpu="Apple Metal" if backend == "metal" else "Native Mac CPU",
+                 gpuCount=int(backend == "metal"), backend=backend, native=True,
+                 unifiedMemory=backend == "metal", context=LLAMA["context"], stream=True,
+                 toolCalling=True, weightsVerified=True, revision=MODEL_REVISION,
+                 runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
+
+
 def load_model():
     try:
         if FORMAT == "source":
@@ -950,6 +1003,9 @@ def load_model():
     except Exception as error:
         # Token values and full Python tracebacks never enter the API response.
         detail = str(error).replace(TOKEN, "[redacted]")
+        for name in PRIVATE_ENVIRONMENT:
+            if os.environ.get(name):
+                detail = detail.replace(os.environ[name], "[redacted]")
         if os.environ.get("HF_TOKEN"):
             detail = detail.replace(os.environ["HF_TOKEN"], "[redacted]")
         STATE.update(status="error", error=detail[:2000])

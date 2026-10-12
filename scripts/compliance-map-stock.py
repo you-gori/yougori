@@ -30,11 +30,11 @@ def record_match(item, archive, member):
     expected = M['digest'](ROOT / item['file'])
     if expected != item['sha256']:
         raise ValueError('Shipped DLL changed since inventory')
-    actual = hashlib.sha256(M['run']('tar', '-xOf', archive, member)).hexdigest()
+    actual = hashlib.sha256(M['run'](M['TAR'], '-xOf', archive, member)).hexdigest()
     if actual != expected:
         return False
-    pkg = package_fields(M['run']('tar', '-xOf', archive, '.PKGINFO'))
-    build = package_fields(M['run']('tar', '-xOf', archive, '.BUILDINFO'))
+    pkg = package_fields(M['run'](M['TAR'], '-xOf', archive, '.PKGINFO'))
+    build = package_fields(M['run'](M['TAR'], '-xOf', archive, '.BUILDINFO'))
     item.update(package=pkg['pkgname'], version=pkg['pkgver'], base=pkg['pkgbase'],
                 license=pkg.get('license', 'UNKNOWN'), provenance='matched-msys-package-by-sha256',
                 binaryPackageSha256=M['digest'](archive), pkgbuildSha256=build['pkgbuild_sha256sum'],

@@ -99,7 +99,7 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
     }
     if args.first().is_some_and(|arg| arg == "cli")
         && args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
-        println!("Yougori interactive CLI\n\nUsage: yougori [cli]\n\nChoose actions with arrow keys and Enter. Browse files and folders when a path is needed.\nBack returns to the home menu; Escape cancels the current flow.\nExit leaves your workloads running. Requires an interactive terminal.\n\nYougori quietly adds a project shortcut in the current folder when supported. Run that shortcut when you want to start the project.\nRun yougori help to see all commands.");
+        println!("Yougori interactive CLI\n\nUsage: yougori [cli]\n\nChoose actions with arrow keys and Enter. Browse files and folders when a path is needed.\nBack returns to the previous menu or question. In setup questions Escape also goes back;\nelsewhere it cancels the current flow. Ctrl+C stops waiting; a second Ctrl+C quits.\nExit leaves your workloads running. Requires an interactive terminal.\n\nYougori quietly adds a project shortcut in the current folder when supported. Run that shortcut when you want to start the project.\nRun yougori help to see all commands.");
         return Ok(0);
     }
     if launcher::requested(&args) {
@@ -279,7 +279,11 @@ Waiting for approval… (Ctrl+C cancels)")).await?,
         let live = !once && output::stdout_terminal();
         loop {
             let state = yougori_cli::public::call("refresh_host_metrics", json!({})).await?;
-            let snapshot = yougori_cli::overview::top(&state);
+            let mut snapshot = yougori_cli::overview::top(&state);
+            // Engines without the security monitor show usage only.
+            if let Ok(monitor) = yougori_cli::public::call("security_monitor", json!({})).await {
+                yougori_cli::overview::add_security(&mut snapshot, &monitor);
+            }
             if !live {
                 println!("{}", wire_json(snapshot));
                 return Ok(0);
@@ -292,6 +296,9 @@ Refreshing every 2 seconds * Ctrl+C to leave
                 _ = tokio::signal::ctrl_c() => return Ok(0),
             }
         }
+    }
+    if matches!(args[0].as_str(), "monitor" | "audit" | "lockdown" | "unlock") {
+        return security(&args).await;
     }
     // Overviews print a table in a terminal and JSON when piped; --format overrides.
     let all_ports = args.len() >= 3 && args[0] == "ports" && args[1] == "list" && args[2..].contains(&"--all".to_string());
@@ -401,6 +408,47 @@ Refreshing every 2 seconds * Ctrl+C to leave
         .map(|v| v.clamp(1, 255) as i32)
         .unwrap_or(0))
 }
+/// `monitor`, `audit`, `lockdown` and `unlock`: tables in a terminal, JSON when piped.
+/// A failed chain check or a kill-switch step that did not complete exits nonzero.
+async fn security(args: &[String]) -> Result<i32, String> {
+    use yougori_cli::security;
+    let terminal = output::stdout_terminal();
+    let color = output::stdout_color();
+    match args[0].as_str() {
+        "monitor" => {
+            let (environment, once) = security::monitor_request(&args[1..])?;
+            client::start(None).await?;
+            let live = !once && terminal;
+            loop {
+                let snapshot = security::monitor(environment.as_deref()).await?;
+                if !live {
+                    println!("{}", wire_json(snapshot));
+                    return Ok(0);
+                }
+                print!("\x1b[2J\x1b[H{}\nRefreshing every 2 seconds * Ctrl+C to leave\n", presentation::text(&output::monitor(&snapshot, color)));
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                    _ = tokio::signal::ctrl_c() => return Ok(0),
+                }
+            }
+        }
+        "audit" => {
+            let request = security::audit_request(&args[1..])?;
+            let result = launcher::command_progress(args, security::audit(&request)).await?;
+            if terminal { print!("{}", presentation::text(&output::audit(&result, color))) } else { println!("{}", wire_json(result.clone())) }
+            Ok(if result["verification"]["ok"] == false { 1 } else { 0 })
+        }
+        _ => {
+            let unlock = args[0] == "unlock";
+            let selection = security::selection(&args[1..], if unlock { security::UNLOCK_USAGE } else { security::LOCKDOWN_USAGE })?;
+            let result = launcher::command_progress(args, security::contain(&selection, unlock)).await?;
+            if terminal { print!("{}", presentation::text(&output::containment(&result, unlock, color))) } else { println!("{}", wire_json(result.clone())) }
+            let incomplete = result["environments"].as_array().is_some_and(|items| items.iter().any(|item| item["ok"] == false));
+            Ok(if incomplete { 1 } else { 0 })
+        }
+    }
+}
+
 fn wire_json(value: Value) -> String {
     output::json(&serde_json::to_value(wire::Response::success(value)).unwrap(), output::stdout_color())
 }
@@ -414,11 +462,14 @@ fn main() {
         .name("yougori-main".into())
         .stack_size(MAIN_STACK_BYTES)
         .spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
+            let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .unwrap()
-                .block_on(Box::pin(client::capture_errors(run(args))))
+                .unwrap();
+            let result = runtime.block_on(Box::pin(client::capture_errors(run(args))));
+            // Work left behind by Ctrl+C, such as a folder scan, must not keep the command open.
+            runtime.shutdown_timeout(std::time::Duration::from_millis(200));
+            result
         })
         .expect("Cannot start the Yougori CLI thread")
         .join()

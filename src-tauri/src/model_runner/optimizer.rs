@@ -72,9 +72,12 @@ fn idle_expired(health: &Value) -> bool {
 }
 
 pub(crate) fn start(app: &AppHandle) {
+    start_until(app, crate::automation::shutdown_signal(app));
+}
+
+pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::CancellationToken) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let shutdown = crate::automation::shutdown_signal(&app);
         loop {
             tokio::select! { _=shutdown.cancelled()=>break, _=tokio::time::sleep(Duration::from_secs(1))=>{} }
             let Ok(state) = app.state::<PlatformStore>().snapshot() else { continue };
@@ -106,7 +109,7 @@ pub(crate) fn start(app: &AppHandle) {
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)] mod tests {

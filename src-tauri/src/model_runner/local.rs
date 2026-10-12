@@ -66,17 +66,47 @@ pub(super) async fn run(model:String,port:Option<u16>,resources:ModelResources,q
     if port==Some(0){return Err("Invalid API port".into())}
     let folder=resources.model_folder.clone().ok_or("Choose a model folder")?;let source_model=model.clone();
     let (check,manifest)=tokio::task::spawn_blocking(move||inspect_folder(&source_model,&folder,quant.as_deref(),true)).await.map_err(|e|e.to_string())??;
+    run_checked(model, port, resources, check, manifest, app).await
+}
+pub(super) async fn run_verified(model:String,port:Option<u16>,resources:ModelResources,mut check:Value,app:AppHandle)->Result<Value,String>{
+    check["localFolder"] = json!(resources.model_folder);
+    let manifest = json!({"revision":check["revision"],"files":check["files"]});
+    run_checked(model, port, resources, check, manifest, app).await
+}
+async fn run_checked(model:String,port:Option<u16>,mut resources:ModelResources,check:Value,manifest:Value,app:AppHandle)->Result<Value,String>{
+    if port==Some(0){return Err("Invalid API port".into())}
     if check["supported"]!=true{return Err(check["reason"].as_str().unwrap_or("Unsupported local model").into())}
     if check["format"]=="vllm"{return Err("Local folders currently support the Transformers and GGUF runners; use an existing API for this architecture".into())}
     let state=app.state::<PlatformStore>().snapshot()?;
     let source_only=check["sourceOnly"]==true;
+    let mut backend = super::compute::Backend::select(std::env::consts::OS, std::env::consts::ARCH, resources.backend.as_deref(), resources.cpu_only)?;
+    if backend == super::compute::Backend::Metal && resources.backend.as_deref().is_none_or(|b|b=="auto")
+        && app.state::<RuntimeManager>().native_model_capabilities().await["metalSupported"] != true {
+        backend = super::compute::Backend::MacCpu;
+    }
+    if !source_only && backend != super::compute::Backend::Cuda && check["format"] != "gguf" {
+        return Err("This backend requires GGUF weights; repository Python and CUDA models cannot run natively on this Mac".into());
+    }
+    let native = !source_only && backend.native();
+    if native {
+        app.state::<RuntimeManager>().native_model_runtime()?;
+        if resources.memory_gb.is_none() { resources.memory_gb = Some(check["resources"]["gpuMemoryGbEstimated"].as_f64().unwrap_or(4.).max(4.)); }
+    }
+    let cuda = !source_only && backend == super::compute::Backend::Cuda;
     // Reuse only the same immutable folder snapshot and runtime kind. A changed
     // folder gets a separate environment; the previous environment and data stay intact.
     let runtime=app.state::<RuntimeManager>();
     for env in &state.environments {
+        // Swarm has its own ownership/reuse checks. Never adopt an ordinary
+        // user's model here merely because it references the same native cache.
+        if resources.agent_api { continue; }
         if env.kind!=EnvironmentKind::Container || env.description!=format!("Hugging Face · {model}") {continue}
         let options=runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
         if options.environment.get("YOUGORI_MODEL_REVISION")==check["revision"].as_str().map(String::from).as_ref()
+            && options.environment.get("YOUGORI_NATIVE_BACKEND").map(String::as_str) == native.then_some(backend.name())
+            && env.gpu_access == cuda
+            && resources.cpu.is_none_or(|cpu| env.resource_policy.cpu.preferred == cpu)
+            && resources.memory_gb.is_none_or(|memory| env.resource_policy.memory_gb.preferred == memory)
             && options.environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|f|f=="source")==source_only
             && options.binds.iter().any(|bind|bind.target=="/yougori-model" && Path::new(&bind.source).canonicalize().ok().as_ref()==Path::new(check["localFolder"].as_str().unwrap()).canonicalize().ok().as_ref()) {
             let mut result=super::start_model(env.id.clone(),app.clone()).await?;
@@ -94,13 +124,20 @@ pub(super) async fn run(model:String,port:Option<u16>,resources:ModelResources,q
     environment["YOUGORI_MODEL_SERVER_SOURCE"]=json!(super::server_payload());
     environment["YOUGORI_GPU_SOURCE"]=json!(super::optimizer::source());
     if source_only {environment["YOUGORI_MODEL_FORMAT"]=json!("source");}
+    if resources.agent_api { environment["YOUGORI_MODEL_AGENT_API"] = json!("1"); }
     if check["localCode"]==true {environment["YOUGORI_LOCAL_CODE"]=json!("1");}
     if gguf{environment["YOUGORI_MODEL_FORMAT"]=json!("gguf");environment["YOUGORI_MODEL_QUANT"]=check["quant"].clone();environment["YOUGORI_MODEL_FILES"]=json!(check["files"].to_string());}
     let mut protected=json!({"YOUGORI_MODEL_TOKEN":reference});
     protected[super::ADMIN_TOKEN]=json!(super::admin_reference()?);
-    if !source_only {super::optimizer::environment(&mut environment,&mut protected)?;}
+    if cuda {super::optimizer::environment(&mut environment,&mut protected)?;}
+    if native {super::macos::configure(&mut environment,&mut protected,backend,cpu,memory)?;}
+    if backend == super::compute::Backend::Cpu {
+        environment["YOUGORI_MODEL_CPU"] = json!("1");
+        environment["YOUGORI_MODEL_CPU_THREADS"] = json!(cpu.floor().max(1.).min(64.).to_string());
+        environment["YOUGORI_GPU_OPTIMIZER"] = json!("0");
+    }
     let name=yougori_cli::public::model_environment_name(&model,state.environments.iter().map(|e|e.name.as_str()));let range=|n:f64|json!({"min":n,"preferred":n,"max":n});
-    let mut result=crate::projects::run_workload(json!({"name":name,"kind":"container","provider":if source_only{"yougoriOci"}else{"yougoriCuda"},"autoSetupCuda":!source_only,"runtime":if gguf||source_only{LLAMA_CPP_IMAGE}else{TRANSFORMERS_IMAGE},"containerCommand":server_command(),"gpuAccess":!source_only,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"binds":[{"source":check["localFolder"],"target":"/yougori-model","readOnly":true}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()}),true,app).await?;
+    let mut result=crate::projects::run_workload(json!({"name":name,"kind":"container","provider":if cuda{"yougoriCuda"}else{"yougoriOci"},"autoSetupCuda":cuda,"runtime":if gguf||source_only{LLAMA_CPP_IMAGE}else{TRANSFORMERS_IMAGE},"containerCommand":server_command(),"gpuAccess":cuda,"networkAccess":true,"storageGb":storage,"storageDrive":resources.storage_drive,"description":format!("Hugging Face · {model}"),"resourcePolicy":{"cpu":range(cpu),"memoryGb":range(memory),"priority":"normal","dynamic":false},"workload":{"environment":environment,"secretEnvironment":protected,"binds":[{"source":check["localFolder"],"target":"/yougori-model","readOnly":true}]},"ports":port.map(|p|vec![format!("{p}:8000")]).unwrap_or_default()}),true,app).await?;
     result["model"]=json!(model);result["status"]=json!("loading");result["sourceOnly"]=json!(source_only);result["preflight"]=check;
     if let Some(port)=port{result["apiUrl"]=json!(format!("http://127.0.0.1:{port}/v1"));result["apiKey"]=json!(token);}
     Ok(result)

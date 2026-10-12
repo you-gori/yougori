@@ -1429,6 +1429,9 @@ pub async fn set_environment_status(
         return Err("Provisioning and error states are controlled by the runtime".into());
     }
     let requested = store.environment(&environment_id)?;
+    if status == EnvironmentStatus::Running {
+        crate::security::ensure_open(&store, &environment_id, "Starting or resuming it")?;
+    }
     let stopping = matches!(status, EnvironmentStatus::Stopped | EnvironmentStatus::Paused);
     // Snapshot exports hold the lifecycle lock, so they are interrupted before taking it.
     let snapshot_interruption = stopping.then(|| runtime.interrupt_snapshot_exports(runtime_id(&requested)));
@@ -2105,6 +2108,9 @@ pub async fn update_container_network(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<PlatformState, String> {
+    if enabled {
+        crate::security::ensure_open(&store, &environment_id, "Turning Internet access on")?;
+    }
     let network_lock = environment_network_lock(&environment_id).await;
     let _network_serial = network_lock.lock().await;
     let guarded = store.environment(&environment_id)?;
@@ -2837,6 +2843,18 @@ pub async fn restore_snapshot(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<PlatformState, String> {
+    let environment_id = store.snapshot().ok().and_then(|state| state.snapshots.iter().find(|snapshot| snapshot.id == snapshot_id).map(|snapshot| snapshot.environment_id.clone()));
+    let result = restore_snapshot_now(snapshot_id.clone(), store, runtime).await;
+    crate::security::record(crate::security::Event::new("environment.restored").env(environment_id.as_deref().unwrap_or_default())
+        .text("from", "snapshot").text("snapshot", &snapshot_id).outcome(&result));
+    result
+}
+
+async fn restore_snapshot_now(
+    snapshot_id: String,
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+) -> Result<PlatformState, String> {
     let restore_id = store.snapshot()?.snapshots.iter().find(|snapshot| snapshot.id == snapshot_id)
         .map(|snapshot| snapshot.environment_id.clone()).ok_or("Snapshot not found")?;
     let network_lock = environment_network_lock(&restore_id).await;
@@ -3357,6 +3375,19 @@ pub async fn restore_backup(
     runtime: State<'_, RuntimeManager>,
     backup: State<'_, BackupManager>,
 ) -> Result<PlatformState, String> {
+    let environment_id = store.snapshot().ok().and_then(|state| state.backup_runs.iter().find(|run| run.id == backup_id).map(|run| run.environment_id.clone()));
+    let result = restore_backup_now(backup_id.clone(), store, runtime, backup).await;
+    crate::security::record(crate::security::Event::new("environment.restored").env(environment_id.as_deref().unwrap_or_default())
+        .text("from", "backup").text("backup", &backup_id).outcome(&result));
+    result
+}
+
+async fn restore_backup_now(
+    backup_id: String,
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+    backup: State<'_, BackupManager>,
+) -> Result<PlatformState, String> {
     let state = store.snapshot()?;
     let run = state
         .backup_runs
@@ -3706,8 +3737,10 @@ pub async fn update_settings(
     runtime: State<'_, RuntimeManager>,
     backup: State<'_, BackupManager>,
 ) -> Result<PlatformState, String> {
-    let revision = store.snapshot()?.settings_revision;
+    let previous = store.snapshot()?;
+    let revision = previous.settings_revision;
     let saved = crate::lifecycle::save_settings(settings, revision, &store).await?;
+    crate::security::settings_changed(&previous.settings.security_monitoring, &saved.settings.security_monitoring);
     // The settings commit succeeded even if subsequent snapshot cleanup fails.
     // Do not invite clients to repeat a completed update as a failed mutation.
     if let Err(error) = enforce_snapshot_retention(&store, &runtime, &backup).await {
@@ -3797,8 +3830,16 @@ pub(crate) fn collect_host_metrics(previous: &HostMetrics, runtime_root: &std::p
     }
 }
 
+/// Exits and lost connections noticed here are observations, recorded as the engine's.
 #[tauri::command]
 pub async fn refresh_host_metrics(
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+) -> Result<PlatformState, String> {
+    crate::security::acting_as("engine", sample_host_metrics(store, runtime)).await
+}
+
+async fn sample_host_metrics(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<PlatformState, String> {
@@ -3879,7 +3920,12 @@ pub async fn refresh_host_metrics(
             stats: None,
         };
         let telemetry = match telemetry_by_id.get(runtime_id(environment)) {
-            Some(Ok(telemetry)) => telemetry,
+            Some(Ok(telemetry)) => {
+                if let Some(hits) = telemetry.pids_limit_hits {
+                    crate::security::guest_pids_hits(&environment.id, hits);
+                }
+                telemetry
+            }
             Some(Err(error)) => {
                 refresh.last_error = Some(Some(error.clone()));
                 container_refreshes.push(refresh);
@@ -4236,8 +4282,27 @@ pub async fn read_environment_console(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Runs one bounded command. The audit log keeps only its program name, length, a salted
+/// hash, the exit code and duration; never the command line or output.
 #[tauri::command]
 pub async fn execute_environment_command(
+    request: ExecuteCommandRequest,
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+) -> Result<CommandResult, String> {
+    let (environment_id, command) = (request.environment_id.clone(), request.command.clone());
+    let started = std::time::Instant::now();
+    let result = run_environment_command(request, store, runtime).await;
+    let mut event = crate::security::Event::new("exec.run").env(&environment_id).command(&command).outcome(&result)
+        .number("milliseconds", started.elapsed().as_millis() as u64);
+    if let Ok(result) = &result {
+        event = event.signed("exitCode", i64::from(result.exit_code));
+    }
+    crate::security::record(event);
+    result
+}
+
+async fn run_environment_command(
     request: ExecuteCommandRequest,
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,

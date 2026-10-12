@@ -2,10 +2,27 @@
 use crate::{
     cli_ui::{self as ui, Choice},
     public::call,
-    tool_sharing::share_prompt,
+    tool_sharing::{finish_first, step_prompt, step_wait},
 };
 use serde_json::{json, Value};
 use std::future::Future;
+
+/// The answers so far. Going back asks a question again with its last answer selected.
+#[derive(Default)]
+pub(crate) struct Answers {
+    wanted: bool,
+    port: Option<String>,
+    domain: Option<String>,
+    /// Links this launch already created; asking again then defaults to keeping them.
+    published: Vec<String>,
+}
+
+impl Answers {
+    /// Yes again only before anything was published, so Enter never creates a second link.
+    fn access_choice(&self) -> usize {
+        usize::from(self.wanted && self.published.is_empty())
+    }
+}
 
 fn port(entry: &str) -> Result<String, String> {
     let number = entry
@@ -86,56 +103,9 @@ where
     ready_urls(&publication, id, chosen_port)
 }
 
-pub(crate) async fn configure(id: &str, tool: &str) -> Result<bool, String> {
-    let Some(access) = share_prompt(id, || {
-        ui::select(
-            "Want your project on the internet right away?",
-            &[
-                "Create a public HTTPS link for a website or API running inside this sandbox."
-                    .into(),
-            ],
-            &[
-                Choice::new(
-                    "Not yet, let's build first",
-                    "continue with the current access settings",
-                ),
-                Choice::new(
-                    "Yes, let's give it a link",
-                    "choose a project port and public address",
-                ),
-            ],
-            0,
-        )
-    })
-    .await?
-    else {
-        return Ok(false);
-    };
-    if access == 0 {
-        return Ok(true);
-    }
-    let hint = if tool == "ollama" {
-        "This link is for the website you build. Ollama's model API stays inside the sandbox on port 11434."
-    } else {
-        "Use the same port when starting your website or HTTP API inside this sandbox."
-    };
-    ui::info(hint);
-    let Some(chosen_port) = share_prompt(id, || {
-        ui::input(
-            "Which port will your website or project API use?",
-            default_port(tool),
-            false,
-            &port,
-        )
-    })
-    .await?
-    else {
-        return Ok(false);
-    };
-    let chosen_port = chosen_port
-        .parse::<u16>()
-        .map_err(|_| "Invalid project port")?;
-    let loading = ui::task("Finding a home for your project");
+/// Where the project can live: a quick link, then each saved domain, disabled when another
+/// service holds it.
+async fn addresses(id: &str, chosen_port: u16) -> Result<(Vec<Choice>, Vec<Option<String>>), String> {
     let saved = call("list_saved_domains", json!({})).await?;
     let domains = saved.as_array().ok_or("Invalid saved domain list")?;
     let mut choices = vec![Choice::new(
@@ -172,43 +142,121 @@ pub(crate) async fn configure(id: &str, tool: &str) -> Result<bool, String> {
         choices.push(if enabled { choice } else { choice.disabled() });
         destinations.push(Some(hostname.to_owned()));
     }
-    loading.clear();
+    Ok((choices, destinations))
+}
+
+/// Asks whether to publish the project, its port and its address, then publishes it. Each
+/// question after the first offers Back; nothing is published before the address is chosen.
+pub(crate) async fn configure(id: &str, tool: &str, answers: &mut Answers) -> Result<bool, String> {
+    let mut steps = ui::Wizard::new();
+    let mut hinted = false;
+    loop {
+        let asked: Result<bool, String> = match steps.step() {
+            0 => async {
+                let mut notes = vec!["Create a public HTTPS link for a website or API running inside this sandbox.".to_owned()];
+                if !answers.published.is_empty() {
+                    notes.push("Your project already has the link above. Not yet keeps it.".into());
+                }
+                let access = step_prompt(id, || {
+                    ui::select(
+                        "Want your project on the internet right away?",
+                        &notes,
+                        &[
+                            Choice::new(
+                                "Not yet, let's build first",
+                                "continue with the current access settings",
+                            ),
+                            Choice::new(
+                                "Yes, let's give it a link",
+                                "choose a project port and public address",
+                            ),
+                        ],
+                        answers.access_choice(),
+                    )
+                })
+                .await?;
+                answers.wanted = access == 1;
+                Ok(true)
+            }
+            .await,
+            1 if answers.wanted => async {
+                if !std::mem::replace(&mut hinted, true) {
+                    ui::info(if tool == "ollama" {
+                        "This link is for the website you build. Ollama's model API stays inside the sandbox on port 11434."
+                    } else {
+                        "Use the same port when starting your website or HTTP API inside this sandbox."
+                    });
+                }
+                let default = answers.port.clone().unwrap_or_else(|| default_port(tool).into());
+                let chosen = step_prompt(id, || {
+                    ui::input(
+                        "Which port will your website or project API use?",
+                        &default,
+                        false,
+                        &port,
+                    )
+                })
+                .await?;
+                answers.port = Some(chosen);
+                Ok(true)
+            }
+            .await,
+            2 if answers.wanted => publish_step(id, tool, answers).await.map(|()| true),
+            1 | 2 => Ok(false),
+            _ => break,
+        };
+        steps.next(asked)?;
+    }
+    Ok(true)
+}
+
+/// Chooses the address and publishes. Once the link exists the last question offers no Back:
+/// going back would publish again.
+async fn publish_step(id: &str, tool: &str, answers: &mut Answers) -> Result<(), String> {
+    let chosen_port = answers
+        .port
+        .as_deref()
+        .unwrap_or(default_port(tool))
+        .parse::<u16>()
+        .map_err(|_| "Invalid project port")?;
+    let (choices, destinations) = step_wait(id, "Finding a home for your project", || {
+        addresses(id, chosen_port)
+    })
+    .await?;
     let mut notes = vec![format!(
         "Public access to port {chosen_port}. Anyone with the URL can reach the service."
     )];
-    if domains.is_empty() {
+    if destinations.len() == 1 {
         notes.push(
             "No saved domains yet. Save one in Yougori's Public access setups to use it here."
                 .into(),
         );
     }
-    let Some(destination) = share_prompt(id, || {
-        ui::select("Where should your project live?", &notes, &choices, 0)
+    let initial = destinations
+        .iter()
+        .position(|destination| *destination == answers.domain)
+        .filter(|&index| choices[index].enabled)
+        .unwrap_or(0);
+    let destination = step_prompt(id, || {
+        ui::select("Where should your project live?", &notes, &choices, initial)
     })
-    .await?
-    else {
-        return Ok(false);
-    };
-    let domain = destinations[destination].as_deref();
+    .await?;
+    let domain = destinations[destination].clone();
+    answers.domain = domain.clone();
     ui::info(&format!(
         "Connecting port {chosen_port} to {}",
-        domain.unwrap_or("a quick HTTPS link")
+        domain.as_deref().unwrap_or("a quick HTTPS link")
     ));
-    let connecting = ui::task("Giving your project a public link");
-    let urls = match publish(id, chosen_port, domain, |method, params| {
-        call(method, params)
-    })
-    .await
-    {
-        Ok(urls) => {
-            connecting.done("Your public link is ready");
-            urls
-        }
-        Err(error) => {
-            connecting.fail("Public access could not finish");
-            return Err(error);
-        }
-    };
+    let urls = finish_first(
+        id,
+        "Giving your project a public link",
+        ["Your public link is ready", "Public access could not finish"],
+        publish(id, chosen_port, domain.as_deref(), |method, params| {
+            call(method, params)
+        }),
+    )
+    .await?;
+    answers.published = urls.clone();
     ui::info("Copy this link before opening the tool:");
     for url in &urls {
         ui::step(url);
@@ -217,22 +265,21 @@ pub(crate) async fn configure(id: &str, tool: &str) -> Result<bool, String> {
     ui::info(
         "Keep the owner computer and Yougori running. Quick links can change after a restart.",
     );
-    let Some(_) = share_prompt(id, || {
-        ui::select(
-            "Copy your link, then let's build.",
-            &urls,
-            &[Choice::new(
-                format!("Continue with {tool}"),
-                "copy the link above, then continue in this terminal",
-            )],
-            0,
-        )
+    step_prompt(id, || {
+        ui::without_back(|| {
+            ui::select(
+                "Copy your link, then let's build.",
+                &urls,
+                &[Choice::new(
+                    format!("Continue with {tool}"),
+                    "copy the link above, then continue in this terminal",
+                )],
+                0,
+            )
+        })
     })
-    .await?
-    else {
-        return Ok(false);
-    };
-    Ok(true)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -252,6 +299,15 @@ mod tests {
         for tool in crate::container_tools::TOOLS {
             assert_eq!(default_port(tool),"3000");
         }
+    }
+    #[test]
+    fn going_back_preselects_the_last_answer_but_never_a_second_link() {
+        let mut answers = Answers::default();
+        assert_eq!(answers.access_choice(), 0, "Not yet by default");
+        answers.wanted = true;
+        assert_eq!(answers.access_choice(), 1, "back from the port question keeps Yes");
+        answers.published = vec!["https://project.example.com/".into()];
+        assert_eq!(answers.access_choice(), 0, "after publishing, Enter keeps the link");
     }
     fn publication(id: &str, port: u16, url: &str) -> Value {
         json!({"environmentId":id,"port":port,"kind":"cloudflare","status":"active","urls":[url]})

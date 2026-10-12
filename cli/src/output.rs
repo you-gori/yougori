@@ -338,7 +338,7 @@ pub fn ps(environments: &Value, color: bool) -> String {
 pub fn bounty(action: &str, result: &Value, color: bool) -> Option<String> {
     match action {
         "workers" => Some(bounty_workers(&result["workers"], color)),
-        "status" if result["worker"].is_object() => Some(bounty_worker(&result["worker"], color)),
+        "status" | "memory" if result["worker"].is_object() => Some(bounty_worker(&result["worker"], color)),
         "offers" => Some(bounty_offers(&result["offers"], color)),
         "doctor" if result["worker"].is_object() => Some(bounty_doctor(result, color)),
         _ => None,
@@ -391,79 +391,97 @@ fn worker_detail(worker: &Value) -> String {
     })
 }
 
+/// The short name people type for a worker, such as keen-heron.
+fn worker_handle(worker: &Value) -> String {
+    worker["id"].as_str().map(yougori_cli::bounty::worker_handle).unwrap_or_else(|| "—".into())
+}
+
 fn bounty_workers(workers: &Value, color: bool) -> String {
     let workers = workers.as_array().map(Vec::as_slice).unwrap_or_default();
-    let rows: Vec<Vec<String>> = workers.iter().map(|worker| vec![
-        text(&worker["name"]), worker_state(worker), worker_model(worker), worker_detail(worker), text(&worker["id"]),
+    // What to type for each worker: its short name, or its ID where two listed workers share one.
+    let names = yougori_cli::bounty::worker_names(&workers.iter().collect::<Vec<_>>());
+    let rows: Vec<Vec<String>> = workers.iter().zip(&names).map(|(worker, handle)| vec![
+        text(&worker["name"]), worker_state(worker), worker_model(worker), worker_detail(worker), handle.clone(),
     ]).collect();
     let mut output = section("Bounty workers", color);
     if rows.is_empty() {
         output.push_str("No bounty workers yet. Start one with `yougori start bounty`.\n");
         return output;
     }
-    output.push_str(&table(&["NAME", "STATE", "MODEL", "DETAIL", "ID"], &rows, color));
-    // Workers that wait for the participant get their exact next command, even when the
-    // table had to shorten the ID column.
-    let name_and_id = |worker: &Value| (safe(&text(&worker["name"])), safe(&text(&worker["id"])));
-    let paused: Vec<_> = workers.iter().filter(|worker| restored(worker)).map(name_and_id).collect();
+    output.push_str(&table(&["NAME", "STATE", "MODEL", "DETAIL", "WORKER"], &rows, color));
+    // Workers that wait for the participant get their exact next command.
+    let listed = || workers.iter().zip(&names).map(|(worker, handle)| (worker, safe(&text(&worker["name"])), handle));
+    let paused: Vec<_> = listed().filter(|(worker, ..)| restored(worker)).collect();
     if !paused.is_empty() {
         output.push_str(&format!("\n{}\n", styled("The engine restarted, so these workers paused. Nothing runs until you resume them:", WARN, color)));
-        for (name, id) in paused {
-            output.push_str(&format!("Resume {name}: yougori bounty resume {id}\n"));
+        for (_, name, handle) in paused {
+            output.push_str(&format!("Resume {name}: yougori bounty resume {handle}\n"));
         }
     }
-    let drafts: Vec<_> = workers.iter().filter(|worker| worker["state"] == "awaiting_review")
-        .filter_map(|worker| review_draft(worker).map(|report| (name_and_id(worker), report))).collect();
+    let drafts: Vec<_> = listed().filter(|(worker, ..)| worker["state"] == "awaiting_review")
+        .filter_map(|(worker, name, handle)| review_draft(worker).map(|report| (name, handle, report))).collect();
     if !drafts.is_empty() {
-        output.push_str(&format!("\n{}\n", styled("Report drafts wait for your review. Read them with yougori bounty reports ID, then submit:", WARN, color)));
-        for ((name, id), report) in drafts {
-            output.push_str(&format!("Submit {name}'s draft: yougori bounty submit {id} {report} --yes\n"));
+        output.push_str(&format!("\n{}\n", styled("Report drafts wait for your review. Read them with yougori bounty reports WORKER, then submit:", WARN, color)));
+        for (name, handle, report) in drafts {
+            output.push_str(&format!("Submit {name}'s draft: yougori bounty submit {handle} {report} --yes\n"));
         }
     }
-    output.push_str(&format!("\n{}\n", styled("Open one: yougori start bounty --worker ID", MUTED, color)));
+    output.push_str(&format!("\n{}\n", styled("Open one: yougori start bounty --worker WORKER", MUTED, color)));
     output
 }
 
 fn bounty_worker(worker: &Value, color: bool) -> String {
-    let id = safe(&text(&worker["id"]));
+    // Commands name the worker by its short name; the ID stays in the card for reference.
+    let handle = worker_handle(worker);
     let state = worker_state(worker);
     let resources = &worker["resources"];
-    let mut runs = vec![if worker["gpu"] == "cpu" { "Processor".to_owned() } else { "NVIDIA GPU".to_owned() }];
+    let mut runs = vec![match worker["gpu"].as_str() {
+        Some("cpu") => "Processor".to_owned(),
+        Some("metal") => "Apple Metal".to_owned(),
+        _ => "NVIDIA GPU".to_owned(),
+    }];
     if let Some(cpu) = resources["cpu"].as_f64() { runs.push(format!("{cpu} CPU")); }
     if let Some(memory) = resources["memoryGb"].as_f64() { runs.push(format!("{memory} GB")); }
     if let Some(drive) = resources["storageDrive"].as_str() { runs.push(drive.to_owned()); }
+    let drafts: Vec<&str> = worker["reviewReports"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     let mut rows = vec![
         ("Name", text(&worker["name"])),
+        ("Worker", handle.clone()),
         ("State", state.clone()),
         ("Model", worker_model(worker)),
         ("Runs on", runs.join(" · ")),
         ("Workspace", worker["workspaceQuotaGb"].as_f64().map_or_else(|| "—".into(), |gb| format!("{gb} GB for bounty workspaces"))),
-        ("Bounty", text(&worker["bountyId"])),
-        ("Attempts", text(&worker["completedAttempts"])),
-        (if worker["error"].is_string() { "Problem" } else { "Doing" }, worker_detail(worker)),
-        ("ID", id.clone()),
+        ("Model memory", match worker["keepResident"].as_bool() {
+            Some(true) => "kept loaded while waiting".into(),
+            Some(false) => "loaded only for work".into(),
+            None => "—".into(),
+        }),
     ];
-    let drafts: Vec<&str> = worker["reviewReports"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    if !worker["bountyId"].is_null() { rows.push(("Bounty", text(&worker["bountyId"]))); }
+    rows.push(("Attempts", text(&worker["completedAttempts"])));
     if !drafts.is_empty() {
-        rows.insert(7, ("Drafts", format!("{} · waiting for your review", drafts.join(", "))));
+        rows.push(("Drafts", format!("{} · waiting for your review", drafts.join(", "))));
     }
-    if rows[5].1 == "—" { rows.remove(5); }
+    rows.push((if worker["error"].is_string() { "Problem" } else { "Doing" }, worker_detail(worker)));
+    rows.push(("ID", text(&worker["id"])));
     let mut output = section("Bounty worker", color);
+    // Values line up after the longest label.
+    let pad = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
     for (label, value) in rows {
         let value = safe(&value);
         let value = if label == "State" || label == "Problem" { styled(&value, tone(if label == "Problem" { "failed" } else { &state }), color) } else { value };
-        output.push_str(&format!("{}  {value}\n", styled(&format!("{label:<9}"), MUTED, color)));
+        output.push_str(&format!("{}  {value}\n", styled(&format!("{label:<pad$}"), MUTED, color)));
     }
     if restored(worker) {
         output.push_str(&format!("\n{}", styled("The engine restarted, so this worker paused. Nothing runs until you resume it.", WARN, color)));
     }
     let report = review_draft(worker).unwrap_or_else(|| "REPORT_ID".into());
     let next = match worker["state"].as_str().unwrap_or("") {
-        "paused" => format!("Resume: yougori bounty resume {id}"),
-        "stopped" => format!("Start again: yougori start bounty --worker {id}"),
-        "awaiting_review" => format!("Read the draft: yougori bounty reports {id}  ·  Submit it: yougori bounty submit {id} {report} --yes"),
-        _ if worker["error"].is_string() => format!("Check it: yougori bounty doctor {id}  ·  Try again: yougori start bounty --worker {id}"),
-        _ => format!("Open the live view: yougori start bounty --worker {id}"),
+        "paused" => format!("Resume: yougori bounty resume {handle}"),
+        "stopped" => format!("Start again: yougori start bounty --worker {handle}"),
+        "awaiting_review" => format!("Read the draft: yougori bounty reports {handle}  ·  Submit it: yougori bounty submit {handle} {report} --yes"),
+        _ if worker["error"].is_string() => format!("Check it: yougori bounty doctor {handle}  ·  Try again: yougori start bounty --worker {handle}"),
+        _ => format!("Open the live view: yougori start bounty --worker {handle}"),
     };
     output.push_str(&format!("\n{}\n", styled(&next, MUTED, color)));
     output
@@ -571,10 +589,202 @@ pub fn top(snapshot: &Value, color: bool) -> String {
     let rows: Vec<Vec<String>> = snapshot["environments"].as_array().into_iter().flatten().map(|env| vec![
         text(&env["name"]), text(&env["type"]), percent(&env["cpuPercent"]), gigabytes(&env["memoryGb"]),
         format!("+{}", gigabytes(&env["storageAddedGb"])), env["networkMbps"].as_f64().map(|v| format!("{v:.1} Mb/s")).unwrap_or_else(|| "—".into()),
+        text(&env["blocked"]), text(&env["security"]),
     ]).collect();
     if rows.is_empty() { output.push_str("No environments are running.
 "); }
-    else { output.push_str(&table(&["NAME", "TYPE", "CPU", "MEMORY", "STORAGE", "NETWORK"], &rows, color)); }
+    else { output.push_str(&table(&["NAME", "TYPE", "CPU", "MEMORY", "STORAGE", "NETWORK", "BLOCKED", "SECURITY"], &rows, color)); }
+    output.push_str(&security_line(&snapshot["security"], color));
+    output
+}
+
+/// One line about monitoring for `status` and `top`; empty for engines without it.
+fn security_line(summary: &Value, color: bool) -> String {
+    if !summary.is_object() {
+        return String::new();
+    }
+    let contained = summary["contained"].as_array().map(Vec::len).unwrap_or(0);
+    let alerts = summary["alerts"].as_u64().unwrap_or(0);
+    let state = if summary["monitoring"] == false { styled("monitoring off", WARN, color) } else { "monitoring on".into() };
+    let problems = format!("{alerts} alert{}  ·  {contained} contained", if alerts == 1 { "" } else { "s" });
+    let problems = if alerts + contained as u64 > 0 { styled(&problems, WARN, color) } else { problems };
+    format!("Security: {state}  ·  {problems}  ·  `yougori monitor`\n")
+}
+
+fn ratio(value: &Value) -> String {
+    value.as_f64().map(|v| format!("{:.0}%", v * 100.0)).unwrap_or_else(|| "—".into())
+}
+
+fn count(value: &Value) -> String {
+    value.as_u64().map(|v| v.to_string()).unwrap_or_else(|| "—".into())
+}
+
+/// The name to type in a suggested command: the name when it is one word, else the ID.
+fn command_target(entry: &Value) -> String {
+    let name = entry["name"].as_str().unwrap_or("");
+    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) { name.into() } else { text(&entry["id"]) }
+}
+
+/// `yougori monitor`: one row per environment, then alerts and what is not measured.
+pub fn monitor(snapshot: &Value, color: bool) -> String {
+    let policies = &snapshot["policies"];
+    let mut output = section("Security monitor", color);
+    let state = if snapshot["monitoring"] == false { styled("● Monitoring off", WARN, color) } else { styled("● Monitoring on", GOOD, color) };
+    output.push_str(&format!("{state}  ·  kill switches: PC ports {}, metadata {}  ·  notifications {}\n\n",
+        safe(&text(&policies["hostPortProbe"])), safe(&text(&policies["metadataProbe"])), if snapshot["notifications"] == false { "off" } else { "on" }));
+    let mut rows = Vec::new();
+    let mut notes = Vec::new();
+    for env in snapshot["environments"].as_array().into_iter().flatten() {
+        let network = &env["network"];
+        let measured = network.is_object();
+        let traffic = |value: &Value| if measured { count(value) } else { "—".into() };
+        rows.push(vec![
+            text(&env["name"]), text(&env["type"]), text(&env["status"]), yougori_cli::security::label(env),
+            traffic(&network["blockedLast10m"]), traffic(&network["connectionsLastMinute"]),
+            if measured { bytes(&network["egressLastHourBytes"]) } else { "—".into() },
+            ratio(&env["cpuRatio"]), ratio(&env["memoryRatio"]),
+        ]);
+        let target = command_target(env);
+        if let Some(containment) = env["containment"].as_object() {
+            notes.push(styled(&format!("■ {}: {} since {} ({}). Review `yougori audit {target}`, then `yougori unlock {target} --yes`.",
+                safe(&text(&env["name"])), safe(&text(&containment["level"])), safe(&text(&containment["since"])), safe(&text(&containment["reason"]))), BAD, color));
+        }
+        for alert in env["alerts"].as_array().into_iter().flatten() {
+            let actions = alert["actions"].as_array().filter(|actions| !actions.is_empty())
+                .map(|actions| format!(", steps: {}", actions.iter().map(text).collect::<Vec<_>>().join(", "))).unwrap_or_default();
+            notes.push(styled(&format!("! {}: {} for {} min{actions}", safe(&text(&env["name"])), safe(&text(&alert["rule"])), alert["sinceSeconds"].as_u64().unwrap_or(0) / 60), WARN, color));
+        }
+    }
+    for pool in snapshot["pools"].as_array().into_iter().flatten() {
+        let summary = &pool["summary"];
+        let network = &summary["network"];
+        rows.push(vec![
+            text(&pool["label"]), "shared VM".into(), "—".into(), yougori_cli::security::label(summary),
+            count(&network["blockedLast10m"]), count(&network["connectionsLastMinute"]), bytes(&network["egressLastHourBytes"]), "—".into(), "—".into(),
+        ]);
+        for alert in summary["alerts"].as_array().into_iter().flatten() {
+            notes.push(styled(&format!("! {}: {} (alert only: the shared VM cannot be cut off per container)", safe(&text(&pool["label"])), safe(&text(&alert["rule"]))), WARN, color));
+        }
+    }
+    if rows.is_empty() {
+        output.push_str("No environments yet.\n");
+    } else {
+        output.push_str(&table(&["NAME", "TYPE", "STATUS", "SECURITY", "BLOCKED 10M", "CONN/MIN", "SENT 1H", "CPU", "MEMORY"], &rows, color));
+    }
+    for note in notes {
+        output.push_str(&note);
+        output.push('\n');
+    }
+    output.push_str(&styled("Blocked: refused attempts to reach PC ports, link-local/metadata addresses or the Internet while it is off.\n\
+— not measured for this type; container network counters and process-limit hits need a guest agent update.\n", MUTED, color));
+    output
+}
+
+fn audit_detail(record: &Value) -> String {
+    let mut parts = Vec::new();
+    if record["outcome"] == "failed" {
+        parts.push("failed".to_owned());
+    }
+    for (key, value) in record["detail"].as_object().into_iter().flatten() {
+        if matches!(key.as_str(), "commandHash" | "removedLastHash") {
+            continue;
+        }
+        let shown = match value {
+            Value::String(text) => text.clone(),
+            Value::Array(items) => items.iter().map(text).collect::<Vec<_>>().join(", "),
+            Value::Object(_) => value.to_string(),
+            other => other.to_string(),
+        };
+        parts.push(format!("{key}={shown}"));
+    }
+    parts.join("  ")
+}
+
+fn short_time(value: &Value) -> String {
+    value.as_str().map(|time| time.replacen('T', " ", 1).trim_end_matches('Z').split('.').next().unwrap_or(time).to_owned()).unwrap_or_else(|| "—".into())
+}
+
+/// `yougori audit`: optional chain check, then records oldest first.
+pub fn audit(result: &Value, color: bool) -> String {
+    let mut output = String::new();
+    let verification = &result["verification"];
+    if verification.is_object() {
+        output.push_str(&section("Audit log check", color));
+        if verification["ok"] == true {
+            output.push_str(&format!("{}  {} records (#{}–#{}) in {} segments, anchored at #{}\n",
+                styled("✓ Chain intact", GOOD, color), count(&verification["records"]), count(&verification["firstSeq"]),
+                count(&verification["lastSeq"]), count(&verification["segments"]), count(&verification["anchoredSeq"])));
+        } else {
+            output.push_str(&format!("{}\n", styled("✗ The log was changed, reordered or truncated outside Yougori", BAD, color)));
+            for problem in verification["problems"].as_array().into_iter().flatten().take(10) {
+                let place = problem["seq"].as_u64().map(|seq| format!("record #{seq}: ")).unwrap_or_default();
+                output.push_str(&format!("  {place}{}\n", safe(&text(&problem["problem"]))));
+            }
+        }
+        for incident in verification["incidents"].as_array().into_iter().flatten() {
+            output.push_str(&styled(&format!("! #{} {}: {}\n", count(&incident["seq"]), safe(&text(&incident["event"])), safe(&incident["detail"].to_string())), WARN, color));
+        }
+        for warning in verification["warnings"].as_array().into_iter().flatten() {
+            output.push_str(&styled(&format!("  note: {}\n", safe(&text(&warning["warning"]))), MUTED, color));
+        }
+        output.push('\n');
+    }
+    output.push_str(&section("Audit log", color));
+    let rows: Vec<Vec<String>> = result["records"].as_array().into_iter().flatten().map(|record| vec![
+        short_time(&record["time"]), record["env"].as_str().map(|id| id.chars().take(12).collect()).unwrap_or_else(|| "—".into()),
+        text(&record["event"]), text(&record["via"]), audit_detail(record),
+    ]).collect();
+    if rows.is_empty() {
+        output.push_str("No matching records.\n");
+    } else {
+        output.push_str(&table(&["TIME (UTC)", "ENVIRONMENT", "EVENT", "BY", "DETAIL"], &rows, color));
+    }
+    output.push_str(&styled(&format!("{} records shown · stored in {}\n", count(&result["count"]), safe(&text(&result["folder"]))), MUTED, color));
+    output
+}
+
+/// `yougori lockdown` / `unlock`: what happened to each environment and how to undo it.
+pub fn containment(result: &Value, unlock: bool, color: bool) -> String {
+    let mut output = section(if unlock { "Unlock" } else { "Lockdown" }, color);
+    let mut released = false;
+    for env in result["environments"].as_array().into_iter().flatten() {
+        let name = env["name"].as_str().map(str::to_owned).unwrap_or_else(|| text(&env["id"]));
+        let line = if let Some(reason) = env["skipped"].as_str() {
+            styled(&format!("– {}: skipped ({})", safe(&name), safe(reason)), MUTED, color)
+        } else if let Some(error) = env["error"].as_str() {
+            styled(&format!("✗ {}: {}", safe(&name), safe(error)), BAD, color)
+        } else if unlock && env["unlocked"] == false {
+            styled(&format!("– {}: was not locked down", safe(&name)), MUTED, color)
+        } else {
+            released |= unlock;
+            let steps: Vec<String> = env["steps"].as_array().into_iter().flatten().map(|step| {
+                let what = match step["step"].as_str().unwrap_or("") {
+                    "cutInternet" => "Internet cut",
+                    "pause" => "paused",
+                    "restoreInternet" => "Internet restored",
+                    "resume" => "resumed",
+                    other => other,
+                };
+                if step["ok"] == true { what.to_owned() } else { format!("could not complete \"{what}\": {}", text(&step["error"])) }
+            }).collect();
+            let summary = if steps.is_empty() { if unlock { "unlocked; nothing to restore".to_owned() } else { "already contained".to_owned() } } else { steps.join(", ") };
+            let ok = env["ok"] != false;
+            styled(&format!("{} {}: {}", if ok { "✓" } else { "✗" }, safe(&name), safe(&summary)), if ok { GOOD } else { BAD }, color)
+        };
+        output.push_str(&line);
+        output.push('\n');
+    }
+    let note = if unlock {
+        if released { "Automatic kill switches for these environments wait 30 minutes; alerts continue." } else { "" }
+    } else if result["all"] == true {
+        "Review with `yougori audit`, then undo with `yougori unlock --all --yes`."
+    } else {
+        "Review with `yougori audit ENV`, then undo with `yougori unlock ENV --yes`."
+    };
+    if !note.is_empty() {
+        output.push_str(&styled(note, MUTED, color));
+        output.push('\n');
+    }
     output
 }
 
@@ -602,16 +812,18 @@ pub fn status(overview: &Value, color: bool) -> String {
         section("Yougori status", color), styled("● Online", GOOD, color), safe(&text(&overview["engine"]["version"])), envs["total"], envs["running"], overview["connections"], overview["activeJobs"],
     );
     if !types.is_empty() { output.push_str(&format!("{}\n", styled(&safe(&types), MUTED, color))); }
-    output.push_str(&format!("Sharing: {}  ·  Saved domains: {}\n\n",
+    output.push_str(&format!("Sharing: {}  ·  Saved domains: {}\n",
         if sharing["link"].is_string() { format!("link on, {} people", sharing["people"]) } else { "link off".into() }, safe(&domains)));
+    output.push_str(&security_line(&overview["security"], color));
+    output.push('\n');
     let rows: Vec<Vec<String>> = envs["list"].as_array().into_iter().flatten().map(|env| vec![
-        text(&env["name"]), text(&env["type"]), text(&env["status"]), percent(&env["cpuPercent"]), gigabytes(&env["memoryGb"]), links(&env["published"]),
+        text(&env["name"]), text(&env["type"]), text(&env["status"]), percent(&env["cpuPercent"]), gigabytes(&env["memoryGb"]), text(&env["security"]), links(&env["published"]),
     ]).collect();
     if rows.is_empty() {
         output.push_str("No environments yet. Create one with `yougori run IMAGE`.\n");
     } else {
         output.push_str(&section("Environments", color));
-        output.push_str(&table(&["NAME", "TYPE", "STATUS", "CPU", "MEMORY", "PUBLISHED"], &rows, color));
+        output.push_str(&table(&["NAME", "TYPE", "STATUS", "CPU", "MEMORY", "SECURITY", "PUBLISHED"], &rows, color));
     }
     output
 }
@@ -621,24 +833,40 @@ mod bounty_views {
     use super::*;
     use serde_json::json;
 
+    fn handle(id: &str) -> String {
+        yougori_cli::bounty::worker_handle(id)
+    }
+
     #[test]
     fn workers_status_and_offers_read_like_sentences() {
         let workers = json!({"workers":[
             {"id":"worker-1","name":"ToA","state":"ready_waiting","model":"hf.co/owner/model","error":null,"stage":null},
             {"id":"worker-2","name":"TOOT","state":"failed","model":"owner/model","error":"copy container backing image: missing\nsecond line","stage":"Worker needs attention"}]});
         let view = bounty("workers", &workers, false).unwrap();
-        assert!(view.contains("BOUNTY WORKERS") && view.contains("NAME") && view.contains("STATE"), "{view}");
+        assert!(view.contains("BOUNTY WORKERS") && view.contains("NAME") && view.contains("STATE") && view.contains("WORKER"), "{view}");
         assert!(view.contains("live") && view.contains("waiting for bounty offers") && view.contains("owner/model"), "{view}");
         assert!(view.contains("needs attention") && view.contains("copy container backing image") && !view.contains("second line"), "{view}");
         assert!(!view.contains("hf.co/") && !view.contains('\u{1b}'), "{view}");
+        assert!(view.contains(&handle("worker-1")) && view.contains(&handle("worker-2")) && !view.contains("worker-1"), "short names replace IDs: {view}");
+        assert!(view.contains("yougori start bounty --worker WORKER"), "{view}");
         assert!(bounty("workers", &json!({"workers":[]}), false).unwrap().contains("yougori start bounty"));
         let status = json!({"worker":{"id":"worker-2","name":"TOOT\u{1b}[31m","state":"failed","model":"owner/model","gpu":"nvidia",
             "resources":{"cpu":4,"memoryGb":8,"storageDrive":"D:\\"},"workspaceQuotaGb":20.0,"completedAttempts":0,"error":"backing image missing"}});
         let card = bounty("status", &status, false).unwrap();
         assert!(card.contains("NVIDIA GPU · 4 CPU · 8 GB · D:\\") && card.contains("20 GB for bounty workspaces"), "{card}");
         assert!(card.contains("Problem") && card.contains("backing image missing"), "{card}");
-        assert!(card.contains("yougori bounty doctor worker-2") && !card.contains('\u{1b}'), "{card}");
+        let value = |label: &str| card.lines().find_map(|line| line.strip_prefix(label).filter(|rest| rest.starts_with("  ")).map(str::trim));
+        assert_eq!((value("Worker"), value("ID")), (Some(handle("worker-2").as_str()), Some("worker-2")), "{card}");
+        // Every value starts in one column, after the longest label ("Model memory").
+        let rows: Vec<&str> = card.lines().skip(1).take_while(|line| !line.is_empty()).collect();
+        let start = |line: &str| line.find("  ").map(|at| line.len() - line[at..].trim_start().len());
+        assert!(rows.len() >= 8 && rows.iter().all(|line| start(line) == Some("Model memory".len() + 2)), "{card}");
+        assert!(card.contains(&format!("yougori bounty doctor {0}  ·  Try again: yougori start bounty --worker {0}", handle("worker-2"))), "{card}");
+        assert!(!card.contains("doctor worker-2") && !card.contains('\u{1b}'), "{card}");
         assert!(!card.contains("Bounty   "), "no empty bounty row: {card}");
+        let mut metal = status.clone();
+        metal["worker"]["gpu"] = json!("metal");
+        assert!(bounty("status", &metal, false).unwrap().contains("Apple Metal · 4 CPU"), "a Mac worker does not claim an NVIDIA GPU");
         let offers = json!({"offers":[{"id":"offer-1","bounty":{"id":"b1","title":"Audit login"},"reward":{"amount":"250","currency":"USDC"}}]});
         let list = bounty("offers", &offers, false).unwrap();
         assert!(list.contains("Audit login") && list.contains("250 USDC") && list.contains("offer-1"), "{list}");
@@ -655,16 +883,104 @@ mod bounty_views {
             {"id":"worker-1","name":"ToA","state":"paused","restored":true,"model":"owner/model","stage":"Paused when the Yougori engine restarted. Resume to recheck authorization and continue."},
             {"id":"worker-2","name":"Kit","state":"awaiting_review","reviewReports":["report_9"],"model":"owner/model","stage":"Your agent is reviewing the approved project"},
             {"id":"worker-3","name":"Old","state":"paused","model":"owner/model","stage":"Progress saved"}]});
+        let (one, two, three) = (handle("worker-1"), handle("worker-2"), handle("worker-3"));
         let view = bounty("workers", &workers, false).unwrap();
         assert!(view.contains("paused when the engine restarted") && view.contains("Nothing runs until you resume them"), "{view}");
-        assert!(view.contains("Resume ToA: yougori bounty resume worker-1") && !view.contains("bounty resume worker-3"), "{view}");
-        assert!(view.contains("report ready") && view.contains("Submit Kit's draft: yougori bounty submit worker-2 report_9 --yes"), "{view}");
+        assert!(view.contains(&format!("Resume ToA: yougori bounty resume {one}")) && !view.contains(&format!("bounty resume {three}")), "{view}");
+        assert!(view.contains("report ready") && view.contains(&format!("Submit Kit's draft: yougori bounty submit {two} report_9 --yes")), "{view}");
         let card = bounty("status", &json!({"worker":workers["workers"][0]}), false).unwrap();
-        assert!(card.contains("The engine restarted, so this worker paused") && card.contains("Resume: yougori bounty resume worker-1"), "{card}");
+        assert!(card.contains("The engine restarted, so this worker paused") && card.contains(&format!("Resume: yougori bounty resume {one}")), "{card}");
         let card = bounty("status", &json!({"worker":workers["workers"][1]}), false).unwrap();
         assert!(card.contains("Drafts") && card.contains("report_9 · waiting for your review"), "{card}");
-        assert!(card.contains("yougori bounty reports worker-2") && card.contains("yougori bounty submit worker-2 report_9 --yes"), "{card}");
+        assert!(card.contains(&format!("yougori bounty reports {two}")) && card.contains(&format!("yougori bounty submit {two} report_9 --yes")), "{card}");
         let card = bounty("status", &json!({"worker":workers["workers"][2]}), false).unwrap();
-        assert!(!card.contains("engine restarted") && card.contains("Resume: yougori bounty resume worker-3"), "{card}");
+        assert!(!card.contains("engine restarted") && card.contains(&format!("Resume: yougori bounty resume {three}")), "{card}");
+    }
+
+    #[test]
+    fn workers_that_share_a_short_name_are_listed_by_id() {
+        let mut seen = std::collections::BTreeMap::new();
+        let (first, second) = (0..100_000)
+            .map(|n| format!("worker-{n:032x}"))
+            .find_map(|id| seen.insert(handle(&id), id.clone()).map(|earlier| (earlier, id)))
+            .unwrap();
+        let workers = json!({"workers":[
+            {"id":first,"name":"One","state":"paused","restored":true},
+            {"id":second,"name":"Two","state":"ready_waiting"},
+            {"id":"worker-3","name":"Three","state":"ready_waiting"}]});
+        let view = bounty("workers", &workers, false).unwrap();
+        assert!(view.contains(&first) && view.contains(&second) && view.contains(&handle("worker-3")), "{view}");
+        assert!(view.contains(&format!("Resume One: yougori bounty resume {first}")), "{view}");
+    }
+}
+
+#[cfg(test)]
+mod security_views {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn monitor_shows_measured_rows_containment_and_what_is_not_measured() {
+        let snapshot = json!({"monitoring": true, "notifications": true, "policies": {"hostPortProbe": "cutInternet", "metadataProbe": "alert"},
+            "environments": [
+                {"id": "env-1", "name": "codex\u{1b}[31m", "type": "microvm", "status": "running", "cpuRatio": 0.5, "memoryRatio": null,
+                 "network": {"blockedLast10m": 31, "connectionsLastMinute": 4, "egressLastHourBytes": 2048},
+                 "alerts": [{"rule": "hostPortProbe", "sinceSeconds": 120, "actions": ["cutInternet"]}],
+                 "containment": {"level": "internetCut", "since": "2026-10-11T12:00:00Z", "reason": "31 blocked PC ports tried in 60 s"}},
+                {"id": "env-2", "name": "web", "type": "container", "status": "running", "cpuRatio": 0.1, "memoryRatio": 0.2, "network": null, "alerts": []}],
+            "pools": [{"label": "standard containers (shared VM, D:/data)", "summary": {"network": {"blockedLast10m": 0}, "alerts": []}}]});
+        let view = monitor(&snapshot, false);
+        assert!(view.contains("SECURITY MONITOR") && view.contains("Monitoring on") && view.contains("PC ports cutInternet"), "{view}");
+        assert!(view.contains("internet cut") && view.contains("31") && view.contains("2.0 KB") && view.contains("50%"), "{view}");
+        assert!(view.contains("yougori unlock env-1 --yes"), "a name that is not one word is replaced by the ID: {view}");
+        assert!(view.contains("hostPortProbe for 2 min, steps: cutInternet"), "{view}");
+        assert!(view.contains("standard containers (shared VM") && view.contains("not measured"), "{view}");
+        assert!(!view.contains('\u{1b}'), "guest-chosen names cannot inject escape sequences: {view}");
+    }
+
+    #[test]
+    fn audit_reports_the_chain_check_and_compact_records() {
+        let result = json!({"count": 2, "folder": "C:/Yougori/security/audit", "verification": {"ok": false, "records": 2,
+            "problems": [{"seq": 7, "problem": "record was changed after it was written (hash mismatch)"}],
+            "incidents": [{"seq": 9, "event": "audit.truncated", "detail": {"anchoredSeq": 12, "lastSeq": 8}}], "warnings": []},
+            "records": [
+                {"seq": 1, "time": "2026-10-11T12:00:05.123Z", "event": "exec.run", "env": "env-0123456789abcdef", "via": "cli", "outcome": "succeeded",
+                 "detail": {"program": "npm", "commandLength": 8, "commandHash": "abc", "exitCode": 0}},
+                {"seq": 2, "time": "2026-10-11T12:01:00.000Z", "event": "lockdown.applied", "env": null, "via": "policy", "outcome": "failed", "detail": {"level": "internet cut"}}]});
+        let view = audit(&result, false);
+        assert!(view.contains("changed, reordered or truncated") && view.contains("record #7: record was changed"), "{view}");
+        assert!(view.contains("audit.truncated") && view.contains("2026-10-11 12:00:05") && view.contains("env-01234567"), "{view}");
+        assert!(view.contains("program=npm") && !view.contains("commandHash"), "{view}");
+        assert!(view.contains("failed  level=internet cut") && view.contains("2 records shown"), "{view}");
+        let intact = audit(&json!({"count": 0, "records": [], "verification": {"ok": true, "records": 5, "firstSeq": 1, "lastSeq": 5, "segments": 1, "anchoredSeq": 5}}), false);
+        assert!(intact.contains("Chain intact") && intact.contains("#1–#5") && intact.contains("No matching records"), "{intact}");
+    }
+
+    #[test]
+    fn lockdown_and_unlock_summaries_name_each_step_and_the_way_back() {
+        let locked = json!({"all": true, "environments": [
+            {"id": "env-1", "name": "codex", "ok": true, "steps": [{"step": "cutInternet", "ok": true}, {"step": "pause", "ok": true}]},
+            {"id": "env-2", "name": "box", "skipped": "cloud servers run outside Yougori"},
+            {"id": "env-3", "name": "vm", "ok": false, "steps": [{"step": "pause", "ok": false, "error": "busy"}]},
+            {"id": "env-4", "name": "idle", "ok": true, "steps": []}]});
+        let view = containment(&locked, false, false);
+        assert!(view.contains("✓ codex: Internet cut, paused") && view.contains("– box: skipped"), "{view}");
+        assert!(view.contains("✗ vm: could not complete \"paused\": busy") && view.contains("idle: already contained"), "{view}");
+        assert!(view.contains("yougori unlock --all --yes"), "{view}");
+        let unlocked = json!({"all": false, "environments": [{"id": "env-1", "name": "codex", "unlocked": true, "ok": true,
+            "steps": [{"step": "restoreInternet", "ok": true}, {"step": "resume", "ok": true}]}, {"id": "env-5", "unlocked": false}]});
+        let view = containment(&unlocked, true, false);
+        assert!(view.contains("✓ codex: Internet restored, resumed") && view.contains("env-5: was not locked down") && view.contains("30 minutes"), "{view}");
+    }
+
+    #[test]
+    fn status_and_top_show_security_only_when_the_engine_reports_it() {
+        assert_eq!(security_line(&Value::Null, false), "");
+        let line = security_line(&json!({"monitoring": true, "alerts": 1, "contained": [{"name": "codex"}]}), false);
+        assert!(line.contains("monitoring on") && line.contains("1 alert  ·  1 contained") && line.contains("yougori monitor"), "{line}");
+        let snapshot = json!({"host": {}, "environments": [{"name": "codex", "type": "microvm", "blocked": 3, "security": "locked down"}],
+            "security": {"monitoring": false, "alerts": 0, "contained": []}});
+        let view = top(&snapshot, false);
+        assert!(view.contains("BLOCKED") && view.contains("SECURITY") && view.contains("locked down") && view.contains("monitoring off"), "{view}");
     }
 }

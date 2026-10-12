@@ -159,8 +159,30 @@ fn completed_before_cancellation(result: &Result<Value, String>) -> bool {
     })
 }
 
+/// An asynchronous guest command. Its start and end are audited with the program name,
+/// length and a salted hash only; never the command line or output.
 #[tauri::command]
 pub(crate) async fn execute_guest_job(
+    request: GuestJobRequest,
+    store: State<'_, PlatformStore>,
+    runtime: State<'_, RuntimeManager>,
+) -> Result<Value, String> {
+    let (environment_id, command) = (request.environment_id.clone(), request.command.clone());
+    let started = std::time::Instant::now();
+    let result = run_guest_job(request, store, runtime).await;
+    let mut event = crate::security::Event::new("exec.finished").env(&environment_id).command(&command).outcome(&result)
+        .number("milliseconds", started.elapsed().as_millis() as u64);
+    if let Ok(value) = &result {
+        event = event.text("execution", value["executionId"].as_str().unwrap_or_default());
+        if let Some(code) = value["exitCode"].as_i64() {
+            event = event.signed("exitCode", code);
+        }
+    }
+    crate::security::record(event);
+    result
+}
+
+async fn run_guest_job(
     request: GuestJobRequest,
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
@@ -191,6 +213,8 @@ pub(crate) async fn execute_guest_job(
         result=start=>{result.map_err(|e|format!("YOUGORI_OPERATION_INTERRUPTED:Guest execution submission failed; inspect execution {execution_id} before repeating: {e}"))?;},
         _=cancellation.cancelled()=>{let cancelled=cancel_bounded(&runtime,&environment,&execution_id).await;if completed_before_cancellation(&cancelled){cancellation_raced_completion=true;}else{return Err(cancellation_outcome(&execution_id,cancelled));}}
     }
+    crate::security::record(crate::security::Event::new("exec.started").env(&environment.id).command(&request.command)
+        .text("execution", &execution_id).number("timeoutSeconds", timeout));
     crate::automation::context::progress(
         json!({"phase":"executing","completedBytes":0,"executionId":execution_id}),
     );
@@ -303,7 +327,9 @@ pub(crate) async fn cancel_guest_execution(
         return Err("Invalid guest execution ID".into());
     }
     let environment = selected(&store, &environment_id, false)?;
-    cancel_bounded(&runtime, &environment, &execution_id).await
+    let result = cancel_bounded(&runtime, &environment, &execution_id).await;
+    crate::security::record(crate::security::Event::new("exec.cancelled").env(&environment_id).text("execution", &execution_id).outcome(&result));
+    result
 }
 
 #[tauri::command]

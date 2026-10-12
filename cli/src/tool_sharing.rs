@@ -2,7 +2,14 @@
 use crate::public::call;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{future::Future, io::IsTerminal};
+use std::{
+    future::Future,
+    io::IsTerminal,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use zeroize::Zeroizing;
 
 pub const HELP: &str = "Yougori shared sandbox\n\n  yougori connect LINK USERNAME [PASSWORD]\n\nOpens the owner's shared sandbox in this terminal, like an SSH session.\nUse the complete HTTPS share link and the credentials supplied by its owner.\nRun the installed tool (codex, claude, opencode, etc.) inside this shell.\nCtrl+] disconnects; the sandbox and files stay on the owner's computer.\nThe owner must keep Yougori, the container and sharing gateway running.\n\nLeave out PASSWORD to type it privately. A password in the command can appear\nin shell history and process arguments. For credentials supplied privately\nthrough JSON, use yougori remote connect --file -.\n";
@@ -212,12 +219,29 @@ pub async fn connect(args: &[String]) -> Result<(), String> {
         }
     };
     password(&secret)?;
-    crate::client::start(None).await?;
-    let state = call(
-        "connect_remote_share",
-        json!({"link":args[0],"username":name,"password":secret.as_str()}),
-    )
-    .await?;
+    use crate::cli_ui as ui;
+    // Spinners show these waits; the engine's progress notes would break their line.
+    crate::client::QUIET.store(true, Ordering::Relaxed);
+    let connected = async {
+        ui::busy("Starting Yougori engine", crate::client::start(None)).await?;
+        ui::busy(
+            "Connecting to the shared sandbox",
+            call(
+                "connect_remote_share",
+                json!({"link":args[0],"username":name,"password":secret.as_str()}),
+            ),
+        )
+        .await
+    }
+    .await;
+    let state = match connected {
+        // Ctrl+C stops waiting; a connection the engine already made stays listed in yougori ps.
+        Err(error) if error == ui::CANCELLED => {
+            ui::outro(&ui::muted(&error));
+            return Ok(());
+        }
+        result => result?,
+    };
     drop(secret);
     let id = connected_environment(&state, &args[0])?;
     // Permission checks stay in the gateway; do not start or install on the owner's behalf.
@@ -244,11 +268,136 @@ pub(crate) async fn share_prompt<T>(
                     return Ok(None);
                 }
             }
+            // Includes Back, which belongs to the wizard asking this question.
             Err(error) => return Err(error),
         }
     }
 }
 
+/// Ends a tool launch quietly from a wizard step: the person cancelled a question or chose a
+/// stop action, and the screen already shows which.
+pub(crate) const ENDED: &str = "\u{1}yougori launch ended";
+
+/// [`share_prompt`] for a wizard step: Back reaches the wizard untouched, and a cancelled
+/// question or a stop action ends the launch with [`ENDED`].
+pub(crate) async fn step_prompt<T>(
+    id: &str,
+    prompt: impl FnMut() -> Result<T, String>,
+) -> Result<T, String> {
+    share_prompt(id, prompt).await?.ok_or_else(|| ENDED.into())
+}
+
+/// Read-only work behind a spinner. Ctrl+C stops waiting and opens the stop menu; Cancel there
+/// starts the work again.
+pub(crate) async fn step_wait<T, Fut>(
+    id: &str,
+    label: &str,
+    mut work: impl FnMut() -> Fut,
+) -> Result<T, String>
+where
+    Fut: Future<Output = Result<T, String>>,
+{
+    use crate::cli_ui as ui;
+    loop {
+        match ui::busy(label, work()).await {
+            Err(error) if error == ui::CANCELLED => {
+                if crate::sandbox_stop::menu(id).await? {
+                    return Err(ENDED.into());
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Engine work that must not stop half done, such as publishing a link, shown as `label` and
+/// then as `done` or `failed`. Keys typed meanwhile are dropped so they cannot answer the next
+/// question. Ctrl+C opens the stop menu once the work is done; a second Ctrl+C quits at once.
+pub(crate) async fn finish_first<T>(
+    id: &str,
+    label: &str,
+    [done, failed]: [&str; 2],
+    work: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    use crate::cli_ui as ui;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let result = {
+        let _keys = ui::Interrupts::watch(interrupted.clone());
+        let task = ui::task(label);
+        let mut work = std::pin::pin!(work);
+        let mut noted = false;
+        let result = loop {
+            tokio::select! {
+                result = &mut work => break result,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)), if !noted => {
+                    if interrupted.load(Ordering::Relaxed) {
+                        noted = true;
+                        task.detail("stop options open when this is done");
+                    }
+                }
+            }
+        };
+        match &result {
+            Ok(_) => task.done(done),
+            Err(_) => task.fail(failed),
+        }
+        result
+    };
+    if result.is_ok()
+        && interrupted.load(Ordering::Relaxed)
+        && crate::sandbox_stop::menu(id).await?
+    {
+        return Err(ENDED.into());
+    }
+    result
+}
+
+/// 24 hours, 7 days and 1 hour, in the order the expiry question lists them.
+const EXPIRY_SECONDS: [u64; 3] = [86400, 604800, 3600];
+
+fn teammate_count(entry: &str, available: usize) -> Result<String, String> {
+    entry
+        .parse::<usize>()
+        .ok()
+        .filter(|n| (1..=available).contains(n))
+        .map(|n| n.to_string())
+        .ok_or_else(|| format!("Enter a number between 1 and {available}."))
+}
+
+#[derive(Debug, PartialEq)]
+enum Question {
+    Count,
+    Username(usize),
+    Password(usize),
+    Expiry,
+    Confirm,
+    Done,
+}
+
+/// Answers are asked in order, so an answer replaces the one given before going back, or
+/// follows the earlier teammates' answers.
+fn replace<T>(answers: &mut Vec<T>, index: usize, answer: T) {
+    match answers.get_mut(index) {
+        Some(previous) => *previous = answer,
+        None => answers.push(answer),
+    }
+}
+
+/// The question a sharing step asks: first the teammate count, then each teammate's username
+/// and password, then the expiry and the confirmation.
+fn question(step: usize, count: usize) -> Question {
+    match step {
+        0 => Question::Count,
+        n if n <= 2 * count && n % 2 == 1 => Question::Username(n / 2),
+        n if n <= 2 * count => Question::Password(n / 2 - 1),
+        n if n == 2 * count + 1 => Question::Expiry,
+        n if n == 2 * count + 2 => Question::Confirm,
+        _ => Question::Done,
+    }
+}
+
+/// Asks who to add, then creates their access. Each question after the first offers Back;
+/// nothing is created until the person confirms.
 pub(crate) async fn share(id: &str, name: &str) -> Result<bool, String> {
     use crate::cli_ui::{self as ui, Choice};
     let _raw = ui::Raw::on()?;
@@ -256,7 +405,10 @@ pub(crate) async fn share(id: &str, name: &str) -> Result<bool, String> {
         "Share sandbox",
         &name.chars().filter(|c| !c.is_control()).collect::<String>(),
     );
-    let listing = call("list_remote_shares", json!({})).await?;
+    let listing = step_wait(id, "Checking teammate access", || {
+        call("list_remote_shares", json!({}))
+    })
+    .await?;
     let active = listing["grants"]
         .as_array()
         .ok_or("Sharing returned no recipient list")?
@@ -267,121 +419,134 @@ pub(crate) async fn share(id: &str, name: &str) -> Result<bool, String> {
     if available == 0 {
         return Err("The maximum of 128 recipients has been reached. Revoke unused recipients with yougori remote revoke ID --yes.".into());
     }
-    let Some(count) = share_prompt(id, || {
-        ui::input("How many teammates?", "1", false, &|entry| {
-            entry
-                .parse::<usize>()
-                .ok()
-                .filter(|n| (1..=available).contains(n))
-                .map(|n| n.to_string())
-                .ok_or_else(|| format!("Enter a number between 1 and {available}."))
-        })
-    })
-    .await?
-    else {
-        return Ok(false);
-    };
-    let count = count
-        .parse::<usize>()
-        .map_err(|_| "Invalid teammate count")?;
-    let mut recipients: Vec<Recipient> = vec![];
-    for index in 0..count {
-        let Some(name) = share_prompt(id, || {
-            ui::input(
-                &format!("Teammate {} · username", index + 1),
-                "",
-                false,
-                &|entry| {
-                    let name = username(entry)?;
-                    if recipients.iter().any(|person| person.username == name) {
-                        return Err("Each teammate needs a different username.".into());
-                    }
-                    Ok(name)
-                },
-            )
-        })
-        .await?
-        else {
-            return Ok(false);
+    // The draft survives going back, so earlier answers are offered again.
+    let mut count = 1;
+    let mut names: Vec<String> = vec![];
+    let mut secrets: Vec<Zeroizing<String>> = vec![];
+    let mut expiry = 0;
+    let mut steps = ui::Wizard::new();
+    loop {
+        let asked: Result<bool, String> = match question(steps.step(), count) {
+            Question::Count => async {
+                let default = count.to_string();
+                let entry = step_prompt(id, || {
+                    ui::input("How many teammates?", &default, false, &|entry| {
+                        teammate_count(entry, available)
+                    })
+                })
+                .await?;
+                count = entry.parse().map_err(|_| "Invalid teammate count")?;
+                names.truncate(count);
+                secrets.truncate(count);
+                Ok(true)
+            }
+            .await,
+            Question::Username(index) => async {
+                let previous = names.get(index).cloned().unwrap_or_default();
+                let earlier = &names[..index];
+                let name = step_prompt(id, || {
+                    ui::input(
+                        &format!("Teammate {} · username", index + 1),
+                        &previous,
+                        false,
+                        &|entry| {
+                            let name = username(entry)?;
+                            if earlier.contains(&name) {
+                                return Err("Each teammate needs a different username.".into());
+                            }
+                            Ok(name)
+                        },
+                    )
+                })
+                .await?;
+                replace(&mut names, index, name);
+                Ok(true)
+            }
+            .await,
+            Question::Password(index) => async {
+                let label = format!("{} · password", names[index]);
+                let secret = Zeroizing::new(
+                    step_prompt(id, || {
+                        ui::input(&label, "", true, &|entry| {
+                            password(entry)?;
+                            Ok(entry.into())
+                        })
+                    })
+                    .await?,
+                );
+                replace(&mut secrets, index, secret);
+                Ok(true)
+            }
+            .await,
+            Question::Expiry => async {
+                expiry = step_prompt(id, || {
+                    ui::select(
+                        "Access expires after",
+                        &[],
+                        &[
+                            Choice::new("24 hours", "one day"),
+                            Choice::new("7 days", "one week"),
+                            Choice::new("1 hour", "short session"),
+                        ],
+                        expiry,
+                    )
+                })
+                .await?;
+                Ok(true)
+            }
+            .await,
+            Question::Confirm => async {
+                let notes = vec![
+                    format!("{count} teammates · control of this sandbox, its files, tool sign-in and connected access · {} hours", EXPIRY_SECONDS[expiry] / 3600),
+                    "Existing active recipients also become reachable when the sharing gateway is enabled.".into(),
+                    "Each connection command includes that teammate's password. Send it only to them.".into(),
+                ];
+                let confirm = step_prompt(id, || {
+                    ui::select(
+                        "Create teammate access?",
+                        &notes,
+                        &[
+                            Choice::new(
+                                "Create links and connection commands",
+                                "enable password-protected sharing",
+                            ),
+                            Choice::new("Cancel", "keep the sandbox without adding teammates"),
+                        ],
+                        0,
+                    )
+                })
+                .await?;
+                if confirm != 0 {
+                    return Err(ENDED.to_owned());
+                }
+                Ok(true)
+            }
+            .await,
+            Question::Done => break,
         };
-        let Some(secret) = share_prompt(id, || {
-            ui::input(&format!("{name} · password"), "", true, &|entry| {
-                password(entry)?;
-                Ok(entry.into())
-            })
-        })
-        .await?
-        else {
-            return Ok(false);
-        };
-        recipients.push(Recipient {
-            username: name,
-            password: Zeroizing::new(secret),
-        });
+        steps.next(asked)?;
     }
-    let Some(expiry) = share_prompt(id, || {
-        ui::select(
-            "Access expires after",
-            &[],
-            &[
-                Choice::new("24 hours", "one day"),
-                Choice::new("7 days", "one week"),
-                Choice::new("1 hour", "short session"),
-            ],
-            0,
-        )
-    })
-    .await?
-    else {
-        return Ok(false);
-    };
-    let seconds = [86400u64, 604800, 3600][expiry];
-    let notes = vec![
-        format!("{count} teammates · control of this sandbox, its files, tool sign-in and connected access · {} hours", seconds / 3600),
-        "Existing active recipients also become reachable when the sharing gateway is enabled.".into(),
-        "Each connection command includes that teammate's password. Send it only to them.".into(),
-    ];
-    let Some(confirm) = share_prompt(id, || {
-        ui::select(
-            "Create teammate access?",
-            &notes,
-            &[
-                Choice::new(
-                    "Create links and connection commands",
-                    "enable password-protected sharing",
-                ),
-                Choice::new("Cancel", "keep the sandbox without adding teammates"),
-            ],
-            0,
-        )
-    })
-    .await?
-    else {
-        return Ok(false);
-    };
-    if confirm != 0 {
-        return Ok(false);
-    }
+    drop(steps);
+    let recipients: Vec<Recipient> = names
+        .into_iter()
+        .zip(secrets)
+        .map(|(username, password)| Recipient { username, password })
+        .collect();
+    let seconds = EXPIRY_SECONDS[expiry];
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
         + seconds;
-    let task = ui::task("Creating teammate accounts and sharing links");
-    let links = match create_recipients(id, &recipients, expires, |method, params| {
-        call(method, params)
-    })
-    .await
-    {
-        Ok(links) => {
-            task.done("Teammate access ready");
-            links
-        }
-        Err(error) => {
-            task.fail("Sharing could not finish");
-            return Err(error);
-        }
-    };
+    let links = finish_first(
+        id,
+        "Creating teammate accounts and sharing links",
+        ["Teammate access ready", "Sharing could not finish"],
+        create_recipients(id, &recipients, expires, |method, params| {
+            call(method, params)
+        }),
+    )
+    .await?;
     for (person, link) in recipients.iter().zip(&links) {
         ui::step(&format!("{} · {link}", person.username));
         for (label, powershell) in [("PowerShell 7", true), ("macOS / Linux", false)] {
@@ -393,22 +558,25 @@ pub(crate) async fn share(id: &str, name: &str) -> Result<bool, String> {
         }
     }
     ui::info("Teammates open a shell in this sandbox, then run the installed tool. Keep the owner computer, sandbox and gateway running.");
-    let Some(open) = share_prompt(id, || {
-        ui::select(
-            "Connection commands are ready to copy",
-            &[],
-            &[
-                Choice::new("Open tool", "continue in this terminal"),
-                Choice::new("Leave shared", "return to your PC terminal"),
-            ],
-            0,
-        )
+    // The access exists now; going back would create it again.
+    let open = step_prompt(id, || {
+        ui::without_back(|| {
+            ui::select(
+                "Connection commands are ready to copy",
+                &[],
+                &[
+                    Choice::new("Open tool", "continue in this terminal"),
+                    Choice::new("Leave shared", "return to your PC terminal"),
+                ],
+                0,
+            )
+        })
     })
-    .await?
-    else {
-        return Ok(false);
-    };
-    Ok(open == 0)
+    .await?;
+    if open != 0 {
+        return Err(ENDED.into());
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -581,6 +749,40 @@ mod tests {
         assert!(error.contains("share-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert!(error.contains("Retry only the gateway"));
         assert!(!error.contains("first password"));
+    }
+    #[tokio::test]
+    async fn wizard_steps_receive_back_untouched_and_a_cancelled_question_ends_the_launch() {
+        use crate::cli_ui as ui;
+        assert_eq!(step_prompt("env", || Ok::<_, String>(3)).await, Ok(3));
+        assert_eq!(step_prompt("env", || Err::<usize, _>(ui::BACK.to_owned())).await, Err(ui::BACK.into()));
+        // Esc without Back: the question shows it was cancelled, so the launch ends quietly.
+        assert_eq!(step_prompt("env", || Err::<usize, _>(ui::CANCELLED.to_owned())).await, Err(ENDED.into()));
+        assert_eq!(step_prompt("env", || Err::<usize, _>("broken".to_owned())).await, Err("broken".into()));
+    }
+    #[test]
+    fn sharing_questions_follow_the_teammate_count_and_going_back_keeps_answers() {
+        let order: Vec<Question> = (0..8).map(|step| question(step, 2)).collect();
+        assert_eq!(order, [
+            Question::Count,
+            Question::Username(0),
+            Question::Password(0),
+            Question::Username(1),
+            Question::Password(1),
+            Question::Expiry,
+            Question::Confirm,
+            Question::Done,
+        ]);
+        assert_eq!(question(3, 1), Question::Expiry);
+        let mut names = vec!["alice".to_owned(), "bob".to_owned()];
+        replace(&mut names, 0, "carol".to_owned());
+        assert_eq!(names, ["carol", "bob"], "answering again keeps later teammates");
+        replace(&mut names, 2, "dave".to_owned());
+        assert_eq!(names, ["carol", "bob", "dave"]);
+        assert_eq!(teammate_count("2", 5).unwrap(), "2");
+        for entry in ["0", "6", "two", ""] {
+            assert!(teammate_count(entry, 5).is_err(), "{entry}");
+        }
+        assert_eq!(EXPIRY_SECONDS.map(|seconds| seconds / 3600), [24, 168, 1]);
     }
     #[test]
     fn recipient_shell_loads_the_shared_tools_without_installing_or_starting_a_new_container() {

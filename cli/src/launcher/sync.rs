@@ -6,6 +6,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex,
+    },
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -26,9 +31,36 @@ pub fn sqlite_file(path: &Path) -> bool {
     fs::File::open(path).and_then(|mut f| f.read_exact(&mut header)).is_ok() && &header == b"SQLite format 3\0"
 }
 
-pub fn sqlite_files(root: &Path, files: &Manifest) -> BTreeSet<String> {
-    files.iter().filter(|(path, (size, _))| *size >= 16 && sqlite_file(&root.join(path)))
-        .map(|(path, _)| path.clone()).collect()
+/// The SQLite databases among `files`, which need a consistent snapshot instead of a copy.
+/// Only headers are read, several files at once, since opening every file of a large project
+/// takes a while. `checked(done, total)` hears how far it got and stops it with an error.
+pub fn sqlite_files(root: &Path, files: &Manifest, mut checked: impl FnMut(usize, usize) -> Result<(), String>) -> Result<BTreeSet<String>, String> {
+    let candidates: Vec<&String> = files.iter().filter(|(_, (size, _))| *size >= 16).map(|(path, _)| path).collect();
+    let (next, done, quit) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicBool::new(false));
+    let found = Mutex::new(BTreeSet::new());
+    std::thread::scope(|scope| {
+        for _ in 0..candidates.len().min(8) {
+            scope.spawn(|| {
+                while !quit.load(Ordering::Relaxed) {
+                    let Some(path) = candidates.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
+                    if sqlite_file(&root.join(path)) {
+                        found.lock().unwrap_or_else(|p| p.into_inner()).insert((*path).clone());
+                    }
+                    done.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        loop {
+            let finished = done.load(Ordering::Relaxed);
+            let result = checked(finished, candidates.len());
+            if result.is_err() || finished == candidates.len() {
+                quit.store(true, Ordering::Relaxed);
+                return result;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    })?;
+    Ok(found.into_inner().unwrap_or_else(|p| p.into_inner()))
 }
 
 pub fn database_member(path: &str, databases: &BTreeSet<String>) -> bool {
@@ -194,7 +226,9 @@ fn walk(
     out: &mut Manifest,
     links: &mut BTreeSet<String>,
     depth: usize,
+    stop: &AtomicBool,
 ) -> Result<(), String> {
+    stopped(stop)?;
     if depth > 128 {
         return Err("The project has folders nested more than 128 levels deep".into());
     }
@@ -228,7 +262,7 @@ fn walk(
         if linked(&meta) {
             links.insert(path);
         } else if meta.is_dir() {
-            walk(root, &path, filter, out, links, depth + 1)?;
+            walk(root, &path, filter, out, links, depth + 1, stop)?;
         } else if meta.is_file() {
             out.insert(path, stamp(&meta));
         }
@@ -240,18 +274,32 @@ pub fn scan(root: &Path, filter: &Filter) -> Result<Manifest, String> {
     Ok(scan_links(root, filter)?.0)
 }
 
+/// [`scan`] that ends with an error at the next folder once `stop` is set, so a stopped launch
+/// never waits for the whole walk.
+pub fn scan_until(root: &Path, filter: &Filter, stop: &AtomicBool) -> Result<Manifest, String> {
+    let mut manifest = Manifest::new();
+    walk(root, "", filter, &mut manifest, &mut BTreeSet::new(), 0, stop)?;
+    Ok(manifest)
+}
+
 /// The project's files, and the links found instead of files or folders.
 pub fn scan_links(root: &Path, filter: &Filter) -> Result<(Manifest, BTreeSet<String>), String> {
     let mut manifest = Manifest::new();
     let mut links = BTreeSet::new();
-    walk(root, "", filter, &mut manifest, &mut links, 0)?;
+    walk(root, "", filter, &mut manifest, &mut links, 0, &AtomicBool::new(false))?;
     Ok((manifest, links))
 }
 
 pub fn directories(root: &Path, filter: &Filter) -> Result<BTreeSet<String>, String> {
+    directories_until(root, filter, &AtomicBool::new(false))
+}
+
+/// [`directories`] that ends with [`STAGING_STOPPED`] once `stop` is set.
+fn directories_until(root: &Path, filter: &Filter, stop: &AtomicBool) -> Result<BTreeSet<String>, String> {
     let mut result = BTreeSet::new();
     let mut pending = vec![(root.to_path_buf(), String::new())];
     while let Some((folder, relative)) = pending.pop() {
+        stopped(stop)?;
         if relative.split('/').count() > 128 { return Err("Project directories are nested too deeply".into()); }
         let entries = match fs::read_dir(folder) { Ok(entries) => entries, Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue, Err(e) => return Err(e.to_string()) };
         for entry in entries {
@@ -379,36 +427,108 @@ pub struct Staged {
 }
 impl Staged { pub fn path(&self) -> &Path { self.folder.path() } }
 
-#[cfg(test)]
-pub fn stage(root: &Path, manifest: &Manifest) -> Result<Staged, String> {
-    stage_progress(root, manifest, |_| Ok(()))
+/// Why staging ended early: it was asked to stop.
+const STAGING_STOPPED: &str = "Project preparation cancelled; both copies kept";
+
+fn stopped(stop: &AtomicBool) -> Result<(), String> {
+    if stop.load(Ordering::Relaxed) { Err(STAGING_STOPPED.into()) } else { Ok(()) }
 }
 
-pub fn stage_progress(root: &Path, manifest: &Manifest, mut progress: impl FnMut(&serde_json::Value) -> Result<(), String>) -> Result<Staged, String> {
+/// The most a copy reads and writes at once: little enough to stop within moments.
+const CHUNK: usize = 4 * 1024 * 1024;
+
+/// Copies a file in chunks, so copying a large file can stop part way: `more` hears the size of
+/// each chunk written and returns false to stop there. Keeps the permissions and modification
+/// time, as fs::copy does. Returns whether the whole file was copied.
+pub fn copy_file(source: &Path, destination: &Path, mut more: impl FnMut(u64) -> bool) -> std::io::Result<bool> {
+    use std::io::{Read, Write};
+    let mut input = fs::File::open(source)?;
+    let metadata = input.metadata()?;
+    let mut output = fs::File::create(destination)?;
+    let mut buffer = vec![0; usize::try_from(metadata.len()).unwrap_or(CHUNK).clamp(64 * 1024, CHUNK)];
+    loop {
+        let read = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        output.write_all(&buffer[..read])?;
+        if !more(read as u64) {
+            return Ok(false);
+        }
+    }
+    if let Ok(modified) = metadata.modified() {
+        let _ = output.set_modified(modified);
+    }
+    output.set_permissions(metadata.permissions())?;
+    Ok(true)
+}
+
+#[cfg(test)]
+pub fn stage(root: &Path, manifest: &Manifest) -> Result<Staged, String> {
+    stage_progress(root, manifest, &AtomicBool::new(false), |_| Ok(()))
+}
+
+/// Stages the project for its first copy, reporting progress (at most every 100 ms) to
+/// `progress`, which can stop it with an error. Setting `stop` ends it within moments, even in
+/// the middle of a large file or a database snapshot.
+pub fn stage_progress(root: &Path, manifest: &Manifest, stop: &AtomicBool, mut progress: impl FnMut(&serde_json::Value) -> Result<(), String>) -> Result<Staged, String> {
     let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
     // The outer folder has no .yougoriignore: the engine must not re-filter the
     // launcher's manifest using the project's own ignore file.
     let target = staging.path().join("project/workspace");
     fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-    let databases = sqlite_files(root, manifest);
-    for directory in directories(root, &Filter::load(root, false)?)? {
+    let databases = sqlite_files(root, manifest, |done, total| {
+        stopped(stop)?;
+        progress(&serde_json::json!({"phase":"inspect","done":done,"total":total}))
+    })?;
+    let total = manifest.iter().filter(|(path, _)| !database_member(path, &databases))
+        .fold(0u64, |total, (_, (size, _))| total.saturating_add(*size));
+    // Creating the folders of a large project takes a moment; the files step shows meanwhile.
+    progress(&serde_json::json!({"phase":"files","done":0,"total":manifest.len(),"bytes":0,"totalBytes":total}))?;
+    for directory in directories_until(root, &Filter::load(root, false)?, stop)? {
+        stopped(stop)?;
         fs::create_dir_all(target.join(directory)).map_err(|e| e.to_string())?;
     }
-    for (index, path) in manifest.keys().enumerate() {
-        if index % 64 == 0 { progress(&serde_json::json!({"phase":"files","done":index,"total":manifest.len(),"path":path}))?; }
+    let mut bytes = 0u64;
+    let mut reported: Option<Instant> = None;
+    let mut due = move || {
+        let now = Instant::now();
+        let due = reported.is_none_or(|at| now - at >= Duration::from_millis(100));
+        if due { reported = Some(now); }
+        due
+    };
+    for (index, (path, (size, _))) in manifest.iter().enumerate() {
+        stopped(stop)?;
+        let measurement = |bytes: u64| serde_json::json!({"phase":"files","done":index,"total":manifest.len(),"bytes":bytes,"totalBytes":total,"path":path});
+        if due() { progress(&measurement(bytes))?; }
         if database_member(path, &databases) { continue; }
         let source = root.join(path);
         let destination: PathBuf = target.join(path);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        if fs::hard_link(&source, &destination).is_err() {
-            fs::copy(&source, &destination).map_err(|e| format!("Cannot copy {path}: {e}"))?;
+        if fs::hard_link(&source, &destination).is_ok() {
+            bytes = bytes.saturating_add(*size);
+            continue;
+        }
+        let mut failure = None;
+        let whole = copy_file(&source, &destination, |chunk| {
+            bytes = bytes.saturating_add(chunk);
+            if stop.load(Ordering::Relaxed) { return false; }
+            if due() {
+                if let Err(error) = progress(&measurement(bytes)) { failure = Some(error); return false; }
+            }
+            true
+        }).map_err(|e| format!("Cannot copy {path}: {e}"))?;
+        if !whole {
+            return Err(failure.unwrap_or_else(|| STAGING_STOPPED.into()));
         }
     }
-    progress(&serde_json::json!({"phase":"files","done":manifest.len(),"total":manifest.len()}))?;
+    progress(&serde_json::json!({"phase":"files","done":manifest.len(),"total":manifest.len(),"bytes":total,"totalBytes":total}))?;
     let baselines = if databases.is_empty() { BTreeMap::new() } else {
-        use std::{io::{BufRead, BufReader, Write}, process::{Command, Stdio}};
+        use std::{io::{BufRead, BufReader, Write}, process::{Command, Stdio}, sync::mpsc::RecvTimeoutError};
         let script = staging.path().join("snapshot.cjs");
         let helper = staging.path().join("sqlite.cjs");
         fs::write(&script, include_bytes!("assets/sqlite-snapshot.cjs")).map_err(|e| e.to_string())?;
@@ -424,9 +544,24 @@ pub fn stage_progress(root: &Path, manifest: &Manifest, mut progress: impl FnMut
             input.write_all(&serde_json::to_vec(&databases).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             drop(input);
             let output = child.stdout.take().ok_or("Missing snapshot progress")?;
-            for line in BufReader::new(output).lines() {
-                let measurement = serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-                progress(&measurement)?;
+            // Lines are read on their own thread, so a stop ends the snapshot at once
+            // instead of after its next progress line.
+            let (send, lines) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in BufReader::new(output).lines() {
+                    if send.send(line).is_err() { break; }
+                }
+            });
+            loop {
+                stopped(stop)?;
+                match lines.recv_timeout(Duration::from_millis(50)) {
+                    Ok(line) => {
+                        let measurement = serde_json::from_str(&line.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                        progress(&measurement)?;
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
             }
             let status = child.wait().map_err(|e| e.to_string())?;
             if !status.success() {
@@ -678,5 +813,81 @@ mod tests {
     fn paths_and_operations_are_portable() {
         assert_eq!(write_op("a b/c.js", b"hi"), "W YSBiL2MuanM= aGk=\n");
         assert_eq!(delete_op("x"), "D eA==\n");
+    }
+
+    #[test]
+    fn large_copies_report_their_bytes_and_stop_part_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("large.bin");
+        let data: Vec<u8> = (0..CHUNK * 2 + 123).map(|i| (i % 251) as u8).collect();
+        fs::write(&source, &data).unwrap();
+        let whole = dir.path().join("whole.bin");
+        let mut reported = 0;
+        assert!(copy_file(&source, &whole, |chunk| { reported += chunk; true }).unwrap());
+        assert_eq!(reported, data.len() as u64);
+        assert_eq!(fs::read(&whole).unwrap(), data);
+        assert_eq!(fs::metadata(&whole).unwrap().modified().unwrap(), fs::metadata(&source).unwrap().modified().unwrap());
+        // Stopping after the first chunk leaves the rest of the file uncopied.
+        let partial = dir.path().join("partial.bin");
+        let mut chunks = 0;
+        assert!(!copy_file(&source, &partial, |_| { chunks += 1; false }).unwrap());
+        assert_eq!(chunks, 1);
+        assert!(fs::metadata(&partial).unwrap().len() < data.len() as u64);
+    }
+
+    #[test]
+    fn staging_reports_bytes_and_stops_when_asked() {
+        let root = tempfile::tempdir().unwrap();
+        for (path, size) in [("a.txt", 10), ("src/b.js", 20), ("data/c.bin", 30)] {
+            let file = root.path().join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, vec![b'x'; size]).unwrap();
+        }
+        let manifest = scan(root.path(), &Filter::load(root.path(), false).unwrap()).unwrap();
+        let mut reports = Vec::new();
+        let staged = stage_progress(root.path(), &manifest, &AtomicBool::new(false), |progress| {
+            reports.push(progress.clone());
+            Ok(())
+        }).unwrap();
+        assert_eq!(reports[0]["phase"], "inspect");
+        // The files step shows before the folders are created.
+        let first = reports.iter().find(|report| report["phase"] == "files").unwrap();
+        assert_eq!((first["bytes"].as_u64(), first["totalBytes"].as_u64()), (Some(0), Some(60)));
+        let last = reports.last().unwrap();
+        assert_eq!(last["phase"], "files");
+        assert_eq!((last["bytes"].as_u64(), last["totalBytes"].as_u64()), (Some(60), Some(60)));
+        assert_eq!(fs::read(staged.path().join("project/workspace/src/b.js")).unwrap().len(), 20);
+        // A stop during the copy ends staging with nothing returned.
+        let stop = AtomicBool::new(false);
+        let stopped = stage_progress(root.path(), &manifest, &stop, |progress| {
+            if progress["phase"] == "files" { stop.store(true, Ordering::Relaxed); }
+            Ok(())
+        });
+        assert_eq!(stopped.err().as_deref(), Some(STAGING_STOPPED));
+        let stop = AtomicBool::new(true);
+        assert_eq!(stage_progress(root.path(), &manifest, &stop, |_| Ok(())).err().as_deref(), Some(STAGING_STOPPED));
+        // The scan before staging stops too, at its next folder.
+        let filter = Filter::load(root.path(), false).unwrap();
+        assert_eq!(scan_until(root.path(), &filter, &AtomicBool::new(false)).unwrap(), manifest);
+        assert_eq!(scan_until(root.path(), &filter, &stop).err().as_deref(), Some(STAGING_STOPPED));
+    }
+
+    #[test]
+    fn database_headers_are_read_in_parallel_and_the_search_can_stop() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("data")).unwrap();
+        for i in 0..40 {
+            fs::write(root.path().join(format!("file-{i}.txt")), "an ordinary text file").unwrap();
+        }
+        let mut database = b"SQLite format 3\0".to_vec();
+        database.extend([0; 84]);
+        fs::write(root.path().join("data/app.db"), database).unwrap();
+        fs::write(root.path().join("tiny"), "SQLite").unwrap();
+        let manifest = scan(root.path(), &Filter::load(root.path(), false).unwrap()).unwrap();
+        let mut seen = (0, 0);
+        let found = sqlite_files(root.path(), &manifest, |done, total| { seen = (done, total); Ok(()) }).unwrap();
+        assert_eq!(found.into_iter().collect::<Vec<_>>(), ["data/app.db"]);
+        assert_eq!(seen, (41, 41), "every file of 16 bytes or more is checked once");
+        assert_eq!(sqlite_files(root.path(), &manifest, |_, _| Err("stopped".into())), Err("stopped".into()));
     }
 }

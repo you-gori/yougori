@@ -31,6 +31,7 @@ impl RuntimeManager {
 
     async fn shutdown_local_report(&self) -> Vec<Value> {
         let root = self.data_root.display().to_string();
+        let native_models = self.shutdown_native_models().await;
         let cuda = async {
             let owned = self.cuda.owns_runtime().await;
             let result = self.cuda.shutdown().await;
@@ -75,7 +76,7 @@ impl RuntimeManager {
             futures_util::future::join_all(processes.into_iter().map(|(id, process)| self.shutdown_vm_report(id, process))).await
         };
         let (cuda, oci, vms) = tokio::join!(cuda, oci, vms);
-        let mut results = vec![cuda];
+        let mut results = vec![cuda, outcome("nativeModel", &root, None, if native_models.is_ok() {"stopped"} else {"failed"}, native_models.err())];
         results.extend(oci);
         results.extend(vms);
         results

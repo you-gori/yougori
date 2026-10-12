@@ -150,7 +150,8 @@ test("packaged CUDA update stages every helper from canonical paths and reports 
     const distro = `Yougori-CUDA-${digest.slice(0, 12)}`
     const harness = join(root, "stage.ps1")
     // Stub external WSL, registry and download calls. The real install script
-    // stages real files and must stop before launching a distribution.
+    // stages real files, archives them with Windows' own tar and must stop
+    // before launching a distribution.
     await writeFile(harness, String.raw`param([string]$Script, [string]$DataPath, [string]$Agent, [string]$Assets, [string]$Distro, [switch]$AllowRecovery)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -173,7 +174,12 @@ function global:Get-ItemProperty {
     param([Parameter(ValueFromPipeline=$true)]$Entry)
     process { $Entry }
 }
-function global:tar.exe {
+# A PATH-resolved tar can be Git's GNU tar, which reads C: as a remote host.
+function global:tar { throw 'PATH-resolved tar' }
+function global:tar.exe { throw 'PATH-resolved tar' }
+$global:WindowsTar = Get-Command -CommandType Application (Join-Path $env:SystemRoot 'System32\tar.exe')
+New-Item -Path Function: -Name (Join-Path $env:SystemRoot 'System32\tar.exe') -Force -Value {
+    $bundle = $args[1]
     $staging = $args[3]
     foreach ($name in @('yougori-agent', 'yougori-mount-helper', 'yougori-cuda-probe')) {
         if ([IO.File]::ReadAllText((Join-Path $staging ('usr/local/sbin/' + $name))) -cne $name) { throw ('Incorrect staged helper: ' + $name) }
@@ -183,9 +189,15 @@ function global:tar.exe {
     }
     if (!(Test-Path -LiteralPath (Join-Path $staging 'usr/local/sbin/yougori-cuda-install-oci.py'))) { throw 'Missing verified vendor installer' }
     if (!(Test-Path -LiteralPath (Join-Path $staging 'etc/yougori-cuda-runtime'))) { throw 'Missing ownership marker' }
+    & $global:WindowsTar @args
+    if ($LASTEXITCODE -ne 0) { throw 'Windows tar could not archive the staged payload' }
+    $root = $staging.TrimEnd('\') + '\'
+    $staged = @(foreach ($tree in @('etc', 'usr')) { [IO.Directory]::GetFiles($root + $tree, '*', 'AllDirectories') | ForEach-Object { $_.Substring($root.Length).Replace('\', '/') } }) | Sort-Object
+    $archived = @(& $global:WindowsTar -tf $bundle | Where-Object { !$_.EndsWith('/') }) | Sort-Object
+    if ($LASTEXITCODE -ne 0 -or ($archived -join '|') -cne ($staged -join '|')) { throw 'The payload archive does not match the staged files' }
     [IO.File]::WriteAllText((Join-Path $global:FixtureData 'staging-passed'), 'all helpers staged')
     throw 'STAGING_COMPLETE: simulated archive failure'
-}
+} | Out-Null
 & $Script -DataDirectory $DataPath -AgentPath $Agent -AssetsDirectory $Assets
 exit $LASTEXITCODE
 `)
@@ -193,6 +205,7 @@ exit $LASTEXITCODE
       join(assets, "install.ps1"), extended(data), extended(join(payload, "yougori-agent")), extended(assets), distro], { encoding: "utf8", windowsHide: true, timeout: powershellTimeoutMs })
     assert.ifError(result.error)
     assert.equal(result.status, 1, result.stderr)
+    assert.doesNotMatch(result.stdout, /PATH-resolved tar/)
     assert.match(result.stdout, /YOUGORI_CUDA_SETUP_ERROR: STAGING_COMPLETE: simulated archive failure/)
     assert.equal(await readFile(join(data, "staging-passed"), "utf8"), "all helpers staged")
     assert.equal(await readFile(join(data, "installed.json"), "utf8"), "existing manifest must survive")

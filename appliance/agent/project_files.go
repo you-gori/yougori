@@ -182,13 +182,13 @@ func (s *server) activateProjectFiles(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	rootPath := "/"
-	if !s.microVM {
-		pid, err := containerPID(ctx, request.ID)
-		if err != nil {
-			writeError(w, 409, "Start the owned project before activating its verified files")
-			return
-		}
-		rootPath = "/proc/" + strconv.Itoa(pid) + "/root"
+	process, err := s.filesProcess(ctx, request.ID)
+	if err != nil {
+		writeError(w, 409, "Start the owned project before activating its verified files")
+		return
+	}
+	if process != "" {
+		rootPath = process + "/root"
 	}
 	root, err := unix.Open(rootPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {

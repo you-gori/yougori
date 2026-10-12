@@ -139,7 +139,7 @@ yougori app quit --yes
 - `yougori` (or `yougori cli`) opens the menu: Overview, Run a project, Create an environment, Manage an environment, Models, Neocloud/RunPod, MCP Vault, Snapshots and backups, Connections and sharing, Set up my domains, Yougori settings and tools, Command reference, Exit (workloads keep running). It needs an ANSI terminal (`TERM=dumb` is refused).
 - In a project folder it may first offer to run the project, and it quietly adds project shortcuts (package.json scripts `yougori`, `yougori-change`, `yougori-cloud`, or a `yougori` file for Python projects). Do not run bare `yougori` in a user's repository unless they want that.
 - Manage an environment → Open terminal here uses the current terminal; creation offers the same for containers, GPU containers and built-in microVMs. Full VMs use Open environment window for their console.
-- Keys: lists use Up/Down (also Tab, j/k, Home/End), Enter selects, Esc or Ctrl+C cancels; text inputs take Enter (empty keeps the default) and Ctrl+U clears; sliders use Left/Right (Shift for steps of 10), PgUp/PgDn, typed digits, and d resets.
+- Keys: lists use Up/Down (also Tab, j/k, Home/End), Enter selects, Esc or Ctrl+C cancels; text inputs take Enter (empty keeps the default) and Ctrl+U clears; sliders use Left/Right (Shift for steps of 10), PgUp/PgDn, typed digits, and d resets. In setup questions (launch, model run, `start bounty`, tool sandboxes) every question after the first adds a Back row, and Esc goes back to the previous question with its answer kept; Ctrl+C still cancels. Keys typed while a step is working are discarded, so they never answer the next question. Every wait shows a spinner; Ctrl+C stops waiting.
 
 ## Environment variables
 
@@ -464,9 +464,10 @@ python yougori [--change]
 - First run (and `--change`): drive (first run only), resources (**Recommended**: 2 CPU, 4 GB, storage twice the folder size; or **Customize**: container or GPU container, sliders, dev-server port), access (This computer, Local network, Quick public link, Your own domain with a tunnel token, or a saved domain), the run command, whether to copy `.env` files into the container (default: keep them on this computer), sync timing and direction. Settings and the environment ID live in `~/.yougori/launch`, keyed by the folder.
 - Code is copied into `/workspace`, never mounted: databases, uploads, snapshots, host dependencies, `.git` and build output included; `.gitignore` and `.yougoriignore` are ignored here; only `.env` files kept on the PC and sync protocol files are left out; links are not followed. Dependencies install for Linux. New containers mount only `~/.yougori/cache/packages` (shared by all launch projects at `/yougori/cache`; never keep private files there).
 - Sync: **Continuously** (recommended below 2.5 GB) or **On demand** (press `y`: Sync to container, or with two-way enabled Sync to this computer / Sync both ways). Both sync once at launch. Two-way sync never exchanges `.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv` or `__pycache__`; names this computer cannot store and unresolved letter-case clashes are skipped with a warning. The conflict choice (This computer wins, Container wins, Keep both) covers files, folders, deletions and SQLite records; SQLite databases sync record by record (Node.js 22.16 or newer on the PC). Dependency or lockfile changes reinstall dependencies and restart the dev server.
+- Ctrl+C before the dev server runs (engine start, container start, copying or syncing files, installing, publishing) stops the launch: an in-progress copy is cancelled in the engine, then the container is stopped. A second Ctrl+C quits at once and leaves running work to the engine (`yougori ps`).
 - While it runs, logs scroll normally and keys act when the footer is visible: `t` terminal window, `o` open in browser, `p` open the public link, `u` list URLs, `r` restart the dev server, `y` sync, `s` usage details, `c` clear, `q` or Ctrl+C stop. Quitting stops the container and keeps its disk (a later `yougori start` runs the dev server again).
 - The first launch adds `yougori`, `yougori-change` and `yougori-cloud` scripts to package.json (or a `yougori` file for Python), keeping existing scripts. `npm run yougori -- --change` also works. One launcher per folder can run at a time. If the required runtime image changes, launch stops with an error instead of replacing the disk.
-- Access: "This computer" stays on 127.0.0.1. "Local network" also accepts devices on your Wi-Fi or LAN, and so does the local address of a public link or domain (except with `--cloud`). Public links and domains go through a proxy in the container (port 43119) that handles host checks and hot reload. Public URLs expose a development app: choose them deliberately.
+- Access: "This computer" stays on 127.0.0.1. "Local network" also accepts devices on your Wi-Fi or LAN, and so does the local address of a public link or domain (except with `--cloud`). Switching to This computer or Local network turns off the project's earlier public link or domain. Public links and domains go through a proxy in the container (port 43119) that handles host checks and hot reload. Public URLs expose a development app: choose them deliberately.
 - `--cloud` runs the project on a connected cloud server whose user can run Docker, in a hardened container, with the same sync choices.
 
 ## Declarative projects
@@ -582,6 +583,14 @@ Health checks support GET, HEAD and POST; JSON bodies need POST.
 # Models and the Yougori Network
 
 Contents: Run a model (agents) · Interactive setup and chat (people) · Scripted chat · API access, usage and history · Compatibility, runners and architecture support · Memory optimizer · Decision models · Share on the Yougori Network · Published models · Neocloud models · Troubleshooting
+
+Native Mac development builds: `yougori model compute` probes the bundled native
+runtime and Metal availability. `model run REPO --backend auto|metal|cpu|cuda`
+selects compute; an explicit backend creates a separate model environment.
+On macOS, auto uses native Metal when exposed, otherwise native CPU. These paths
+require GGUF weights; other native Mac model formats and ARM64 guest execution
+are not implemented. `--memory GB` sets the model memory allocation. Grid sharing
+uses the same authenticated model API. Native Mac acceptance is still pending.
 
 ## Run a model (agents)
 
@@ -856,7 +865,7 @@ yougori neocloud delete ENV_ID --confirmation EXACT_NAME --yes
 
 # Commands, logs, terminals and automation
 
-Contents: Run commands · Bounded execution · Logs · Guest terminals · Host terminal and agent setup · Raw API and execution · Personal Vault MCP · Troubleshooting
+Contents: Run commands · Bounded execution · Logs · Guest terminals · Host terminal and agent setup · Raw API and execution · Personal Vault MCP · Monitoring, audit and lockdown · Troubleshooting
 
 ## Run commands
 
@@ -954,6 +963,22 @@ yougori vault help
 - `vault mcp` is a stdio MCP bridge (JSON-RPC, not the CLI envelope) to the protected vault configured in the desktop app. The remote form uses a pinned TLS device identity; it is separate from the Cloudflare HTTPS /mcp connector URL. `vault identity` writes a new private identity file and, when piped, returns only its path, certificate fingerprint and `canApprove:false`. Keep identity files private.
 - Vault tools may return selected personal information, run supported provider actions, or share a credential only after its separate approval in the app. A shared credential is visible to the receiving agent; never claim it stays secret from that agent.
 
+## Monitoring, audit and lockdown
+
+```text
+yougori monitor [ENV] [--once]
+yougori audit [ENV] [--since TIME] [--limit N] [--verify]
+yougori lockdown ENV|--all --yes
+yougori unlock ENV|--all --yes
+```
+
+- The engine keeps a tamper-evident audit log on this PC, outside every guest: environment create/start/stop/pause/delete/reset/restore, exec and terminal sessions opened and closed (program name, length and a salted hash only), file copies in and out (paths and byte counts), tool credential imports, PC-folder, remote, LAN and download-link sharing and their revocations, port publications, Internet and GPU changes, blocked network attempts, alerts and kill-switch actions, each with the time, environment and who acted (`cli`, `app`, `remote`, `lan`, `policy`, `engine`). It never records secrets, tokens, prompts, file contents or output. Each record carries the previous record's SHA-256; `--verify` checks every link, rotation and the head anchor and exits 1 when the log was edited or truncated. The log keeps 16 MiB and rotates; the same Windows user can still rewrite it, so it is evidence, not a remote copy.
+- `audit` lists the newest records oldest first: `--since` takes `2026-10-11T08:00:00Z`, a UTC date (`2026-10-11`) or `90s`/`30m`/`2h`/`7d`; `--limit` 1–1000 (default 50). Give a deleted environment by its ID.
+- `monitor` (`--once` or piped: one JSON snapshot) shows per environment: blocked attempts in the last 10 minutes to reach PC ports, link-local/metadata addresses (169.254.169.254) or the Internet while it is off; new outbound connections per minute; data sent to the Internet in the last hour; CPU and memory against the allocation; alerts and containment. MicroVMs (including tool sandboxes) and VMs are measured exactly by the host network filter; standard and GPU containers show CPU and memory (container network counters and process-limit hits need a guest agent update, shown as `—`). `status` and `top` add a SECURITY column.
+- Kill switches act only on clear policy violations. Scanning PC ports (24 distinct ports within 60 s) or link-local/metadata addresses (12 addresses or 120 attempts within 60 s) cuts that environment's Internet; smaller bursts only alert (Windows notification, `monitor`, `status`). Connection floods, upload volume and sustained CPU/memory saturation only alert. Nothing automatic ever stops, deletes, resets or restarts an environment; shells, file writes, builds, downloads and package installs never trigger.
+- `lockdown ENV --yes` cuts Internet and pauses; stopped environments stay offline. `--all` covers every local container, GPU container, microVM and VM. While locked down or cut off by a kill switch, starting, resuming, turning Internet on, publishing ports, sharing PC folders and creating remote, LAN or download links are refused. `unlock ENV --yes` restores exactly what containment changed and holds automatic kill switches for that environment for 30 minutes. Both are safe to repeat; review `yougori audit ENV` first and never unlock to finish a task without the user.
+- Policies are `securityMonitoring` in `yougori settings get`; change them with `settings patch` and `{"patch":{"securityMonitoring":{...}},"expectedRevision":N}`. Fields: `enabled`, `notifications`, `hostPortProbe` and `metadataProbe` (default `cutInternet`), `pidsLimit`, `connectionRate`, `egressVolume`, `cpuSaturation` (default `alert`) and `memorySaturation` (`off` or `alert`). Values are `off`, `alert`, `cutInternet` or `pause`; `pause` (after a cut, if the violation continues) is opt-in. Omitted fields take their defaults; policy changes are audited.
+
 ## Troubleshooting
 
 | Message | Cause and fix |
@@ -968,6 +993,8 @@ yougori vault help
 | A local Personal Vault requires Windows / Personal Vault needs the Yougori app | The vault broker runs in the Windows desktop app; engine-only installs cannot approve requests (they expire after 120 s). |
 | Yougori is running as administrator… | Host shells are refused while the app runs elevated: restart it normally. |
 | Close a host terminal first (maximum four sessions) | Four host shells exist (dashboard and CLI together): close one. |
+| ENV is locked down / internet cut (…) since … | A lockdown or kill switch contains it: review `yougori audit ENV` and `yougori monitor ENV` with the user, then `yougori unlock ENV --yes`. |
+| `audit --verify` reports problems | Records were edited, removed or truncated outside Yougori: keep a copy of the log folder it names; new records still chain on. |
 
 # AI tool sandboxes and teammate sharing
 
@@ -991,14 +1018,14 @@ yougori claude -- --continue
 `yougori codex`, `claude`, `gemini`, `ollama`, `opencode`, `kilo` and `openclaw` create a sandbox, install the tool if missing, and attach it to the invoking terminal in `/workspace`. Later calls reuse that tool's sandbox and sign-in.
 
 - Isolation: each new sandbox is its own microVM (own kernel, minimal virtual hardware) that runs the tool in a hardened container from Ubuntu 24.04 pinned by digest (`ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55`). `--isolation container` opts out: a container in Yougori's shared VM, sharing that VM's kernel with other containers. `--isolation microvm` is the default. `--gpu nvidia` and `--mount` need `--isolation container` and fail otherwise; nothing switches to a container automatically. MicroVM storage is at least 6 GB.
-- MicroVM limits: no GPU, no PC folders, and no copied sign-in yet (the credential question is skipped with a notice; sign in inside the tool). `yougori cp` reaches a microVM's outer guest, not the tool's files. Public links, `--share` and the stop menu work the same.
+- MicroVM limits: no GPU and no `--mount`. `yougori exec` runs in the tool's container, and copied sign-in, `yougori cp` in both directions and folders shared with teammates (Ctrl+G) reach its files, as in a container. PC folders added later (`share add`) and connection folders are mounted in that container under `/yougori/shared`. Public links, `--share` and the stop menu work the same.
 - Options: `--new` (another sandbox), `--name NAME`, `--isolation microvm|container`, `--image IMAGE` (default the pinned Ubuntu 24.04; either isolation), `--cpu CORES`, `--memory GB` (default 4), `--storage GB` (default 20), `--storage-drive PATH`, `--gpu nvidia`, `--mount PC_FOLDER:/guest/path[:ro]` (repeatable; grants PC access), `--share`, `--no-credentials`, `--no-public`, `--dry-run`. `--environment ENV` (ID or name) uses a chosen local container or built-in microVM, keeps its isolation, and cannot be combined with creation options or `--isolation`. Arguments after `--` go to the tool (at most 4096 bytes). `TOOL --help` works only on its own.
 - Reuse: without `--new`, the newest matching sandbox with the same isolation is reused (running ones first) and keeps its saved resources; existing sandboxes keep their isolation and are never converted. When only a container sandbox exists, the default creates a microVM sandbox and prints how to reconnect to the container (`--isolation container`). Giving creation options while a match exists fails ("Creation options require --new or an unused --name"). New sandboxes are named `codex`, `codex-2`, …
 - New sandboxes first show CPU and RAM sliders (defaults 2 CPU and 4 GB, capped by the host); `--cpu` and `--memory` skip them. Cancelling creates nothing.
-- Every launch asks whether to put a project on the internet now (default Not yet), and container sandboxes also ask whether to copy this PC's sign-in for the tool (default No; it copies only the tool's own credential file, such as `~/.codex/auth.json` or `~/.claude/.credentials.json`). `--no-credentials` skips the sign-in question (nothing is copied) and `--no-public` the internet one (access stays as it is). No host folders or credentials are copied otherwise. The tool itself runs attached to the terminal, so a person must be there.
-- Installation runs in a separate quiet terminal with a progress bar; typing during setup is discarded; failures show a short error summary. The CLI then prints `Reconnect: yougori TOOL --environment ID` and opens the tool. A non-zero tool exit is reported as an error.
-- Ctrl+] closes only this terminal session; the sandbox and its files stay (the attached program may stop). Ctrl+C opens the sandbox stop menu (Cancel / Stop sandbox / Stop and delete) for container and microVM sandboxes; Cancel returns to the tool. Esc during the questions leaves without opening the tool.
-- `--dry-run` needs no terminal or engine and changes nothing. It reports `{dryRun, tool, isolation, request, environment, reuse, arguments, share, gpuChoiceRequired, resourceChoicesRequired, publicAccessPrompt, credentialImportPrompt}`; `isolation` is `microvm`, `container`, or null with `--environment`, and `credentialImportPrompt` is false for microVMs.
+- Every launch, microVM or container, new or reused, with or without `--share`, asks whether to copy this PC's sign-in for the tool ("Use your Claude Code sign-in from this computer?"; default No; OpenClaw offers only No; it copies only the tool's own credential file, such as `~/.codex/auth.json` or `~/.claude/.credentials.json`) and whether to put a project on the internet now (default Not yet). `--no-credentials` skips the sign-in question (nothing is copied) and `--no-public` the internet one (access stays as it is). No host folders or credentials are copied otherwise. The tool itself runs attached to the terminal, so a person must be there.
+- Installation runs in a separate quiet terminal with a progress bar; typing during setup is discarded; failures show a short error summary. The CLI then prints `Reconnect: yougori TOOL` when the plain shortcut reuses that sandbox, otherwise `Reconnect: yougori TOOL --environment NAME` (the ID when the name is ambiguous or needs quoting), and opens the tool. A non-zero tool exit is reported as an error.
+- Ctrl+] closes only this terminal session; the sandbox and its files stay (the attached program may stop). Ctrl+C opens the sandbox stop menu (Cancel / Stop sandbox / Stop and delete) for container and microVM sandboxes; Cancel returns to the tool. Esc on the first question leaves without opening the tool; later questions offer Back (Esc or the Back row). Engine start, loading state and starting or creating the sandbox show spinners, and Ctrl+C there ends the command. Ctrl+C during a sign-in copy cancels the copy first, then opens the stop menu.
+- `--dry-run` needs no terminal or engine and changes nothing. It reports `{dryRun, tool, isolation, request, environment, reuse, arguments, share, gpuChoiceRequired, resourceChoicesRequired, publicAccessPrompt, credentialImportPrompt}`; `isolation` is `microvm`, `container`, or null with `--environment`, and `credentialImportPrompt` is false only with `--no-credentials`.
 - OpenClaw starts its interactive `onboard`. Tool sandboxes are ordinary environments: `yougori ps` (`--type microvm` lists microVM sandboxes), `exec`, `stop` and `rm` work on them.
 
 ## Ollama
@@ -1064,7 +1091,7 @@ Current engines and guest agents stream terminal bytes over persistent connectio
 | Enable this sandbox's Internet access before launching a tool | `--environment` needs a local, running or stopped container or built-in microVM with Internet on: `yougori env internet ENV_ID --enabled true`. |
 | Tool shortcuts require a local container or a microVM with Yougori's built-in guest | `--environment` named a VM, cloud server, shared node or custom microVM; choose a local tool sandbox. |
 | --gpu needs --isolation container / --mount needs --isolation container | GPUs and PC folders work only in containers, which share Yougori's VM kernel: add `--isolation container` only if the user accepts that, or drop the option. |
-| Copying this computer's sign-in into a microVM sandbox is not supported yet | Sign in inside the tool, or use `--isolation container` for a sandbox that can receive copied credentials. |
+| Could not transfer credential files | Nothing was printed. Retry, or answer No and sign in inside the tool. The launch continues without the copy. For a microVM sandbox the guest agent must support copies into the tool's files: update Yougori (CLI and engine together), then restart the sandbox. |
 | This Yougori engine prepared the … installer outside the sandbox | The engine predates microVM tool sandboxes: update Yougori (CLI and engine together), then retry; the sandbox is kept. |
 | yougori connect requires an interactive terminal | Scripts use `yougori remote connect --file -`. |
 | Invalid credentials or unavailable share | Wrong username or password, or the owner revoked or stopped the share. |
@@ -1080,6 +1107,8 @@ Contents: What it is · Rules · Set up a worker · Scripted setup · States and
 ## What Swarm Mining is
 
 Swarm Mining turns this PC into a bug-bounty hunter for companies that publish authorized research bounties on yougori.com. `yougori start bounty` prepares a **worker**: a private local model (a GGUF checkpoint run by llama.cpp) plus an OpenCode agent in an isolated sandbox. The worker waits for offers. After the user accepts one, it investigates the company's source in an offline test sandbox and reports evidence. Publishers promise USDC rewards and pay winners directly.
+
+Custom or uncensored GGUF checkpoints must pass the same tool-calling check; labels guarantee neither research quality nor a report. Approved reads and managed bounty tools need no OpenCode approval. A turn allows 12 model steps and 15 minutes; an approved check five minutes, with lease renewal and authorization checks. The accepted budget can end work earlier.
 
 - Waiting generates no agent tokens and accepts nothing. Work starts only after the user's explicit acceptance.
 - The worker's model API stays private: never add Network sharing flags (`--now`, `--nowfree`) or a tunnel to it.
@@ -1098,17 +1127,22 @@ Swarm Mining turns this PC into a bug-bounty hunter for companies that publish a
 yougori login
 yougori model preflight hf.co/OWNER/MODEL-GGUF --quant Q4_K_M
 yougori start bounty
+yougori start bounty --change
 yougori start bounty --model hf.co/OWNER/MODEL-GGUF --quant Q4_K_M
 ```
 
 1. Sign in once (`yougori login`; a person approves the device code in the browser).
-2. Pick a Hugging Face **GGUF** model that supports agent tool calling. `model preflight` must report the `yougori-llama-cpp` runner; other formats pass the first check but fail during preparation.
-3. `start bounty` asks for the model (`hf.co/OWNER/MODEL`, a huggingface.co URL or `OWNER/MODEL`; `yg/` models are not accepted), checks the model and hardware, and offers **Sign in to Hugging Face** when the repository needs access.
-4. Quick setup is one screen: **Prepare** (default), **Customize** or **Cancel**. Recommended: 4 CPU, 8 GB memory, the writable fixed drive with the most free space, the NVIDIA GPU only when this PC passes the CUDA checks of `yougori gpu status` (otherwise CPU, with a note to run that command; AMD and Intel graphics always get CPU), a 20 GB workspace, the model kept loaded, name "Bounty worker". Giving any of `--gpu --cpu --memory --storage-drive --workspace-quota --name --release-memory` skips this screen. Customize preselects the same GPU or CPU choice and ends on a confirm screen where Cancel is the default.
-5. Preparation runs: Ctrl+C offers Cancel / Stop preparation / Back to terminal; Q, Esc or Ctrl+] detach while it continues in the engine (the CLI then prints "Cancelled. Nothing else was changed." although preparation goes on).
-6. When the worker is live, Yougori offers a practice bounty, then opens the live screen.
+2. Pick a Hugging Face **GGUF** repository (llama.cpp format) whose model supports agent tool calling. `model preflight` must report the `yougori-llama-cpp` runner; interactive setup refuses anything else before downloading.
+3. Once a worker exists, plain `start bounty` reconnects to the worker set up last (newest `createdAt`), reusing its downloaded model and OpenCode sandbox without setup questions. A preparing, waiting or working one is only opened, never restarted. A failed one asks **Retry** (keeps its files), **Set up again**, **Open NAME** (the newest worker that did not fail) or **Cancel**. `--change`, `--model` or any other creation option (`--cpu --memory --gpu --storage-drive --workspace-quota --name --quant --release-memory --keep-loaded`) sets up a new worker; `--change` suggests the current worker's model and drive, and the current worker keeps running until `bounty stop`. `--change` cannot be combined with `--worker`.
+4. A new setup asks for a GGUF model (`hf.co/OWNER/MODEL`, a huggingface.co URL or `OWNER/MODEL`; not `yg/`), suggesting `hf.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF:Q4_K_M`. A `:QUANT` suffix selects the GGUF variant, including `:IQ4_XS`; conflicting `--quant` values are rejected. It checks the model and hardware: a repository without GGUF files, without access (**Sign in to Hugging Face**) or too large for this PC's memory shows **This model needs attention**.
+5. Then it asks which drive stores the model, its runtime and the worker's sandboxes, with free space and the approximate need (a model volume of at least 20 GB plus the workspace quota); read-only drives are disabled, the fixed drive with the most free space is recommended, and `--change` preselects the current worker's drive. One drive needs no question; `--storage-drive PATH` answers it. A model already downloaded on that drive with the same settings is reused; another drive downloads it again.
+6. Quick setup is one screen: **Prepare** (default), **Customize** or **Cancel**. Recommended: 4 CPU, memory estimated from weights plus overhead and 4 GB for agent/test sandboxes (minimum 8 GB; about 16 GB for the default Gemma Q4_K_M), the chosen drive, the NVIDIA GPU only when this PC passes the CUDA checks of `yougori gpu status` (otherwise CPU, also for AMD and Intel graphics), a 20 GB workspace, the model loaded only for work, name "Bounty worker". Any of `--gpu --cpu --memory --workspace-quota --name --release-memory --keep-loaded` skips this screen. Customize preselects the same GPU or CPU choice and ends on a confirm screen with Cancel preselected. Explicit resource values stay; scripts should pass enough `--memory` for their checkpoint.
+7. Esc returns to the previous question, keeping its answer; Ctrl+C stops any wait. During preparation Ctrl+C offers Cancel / Stop preparation / Back to terminal; Q, Esc or Ctrl+] detach while it continues in the engine and print the reconnect command.
+8. When the worker is live, Yougori offers a practice bounty, then opens the live screen.
 
-Limits and resources: `--cpu` 4–255, `--memory` 8–1024 GB, `--workspace-quota` 4–1024 GB, `--name` 2–64 characters, `--gpu nvidia|cpu`. The model gets the worker's CPU minus 2 and memory minus 4 GB; the agent sandbox gets 1 CPU, 2 GB memory and 2 GB disk; the offline test sandbox gets 1 CPU, 2 GB memory and the workspace quota minus 2 GB (at least 2 GB). `--release-memory` frees the model's memory while waiting, but only when no other worker sharing that model keeps it loaded. `--platform-url` must equal the engine's configured website (`YOUGORI_NETWORK_URL`, default https://yougori.com); it cannot switch sites.
+Each worker gets a short name from its ID, such as `keen-heron`, used by hints, tables and the live screen. WORKER and `--worker` accept it, the worker's own name (any case), its ID or 4+ leading hex digits of the ID; unknown or ambiguous names fail with the list of workers. JSON keeps `id` and adds `handle`.
+
+Limits and resources: `--cpu` 4–255, `--memory` 8–1024 GB, `--workspace-quota` 4–1024 GB, `--name` 2–64 characters, `--gpu nvidia|metal|cpu`. The model gets the worker's CPU minus 2 and memory minus 4 GB; the agent sandbox 1 CPU, 2 GB memory and 2 GB disk; the offline test sandbox 1 CPU, 2 GB memory and the workspace quota minus 2 GB (at least 2 GB). The model loads only for work (an accepted bounty, the user's chat or the practice) and is unloaded while the worker waits, freeing GPU and model memory; the next job reloads it from disk. `--keep-loaded` keeps it loaded, as does another worker sharing that model that keeps it loaded, a pin or another use; `--release-memory` states the default. `--platform-url` must equal the engine's configured website (`YOUGORI_NETWORK_URL`, default https://yougori.com).
 
 ## Scripted setup
 
@@ -1118,11 +1152,11 @@ yougori start bounty --worker WORKER_ID --yes --no-wait
 yougori start bounty --model hf.co/OWNER/MODEL-GGUF --dry-run
 ```
 
-- When stdout is not a terminal, `start bounty` needs `--yes`, `--no-wait` and `--model` or `--worker`; a new worker also needs an account that is already signed in, otherwise "Connect your account first with yougori login. No worker was created."
-- Script defaults: 4 CPU, 8 GB, 20 GB workspace, model kept loaded, the engine's default drive, and the GPU from the CUDA checks of `yougori gpu status`: `nvidia` only when all of them pass, otherwise `cpu` (also when the engine cannot run them). `--gpu nvidia|cpu` skips the check.
-- `--no-wait` returns as soon as preparation starts, with nothing but the JSON on stdout: `{"version":2,"ok":true,"result":{"worker":{…,"state":"preparing"},"background":true,"next":"…"}}`. It never waits for readiness: poll `yougori bounty status ID` until `state` is `ready_waiting` (or `failed` with `error`); downloads can take up to an hour and continue after the CLI exits. With `--worker ID` it sends one resume request and returns that worker (`background` only when preparation restarts). In a terminal without `--yes`, `--no-wait` shows the setup screens, then returns the same way.
-- `--dry-run` prints the request without contacting the engine. Setup never accepts an offer.
-- Every run without `--worker` creates a new worker (`worker-` plus 32 hex digits; at most 32 per PC, failed ones included). Retry with `--worker ID`; remove failed extras with `yougori bounty delete ID --yes`.
+- When stdout is not a terminal, `start bounty` needs `--yes` and `--no-wait`; without `--model` or `--worker` it reconnects to the saved worker ("No saved worker on this computer. Supply --model hf.co/OWNER/MODEL-GGUF to prepare one." when there is none) and returns a worker the engine already runs without sending a request; a new worker also needs a signed-in account, otherwise "Connect your account first with yougori login. No worker was created."
+- Script defaults: 4 CPU, 8 GB, 20 GB workspace, model loaded only for work, the engine's default drive, and the GPU from the CUDA checks of `yougori gpu status`: `nvidia` only when all of them pass, otherwise `cpu` (also when the engine cannot run them). `--gpu nvidia|metal|cpu` skips the check and is kept. The engine makes the same choice for a raw `swarm_dispatch` `prepare` without `gpu`; Native Mac builds use `model compute` to select `metal` when verified, otherwise native `cpu`. Native Mac acceptance remains pending.
+- `--no-wait` returns as soon as preparation starts, with nothing but the JSON on stdout: `{"version":2,"ok":true,"result":{"worker":{…,"handle":…,"state":"preparing"},"background":true,"next":"…"}}`. It never waits for readiness: poll `yougori bounty status ID` until `state` is `ready_waiting` (or `failed` with `error`); downloads can take up to an hour and continue after the CLI exits. With `--worker ID` it sends one resume request and returns that worker (`background` only when preparation restarts). In a terminal without `--yes`, `--no-wait` shows the setup screens, then returns the same way.
+- `--dry-run` prints the request without contacting the engine (WORKER stays as typed). Setup never accepts an offer.
+- Runs with `--model`, `--change` or other creation options create a new worker (ID `worker-` plus 32 hex digits; at most 32 per PC, failed ones included). Plain runs reuse the saved worker; retry a specific one with `--worker WORKER`; remove failed extras with `yougori bounty delete WORKER --yes`.
 
 ## States and the live screen
 
@@ -1131,16 +1165,16 @@ yougori start bounty --model hf.co/OWNER/MODEL-GGUF --dry-run
 | preparing | preparing | checking the model, downloading and loading it, testing tool calling, building the OpenCode sandbox (its network is then turned off), registering |
 | ready_waiting | live | waiting for offers; refreshes credentials and answers chat about every 15 s; investigates nothing |
 | preparing_bounty | preparing bounty | an offer was accepted here or on the website: verifying the source (at most 4000 files, 8 MiB each, 64 MiB total) and building the offline test sandbox |
-| running | working | investigating in bounded turns (3 minutes, 12 steps); company setup/test commands run offline for 45 s; authorization is rechecked every 5 s |
+| running | working | investigating in bounded turns (15 minutes, 12 steps); company setup/test commands run offline for up to 5 minutes with authorization checks and task lease renewal; the accepted work budget can stop either earlier |
 | awaiting_review | report ready | report policy `review` only: a finished draft waits for the user (its ID is in `reviewReports`) while the agent keeps investigating; `bounty submit` returns the worker to running |
 | paused | paused | by the user, by lapsed authorization, deadline or budget, by changed terms ("accept a new version"), by a runtime error (`error` is set), or by an engine restart (`restored: true`) |
 | stopped | stopped | both sandboxes stopped and kept |
 | failed | needs attention | a setup error; read `error` and `stage` |
 
 - A paused worker with an error still shows as paused: always read `error`.
-- Every engine restart pauses all workers that were preparing, waiting or working, with `"restored": true` and the stage "Paused when the Yougori engine restarted. Resume to recheck authorization and continue." Nothing runs until the user resumes each one: `yougori bounty resume ID` (or P in the live screen). `bounty workers` and `bounty status` print that command for every such worker. Workers paused before the restart keep their own reason.
-- With report policy `review`, a finished draft sets the state to `awaiting_review` and adds its report ID to `reviewReports` (the `summary` also says "A report draft is ready for your review…"). Read it with `bounty reports WORKER` (its state there is `draft`) and send it only on the user's decision with `bounty submit WORKER REPORT_ID --yes`. A paused worker keeps listing the draft; accepting a new bounty or leaving clears the list, while the drafts stay in `bounty reports`.
-- The live screen appears only in an interactive `start bounty`, after setup. It draws a pulsing map in the website's colours with the worker's state and offer count and polls every 5 s. Keys: **O** offers, **C** chat, **P** pause/resume, **R** refresh, **Q**/Esc/Ctrl+] detach (the worker keeps running), Ctrl+C for Cancel / Pause / Stop / Stop and delete (Enter confirms; delete asks again). "Report ready" and a worker paused by a restart also print the exact `bounty submit` or `bounty resume` command in the log above the map. It hides while offers, chat or the Ctrl+C menu are open; it is a still frame with `CI` or `YOUGORI_NO_ANIMATION`, uses ASCII over SSH, in non-UTF-8 locales or with `YOUGORI_ASCII=1`, and drops the map below 27 columns or 14 rows. If polling fails (site unreachable, signed out) the screen closes with the error while the worker keeps running.
+- Every engine restart pauses all workers that were preparing, waiting or working, with `"restored": true` and the stage "Paused when the Yougori engine restarted…". Nothing runs until the user resumes each one: `yougori bounty resume ID` (or P in the live screen). `bounty workers` and `bounty status` print that command. Workers paused before the restart keep their own reason.
+- With report policy `review`, a finished draft sets the state to `awaiting_review` and adds its report ID to `reviewReports`. Read it with `bounty reports WORKER` (its state there is `draft`) and send it only on the user's decision with `bounty submit WORKER REPORT_ID --yes`. A paused worker keeps listing the draft; accepting a new bounty or leaving clears the list, while the drafts stay in `bounty reports`.
+- The live screen appears only in an interactive `start bounty`, after setup. It draws a pulsing map in the website's colours, titled with the worker's name and short name, with its state and offer count, polling every 5 s. Keys: **O** offers, **C** chat, **P** pause/resume, **T** practice (while waiting), **L** or **Enter** watch work live (while working), **R** refresh, **Q**/Esc/Ctrl+] detach (the worker keeps running), Ctrl+C for Cancel / Pause / Stop / Stop and delete (Enter confirms; delete asks again). It is a still frame with `CI` or `YOUGORI_NO_ANIMATION`, ASCII over SSH, in non-UTF-8 locales or with `YOUGORI_ASCII=1`, and drops the map below 27 columns or 14 rows. If polling fails (site unreachable, signed out) the screen closes with the error while the worker keeps running.
 
 ## Offers
 
@@ -1169,22 +1203,25 @@ yougori bounty doctor [WORKER]
 yougori bounty chat WORKER [--message "ONE LINE"]
 yougori bounty messages WORKER
 yougori bounty pause WORKER
-yougori bounty resume WORKER
+yougori bounty resume WORKER [--budget-minutes N]
 yougori bounty stop WORKER [--yes]
 yougori bounty submit WORKER REPORT_ID --yes
 yougori bounty leave WORKER --yes
 yougori bounty delete WORKER --yes
 yougori bounty reports [WORKER]
 yougori bounty rewards
+yougori bounty practice WORKER
+yougori bounty memory WORKER release|keep
 yougori start bounty --worker WORKER
 ```
 
-- Terminal views exist for `workers`, `status`, `offers` and `doctor WORKER`; everything else, and everything piped, is the JSON envelope. `status` returns `{"worker":{id, serverId, name, model, state, stage, restored, reviewReports, error, summary, completedAttempts, bountyId, gpu, resources, workspaceQuotaGb, keepResident, environmentId, modelEnvironmentId, testEnvironmentId, policyVersion, cursor}}`.
+- Terminal views exist for `workers`, `status`, `offers` and `doctor WORKER`; everything else, and everything piped, is the JSON envelope. `status` returns `{"worker":{id, handle, serverId, name, model, state, stage, restored, reviewReports, error, summary, completedAttempts, bountyId, gpu, resources, workspaceQuotaGb, keepResident, environmentId, modelEnvironmentId, testEnvironmentId, policyVersion, cursor}}`.
 - `doctor` without a worker shows host readiness and the minimum (4 CPU, 8 GB). With a worker it shows that worker, its model status and `credentialConfigured` instead. It checks neither sign-in nor whether the website has Swarm Mining enabled.
 - `chat` talks only to your own agent, from a private model context with short replies, and only while the worker loop runs. Interactive chat has `/pause`, `/resume`, `/status`, `/back`; `--message` takes one line of at most 8192 bytes. `messages` lists the conversation.
-- `pause` ends the agent's turn and stops the test sandbox (model memory may be released); `resume` continues after rechecking authorization. `stop` stops both sandboxes, and the model when nothing else uses it; nothing is deleted. `delete --yes` removes the sandboxes, the local record, journals and credentials; model files and server-side reports and rewards stay, and the local deletion happens even if the website call fails.
+- `pause` ends the agent's turn and stops the test sandbox (model memory may be released); `resume` continues after rechecking authorization. Once the accepted work budget is spent, the website refuses a plain resume; on the user's decision, `resume WORKER --budget-minutes N` (1–1440) makes the budget end N minutes from now, never after the bounty's deadline (it replaces any time still left). Raw form: `{"request":{"action":"resume","workerId":…,"budgetMinutes":N}}`. `stop` stops both sandboxes, and the model when nothing else uses it; nothing is deleted. `delete --yes` removes the sandboxes, the local record, journals and credentials; model files and server-side reports and rewards stay, and the local deletion happens even if the website call fails.
+- `memory WORKER release` unloads an idle model now and from then on loads it only for work; `memory WORKER keep` keeps it loaded after its next job. Older workers keep their choice. Returns `{"worker":…}`.
 - `reports` and `rewards` read the account's records (`rewards` is account-wide and adds `paymentStatusLabels`).
-- `start bounty --worker WORKER` reconnects with the saved model and resources. A worker that never finished registering restarts preparation (downloads are reused); a registered worker resumes and restarts its loop, aborting a turn in progress, so use `bounty status` merely to look. A paused worker asks Stay paused / Resume (`--yes` resumes).
+- `start bounty --worker WORKER` opens a saved worker with its model and resources: a preparing, waiting or working one is only watched; a stopped or failed one resumes (one that never registered restarts preparation, reusing downloads); a paused one asks Stay paused / Resume (`--yes` resumes).
 - To cancel preparation use `bounty pause WORKER` or `bounty stop WORKER` (or Ctrl+C, Stop preparation).
 - `submit WORKER REPORT_ID --yes` sends a reviewed draft privately to the publisher; run it only after the user read that draft and approved sending it. Report IDs come from `reviewReports` or `bounty reports WORKER`. It returns `{"report":{…,"state":"complete_received","receiptId":…},"worker":…}`; submission priority counts from that receipt, so a draft that waits can lose priority. The worker leaves `awaiting_review` when no draft is left. Raw form: `{"request":{"action":"submitReport","workerId":…,"reportId":…}}`.
 - `leave WORKER --yes` ends the worker's accepted bounty on the user's decision: it stops the agent and both sandboxes, tells the website and clears the bounty from the worker (state `stopped`). Reports, drafts and reward records stay. `start bounty --worker WORKER` then waits for new offers.
@@ -1192,22 +1229,22 @@ yougori start bounty --worker WORKER
 
 ## Practice bounty
 
-`bounty practice` is not a command. When a worker is live, the interactive `start bounty` asks "Want to try a practice bounty while you wait?". Practice writes a small deliberately flawed Node project to `%TEMP%\yougori-practice-bounty-<pid>\practice-login` (left on disk), shows an example offer, lets the user look for the flaw, then replays a scripted investigation, report and verification with a reward of 0 PRACTICE. It runs nothing and uses no model, server, account or money. Declining, Esc or Ctrl+C return to the live screen.
+`bounty practice WORKER`, or **T** in the live screen, opens a live console while the worker waits for offers; a newly prepared worker is also offered it. It writes a small flawed Node project to `%TEMP%\yougori-practice-bounty-<pid>\practice-login` (kept) and lets the user look first. Then the worker's own model, loaded for this job, reviews the numbered files and calls `bounty_report` (file, line, reproduction, impact), streaming its work into the console. A report qualifies only with `auth.js`, the hardcoded password's line and a login with that password; a rejected one returns to the model with the reason, plus a growing hint from the second rejection (never the line or password), until one qualifies. Type a line to steer the model (a suggestion; it cannot change scope); `/stop` ends it; **Ctrl+]** detaches and leaves it running. Success earns 0 PRACTICE (no money or server). Piped, `bounty practice` runs to the end and returns `{"status","reportQualifies","attempts":[{"report","qualifies","reason","seconds"}]}`. No OpenCode or sandbox runs.
 
 ## Troubleshooting
 
 | Message | Cause and fix |
 |---|---|
-| Swarm Mining is not enabled on this platform yet. Your worker can be resumed after it is enabled. | The website operator has not enabled Swarm Mining (operator details in the website's Swarm admin page). The worker is marked failed. After it is enabled run `start bounty --worker ID`; do not create new workers. |
+| Swarm Mining is not enabled on this platform yet. Your worker can be resumed after it is enabled. | The website operator has not enabled Swarm Mining; the worker is marked failed. Once enabled, run `start bounty --worker ID`; do not create new workers. |
 | Connect your account first with yougori login / Connect your Yougori account before registering a bounty worker | Sign in: `yougori login` (website sign-in uses the wallet plus an emailed code). |
 | Cannot reach the Yougori Network / the Swarm Mining service | Network or website outage; retry later. |
 | Set YOUGORI_NETWORK_URL before starting Yougori / Worker belongs to a different configured Yougori website | Drop `--platform-url`, or set `YOUGORI_NETWORK_URL` before starting the engine. |
 | This running engine does not support Swarm Mining | The engine is older than the CLI: update Yougori. |
 | Hugging Face 401/403/404/429 | Accept the model's terms on Hugging Face, then `yougori model auth login --file -` (or Sign in to Hugging Face in setup). |
 | This repository has no Q GGUF file. Available: … | Pick one of the listed quantizations with `--quant`. |
-| Swarm workers currently require a supported GGUF model with agent tool calling | Choose a GGUF model with tool calling; check `model preflight`. |
+| This repository has no GGUF files / Swarm workers currently require a supported GGUF model with agent tool calling | Choose a GGUF repository (usually named `…-GGUF`) with tool calling; check `model preflight`. |
 | The model loaded, but did not complete the agent tool check / did not report a supported context window | The model cannot drive the agent; choose another model. |
-| llama.cpp stopped while loading the model, Not enough GPU memory, Model setup exceeded one hour | Too big for this PC: a smaller `--quant` or model, more `--memory`, or `--gpu cpu`. |
+| This model needs about N GB of memory, llama.cpp stopped while loading the model, Not enough GPU memory, Model setup exceeded one hour | Too big for this PC: a smaller `--quant` or model, more `--memory`, or `--gpu cpu`. |
 | NVIDIA CUDA is unavailable on this computer | No supported NVIDIA GPU/WSL 2 runtime for a worker created with `--gpu nvidia`: create it again with `--gpu cpu`, or leave `--gpu` out so the CUDA checks choose (`yougori gpu status` shows which check failed). |
 | Paused when the Yougori engine restarted. Resume to recheck authorization and continue. | The engine restarted; nothing runs until the user resumes: `yougori bounty resume ID` (or P in the live screen). |
 | Submitting requires --yes … / Leaving requires --yes … | Add `--yes` only after the user approved sending that draft or leaving the bounty. |
@@ -1216,9 +1253,12 @@ yougori start bounty --worker WORKER
 | Model storage exceeds available capacity / at least 12 GB | Free space (`yougori storage reclaim --yes`) or choose another `--storage-drive`. |
 | OpenCode installation did not complete / Worker staging prerequisites could not be installed / test sandbox prerequisites | Setup needs internet: check connectivity, then `start bounty --worker ID`. |
 | copy container backing image: … , Agent sandbox is stopped | Runtime problem: `yougori bounty doctor ID`, `yougori doctor`, then `start bounty --worker ID`. |
+| Start the environment before attaching a host service | Older engines failed so for workers on a non-default drive: update Yougori, then `start bounty` and Retry. |
+| No bounty worker matches … / … matches more than one worker | Use a short name or ID listed by `bounty workers`. |
 | This computer already has 32 workers | Delete unused workers with `bounty delete ID --yes`. |
 | The offer changed / This offer is no longer available | Re-read `bounty details` and let the user decide again, or skip it. |
-| Agent turn exceeded its three-minute limit; progress is preserved | The worker resumes its investigation in the next turn; check `bounty status ID`. |
+| Agent turn exceeded its fifteen-minute limit; progress is preserved | The worker resumes its investigation in the next turn; check `bounty status ID`. |
 | Bounty authorization, accepted scope, or work budget changed; investigation was stopped | `bounty status ID`; resume, or let the user accept the new version. |
+| Explicitly extend the work budget before resuming | The accepted work budget is spent. With the user's decision: `yougori bounty resume ID --budget-minutes N` (1–1440). |
 
 Stored worker errors are shortened to 1000 characters and URLs or words after "token"/"password" show as "[credential redacted]".

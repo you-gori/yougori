@@ -85,9 +85,13 @@ impl Downloads {
         let environments = store.snapshot().map(|s| s.environments).unwrap_or_default();
         let mut live = self.live.lock().await;
         live.retain(|id, link| {
-            link.seen.elapsed() < LEASE && process_identity(link.process.0) == Some(link.process.1)
+            let keep = link.seen.elapsed() < LEASE && process_identity(link.process.0) == Some(link.process.1)
                 && environments.iter().any(|environment| &environment.id == id)
-                && !link.task.is_finished() && matches!(link.tunnel.child.try_wait(), Ok(None))
+                && !link.task.is_finished() && matches!(link.tunnel.child.try_wait(), Ok(None));
+            if !keep {
+                crate::security::record(crate::security::Event::new("share.download.expired").via("engine").env(id));
+            }
+            keep
         });
     }
     pub(crate) async fn list(&self, store: &PlatformStore) -> Result<Vec<DownloadInfo>, String> {
@@ -113,7 +117,11 @@ impl Downloads {
         if let Ok(mut generations) = self.generations.lock() { let generation = generations.entry(environment_id.into()).or_default(); *generation = generation.wrapping_add(1); }
         let mut stopped = false;
         if let Ok(pending) = self.pending.lock() { if let Some(token) = pending.get(environment_id) { token.cancel(); stopped = true; } }
-        self.live.lock().await.remove(environment_id).is_some() || stopped
+        let stopped = self.live.lock().await.remove(environment_id).is_some() || stopped;
+        if stopped {
+            crate::security::record(crate::security::Event::new("share.download.stopped").env(environment_id));
+        }
+        stopped
     }
     pub(crate) async fn start(&self, request: StartRequest, app: &AppHandle) -> Result<DownloadInfo, String> {
         self.start_generated(request, None, app).await
@@ -147,6 +155,7 @@ impl Downloads {
             return Err("This environment already has a download link. Turn it off before creating another one.".into());
         }
         let environment = store.environment(&request.environment_id)?;
+        crate::security::ensure_open(&store, &request.environment_id, "Creating a download link for it")?;
         if environment.status != EnvironmentStatus::Stopped { return Err("Stop the environment before making its complete, consistent download copy.".into()); }
         let pid = request.process_id.unwrap_or(std::process::id());
         let identity = process_identity(pid).ok_or("The app or CLI creating this link is no longer running")?;
@@ -179,6 +188,11 @@ impl Downloads {
             size_bytes: size, downloads: store.snapshot()?.environment_downloads.get(&request.environment_id).copied().unwrap_or(0) };
         let mut live = self.live.lock().await;
         if preparing.is_cancelled() { cancel.cancel(); task.abort(); return Err("Download link creation was cancelled.".into()); }
+        let mut event = crate::security::Event::new("share.download.started").env(&request.environment_id).number("sizeBytes", size);
+        if let Some(domain) = &info.domain {
+            event = event.text("domain", domain);
+        }
+        crate::security::record(event);
         live.insert(request.environment_id, Live { info: info.clone(), owner: request.owner_id, process: (pid, identity),
             seen: Instant::now(), cancel, task, tunnel, _temporary: temporary });
         Ok(info)

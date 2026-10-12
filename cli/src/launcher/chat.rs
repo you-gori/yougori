@@ -8,7 +8,7 @@ use std::{
     io::{self, IsTerminal},
     time::{Duration, Instant},
 };
-use yougori_cli::{client, network, public};
+use yougori_cli::{network, public};
 
 const CODE: ui::Rgb = ui::Rgb(0xa5, 0xb4, 0xfc);
 
@@ -73,6 +73,12 @@ fn options(args: &[String]) -> Result<Options, String> {
             "--quant" if run => {
                 i += 1;
                 quant = Some(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--quant needs a quantization such as Q4_K_M")?.clone());
+            }
+            "--backend" if run && !resources.contains_key("backend") => {
+                i += 1;
+                let backend = args.get(i).ok_or("--backend needs auto, cuda, metal or cpu")?;
+                if !matches!(backend.as_str(), "auto" | "cuda" | "metal" | "cpu") { return Err("--backend needs auto, cuda, metal or cpu".into()); }
+                resources.insert("backend".into(), json!(backend));
             }
             "--storage-drive" if run => {
                 i+=1;
@@ -171,16 +177,21 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
     let target = &args[2];
     let _session = ui::Session::start("model", if options.neocloud { "open models, served from Neocloud" } else { "open models, chat and API" });
     super::releases::offer(false).await?;
-    let engine = ui::task("Starting Yougori engine");
-    client::start(None).await?;
-    let mut engine = Some(engine);
     if !chat_only {
         ui::intro(&short(target), &clean(target));
-        if let Some(engine) = engine.take() {
-            engine.done("Engine ready");
-        }
     }
-    let launch_preflight = if !chat_only && (options.neocloud || options.quant.is_some() || options.resources.contains_key("modelFolder") || public::find_model(target).await?.is_none()) {Some(call("model_preflight",json!({"model":target,"quant":options.quant,"folder":options.resources.get("modelFolder")})).await?)}else{None};
+    let engine = super::start_engine().await?;
+    if !chat_only {
+        ui::step(&super::timed("Engine ready", engine));
+    }
+    // One environment per model: one with this model and the default options is reused.
+    let existing = if chat_only || options.neocloud { None } else {
+        super::busy("Looking for this model on this computer", public::find_model(target)).await?
+    };
+    let reusable = existing.filter(|_| options.quant.is_none() && !options.resources.contains_key("modelFolder") && !options.resources.contains_key("backend"));
+    let launch_preflight = if !chat_only && (options.neocloud || reusable.is_none()) {
+        Some(super::busy("Checking the model on Hugging Face", call("model_preflight",json!({"model":target,"quant":options.quant,"folder":options.resources.get("modelFolder")}))).await?)
+    } else { None };
     if let Some(preflight)=&launch_preflight {
         if preflight["sourceOnly"]==true {
             ui::info(preflight["reason"].as_str().unwrap_or("Source files only; no inference weights"));
@@ -193,17 +204,19 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             return yougori_cli::architecture_support::launch(&task);
         }
     }
-    if options.share_mode.is_some() && !network::signed_in().await? {
+    if options.share_mode.is_some() && !super::busy("Checking your Yougori Network sign-in", network::signed_in()).await? {
         ui::step("Sign in to share this model on the Yougori Network");
-        network::login(|code, address| {
+        super::busy("Waiting for you to approve the sign-in", network::login(|code, address| {
             ui::step(&format!("Approve code {} in your browser", clean(code)));
             ui::line(&clean(address));
-        }).await?;
+        })).await?;
         ui::step("Signed in; the desktop app shares this account");
     }
     let (id, name) = if chat_only {
-        let id = public::resolve(target).await?;
-        let state = call("get_platform_state", json!({})).await?;
+        let (id, state) = super::busy(&format!("Finding {}", clean(target)), async {
+            let id = public::resolve(target).await?;
+            Ok((id, call("get_platform_state", json!({})).await?))
+        }).await?;
         let env = state["environments"]
             .as_array()
             .and_then(|all| all.iter().find(|e| e["id"] == id))
@@ -215,33 +228,34 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             .map(short))
             .unwrap_or_else(|| short(target));
         // The title names the model, which is only known once the environment is found.
-        ui::intro(&model, &format!("chat · {}", clean(env["name"].as_str().unwrap_or(&id))));
-        if let Some(engine) = engine.take() {
-            engine.done("Engine ready");
-        }
+        let environment = clean(env["name"].as_str().unwrap_or(&id));
+        ui::intro(&model, &format!("chat · {environment}"));
+        ui::step(&super::timed("Engine ready", engine));
         if env["status"] != "running" || env["kind"] == "cloud" {
-            let starting = ui::task(&format!("Starting {}", clean(env["name"].as_str().unwrap_or(&id))));
-            call(
-                "start_model",
-                json!({"environmentId":id}),
+            super::stage(
+                &format!("Starting {environment}"),
+                |_| format!("{environment} running"),
+                call("start_model", json!({"environmentId":id})),
             )
             .await?;
-            starting.done(&format!("{} running", clean(env["name"].as_str().unwrap_or(&id))));
         }
         (id, model)
     } else if options.neocloud {
-        let state = call("get_platform_state", json!({})).await?;
+        let state = super::busy("Loading your RunPod pods", call("get_platform_state", json!({}))).await?;
         let candidates = public::neocloud_model_targets(&state);
         let Some(env) = super::neocloud::target(&state, &candidates, options.environment.as_deref(), target).await? else {
             return Ok(0);
         };
-        let starting = ui::task(&format!("Starting {} on {}", short(target), clean(env["name"].as_str().unwrap_or("RunPod"))));
-        let mut result = call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":options.api_port})).await?;
-        starting.done("Model started in Neocloud");
+        let mut result = super::stage(
+            &format!("Starting {} on {}", short(target), clean(env["name"].as_str().unwrap_or("RunPod"))),
+            |_| "Model started in Neocloud".into(),
+            call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":options.api_port})),
+        )
+        .await?;
         if options.api_port.is_some() {
             if let Some(mode) = options.share_mode {
                 let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
-                result["network"] = network::share_with_publication(&id, mode, options.listen, options.publish).await?;
+                result["network"] = super::busy("Sharing this model on the Yougori Network", network::share_with_publication(&id, mode, options.listen, options.publish)).await?;
             }
             ui::outro("API configured; model weights may still be loading");
             // Keys are explicitly requested with --api, as with the scripted local runner.
@@ -249,9 +263,9 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             return Ok(0);
         }
         (result["id"].as_str().ok_or("Model environment missing")?.to_owned(), short(target))
-    } else if let Some(env) = public::find_model(target).await?.filter(|_| options.quant.is_none() && !options.resources.contains_key("modelFolder")) {
+    } else if let Some(env) = reusable {
         if options.storage_drive.is_some() {
-            let state=call("get_platform_state",json!({})).await?;
+            let state = super::busy("Checking the storage drive", call("get_platform_state",json!({}))).await?;
             yougori_cli::storage::validate_reuse(&env,&state["host"],options.storage_drive.as_deref())?;
         }
         // One environment per model: start the one that already has it.
@@ -261,21 +275,22 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         // one, whose container takes new CPU, memory and storage without a restart.
         if options.resources.is_empty() && (options.change || !running) {
             ui::step(&format!("{name} already has this model"));
-            let state = call("get_platform_state", json!({})).await?;
-            let host = super::storage::for_environment(&state["host"], &env).await?;
-            if let Some(changes) = super::changed_model_resources(&host, &env, options.change)? {
+            let host = super::busy("Checking the model's storage", async {
+                let state = call("get_platform_state", json!({})).await?;
+                super::storage::for_environment(&state["host"], &env).await
+            })
+            .await?;
+            if let Some(changes) = super::changed_model_resources(&host, &env, options.change, None)? {
                 options.resources = changes;
             }
         }
         let changed = !options.resources.is_empty();
-        let using = ui::task(&if running {
-            format!("Using {name}")
-        } else {
-            format!("Starting {name}")
-        });
-        using.detail("it already has this model");
-        let result = public::reuse_model(&env, &options.resources, None).await?;
-        using.done(&format!("Using {name}, which already has this model"));
+        let result = super::stage(
+            &if running { format!("Using {name}") } else { format!("Starting {name}") },
+            |_| format!("Using {name}, which already has this model"),
+            public::reuse_model(&env, &options.resources, None),
+        )
+        .await?;
         if changed {
             ui::step(&format!("Resources changed · {}", reserved(&options.resources, &env)));
         }
@@ -285,12 +300,37 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         )
     } else {
         let preflight=launch_preflight.as_ref().ok_or("Missing model preflight")?;
-        let host=call("refresh_host_metrics",json!({})).await?["host"].take();
-        let plan=super::ModelStorage {minimum:preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.0).ceil().max(12.0) as u32,supports_selection:preflight["storageDriveSelection"]==true};
+        let host = super::busy("Reading this computer's drives and memory", call("refresh_host_metrics",json!({}))).await?["host"].take();
+        let plan = super::ModelStorage::from_preflight(preflight);
         let minimum=plan.minimum.max(options.resources.get("storageGb").and_then(Value::as_f64).unwrap_or(0.0).ceil() as u32);
-        let selected=super::storage::choose_model(&host,options.storage_drive.as_deref(),minimum,plan.supports_selection)?;
-        if options.resources.is_empty() {
-            let [cpu, memory, storage] = super::model_resources(&selected.host, options.change, minimum)?;
+        // Flags answer their questions up front; the rest are asked in turn, each after the
+        // first with Back.
+        let given = !options.resources.is_empty();
+        let mut selected: Option<super::storage::Selection> = None;
+        let mut chosen = None;
+        let mut steps = ui::Wizard::new();
+        loop {
+            let asked = match steps.step() {
+                0 => super::storage::choose_model(&host, options.storage_drive.as_deref(), minimum, plan.supports_selection, selected.as_ref().map(|s| s.label.as_str()))
+                    .map(|selection| {
+                        selected = Some(selection);
+                        options.storage_drive.is_none()
+                    }),
+                1 if given => Ok(false),
+                1 => match &selected {
+                    Some(selection) => super::model_resources(&selection.host, options.change, minimum, chosen).map(|picked| {
+                        chosen = Some(picked);
+                        true
+                    }),
+                    None => Ok(false),
+                },
+                _ => break,
+            };
+            steps.next(asked)?;
+        }
+        drop(steps);
+        let selected = selected.ok_or("Choose where to store the model")?;
+        if let Some([cpu, memory, storage]) = chosen {
             options.resources = Map::from_iter([
                 ("cpu".into(), json!(cpu)),
                 ("memoryGb".into(), json!(memory)),
@@ -298,23 +338,26 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             ]);
         }
         if let Some(drive)=selected.drive {options.resources.insert("storageDrive".into(),json!(drive));}
-        let creating = ui::task("Creating the model environment");
-        creating.detail(if preflight["sourceOnly"]==true {"a CPU file publisher; no GPU or ML dependencies"} else {"a GPU container with PyTorch; the first run downloads it"});
-        let result = call(
-            "run_model",
-            json!({"model":target,"resources":options.resources,"quant":options.quant}),
+        ui::info(if preflight["sourceOnly"]==true {"A CPU file publisher; no GPU or ML dependencies."} else {"A GPU container with PyTorch; the first run downloads it."});
+        let result = super::stage(
+            "Creating the model environment",
+            |result: &Value| format!("Created {}", clean(result["name"].as_str().or(result["id"].as_str()).unwrap_or("the model environment"))),
+            call(
+                "run_model",
+                json!({"model":target,"resources":options.resources,"quant":options.quant}),
+            ),
         )
         .await?;
         let id = result["id"]
             .as_str()
             .ok_or("Model environment missing")?
             .to_owned();
-        creating.done(&format!("Created {}", clean(result["name"].as_str().unwrap_or(&id))));
         (id, short(target))
     };
     if let Some(mode) = options.share_mode {
-        match network::share_with_publication(&id, mode, options.listen, options.publish).await {
+        match super::busy("Sharing this model on the Yougori Network", network::share_with_publication(&id, mode, options.listen, options.publish)).await {
             Ok(share) => show_network_share(&share),
+            Err(error) if error == ui::CANCELLED => return Err(error),
             Err(error) => ui::warn(&format!("Model is running; sharing needs attention: {}", clean(&error))),
         }
     }
@@ -332,9 +375,12 @@ async fn listen_session(id: &str, name: &str) -> Result<(), String> {
             Err(_) => { ui::outro("Detached; model keeps running"); return Ok(()); }
         }}
     };
-    let share = network::settled(id, Duration::from_secs(45)).await?.ok_or("This model is not shared; recording is off")?;
+    let share = super::busy("Checking the Yougori Network share", network::settled(id, Duration::from_secs(45))).await?
+        .ok_or("This model is not shared; recording is off")?;
     show_network_share(&share);
-    let status = if status["listen"]["enabled"] == true { status } else {call("model_status",json!({"environmentId":id})).await?};
+    let status = if status["listen"]["enabled"] == true { status } else {
+        super::busy("Checking the recording", call("model_status",json!({"environmentId":id}))).await?
+    };
     if status["listen"]["enabled"] != true { return Err("Recording is off. Check the free share status; stop and rerun an older model runner with --nowfree --listen.".into()); }
     let path=status["listen"]["path"].as_str().ok_or("The runner did not return its recording path")?;
     ui::outro(&format!("Listening · saved in the model container: {}",clean(path)));
@@ -344,9 +390,7 @@ async fn listen_session(id: &str, name: &str) -> Result<(), String> {
 
 /// Waits for the model, then chats until the user leaves. The model keeps running.
 pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
-    let environment = call("get_platform_state", json!({}))
-        .await
-        .ok()
+    let environment = super::tolerated(super::busy("Loading the model environment", call("get_platform_state", json!({}))).await)?
         .and_then(|state| {
             state["environments"]
                 .as_array()?
@@ -370,7 +414,7 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
         Err(exit) => break exit,
         Ok(status) => {
             if status["sourceOnly"]==true {
-                if let Some(share)=network::settled(id,Duration::from_secs(45)).await? {
+                if let Some(share)=super::busy("Checking the Yougori Network share", network::settled(id,Duration::from_secs(45))).await? {
                     show_network_share(&share);
                     if let Some(page)=share["modelPage"].as_str() {ui::info(&clean(page));}
                 }
@@ -387,10 +431,14 @@ pub async fn session(id: &str, name: &str, fresh: bool) -> Result<(), String> {
             if status["task"] == "structured-decision" {
                 ui::info("Decision model: paste JSON containing state and questions. /example shows a request.");
             }
-            match network::settled(id, Duration::from_secs(45)).await {
+            match super::busy("Checking the Yougori Network share", network::settled(id, Duration::from_secs(45))).await {
                 Ok(Some(share)) => show_network_share(&share),
+                // Ctrl+C opens the stop options here too, as it does during startup.
+                Err(error) if error == ui::CANCELLED => {
+                    if stop_choice(id).await? { break Exit::Stopped; }
+                }
                 Err(error) => ui::warn(&clean(&error)),
-                _ => {}
+                Ok(None) => {}
             }
             ui::dash(|d| {
                 d.status(ui::Tone::Good, "ready");
@@ -928,6 +976,7 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
                 match api::menu(id, status["stream"] == true).await {
                     Ok(api::MenuExit::NewChat) => start_new_chat(id, &mut store, &mut editor).await,
                     Ok(api::MenuExit::Done) => {},
+                    Err(error) if super::left(&error) => {},
                     Err(error) => ui::warn(&clean(&error)),
                 }
                 if ui::take_interrupt() && stop_choice(id).await? { return Ok(Exit::Stopped); }

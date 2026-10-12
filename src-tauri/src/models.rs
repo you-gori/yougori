@@ -475,6 +475,9 @@ pub struct AppSettings {
     pub data_directory: String,
     pub snapshot_retention: usize,
     pub bandwidth_limit_mbps: usize,
+    /// Monitoring rules and kill-switch ceilings (`yougori settings patch`).
+    #[serde(default)]
+    pub security_monitoring: crate::security::monitor::Settings,
 }
 
 /// A saved domain: the metadata of a reusable Cloudflare account tunnel. Its token is only in the OS vault.

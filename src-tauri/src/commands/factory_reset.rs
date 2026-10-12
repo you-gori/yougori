@@ -298,6 +298,7 @@ pub async fn factory_reset_environment(
         return Err("Type the environment name exactly to confirm factory reset".into());
     }
     let result = reset(&environment_id, &store, &runtime, &backup).await;
+    crate::security::record(crate::security::Event::new("environment.reset").env(&environment_id).outcome(&result));
     if let Err(error) = &result {
         // Includes failure to persist the generation switch: keep the journal
         // and expose retry rather than leaving a permanent Provisioning spinner.

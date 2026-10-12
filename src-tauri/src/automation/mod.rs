@@ -63,9 +63,9 @@ pub(crate) fn start_storage_maintenance(app: &AppHandle) {
             if !storage_maintenance_due(&state, |pool| runtime.storage_reclaim_pending(pool)) { continue; }
             let control = app.state::<Arc<Control>>();
             if control.jobs.lock().await.iter().any(|job| matches!(job.status, "queued" | "running")) { continue; }
-            let response = control.handle(app.clone(), Request {
+            let response = crate::security::acting_as("engine", control.handle(app.clone(), Request {
                 version: wire::VERSION, method: "reclaim_storage".into(), params: json!({}), confirmed: true, dry_run: false,
-            }).await;
+            })).await;
             if !response.ok { eprintln!("Storage maintenance could not queue cleanup: {}", crate::lifecycle::safe_diagnostic(response.error.as_deref().unwrap_or("unknown error"))); }
         }
     });
@@ -101,7 +101,7 @@ async fn connection(
                 }
                 let lane=if queue::is_control_method(&request.method){&control.control_clients}else{&control.regular_clients};
                 match lane.clone().try_acquire_owned() {
-                    Ok(_client)=>control.handle(app,request).await,
+                    Ok(_client)=>crate::security::acting_as("cli",control.handle(app,request)).await,
                     Err(_)=>Response::failure_with_details("This control lane is busy; cancel queued jobs or retry shortly",yougori_cli::wire::ErrorDetails{code:"control_lane_busy".into(),affected_resource:None,retryable:true,outcome:"not_submitted".into()})
                 }
             },

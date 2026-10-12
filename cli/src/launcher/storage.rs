@@ -1,6 +1,6 @@
-use super::{call, clean, ui};
+use super::{busy, call, clean, ui};
 use serde_json::{json, Value};
-use std::io::IsTerminal;
+use std::{io::IsTerminal, sync::atomic::Ordering};
 use yougori_cli::{client, public, storage};
 
 pub struct Selection {
@@ -13,7 +13,8 @@ pub fn interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// Existing disks stay in place and may reuse their already allocated capacity.
+/// Existing disks stay in place and may reuse their already allocated capacity. The engine may
+/// need a moment to measure the disk, so callers show a spinner (see [`super::busy`]).
 pub async fn for_environment(host: &Value, env: &Value) -> Result<Value, String> {
     let id = env["id"].as_str().ok_or("Environment has no ID")?;
     let allocation = call("get_storage_allocation", json!({"environmentId":id})).await?;
@@ -29,18 +30,28 @@ pub async fn for_environment(host: &Value, env: &Value) -> Result<Value, String>
 }
 
 /// Reads host disks only. Creation rechecks free space and filesystem support on the chosen drive.
+/// With `explicit` nothing is asked. Otherwise a single question: as a [`ui::Wizard`] step, Back
+/// returns [`ui::BACK`], while its Cancel choice still cancels.
 pub fn choose(host: &Value, explicit: Option<&str>, minimum: u32) -> Result<Selection, String> {
-    choose_supported(host, explicit, minimum, true)
+    choose_supported(host, explicit, minimum, true, None)
 }
 
+/// [`choose`] asked again, with the drive chosen earlier (its path or label) preselected.
+pub fn choose_with_previous(host: &Value, minimum: u32, previous: Option<&str>) -> Result<Selection, String> {
+    choose_supported(host, None, minimum, true, previous)
+}
+
+/// [`choose`] for a model, on the engine's configured drive when it cannot place models on
+/// another. `previous` is the drive chosen earlier, preselected when asked again.
 pub fn choose_model(
     host: &Value,
     explicit: Option<&str>,
     minimum: u32,
     supports_selection: bool,
+    previous: Option<&str>,
 ) -> Result<Selection, String> {
     public::model_storage_drive(supports_selection, host, explicit)?;
-    let mut selected = choose_supported(host, explicit, minimum, supports_selection)?;
+    let mut selected = choose_supported(host, explicit, minimum, supports_selection, previous)?;
     if !supports_selection {
         selected.drive = None;
         ui::info("Using the running engine's configured storage drive. Reopen the updated Yougori app to enable other drives.");
@@ -48,11 +59,26 @@ pub fn choose_model(
     Ok(selected)
 }
 
+/// The drive to preselect: the one chosen earlier, else the configured storage drive, else the
+/// first with room; only drives that `fit` count.
+fn initial_drive(drives: &[Value], host: &Value, previous: Option<&str>, fits: impl Fn(&Value) -> bool) -> Option<usize> {
+    let at = |path: Option<&str>| {
+        let path = path?;
+        drives.iter().position(|drive| {
+            drive["path"].as_str().is_some_and(|candidate| storage::same_drive(candidate, path)) && fits(drive)
+        })
+    };
+    at(previous)
+        .or_else(|| at(host["storageDrive"].as_str()))
+        .or_else(|| drives.iter().position(&fits))
+}
+
 fn choose_supported(
     host: &Value,
     explicit: Option<&str>,
     minimum: u32,
     supports_selection: bool,
+    previous: Option<&str>,
 ) -> Result<Selection, String> {
     let drives = host["storageDrives"]
         .as_array()
@@ -136,16 +162,7 @@ fn choose_supported(
             })
             .collect::<Vec<_>>();
         choices.push(ui::Choice::new("Cancel", "nothing is created"));
-        let initial = drives
-            .iter()
-            .position(|drive| {
-                drive["path"]
-                    .as_str()
-                    .zip(host["storageDrive"].as_str())
-                    .is_some_and(|(a, b)| storage::same_drive(a, b))
-                    && fits(drive)
-            })
-            .unwrap_or_else(|| drives.iter().position(fits).unwrap_or(drives.len()));
+        let initial = initial_drive(drives, host, previous, &fits).unwrap_or(drives.len());
         let picked = ui::select(
             "Where should this environment be stored?",
             &["Storage is chosen for this new environment.".into()],
@@ -170,6 +187,22 @@ fn choose_supported(
         host: selected,
         label: path,
     })
+}
+
+/// While alive, the engine's plain "still working" lines stay off the terminal: they would break
+/// the spinners, which show the same progress. The command that follows prints them again.
+struct Quiet(bool);
+
+impl Quiet {
+    fn on() -> Self {
+        Self(client::QUIET.swap(true, Ordering::Relaxed))
+    }
+}
+
+impl Drop for Quiet {
+    fn drop(&mut self) {
+        client::QUIET.store(self.0, Ordering::Relaxed);
+    }
 }
 
 /// Direct CLI commands use the same picker as the menus. Piped scripts and dry runs never prompt.
@@ -201,17 +234,20 @@ pub async fn prepare_args(args: &mut Vec<String>) -> Result<(), String> {
     if args.len() < 2 || (first == "run" && args.len() == 1) {
         return Ok(());
     }
+    let _quiet = Quiet::on();
     // Explicit drive flags belong to the host options, not a guest command after the image.
     let mut model_support = None;
     let (offset, minimum) = if model || hf {
         if args.iter().any(|a| a == "--storage-drive") {
             return Ok(());
         }
-        client::start(None).await?;
+        busy("Starting Yougori engine", client::start(None)).await?;
         let target = args
             .get(if model { 2 } else { 1 })
             .ok_or("Supply a model")?;
-        if public::find_model(target).await?.is_some() && !args.iter().any(|a| a == "--quant") {
+        if busy("Looking for this model on this computer", public::find_model(target)).await?.is_some()
+            && !args.iter().any(|a| a == "--quant")
+        {
             return Ok(());
         }
         let quant = args
@@ -265,10 +301,10 @@ pub async fn prepare_args(args: &mut Vec<String>) -> Result<(), String> {
                 .max(1.0) as u32,
         )
     };
-    client::start(None).await?;
-    let host = call("refresh_host_metrics", json!({})).await?["host"].take();
+    busy("Starting Yougori engine", client::start(None)).await?;
+    let host = busy("Reading this computer's drives and memory", call("refresh_host_metrics", json!({}))).await?["host"].take();
     let selection = match model_support {
-        Some(supported) => choose_model(&host, None, minimum, supported)?,
+        Some(supported) => choose_model(&host, None, minimum, supported, None)?,
         None => choose(&host, None, minimum)?,
     };
     if let Some(drive) = selection.drive {
@@ -298,23 +334,49 @@ mod tests {
         assert!(choose(&host, Some("F:\\"), 76).is_err());
     }
     #[test]
+    fn the_drive_chosen_earlier_is_preselected_when_it_still_fits() {
+        let host = json!({"storageDrive":"C:\\","storageDrives":[
+            {"path":"C:\\","freeGb":50},
+            {"path":"D:\\","freeGb":800},
+            {"path":"E:\\","freeGb":10}
+        ]});
+        let drives = host["storageDrives"].as_array().unwrap();
+        let fits = |drive: &Value| drive["freeGb"].as_f64().is_some_and(|free| free >= 22.0);
+        assert_eq!(initial_drive(drives, &host, Some("d:/"), fits), Some(1));
+        assert_eq!(initial_drive(drives, &host, None, fits), Some(0), "the configured drive");
+        assert_eq!(initial_drive(drives, &host, Some("E:\\"), fits), Some(0), "a drive without room is not preselected");
+        assert_eq!(initial_drive(drives, &host, Some("Default storage"), fits), Some(0));
+        let full = json!({"storageDrive":"E:\\"});
+        assert_eq!(initial_drive(drives, &full, None, fits), Some(0), "the first drive with room");
+        assert_eq!(initial_drive(drives, &host, None, |_: &Value| false), None);
+    }
+    #[test]
     fn older_model_engine_keeps_the_chosen_default_without_an_unsupported_resource_field() {
         let host = json!({"totalCpu":8,"totalMemoryGb":16,"storageDrive":"D:\\","storageDrives":[
             {"path":"C:\\","totalGb":100,"freeGb":80,"readOnly":false},
             {"path":"D:\\","totalGb":1000,"freeGb":800,"readOnly":false}
         ]});
-        let selected = choose_model(&host, Some("D:/"), 20, false).unwrap();
+        let selected = choose_model(&host, Some("D:/"), 20, false, None).unwrap();
         assert!(selected.drive.is_none());
         assert_eq!(selected.label, "D:\\");
         assert_eq!(selected.host["storageDrive"], "D:\\");
-        assert!(choose_model(&host, Some("C:\\"), 20, false).is_err());
+        assert!(choose_model(&host, Some("C:\\"), 20, false, None).is_err());
         assert_eq!(
-            choose_model(&host, Some("C:\\"), 20, true)
+            choose_model(&host, Some("C:\\"), 20, true, None)
                 .unwrap()
                 .drive
                 .as_deref(),
             Some("C:\\")
         );
+    }
+    #[test]
+    fn engine_progress_lines_return_once_the_picker_is_done() {
+        let before = client::QUIET.load(Ordering::Relaxed);
+        {
+            let _quiet = Quiet::on();
+            assert!(client::QUIET.load(Ordering::Relaxed), "spinners show the progress meanwhile");
+        }
+        assert_eq!(client::QUIET.load(Ordering::Relaxed), before);
     }
     #[tokio::test]
     async fn scripts_and_dry_runs_do_not_open_a_picker_or_contact_the_engine() {

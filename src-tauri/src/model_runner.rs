@@ -7,6 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod neocloud;
 pub(crate) mod optimizer;
 mod local;
+pub(crate) mod macos;
+mod compute;
 pub(crate) mod huggingface;
 pub(crate) mod preflight;
 mod vllm;
@@ -53,15 +55,24 @@ pub fn normalize_model(model: &str) -> Result<String, String> {
     Ok(model.into())
 }
 #[tauri::command]
-pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
+pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, backend: Option<String>, memory_gb: Option<f64>, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
     // A local model folder is a raw host path: dashboard or same-user CLI only.
     if folder.is_some() { crate::host_terminal::require_dashboard(window.label())?; }
-    run_model_with_resources(model, port, Some(ModelResources { model_folder:folder, ..Default::default() }), quant, app).await
+    run_model_with_resources(model, port, Some(ModelResources { model_folder:folder, backend, memory_gb, ..Default::default() }), quant, app).await
 }
 /// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod.
 #[tauri::command]
 pub async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
     neocloud::run_neocloud_model(model, environment_id, port, app).await
+}
+#[tauri::command]
+pub async fn model_compute_status(app: AppHandle) -> Result<Value, String> {
+    let runtime = app.state::<RuntimeManager>();
+    if cfg!(target_os="macos") { return Ok(runtime.native_model_capabilities().await); }
+    let cuda = runtime.cuda_status().await;
+    Ok(json!({"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,"native":false,
+        "available":true,"metalSupported":false,"cudaSupported":cuda.supported,
+        "backend":if cuda.supported {"cuda"} else {"cpu"},"unifiedMemory":false}))
 }
 /// Safetensors models run on the PyTorch CUDA image. GGUF models need a newer C library for the
 /// pinned llama.cpp CUDA build, which the model server downloads and verifies itself.
@@ -78,6 +89,7 @@ pub struct ModelResources {
     pub model_folder: Option<String>,
     #[serde(default)]
     pub cpu_only: bool,
+    pub backend: Option<String>,
     #[serde(default)]
     pub agent_api: bool,
 }
@@ -95,7 +107,7 @@ impl ModelResources {
             return Err("Model storage exceeds available capacity".into());
         }
         if storage < 12.0 {
-            return Err("Model workloads need at least 12 GB of available storage for the CUDA image and model weights".into());
+            return Err("Model workloads need at least 12 GB of available storage for the model runtime and weights".into());
         }
         Ok((cpu, memory, storage))
     }
@@ -114,6 +126,29 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
         return Err(format!("{}: {}. No environment was created.{help}",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")));
     }
     let cpu_only = resources.as_ref().is_some_and(|r| r.cpu_only);
+    let mut backend = compute::Backend::select(std::env::consts::OS, std::env::consts::ARCH,
+        resources.as_ref().and_then(|r| r.backend.as_deref()), cpu_only)?;
+    if backend == compute::Backend::Metal && resources.as_ref().and_then(|r|r.backend.as_deref()).is_none_or(|b|b=="auto")
+        && app.state::<RuntimeManager>().native_model_capabilities().await["metalSupported"] != true {
+        backend = compute::Backend::MacCpu;
+    }
+    if backend.native() {
+        if compatibility["runner"] != "yougori-llama-cpp" {
+            return Err("Native Mac inference currently requires GGUF weights. Select a supported GGUF repository.".into());
+        }
+        let mut resources = resources.unwrap_or_default();
+        resources.backend = Some(backend.name().into());
+        if resources.memory_gb.is_none() { resources.memory_gb = Some(compatibility["resources"]["gpuMemoryGbEstimated"].as_f64().unwrap_or(4.).max(4.)); }
+        let host = app.state::<PlatformStore>().snapshot()?.host;
+        let free = app.state::<RuntimeManager>().new_storage_on_drive(resources.storage_drive.as_deref())?.maximum_gb;
+        resources.allocation(host.total_cpu,host.total_memory_gb,free)?;
+        let required = compatibility["resources"]["storageGbRecommended"].as_f64().unwrap_or(20.);
+        if free < required { return Err(format!("Native model storage needs approximately {required:.0} GB free")); }
+        let folder = macos::download(&model, &compatibility, &resources, &app).await?;
+        resources.model_folder = Some(folder.to_string_lossy().into_owned());
+        return local::run_verified(model, port, resources, compatibility, app).await;
+    }
+    let cpu_only = backend == compute::Backend::Cpu;
     if cpu_only && compatibility["runner"] != "yougori-llama-cpp" {
         return Err("CPU model workers currently require a supported GGUF repository. Choose a GGUF variant or an NVIDIA GPU.".into());
     }
@@ -211,6 +246,26 @@ async fn run_registry_model(model:String,port:Option<u16>,resources:Option<Model
     let (cpu,memory,storage)=resources.allocation(state.host.total_cpu,state.host.total_memory_gb,available)?;
     let cached=crate::model_registry::cached(&model,resources.storage_drive.as_deref(),version_id,&app).await?;
     let folder=cached["folder"].as_str().ok_or("Missing model artifact folder")?;
+    let backend = compute::Backend::select(std::env::consts::OS,std::env::consts::ARCH,resources.backend.as_deref(),resources.cpu_only)?;
+    if backend != compute::Backend::Cuda {
+        if version["format"] != "gguf" { return Err("This backend requires a GGUF publication".into()); }
+        let mut resources = resources;
+        resources.model_folder = Some(folder.into());
+        let files:Vec<Value> = cached["files"].as_array().into_iter().flatten().filter(|f|f["name"].as_str().is_some_and(|n|n.ends_with(".gguf"))).cloned().collect();
+        let bytes:f64 = files.iter().filter_map(|f|f["size"].as_u64()).map(|n|n as f64).sum();
+        let native_check = json!({"supported":true,"format":"gguf","runner":"yougori-llama-cpp","revision":version["revision"],"quant":version["quant"],"files":files,
+            "resources":{"gpuMemoryGbEstimated":(bytes/1073741824.*1.15+1.5).ceil()}});
+        let result = local::run_verified(model.clone(),port,resources,native_check,app.clone()).await?;
+        let id=result["id"].as_str().ok_or("Missing environment ID")?;
+        let runtime=app.state::<RuntimeManager>();
+        let env=app.state::<PlatformStore>().environment(id)?;
+        let runtime_id=env.runtime_id.as_deref().unwrap_or(id);
+        let mut options=runtime.workload_options(runtime_id)?;
+        options.environment.insert("YOUGORI_REGISTRY_MODEL".into(),model);
+        options.environment.insert("YOUGORI_REGISTRY_VERSION".into(),version_id.into());
+        runtime.save_workload_options(runtime_id,&options)?;
+        return Ok(result);
+    }
     let token=format!("{}{}",uuid::Uuid::new_v4().simple(),uuid::Uuid::new_v4().simple());
     let reference=format!("model-api-{}",uuid::Uuid::new_v4().simple());crate::projects::secrets::store(&reference,&token)?;
     let gguf=version["format"]=="gguf";
@@ -740,6 +795,21 @@ async fn stream_reply(
     body: &Value,
     mut delta: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<Value, String> {
+    stream_deltas(app, environment_id, cancel, body, |piece| match piece["content"].as_str() {
+        Some(text) if !text.is_empty() => delta(text),
+        _ => Ok(()),
+    })
+    .await
+}
+/// Streams a reply, handing each delta (`content` and `tool_calls` pieces) to `delta`;
+/// resolves with the finish reason and usage.
+pub(crate) async fn stream_deltas(
+    app: &AppHandle,
+    environment_id: &str,
+    cancel: &tokio::sync::Notify,
+    body: &Value,
+    mut delta: impl FnMut(&Value) -> Result<(), String>,
+) -> Result<Value, String> {
     let mut result = json!({"finishReason":"stop"});
     let mut stream = tokio::select! {
         stream = model_connection(app, environment_id, "/v1/chat/completions", Some(body)) => stream?,
@@ -802,10 +872,9 @@ async fn stream_reply(
             if let Some(message) = event["error"]["message"].as_str() {
                 return Err(message.to_owned());
             }
-            if let Some(text) = event["choices"][0]["delta"]["content"].as_str() {
-                if !text.is_empty() {
-                    delta(text)?;
-                }
+            let piece = &event["choices"][0]["delta"];
+            if piece.is_object() {
+                delta(piece)?;
             }
             if let Some(reason) = event["choices"][0]["finish_reason"].as_str() {
                 result["finishReason"] = json!(reason);

@@ -32,33 +32,43 @@ async function files(directory) {
 }
 
 const executables = ["MacOS/yougori", "Resources/cli/yougori", "Resources/cli/yougori-cli",
-  "Resources/runtime/qemu/qemu-system-x86_64", "Resources/runtime/qemu/qemu-img"].map(file => join(contents, file))
+  "Resources/runtime/qemu/qemu-system-x86_64", "Resources/runtime/qemu/qemu-img",
+  "Resources/runtime/llama/llama-server", "Resources/runtime/llama/yougori-supervise"].map(file => join(contents, file))
 for (const file of executables) assertMacCli(await readFile(file), process.arch)
 for (const file of await files(join(contents, "Resources"))) {
   if (/\.(exe|dll)$/i.test(file)) throw new Error(`Windows binary leaked into macOS package: ${file}`)
 }
 
 // The runtime holds exactly what its SHA256SUMS lists, which the app verifies before use.
-const listed = new Map((await readFile(join(runtime, "SHA256SUMS"), "utf8")).split("\n").filter(Boolean).map(line => {
-  const [hash, ...name] = line.trim().split(/\s+/)
-  return [name.join(" ").replace(/^\*/, ""), hash]
-}))
-const present = (await files(runtime)).map(file => relative(runtime, file).split("\\").join("/")).filter(file => file !== "SHA256SUMS")
-for (const file of present) {
-  const hash = createHash("sha256").update(await readFile(join(runtime, file))).digest("hex")
-  if (listed.get(file) !== hash) throw new Error(`Runtime file is not listed with its checksum: ${file}`)
+async function verifyRuntime(directory) {
+  const listed = new Map()
+  for (const line of (await readFile(join(directory, "SHA256SUMS"), "utf8")).split("\n").filter(line => line.trim())) {
+    const match = line.match(/^([0-9a-f]{64})\s+\*?(.+?)\s*$/i)
+    if (!match || listed.has(match[2])) throw new Error(`Invalid or duplicate runtime checksum: ${directory}`)
+    listed.set(match[2], match[1].toLowerCase())
+  }
+  const present = (await files(directory)).map(file => relative(directory, file).split("\\").join("/")).filter(file => file !== "SHA256SUMS")
+  for (const file of present) {
+    const hash = createHash("sha256").update(await readFile(join(directory, file))).digest("hex")
+    if (listed.get(file) !== hash) throw new Error(`Runtime file is not listed with its checksum: ${join(directory, file)}`)
+  }
+  for (const file of listed.keys()) if (!present.includes(file)) throw new Error(`Runtime file listed but missing: ${join(directory, file)}`)
+  return present
 }
-for (const file of listed.keys()) if (!present.includes(file)) throw new Error(`Runtime file listed but missing: ${file}`)
+const present = await verifyRuntime(runtime)
+const nativeModel = join(contents, "Resources/runtime/llama")
+await verifyRuntime(nativeModel)
 
 // Libraries load only from macOS itself or from the runtime's own lib folder.
 const libraries = present.filter(file => file.startsWith("lib/") && file.endsWith(".dylib")).map(file => join(runtime, file))
-for (const binary of [join(runtime, "qemu-system-x86_64"), join(runtime, "qemu-img"), ...libraries]) {
+for (const binary of [join(runtime, "qemu-system-x86_64"), join(runtime, "qemu-img"), ...libraries,
+  join(nativeModel, "llama-server"), join(nativeModel, "yougori-supervise")]) {
   for (const line of run("/usr/bin/otool", ["-L", binary]).split("\n").slice(1)) {
     const reference = line.trim().split(" (compatibility")[0]
     if (!reference) continue
     const name = basename(reference)
     const own = reference === `@rpath/${basename(binary)}`
-    const bundled = [`@executable_path/lib/${name}`, `@loader_path/${name}`].includes(reference) && present.includes(`lib/${name}`)
+    const bundled = !binary.startsWith(nativeModel) && [`@executable_path/lib/${name}`, `@loader_path/${name}`].includes(reference) && present.includes(`lib/${name}`)
     if (!(own || bundled || reference.startsWith("/usr/lib/") || reference.startsWith("/System/Library/"))) {
       throw new Error(`${relative(contents, binary)} loads ${reference} from outside macOS and the app`)
     }
@@ -83,5 +93,5 @@ if (distribution) {
   run("/usr/bin/xcrun", ["stapler", "validate", app])
 }
 run("/usr/bin/plutil", ["-lint", join(contents, "Info.plist")])
-console.log(`macOS bundle verified (${process.arch}): native binaries, bundled QEMU runtime and signatures${distribution ? ", Developer ID, notarization and Gatekeeper" : ""}: ${app}`)
+console.log(`macOS bundle verified (${process.arch}): native binaries, QEMU and model runtimes, and signatures${distribution ? ", Developer ID, notarization and Gatekeeper" : ""}: ${app}`)
 if (!distribution) console.log("Not a distribution check: run with --distribution on the signed, notarized build.")

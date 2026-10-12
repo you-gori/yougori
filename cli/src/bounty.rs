@@ -2,15 +2,29 @@
 use crate::{cli_ui as ui, model_invocation, public::call};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, future::Future, time::Duration};
+use std::{
+    collections::BTreeSet,
+    future::Future,
+    time::{Duration, Instant},
+};
+
+pub const DEFAULT_MODEL: &str = "hf.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF:Q4_K_M";
+
+/// The setup's model question and the line under it.
+const MODEL_QUESTION: &str = "Which Hugging Face GGUF model should power your worker?";
+const MODEL_NOTE: &str =
+    "Use a GGUF repository, for example hf.co/OWNER/MODEL-GGUF. Add :Q4_K_M to choose a quantization.";
+/// Workers run GGUF models only, through the engine's llama.cpp runner.
+const GGUF_ONLY: &str = "Swarm Mining workers run only GGUF models (the llama.cpp format). Choose a Hugging Face repository with .gguf files; its name usually ends in -GGUF.";
 
 pub const HELP: &str = r#"Swarm Mining — your model, your worker, your choice of bounty.
 
-  yougori start bounty [--model hf.co/OWNER/MODEL] [OPTIONS]
+  yougori start bounty [--change] [--model hf.co/OWNER/MODEL-GGUF[:QUANT]] [OPTIONS]
   yougori bounty workers
   yougori bounty bounties [WORKER]
   yougori bounty apply WORKER BOUNTY --version N --terms-digest DIGEST --yes
   yougori bounty status|offers|chat|messages|pause|resume|stop WORKER
+  yougori bounty resume WORKER [--budget-minutes N]
   yougori bounty details WORKER OFFER
   yougori bounty accept WORKER OFFER --version N --terms-digest DIGEST
                          --authorization-digest DIGEST --report-policy automatic|review
@@ -23,25 +37,60 @@ pub const HELP: &str = r#"Swarm Mining — your model, your worker, your choice 
   yougori bounty delete WORKER --yes
   yougori bounty reports|rewards [WORKER]
   yougori bounty doctor [WORKER]
+  yougori bounty practice WORKER
+  yougori bounty memory WORKER release|keep
+
+WORKER is the short name Yougori gives each worker, such as keen-heron. Every hint
+uses it and yougori bounty workers lists it; the worker's own name, its ID or the
+first digits of its ID work too.
 
 Setup options:
-  --cpu CORES --memory GB --gpu nvidia|cpu --storage-drive PATH
-  --workspace-quota GB --name NAME --quant VARIANT --release-memory
+  --change (set up a new worker: choose the model, drive and resources again)
+  --cpu CORES --memory GB --gpu nvidia|metal|cpu --storage-drive PATH
+  --workspace-quota GB --name NAME --quant VARIANT --release-memory|--keep-loaded
   --worker WORKER (resume the saved model and resources)
   --platform-url HTTPS_URL (HTTP loopback supported for local development)
   --yes --no-wait (scripted start: prints the worker at once; never accepts a bounty)
   --dry-run (validate and show requests without contacting the engine)
 
-Without --gpu the worker uses an NVIDIA GPU only when this PC passes the CUDA
+Without options, start bounty reconnects to the worker set up last on this computer
+and reuses its downloaded model and sandbox. A worker whose preparation failed asks
+before retrying. --change, --model or another creation option (--cpu, --memory,
+--gpu, --storage-drive, --workspace-quota, --name, --quant, --release-memory,
+--keep-loaded) sets up a new worker instead.
+
+The model loads only for work: an accepted bounty, your chat, or the practice. While
+the worker waits it is unloaded, so it holds no GPU or model memory; the next job
+loads it from disk again. --keep-loaded, or bounty memory WORKER keep, keeps it
+loaded for faster starts; bounty memory WORKER release unloads it again.
+bounty practice WORKER, or T in the waiting view, opens a live console where the
+worker's own model investigates a planted flaw in a safe offline example. Its work
+streams as it happens; type guidance to steer it, or /stop to end it. Yougori checks
+each report and returns its feedback, without the answer, until one qualifies.
+Nothing is paid. Press L (or Enter) in the waiting view to watch an accepted bounty
+the same way; there /stop pauses or leaves it.
+
+Without --gpu, native Mac builds probe Metal first. Other hosts use an NVIDIA GPU only when this PC passes the CUDA
 checks of yougori gpu status; otherwise the processor runs the model.
 
-Paste a Hugging Face model first. Yougori prepares a private local model API and
+Workers run GGUF models (the llama.cpp format) that support tool calling. Interactive
+setup suggests Gemma-4-12B-Hephaestus-GGUF at Q4_K_M. Paste another Hugging Face
+GGUF repository to change it; :IQ4_XS also selects the quantization. A repository
+without GGUF files is refused before anything downloads. Setup then asks which drive
+stores the model and the worker's sandboxes, preselecting the fixed drive with the
+most free space. A model already downloaded on that drive with the same settings is
+reused; another drive downloads it again. Esc goes back to the previous question,
+and Ctrl+C stops waiting at any step. Memory is suggested from the selected weights
+plus space for the agent and test sandbox.
+Yougori prepares a private local model API and
 OpenCode, then waits for offers without agent inference. Once online it offers a
 safe, offline practice bounty you can try while you wait. Review the company,
 objective, exact source authorization and publisher payment promise before accepting.
 With report policy review, a finished draft shows as report ready: read it with
 bounty reports, then send it with bounty submit. Leaving ends the accepted bounty.
-An engine restart pauses every worker until you resume it.
+An engine restart pauses every worker until you resume it. Once the work budget
+is spent, resume with --budget-minutes N (1-1440): work continues N more minutes
+from now, never past the bounty's deadline.
 The publisher pays a qualifying winner externally from its own wallet. Payment is
 not prefunded, verified or guaranteed by Yougori. No Swarm withdrawal or transfer
 command is provided. Never supply a wallet private key or seed phrase.
@@ -52,6 +101,7 @@ bypass safeguards, or falsify evidence. Open source modification rights remain.
 Read https://yougori.com/swarm/rules and the exact rules in your offer.
 Publisher assertions do not grant rights over third parties or live systems.
 
+The waiting view: O offers, C chat, P pause/resume, T practice, R refresh, Q detach.
 Ctrl+C opens Cancel / Pause / Stop / Stop and delete. Ctrl+] detaches and keeps
 the engine's worker running. Deletion keeps submitted reports and reward records.
 An environment named bounty can still start with: yougori env start bounty
@@ -65,6 +115,8 @@ pub struct Invocation {
     pub yes: bool,
     pub no_wait: bool,
     pub interactive_start: bool,
+    /// `--change`: set up a new worker instead of reconnecting to the saved one.
+    pub change: bool,
 }
 
 fn clean(value: &str, name: &str, max: usize) -> Result<String, String> {
@@ -75,6 +127,15 @@ fn clean(value: &str, name: &str, max: usize) -> Result<String, String> {
         ));
     }
     Ok(value.into())
+}
+
+/// A worker's own name. The engine refuses names shorter than two bytes.
+fn worker_name(value: &str) -> Result<String, String> {
+    let name = value.trim();
+    if name.len() < 2 || name.len() > 64 || name.chars().any(char::is_control) {
+        return Err("Worker name must contain 2 to 64 bytes and no control characters".into());
+    }
+    Ok(name.into())
 }
 
 fn number(value: &str, name: &str, min: f64, max: f64) -> Result<f64, String> {
@@ -89,11 +150,35 @@ fn number(value: &str, name: &str, min: f64, max: f64) -> Result<f64, String> {
 }
 
 pub fn model(value: &str) -> Result<String, String> {
-    let value = model_invocation::model_id(value)?;
+    let (repository, quant) = match value.trim().rsplit_once(':') {
+        Some((repository, quant)) if !quant.contains('/') => {
+            if quant.is_empty() || quant.len() > 32 || !quant.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return Err("Use a GGUF quantization label after ':', for example IQ4_XS or Q4_K_M".into());
+            }
+            (repository, Some(quant.to_ascii_uppercase()))
+        }
+        _ => (value, None),
+    };
+    let value = model_invocation::model_id(repository)?;
     if !value.starts_with("hf.co/") {
-        return Err("Paste a Hugging Face model: hf.co/OWNER/MODEL".into());
+        return Err("Paste a Hugging Face GGUF model: hf.co/OWNER/MODEL-GGUF".into());
     }
-    Ok(value)
+    Ok(match quant { Some(quant) => format!("{value}:{quant}"), None => value })
+}
+
+fn normalize_selection(request: &mut Value) -> Result<(), String> {
+    let Some(selected) = request["model"].as_str() else { return Ok(()) };
+    let selected = model(selected)?;
+    if let Some((repository, quant)) = selected.rsplit_once(':') {
+        if request["quant"].as_str().is_some_and(|explicit|!explicit.eq_ignore_ascii_case(quant)) {
+            return Err("The model's :QUANT suffix conflicts with --quant; choose one variant".into());
+        }
+        request["model"] = repository.into();
+        request["quant"] = quant.into();
+    } else {
+        request["model"] = selected.into();
+    }
+    Ok(())
 }
 
 /// The engine's rule for worker and report IDs.
@@ -286,6 +371,8 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
             | "doctor"
             | "bounties"
             | "apply"
+            | "practice"
+            | "memory"
     ) {
         return Err(format!(
             "Unknown bounty command {action}. Run yougori bounty --help."
@@ -301,6 +388,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
     let mut dry_run = false;
     let mut yes = false;
     let mut no_wait = false;
+    let mut change = false;
     let mut i = 1;
     while i < tail.len() {
         let flag = tail[i].as_str();
@@ -316,7 +404,13 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
             "--dry-run" => dry_run = true,
             "--yes" => yes = true,
             "--no-wait" if action == "start" => no_wait = true,
-            "--release-memory" if action == "start" => request["keepResident"] = false.into(),
+            "--change" if action == "start" => change = true,
+            "--release-memory" | "--keep-loaded" if action == "start" => {
+                if request["keepResident"].is_boolean() {
+                    return Err("Choose either --release-memory or --keep-loaded".into());
+                }
+                request["keepResident"] = (flag == "--keep-loaded").into();
+            }
             "--model" | "--cpu" | "--memory" | "--gpu" | "--storage-drive"
             | "--workspace-quota" | "--name" | "--quant" | "--worker" | "--platform-url"
                 if action == "start" =>
@@ -342,8 +436,8 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
                             .into();
                     }
                     "--gpu" => {
-                        if !matches!(value.as_str(), "nvidia" | "cpu") {
-                            return Err("--gpu must be nvidia or cpu".into());
+                        if !matches!(value.as_str(), "nvidia" | "metal" | "cpu") {
+                            return Err("--gpu must be nvidia, metal or cpu".into());
                         }
                         request["gpu"] = value.clone().into();
                     }
@@ -358,12 +452,10 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
                         request["workspaceQuotaGb"] = number(value, flag, 4.0, 1024.0)?.into()
                     }
                     "--platform-url" => request["platformUrl"] = platform(value)?.into(),
+                    "--name" => request["name"] = worker_name(value)?.into(),
                     _ => {
-                        request[match flag {
-                            "--name" => "name",
-                            "--quant" => "quant",
-                            _ => "workerId",
-                        }] = clean(value, flag, if flag == "--name" { 64 } else { 256 })?.into()
+                        request[if flag == "--quant" { "quant" } else { "workerId" }] =
+                            clean(value, flag, 256)?.into()
                     }
                 }
             }
@@ -391,7 +483,8 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
             | "--report-policy"
             | "--budget-minutes"
                 if action == "accept"
-                    || action == "apply" && matches!(flag, "--version" | "--terms-digest") =>
+                    || action == "apply" && matches!(flag, "--version" | "--terms-digest")
+                    || action == "resume" && flag == "--budget-minutes" =>
             {
                 i += 1;
                 let value = tail
@@ -440,7 +533,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
     }
     let limits = match action {
         "start" | "workers" => (0, 0),
-        "details" | "accept" | "skip" | "apply" | "submit" => (2, 2),
+        "details" | "accept" | "skip" | "apply" | "submit" | "memory" => (2, 2),
         "reports" | "rewards" | "doctor" | "bounties" => (0, 1),
         _ => (1, 1),
     };
@@ -452,7 +545,14 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
     if let Some(worker) = positional.first() {
         request["workerId"] = worker.clone().into();
     }
-    if let Some(report) = positional.get(1).filter(|_| action == "submit") {
+    if action == "memory" {
+        request["keepResident"] = match positional[1].as_str() {
+            "release" => false,
+            "keep" => true,
+            _ => return Err("bounty memory WORKER takes release (unload while waiting) or keep".into()),
+        }
+        .into();
+    } else if let Some(report) = positional.get(1).filter(|_| action == "submit") {
         if !identifier(report) {
             return Err("REPORT_ID is the id of a draft listed by yougori bounty reports WORKER".into());
         }
@@ -462,16 +562,9 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
         request["bountyId"] = offer.clone().into();
     }
     if action == "start" {
-        if request["workerId"].is_string()
-            && (request["model"].is_string()
-                || request["resources"].is_object()
-                || request["gpu"].is_string()
-                || request["name"].is_string()
-                || request["quant"].is_string()
-                || request["workspaceQuotaGb"].is_number()
-                || request["keepResident"].is_boolean())
-        {
-            return Err("--worker resumes saved model and resources; do not combine it with creation options".into());
+        normalize_selection(&mut request)?;
+        if request["workerId"].is_string() && (change || creation_options(&request)) {
+            return Err("--worker resumes saved model and resources; do not combine it with --change or creation options".into());
         }
         if request["workerId"].is_string() {
             request["action"] = "resume".into();
@@ -545,7 +638,19 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
         yes,
         no_wait,
         interactive_start: action == "start",
+        change,
     }))
+}
+
+/// Settings that describe a new worker, so `start bounty` does not reconnect to the saved one.
+fn creation_options(request: &Value) -> bool {
+    request["model"].is_string()
+        || request["resources"].is_object()
+        || request["gpu"].is_string()
+        || request["name"].is_string()
+        || request["quant"].is_string()
+        || request["workspaceQuotaGb"].is_number()
+        || request["keepResident"].is_boolean()
 }
 
 /// Publisher and server text becomes one plain line: newlines and other controls could fake
@@ -571,6 +676,27 @@ fn field(value: &Value, key: &str, fallback: &str) -> String {
     }
 }
 
+/// A long note for a prompt, such as a problem to fix, as lines that fit this terminal:
+/// prompts cut every note line at the screen's edge.
+fn note_lines(text: &str) -> Vec<String> {
+    let columns = crossterm::terminal::size().map_or(80, |(columns, _)| usize::from(columns));
+    // The rail before each note line takes three columns; the last one stays free.
+    wrapped(text, columns.saturating_sub(4))
+}
+
+/// At most five lines, so the question and its choices stay on screen.
+fn wrapped(text: &str, columns: usize) -> Vec<String> {
+    let mut lines: Vec<String> = ui::wrap(text, columns.max(20))
+        .into_iter()
+        .map(|(line, _)| line.trim_end().to_owned())
+        .collect();
+    if lines.len() > 5 {
+        lines.truncate(5);
+        lines[4].push('…');
+    }
+    lines
+}
+
 fn worker_id(result: &Value) -> Result<String, String> {
     result["worker"]["id"]
         .as_str()
@@ -581,6 +707,188 @@ fn worker_id(result: &Value) -> Result<String, String> {
             "The engine did not return a worker ID; inspect yougori bounty workers before retrying"
                 .into()
         })
+}
+
+/// Words for worker short names: plain, friendly, easy to type and harmless in any pairing
+/// (no word that reads as slang next to another). Changing either list renames existing workers.
+const HANDLE_ADJECTIVES: [&str; 100] = [
+    "able", "agile", "amber", "ample", "apt", "azure", "bold", "brave", "breezy", "bright",
+    "brisk", "calm", "candid", "cheery", "civic", "clever", "cosmic", "cozy", "crisp", "curious",
+    "dapper", "daring", "deft", "eager", "early", "earnest", "elated", "epic", "fair", "fancy",
+    "fleet", "fluent", "fresh", "frosty", "gentle", "glad", "golden", "grand", "happy", "hardy",
+    "hearty", "honest", "humble", "jolly", "jovial", "keen", "kind", "lively", "lucid", "lucky",
+    "lunar", "mellow", "merry", "mighty", "misty", "modest", "neat", "nimble", "noble", "novel",
+    "polar", "polite", "proud", "quick", "quiet", "rapid", "ready", "regal", "rosy", "royal",
+    "rustic", "sage", "scenic", "serene", "sharp", "shiny", "silent", "silver", "sleek", "smart",
+    "snowy", "solar", "sonic", "spry", "steady", "stellar", "sturdy", "sunny", "swift", "tidy",
+    "tranquil", "true", "trusty", "upbeat", "valiant", "vivid", "warm", "wise", "witty", "zesty",
+];
+const HANDLE_NOUNS: [&str; 100] = [
+    "alpaca", "badger", "bear", "bee", "beetle", "bison", "bobcat", "canary", "caribou", "cheetah",
+    "condor", "corgi", "coyote", "crane", "cricket", "deer", "dingo", "dolphin", "dove", "eagle",
+    "egret", "elk", "falcon", "ferret", "finch", "fox", "gazelle", "gecko", "gibbon", "gopher",
+    "grouse", "hare", "hawk", "heron", "ibex", "ibis", "impala", "jaguar", "kestrel", "kite",
+    "kiwi", "koala", "lark", "lemur", "leopard", "lion", "llama", "lynx", "magpie", "marmot",
+    "marten", "meerkat", "mink", "moose", "narwhal", "newt", "ocelot", "okapi", "orca", "osprey",
+    "otter", "owl", "panda", "panther", "parrot", "pelican", "penguin", "petrel", "pika", "plover",
+    "puffin", "puma", "quail", "quokka", "rabbit", "raven", "robin", "salmon", "seal", "sparrow",
+    "starling", "stork", "swan", "tapir", "teal", "tern", "thrush", "tiger", "toucan", "trout",
+    "turtle", "vole", "walrus", "warbler", "whale", "wolf", "wombat", "wren", "yak", "zebra",
+];
+
+/// The short name people use for a worker, such as keen-heron: derived from the whole ID, so
+/// an ID keeps its name forever. Two workers rarely share one; their IDs then tell them apart.
+pub fn worker_handle(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(id.as_bytes());
+    let n = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) as usize;
+    format!("{}-{}", HANDLE_ADJECTIVES[n % 100], HANDLE_NOUNS[n / 100 % 100])
+}
+
+/// What to type for each of these workers: its short name, or its full ID when another of
+/// them has the same short name.
+pub fn worker_names(workers: &[&Value]) -> Vec<String> {
+    let handles: Vec<String> = workers
+        .iter()
+        .map(|worker| worker_handle(worker["id"].as_str().unwrap_or_default()))
+        .collect();
+    workers
+        .iter()
+        .zip(&handles)
+        .map(|(worker, handle)| {
+            if handles.iter().filter(|other| *other == handle).count() > 1 {
+                field(worker, "id", "worker")
+            } else {
+                handle.clone()
+            }
+        })
+        .collect()
+}
+
+/// Workers listed for people to choose from: what to type, with each one's name and state.
+fn worker_choices(workers: &[&Value]) -> String {
+    workers
+        .iter()
+        .zip(worker_names(workers))
+        .map(|(worker, name)| {
+            format!(
+                "{name} ({}, {})",
+                field(worker, "name", "Bounty worker"),
+                state_label(worker["state"].as_str().unwrap_or(""))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The full ID of the worker that `input` names, from a `workers` listing: its ID, its short
+/// name or its own name in any case, or the first digits of its ID (at least four).
+pub fn resolve_worker(input: &str, listed: &Value) -> Result<String, String> {
+    let workers: Vec<&Value> = listed["workers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|worker| worker["id"].is_string())
+        .collect();
+    let id = |worker: &Value| worker["id"].as_str().unwrap_or_default().to_owned();
+    let input = input.trim();
+    if let Some(worker) = workers.iter().find(|worker| worker["id"].as_str() == Some(input)) {
+        return Ok(id(worker));
+    }
+    let wanted = input.to_lowercase();
+    let digits = wanted.strip_prefix("worker-").unwrap_or(&wanted);
+    let prefix = digits.len() >= 4 && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let shown = ui::clip(&safe(input), 80);
+    // "keen heron" names keen-heron too.
+    let hyphenated = wanted.split_whitespace().collect::<Vec<_>>().join("-");
+    let by_handle = |worker: &Value| worker_handle(&id(worker)) == hyphenated;
+    let by_name = |worker: &Value| worker["name"].as_str().is_some_and(|name| name.trim().to_lowercase() == wanted);
+    let by_prefix = |worker: &Value| {
+        let full = id(worker).to_lowercase();
+        prefix && full.strip_prefix("worker-").unwrap_or(&full).starts_with(digits)
+    };
+    let tiers: [&dyn Fn(&Value) -> bool; 3] = [&by_handle, &by_name, &by_prefix];
+    for matches in tiers {
+        let found: Vec<&Value> = workers.iter().copied().filter(|worker| matches(worker)).collect();
+        match found.len() {
+            0 => {}
+            1 => return Ok(id(found[0])),
+            _ => {
+                return Err(format!(
+                    "{shown} matches more than one worker: {}. Name one of them as listed, such as {}.",
+                    worker_choices(&found),
+                    worker_names(&found)[0]
+                ))
+            }
+        }
+    }
+    if workers.is_empty() {
+        return Err(format!(
+            "No bounty worker matches {shown}: this computer has none yet. Set one up with yougori start bounty."
+        ));
+    }
+    Err(format!(
+        "No bounty worker matches {shown}. Workers on this computer: {}.",
+        worker_choices(&workers)
+    ))
+}
+
+/// The engine names workers by their full ID. Anything else the person typed is looked up.
+async fn resolve(request: &mut Value) -> Result<(), String> {
+    let Some(input) = request["workerId"].as_str().map(str::to_owned) else { return Ok(()) };
+    let full = input.strip_prefix("worker-").is_some_and(|digits| {
+        digits.len() == 32 && digits.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !full {
+        let listed = ui::busy("Finding your workers", dispatch(json!({"action":"workers"}))).await?;
+        request["workerId"] = resolve_worker(&input, &listed)?.into();
+    }
+    Ok(())
+}
+
+/// Adds the short name of each worker in an engine result, next to its ID.
+fn with_handles(result: &mut Value) {
+    fn add(worker: &mut Value) {
+        let handle = worker["id"].as_str().map(worker_handle);
+        if let (Some(handle), Some(worker)) = (handle, worker.as_object_mut()) {
+            worker.insert("handle".into(), handle.into());
+        }
+    }
+    if let Some(result) = result.as_object_mut() {
+        if let Some(worker) = result.get_mut("worker") {
+            add(worker);
+        }
+        if let Some(Value::Array(workers)) = result.get_mut("workers") {
+            workers.iter_mut().for_each(add);
+        }
+    }
+}
+
+/// The command that opens this worker again: plain `start bounty` when it picks this worker,
+/// otherwise with the worker's short name.
+fn reconnect_command(id: &str, listed: &Value, environments: &[Value]) -> String {
+    if saved_worker(listed, environments).is_some_and(|saved| saved["id"] == id) {
+        "yougori start bounty".into()
+    } else {
+        format!("yougori start bounty --worker {}", worker_handle(id))
+    }
+}
+
+async fn reconnect_line(id: &str) -> String {
+    let (listed, environments) = workers_listing().await.unwrap_or_default();
+    format!("Reconnect: {}", reconnect_command(id, &listed, &environments))
+}
+
+/// The workers, and the environments that tell which of them was set up last.
+async fn workers_listing() -> Result<(Value, Vec<Value>), String> {
+    let listed = dispatch(json!({"action":"workers"})).await?;
+    // Older engines record no creation time; the workers' environments stand in for it.
+    let environments = call("get_platform_state", json!({}))
+        .await
+        .ok()
+        .and_then(|mut state| serde_json::from_value(state["environments"].take()).ok())
+        .unwrap_or_default();
+    Ok((listed, environments))
 }
 
 pub async fn dispatch(request: Value) -> Result<Value, String> {
@@ -595,34 +903,53 @@ fn engine_error(error: String) -> String {
     }
 }
 
+/// A finished step's line, as a task leaves it: what was done and how long it took.
+fn finished(text: &str, started: Instant) {
+    let elapsed = started.elapsed();
+    let time = if elapsed >= Duration::from_millis(100) {
+        format!("  {}", ui::muted(&ui::clock(elapsed)))
+    } else {
+        String::new()
+    };
+    ui::line(&format!("{}  {text}{time}", ui::paint("◇", ui::GREEN)));
+}
+
+/// One engine request shown as a step. Ctrl+C stops waiting (the engine may still finish a
+/// request it received); keys typed meanwhile are dropped.
 async fn activity(label: &str, request: Value) -> Result<Value, String> {
-    let mut task = ui::loading_task(label);
-    let result = crate::public::call_with_progress(
-        "swarm_dispatch",
-        json!({"request":request}),
-        |progress| {
-            if let Some(stage) = progress["stage"].as_str().or(progress["message"].as_str()) {
-                task.set(&safe(stage));
-            }
-            if let (Some(done), Some(total)) = (
-                progress["bytesDone"].as_u64(),
-                progress["bytesTotal"].as_u64(),
-            ) {
-                task.progress("Downloading", done, total, "bytes");
-            }
-        },
-    )
-    .await;
-    match result {
+    let started = Instant::now();
+    match ui::busy(label, dispatch(request)).await {
         Ok(value) => {
-            task.done(label);
+            finished(label, started);
             Ok(value)
         }
-        Err(e) => {
-            task.fail("Could not complete this step");
-            Err(e)
+        Err(error) if error == ui::CANCELLED => Err(error),
+        Err(error) => {
+            ui::line(&format!("{}  Could not complete this step", ui::paint("■", ui::RED)));
+            Err(error)
         }
     }
+}
+
+/// A change the person asked for, shown as a step. Ctrl+C stops waiting, but the engine may
+/// still finish a request it received, so the person is told where to check instead of
+/// hearing that nothing changed.
+async fn change(label: &str, request: Value) -> Result<Value, String> {
+    let check = match request["workerId"].as_str() {
+        Some(id) => format!("yougori bounty status {}", worker_handle(id)),
+        None => "yougori bounty workers".into(),
+    };
+    match activity(label, request).await {
+        Err(error) if error == ui::CANCELLED => {
+            ui::take_interrupt();
+            Err(stopped_waiting(&check))
+        }
+        result => result,
+    }
+}
+
+fn stopped_waiting(check: &str) -> String {
+    format!("Stopped waiting. Yougori may still finish this change; check it with {check}.")
 }
 
 fn worker_value(result: &Value) -> &Value {
@@ -631,6 +958,14 @@ fn worker_value(result: &Value) -> &Value {
     } else {
         result
     }
+}
+/// The engine is already preparing or running this worker. Reconnecting only watches it:
+/// a resume request would restart its preparation.
+fn active_state(state: &str) -> bool {
+    matches!(state, "preparing" | "preparing_bounty") || prepared_state(state, false)
+}
+fn failed_state(state: &str) -> bool {
+    matches!(state, "failed" | "error" | "preparation_failed" | "failed_prepare" | "failed_bounty")
 }
 fn prepared_state(state: &str, bounty: bool) -> bool {
     if bounty {
@@ -664,13 +999,10 @@ async fn preparation_interrupt(worker: &str) -> Result<bool, String> {
         return Ok(false);
     }
     if selected == 1 {
-        dispatch(json!({"action":"cancelPrepare","workerId":worker})).await?;
+        change("Stopping preparation", json!({"action":"cancelPrepare","workerId":worker})).await?;
         ui::info("Preparation stopped. Saved downloads remain available for retry.");
     } else {
-        ui::info(&format!(
-            "Preparation continues. Reconnect: yougori start bounty --worker {}",
-            safe(worker)
-        ));
+        ui::info(&format!("Preparation continues. {}", reconnect_line(worker).await));
     }
     Ok(true)
 }
@@ -678,6 +1010,7 @@ async fn preparation_interrupt(worker: &str) -> Result<bool, String> {
 /// Mutations return a stable owned worker promptly. Preparation runs in the
 /// engine and remains inspectable/cancellable if this terminal disconnects.
 async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
+    let handle = worker_handle(worker);
     let mut task = ui::loading_task(if bounty {
         "Preparing the accepted bounty"
     } else {
@@ -694,17 +1027,14 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
         let data = worker_value(&result);
         let state = data["state"].as_str().unwrap_or("");
         if prepared_state(state, bounty) {
-            task.done(if bounty {
-                "Your agent is ready to work."
+            task.done(&if bounty {
+                "Your agent is ready to work.".to_owned()
             } else {
-                "Your worker is ready."
+                format!("Your worker {handle} is ready.")
             });
             return Ok(true);
         }
-        if matches!(
-            state,
-            "failed" | "error" | "preparation_failed" | "failed_prepare" | "failed_bounty"
-        ) {
+        if failed_state(state) {
             task.fail("Worker preparation failed");
             let reason = data["error"]
                 .as_str()
@@ -712,8 +1042,7 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
                 .map(safe)
                 .unwrap_or_else(|| "Preparation failed.".into());
             return Err(format!(
-                "{reason}\nCheck it: yougori bounty doctor {0}\nTry again: yougori start bounty --worker {0}",
-                safe(worker)
+                "{reason}\nCheck it: yougori bounty doctor {handle}\nTry again: yougori start bounty --worker {handle}\nChoose another model or drive: yougori start bounty --change"
             ));
         }
         if state == "paused" && data["error"].is_string() {
@@ -734,8 +1063,7 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
         if tokio::time::Instant::now() >= deadline {
             task.done("Preparation continues in the engine");
             ui::info(&format!(
-                "The terminal stopped waiting after 60 minutes. Inspect: yougori bounty status {}",
-                safe(worker)
+                "The terminal stopped waiting after 60 minutes. Inspect: yougori bounty status {handle}"
             ));
             return Ok(false);
         }
@@ -752,6 +1080,9 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
                         }
                         WorkerKey::Detach => {
                             task.done("Preparation continues in the engine");
+                            if !bounty {
+                                ui::info(&reconnect_line(worker).await);
+                            }
                             return Ok(false);
                         }
                         _ => {} // Discard setup-time Enter/typing; never accept a later prompt.
@@ -790,7 +1121,7 @@ fn state_sentence(name: &str, state: &str) -> String {
 }
 
 /// What the participant can do next when a worker waits for them: work that an engine
-/// restart paused, or a report draft to read and send.
+/// restart paused, or a report draft to read and send. `id` is the worker's short name.
 fn state_hint(worker: &Value, id: &str) -> Option<String> {
     let id = safe(id);
     if worker["state"] == "paused" && worker["restored"] == true {
@@ -814,19 +1145,30 @@ fn state_hint(worker: &Value, id: &str) -> Option<String> {
 /// NVIDIA only when this PC passes the CUDA checks behind `yougori gpu status`. AMD or Intel
 /// graphics, a missing driver or WSL, or an engine that could not check, mean the processor.
 fn gpu_choice(cuda: &Value) -> &'static str {
-    if cuda["supported"] == true {
+    if cuda["metalSupported"] == true && cuda["available"] == true {
+        "metal"
+    } else if cuda["supported"] == true {
         "nvidia"
     } else {
         "cpu"
     }
 }
 
+#[test]
+fn metal_requires_a_successful_native_runtime_probe() {
+    assert_eq!(gpu_choice(&json!({"available":true,"metalSupported":true})), "metal");
+    assert_eq!(gpu_choice(&json!({"available":false,"metalSupported":true})), "cpu");
+    assert_eq!(gpu_choice(&json!({"available":true,"metalSupported":false})), "cpu");
+}
+
+const COMPUTE_STATUS_METHOD: &str = if cfg!(target_os="macos") {"model_compute_status"} else {"get_cuda_runtime_status"};
+
 async fn cuda_checks<F, Fut>(rpc: &mut F) -> Value
 where
     F: FnMut(&'static str, Value) -> Fut,
     Fut: Future<Output = Result<Value, String>>,
 {
-    rpc("get_cuda_runtime_status", json!({})).await.unwrap_or(Value::Null)
+    rpc(COMPUTE_STATUS_METHOD, json!({})).await.unwrap_or(Value::Null)
 }
 
 /// `--yes` settings: the documented defaults, and the NVIDIA GPU only when CUDA works here.
@@ -843,8 +1185,9 @@ where
 
 /// Settings for the one-screen setup, or none when the command line already chose some.
 fn recommended_settings(request: &Value, host: &Value, cuda: &Value) -> Result<Option<Value>, String> {
+    // The drive is asked separately, so a chosen drive keeps this screen.
     if ["gpu", "workspaceQuotaGb", "name", "keepResident"].iter().any(|key| !request[*key].is_null())
-        || ["cpu", "memoryGb", "storageDrive"].iter().any(|key| !request["resources"][*key].is_null())
+        || ["cpu", "memoryGb"].iter().any(|key| !request["resources"][*key].is_null())
     {
         return Ok(None);
     }
@@ -853,12 +1196,9 @@ fn recommended_settings(request: &Value, host: &Value, cuda: &Value) -> Result<O
     for slider in resource_sliders(request, host)? {
         recommended["resources"][if slider.label == "CPU" { "cpu" } else { "memoryGb" }] = slider.value.into();
     }
-    // The drive with the most free space keeps model files off a full system drive.
-    let free = |drive: &&Value| drive["freeGb"].as_f64().unwrap_or(0.0);
-    if let Some(drive) = host["storageDrives"].as_array().into_iter().flatten()
-        .filter(|drive| drive["path"].is_string() && drive["readOnly"] != true && drive["removable"] != true)
-        .max_by(|a, b| free(a).total_cmp(&free(b)))
-    {
+    if let Some(drive) = request["resources"]["storageDrive"].as_str() {
+        recommended["resources"]["storageDrive"] = drive.into();
+    } else if let Some(drive) = roomiest_drive(host) {
         recommended["resources"]["storageDrive"] = drive["path"].clone();
     }
     // Windows reports GPU use for any vendor; only the CUDA checks show an NVIDIA GPU works.
@@ -867,13 +1207,167 @@ fn recommended_settings(request: &Value, host: &Value, cuda: &Value) -> Result<O
     Ok(Some(recommended))
 }
 
+fn free_gb(drive: &Value) -> f64 {
+    drive["freeGb"].as_f64().filter(|gb| gb.is_finite()).unwrap_or(0.0)
+}
+
+/// The drive with the most free space keeps model files off a full system drive.
+fn roomiest_drive(host: &Value) -> Option<&Value> {
+    host["storageDrives"].as_array().into_iter().flatten()
+        .filter(|drive| drive["path"].is_string() && drive["readOnly"] != true && drive["removable"] != true)
+        .max_by(|a, b| free_gb(a).total_cmp(&free_gb(b)))
+}
+
+/// Which drive stores the model download, its runtime and the worker's sandboxes, and whether
+/// that was asked. One drive needs no question, and without a drive list the engine uses its
+/// default.
+fn choose_drive(request: &Value, host: &Value, preflight: &Value, preferred: Option<&str>) -> Result<(Option<String>, bool), String> {
+    let drives = host["storageDrives"].as_array().into_iter().flatten()
+        .filter(|drive| drive["path"].is_string())
+        .collect::<Vec<_>>();
+    let path = |drive: &Value| drive["path"].as_str().unwrap_or_default().to_owned();
+    if drives.len() < 2 {
+        return Ok((drives.first().map(|drive| path(drive)), false));
+    }
+    // The model volume holds at least 20 GB; both sandboxes share the workspace quota.
+    let needed = preflight["resources"]["storageGbRecommended"].as_f64().unwrap_or(0.0).max(20.0)
+        + request["workspaceQuotaGb"].as_f64().unwrap_or(20.0);
+    let recommended = roomiest_drive(host).map(path);
+    let writable = |drive: &Value| drive["readOnly"] != true;
+    let mut choices = drives
+        .iter()
+        .map(|drive| {
+            let label = match drive["name"].as_str().map(str::trim).filter(|name| !name.is_empty()) {
+                Some(name) => format!("{} {}", safe(&path(drive)), safe(name)),
+                None => safe(&path(drive)),
+            };
+            let free = free_gb(drive);
+            let mut hint = if !writable(drive) {
+                "read-only".to_string()
+            } else if free < needed {
+                format!("{} free; needs about {needed:.0} GB", ui::size_gb(free))
+            } else {
+                format!("{} free", ui::size_gb(free))
+            };
+            if drive["removable"] == true {
+                hint.push_str(" · removable");
+            }
+            let choice = ui::Choice::new(label, hint).recommended(recommended == Some(path(drive)));
+            if writable(drive) { choice } else { choice.disabled() }
+        })
+        .collect::<Vec<_>>();
+    choices.push(ui::Choice::new("Cancel", "return without creating a worker"));
+    let initial = preferred
+        .and_then(|preferred| drives.iter().position(|drive| writable(drive) && crate::storage::same_drive(&path(drive), preferred)))
+        .or_else(|| drives.iter().position(|drive| recommended == Some(path(drive))))
+        .or_else(|| drives.iter().position(|drive| writable(drive)))
+        .unwrap_or(drives.len());
+    let weights = preflight["resources"]["weightsBytes"].as_u64().map(|bytes| format!(" ({})", ui::bytes(bytes))).unwrap_or_default();
+    let picked = ui::select(
+        "Where should your worker's files be stored?",
+        &[
+            format!("The model download{weights}, its runtime and the worker's sandboxes need about {needed:.0} GB."),
+            "A model already downloaded on a drive with the same settings is reused there.".into(),
+        ],
+        &choices,
+        initial,
+    )?;
+    if picked >= drives.len() {
+        return Err(ui::CANCELLED.into());
+    }
+    Ok((Some(path(drives[picked])), true))
+}
+
+/// When a worker's environments were created, standing in for the creation time that older
+/// releases did not record: its sandboxes first, then its model. Environments deleted since
+/// count for nothing, so a worker whose files are gone ranks below one that still has them.
+fn environments_created<'a>(worker: &Value, environments: &'a [Value]) -> (&'a str, &'a str) {
+    let created = |key: &str| {
+        worker[key]
+            .as_str()
+            .and_then(|id| environments.iter().find(|environment| environment["id"] == id))
+            .and_then(|environment| environment["createdAt"].as_str())
+            .unwrap_or("")
+    };
+    (created("environmentId").max(created("testEnvironmentId")), created("modelEnvironmentId"))
+}
+
+/// The worker `start bounty` reconnects to: the newest. Workers from releases without a
+/// creation time rank by when their environments were created, then by state and by how far
+/// their preparation got.
+fn saved_worker<'a>(listed: &'a Value, environments: &[Value]) -> Option<&'a Value> {
+    listed["workers"].as_array()?.iter()
+        .filter(|worker| worker["id"].as_str().is_some_and(identifier))
+        .max_by_key(|worker| {
+            let state = worker["state"].as_str().unwrap_or("");
+            let rank = if active_state(state) { 3 } else if state == "paused" { 2 } else if failed_state(state) { 1 } else { 0 };
+            (
+                worker["createdAt"].as_i64().unwrap_or(0),
+                environments_created(worker, environments),
+                rank,
+                worker["serverId"].is_string(),
+                worker["environmentId"].is_string(),
+                worker["modelEnvironmentId"].is_string(),
+            )
+        })
+}
+
+/// The saved worker's model and quantization, suggested again by `--change`.
+fn saved_model(saved: &Value) -> Option<String> {
+    let name = saved["model"].as_str()?;
+    let name = if name.starts_with("hf.co/") { name.to_owned() } else { format!("hf.co/{name}") };
+    model(&match saved["quant"].as_str() {
+        Some(quant) => format!("{name}:{quant}"),
+        None => name,
+    })
+    .ok()
+}
+
+/// The saved worker as `start bounty` introduces it before reconnecting.
+fn saved_line(saved: &Value) -> String {
+    format!(
+        "Your worker: {} ({}) · {} · files on {}",
+        field(saved, "name", "Bounty worker"),
+        worker_handle(saved["id"].as_str().unwrap_or_default()),
+        saved_model(saved).unwrap_or_else(|| field(saved, "model", "")),
+        field(&saved["resources"], "storageDrive", "the default drive")
+    )
+}
+
+/// The newest worker besides `saved` that did not fail, which a failed saved worker's
+/// screen offers to open instead.
+fn other_worker(listed: &Value, saved: &Value, environments: &[Value]) -> Value {
+    let others: Vec<Value> = listed["workers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|worker| worker["id"] != saved["id"] && !failed_state(worker["state"].as_str().unwrap_or("")))
+        .cloned()
+        .collect();
+    saved_worker(&json!({"workers":others}), environments).cloned().unwrap_or(Value::Null)
+}
+
+fn model_memory_recommendation(preflight: &Value) -> u32 {
+    let weights = preflight["resources"]["weightsBytes"].as_u64().unwrap_or(0) as f64 / 1_073_741_824.;
+    // Keep four GB for OpenCode/test sandboxes, plus weight/context overhead.
+    (((weights * 1.15 + 1.5 + 4.) / 4.).ceil() * 4.).clamp(8., 1024.) as u32
+}
+
+fn recommended_model_settings(request: &Value, host: &Value, cuda: &Value, memory: u32) -> Result<Option<Value>, String> {
+    let Some(mut settings) = recommended_settings(request, host, cuda)? else { return Ok(None) };
+    for slider in resource_sliders_with_memory(request, host, memory)? {
+        settings["resources"][if slider.label == "CPU" { "cpu" } else { "memoryGb" }] = slider.value.into();
+    }
+    Ok(Some(settings))
+}
+
 fn setup_notes(request: &Value, cuda: &Value) -> Vec<String> {
     let resources = &request["resources"];
     let mut notes = vec![
         format!("{} · {}", field(request, "name", "Bounty worker"), field(request, "model", "")),
         format!(
             "{} · {} CPU cores · {} GB memory",
-            if request["gpu"] == "cpu" { "Runs on the processor" } else { "Runs on your NVIDIA GPU" },
+            runs_on(request),
             field(resources, "cpu", "4"),
             field(resources, "memoryGb", "8")
         ),
@@ -886,7 +1380,7 @@ fn setup_notes(request: &Value, cuda: &Value) -> Vec<String> {
             "Files on {} · {} GB for bounty workspaces · {}",
             field(resources, "storageDrive", "the default drive"),
             field(request, "workspaceQuotaGb", "20"),
-            if request["keepResident"] == false { "model memory released while waiting" } else { "model kept loaded while waiting" }
+            if request["keepResident"] == true { "model kept loaded while waiting" } else { "model loaded only for work" }
         ),
         "The engine checks disk space, downloads, model tools and context before readiness.".into(),
         "Your model API stays private. No bounty is accepted during setup.".into(),
@@ -911,8 +1405,9 @@ fn defaults(request: &mut Value) {
     if request["workspaceQuotaGb"].is_null() {
         request["workspaceQuotaGb"] = 20.into();
     }
+    // The model loads for work only, unless the participant keeps it loaded.
     if request["keepResident"].is_null() {
-        request["keepResident"] = true.into();
+        request["keepResident"] = false.into();
     }
     if request["name"].is_null() {
         request["name"] = "Bounty worker".into();
@@ -920,6 +1415,10 @@ fn defaults(request: &mut Value) {
 }
 
 fn resource_sliders(request: &Value, host: &Value) -> Result<Vec<ui::Slider>, String> {
+    resource_sliders_with_memory(request, host, 8)
+}
+
+fn resource_sliders_with_memory(request: &Value, host: &Value, memory: u32) -> Result<Vec<ui::Slider>, String> {
     let mut sliders = Vec::new();
     for (key, host_key, label, unit, default, ceiling) in [
         ("cpu", "totalCpu", "CPU", "cores", 4, 255),
@@ -935,22 +1434,30 @@ fn resource_sliders(request: &Value, host: &Value) -> Result<Vec<ui::Slider>, St
             ));
         }
         let max = total.floor().min(ceiling as f64) as u32;
+        let suggested = if key == "memoryGb" { memory.max(default) } else { default };
+        if suggested > max {
+            return Err(format!("This selected model needs about {suggested} GB for the worker. Choose a smaller GGUF or a lower quantization."));
+        }
         sliders.push(ui::Slider {
             label,
             unit,
             min: default,
             max,
-            default: default.min(max),
-            value: default.min(max),
+            default: suggested,
+            value: suggested,
         });
     }
     Ok(sliders)
 }
 
-/// What `--no-wait` prints: the worker as the engine returned it, and how to follow it.
+/// What `--no-wait` prints: the worker as the engine returned it, with its short name, and how
+/// to follow it.
 fn started(result: &Value) -> Result<Value, String> {
     let id = worker_id(result)?;
-    let worker = worker_value(result);
+    let mut worker = worker_value(result).clone();
+    if let Some(shown) = worker.as_object_mut() {
+        shown.insert("handle".into(), worker_handle(&id).into());
+    }
     let next = match worker["state"].as_str() {
         Some("preparing") => format!("Preparation continues in the engine. Follow it with `yougori bounty status {id}`; the worker is ready when its state is ready_waiting."),
         Some("paused") => format!("The worker stays paused. Resume it with `yougori bounty resume {id}`."),
@@ -981,7 +1488,7 @@ where
 
 /// Registering a new worker needs the account. Scripts stop here; people can sign in now.
 async fn sign_in(interactive: bool) -> Result<(), String> {
-    if crate::network::signed_in().await? {
+    if ui::busy("Checking your Yougori account", crate::network::signed_in()).await? {
         return Ok(());
     }
     if !interactive {
@@ -991,312 +1498,769 @@ async fn sign_in(interactive: bool) -> Result<(), String> {
         "Connect this worker to your Yougori account",
         "The engine stores credentials securely on this computer.",
     );
-    crate::network::login(|code, address| {
+    let login = crate::network::login(|code, address| {
         ui::info(&format!("Approve this sign-in: {}", safe(address)));
         ui::info(&format!("Code: {}", safe(code)));
-    })
-    .await
-    .map(|_| ())
+    });
+    ui::busy("Waiting for you to approve the sign-in", login).await.map(|_| ())
+}
+
+/// Saves a Hugging Face read token in the OS credential vault, for gated and private models.
+async fn save_token() -> Result<(), String> {
+    let token = ui::input("Hugging Face read token", "", true, &|value| {
+        if !value.starts_with("hf_")
+            || !(12..=1024).contains(&value.len())
+            || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Err("Enter a valid Hugging Face read token. Its value is withheld.".into());
+        }
+        Ok(value.into())
+    })?;
+    ui::busy(
+        "Saving the token",
+        call("set_deployment_secret", json!({"name":crate::model_auth::REFERENCE,"value":token})),
+    )
+    .await?;
+    ui::info("Read token saved in the OS credential vault. Accept any gated model's terms on Hugging Face before retrying.");
+    Ok(())
+}
+
+/// Why a checked model cannot power a worker, or None when it can. An engine that reports no
+/// preflight leaves the decision to preparation.
+fn gguf_problem(preflight: &Value) -> Option<String> {
+    if !preflight.is_object() || preflight["runner"] == "yougori-llama-cpp" {
+        return None;
+    }
+    if preflight["format"] != "gguf" {
+        return Some(format!("This repository has no GGUF files. {GGUF_ONLY}"));
+    }
+    // The engine's reasons end without a full stop.
+    let reason = field(preflight, "reason", "Yougori cannot run this GGUF repository on a worker");
+    Some(format!("{}. Choose another GGUF repository.", reason.trim_end().trim_end_matches('.')))
+}
+
+/// The model's memory need when this computer cannot give a worker that much. A --memory
+/// given on the command line is the person's own choice.
+fn too_big(request: &Value, host: &Value, memory: u32) -> Option<String> {
+    if !request["resources"]["memoryGb"].is_null() {
+        return None;
+    }
+    let total = host["totalMemoryGb"].as_f64().filter(|total| total.is_finite())?;
+    let needed = memory.max(8);
+    (f64::from(needed) > total.floor().min(1024.0)).then(|| format!(
+        "This model needs about {needed} GB of memory for the worker, more than this computer has. Choose a smaller GGUF model or a lower quantization, such as :IQ4_XS."
+    ))
+}
+
+/// A failed model check as the attention screen shows it. The engine words a repository
+/// without GGUF files for --quant; people get the rule instead.
+fn model_problem(error: &str) -> String {
+    if error.contains("has no GGUF files") {
+        format!("This repository has no GGUF files. {GGUF_ONLY}")
+    } else {
+        safe(error)
+    }
+}
+
+/// Where the worker runs its model, in words.
+fn runs_on(request: &Value) -> &'static str {
+    match request["gpu"].as_str() {
+        Some("cpu") => "Runs on the processor",
+        Some("metal") => "Runs natively on Apple Metal",
+        _ => "Runs on your NVIDIA GPU",
+    }
+}
+
+/// The questions of an interactive setup, in order. Back returns to the last one that asked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    /// The saved worker failed: Retry, Set up again, open another worker, or Cancel.
+    Attention,
+    /// The model, then its checks.
+    Model,
+    Drive,
+    /// Prepare with the recommended settings, or Customize.
+    Summary,
+    Gpu,
+    Size,
+    Quota,
+    Name,
+    Memory,
+    Confirm,
+}
+
+const STEPS: [Step; 10] = [
+    Step::Attention,
+    Step::Model,
+    Step::Drive,
+    Step::Summary,
+    Step::Gpu,
+    Step::Size,
+    Step::Quota,
+    Step::Name,
+    Step::Memory,
+    Step::Confirm,
+];
+
+/// An interactive setup. The command line's request stays as given and each answer is kept on
+/// its own, so a question asked again after Back starts from the earlier answer; the request
+/// is put together at the end.
+#[derive(Default)]
+struct Setup {
+    /// The request from the command line.
+    given: Value,
+    /// The worker set up last on this computer, or null.
+    saved: Value,
+    /// A worker that did not fail, offered when the saved one did.
+    other: Value,
+    /// The saved worker failed, so the setup first asks what to do with it.
+    attention: bool,
+    attention_choice: usize,
+    /// The model is checked and the setup questions follow (no --yes).
+    checks: bool,
+    /// The worker to open instead of setting up a new one.
+    reopen: Option<String>,
+    /// The model question is asked: no model was given, or a model needed attention.
+    enter_model: bool,
+    model: Option<String>,
+    /// The chosen model passed its checks, which found `preflight`.
+    checked: bool,
+    preflight: Value,
+    host: Option<Value>,
+    cuda: Option<Value>,
+    drive: Option<String>,
+    /// Prepare with the recommended settings (true) or Customize (false).
+    quick: Option<bool>,
+    gpu: Option<&'static str>,
+    sizes: Vec<u32>,
+    quota: Option<f64>,
+    name: Option<String>,
+    keep: Option<bool>,
+}
+
+impl Setup {
+    /// Steps that ask nothing with the choices made so far.
+    fn skips(&self, step: Step) -> bool {
+        let customize = self.checks && self.quick != Some(true);
+        match step {
+            Step::Attention => !self.attention,
+            Step::Model => !self.enter_model && !self.checks,
+            Step::Drive => !self.checks || !self.given["resources"]["storageDrive"].is_null(),
+            Step::Summary => !self.checks,
+            Step::Gpu => !customize || !self.given["gpu"].is_null(),
+            Step::Size | Step::Confirm => !customize,
+            Step::Quota => !customize || !self.given["workspaceQuotaGb"].is_null(),
+            Step::Name => !customize || !self.given["name"].is_null(),
+            Step::Memory => !customize || !self.given["keepResident"].is_null(),
+        }
+    }
+
+    /// Asks each step in turn until the setup is complete or a worker is opened instead.
+    async fn ask(&mut self) -> Result<(), String> {
+        let mut steps = ui::Wizard::new();
+        while let Some(&step) = STEPS.get(steps.step()) {
+            let asked = if self.skips(step) { Ok(false) } else { self.run(step).await };
+            steps.next(asked)?;
+            if self.reopen.is_some() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn run(&mut self, step: Step) -> Result<bool, String> {
+        match step {
+            Step::Attention => self.ask_attention(),
+            Step::Model => self.ask_model_step().await,
+            Step::Drive => self.ask_drive(),
+            Step::Summary => self.ask_summary(),
+            Step::Gpu => self.ask_gpu(),
+            Step::Size => self.ask_size(),
+            Step::Quota => self.ask_quota(),
+            Step::Name => self.ask_name(),
+            Step::Memory => self.ask_memory(),
+            Step::Confirm => self.ask_confirm(),
+        }
+    }
+
+    /// The command line's request without the quantization of a model it gave, for a model
+    /// the person enters instead. --quant without --model still applies.
+    fn entry_base(&self) -> Value {
+        let mut base = self.given.clone();
+        if !self.given["model"].is_null() {
+            base["quant"] = Value::Null;
+        }
+        base
+    }
+
+    /// The command line's request with the model the person entered.
+    fn selection(&self) -> Result<Value, String> {
+        let Some(model) = &self.model else { return Ok(self.given.clone()) };
+        let mut request = self.entry_base();
+        request["model"] = model.as_str().into();
+        normalize_selection(&mut request)?;
+        Ok(request)
+    }
+
+    /// The selection with the variant its checks chose and the chosen drive.
+    fn chosen(&self) -> Result<Value, String> {
+        let mut request = self.selection()?;
+        if request["quant"].is_null() && self.preflight["quant"].is_string() {
+            request["quant"] = self.preflight["quant"].clone();
+        }
+        if let Some(drive) = &self.drive {
+            if !request["resources"].is_object() {
+                request["resources"] = json!({});
+            }
+            request["resources"]["storageDrive"] = drive.as_str().into();
+        }
+        Ok(request)
+    }
+
+    fn host(&self) -> &Value {
+        self.host.as_ref().unwrap_or(&Value::Null)
+    }
+
+    fn cuda(&self) -> &Value {
+        self.cuda.as_ref().unwrap_or(&Value::Null)
+    }
+
+    fn memory(&self) -> u32 {
+        model_memory_recommendation(&self.preflight)
+    }
+
+    fn recommended(&self) -> Result<Option<Value>, String> {
+        recommended_model_settings(&self.chosen()?, self.host(), self.cuda(), self.memory())
+    }
+
+    /// The request to prepare: the recommended settings, or the command line's choices with
+    /// the customized answers. Without checks (--yes), the scripted defaults follow later.
+    fn request(&self) -> Result<Value, String> {
+        if !self.checks {
+            return self.chosen();
+        }
+        if self.quick == Some(true) {
+            if let Some(recommended) = self.recommended()? {
+                return Ok(recommended);
+            }
+        }
+        let mut request = self.chosen()?;
+        let sliders = resource_sliders_with_memory(&request, self.host(), self.memory())?;
+        if !request["resources"].is_object() {
+            request["resources"] = json!({});
+        }
+        for (i, slider) in sliders.iter().enumerate() {
+            let value = self.sizes.get(i).copied().unwrap_or(slider.value);
+            request["resources"][if slider.label == "CPU" { "cpu" } else { "memoryGb" }] = value.into();
+        }
+        if let Some(gpu) = self.gpu {
+            request["gpu"] = gpu.into();
+        }
+        if let Some(quota) = self.quota {
+            request["workspaceQuotaGb"] = quota.into();
+        }
+        if let Some(name) = &self.name {
+            request["name"] = name.as_str().into();
+        }
+        if let Some(keep) = self.keep {
+            request["keepResident"] = keep.into();
+        }
+        defaults(&mut request);
+        Ok(request)
+    }
+
+    /// The saved worker failed. Retry keeps its model and sandbox, Set up again asks for a
+    /// model, and a worker that did not fail can be opened instead.
+    fn ask_attention(&mut self) -> Result<bool, String> {
+        let other = self.other["id"].as_str().map(str::to_owned);
+        let mut choices = vec![
+            ui::Choice::new("Retry", "prepare this worker again with its saved settings"),
+            ui::Choice::new("Set up again", "choose the model, drive and resources"),
+        ];
+        if let Some(id) = &other {
+            choices.push(ui::Choice::new(
+                format!("Open {}", worker_handle(id)),
+                format!("your other worker · {}", state_label(self.other["state"].as_str().unwrap_or(""))),
+            ));
+        }
+        choices.push(ui::Choice::new("Cancel", "return without changes"));
+        let mut note = note_lines(&field(&self.saved, "error", "Preparation failed."));
+        note.push("Retrying reuses its downloaded model and sandbox.".into());
+        let picked = ui::select("Your worker needs attention", &note, &choices, self.attention_choice)?;
+        self.attention_choice = picked;
+        self.reopen = match (picked, other) {
+            (0, _) => self.saved["id"].as_str().map(str::to_owned),
+            (1, _) => None,
+            (2, Some(id)) => Some(id),
+            _ => return Err(ui::CANCELLED.into()),
+        };
+        Ok(true)
+    }
+
+    /// The model question when it is asked, then the model's checks. Back from a model that
+    /// needs attention returns to the model question; once this step asked anything, coming
+    /// back to it asks the model question again.
+    async fn ask_model_step(&mut self) -> Result<bool, String> {
+        let mut asked_any = false;
+        let mut steps = ui::Wizard::new();
+        loop {
+            let asked = match steps.step() {
+                0 if self.enter_model => self.ask_model().map(|()| true),
+                1 if self.checks => self.check_until_usable().await,
+                0 | 1 => Ok(false),
+                _ => break,
+            };
+            asked_any |= matches!(asked, Ok(true));
+            steps.next(asked)?;
+        }
+        if self.checks {
+            self.check_compute().await?;
+        }
+        Ok(asked_any)
+    }
+
+    /// Checks the chosen model and asks what to do while it needs attention.
+    async fn check_until_usable(&mut self) -> Result<bool, String> {
+        self.check_host().await?;
+        let mut asked = false;
+        while let Some(problem) = self.check_model().await? {
+            self.model_attention(&problem).await?;
+            asked = true;
+        }
+        Ok(asked)
+    }
+
+    /// The model question, prefilled with the last answer, the given model, the saved worker's
+    /// model or the suggested one. A :QUANT that conflicts with --quant is refused here.
+    fn ask_model(&mut self) -> Result<(), String> {
+        let given = self.given["model"].as_str().map(|model| match self.given["quant"].as_str() {
+            Some(quant) => format!("{model}:{quant}"),
+            None => model.to_owned(),
+        });
+        let initial = self
+            .model
+            .clone()
+            .or(given)
+            .or_else(|| saved_model(&self.saved))
+            .unwrap_or_else(|| DEFAULT_MODEL.into());
+        let base = self.entry_base();
+        let answer = ui::input_noted(MODEL_QUESTION, &note_lines(MODEL_NOTE), &initial, &|value| {
+            let chosen = model(value)?;
+            let mut request = base.clone();
+            request["model"] = chosen.as_str().into();
+            normalize_selection(&mut request)?;
+            Ok(chosen)
+        })?;
+        if self.model.as_ref() != Some(&answer) {
+            self.checked = false;
+            self.preflight = Value::Null;
+        }
+        self.model = Some(answer);
+        self.enter_model = true;
+        Ok(())
+    }
+
+    /// This computer's resources and drives, read once.
+    async fn check_host(&mut self) -> Result<(), String> {
+        if self.host.is_none() {
+            let state = activity(
+                "Checking your model and hardware",
+                json!({"action":"doctor","model":self.selection()?["model"]}),
+            )
+            .await?;
+            self.host = Some(if state["host"].is_object() { state["host"].clone() } else { state });
+        }
+        Ok(())
+    }
+
+    /// Checks the chosen model once. None when it can power a worker, otherwise what needs
+    /// attention.
+    async fn check_model(&mut self) -> Result<Option<String>, String> {
+        if self.checked {
+            return Ok(None);
+        }
+        let request = self.selection()?;
+        let result = activity(
+            "Checking the selected model revision",
+            json!({"action":"doctor","model":request["model"],"quant":request["quant"],"preflightModel":true}),
+        )
+        .await;
+        let preflight = match result {
+            Ok(value) => value["preflight"].clone(),
+            Err(error) if error == ui::CANCELLED => return Err(error),
+            Err(error) => return Ok(Some(model_problem(&error))),
+        };
+        if let Some(problem) = gguf_problem(&preflight) {
+            return Ok(Some(problem));
+        }
+        if preflight.is_object() {
+            ui::info(&format!("Model revision: {}", field(&preflight, "revision", "Unknown")));
+            ui::info(&format!(
+                "Selected variant: {} · Weights: {}",
+                field(&preflight, "quant", "GGUF"),
+                preflight["resources"]["weightsBytes"]
+                    .as_u64()
+                    .map(ui::bytes)
+                    .unwrap_or_else(|| "See model metadata".into())
+            ));
+        }
+        if let Some(problem) = too_big(&request, self.host(), model_memory_recommendation(&preflight)) {
+            return Ok(Some(problem));
+        }
+        self.preflight = preflight;
+        self.checked = true;
+        Ok(None)
+    }
+
+    /// Whether the model can run on this PC's GPU, checked once unless --gpu chose already.
+    async fn check_compute(&mut self) -> Result<(), String> {
+        if self.cuda.is_some() || !self.given["gpu"].is_null() {
+            return Ok(());
+        }
+        let started = Instant::now();
+        let mut rpc = |method: &'static str, params: Value| call(method, params);
+        let cuda = ui::busy("Checking local model compute", async {
+            Ok::<_, String>(cuda_checks(&mut rpc).await)
+        })
+        .await?;
+        finished(
+            match gpu_choice(&cuda) {
+                "metal" => "Native Apple Metal is available",
+                "nvidia" => "This PC passed the NVIDIA CUDA checks",
+                _ => "No compatible NVIDIA GPU; the processor will run the model",
+            },
+            started,
+        );
+        self.cuda = Some(cuda);
+        Ok(())
+    }
+
+    /// "This model needs attention": another model, or a Hugging Face sign-in for gated and
+    /// private models. Returns once the person entered another model or saved a token.
+    async fn model_attention(&mut self, problem: &str) -> Result<(), String> {
+        let choices = [
+            ui::Choice::new("Choose another model", "paste a supported Hugging Face GGUF repository"),
+            ui::Choice::new(
+                "Sign in to Hugging Face",
+                "save a read token securely; gated terms must be accepted on Hugging Face",
+            ),
+            ui::Choice::new("Cancel", "return without creating a worker"),
+        ];
+        let note = note_lines(problem);
+        let mut steps = ui::Wizard::new();
+        let mut choice = 0;
+        loop {
+            let asked = match steps.step() {
+                0 => match ui::select("This model needs attention", &note, &choices, choice) {
+                    Ok(2) => Err(ui::CANCELLED.into()),
+                    Ok(picked) => {
+                        choice = picked;
+                        Ok(true)
+                    }
+                    Err(error) => Err(error),
+                },
+                1 if choice == 0 => self.ask_model().map(|()| true),
+                1 => save_token().await.map(|()| true),
+                _ => break,
+            };
+            steps.next(asked)?;
+        }
+        self.enter_model = true;
+        Ok(())
+    }
+
+    fn ask_drive(&mut self) -> Result<bool, String> {
+        let preferred = self
+            .drive
+            .clone()
+            .or_else(|| self.saved["resources"]["storageDrive"].as_str().map(str::to_owned));
+        let (drive, asked) = choose_drive(&self.selection()?, self.host(), &self.preflight, preferred.as_deref())?;
+        self.drive = drive;
+        Ok(asked)
+    }
+
+    /// One screen with the recommended settings instead of six questions; Customize asks them.
+    fn ask_summary(&mut self) -> Result<bool, String> {
+        let Some(recommended) = self.recommended()? else {
+            self.quick = None;
+            return Ok(false);
+        };
+        let picked = ui::select(
+            "Prepare this worker?",
+            &setup_notes(&recommended, self.cuda()),
+            &[
+                ui::Choice::new("Prepare", "download and verify the model with these settings"),
+                ui::Choice::new("Customize", "choose GPU or CPU, cores, memory, space and name"),
+                ui::Choice::new("Cancel", "return without creating a worker"),
+            ],
+            usize::from(self.quick == Some(false)),
+        )?;
+        if picked == 2 {
+            return Err(ui::CANCELLED.into());
+        }
+        self.quick = Some(picked == 0);
+        Ok(true)
+    }
+
+    fn ask_gpu(&mut self) -> Result<bool, String> {
+        let detected = gpu_choice(self.cuda());
+        let note = if detected == "metal" {
+            "The native runtime detected Apple Metal. Model and agent readiness are checked before joining."
+        } else if detected == "nvidia" {
+            "This PC passed the NVIDIA CUDA checks. Compatibility is checked again before the worker is marked ready."
+        } else {
+            "No NVIDIA GPU passed the CUDA checks (yougori gpu status shows why), so CPU is recommended."
+        };
+        let initial = match self.gpu {
+            Some("cpu") => 1,
+            Some(_) => 0,
+            None => usize::from(detected == "cpu"),
+        };
+        let picked = ui::select(
+            "Where should your worker run the model?",
+            &[note.into()],
+            &[
+                ui::Choice::new("Compatible local GPU", "use the detected CUDA or Apple Metal backend"),
+                ui::Choice::new("CPU", "use this computer's processor"),
+            ],
+            initial,
+        )?;
+        self.gpu = Some(if picked == 1 {
+            "cpu"
+        } else if detected == "metal" {
+            "metal"
+        } else {
+            "nvidia"
+        });
+        Ok(true)
+    }
+
+    fn ask_size(&mut self) -> Result<bool, String> {
+        let mut sliders = resource_sliders_with_memory(&self.chosen()?, self.host(), self.memory())?;
+        if sliders.is_empty() {
+            return Ok(false);
+        }
+        for (slider, value) in sliders.iter_mut().zip(&self.sizes) {
+            slider.value = (*value).clamp(slider.min, slider.max);
+        }
+        ui::sliders(
+            "Size your bounty worker",
+            "Choose CPU cores and RAM. Existing workloads keep their allocations.",
+            &mut sliders,
+        )?;
+        self.sizes = sliders.iter().map(|slider| slider.value).collect();
+        Ok(true)
+    }
+
+    fn ask_quota(&mut self) -> Result<bool, String> {
+        let default = self.quota.map_or_else(|| "20".to_owned(), |gb| gb.to_string());
+        let value = ui::input("How much space can bounty workspaces use?", &default, false, &|v| {
+            number(v, "Workspace quota", 4.0, 1024.0).map(|n| n.to_string())
+        })?;
+        self.quota = Some(number(&value, "Workspace quota", 4.0, 1024.0)?);
+        Ok(true)
+    }
+
+    fn ask_name(&mut self) -> Result<bool, String> {
+        let default = self.name.clone().unwrap_or_else(|| "Bounty worker".into());
+        self.name = Some(ui::input("Name this worker", &default, false, &worker_name)?);
+        Ok(true)
+    }
+
+    fn ask_memory(&mut self) -> Result<bool, String> {
+        let choices = [
+            ui::Choice::new(
+                "Load it only for work",
+                "frees GPU and memory while waiting; loads for bounties, chat and practice",
+            ),
+            ui::Choice::new("Keep it loaded", "faster starts; holds GPU and memory while waiting"),
+        ];
+        let initial = usize::from(self.keep == Some(true));
+        self.keep = Some(ui::select("When should the model be loaded?", &[], &choices, initial)? == 1);
+        Ok(true)
+    }
+
+    /// The customized settings, confirmed with Cancel preselected.
+    fn ask_confirm(&mut self) -> Result<bool, String> {
+        let request = self.request()?;
+        let notes = vec![
+            format!("Model: {}", field(&request, "model", "")),
+            format!(
+                "{} · CPU: {} · Memory: {} GB · Workspace quota: {} GB",
+                runs_on(&request),
+                field(&request["resources"], "cpu", ""),
+                field(&request["resources"], "memoryGb", ""),
+                field(&request, "workspaceQuotaGb", "")
+            ),
+            format!("Files on {}", field(&request["resources"], "storageDrive", "the default drive")),
+            "The engine checks disk space, downloads, model tools and context before readiness.".into(),
+            "Your model API stays private. No bounty is accepted during setup.".into(),
+        ];
+        let picked = ui::select(
+            "Prepare this worker?",
+            &notes,
+            &[
+                ui::Choice::new("Cancel", "return without creating a worker"),
+                ui::Choice::new("Prepare", "download and verify the selected local model"),
+            ],
+            0,
+        )?;
+        if picked != 1 {
+            return Err(ui::CANCELLED.into());
+        }
+        Ok(true)
+    }
+}
+
+/// Opens a saved worker. A paused one resumes only with consent; a stopped or failed one
+/// resumes, restarting a preparation that never finished; an active one is only watched.
+async fn reopen(invocation: &Invocation) -> Result<Option<Value>, String> {
+    let interactive = ui::can_prompt();
+    let worker = invocation.request["workerId"].as_str().unwrap_or_default().to_owned();
+    let current =
+        ui::busy("Opening your worker", dispatch(json!({"action":"status","workerId":worker}))).await?;
+    let active = active_state(current["worker"]["state"].as_str().unwrap_or(""));
+    if current["worker"]["state"] == "paused" {
+        let note = if current["worker"]["restored"] == true {
+            "The engine restarted, so this worker paused. Reconnecting does not resume work by itself."
+        } else {
+            "Reconnecting does not resume work by itself."
+        };
+        let resume = invocation.yes
+            || interactive
+                && ui::select_required(
+                    "This worker is paused. Resume it?",
+                    &[note.into()],
+                    &[
+                        ui::Choice::new("Stay paused", "open the worker without resuming"),
+                        ui::Choice::new("Resume", "recheck authorization and continue"),
+                    ],
+                )? == 1;
+        if !resume {
+            ui::info(&format!(
+                "The worker stays paused. Press P in its view, or run: yougori bounty resume {}",
+                worker_handle(&worker)
+            ));
+            return Ok(Some(current));
+        }
+    }
+    let result = if active {
+        current
+    } else {
+        change("Resuming worker and synchronizing notes", invocation.request.clone()).await?
+    };
+    if invocation.no_wait {
+        return Ok(Some(result));
+    }
+    if worker_value(&result)["state"] == "preparing" {
+        ui::info(&reconnect_line(&worker).await);
+    }
+    if !wait_prepared(&worker, false).await? {
+        return Ok(Some(left_preparation(&worker)));
+    }
+    Ok(Some(result))
+}
+
+/// The person left a preparation that goes on (or that they stopped); what to do next is
+/// already on screen.
+fn left_preparation(worker: &str) -> Value {
+    json!({"detached":true,"workerId":worker,"handle":worker_handle(worker)})
 }
 
 /// Starts or reconnects a worker and returns the engine's result for it, after it is
-/// ready unless `--no-wait` was given. None means the person cancelled or detached.
+/// ready unless `--no-wait` was given. None means the person cancelled; a `detached` result
+/// means they left a preparation that goes on.
 async fn setup(invocation: &mut Invocation) -> Result<Option<Value>, String> {
     let interactive = ui::can_prompt();
-    let resume = invocation.request["action"] == "resume";
-    if !resume && invocation.request["model"].is_null() {
-        invocation.request["model"] = ui::input_prefilled(
-            "Which Hugging Face model should power your worker?",
-            "hf.co/",
-            &model,
-        )?
-        .into();
+    let mut resume = invocation.request["action"] == "resume";
+    let (listed, environments) = if resume {
+        (Value::Null, Vec::new())
+    } else {
+        ui::busy("Finding your workers", workers_listing()).await?
+    };
+    let saved = saved_worker(&listed, &environments).cloned().unwrap_or(Value::Null);
+    let reconnecting = !saved.is_null() && !invocation.change && !creation_options(&invocation.request);
+    let attention = reconnecting
+        && interactive
+        && !invocation.yes
+        && failed_state(saved["state"].as_str().unwrap_or(""));
+    let mut setup = Setup {
+        given: invocation.request.clone(),
+        saved: saved.clone(),
+        other: if attention { other_worker(&listed, &saved, &environments) } else { Value::Null },
+        attention,
+        checks: interactive && !invocation.yes,
+        enter_model: invocation.request["model"].is_null(),
+        ..Setup::default()
+    };
+    if reconnecting {
+        if interactive {
+            ui::info(&saved_line(&saved));
+        }
+        if !attention {
+            if interactive {
+                ui::info("Choose another model or drive: yougori start bounty --change");
+            }
+            setup.reopen = saved["id"].as_str().map(str::to_owned);
+        }
+    } else if !resume && interactive && active_state(saved["state"].as_str().unwrap_or("")) {
+        ui::info(&format!(
+            "This sets up a new worker. {} keeps running until you stop it: yougori bounty stop {}",
+            field(&saved, "name", "Your current worker"),
+            worker_handle(saved["id"].as_str().unwrap_or_default())
+        ));
     }
-    crate::client::start(None).await?;
+    if !resume && setup.reopen.is_none() {
+        if interactive {
+            setup.ask().await?;
+        } else if invocation.request["model"].is_null() {
+            return Err(if saved.is_null() {
+                "No saved worker on this computer. Supply --model hf.co/OWNER/MODEL-GGUF to prepare one."
+            } else {
+                "Supply --model hf.co/OWNER/MODEL-GGUF to set up a new worker without a terminal."
+            }
+            .into());
+        }
+    }
+    if let Some(id) = &setup.reopen {
+        invocation.request = json!({"action":"resume","workerId":id});
+        resume = true;
+    } else if !resume {
+        invocation.request = setup.request()?;
+    }
     if invocation.yes && invocation.no_wait {
         if !resume {
             sign_in(interactive).await?;
         }
-        return start_detached(invocation.request.clone(), |method, params| call(method, params))
+        // A saved worker the engine already runs is returned as it is, never restarted.
+        if resume && invocation.request["workerId"] == saved["id"] && active_state(saved["state"].as_str().unwrap_or("")) {
+            return Ok(Some(json!({"worker":saved})));
+        }
+        return start_detached(invocation.request.clone(), call)
             .await
             .map(Some);
     }
     if resume {
-        let worker = invocation.request["workerId"].as_str().unwrap().to_string();
-        // Reconnecting opens the worker; it continues paused work only with explicit consent.
-        let current = dispatch(json!({"action":"status","workerId":worker})).await?;
-        if current["worker"]["state"] == "paused" {
-            let note = if current["worker"]["restored"] == true {
-                "The engine restarted, so this worker paused. Reconnecting does not resume work by itself."
-            } else {
-                "Reconnecting does not resume work by itself."
-            };
-            let resume = invocation.yes
-                || interactive
-                    && ui::select_required(
-                        "This worker is paused. Resume it?",
-                        &[note.into()],
-                        &[
-                            ui::Choice::new("Stay paused", "open the worker without resuming"),
-                            ui::Choice::new("Resume", "recheck authorization and continue"),
-                        ],
-                    )? == 1;
-            if !resume {
-                ui::info(&format!(
-                    "The worker stays paused. Press P in its view, or run: yougori bounty resume {}",
-                    safe(&worker)
-                ));
-                return Ok(Some(current));
-            }
-        }
-        let result = activity(
-            "Resuming worker and synchronizing notes",
-            invocation.request.clone(),
-        )
-        .await?;
-        if !invocation.no_wait && !wait_prepared(&worker, false).await? {
-            return Ok(None);
-        }
-        return Ok(Some(result));
+        return reopen(invocation).await;
     }
-    let mut rpc = |method: &'static str, params: Value| call(method, params);
-    if interactive && !invocation.yes {
-        let state = activity(
-            "Checking your model and hardware",
-            json!({"action":"doctor","model":invocation.request["model"]}),
-        )
+    if !setup.checks {
+        // --yes in a terminal: the CUDA checks can take a moment.
+        let request = &mut invocation.request;
+        ui::busy("Checking local model compute", async {
+            scripted_settings(request, &mut |method: &'static str, params: Value| call(method, params)).await;
+            Ok(())
+        })
         .await?;
-        let preflight = loop {
-            let result=activity("Checking the selected model revision",json!({"action":"doctor","model":invocation.request["model"],"quant":invocation.request["quant"],"preflightModel":true})).await;
-            match result {
-                Ok(value) if value["preflight"].is_object() => break value["preflight"].clone(),
-                Ok(_) => break Value::Null,
-                Err(error) => {
-                    let choices=[ui::Choice::new("Choose another model","paste a supported Hugging Face GGUF repository"),ui::Choice::new("Sign in to Hugging Face","save a read token securely; gated terms must be accepted on Hugging Face"),ui::Choice::new("Cancel","return without creating a worker")];
-                    match ui::select("This model needs attention", &[safe(&error)], &choices, 0)? {
-                        0 => {
-                            invocation.request["model"] = ui::input_prefilled(
-                                "Which Hugging Face model should power your worker?",
-                                "hf.co/",
-                                &model,
-                            )?
-                            .into()
-                        }
-                        1 => {
-                            let token = ui::input("Hugging Face read token", "", true, &|value| {
-                                if !value.starts_with("hf_")
-                                    || !(12..=1024).contains(&value.len())
-                                    || !value
-                                        .bytes()
-                                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                                {
-                                    return Err("Enter a valid Hugging Face read token. Its value is withheld.".into());
-                                }
-                                Ok(value.into())
-                            })?;
-                            call(
-                                "set_deployment_secret",
-                                json!({"name":crate::model_auth::REFERENCE,"value":token}),
-                            )
-                            .await?;
-                            ui::info("Read token saved in the OS credential vault. Accept any gated model's terms on Hugging Face before retrying.");
-                        }
-                        _ => return Ok(None),
-                    }
-                }
-            }
-        };
-        if !preflight.is_null() {
-            for line in [
-                format!(
-                    "Model revision: {}",
-                    field(&preflight, "revision", "Unknown")
-                ),
-                format!(
-                    "Selected variant: {} · Weights: {}",
-                    field(&preflight, "quant", "GGUF"),
-                    preflight["resources"]["weightsBytes"]
-                        .as_u64()
-                        .map(ui::bytes)
-                        .unwrap_or_else(|| "See model metadata".into())
-                ),
-            ] {
-                ui::info(&line);
-            }
-            if invocation.request["quant"].is_null() && preflight["quant"].is_string() {
-                invocation.request["quant"] = preflight["quant"].clone();
-            }
-        }
-        let host = if state["host"].is_object() {
-            &state["host"]
-        } else {
-            &state
-        };
-        let cuda = if invocation.request["gpu"].is_null() {
-            let task = ui::loading_task("Checking for a compatible NVIDIA GPU");
-            let cuda = cuda_checks(&mut rpc).await;
-            task.done(if gpu_choice(&cuda) == "nvidia" {
-                "This PC passed the NVIDIA CUDA checks"
-            } else {
-                "No compatible NVIDIA GPU; the processor will run the model"
-            });
-            cuda
-        } else {
-            Value::Null
-        };
-        // One screen with recommended settings instead of six questions; Customize keeps them.
-        let mut chosen = false;
-        if let Some(recommended) = recommended_settings(&invocation.request, host, &cuda)? {
-            match ui::select(
-                "Prepare this worker?",
-                &setup_notes(&recommended, &cuda),
-                &[
-                    ui::Choice::new("Prepare", "download and verify the model with these settings"),
-                    ui::Choice::new("Customize", "choose GPU or CPU, cores, memory, drive, space and name"),
-                    ui::Choice::new("Cancel", "return without creating a worker"),
-                ],
-                0,
-            )? {
-                0 => {
-                    invocation.request = recommended;
-                    chosen = true;
-                }
-                1 => {}
-                _ => return Ok(None),
-            }
-        }
-        if !chosen {
-            if invocation.request["gpu"].is_null() {
-                let choices = [
-                    ui::Choice::new("Compatible local GPU", "use this computer's NVIDIA GPU"),
-                    ui::Choice::new("CPU", "use this computer's processor"),
-                ];
-                let detected = gpu_choice(&cuda);
-                let note = if detected == "nvidia" {
-                    "This PC passed the NVIDIA CUDA checks. Compatibility is checked again before the worker is marked ready."
-                } else {
-                    "No NVIDIA GPU passed the CUDA checks (yougori gpu status shows why), so CPU is recommended."
-                };
-                let gpu = ui::select(
-                    "Where should your worker run the model?",
-                    &[note.into()],
-                    &choices,
-                    usize::from(detected == "cpu"),
-                )?;
-                invocation.request["gpu"] = if gpu == 0 { "nvidia" } else { "cpu" }.into();
-            }
-            let mut sliders = resource_sliders(&invocation.request, host)?;
-            if !sliders.is_empty() {
-                ui::sliders(
-                    "Size your bounty worker",
-                    "Choose CPU cores and RAM. Existing workloads keep their allocations.",
-                    &mut sliders,
-                )?;
-            }
-            if invocation.request["resources"].is_null() {
-                invocation.request["resources"] = json!({});
-            }
-            for slider in sliders {
-                invocation.request["resources"][if slider.label == "CPU" {
-                    "cpu"
-                } else {
-                    "memoryGb"
-                }] = slider.value.into();
-            }
-            if invocation.request["resources"]["storageDrive"].is_null() {
-                let drives = host["storageDrives"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                if !drives.is_empty() {
-                    let choices = drives
-                        .iter()
-                        .map(|d| {
-                            ui::Choice::new(
-                                field(d, "path", "Unknown drive"),
-                                format!("{} GB free", field(d, "freeGb", "unknown")),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    let at = ui::select(
-                        "Where should model and workspace files be stored?",
-                        &[],
-                        &choices,
-                        0,
-                    )?;
-                    invocation.request["resources"]["storageDrive"] = drives[at]["path"].clone();
-                }
-            }
-            if invocation.request["workspaceQuotaGb"].is_null() {
-                let value = ui::input(
-                    "How much space can bounty workspaces use?",
-                    "20",
-                    false,
-                    &|v| number(v, "Workspace quota", 4.0, 1024.0).map(|n| n.to_string()),
-                )?;
-                invocation.request["workspaceQuotaGb"] =
-                    number(&value, "Workspace quota", 4.0, 1024.0)?.into();
-            }
-            if invocation.request["name"].is_null() {
-                invocation.request["name"] =
-                    ui::input("Name this worker", "Bounty worker", false, &|v| {
-                        clean(v, "Worker name", 64)
-                    })?
-                    .into();
-            }
-            if invocation.request["keepResident"].is_null() {
-                let choices = [
-                    ui::Choice::new(
-                        "Keep it loaded",
-                        "uses memory while waiting; no agent inference",
-                    ),
-                    ui::Choice::new(
-                        "Release model memory while waiting",
-                        "reload for accepted work or your private prompts",
-                    ),
-                ];
-                invocation.request["keepResident"] =
-                    json!(ui::select("Keep the model ready while waiting?", &[], &choices, 0)? == 0);
-            }
-            defaults(&mut invocation.request);
-            let notes = vec![
-                format!("Model: {}", field(&invocation.request, "model", "")),
-                format!(
-                    "{} · CPU: {} · Memory: {} GB · Workspace quota: {} GB",
-                    if invocation.request["gpu"] == "cpu" { "Runs on the processor" } else { "Runs on your NVIDIA GPU" },
-                    field(&invocation.request["resources"], "cpu", ""),
-                    field(&invocation.request["resources"], "memoryGb", ""),
-                    field(&invocation.request, "workspaceQuotaGb", "")
-                ),
-                "The engine checks disk space, downloads, model tools and context before readiness."
-                    .into(),
-                "Your model API stays private. No bounty is accepted during setup.".into(),
-            ];
-            if ui::select(
-                "Prepare this worker?",
-                &notes,
-                &[
-                    ui::Choice::new("Cancel", "return without creating a worker"),
-                    ui::Choice::new("Prepare", "download and verify the selected local model"),
-                ],
-                0,
-            )? != 1
-            {
-                return Ok(None);
-            }
-        }
-    } else {
-        scripted_settings(&mut invocation.request, &mut rpc).await;
     }
     sign_in(interactive).await?;
-    let result = activity("Preparing your worker", invocation.request.clone()).await?;
+    let result = change("Preparing your worker", invocation.request.clone()).await?;
     let id = worker_id(&result)?;
     if invocation.no_wait {
         return Ok(Some(result));
     }
-    ui::info(&format!("Reconnect: yougori start bounty --worker {id}"));
+    ui::info(&reconnect_line(&id).await);
     if !wait_prepared(&id, false).await? {
-        return Ok(None);
+        return Ok(Some(left_preparation(&id)));
     }
     Ok(Some(result))
 }
@@ -1626,7 +2590,7 @@ async fn browse_bounties(worker: &str) -> Result<(), String> {
         0,
     )?;
     if confirmed == 1 {
-        activity("Requesting exact-version source access",json!({"action":"apply","workerId":worker,"bountyId":bounty["id"],"termsVersion":bounty["termsVersion"],"termsDigest":bounty["termsDigest"],"confirmed":true})).await?;
+        change("Requesting exact-version source access",json!({"action":"apply","workerId":worker,"bountyId":bounty["id"],"termsVersion":bounty["termsVersion"],"termsDigest":bounty["termsDigest"],"confirmed":true})).await?;
         ui::info("Access application sent. Keep waiting for an approved offer; review and accept it separately before any source is downloaded.");
     }
     Ok(())
@@ -1703,12 +2667,12 @@ async fn offers(worker: &str) -> Result<(), String> {
             return Ok(());
         }
         if selection == 2 {
-            dispatch(json!({"action":"skip","workerId":worker,"offerId":offer_id(offer)?,"bountyId":offer["bounty"]["id"]})).await?;
+            let skip = json!({"action":"skip","workerId":worker,"offerId":offer_id(offer)?,"bountyId":offer["bounty"]["id"]});
+            ui::busy("Skipping this offer", dispatch(skip)).await?;
             continue;
         }
-        let detailed =
-            dispatch(json!({"action":"details","workerId":worker,"offerId":offer_id(offer)?}))
-                .await?;
+        let details = json!({"action":"details","workerId":worker,"offerId":offer_id(offer)?});
+        let detailed = ui::busy("Loading the offer details", dispatch(details)).await?;
         let offer = if detailed["offer"].is_object() {
             &detailed["offer"]
         } else if detailed["termsVersion"].is_number() {
@@ -1766,14 +2730,15 @@ async fn offers(worker: &str) -> Result<(), String> {
         if confirmed != 1 {
             return Ok(());
         }
-        activity("Preparing the accepted bounty", request).await?;
+        change("Preparing the accepted bounty", request).await?;
         wait_prepared(worker, true).await?;
         return Ok(());
     }
 }
 
 async fn show_messages(worker: &str, last: &mut BTreeSet<String>) -> Result<(), String> {
-    let result = dispatch(json!({"action":"messages","workerId":worker})).await?;
+    let request = json!({"action":"messages","workerId":worker});
+    let result = ui::busy("Loading your conversation", dispatch(request)).await?;
     for message in result["messages"].as_array().into_iter().flatten() {
         let id = message["id"]
             .as_str()
@@ -1834,30 +2799,41 @@ async fn chat(worker: &str) -> Result<(), String> {
                 } else {
                     "resume"
                 };
-                activity(
-                    "Updating your worker",
-                    json!({"action":action,"workerId":worker}),
-                )
-                .await?;
+                if let Err(error) = activity("Updating your worker", json!({"action":action,"workerId":worker})).await {
+                    if error != ui::CANCELLED {
+                        return Err(error);
+                    }
+                    ui::take_interrupt();
+                    ui::warn("Stopped waiting. The change may still go through; /status shows your worker.");
+                }
                 continue;
             }
             "/status" => {
-                let value = dispatch(json!({"action":"status","workerId":worker})).await?;
+                let request = json!({"action":"status","workerId":worker});
+                let value = ui::busy("Checking your worker", dispatch(request)).await?;
                 let worker = worker_value(&value);
                 ui::info(&format!(
                     "{} · {}",
-                    field(worker, "state", "Unknown"),
+                    state_label(worker["state"].as_str().unwrap_or("")),
                     field(worker, "summary", "No completed attempts yet")
                 ));
                 continue;
             }
             _ => {}
         }
-        let result = activity(
+        let result = match activity(
             "Sending your suggestion",
             json!({"action":"chat","workerId":worker,"content":content}),
         )
-        .await?;
+        .await
+        {
+            Err(error) if error == ui::CANCELLED => {
+                ui::take_interrupt();
+                ui::warn("Stopped waiting. Your message may still arrive.");
+                continue;
+            }
+            result => result?,
+        };
         ui::info(if result["delivered"] == true {
             "Your agent received the message."
         } else {
@@ -1901,6 +2877,214 @@ fn interrupt_choice(index: usize) -> &'static str {
     }
 }
 
+/// One committed log line for an activity event, or None when it only streams model text.
+fn console_line(event: &Value) -> Option<String> {
+    let text = |key| safe(event[key].as_str().unwrap_or_default());
+    let kind = event["kind"].as_str().unwrap_or_default();
+    Some(match kind {
+        "practice" | "work" | "turn" => format!("{}  {}", ui::paint("◇", ui::GREEN), ui::bold(&text("text"))),
+        "attempt" if event["attempt"].is_number() => {
+            format!("{}  {}", ui::paint("◇", ui::GREEN), ui::bold(&format!("Attempt {}", event["attempt"])))
+        }
+        "status" | "feedback" | "report" | "check" | "attempt" | "turnEnd" => format!("{}  {}", ui::muted("│"), ui::muted(&text("text"))),
+        "action" => {
+            let target = text("target");
+            let status = if event["status"] == "error" { " · failed" } else { "" };
+            format!("{}  {} {}{}", ui::muted("│"), ui::paint("→", ui::SKY), ui::muted(&format!("{} {target}", text("tool"))), ui::muted(status))
+        }
+        "tool" => format!("{}  {} {}", ui::muted("│"), ui::paint("→", ui::SKY), ui::muted(&format!("calling {}", text("name")))),
+        "verdict" => {
+            let report = &event["report"];
+            let mut lines = vec![format!(
+                "{}  {} {}",
+                if event["qualifies"] == true { ui::paint("◇", ui::GREEN) } else { ui::paint("◇", ui::AMBER) },
+                ui::bold(&format!("Attempt {}: {}", event["attempt"], if event["qualifies"] == true { "report qualifies" } else { "report rejected" })),
+                ui::muted(&ui::clock(std::time::Duration::from_secs_f64(event["seconds"].as_f64().unwrap_or(0.0).max(0.0)))),
+            )];
+            if report.is_object() {
+                lines.push(format!("{}  {}", ui::muted("│"), ui::muted(&format!("Report: {} · {} line {}", safe(report["title"].as_str().unwrap_or("—")), safe(report["file"].as_str().unwrap_or("—")), report["line"]))));
+                lines.push(format!("{}  {}", ui::muted("│"), ui::muted(&format!("Reproduction: {}", ui::clip(&safe(report["reproduction"].as_str().unwrap_or("—")), 400)))));
+            }
+            lines.push(format!("{}  {}", ui::muted("│"), ui::muted(&format!("Verification: {}", text("reason")))));
+            lines.join("\n")
+        }
+        "practiceEnd" => format!("{}  {}", ui::paint("◇", if event["outcome"] == "qualified" { ui::GREEN } else { ui::AMBER }), ui::bold(&text("text"))),
+        _ => return None,
+    })
+}
+
+/// The last few lines of the model's streamed output, dimmed, for the live block.
+fn stream_tail(stream: &str, columns: usize) -> Vec<String> {
+    if stream.trim().is_empty() {
+        return Vec::new();
+    }
+    let wrapped: Vec<String> = ui::wrap(stream, columns.saturating_sub(4).max(20))
+        .into_iter()
+        .map(|(line, _)| format!("{}  {}", ui::muted("│"), ui::muted(line.trim_end())))
+        .collect();
+    let start = wrapped.len().saturating_sub(4);
+    wrapped[start..].to_vec()
+}
+
+/// A live console over a worker's activity log, like a coding agent's: the agent's actions and
+/// the model's output stream in as they happen, and you can type guidance or a command. Used by
+/// practice (which loops until a report qualifies) and by an accepted bounty's work.
+pub(crate) async fn console(worker: &str, practice: bool) -> Result<Value, String> {
+    let _raw = ui::Raw::on()?;
+    let block = ui::block();
+    let mut after = 0u64;
+    let mut input = String::new();
+    let mut stream = String::new();
+    let hint = if practice {
+        "Type guidance for your worker · /stop ends the practice · Ctrl+] detaches"
+    } else {
+        "Type to message your agent · /stop pauses or leaves the bounty · Ctrl+] detaches"
+    };
+    loop {
+        let log = dispatch(json!({"action":"activity","workerId":worker,"after":after})).await?;
+        for event in log["events"].as_array().into_iter().flatten() {
+            if let Some(seq) = event["seq"].as_u64() {
+                after = seq;
+            }
+            match event["kind"].as_str().unwrap_or_default() {
+                "text" | "arguments" => stream.push_str(event["text"].as_str().unwrap_or_default()),
+                "attempt" | "turn" => stream.clear(),
+                "input" => continue, // Echoed locally when you send it.
+                _ => {}
+            }
+            if let Some(line) = console_line(event) {
+                block.set(Vec::new());
+                for line in line.split('\n') {
+                    ui::line(line);
+                }
+            }
+        }
+        let practicing = log["practicing"] == true;
+        let state = log["worker"]["state"].as_str().unwrap_or("").to_owned();
+        if practice && !practicing && log["events"].as_array().is_none_or(|events| events.is_empty()) {
+            return Ok(json!({"practice":true,"workerId":worker}));
+        }
+        if !practice && matches!(state.as_str(), "stopped" | "failed") {
+            return Ok(json!({"workerId":worker,"state":state}));
+        }
+        let columns = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
+        let mut lines = stream_tail(&stream, columns);
+        if !lines.is_empty() {
+            lines.push(ui::muted("│").to_string());
+        }
+        lines.push(format!("{}  {}{}", ui::paint("›", ui::SKY), input, ui::paint("▌", ui::GRAY)));
+        lines.push(format!("{}  {}", ui::muted("└"), ui::muted(hint)));
+        block.set(lines);
+
+        let tick = tokio::time::Instant::now() + Duration::from_millis(600);
+        while tokio::time::Instant::now() < tick {
+            if event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+                match event::read().map_err(|e| e.to_string())? {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => {
+                        if key.modifiers.contains(KeyModifiers::CONTROL) {
+                            match key.code {
+                                KeyCode::Char('c') => {
+                                    if console_stop(worker, practice, &block).await? {
+                                        return Ok(json!({"workerId":worker,"stopped":true}));
+                                    }
+                                    break;
+                                }
+                                KeyCode::Char(']') => {
+                                    drop(block);
+                                    ui::info(&format!("Detached. {}", reconnect_line(worker).await));
+                                    return Ok(json!({"workerId":worker,"detached":true}));
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    let entered = input.trim().to_owned();
+                                    input.clear();
+                                    if !entered.is_empty() && console_submit(worker, practice, &entered, &block).await? {
+                                        return Ok(json!({"workerId":worker,"stopped":true}));
+                                    }
+                                    break;
+                                }
+                                KeyCode::Backspace => {
+                                    input.pop();
+                                }
+                                KeyCode::Char(c) if !c.is_control() && input.len() < 4000 => input.push(c),
+                                _ => {}
+                            }
+                        }
+                    }
+                    Event::Resize(..) => ui::refresh(),
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+}
+
+/// Handles a typed line. Returns true when the worker should be left (work `/stop` → leave).
+async fn console_submit(worker: &str, practice: bool, entered: &str, block: &ui::Block) -> Result<bool, String> {
+    block.set(Vec::new());
+    if entered.eq_ignore_ascii_case("/stop") {
+        return console_stop(worker, practice, block).await;
+    }
+    if entered == "/help" {
+        ui::info(if practice {
+            "Type guidance to steer your worker. /stop ends the practice. Ctrl+] detaches."
+        } else {
+            "Type to message your agent. /stop pauses or leaves the bounty. Ctrl+] detaches."
+        });
+        return Ok(false);
+    }
+    if entered.starts_with('/') {
+        ui::info("Unknown command. Type /stop, /help, or plain text.");
+        return Ok(false);
+    }
+    ui::line(&format!("{}  {}", ui::paint("›", ui::SKY), ui::bold(&safe(entered))));
+    if practice {
+        dispatch(json!({"action":"practiceInput","workerId":worker,"content":entered})).await?;
+        ui::info("Saved; your worker reads it on its next attempt.");
+    } else {
+        let result = dispatch(json!({"action":"chat","workerId":worker,"content":entered})).await?;
+        ui::info(if result["delivered"] == true { "Your agent received the message." } else { "Saved; your agent handles it at a task checkpoint." });
+    }
+    Ok(false)
+}
+
+/// `/stop` or Ctrl+C. Practice: end the practice. Work: pause or leave the accepted bounty.
+async fn console_stop(worker: &str, practice: bool, block: &ui::Block) -> Result<bool, String> {
+    ui::take_interrupt();
+    block.set(Vec::new());
+    if practice {
+        dispatch(json!({"action":"practiceStop","workerId":worker})).await?;
+        ui::info("Stopping practice after this attempt…");
+        return Ok(false);
+    }
+    let handle = worker_handle(worker);
+    let choice = ui::select_required(
+        "Stop working on this bounty?",
+        &[format!("Worker {handle}")],
+        &[
+            ui::Choice::new("Keep working", "return to the live view"),
+            ui::Choice::new("Pause", "checkpoint and stop new tasks; resume later"),
+            ui::Choice::new("Leave the bounty", "stop work and its sandboxes; reports and rewards stay"),
+        ],
+    )?;
+    match choice {
+        1 => {
+            change("Pausing worker", json!({"action":"pause","workerId":worker})).await?;
+            ui::info(&format!("Paused. Resume with: yougori bounty resume {handle}"));
+            Ok(false)
+        }
+        2 => {
+            change("Leaving the bounty", json!({"action":"leave","workerId":worker})).await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 async fn interrupt(worker: &str) -> Result<bool, String> {
     ui::take_interrupt();
     let choices = [
@@ -1911,7 +3095,7 @@ async fn interrupt(worker: &str) -> Result<bool, String> {
     ];
     let action = interrupt_choice(ui::select_required(
         "What would you like to do?",
-        &[safe(worker)],
+        &[format!("Worker {}", worker_handle(worker))],
         &choices,
     )?);
     if action == "cancel" {
@@ -1923,12 +3107,17 @@ async fn interrupt(worker: &str) -> Result<bool, String> {
             return Ok(false);
         }
     }
-    activity(
-        "Updating worker",
-        json!({"action":action,"workerId":worker,"confirmed":action=="delete"}),
-    )
-    .await?;
-    Ok(action != "pause")
+    let request = json!({"action":action,"workerId":worker,"confirmed":action=="delete"});
+    match activity("Updating worker", request).await {
+        // Leave the view: it cannot tell what the engine finished.
+        Err(error) if error == ui::CANCELLED => {
+            ui::take_interrupt();
+            ui::warn(&stopped_waiting(&format!("yougori bounty status {}", worker_handle(worker))));
+            Ok(true)
+        }
+        Err(error) => Err(error),
+        Ok(_) => Ok(action != "pause"),
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -1937,6 +3126,8 @@ enum WorkerKey {
     Offers,
     Chat,
     TogglePause,
+    Practice,
+    Console,
     Refresh,
     Detach,
     Interrupt,
@@ -1956,6 +3147,9 @@ fn key_action(key: KeyEvent) -> WorkerKey {
         KeyCode::Char('o' | 'O') => WorkerKey::Offers,
         KeyCode::Char('c' | 'C') => WorkerKey::Chat,
         KeyCode::Char('p' | 'P') => WorkerKey::TogglePause,
+        KeyCode::Char('t' | 'T') => WorkerKey::Practice,
+        KeyCode::Char('l' | 'L') => WorkerKey::Console,
+        KeyCode::Enter => WorkerKey::Console,
         KeyCode::Char('r' | 'R') => WorkerKey::Refresh,
         KeyCode::Char('q' | 'Q') | KeyCode::Esc => WorkerKey::Detach,
         _ => WorkerKey::None,
@@ -1963,13 +3157,16 @@ fn key_action(key: KeyEvent) -> WorkerKey {
 }
 
 async fn dashboard(worker: &str) -> Result<(), String> {
+    let handle = worker_handle(worker);
     // The live map lists the keys; this stays in the log above it.
     ui::info(
         "Ctrl+C opens lifecycle choices. Ctrl+] detaches; the engine keeps your worker running.",
     );
-    let screen = crate::bounty_map::Screen::start(worker);
+    let screen = crate::bounty_map::Screen::start(&handle, &handle);
     let mut last_snapshot = String::new();
     let mut offer_count = usize::MAX;
+    // The worker state the practice hint was last shown for; repeated presses add nothing.
+    let mut practice_hint = String::new();
     let _raw = ui::Raw::on()?;
     loop {
         let result = dispatch(json!({"action":"status","workerId":worker})).await?;
@@ -1983,8 +3180,8 @@ async fn dashboard(worker: &str) -> Result<(), String> {
         let paused = state["state"] == "paused";
         // The map shows the details; the log keeps one plain line per change, and the exact
         // command when the worker waits for the participant.
-        let sentence = state_sentence(&field(state, "name", worker), state["state"].as_str().unwrap_or(""));
-        let hint = state_hint(state, worker);
+        let sentence = state_sentence(&field(state, "name", &handle), state["state"].as_str().unwrap_or(""));
+        let hint = state_hint(state, &handle);
         let snapshot = format!("{sentence}\n{}", hint.as_deref().unwrap_or_default());
         if last_snapshot != snapshot {
             ui::step(&sentence);
@@ -2050,24 +3247,68 @@ async fn dashboard(worker: &str) -> Result<(), String> {
                     break;
                 }
                 WorkerKey::TogglePause => {
-                    activity(
-                        if paused {
-                            "Resuming worker"
-                        } else {
-                            "Pausing worker"
-                        },
-                        json!({"action":if paused{"resume"}else{"pause"},"workerId":worker}),
-                    )
-                    .await?;
+                    let label = if paused { "Resuming worker" } else { "Pausing worker" };
+                    let request = json!({"action":if paused{"resume"}else{"pause"},"workerId":worker});
+                    match activity(label, request).await {
+                        // The view shows whether the change went through.
+                        Err(error) if error == ui::CANCELLED => {
+                            ui::take_interrupt();
+                            ui::warn("Stopped waiting. The change may still go through; this view shows the worker's state.");
+                        }
+                        result => {
+                            result?;
+                        }
+                    }
+                    break;
+                }
+                WorkerKey::Practice => {
+                    let current = state["state"].as_str().unwrap_or_default();
+                    if !matches!(current, "ready_waiting" | "waiting" | "ready") {
+                        if practice_hint != current {
+                            ui::info(if paused {
+                                "Practice needs a live worker. Press P to resume, then T to practice."
+                            } else {
+                                "Practice runs once your worker is live and waiting for offers."
+                            });
+                            practice_hint = current.to_owned();
+                        }
+                        break;
+                    }
+                    screen.show(false);
+                    match crate::bounty_practice::practice_now(worker).await {
+                        Err(e) if e == ui::CANCELLED => {
+                            if ui::take_interrupt() && interrupt(worker).await? {
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => ui::warn(&format!("The practice bounty could not run: {}", safe(&e))),
+                        _ => {}
+                    }
+                    screen.show(true);
+                    break;
+                }
+                WorkerKey::Console => {
+                    if !matches!(state["state"].as_str(), Some("running" | "working" | "preparing_bounty" | "awaiting_review")) {
+                        break;
+                    }
+                    // Watch the agent work the accepted bounty live; /stop pauses or leaves it.
+                    screen.show(false);
+                    match console(worker, false).await {
+                        Err(e) if e == ui::CANCELLED => {
+                            if ui::take_interrupt() && interrupt(worker).await? {
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => ui::warn(&safe(&e)),
+                        _ => {}
+                    }
+                    screen.show(true);
                     break;
                 }
                 WorkerKey::Refresh => break,
                 WorkerKey::Detach => {
                     drop(screen);
-                    ui::outro(&format!(
-                        "Detached. Reconnect: yougori start bounty --worker {}",
-                        safe(worker)
-                    ));
+                    ui::outro(&format!("Detached. {}", reconnect_line(worker).await));
                     return Ok(());
                 }
                 WorkerKey::Interrupt => {
@@ -2102,17 +3343,13 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
         return Ok(None);
     };
     if invocation.dry_run {
+        let reuse = invocation.request["action"] == "prepare" && !invocation.change && !creation_options(&invocation.request);
         return Ok(Some(
-            json!({"dryRun":true,"request":invocation.request,"modelInputFirst":true,"privateModelApi":true,"autoAccept":false,"idleInference":false,"agentChannelHumanAccess":false,"interactiveRequired":invocation.interactive_start&&!invocation.yes,"terminal":"current"}),
+            json!({"dryRun":true,"request":invocation.request,"reuseSavedWorker":reuse,"modelInputFirst":true,"privateModelApi":true,"autoAccept":false,"idleInference":false,"agentChannelHumanAccess":false,"interactiveRequired":invocation.interactive_start&&!invocation.yes,"terminal":"current"}),
         ));
     }
-    if invocation.interactive_start && !ui::can_prompt() {
-        if !invocation.yes
-            || !invocation.no_wait
-            || invocation.request["model"].is_null() && invocation.request["workerId"].is_null()
-        {
-            return Err("Starting a bounty worker requires an interactive terminal. For scripts supply --model, --yes and --no-wait; this never accepts an offer.".into());
-        }
+    if invocation.interactive_start && !ui::can_prompt() && (!invocation.yes || !invocation.no_wait) {
+        return Err("Starting a bounty worker requires an interactive terminal. For scripts supply --yes and --no-wait, plus --model for a new worker; this never accepts an offer.".into());
     }
     if invocation.request["action"] == "chat"
         && invocation.request["content"].is_null()
@@ -2124,6 +3361,7 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     }
     // The wordmark belongs to the guided flows, not to one-line lookups such as `bounty workers`.
     let guided = invocation.interactive_start
+        || invocation.request["action"] == "practice"
         || invocation.request["action"] == "chat" && invocation.request["content"].is_null();
     let _session = if ui::can_prompt() && guided {
         Some(ui::Session::start(
@@ -2134,49 +3372,113 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
         None
     };
     let result = async {
+        ui::busy("Starting Yougori engine", crate::client::start(None)).await?;
+        resolve(&mut invocation.request).await?;
         if invocation.interactive_start {
             let Some(started_worker) = setup(&mut invocation).await? else {
                 return Ok(json!({"cancelled":true}));
             };
+            if started_worker["detached"] == true {
+                return Ok(started_worker);
+            }
             // Waiting for readiness belongs to `bounty status`, not to this process.
             if invocation.no_wait {
                 return started(&started_worker);
             }
             let worker = worker_id(&started_worker)?;
-            // Now online and waiting for offers: offer a safe practice run first.
-            crate::bounty_practice::offer_practice_when_waiting(&worker).await?;
-            dashboard(&worker).await?;
-            Ok(json!({"detached":true,"workerId":worker}))
-        } else {
-            crate::client::start(None).await?;
-            if invocation.request["action"] == "chat" && invocation.request["content"].is_null() {
-                chat(invocation.request["workerId"].as_str().unwrap()).await?;
-                Ok(json!({"detached":true}))
-            } else {
-                if invocation.request["action"]=="accept" {
-                    let detail=dispatch(json!({"action":"details","workerId":invocation.request["workerId"],"offerId":invocation.request["offerId"]})).await?;
-                    bind_offer(&mut invocation.request,&detail["offer"])?;
-                }
-                let rewards=invocation.request["action"]=="rewards";
-                let mut result=dispatch(invocation.request).await?;
-                if rewards {
-                    let lines=reward_lines(&result);
-                    if ui::can_prompt(){for line in &lines {ui::info(line);}}
-                    if result.is_object(){result["paymentStatusLabels"]=json!(lines);}
-                }
-                Ok(result)
+            // Newly online and waiting for offers: offer a safe practice run first. A worker that
+            // was already live when this command reconnected is not asked again.
+            if !prepared_state(worker_value(&started_worker)["state"].as_str().unwrap_or(""), false) {
+                crate::bounty_practice::offer_practice_when_waiting(&worker).await?;
             }
+            dashboard(&worker).await?;
+            Ok(json!({"detached":true,"workerId":worker,"handle":worker_handle(&worker)}))
+        } else if invocation.request["action"] == "chat" && invocation.request["content"].is_null() {
+            chat(invocation.request["workerId"].as_str().unwrap_or_default()).await?;
+            Ok(json!({"detached":true}))
+        } else if invocation.request["action"] == "practice" {
+            let worker = invocation.request["workerId"].as_str().unwrap_or_default();
+            if ui::can_prompt() {
+                crate::bounty_practice::walkthrough(worker).await
+            } else {
+                crate::bounty_practice::headless(worker).await
+            }
+        } else {
+            one_shot(invocation.request).await
         }
     }
     .await;
     match result {
-        Err(e) if e == ui::CANCELLED => {
+        // Back is consumed by the setup's questions; should one ever escape, it cancels.
+        Err(e) if e == ui::CANCELLED || e == ui::BACK => {
             ui::take_interrupt();
             Ok(Some(json!({"cancelled":true})))
         }
         Ok(v) => Ok(Some(v)),
         Err(e) => Err(e),
     }
+}
+
+/// What a one-line `bounty` command shows while the engine works on it.
+fn waiting_label(action: &str) -> &'static str {
+    match action {
+        "workers" => "Finding your workers",
+        "status" | "doctor" => "Checking your worker",
+        "offers" => "Checking bounty offers",
+        "details" => "Loading the offer details",
+        "bounties" => "Loading published bounties",
+        "messages" => "Loading your conversation",
+        "reports" => "Loading reports",
+        "rewards" => "Loading reward records",
+        "pause" => "Pausing your worker",
+        "resume" => "Resuming your worker",
+        "stop" => "Stopping your worker",
+        "delete" => "Deleting your worker",
+        "leave" => "Leaving the bounty",
+        "submitReport" => "Sending your report",
+        "apply" => "Sending your access application",
+        "accept" => "Accepting the bounty",
+        "skip" => "Skipping the offer",
+        "chat" => "Sending your message",
+        _ => "Updating your worker",
+    }
+}
+
+/// `yougori bounty ACTION`: one request, with a spinner while it runs and each shown worker's
+/// short name in the result. Ctrl+C stops waiting; a change the engine already received may
+/// still finish, so that is reported rather than called cancelled.
+async fn one_shot(mut request: Value) -> Result<Value, String> {
+    let action = request["action"].as_str().unwrap_or_default().to_owned();
+    if action == "accept" {
+        let details = json!({"action":"details","workerId":request["workerId"],"offerId":request["offerId"]});
+        let detail = ui::busy("Checking the offer", dispatch(details)).await?;
+        bind_offer(&mut request, &detail["offer"])?;
+    }
+    let reads = matches!(
+        action.as_str(),
+        "workers" | "status" | "doctor" | "offers" | "details" | "bounties" | "messages" | "reports" | "rewards"
+    );
+    let check = match request["workerId"].as_str() {
+        Some(id) if action != "delete" => format!("yougori bounty status {}", worker_handle(id)),
+        _ => "yougori bounty workers".to_owned(),
+    };
+    let mut result = match ui::busy(waiting_label(&action), dispatch(request)).await {
+        Err(error) if error == ui::CANCELLED && !reads => return Err(stopped_waiting(&check)),
+        result => result?,
+    };
+    if action == "rewards" {
+        let lines = reward_lines(&result);
+        if ui::can_prompt() {
+            for line in &lines {
+                ui::info(line);
+            }
+        }
+        if result.is_object() {
+            result["paymentStatusLabels"] = json!(lines);
+        }
+    }
+    with_handles(&mut result);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -2318,10 +3620,12 @@ mod tests {
             key_action(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL)),
             WorkerKey::Detach
         );
-        assert_eq!(
-            key_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            WorkerKey::None
-        );
+        // Enter opens the live console; L watches work.
+        assert_eq!(key_action(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), WorkerKey::Console);
+        assert_eq!(key_action(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)), WorkerKey::Console);
+        // P stays pause; T practices.
+        assert_eq!(key_action(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)), WorkerKey::TogglePause);
+        assert_eq!(key_action(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT)), WorkerKey::Practice);
     }
     #[test]
     fn remote_offer_text_cannot_print_terminal_escape_sequences() {
@@ -2341,6 +3645,34 @@ mod tests {
         assert_eq!(s[0].value, 8);
         assert_eq!(r["resources"]["cpu"], 4.5);
         assert!(resource_sliders(&json!({}), &json!({"totalCpu":0})).is_err());
+    }
+    #[test]
+    fn model_variants_are_split_without_silently_overriding_an_explicit_quant() {
+        let selected = parse(&words("start bounty --model hf.co/HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF:IQ4_XS --dry-run")).unwrap().unwrap();
+        assert_eq!(selected.request["quant"], "IQ4_XS");
+        assert_eq!(selected.request["model"], "hf.co/HauhauCS/Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF");
+        for command in ["start bounty --model hf.co/owner/model:IQ4_XS --quant Q4_K_M",
+                        "start bounty --quant Q4_K_M --model hf.co/owner/model:IQ4_XS",
+                        "start bounty --model hf.co/owner/model:"] {
+            assert!(parse(&words(command)).is_err());
+        }
+        assert!(parse(&words("start bounty --model hf.co/owner/model:iq4_xs --quant IQ4_XS")).is_ok());
+        let mut default = json!({"model":DEFAULT_MODEL});
+        normalize_selection(&mut default).unwrap();
+        assert_eq!(default["quant"], "Q4_K_M");
+        assert!(!default["model"].as_str().unwrap().contains(':'));
+    }
+    #[test]
+    fn large_model_recommendations_include_model_and_both_sandboxes() {
+        let gemma = model_memory_recommendation(&json!({"resources":{"weightsBytes":7_381_384_864u64}}));
+        let qwen = model_memory_recommendation(&json!({"resources":{"weightsBytes":15_705_860_224u64}}));
+        assert_eq!((gemma, qwen), (16, 24));
+        let host = json!({"totalCpu":16,"totalMemoryGb":64});
+        let recommended = recommended_model_settings(&json!({"model":"hf.co/owner/model"}), &host, &Value::Null, gemma).unwrap().unwrap();
+        assert_eq!(recommended["resources"]["memoryGb"], 16);
+        assert!(resource_sliders_with_memory(&json!({}), &json!({"totalCpu":8,"totalMemoryGb":12}), gemma).is_err());
+        let sliders = resource_sliders_with_memory(&json!({"resources":{"memoryGb":32}}), &host, gemma).unwrap();
+        assert!(sliders.iter().all(|slider|slider.label != "Memory"));
     }
     #[test]
     fn background_preparation_never_announces_readiness_while_loading() {
@@ -2517,7 +3849,8 @@ mod tests {
         assert_eq!(recommended["model"], "hf.co/owner/model");
         let notes = setup_notes(&recommended, &nvidia).join("\n");
         assert!(notes.contains("Runs on your NVIDIA GPU · 4 CPU cores · 8 GB memory"), "{notes}");
-        assert!(notes.contains("Files on D:\\ · 20 GB for bounty workspaces · model kept loaded"), "{notes}");
+        assert!(notes.contains("Files on D:\\ · 20 GB for bounty workspaces · model loaded only for work"), "{notes}");
+        assert_eq!(recommended["keepResident"], false, "the model holds no GPU while waiting");
         // Windows reports GPU use for AMD and Intel graphics too; only the CUDA checks count.
         let amd = json!({"supported":false,"checks":[{"name":"NVIDIA GPU and driver","passed":false}]});
         let cpu_only = recommended_settings(&request, &host, &amd).unwrap().unwrap();
@@ -2530,6 +3863,106 @@ mod tests {
         assert!(recommended_settings(&json!({"model":"m","name":"Mine"}), &host, &nvidia).unwrap().is_none());
         assert!(recommended_settings(&json!({"model":"m","resources":{"cpu":6}}), &host, &nvidia).unwrap().is_none());
         assert!(recommended_settings(&request, &json!({"totalCpu":2,"totalMemoryGb":4}), &nvidia).is_err());
+    }
+
+    #[tokio::test]
+    async fn start_reuses_the_saved_worker_unless_change_or_creation_options() {
+        assert!(parse(&words("start bounty --change")).unwrap().unwrap().change);
+        for args in ["start bounty --change --worker worker-1", "start bounty --change --change", "bounty status worker-1 --change"] {
+            assert!(parse(&words(args)).is_err(), "{args}");
+        }
+        for (args, reuse) in [
+            ("start bounty", true),
+            ("start bounty --yes --no-wait", true),
+            ("start bounty --change", false),
+            ("start bounty --model hf.co/owner/model", false),
+            ("start bounty --storage-drive D:\\", false),
+            ("start bounty --release-memory", false),
+            ("start bounty --worker worker-1", false),
+        ] {
+            let shown = run(&words(&format!("{args} --dry-run"))).await.unwrap().unwrap();
+            assert_eq!(shown["reuseSavedWorker"], reuse, "{args}");
+        }
+        assert!(HELP.contains("--change") && HELP.contains("reconnects to the worker set up last"));
+    }
+
+    #[test]
+    fn the_model_loads_for_work_unless_kept_and_practice_and_memory_name_a_worker() {
+        let mut bare = json!({});
+        defaults(&mut bare);
+        assert_eq!(bare["keepResident"], false);
+        assert_eq!(parse(&words("start bounty --keep-loaded")).unwrap().unwrap().request["keepResident"], true);
+        assert_eq!(parse(&words("start bounty --release-memory")).unwrap().unwrap().request["keepResident"], false);
+        assert!(parse(&words("start bounty --keep-loaded --release-memory")).is_err());
+        assert_eq!(parse(&words("bounty memory worker-1 release")).unwrap().unwrap().request, json!({"action":"memory","workerId":"worker-1","keepResident":false}));
+        assert_eq!(parse(&words("bounty memory worker-1 keep")).unwrap().unwrap().request, json!({"action":"memory","workerId":"worker-1","keepResident":true}));
+        assert_eq!(parse(&words("bounty practice worker-1")).unwrap().unwrap().request, json!({"action":"practice","workerId":"worker-1"}));
+        for args in ["bounty memory worker-1", "bounty memory worker-1 off", "bounty memory release", "bounty practice", "bounty practice worker-1 --yes", "bounty memory worker-1 keep --keep-loaded"] {
+            assert!(parse(&words(args)).is_err(), "{args}");
+        }
+        assert!(HELP.contains("yougori bounty practice WORKER") && HELP.contains("yougori bounty memory WORKER release|keep"));
+    }
+
+    #[test]
+    fn the_newest_worker_is_saved_and_older_releases_rank_by_progress() {
+        let listed = json!({"workers":[
+            {"id":"worker-old","state":"ready_waiting","createdAt":100},
+            {"id":"worker-new","state":"failed","createdAt":200},
+            {"id":"../escape","state":"ready_waiting","createdAt":900},
+        ]});
+        assert_eq!(saved_worker(&listed, &[]).unwrap()["id"], "worker-new", "the worker set up last");
+        let legacy = json!({"workers":[
+            {"id":"worker-a","state":"failed"},
+            {"id":"worker-b","state":"failed","environmentId":"env-1","modelEnvironmentId":"env-2"},
+            {"id":"worker-c","state":"stopped","serverId":"remote"},
+            {"id":"worker-d","state":"failed","modelEnvironmentId":"env-2"},
+        ]});
+        assert_eq!(saved_worker(&legacy, &[]).unwrap()["id"], "worker-b");
+        // Older releases recorded no creation time: the worker whose sandbox is newest was set up
+        // last, and one whose environments were deleted ranks below it.
+        let environments = [
+            json!({"id":"env-agent-new","createdAt":"2026-10-12T12:35:57.558419800+00:00"}),
+            json!({"id":"env-agent-old","createdAt":"2026-10-12T09:01:02.5+00:00"}),
+            json!({"id":"env-2","createdAt":"2026-10-12T12:13:04.094877+00:00"}),
+        ];
+        let machine = json!({"workers":[
+            {"id":"worker-gone","state":"failed","environmentId":"env-deleted","modelEnvironmentId":"env-deleted-model"},
+            {"id":"worker-latest","state":"failed","environmentId":"env-agent-new","modelEnvironmentId":"env-2"},
+            {"id":"worker-earlier","state":"failed","environmentId":"env-agent-old","modelEnvironmentId":"env-2"},
+        ]});
+        assert_eq!(saved_worker(&machine, &environments).unwrap()["id"], "worker-latest");
+        assert_eq!(saved_worker(&machine, &environments[1..]).unwrap()["id"], "worker-earlier");
+        let live = json!({"workers":[{"id":"worker-a","state":"failed"},{"id":"worker-b","state":"paused"},{"id":"worker-c","state":"preparing"}]});
+        assert_eq!(saved_worker(&live, &[]).unwrap()["id"], "worker-c");
+        assert!(saved_worker(&json!({"workers":[]}), &[]).is_none());
+        assert!(saved_worker(&json!({}), &[]).is_none());
+        let saved = json!({"model":"HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive","quant":"Q4_K_M"});
+        assert_eq!(saved_model(&saved).unwrap(), "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M");
+        assert_eq!(saved_model(&json!({"model":"hf.co/owner/model"})).unwrap(), "hf.co/owner/model");
+        assert!(saved_model(&json!({"model":"bad;model"})).is_none());
+        for state in ["preparing", "preparing_bounty", "ready_waiting", "running", "awaiting_review"] {
+            assert!(active_state(state), "{state}");
+        }
+        for state in ["paused", "failed", "stopped", ""] {
+            assert!(!active_state(state), "{state}");
+        }
+    }
+
+    #[test]
+    fn a_chosen_drive_keeps_the_recommended_screen() {
+        let host = json!({"totalCpu":24,"totalMemoryGb":63.4,"storageDrives":[{"path":"C:\\","freeGb":58.9},{"path":"D:\\","freeGb":379.6}]});
+        let nvidia = json!({"supported":true});
+        assert_eq!(roomiest_drive(&host).unwrap()["path"], "D:\\");
+        let chosen = json!({"action":"prepare","model":"hf.co/owner/model","resources":{"storageDrive":"C:\\"}});
+        let recommended = recommended_settings(&chosen, &host, &nvidia).unwrap().unwrap();
+        assert_eq!(recommended["resources"]["storageDrive"], "C:\\");
+        assert_eq!(recommended["resources"]["cpu"], 4);
+        assert!(setup_notes(&recommended, &nvidia).join("\n").contains("Files on C:\\"));
+        // One drive, or none reported, needs no question.
+        let preflight = json!({"resources":{"weightsBytes":5_368_709_120u64,"storageGbRecommended":12}});
+        let single = json!({"storageDrives":[{"path":"C:\\","freeGb":58.9}]});
+        assert_eq!(choose_drive(&chosen, &single, &preflight, None).unwrap(), (Some("C:\\".to_owned()), false));
+        assert_eq!(choose_drive(&chosen, &json!({}), &preflight, None).unwrap(), (None, false));
     }
 
     #[tokio::test]
@@ -2547,7 +3980,7 @@ mod tests {
             })
             .await;
             assert_eq!(request["gpu"], expected);
-            assert_eq!(calls, ["get_cuda_runtime_status"]);
+            assert_eq!(calls, [COMPUTE_STATUS_METHOD]);
             assert_eq!((request["resources"]["cpu"].as_u64(), request["workspaceQuotaGb"].as_u64()), (Some(4), Some(20)));
         }
         // An explicit choice is kept without checking.
@@ -2572,13 +4005,13 @@ mod tests {
         let result = start_detached(script.request, |method, params| {
             calls.push((method, params["request"]["action"].clone(), params["request"]["gpu"].clone()));
             std::future::ready(Ok(match method {
-                "get_cuda_runtime_status" => json!({"supported":false}),
+                COMPUTE_STATUS_METHOD => json!({"supported":false}),
                 _ => json!({"worker":{"id":"worker-new","state":"preparing","stage":"Checking your model and resources"},"background":true}),
             }))
         })
         .await
         .unwrap();
-        assert_eq!(calls, [("get_cuda_runtime_status", Value::Null, Value::Null), ("swarm_dispatch", json!("prepare"), json!("cpu"))]);
+        assert_eq!(calls, [(COMPUTE_STATUS_METHOD, Value::Null, Value::Null), ("swarm_dispatch", json!("prepare"), json!("cpu"))]);
         let shown = started(&result).unwrap();
         assert_eq!((shown["worker"]["id"].as_str(), shown["worker"]["state"].as_str(), shown["background"].as_bool()), (Some("worker-new"), Some("preparing"), Some(true)));
         assert!(shown["next"].as_str().unwrap().contains("yougori bounty status worker-new"), "{shown}");
@@ -2623,6 +4056,32 @@ mod tests {
     }
 
     #[test]
+    fn resuming_after_the_work_budget_is_spent_extends_it_only_when_asked() {
+        let resume = parse(&words("bounty resume worker-1 --budget-minutes 90")).unwrap().unwrap();
+        assert_eq!(resume.request, json!({"action":"resume","workerId":"worker-1","budgetMinutes":90}));
+        let plain = parse(&words("bounty resume worker-1")).unwrap().unwrap();
+        assert_eq!(plain.request, json!({"action":"resume","workerId":"worker-1"}), "no extension unless asked");
+        for minutes in [1, 1440] {
+            let args = format!("bounty resume worker-1 --budget-minutes {minutes}");
+            assert_eq!(parse(&words(&args)).unwrap().unwrap().request["budgetMinutes"], minutes);
+        }
+        for args in [
+            "bounty resume worker-1 --budget-minutes 0",
+            "bounty resume worker-1 --budget-minutes 1441",
+            "bounty resume worker-1 --budget-minutes 1.5",
+            "bounty resume worker-1 --budget-minutes -5",
+            "bounty resume worker-1 --budget-minutes",
+            "bounty resume worker-1 --budget-minutes 30 --budget-minutes 60",
+            "bounty resume --budget-minutes 30",
+            "bounty pause worker-1 --budget-minutes 30",
+            "start bounty --worker worker-1 --budget-minutes 30",
+        ] {
+            assert!(parse(&words(args)).is_err(), "{args}");
+        }
+        assert!(HELP.contains("bounty resume WORKER [--budget-minutes N]"));
+    }
+
+    #[test]
     fn restarted_and_review_states_say_exactly_what_to_run() {
         let hint = state_hint(&json!({"state":"paused","restored":true}), "worker-1").unwrap();
         assert!(hint.contains("engine restarted") && hint.contains("yougori bounty resume worker-1"), "{hint}");
@@ -2634,5 +4093,215 @@ mod tests {
         assert!(!forged.contains('\u{1b}'), "{forged}");
         assert_eq!(state_label("awaiting_review"), "report ready");
         assert!(prepared_state("awaiting_review", true));
+    }
+
+    #[test]
+    fn worker_short_names_are_stable_memorable_and_mostly_distinct() {
+        for list in [&HANDLE_ADJECTIVES, &HANDLE_NOUNS] {
+            assert_eq!(list.iter().collect::<BTreeSet<_>>().len(), 100, "100 different words");
+            assert!(list.iter().all(|word| (3..=8).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_lowercase())), "{list:?}");
+        }
+        assert!(HANDLE_ADJECTIVES.iter().all(|word| !HANDLE_NOUNS.contains(word)));
+        // Pinned: an ID keeps its short name across releases.
+        assert_eq!(worker_handle("worker-bd89af264d434eb286e5dad338db9512"), "apt-whale");
+        assert_eq!(worker_handle("worker-1"), "happy-turtle");
+        assert_eq!(worker_handle("worker-1"), worker_handle("worker-1"));
+        let handles: Vec<String> = (0..200).map(|n| worker_handle(&format!("worker-{:032x}", n * 7919))).collect();
+        for handle in &handles {
+            let (adjective, noun) = handle.split_once('-').unwrap();
+            assert!(HANDLE_ADJECTIVES.contains(&adjective) && HANDLE_NOUNS.contains(&noun), "{handle}");
+        }
+        assert!(handles.iter().collect::<BTreeSet<_>>().len() >= 190, "different IDs mostly get different names");
+    }
+
+    fn fleet() -> Value {
+        json!({"workers":[
+            {"id":"worker-aaaa1111aaaa1111aaaa1111aaaa1111","name":"Bounty worker","state":"ready_waiting","createdAt":100},
+            {"id":"worker-bbbb2222bbbb2222bbbb2222bbbb2222","name":"Bounty worker","state":"failed","createdAt":200},
+            {"id":"worker-cccc3333cccc3333cccc3333cccc3333","name":"Laptop","state":"paused","createdAt":50},
+        ]})
+    }
+
+    #[test]
+    fn workers_are_found_by_id_short_name_own_name_or_id_digits() {
+        let listed = fleet();
+        let [a, b, c] = ["worker-aaaa1111aaaa1111aaaa1111aaaa1111", "worker-bbbb2222bbbb2222bbbb2222bbbb2222", "worker-cccc3333cccc3333cccc3333cccc3333"];
+        assert_eq!(resolve_worker(a, &listed).unwrap(), a);
+        assert_eq!(resolve_worker(&worker_handle(b), &listed).unwrap(), b);
+        assert_eq!(resolve_worker(&format!(" {} ", worker_handle(c).to_uppercase()), &listed).unwrap(), c, "any case");
+        assert_eq!(resolve_worker(&worker_handle(c).replace('-', " "), &listed).unwrap(), c, "spaces for the hyphen");
+        assert_eq!(resolve_worker("laptop", &listed).unwrap(), c);
+        for digits in ["cccc", "CCCC3333", "worker-cccc3"] {
+            assert_eq!(resolve_worker(digits, &listed).unwrap(), c, "{digits}");
+        }
+        let both = resolve_worker("Bounty worker", &listed).unwrap_err();
+        assert!(both.contains("more than one worker") && both.contains(&worker_handle(a)) && both.contains(&worker_handle(b)), "{both}");
+        assert!(!both.contains(&worker_handle(c)), "{both}");
+        for unknown in ["ccc", "worker", "nope", "keen-heron-2"] {
+            let error = resolve_worker(unknown, &listed).unwrap_err();
+            assert!(error.contains("No bounty worker matches") && error.contains(&worker_handle(c)) && error.contains("Laptop, paused"), "{error}");
+        }
+        assert!(resolve_worker("apt-whale", &json!({"workers":[]})).unwrap_err().contains("yougori start bounty"));
+        assert!(!resolve_worker("x\u{1b}[2J", &listed).unwrap_err().contains('\u{1b}'));
+        // Two workers that share a short name are told apart by their IDs.
+        let mut seen = std::collections::BTreeMap::new();
+        let (first, second) = (0..100_000)
+            .map(|n| format!("worker-{n:032x}"))
+            .find_map(|id| seen.insert(worker_handle(&id), id.clone()).map(|earlier| (earlier, id)))
+            .unwrap();
+        let twins = json!({"workers":[{"id":first,"name":"One"},{"id":second,"name":"Two"}]});
+        let error = resolve_worker(&worker_handle(&first), &twins).unwrap_err();
+        assert!(error.contains(&first) && error.contains(&second), "{error}");
+        assert_eq!(resolve_worker(&first, &twins).unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn dry_runs_keep_the_worker_as_typed() {
+        let shown = run(&words("bounty status apt-whale --dry-run")).await.unwrap().unwrap();
+        assert_eq!(shown["request"]["workerId"], "apt-whale");
+        let shown = run(&words("start bounty --worker apt-whale --dry-run")).await.unwrap().unwrap();
+        assert_eq!((shown["request"]["action"].as_str(), shown["request"]["workerId"].as_str()), (Some("resume"), Some("apt-whale")));
+        assert!(HELP.contains("WORKER is the short name") && HELP.contains("keen-heron"));
+    }
+
+    #[test]
+    fn results_and_hints_name_workers_by_their_short_names() {
+        let mut result = json!({"worker":{"id":"worker-1","state":"paused"},"workers":[{"id":"worker-2"},{"name":"no id"}]});
+        with_handles(&mut result);
+        assert_eq!(result["worker"]["handle"], "happy-turtle");
+        assert_eq!(result["workers"][0]["handle"], worker_handle("worker-2"));
+        assert!(result["workers"][1]["handle"].is_null());
+        assert_eq!(result["worker"]["id"], "worker-1", "IDs stay for scripts");
+        let mut list = json!(["worker-1"]);
+        with_handles(&mut list);
+        assert_eq!(list, json!(["worker-1"]));
+        let shown = started(&json!({"worker":{"id":"worker-1","state":"preparing"}})).unwrap();
+        assert_eq!(shown["worker"]["handle"], "happy-turtle");
+        // `start bounty` alone reconnects to the newest worker, so only another one needs its name.
+        let listed = fleet();
+        assert_eq!(reconnect_command("worker-bbbb2222bbbb2222bbbb2222bbbb2222", &listed, &[]), "yougori start bounty");
+        let older = reconnect_command("worker-aaaa1111aaaa1111aaaa1111aaaa1111", &listed, &[]);
+        assert_eq!(older, format!("yougori start bounty --worker {}", worker_handle("worker-aaaa1111aaaa1111aaaa1111aaaa1111")));
+        assert!(reconnect_command("worker-1", &Value::Null, &[]).ends_with("--worker happy-turtle"));
+        let saved = &listed["workers"][1];
+        let line = saved_line(saved);
+        assert!(line.contains(&format!("Bounty worker ({})", worker_handle("worker-bbbb2222bbbb2222bbbb2222bbbb2222"))), "{line}");
+        // A failed saved worker can open the newest worker that did not fail instead.
+        assert_eq!(other_worker(&listed, saved, &[])["id"], "worker-aaaa1111aaaa1111aaaa1111aaaa1111");
+        assert!(other_worker(&json!({"workers":[saved]}), saved, &[]).is_null());
+        assert_eq!(waiting_label("delete"), "Deleting your worker");
+    }
+
+    #[test]
+    fn the_model_question_and_its_checks_explain_that_only_gguf_runs() {
+        assert!(MODEL_QUESTION.contains("GGUF") && MODEL_NOTE.contains("hf.co/OWNER/MODEL-GGUF") && MODEL_NOTE.contains(":Q4_K_M"));
+        assert!(HELP.contains("GGUF models (the llama.cpp format)") && HELP.contains("Esc goes back"));
+        let safetensors = json!({"format":"safetensors","runner":"yougori-transformers-chat","supported":true});
+        let problem = gguf_problem(&safetensors).unwrap();
+        assert!(problem.contains("no GGUF files") && problem.contains("only GGUF models") && problem.contains("-GGUF"), "{problem}");
+        let unverified = json!({"format":"gguf","runner":"dedicatedRunnerRequired","reason":"The repository did not provide SHA-256 checksums for its GGUF files, so they cannot be verified before loading"});
+        let problem = gguf_problem(&unverified).unwrap();
+        assert!(problem.contains("SHA-256 checksums") && problem.ends_with("before loading. Choose another GGUF repository."), "{problem}");
+        // Prompts cut each note line at the screen's edge, so a long problem is wrapped.
+        let lines = wrapped(&gguf_problem(&safetensors).unwrap(), 76);
+        assert!(lines.len() > 1 && lines.iter().all(|line| ui::width(line) <= 76), "{lines:?}");
+        assert_eq!(lines.join(" "), gguf_problem(&safetensors).unwrap(), "nothing is lost");
+        let long = wrapped(&"word ".repeat(400), 40);
+        assert!(long.len() == 5 && long[4].ends_with('…'), "{long:?}");
+        assert!(gguf_problem(&json!({"format":"gguf","runner":"yougori-llama-cpp"})).is_none());
+        assert!(gguf_problem(&Value::Null).is_none(), "an engine without preflight leaves it to preparation");
+        let engine = model_problem("hf.co/owner/model has no GGUF files; --quant chooses a GGUF quantization");
+        assert!(engine.contains("only GGUF models") && !engine.contains("--quant"), "{engine}");
+        assert_eq!(model_problem("Hugging Face 401\u{1b}[2J"), "Hugging Face 401 [2J");
+        assert!(model("yg/user/model").unwrap_err().contains("GGUF"));
+        // A model too large for this computer needs attention before any question about it.
+        let host = json!({"totalCpu":16,"totalMemoryGb":31.6});
+        assert!(too_big(&json!({}), &host, 32).unwrap().contains("about 32 GB"));
+        assert!(too_big(&json!({}), &host, 24).is_none());
+        assert!(too_big(&json!({"resources":{"memoryGb":16}}), &host, 32).is_none(), "--memory is the person's choice");
+        assert!(too_big(&json!({}), &json!({}), 64).is_none(), "unknown memory is left to the engine");
+    }
+
+    #[test]
+    fn worker_names_need_two_bytes_like_the_engine() {
+        assert!(parse(&words("start bounty --name a")).is_err());
+        assert_eq!(parse(&words("start bounty --name Laptop")).unwrap().unwrap().request["name"], "Laptop");
+        assert!(worker_name(&"x".repeat(65)).is_err() && worker_name("ab").is_ok());
+    }
+
+    fn setup(given: Value) -> Setup {
+        Setup { enter_model: given["model"].is_null(), given, checks: true, ..Setup::default() }
+    }
+
+    #[test]
+    fn setup_questions_follow_the_choices_made_so_far() {
+        let all = |setup: &Setup| STEPS.iter().copied().filter(|step| !setup.skips(*step)).collect::<Vec<_>>();
+        let mut fresh = setup(json!({"action":"prepare"}));
+        assert_eq!(all(&fresh)[..4], [Step::Model, Step::Drive, Step::Summary, Step::Gpu]);
+        fresh.quick = Some(true);
+        assert_eq!(all(&fresh), [Step::Model, Step::Drive, Step::Summary], "Prepare skips the customize questions");
+        fresh.quick = Some(false);
+        assert_eq!(all(&fresh).len(), 9, "Customize asks each question, ending on the confirmation");
+        fresh.attention = true;
+        assert_eq!(all(&fresh)[0], Step::Attention, "a failed saved worker asks first");
+        // Command line choices are not asked again.
+        let given = parse(&words("start bounty --model hf.co/owner/model --gpu cpu --name Laptop --storage-drive D:\\ --keep-loaded")).unwrap().unwrap();
+        let mut chosen = setup(given.request);
+        assert_eq!(all(&chosen), [Step::Model, Step::Summary, Step::Size, Step::Quota, Step::Confirm], "the model step still checks a given model");
+        chosen.checks = false;
+        assert!(all(&chosen).is_empty(), "--yes asks nothing about a given model");
+        let mut scripted = setup(json!({"action":"prepare"}));
+        scripted.checks = false;
+        assert_eq!(all(&scripted), [Step::Model], "--yes still asks for a missing model in a terminal");
+    }
+
+    #[test]
+    fn setup_answers_are_kept_apart_so_back_can_change_them() {
+        let host = json!({"totalCpu":16,"totalMemoryGb":64,"storageDrives":[{"path":"C:\\","freeGb":40.0},{"path":"D:\\","freeGb":900.0}]});
+        let preflight = json!({"quant":"Q4_K_M","resources":{"weightsBytes":7_381_384_864u64}});
+        let mut answers = setup(parse(&words("start bounty")).unwrap().unwrap().request);
+        answers.host = Some(host.clone());
+        answers.cuda = Some(json!({"supported":true}));
+        answers.model = Some("hf.co/owner/model".into());
+        answers.preflight = preflight.clone();
+        answers.drive = Some("D:\\".into());
+        // Prepare: the recommended settings for the checked model.
+        answers.quick = Some(true);
+        let request = answers.request().unwrap();
+        assert_eq!((request["model"].as_str(), request["quant"].as_str()), (Some("hf.co/owner/model"), Some("Q4_K_M")));
+        assert_eq!((request["gpu"].as_str(), request["resources"]["memoryGb"].as_u64()), (Some("nvidia"), Some(16)));
+        assert_eq!(request["resources"]["storageDrive"], "D:\\");
+        // Customize, then each answer.
+        answers.quick = Some(false);
+        answers.gpu = Some("cpu");
+        answers.sizes = vec![6, 24];
+        answers.quota = Some(30.0);
+        answers.name = Some("Laptop".into());
+        answers.keep = Some(true);
+        let request = answers.request().unwrap();
+        assert_eq!((request["gpu"].as_str(), request["resources"]["cpu"].as_u64(), request["resources"]["memoryGb"].as_u64()), (Some("cpu"), Some(6), Some(24)));
+        assert_eq!((request["workspaceQuotaGb"].as_f64(), request["name"].as_str(), request["keepResident"].as_bool()), (Some(30.0), Some("Laptop"), Some(true)));
+        // Back to the summary and Prepare: the customized answers no longer apply.
+        answers.quick = Some(true);
+        assert_eq!(answers.request().unwrap()["name"], "Bounty worker");
+        // An entered :QUANT wins; a model given with its own variant does not pass it to another one.
+        answers.model = Some("hf.co/owner/other:IQ4_XS".into());
+        answers.preflight = Value::Null;
+        assert_eq!(answers.selection().unwrap()["quant"], "IQ4_XS");
+        let mut replaced = setup(parse(&words("start bounty --model hf.co/owner/model:Q8_0")).unwrap().unwrap().request);
+        replaced.model = Some("hf.co/owner/other".into());
+        assert!(replaced.selection().unwrap()["quant"].is_null());
+        let mut flagged = setup(parse(&words("start bounty --quant Q5_K_M")).unwrap().unwrap().request);
+        flagged.model = Some("hf.co/owner/other".into());
+        assert_eq!(flagged.selection().unwrap()["quant"], "Q5_K_M", "--quant without --model applies to the entered model");
+        flagged.model = Some("hf.co/owner/other:Q8_0".into());
+        assert!(flagged.selection().is_err(), "a conflicting :QUANT is refused");
+        // With --yes the scripted defaults follow later, so nothing else is filled in here.
+        let mut scripted = setup(json!({"action":"prepare"}));
+        scripted.checks = false;
+        scripted.model = Some("hf.co/owner/model".into());
+        let request = scripted.request().unwrap();
+        assert_eq!(request["model"], "hf.co/owner/model");
+        assert!(request["gpu"].is_null() && request["resources"].is_null());
     }
 }

@@ -86,7 +86,11 @@ pub(crate) fn scoped_terminal_id(owner: &str, session: &str) -> Result<String, S
     Ok(format!("term-{}", hex::encode(digest.finalize())))
 }
 
+/// A request from a LAN or isolated-CLI recipient; its effects are audited as `lan`.
 pub(crate) async fn dispatch(app:AppHandle,id:String,owner:String,permission:String,request:Value)->Result<Value,String>{
+    crate::security::acting_as("lan",dispatch_now(app,id,owner,permission,request)).await
+}
+async fn dispatch_now(app:AppHandle,id:String,owner:String,permission:String,request:Value)->Result<Value,String>{
     let method=request["method"].as_str().ok_or("Missing sharing method")?;
     authorize(&permission,method)?;
     let p=&request["params"];let store=app.state::<PlatformStore>();let runtime=app.state::<RuntimeManager>();
@@ -111,6 +115,7 @@ pub async fn create_environment_share(environment_id:String,address:String,permi
     let environment=store.environment(&environment_id)?;
     if is_shared(&environment)||environment.kind==EnvironmentKind::ComputerBranch{return Err("Choose an environment owned by this computer".into());}
     if !matches!(permission.as_str(),"view"|"control"){return Err("Choose View Only or Full guest control".into());}
+    crate::security::ensure_open(&store,&environment_id,"Sharing it on the LAN")?;
     let address:IpAddr=address.parse().map_err(|_|"Enter this computer's private LAN or VPN IP address")?;
     if !private(address){return Err("Sharing requires a private LAN or VPN address".into());}
     let mut servers=sharing.servers.lock().await;
@@ -124,6 +129,7 @@ pub async fn create_environment_share(environment_id:String,address:String,permi
     let cleanup=app.clone();let cleanup_owner=owner.clone();let serving_token=token.clone();
     let task=tokio::spawn(async move{serve(listener,acceptor,serving_token,expires_at,move|request|dispatch(app.clone(),environment_id.clone(),owner.clone(),permission.clone(),request)).await;cleanup.state::<WorkspaceManager>().close_window(&cleanup_owner,&cleanup.state::<PlatformStore>(),&cleanup.state::<RuntimeManager>()).await;});
     servers.insert(info.id.clone(),Server{info:info.clone(),task});
+    crate::security::record(crate::security::Event::new("share.lan.created").env(&info.environment_id).text("share",&info.id).text("address",&info.address).text("permission",&info.permission).signed("expiresAt",info.expires_at));
     Ok(json!({"share":info,"invitation":Invitation{version:1,address:endpoint,certificate,token,expires_at}}))
 }
 #[tauri::command]
@@ -133,6 +139,7 @@ pub(crate) async fn cli_grant(environment_id:String,permission:String,app:AppHan
     let environment=app.state::<PlatformStore>().snapshot()?.environments.into_iter().find(|e|e.id==environment_id).ok_or("Environment not found")?;
     if is_shared(&environment)||environment.kind==EnvironmentKind::ComputerBranch{return Err("Choose an environment owned by this computer".into())}
     if !matches!(permission.as_str(),"view"|"control"){return Err("Choose View Only or Full guest control".into())}
+    crate::security::ensure_open(&app.state::<PlatformStore>(),&environment_id,"Granting the isolated CLI access to it")?;
     let listener=TcpListener::bind(("127.0.0.1",0)).await.map_err(|e|e.to_string())?;
     let address=format!("10.0.2.2:{}",listener.local_addr().map_err(|e|e.to_string())?.port());
     let (acceptor,certificate)=tls("10.0.2.2".parse().unwrap())?;
@@ -142,11 +149,14 @@ pub(crate) async fn cli_grant(environment_id:String,permission:String,app:AppHan
     let sharing=app.state::<Sharing>();let mut servers=sharing.servers.lock().await;servers.retain(|_,s|!s.task.is_finished());if servers.len()>=32{return Err("Revoke an unused sharing grant first".into())}
     let task=tokio::spawn(async move{serve(listener,acceptor,serving_token,expires_at,move|request|dispatch(task_app.clone(),environment_id.clone(),owner.clone(),permission.clone(),request)).await;cleanup.state::<WorkspaceManager>().close_window(&cleanup_owner,&cleanup.state::<PlatformStore>(),&cleanup.state::<RuntimeManager>()).await;});
     servers.insert(info.id.clone(),Server{info:info.clone(),task});
+    crate::security::record(crate::security::Event::new("share.isolatedCli.granted").env(&info.environment_id).text("share",&info.id).text("permission",&info.permission).signed("expiresAt",info.expires_at));
     Ok((info,Invitation{version:1,address,certificate,token,expires_at}))
 }
 #[tauri::command]
 pub async fn revoke_environment_share(share_id:String,app:AppHandle,sharing:State<'_,Sharing>)->Result<(),String>{
-    sharing.servers.lock().await.remove(&share_id);
+    let removed=sharing.servers.lock().await.remove(&share_id);
+    crate::security::record(crate::security::Event::new("share.lan.revoked").env(removed.as_ref().map(|server|server.info.environment_id.as_str()).unwrap_or_default()).text("share",&share_id).flag("wasActive",removed.is_some()));
+    drop(removed);
     app.state::<WorkspaceManager>().close_window(&share_id,&app.state::<PlatformStore>(),&app.state::<RuntimeManager>()).await;
     Ok(())
 }
@@ -173,7 +183,10 @@ pub async fn import_environment_share(invitation:Invitation,store:State<'_,Platf
     env.description=format!("Shared {original_kind} · {} · expires {} · power actions affect the owner's environment; removing this entry only removes your access",result["permission"].as_str().unwrap_or("view"),invitation.expires_at);
     env.status=remote_status;
     let entry=vault(&env.id)?;entry.set_password(&serde_json::to_string(&invitation).map_err(|e|e.to_string())?).map_err(|_|"Could not store invitation securely")?;
-    let result=store.mutate(|s|{s.environments.push(env);Ok(())});if result.is_err(){let _=entry.delete_credential();}result
+    let imported=env.id.clone();
+    let result=store.mutate(|s|{s.environments.push(env);Ok(())});if result.is_err(){let _=entry.delete_credential();}
+    crate::security::record(crate::security::Event::new("share.lan.imported").env(&imported).text("address",&invitation.address).signed("expiresAt",invitation.expires_at).outcome(&result));
+    result
 }
 
 pub fn start_refresh(app:&AppHandle){let app=app.clone();tauri::async_runtime::spawn(async move{loop{

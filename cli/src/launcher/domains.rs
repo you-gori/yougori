@@ -1,5 +1,5 @@
 //! Saved public access setups use the engine's shared list and credential vault.
-use super::{call, choose, choose_with_note, clean, client, port, text, tunnel_token, ui};
+use super::{busy, call, choose, choose_with_initial, choose_with_note, clean, client, left, port, stage, tunnel_token, ui};
 use serde_json::{json, Value};
 
 fn has_hostname(publication: &Value, hostname: &str) -> bool {
@@ -17,7 +17,7 @@ pub(super) struct DomainOption {
     pub domain: Value,
     pub connected: bool,
     pub enabled: bool,
-    hint: String,
+    pub hint: String,
 }
 
 impl DomainOption {
@@ -42,37 +42,48 @@ fn options(saved: &[Value], publications: &[Value], current: Option<&str>, port:
     }).collect()
 }
 
+/// The saved domain to preselect: `hostname` while it can still be chosen, else the one already
+/// connected to this service.
+pub(super) fn preselected(saved: &[DomainOption], hostname: Option<&str>) -> Option<usize> {
+    hostname
+        .and_then(|hostname| saved.iter().position(|option| {
+            option.enabled && option.domain["hostname"].as_str().is_some_and(|h| h.eq_ignore_ascii_case(hostname))
+        }))
+        .or_else(|| saved.iter().position(|option| option.connected))
+}
+
 pub(super) async fn available(current: Option<&str>, port: Option<u16>) -> Result<Vec<DomainOption>, String> {
-    let loading = ui::task("Checking available domains");
-    let (domains, state) = tokio::try_join!(
-        call("list_saved_domains", json!({})),
-        call("get_platform_state", json!({})),
-    )?;
-    let saved = domains.as_array().ok_or("Invalid saved domain list")?;
-    let environments = state["environments"].as_array().ok_or("Invalid environment list")?;
-    let mut publications = Vec::new();
-    if !saved.is_empty() {
-        // Keep discovery bounded while checking all node types and statuses.
-        for batch in environments.chunks(8) {
-            let mut checks = tokio::task::JoinSet::new();
-            for env in batch {
-                let id = env["id"].as_str().ok_or("Environment has no ID")?.to_owned();
-                let name = env["name"].as_str().unwrap_or(&id).to_owned();
-                checks.spawn(async move {
-                    let services = call("list_environment_services", json!({"environmentId":id})).await
-                        .map_err(|e| format!("Cannot check domain assignments for {id}: {e}"))?;
-                    let mut publications = services["publications"].as_array().cloned().ok_or_else(|| format!("Invalid domain assignments for {id}"))?;
-                    for publication in &mut publications { publication["_nodeName"] = json!(name); }
-                    Ok::<_, String>(publications)
-                });
-            }
-            while let Some(result) = checks.join_next().await {
-                publications.extend(result.map_err(|e| format!("Cannot check domain availability: {e}"))??);
+    busy("Checking available domains", async {
+        let (domains, state) = tokio::try_join!(
+            call("list_saved_domains", json!({})),
+            call("get_platform_state", json!({})),
+        )?;
+        let saved = domains.as_array().ok_or("Invalid saved domain list")?;
+        let environments = state["environments"].as_array().ok_or("Invalid environment list")?;
+        let mut publications = Vec::new();
+        if !saved.is_empty() {
+            // Keep discovery bounded while checking all node types and statuses.
+            for batch in environments.chunks(8) {
+                let mut checks = tokio::task::JoinSet::new();
+                for env in batch {
+                    let id = env["id"].as_str().ok_or("Environment has no ID")?.to_owned();
+                    let name = env["name"].as_str().unwrap_or(&id).to_owned();
+                    checks.spawn(async move {
+                        let services = call("list_environment_services", json!({"environmentId":id})).await
+                            .map_err(|e| format!("Cannot check domain assignments for {id}: {e}"))?;
+                        let mut publications = services["publications"].as_array().cloned().ok_or_else(|| format!("Invalid domain assignments for {id}"))?;
+                        for publication in &mut publications { publication["_nodeName"] = json!(name); }
+                        Ok::<_, String>(publications)
+                    });
+                }
+                while let Some(result) = checks.join_next().await {
+                    publications.extend(result.map_err(|e| format!("Cannot check domain availability: {e}"))??);
+                }
             }
         }
-    }
-    loading.clear();
-    Ok(options(saved, &publications, current, port))
+        Ok(options(saved, &publications, current, port))
+    })
+    .await
 }
 
 /// Replace only this service's previous Cloudflare route. Other nodes/ports are never removed.
@@ -105,15 +116,12 @@ pub(super) async fn publish(params: Value) -> Result<Value, String> {
     call("publish_environment_service", params).await
 }
 
+/// The saved setups, managed until Back, which returns [`ui::BACK`] to the menu that opened them.
 pub(super) async fn run() -> Result<(), String> {
-    let starting = ui::task("Loading public access setups");
-    client::start(None).await?;
-    starting.clear();
+    busy("Loading public access setups", client::start(None)).await?;
     loop {
-        let loading = ui::task("Loading saved domains");
-        let list = call("list_saved_domains", json!({})).await?;
+        let list = busy("Loading saved domains", call("list_saved_domains", json!({}))).await?;
         let saved = list.as_array().ok_or("Invalid saved domain list")?;
-        loading.clear();
         let mut choices = vec!["Add a setup — save a domain and app port".into()];
         choices.extend(saved.iter().map(|domain| {
             format!(
@@ -124,31 +132,28 @@ pub(super) async fn run() -> Result<(), String> {
             )
         }));
         choices.push("Back".into());
-        let picked = match choose_with_note(
+        let picked = choose_with_note(
             "Public access setups",
             "Save a domain and app port once, then use it with any environment running an app on that port.\nEach domain needs its own dedicated Cloudflare tunnel and local bridge port.",
             &choices,
-        ) {
-            Ok(index) => index,
-            Err(error) if error == ui::CANCELLED => return Ok(()),
-            Err(error) => return Err(error),
-        };
+        )?;
         let result = if picked == 0 {
             add(saved).await
         } else if let Some(domain) = saved.get(picked - 1) {
             manage(domain).await
         } else {
-            return Ok(());
+            return Err(ui::BACK.into());
         };
         if let Err(error) = result {
-            if error != ui::CANCELLED {
+            if !left(&error) {
                 ui::warn(&clean(&error));
             }
         }
     }
 }
 
-fn hostname(entry: &str, saved: &[Value]) -> Result<String, String> {
+/// A domain someone manages, in lowercase, that has no saved setup yet.
+pub(super) fn hostname(entry: &str, saved: &[Value]) -> Result<String, String> {
     let name = entry.trim().to_ascii_lowercase();
     if name.len() > 253
         || !name.contains('.')
@@ -176,58 +181,71 @@ fn hostname(entry: &str, saved: &[Value]) -> Result<String, String> {
     Ok(name)
 }
 
+/// Asks for a setup in turn, where Back returns to the previous question, then saves and
+/// connects it.
 async fn add(saved: &[Value]) -> Result<(), String> {
     if saved.len() >= 200 {
         return Err("Remove an unused setup before adding another.".into());
     }
-    let hostname = ui::input(
-        "Domain (for example app.example.com)",
-        "",
-        false,
-        &|entry| hostname(entry, saved),
-    )?;
-    let app_port = port("App port inside the environment", 3000)?;
     let suggested = (45000..=65535u16)
         .find(|port| !saved.iter().any(|d| d["hostPort"] == *port))
         .ok_or("No unused tunnel port available in the suggested range")?;
-    let bridge = ui::input(
-        "Local tunnel port",
-        &suggested.to_string(),
-        false,
-        &|entry| {
-            let value = super::valid_port(entry)?;
-            if saved.iter().any(|d| d["hostPort"] == value) {
-                return Err("Choose a different local tunnel port for each setup.".into());
+    let (mut name, mut app_port, mut bridge, mut token) = (String::new(), 3000, suggested, String::new());
+    let mut steps = ui::Wizard::new();
+    loop {
+        let asked = match steps.step() {
+            0 => ui::input("Domain (for example app.example.com)", &name, false, &|entry| hostname(entry, saved))
+                .map(|entry| name = entry),
+            1 => port("App port inside the environment", app_port).map(|entry| app_port = entry),
+            2 => ui::input("Local tunnel port", &bridge.to_string(), false, &|entry| {
+                let value = super::valid_port(entry)?;
+                if saved.iter().any(|d| d["hostPort"] == value) {
+                    return Err("Choose a different local tunnel port for each setup.".into());
+                }
+                Ok(value.to_string())
+            })
+            .and_then(|entry| super::valid_port(&entry))
+            .map(|entry| bridge = entry),
+            3 => {
+                ui::info("Open https://dash.cloudflare.com/ and create a dedicated Cloudflare tunnel.");
+                ui::info("Paste its token below. Yougori will connect it, then show you the route to enter in Cloudflare.");
+                ui::input("Cloudflare tunnel token (or full install command)", "", true, &tunnel_token)
+                    .map(|entry| token = entry)
             }
-            Ok(value.to_string())
-        },
-    )?;
-    let bridge = super::valid_port(&bridge)?;
-    ui::info("Open https://dash.cloudflare.com/ and create a dedicated Cloudflare tunnel.");
-    ui::info("Paste its token below. Yougori will connect it, then show you the route to enter in Cloudflare.");
-    let token = tunnel_token(&text(
-        "Cloudflare tunnel token (or full install command)",
-        "",
-        true,
-    )?)?;
-    if choose_with_note("Save and connect this tunnel?", &format!(
-        "{hostname} · app port {app_port} · local tunnel port {bridge}\nUse a dedicated tunnel with no routes yet, or only this domain pointing to http://localhost:{bridge}.\nThe token is saved in the OS credential vault; this setup is also available in the app."
-    ), &["Save and connect tunnel".into(), "Cancel".into()])? != 0 { return Ok(()); }
-    let saving = ui::task("Saving public access setup");
-    let domain = call(
-        "add_saved_domain",
-        json!({"hostname":hostname,"port":app_port,"hostPort":bridge,"token":token}),
+            4 => match choose_with_note("Save and connect this tunnel?", &format!(
+                "{name} · app port {app_port} · local tunnel port {bridge}\nUse a dedicated tunnel with no routes yet, or only this domain pointing to http://localhost:{bridge}.\nThe token is saved in the OS credential vault; this setup is also available in the app."
+            ), &["Save and connect tunnel".into(), "Cancel".into()]) {
+                Ok(0) => Ok(()),
+                Ok(_) => return Ok(()),
+                Err(error) => Err(error),
+            },
+            _ => break,
+        };
+        steps.next(asked.map(|()| true))?;
+    }
+    drop(steps);
+    let domain = stage(
+        "Saving public access setup",
+        |_| format!("Saved {name}"),
+        call(
+            "add_saved_domain",
+            json!({"hostname":name,"port":app_port,"hostPort":bridge,"token":token}),
+        ),
     )
     .await?;
-    saving.done(&format!("Saved {hostname}"));
     configure_tunnel(&domain).await
 }
 
 async fn configure_tunnel(domain: &Value) -> Result<(), String> {
-    let connecting = ui::task("Connecting tunnel to Cloudflare");
-    let status = call("start_saved_domain_tunnel", json!({"domain":domain["id"]})).await
-        .map_err(|error| format!("Setup is saved, but the tunnel could not connect: {error}\nChoose this saved setup → Connect tunnel / Cloudflare routing to retry."))?;
-    connecting.done("Connection is on — tunnel connected to Cloudflare");
+    let status = stage(
+        "Connecting tunnel to Cloudflare",
+        |_| "Connection is on — tunnel connected to Cloudflare".into(),
+        call("start_saved_domain_tunnel", json!({"domain":domain["id"]})),
+    )
+    .await
+    .map_err(|error| if left(&error) { error } else {
+        format!("Setup is saved, but the tunnel could not connect: {error}\nChoose this saved setup → Connect tunnel / Cloudflare routing to retry.")
+    })?;
     let hostname = clean(domain["hostname"].as_str().ok_or("Missing domain")?);
     ui::info(&format!("In Cloudflare, open this tunnel and add a Published application route:\nHostname  {hostname}\nType      HTTP\nURL       http://localhost:{}", domain["hostPort"]));
     ui::info("https://dash.cloudflare.com/");
@@ -236,46 +254,66 @@ async fn configure_tunnel(domain: &Value) -> Result<(), String> {
         return Ok(());
     }
     ui::info("The connection stays on while you set up the tunnel in Cloudflare. Keep Yougori running. The domain shows a setup message until you connect an environment.");
-    if choose("After saving the route in Cloudflare", &[
-        "Connect an environment now".into(),
-        "Done — connect an environment later".into(),
-    ])? == 0 { connect(domain).await?; }
-    Ok(())
+    loop {
+        if choose("After saving the route in Cloudflare", &[
+            "Connect an environment now".into(),
+            "Done — connect an environment later".into(),
+        ])? != 0 {
+            return Ok(());
+        }
+        // Back from the environment list asks again.
+        match connect(domain).await {
+            Err(error) if error == ui::BACK => {}
+            other => return other,
+        }
+    }
 }
 
+/// One setup's actions until Back, which returns to the list of setups.
 async fn manage(domain: &Value) -> Result<(), String> {
     let hostname = domain["hostname"].as_str().ok_or("Missing domain")?;
-    match choose_with_note(
-        &clean(hostname),
-        &format!(
-            "App port {} · local tunnel port {}",
-            domain["port"], domain["hostPort"]
-        ),
-        &[
-            "Connect an environment".into(),
-            "Connect tunnel / Cloudflare routing".into(),
-            "Stop setup tunnel — keeps the saved setup".into(),
-            "Remove saved setup".into(),
-            "Back".into(),
-        ],
-    )? {
-        0 => connect(domain).await,
-        1 => configure_tunnel(domain).await,
-        2 => {
-            let stopping = ui::task("Stopping setup tunnel");
-            call("stop_saved_domain_tunnel", json!({"domain":domain["id"]})).await?;
-            stopping.done("Setup connector stopped; any connected environment keeps its own tunnel");
-            Ok(())
-        }
-        3 => {
-            if choose_with_note("Remove this saved setup?", "This forgets its saved tunnel token. Active publications keep running until you disconnect them.", &["Cancel".into(), "Remove setup".into()])? == 1 {
-                let removing = ui::task("Removing public access setup");
-                call("remove_saved_domain", json!({"domain":domain["id"]})).await?;
-                removing.done("Setup removed");
+    loop {
+        let result = match choose_with_note(
+            &clean(hostname),
+            &format!(
+                "App port {} · local tunnel port {}",
+                domain["port"], domain["hostPort"]
+            ),
+            &[
+                "Connect an environment".into(),
+                "Connect tunnel / Cloudflare routing".into(),
+                "Stop setup tunnel — keeps the saved setup".into(),
+                "Remove saved setup".into(),
+                "Back".into(),
+            ],
+        )? {
+            0 => connect(domain).await,
+            1 => configure_tunnel(domain).await,
+            2 => stage(
+                "Stopping setup tunnel",
+                |_| "Setup connector stopped; any connected environment keeps its own tunnel".into(),
+                call("stop_saved_domain_tunnel", json!({"domain":domain["id"]})),
+            )
+            .await
+            .map(|_| ()),
+            3 => {
+                if choose_with_note("Remove this saved setup?", "This forgets its saved tunnel token. Active publications keep running until you disconnect them.", &["Cancel".into(), "Remove setup".into()])? == 1 {
+                    stage(
+                        "Removing public access setup",
+                        |_| "Setup removed".into(),
+                        call("remove_saved_domain", json!({"domain":domain["id"]})),
+                    )
+                    .await?;
+                }
+                Ok(())
             }
-            Ok(())
+            _ => return Ok(()),
+        };
+        // Back from an action returns to this setup's actions.
+        match result {
+            Err(error) if error == ui::BACK => {}
+            other => return other,
         }
-        _ => Ok(()),
     }
 }
 
@@ -291,16 +329,16 @@ fn eligible(environment: &Value) -> bool {
             .starts_with("shared://")
 }
 
+/// Connects a running environment to the domain: one is chosen, then confirmed, and Back from
+/// the confirmation chooses again. Back from the list returns [`ui::BACK`].
 async fn connect(domain: &Value) -> Result<(), String> {
-    let loading = ui::task("Loading running environments");
-    let state = call("get_platform_state", json!({})).await?;
+    let state = busy("Loading running environments", call("get_platform_state", json!({}))).await?;
     let environments: Vec<_> = state["environments"]
         .as_array()
         .ok_or("Invalid environment list")?
         .iter()
         .filter(|env| eligible(env))
         .collect();
-    loading.clear();
     if environments.is_empty() {
         ui::info(
             "Start an environment running an app on this setup's app port, then connect it here.",
@@ -312,28 +350,49 @@ async fn connect(domain: &Value) -> Result<(), String> {
         .map(|env| clean(env["name"].as_str().unwrap_or("Unnamed")))
         .collect();
     choices.push("Back".into());
-    let index = choose(
-        &format!(
-            "Choose an environment running an app on port {}",
-            domain["port"]
-        ),
-        &choices,
-    )?;
-    let Some(environment) = environments.get(index) else {
-        return Ok(());
-    };
     let hostname = domain["hostname"].as_str().ok_or("Missing domain")?;
-    if choose_with_note("Connect this domain?", &format!(
-        "https://{} → {} · app port {}\nAnyone who knows the public URL can visit unless you configure visitor protection.",
-        clean(hostname), clean(environment["name"].as_str().unwrap_or("Unnamed")), domain["port"]
-    ), &["Connect".into(), "Cancel".into()])? != 0 { return Ok(()); }
-    let connecting = ui::task("Connecting public access");
-    call(
-        "publish_environment_service",
-        json!({"environmentId":environment["id"],"port":domain["port"],"domain":hostname}),
+    let mut index = 0;
+    let mut steps = ui::Wizard::new();
+    loop {
+        let asked = match steps.step() {
+            0 => match choose_with_initial(
+                &format!(
+                    "Choose an environment running an app on port {}",
+                    domain["port"]
+                ),
+                "",
+                &choices,
+                index,
+            ) {
+                Ok(picked) if picked < environments.len() => {
+                    index = picked;
+                    Ok(true)
+                }
+                Ok(_) => Err(ui::BACK.into()),
+                Err(error) => Err(error),
+            },
+            1 => match choose_with_note("Connect this domain?", &format!(
+                "https://{} → {} · app port {}\nAnyone who knows the public URL can visit unless you configure visitor protection.",
+                clean(hostname), clean(environments[index]["name"].as_str().unwrap_or("Unnamed")), domain["port"]
+            ), &["Connect".into(), "Cancel".into()]) {
+                Ok(0) => Ok(true),
+                Ok(_) => return Ok(()),
+                Err(error) => Err(error),
+            },
+            _ => break,
+        };
+        steps.next(asked)?;
+    }
+    drop(steps);
+    stage(
+        "Connecting public access",
+        |_| format!("Connected https://{}", clean(hostname)),
+        call(
+            "publish_environment_service",
+            json!({"environmentId":environments[index]["id"],"port":domain["port"],"domain":hostname}),
+        ),
     )
     .await?;
-    connecting.done(&format!("Connected https://{}", clean(hostname)));
     Ok(())
 }
 
@@ -417,6 +476,25 @@ mod tests {
         ];
         assert_eq!(unassigned(&saved, &publications), vec![saved[0].clone(), saved[2].clone()]);
         assert!(unassigned(&[json!({"hostname":""})], &[]).is_empty());
+    }
+
+    #[test]
+    fn an_earlier_domain_is_preselected_while_it_can_still_be_chosen() {
+        let saved = vec![
+            json!({"hostname":"mine.example.com","hostPort":45000}),
+            json!({"hostname":"busy.example.com","hostPort":45001}),
+            json!({"hostname":"free.example.com","hostPort":45002}),
+        ];
+        let publications = vec![
+            json!({"environmentId":"crm","port":4000,"kind":"cloudflare","hostPort":45000}),
+            json!({"environmentId":"other","port":4000,"kind":"cloudflare","hostPort":45001}),
+        ];
+        let menu = options(&saved, &publications, Some("crm"), Some(4000));
+        assert_eq!(preselected(&menu, Some("FREE.example.com")), Some(2));
+        assert_eq!(preselected(&menu, None), Some(0), "the connected domain");
+        assert_eq!(preselected(&menu, Some("busy.example.com")), Some(0), "a domain in use elsewhere is not preselected");
+        assert_eq!(preselected(&menu, Some("gone.example.com")), Some(0));
+        assert_eq!(preselected(&options(&saved, &[], None, None), None), None);
     }
 
     #[test]

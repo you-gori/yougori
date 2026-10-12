@@ -94,15 +94,22 @@ impl PlatformStore {
             .ok_or_else(|| "Environment not found".into())
     }
 
+    // Every commit below hands a before/after view of environments to the audit log,
+    // after the state lock is released, so lifecycle changes are recorded on every path.
     pub fn replace(&self, mut state: PlatformState) -> Result<PlatformState, String> {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| "Platform state is unavailable".to_string())?;
-        state.settings_revision = next_settings_revision(&current, &state)?;
-        state.state_revision = current.state_revision.saturating_add(1);
-        persist_state(&self.path, &state)?;
-        *current = state.clone();
+        let before = {
+            let mut current = self
+                .state
+                .lock()
+                .map_err(|_| "Platform state is unavailable".to_string())?;
+            let before = crate::security::before(&current);
+            state.settings_revision = next_settings_revision(&current, &state)?;
+            state.state_revision = current.state_revision.saturating_add(1);
+            persist_state(&self.path, &state)?;
+            *current = state.clone();
+            before
+        };
+        crate::security::committed(before, &state);
         Ok(state)
     }
 
@@ -110,16 +117,21 @@ impl PlatformStore {
     where
         F: FnOnce(&mut PlatformState) -> Result<(), String>,
     {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| "Platform state is unavailable".to_string())?;
-        let mut candidate = current.clone();
-        operation(&mut candidate)?;
-        candidate.settings_revision = next_settings_revision(&current, &candidate)?;
-        candidate.state_revision = current.state_revision.saturating_add(1);
-        persist_state(&self.path, &candidate)?;
-        *current = candidate.clone();
+        let (before, candidate) = {
+            let mut current = self
+                .state
+                .lock()
+                .map_err(|_| "Platform state is unavailable".to_string())?;
+            let mut candidate = current.clone();
+            operation(&mut candidate)?;
+            candidate.settings_revision = next_settings_revision(&current, &candidate)?;
+            candidate.state_revision = current.state_revision.saturating_add(1);
+            persist_state(&self.path, &candidate)?;
+            let before = crate::security::before(&current);
+            *current = candidate.clone();
+            (before, candidate)
+        };
+        crate::security::committed(before, &candidate);
         Ok(candidate)
     }
 
@@ -127,15 +139,20 @@ impl PlatformStore {
     where
         F: FnOnce(&mut PlatformState) -> Result<(), String>,
     {
-        let mut current = self
-            .state
-            .lock()
-            .map_err(|_| "Platform state is unavailable".to_string())?;
-        let mut candidate = current.clone();
-        operation(&mut candidate)?;
-        candidate.settings_revision = next_settings_revision(&current, &candidate)?;
-        candidate.state_revision = current.state_revision.saturating_add(1);
-        *current = candidate.clone();
+        let (before, candidate) = {
+            let mut current = self
+                .state
+                .lock()
+                .map_err(|_| "Platform state is unavailable".to_string())?;
+            let mut candidate = current.clone();
+            operation(&mut candidate)?;
+            candidate.settings_revision = next_settings_revision(&current, &candidate)?;
+            candidate.state_revision = current.state_revision.saturating_add(1);
+            let before = crate::security::before(&current);
+            *current = candidate.clone();
+            (before, candidate)
+        };
+        crate::security::committed(before, &candidate);
         Ok(candidate)
     }
 

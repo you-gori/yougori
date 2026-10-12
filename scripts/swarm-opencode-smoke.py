@@ -13,8 +13,29 @@ import tempfile
 import threading
 import time
 import urllib.request
-import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+EVIDENCE = [{"name": "fixture-check.txt", "contentBase64": base64.b64encode(
+    b"Synthetic harness receipt: test_denies_other_account FAIL; True is not false.\n").decode()}]
+ATTEMPT = {"outcome": "candidate", "observations": "The fixture permits reading another account's data.",
+           "expected": "Only the owner can read.", "limitations": "Synthetic local harness fixture only.",
+           "evidence": EVIDENCE}
+REPORT = {"title": "Fixture ownership check is missing", "component": "permissions.py",
+          "reproduction": "Run the publisher-approved test at index 1 in the offline fixture.",
+          "observed": "The other-account assertion fails.", "expected": "Reject non-owners.",
+          "impact": "The local fixture grants access without checking ownership.",
+          "limitations": "Synthetic local harness fixture only.", "evidence": EVIDENCE,
+          "attemptIds": ["attempt_fixture"]}
+OUTSIDE_CANARY = "OUTSIDE_FIXTURE_CONTENT_MUST_STAY_PRIVATE"
+
+
+def verify_receipt(receipt, expected):
+    content = json.dumps(receipt["content"])
+    assert OUTSIDE_CANARY not in content
+    if expected is None:
+        assert any(word in content.lower() for word in ["permission", "denied", "rejected"]), receipt
+    else:
+        assert expected in content, receipt
 
 
 class Provider(BaseHTTPRequestHandler):
@@ -27,13 +48,21 @@ class Provider(BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.requests.append(body)
+        assert OUTSIDE_CANARY not in json.dumps(body), "An external file reached the model"
         print(json.dumps({"providerRequest":len(self.server.requests),"toolNames":[t["function"]["name"] for t in body.get("tools",[])]}),flush=True)
         tools = {t["function"]["name"] for t in body.get("tools", [])}
-        assert tools <= {"bounty_reply", "read", "glob", "grep"}, tools
-        repeated = any(m["role"] == "tool" for m in body.get("messages", []))
-        if not repeated and "bounty_reply" in tools:
-            delta = {"tool_calls": [{"index": 0, "id": "call_fixture", "type": "function",
-                     "function": {"name": "bounty_reply", "arguments": '{"content":"Managed tool reached the owner"}'}}]}
+        assert tools <= self.server.allowed_tools, tools
+        receipts = [m for m in body.get("messages", []) if m["role"] == "tool"]
+        calls = self.server.calls
+        if len(receipts) < len(calls):
+            name, arguments = calls[len(receipts)]
+            assert name in tools, (name, tools)
+            # Every earlier tool must have returned its actual receipt to the
+            # same custom model before it can proceed to the next operation.
+            for receipt, expected in zip(receipts, self.server.receipt_markers):
+                verify_receipt(receipt, expected)
+            delta = {"tool_calls": [{"index": 0, "id": f"call_fixture_{len(receipts)}", "type": "function",
+                     "function": {"name": name, "arguments": json.dumps(arguments)}}]}
             finish = "tool_calls"
         else:
             delta, finish = {"content": "Fixture completed"}, "stop"
@@ -55,7 +84,7 @@ class Provider(BaseHTTPRequestHandler):
         self.close_connection = True
 
 
-def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=False, receipt_race=False):
+def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=False, receipt_race=False, journey=False, boundaries=False):
     if unprivileged and (os.name != "posix" or os.geteuid() != 0):
         raise RuntimeError("--unprivileged requires a disposable Linux process launched as root; no system users are changed")
     repo = Path(__file__).resolve().parents[1]
@@ -67,10 +96,33 @@ def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=F
         tools = (repo / "src-tauri/src/swarm/tools.ts").read_text().replace("/srv/yougori-swarm", str(workspace))
         (config / "tools/bounty.ts").write_text(tools)
         (workspace / "AGENTS.md").write_text("Use only the approved local fixture and managed bounty tools.")
+        (workspace / "project/permissions.py").write_text("def can_read(actor, owner):\n    return True\n")
+        outside = root / "outside"
+        outside.mkdir()
+        (outside / "fixture.txt").write_text(OUTSIDE_CANARY)
         (workspace / ".yougori/bounty").mkdir(parents=True)
         (workspace / ".yougori/bounty/CONTEXT.json").write_text(json.dumps({"policy":{"bountyId":"bounty_fixture","termsVersion":1},"task":{"leaseId":"lease_fixture","generation":1}}))
+        context_names = ["policy.json", "BOUNTY.md", "MEMORY.md", "ATTEMPTS.md", "SHARED.md"]
+        for name in context_names:
+            (workspace / ".yougori/bounty" / name).write_text("approved-context-fixture-" + name)
         provider = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
         provider.requests = []
+        provider.calls = ([
+            ("read", {"filePath": str(workspace / "project/permissions.py")}),
+            ("bounty_check", {"index": 1}), ("bounty_attempt", ATTEMPT), ("bounty_report", REPORT),
+        ] if journey else [("bounty_reply", {"content": "Managed tool reached the owner"})])
+        provider.allowed_tools = {"read", "glob", "grep", *(call[0] for call in provider.calls)}
+        provider.receipt_markers = ["return True", "test_denies_other_account", "attempt_fixture", "report_fixture"] if journey else ["saved"]
+        if journey:
+            provider.calls[:0] = [("read", {"filePath": str(workspace / ".yougori/bounty" / name)})
+                                  for name in ["CONTEXT.json", *context_names]]
+            provider.receipt_markers[:0] = ["OTHER", *["approved-context-fixture-" + name for name in context_names]]
+        if boundaries:
+            provider.calls[1:1] = [("read", {"filePath": str(outside / "fixture.txt")}),
+                                   ("grep", {"path": str(outside), "pattern": ".*"}),
+                                   ("glob", {"path": str(outside), "pattern": "*.txt"})]
+            provider.receipt_markers[1:1] = [None, None, None]
+        managed_calls = [call for call in provider.calls if call[0].startswith("bounty_")]
         thread = threading.Thread(target=provider.serve_forever, daemon=True)
         thread.start()
         environment = {k: v for k, v in os.environ.items() if not any(s in k.upper() for s in ["API_KEY", "TOKEN", "PASSWORD"])}
@@ -86,13 +138,28 @@ def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=F
             "$schema": "https://opencode.ai/config.json", "model": "yougori/fixture", "small_model": "yougori/fixture",
             "enabled_providers": ["yougori"], "share": "disabled", "autoupdate": False,
             "snapshot": False, "lsp": False, "formatter": False, "mcp": {}, "plugin": [],
-            "default_agent": "swarm", "agent": {"swarm": {"description": "Fixture", "mode": "primary", "steps": 4}},
+            "default_agent": "swarm", "agent": {"swarm": {"description": "Fixture", "mode": "primary", "steps": 12}},
             "permission": {"*": "deny", "read": {"*":"deny",str(workspace/"project")+"/**":"allow",str(workspace/".yougori/bounty")+"/**":"allow"}, "glob": "allow", "grep": "allow", "bounty_reply": "allow"},
             "provider": {"yougori": {"npm": "@ai-sdk/openai-compatible", "name": "Private fixture",
                 "options": {"baseURL": f"http://127.0.0.1:{provider.server_address[1]}/v1", "apiKey": "synthetic-local-key"},
                 "models": {"fixture": {"name": "fixture", "tool_call": True,
                     "limit": {"context": 4096, "output": 512}, "modalities": {"input": ["text"], "output": ["text"]}}}}},
         }
+        model["permission"]["read"] = {"*": "deny"}
+        for path in [workspace / "project", workspace / ".yougori/bounty"]:
+            # Non-Git snapshots use OpenCode's global worktree (/).
+            model["permission"]["read"][str(path).lstrip("/")] = "allow"
+            model["permission"]["read"][str(path).lstrip("/") + "/**"] = "allow"
+        for name, _ in provider.calls:
+            if name.startswith("bounty_"):
+                model["permission"][name] = "allow"
+        if journey:
+            model["permission"].pop("bounty_reply")
+            model["provider"]["yougori"]["models"]["fixture"]["limit"]["context"] = 32768
+            # Keep the production 12-step allowance for approved work. Only the
+            # three deliberately denied probes get extra diagnostic steps.
+            if boundaries:
+                model["agent"]["swarm"]["steps"] += 3
         managed_file = root / "managed-opencode.json"
         managed_file.write_text(json.dumps(model))
         managed_file.chmod(0o444)
@@ -194,7 +261,7 @@ def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=F
                 try:
                     result.append(api(f"/session/{session['id']}/message", {"agent": "swarm",
                         "model": {"providerID": "yougori", "modelID": "fixture"},
-                        "parts": [{"type": "text", "text": "Use bounty_reply once to report the fixture, then stop."}]}))
+                        "parts": [{"type": "text", "text": "Inspect the local fixture, run its approved check, record an attempt and report, then stop." if journey else "Use bounty_reply once to report the fixture, then stop."}]}))
                 except Exception as error:
                     errors.append(str(error))
             turn = threading.Thread(target=message, daemon=True)
@@ -204,12 +271,18 @@ def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=F
             while turn.is_alive() and time.monotonic() < deadline:
                 for request_path in (workspace / "spool").glob("*.request"):
                     value = json.loads(request_path.read_text())
-                    assert value["action"] == "reply" and value["params"]["content"] == "Managed tool reached the owner"
+                    expected_action, expected_params = managed_calls[len(seen)]
+                    assert value["action"] == expected_action.removeprefix("bounty_")
+                    assert value["params"] == expected_params, value["params"]
                     assert value["context"] == {"bountyId":"bounty_fixture","termsVersion":1,"leaseId":"lease_fixture","generation":1}
+                    receipt = {"check": {"exitCode": 1, "stdout": "test_denies_other_account FAIL: True is not false", "stderr": ""},
+                               "attempt": {"attempt": {"id": "attempt_fixture", "outcome": "candidate"}},
+                               "report": {"report": {"id": "report_fixture", "state": "complete_received"}},
+                               "reply": {"saved": True}}[value["action"]]
                     response_path = request_path.with_suffix(".response")
                     if receipt_race:
                         pending_response = request_path.with_suffix(".receipt-pending")
-                        pending_response.write_text(json.dumps({"saved": True}))
+                        pending_response.write_text(json.dumps(receipt))
                         pending_response.chmod(0o600)
                         os.replace(pending_response, response_path)
                         def publish(path=response_path):
@@ -217,7 +290,7 @@ def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=F
                             os.chown(path, 65534, 65534)
                         threading.Thread(target=publish, daemon=True).start()
                     else:
-                        response_path.write_text(json.dumps({"saved": True}))
+                        response_path.write_text(json.dumps(receipt))
                     request_path.unlink()
                     seen.append(value)
                 time.sleep(.05)
@@ -225,14 +298,21 @@ def run(binary, unprivileged=False, installer_umask_077=False, repair_readable=F
             assert not turn.is_alive(), "Bounded fixture turn did not finish"
             assert not errors, errors
             assert seen, "OpenCode did not invoke the managed tool"
+            assert len(seen) == (3 if journey else 1), "OpenCode interrupted the managed workflow"
+            assert not result[0].get("info", {}).get("error"), result[0]
             assert len(provider.requests) >= 2, "Tool result did not reach the local model"
             assert any(m["role"] == "tool" for m in provider.requests[-1]["messages"])
+            final_receipts = [m for m in provider.requests[-1]["messages"] if m["role"] == "tool"]
+            assert len(final_receipts) == len(provider.calls)
+            for receipt, expected in zip(final_receipts, provider.receipt_markers):
+                verify_receipt(receipt, expected)
             assert not list((workspace / "spool").glob("*.response")), "Consumed tool response was retained"
             assert not list((workspace / "spool").glob("*.ack")), "Consumed tool acknowledgment was retained"
             print(json.dumps({"passed": True, "version": "1.18.35", "modelRequests": len(provider.requests),
                               "managedTools": len(seen), "privateProvider": True, "receiptCleanup": True,
                               "unprivileged": unprivileged, "installerUmask077": installer_umask_077,
-                              "readableRepair": repair_readable, "receiptRace": receipt_race}))
+                              "readableRepair": repair_readable, "receiptRace": receipt_race, "journey": journey,
+                              "externalReadSearchDenied": boundaries}))
         finally:
             process.terminate()
             try:
@@ -253,8 +333,12 @@ if __name__ == "__main__":
     parser.add_argument("--installer-umask-077", action="store_true", help="Reproduce the native asynchronous root installer umask")
     parser.add_argument("--repair-readable", action="store_true", help="Apply the managed guest's readable root-owned dependency/context repair")
     parser.add_argument("--receipt-race", action="store_true", help="Publish a root-owned0600 receipt before transferring it to the agent")
+    parser.add_argument("--journey", action="store_true", help="Exercise source read, approved check, attempt and report through the real harness with synthetic receipts")
+    parser.add_argument("--boundaries", action="store_true", help="Also verify that external read, grep and glob requests are denied without interrupting approved work")
     arguments = parser.parse_args()
     if (arguments.repair_readable or arguments.receipt_race) and not arguments.unprivileged:
         parser.error("Readable repair and receipt race fixtures require --unprivileged")
+    if arguments.boundaries and not arguments.journey:
+        parser.error("Boundary checks require --journey")
     run(arguments.binary.resolve(), arguments.unprivileged, arguments.installer_umask_077,
-        arguments.repair_readable, arguments.receipt_race)
+        arguments.repair_readable, arguments.receipt_race, arguments.journey, arguments.boundaries)

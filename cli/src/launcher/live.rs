@@ -166,6 +166,8 @@ struct View {
     input: Vec<Event>,
     interactive: bool,
     quit: bool,
+    /// The view was left with Ctrl+C: a second Ctrl+C during the cleanup quits at once.
+    interrupted: bool,
     ended: bool,
     pumped: Instant,
 }
@@ -331,11 +333,11 @@ impl Live {
         ];
         if two_way { choices.push(ui::Choice::new("Sync both ways", "exchange changes using your saved conflict priority")); }
         choices.push(ui::Choice::new("Back", "keep working without syncing"));
-        let selected = match ui::select(
+        let selected = match ui::without_back(|| ui::select(
             "Sync project",
             &["Includes code, files, folders and SQLite database records. Pause editing on the destination while switching.".into(), priority.into(), "Changes waiting to go the other way are kept for the next sync.".into()],
             &choices, 0,
-        ) { Err(error) if error == ui::CANCELLED => return Ok(()), result => result? };
+        )) { Err(error) if error == ui::CANCELLED => return Ok(()), result => result? };
         let direction = match selected { 0 => sync::Direction::ToContainer, 1 => sync::Direction::ToComputer, 2 if two_way => sync::Direction::Both, _ => return Ok(()) };
         let syncing = ui::task(&choices[selected].label);
         match self.handoff(env_files, two_way, direction).await {
@@ -388,8 +390,8 @@ impl Live {
         if project.is_python() {
             command.push_str("if ! command -v node >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*; fi; ");
         }
-        execute(id, &container_command(container.as_deref(), &command, false)).await?;
         let preparing = ui::task("Preparing project sync helpers");
+        execute(id, &container_command(container.as_deref(), &command, false)).await?;
         let helpers = [
             ("proxy.cjs", include_str!("assets/proxy.cjs")),
             ("sync.cjs", include_str!("assets/sync.cjs")),
@@ -479,6 +481,7 @@ impl Live {
                 let interrupt = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
                 if key.kind != KeyEventKind::Release && (interrupt || (shortcut && key.code == KeyCode::Char('q'))) {
                     view.quit = true;
+                    view.interrupted = interrupt;
                     return Err(STOPPED.into());
                 }
             }
@@ -668,10 +671,14 @@ impl Live {
             input: Vec::new(),
             interactive,
             quit: false,
+            interrupted: false,
             ended: false,
             pumped: Instant::now(),
         });
         let result = self.watching(name, local_port, env_files, two_way, continuous_sync, gpu, cancel, interactive).await;
+        if self.view.as_ref().is_some_and(|view| view.interrupted) {
+            cancel.store(true, Ordering::Relaxed);
+        }
         self.view = None;
         result
     }
@@ -927,6 +934,7 @@ impl Live {
                         if k.code == KeyCode::Char('c')
                             && k.modifiers.contains(KeyModifiers::CONTROL)
                         {
+                            if let Some(view) = self.view.as_mut() { view.interrupted = true; }
                             return Ok(());
                         }
                         // While the dev server asks something, every key is its answer.

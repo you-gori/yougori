@@ -11,7 +11,7 @@ pub fn topic(method: &str) -> &'static str {
     else if method.contains("cuda") || method.contains("gpu") { "gpu" }
     else if method.contains("settings") || method.contains("startup_report") { "settings" }
     // "_log" keeps provider catalogs out of logs; Cloudflare accounts back saved domains.
-    else if method.contains("terminal") || method.contains("window") || method.contains("execute_") || method.contains("guest_execution") || method.contains("_log") { "terminal" }
+    else if method.contains("terminal") || method.contains("window") || method.contains("execute_") || method.contains("guest_execution") || method.contains("_log") || method.starts_with("security_") { "terminal" }
     else if method.contains("vault") { "vault" }
     else if method.contains("cloudflare") { "deployment" }
     else if method.contains("cloud") || method.contains("runpod") { "cloud" }

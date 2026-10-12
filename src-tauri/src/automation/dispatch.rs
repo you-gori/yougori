@@ -113,6 +113,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
     // Bound each debug poll frame as well as the stored future: a single giant
     // match allocates temporary stack slots for unrelated handlers.
     match method {
+        "model_compute_status" => Box::pin(crate::model_runner::model_compute_status(app.clone())),
         "execute_guest_job" | "guest_execution_output" | "release_guest_execution" | "cancel_guest_execution" | "cancel_file_transfer" | "patch_settings" | "get_settings_snapshot" | "get_startup_report" | "recover_environment_runtime_report" | "model_preflight" | "model_support_task" | "model_huggingface_status" | "set_deployment_secret" | "delete_deployment_secret" | "deployment_status" | "get_environment_health_check" | "set_environment_health_check" | "publication_preflight" => dispatch_group_0(app,method,p,progress),
         "host_share_credentials" | "get_environment_log_window" | "start_environment_download" | "list_environment_downloads" | "keep_environment_downloads_alive" | "stop_environment_download" | "runpod_status" | "runpod_connect" | "runpod_catalog" | "runpod_disconnect" | "runpod_template" | "runpod_search_templates" | "runpod_hub" | "runpod_hub_repo" | "runpod_links" | "runpod_logs" => dispatch_group_1(app,method,p,progress),
         "runpod_create_endpoint" | "runpod_endpoint_run" | "runpod_action" | "runpod_resources" | "runpod_attach" | "runpod_volume" | "runpod_registry" | "runpod_gpu_offers" | "runpod_create_pod" | "neocloud_providers" | "neocloud_install" | "neocloud_account" | "neocloud_authenticate" | "neocloud_forget_account" | "neocloud_catalog" | "neocloud_discover" => dispatch_group_2(app,method,p,progress),
@@ -127,6 +128,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "list_environment_folders" | "request_connected_files" | "read_environment_console" | "get_guest_session" | "terminal_action" | "prepare_terminal_installer" | "install_terminal_tool" | "micro_vm_apps" | "open_environment_window" | "open_micro_vm_app_window" | "close_environment_window" | "list_environment_windows" | "focus_environment_window" | "title_environment_window" | "set_guest_keyboard_capture" | "open_workspace_url" | "open_service_window" => dispatch_group_11(app,method,p,progress),
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
         "model_registry_connect" | "model_registry_request" | "model_registry_upload" | "model_registry_download" | "model_registry_pause" | "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
+        "security_monitor" | "security_audit" | "security_lockdown" | "security_unlock" => dispatch_group_14(app,method,p,progress),
         "swarm_dispatch" => Box::pin(async move {crate::swarm::swarm_dispatch(arg(p,"request")?,app.clone()).await}),
         _ => Box::pin(async move { Err(format!("No backend handler for {method}")) }),
     }
@@ -246,7 +248,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         "create_neocloud_environment" => encoded(crate::neocloud::create_neocloud_environment(arg(p, "request")?, arg(p, "costAcknowledged")?, store).await?),
         "neocloud_action" => encoded(crate::neocloud::neocloud_action(arg(p, "environmentId")?, arg(p, "action")?, arg(p, "confirmation")?, store, runtime).await?),
         "neocloud_recover_id" => encoded(crate::neocloud::neocloud_recover_id(arg(p, "environmentId")?, arg(p, "resourceId")?, store).await?),
-        "run_model" => { let mut resources=arg::<Option<crate::model_runner::ModelResources>>(p,"resources")?.unwrap_or_default(); if let Some(folder)=arg::<Option<String>>(p,"folder")? {resources.model_folder=Some(folder);} crate::model_runner::run_model_with_resources(arg(p,"model")?,arg(p,"port")?,Some(resources),arg(p,"quant")?,app.clone()).await },
+        "run_model" => { let mut resources=arg::<Option<crate::model_runner::ModelResources>>(p,"resources")?.unwrap_or_default(); if let Some(folder)=arg::<Option<String>>(p,"folder")? {resources.model_folder=Some(folder);} if let Some(backend)=arg::<Option<String>>(p,"backend")? {resources.backend=Some(backend);} if let Some(memory)=arg::<Option<f64>>(p,"memoryGb")? {resources.memory_gb=Some(memory);} crate::model_runner::run_model_with_resources(arg(p,"model")?,arg(p,"port")?,Some(resources),arg(p,"quant")?,app.clone()).await },
         "run_neocloud_model" => crate::model_runner::run_neocloud_model(arg(p, "model")?,arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
         "start_model" => crate::model_runner::start_model(arg(p, "environmentId")?,app.clone()).await,
         "stop_model" => crate::model_runner::stop_model(arg(p, "environmentId")?,app.clone()).await,
@@ -352,6 +354,7 @@ dispatch_group! { dispatch_group_6(app, method, p, progress, store, runtime, bac
         "restart_environment" => {
             let id: String = arg(p, "environmentId")?;
             if store.snapshot()?.environments.iter().any(|e|e.id==id && e.kind==EnvironmentKind::Cloud) {return Err("Cloud nodes support Connect/Disconnect, not Restart".into());}
+            crate::security::ensure_open(&store, &id, "Restarting it")?;
             commands::set_environment_status(
                 id.clone(),
                 EnvironmentStatus::Stopped,
@@ -871,6 +874,18 @@ dispatch_group! { dispatch_group_13(app, method, p, progress, store, runtime, ba
         "market_sign_out" => crate::market::market_sign_out(app.clone()).await,
         "market_share_model" => crate::market::market_share_model(arg(p, "environmentId")?, arg(p, "mode")?, arg(p, "listen")?, arg(p, "publish")?, app.clone()).await,
         "market_unshare_model" => crate::market::market_unshare_model(arg(p, "environmentId")?, app.clone()).await,
+        _ => Err(format!("No backend handler for {method}")),
+    }
+}
+
+// Monitoring, the audit log and the kill switch. Read-only methods and lockdown/unlock
+// bypass the job queue (see queue.rs); lockdown serializes per environment itself.
+dispatch_group! { dispatch_group_14(app, method, p, progress, store, runtime, backup, manager, window) =>
+    match method {
+        "security_monitor" => crate::security::monitor_snapshot(&store, arg(p, "environmentId")?),
+        "security_audit" => crate::security::audit_query(arg(p, "environmentId")?, arg(p, "since")?, arg(p, "limit")?, arg(p, "verify")?),
+        "security_lockdown" => crate::security::lockdown(app, arg(p, "environmentId")?, arg(p, "all")?).await,
+        "security_unlock" => crate::security::unlock(app, arg(p, "environmentId")?, arg(p, "all")?).await,
         _ => Err(format!("No backend handler for {method}")),
     }
 }

@@ -31,7 +31,7 @@ pub fn normalize(args: Vec<String>) -> Result<Invocation,String> {
         if raw=="--" {i+=1;continue;}
         if raw.starts_with('-') {
             flags.push(flag.to_owned());
-            if matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant" | "--folder") {
+            if matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant" | "--folder" | "--backend") {
                 i+=1;
                 let value=tail.get(i).filter(|v|!v.starts_with("--")).ok_or_else(||format!("{flag} requires a value"))?;
                 flags.push(value.clone());

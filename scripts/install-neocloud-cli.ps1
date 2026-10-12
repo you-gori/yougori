@@ -45,11 +45,13 @@ function Install-Release([string]$repository) {
         $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
         if ($actual -ine $asset.digest.Substring(7)) { throw 'The provider CLI failed SHA-256 verification.' }
         $executable = $programs[$Provider] + '.exe'
-        $members = @(& tar -tf $archive)
+        # Windows' own bsdtar reads zip (Git's GNU tar earlier on PATH would read C: as a remote host).
+        $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+        $members = @(& $tar -tf $archive)
         if ($LASTEXITCODE -ne 0) { throw 'The provider release archive cannot be read.' }
         $member = @($members | Where-Object { ($_.TrimStart('./') -eq $executable) -or ($_.EndsWith('/' + $executable)) })[0]
         if (-not $member -or $member -match '(^/|(^|/)\.\.(/|$)|^[a-zA-Z]:)') { throw 'The provider release has no safe CLI executable.' }
-        & tar -xf $archive -C $staging -- $member
+        & $tar -xf $archive -C $staging -- $member
         if ($LASTEXITCODE -ne 0) { throw 'The provider CLI could not be extracted.' }
         $extracted = Join-Path $staging ($member -replace '/', '\')
         if (-not (Test-Path -LiteralPath $extracted -PathType Leaf)) { throw 'The provider CLI executable is missing from the archive.' }

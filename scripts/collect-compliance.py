@@ -32,6 +32,8 @@ BUNDLE = WORK / "bundle"
 EVIDENCE = ROOT / "compliance/evidence"
 RUNTIME = ROOT / "src-tauri/resources/runtime"
 APPLICATION = runpy.run_path(str(ROOT / "scripts/compliance-application.py"))
+# Windows' own bsdtar (Git's GNU tar earlier on PATH would read C: as a remote host).
+TAR = str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "tar.exe")) if os.name == "nt" else "tar"
 
 
 def cargo_lockfiles(root=ROOT):
@@ -493,7 +495,7 @@ def collect_msys(retry_blocked=False):
             found = [path for path in cache.glob(f"{name}-{version}-any.pkg.tar.*") if not path.name.endswith(".sig")]
             if len(found) != 1:
                 raise ValueError("Binary package for the recorded ANGLE source is unavailable: " + component)
-            info = dict(re.findall(r"^([^= ]+) = (.+)$", run("tar", "-xOf", found[0], ".PKGINFO").decode(), re.M))
+            info = dict(re.findall(r"^([^= ]+) = (.+)$", run(TAR, "-xOf", found[0], ".PKGINFO").decode(), re.M))
             packages[(name, version)] = {"package": name, "version": version, "base": info["pkgbase"], "license": info["license"]}
     prior_path = WORK / "msys-sources.json"
     prior = {item["id"]: item for item in json.loads(prior_path.read_text(encoding="utf-8"))} if retry_blocked and prior_path.exists() else {}
@@ -514,7 +516,7 @@ def collect_msys(retry_blocked=False):
             matches = [path for path in matches if not path.name.endswith(".sig")]
             if len(matches) != 1:
                 raise ValueError("Matching original binary package / BUILDINFO unavailable")
-            buildinfo = run("tar", "-xOf", matches[0], ".BUILDINFO")
+            buildinfo = run(TAR, "-xOf", matches[0], ".BUILDINFO")
             fields = dict(re.findall(r"^([^= ]+) = (.+)$", buildinfo.decode(), re.M))
             expected = fields["pkgbuild_sha256sum"]
             directory.mkdir(parents=True, exist_ok=True)

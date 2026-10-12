@@ -152,6 +152,154 @@ mod tests {
         result
     }
 
+    /// Any long-running process stands in for QEMU; nothing here boots a guest.
+    fn stand_in_process() -> tokio::process::Child {
+        let mut command = tokio::process::Command::new(if cfg!(windows) { "ping" } else { "sleep" });
+        if cfg!(windows) { command.args(["-n", "60", "127.0.0.1"]); } else { command.arg("60"); }
+        command.stdout(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap()
+    }
+
+    /// Answers `/v1/fabric/attach` like the appliance agent: it dials the granted
+    /// gateway port, presents the one-time token and stays attached.
+    async fn fake_fabric_agent(credential: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let credential = credential.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    let (head, body) = loop {
+                        let count = socket.read(&mut buffer).await.unwrap_or(0);
+                        if count == 0 { return; }
+                        request.extend_from_slice(&buffer[..count]);
+                        let text = String::from_utf8_lossy(&request).into_owned();
+                        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                            let length = head.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|value| value.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                            if body.len() >= length { break (head.to_owned(), body.to_owned()); }
+                        }
+                    };
+                    let authorized = head.lines().any(|line| line.to_ascii_lowercase() == format!("authorization: bearer {credential}"));
+                    if !head.starts_with("POST /v1/fabric/attach ") || !authorized {
+                        let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                        return;
+                    }
+                    let attach: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    let mut gateway = tokio::net::TcpStream::connect(("127.0.0.1", attach["port"].as_u64().unwrap() as u16)).await.unwrap();
+                    gateway.write_all(attach["token"].as_str().unwrap().as_bytes()).await.unwrap();
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
+                    while gateway.read(&mut buffer).await.is_ok_and(|count| count > 0) {}
+                });
+            }
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn private_network_and_host_services_attach_on_the_environments_own_drive() -> Result<(), String> {
+        use super::super::{boot_token::BootTokenFile, microvm_network::MicroVmNetwork, vm::VmPortReservations, AgentEndpoint, ApplianceProcess, VmProcess};
+        use crate::models::RuntimeProviderKind;
+        use std::sync::atomic::AtomicBool;
+        let local = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let manager = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), local.path())?;
+        assign(&manager, second.path(), "env-drive-agent")?;
+        for id in ["env-drive-cuda", "env-drive-micro"] { manager.inherit_storage(id, "env-drive-agent")?; }
+        manager.register_container_provider("env-drive-cuda", &RuntimeProviderKind::YougoriCuda)?;
+        // As for a Swarm worker stored on D:\, only the selected drive's runtime is running.
+        let engine = manager.storage_runtime("env-drive-agent")?.unwrap();
+        let credential = "ab".repeat(32);
+        *engine.appliance.lock().await = Some(ApplianceProcess {
+            child: stand_in_process(),
+            internet: MicroVmNetwork::new(true, 0, "test-drive-appliance").await?,
+            _boot_token: BootTokenFile::create(local.path(), &credential)?,
+            endpoint: AgentEndpoint { base_url: fake_fabric_agent(credential.clone()).await, token: credential },
+            qmp_port: 0,
+            max_memory_mib: 512,
+            _port_reservations: VmPortReservations::new(),
+            capacity: Default::default(),
+            active_containers: Default::default(),
+            gpu: None,
+        });
+        let micro = stand_in_process();
+        let process_id = micro.id().unwrap_or_default();
+        engine.vms.lock().await.insert("env-drive-micro".into(), VmProcess {
+            child: micro,
+            internet: Some(MicroVmNetwork::new(true, 0, "test-drive-microvm").await?),
+            _branch_block_server: None,
+            _port_reservations: VmPortReservations::new(),
+            is_micro_vm: true,
+            gpu_enabled: false,
+            gpu: None,
+            micro_endpoint: None,
+            process_id,
+            allocated_cpus: 1,
+            allocated_micro_memory_gb: Some(1.0),
+            qmp_port: 0,
+            websocket_port: 0,
+            console_password: String::new(),
+        });
+        // The worker's agent-to-model connection: the gateway grant and attach
+        // go through the appliance that runs the agent sandbox.
+        let mut agent = recovery_environment("env-drive-agent");
+        agent.provider = Some(RuntimeProviderKind::YougoriOci);
+        assert_eq!(manager.prepare_shared_fabric_peer(&agent).await?, "env-drive-agent");
+        assert!(manager.fabric.connected("env-drive-agent"));
+        // That appliance's own filter judges grants: an ended service is refused there.
+        let ended = Arc::new(AtomicBool::new(false));
+        let refused = manager.grant_qemu_host_service("env-drive-agent", 41000, Arc::downgrade(&ended), true).await.unwrap_err();
+        assert!(refused.contains("Invalid or exhausted VM host service grant"), "{refused}");
+        let live = Arc::new(AtomicBool::new(true));
+        manager.grant_qemu_host_service("env-drive-micro", 41001, Arc::downgrade(&live), false).await?;
+        // Never through another runtime's appliance.
+        assert_eq!(manager.grant_qemu_host_service("env-drive-cuda", 41002, Arc::downgrade(&live), true).await.unwrap_err(), "Start the selected environment before attaching a host service");
+        assert_eq!(manager.grant_qemu_host_service("env-default", 41003, Arc::downgrade(&live), true).await.unwrap_err(), "Start the environment before attaching a host service");
+        assert!(manager.appliance.lock().await.is_none() && manager.vms.lock().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "boots two disposable OCI appliances on separate storage roots and verifies private HTTP and revocation"]
+    async fn selected_drive_private_connection_reaches_running_appliances() -> Result<(), String> {
+        use crate::models::{ConnectionDirection, PermissionKind, RuntimeProviderKind};
+        let local = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let second = tempfile::Builder::new().prefix("yougori-relay-test-").tempdir_in("D:/").map_err(|e|e.to_string())?;
+        #[cfg(not(windows))]
+        let second = tempfile::tempdir().unwrap();
+        let manager = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), local.path())?;
+        let source = "relay-drive-source";
+        let target = "relay-drive-target";
+        assign(&manager, second.path(), source)?;
+        assign(&manager, second.path(), target)?;
+        let policy = serde_json::from_value(serde_json::json!({"cpu":{"min":1,"preferred":1,"max":1,"current":1},"memoryGb":{"min":0.5,"preferred":0.5,"max":0.5,"current":0.5},"priority":"normal","dynamic":false})).unwrap();
+        let mut from = recovery_environment(source);
+        let mut to = recovery_environment(target);
+        from.provider = Some(RuntimeProviderKind::YougoriOci);
+        to.provider = Some(RuntimeProviderKind::YougoriOci);
+        let result = async {
+            for id in [source, target] {
+                manager.provision_container_with_storage(id, "quay.io/libpod/alpine:latest", "sleep 2147483647", &policy, false, false, 6.0).await?;
+                manager.container_action(id, "start", false).await?;
+            }
+            if manager.appliance.lock().await.is_some() { return Err("test requires no default-drive appliance".into()); }
+            let serve = manager.execute_container_command(target, r#"printf '%s\n' '#!/bin/sh' 'while IFS= read -r header; do [ "$header" = "$(printf "\r")" ] && break; done' 'printf "HTTP/1.0 200 OK\r\nContent-Length: 22\r\nConnection: close\r\n\r\nrouted-private-service"' 'cat >/dev/null' > /tmp/fabric-server; chmod 700 /tmp/fabric-server; sh -c 'while true; do nc -l -p 8000 -e /tmp/fabric-server; done' </dev/null >/tmp/fabric-server.log 2>&1 &"#).await?;
+            if serve.exit_code != 0 { return Err(format!("private HTTP fixture failed: {serve:?}")); }
+            manager.apply_environment_connection("relay-drive-link", &from, &to, &ConnectionDirection::OneWay, &[PermissionKind::Ports], &[8000]).await?;
+            let command = format!("wget -q -T 3 -O - http://{}:8000/", super::super::fabric::ip_text(target));
+            let reply = manager.execute_container_command(source, &command).await?;
+            if reply.exit_code != 0 || reply.stdout.trim() != "routed-private-service" { return Err(format!("selected-drive private HTTP failed: {reply:?}")); }
+            manager.remove_environment_connection("relay-drive-link", source, target, true).await?;
+            let revoked = manager.execute_container_command(source, &command).await?;
+            if revoked.exit_code == 0 { return Err("removed private connection remained reachable".into()); }
+            Ok(())
+        }.await;
+        manager.shutdown_all().await;
+        result
+    }
+
     #[tokio::test]
     #[ignore = "boots a disposable MicroVM on another managed storage root and verifies restart, snapshots and deletion"]
     async fn storage_drive_microvm_lifecycle_preserves_its_disk() -> Result<(), String> {
