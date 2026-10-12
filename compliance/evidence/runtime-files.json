@@ -1,17 +1,17 @@
 [
   {
     "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-    "sha256": "a92f5141824831336db568fbe6a22ee4927b8c3a5dc398c5845c005899915772",
-    "bytes": 185809920
+    "sha256": "a44c81ef5cf8be8d35684e0f4b21c4da1e99e6b0a5facf1c2cd404c89ac0dec6",
+    "bytes": 188824576
   },
   {
     "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-    "sha256": "011bd1cfb359d0b2c46f739cc686735b445397c2488516773b2a436785597a61",
-    "bytes": 94082660
+    "sha256": "f27228f9a4c335c0c5950bd72fffdc8127b3c5a47018504306e4864987ea3ef5",
+    "bytes": 94084304
   },
   {
     "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-    "sha256": "0f78cc026671dd8ae49e1e44faa04213b7da2f23e44db64476243676ddf30686",
+    "sha256": "c3fb236d1ed258eb7d0b4be74a45c6c644ff8fbd6f989e224df7c4dccf1aa661",
     "bytes": 247
   },
   {
@@ -51,13 +51,13 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-    "sha256": "a278bf1ce211c0ec47327cbe393f422ab1e1bbab519bd70539576569ecf5696b",
+    "sha256": "397566c273a35b9b1f699fb1d74e9146dace5abec39c0c98efdeff85c946ebe4",
     "bytes": 684
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-agent",
-    "sha256": "91718e8c3481c11f0e3d26381b247237c80dbdf56e68617e9f1c368d7d84bcee",
-    "bytes": 15392892
+    "sha256": "331e26bfe1291c3daa47250c66cb40ae57d00d02bbeeb7c82dd7094b3c9f32f0",
+    "bytes": 15396988
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-cuda-probe",
@@ -1451,7 +1451,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/SHA256SUMS",
-    "sha256": "983351e77fd5f8b8002bf9394b888cac18d43fb489982de546f929a204e42843",
+    "sha256": "9834eb1aee2fbddc3e3118fd42cede0aba4cc3662b20a0e18e3a2d6021b957af",
     "bytes": 28687
   }
 ]
