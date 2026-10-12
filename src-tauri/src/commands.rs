@@ -1687,7 +1687,7 @@ pub async fn set_environment_status(
                 errors.push(error);
             }
             if environment.status == EnvironmentStatus::Running {
-                if let Err(error) = reconcile_connections(&store, &runtime).await {
+                if let Err(error) = reconcile_connections(&store, &runtime, Reported::All).await {
                     errors.push(format!("restoring environment connections failed: {error}"));
                 }
             }
@@ -1705,7 +1705,7 @@ pub async fn set_environment_status(
         }
     }
     if status == EnvironmentStatus::Running {
-        reconcile_connections(&store, &runtime).await?;
+        reconcile_connections(&store, &runtime, Reported::Environment(&environment_id)).await?;
         return store.snapshot();
     }
     Ok(next)
@@ -2654,7 +2654,7 @@ pub async fn set_connection_active(
     });
     if let Err(error) = persisted {
         if !active {
-            let rollback = reconcile_connections_locked(&store, &runtime).await;
+            let rollback = reconcile_connections_locked(&store, &runtime, Reported::All).await;
             return Err(match rollback {
                 Ok(()) => error,
                 Err(rollback) => {
@@ -2665,7 +2665,7 @@ pub async fn set_connection_active(
         return Err(error);
     }
     if active {
-        reconcile_connections_locked(&store, &runtime).await?;
+        reconcile_connections_locked(&store, &runtime, Reported::Connection(&connection_id)).await?;
     }
     store.snapshot()
 }
@@ -2691,7 +2691,7 @@ pub async fn delete_connection(
         Ok(())
     });
     if let Err(error) = persisted {
-        let rollback = reconcile_connections_locked(&store, &runtime).await;
+        let rollback = reconcile_connections_locked(&store, &runtime, Reported::All).await;
         return Err(match rollback {
             Ok(()) => error,
             Err(rollback) => {
@@ -3040,7 +3040,7 @@ async fn restore_snapshot_now(
             .finalize_vm_backup_install(runtime_id(&environment))
             .await?;
     }
-    reconcile_connections(&store, &runtime).await?;
+    reconcile_connections(&store, &runtime, Reported::Environment(&environment.id)).await?;
     store.snapshot()
 }
 
@@ -3726,7 +3726,7 @@ pub(crate) async fn install_restored_backup(
     if vm_backup_install_pending {
         runtime.finalize_vm_backup_install(&environment_id).await?;
     }
-    reconcile_connections(&store, &runtime).await?;
+    reconcile_connections(&store, &runtime, Reported::Environment(&environment_id)).await?;
     enforce_snapshot_retention(&store, &runtime, &backup).await
 }
 
@@ -3849,7 +3849,8 @@ async fn sample_host_metrics(
     }
     if !lost_cloud.is_empty() {
         store.mutate_ephemeral(|state| {for e in &mut state.environments {if lost_cloud.contains(&e.id) {e.status=EnvironmentStatus::Error;e.last_error=Some("SSH connection was interrupted. Retry Connect. The cloud server was not stopped.".into());}} Ok(())})?;
-        reconcile_connections(&store,&runtime).await?;
+        // A lost server's connections record their own errors; usage still reads.
+        reconcile_connections(&store,&runtime,Reported::Nothing).await?;
     }
     // Compute and apply one container allocation at a time. Otherwise a
     // telemetry request holding an older policy can undo a concurrent Save.
@@ -4384,16 +4385,43 @@ pub async fn execute_connected_command(
     }, store, runtime).await
 }
 
+/// Which failed connections make reconciling fail. Every active connection is applied either
+/// way and records its own result, so one broken connection never blocks the others.
+#[derive(Clone, Copy)]
+pub(crate) enum Reported<'a> {
+    /// Any connection, when restoring rules after a failed change.
+    All,
+    /// The connections of an environment that just started or was restored.
+    Environment(&'a str),
+    /// A connection that was just turned on.
+    Connection(&'a str),
+    /// None: failures stay on their connections.
+    Nothing,
+}
+
+impl Reported<'_> {
+    fn covers(self, connection: &Connection) -> bool {
+        match self {
+            Self::All => true,
+            Self::Environment(id) => connection.source_id == id || connection.target_id == id,
+            Self::Connection(id) => connection.id == id,
+            Self::Nothing => false,
+        }
+    }
+}
+
 pub(crate) async fn reconcile_connections(
     store: &PlatformStore,
     runtime: &RuntimeManager,
+    reported: Reported<'_>,
 ) -> Result<(), String> {
     let _serial = connection_operations().lock().await;
-    reconcile_connections_locked(store, runtime).await
+    reconcile_connections_locked(store, runtime, reported).await
 }
 
-async fn reconcile_connections_locked(store: &PlatformStore, runtime: &RuntimeManager) -> Result<(),String> {
+async fn reconcile_connections_locked(store: &PlatformStore, runtime: &RuntimeManager, reported: Reported<'_>) -> Result<(),String> {
     let state = store.snapshot()?;
+    let mut failure = None;
     for connection in state.connections.iter().filter(|item| item.active) {
         let Some(source) = state
             .environments
@@ -4449,14 +4477,33 @@ async fn reconcile_connections_locked(store: &PlatformStore, runtime: &RuntimeMa
             }
             Ok(())
         })?;
-        result?;
+        if let Err(error) = result {
+            if failure.is_none() && reported.covers(connection) {
+                failure = Some(error);
+            }
+        }
     }
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_connection_fails_only_the_change_it_belongs_to() {
+        let connection: Connection = serde_json::from_value(serde_json::json!({
+            "id":"conn-old","sourceId":"env-a","targetId":"env-b","direction":"oneWay",
+            "permissions":[],"ports":[],"active":true,"createdAt":"2026-10-12T00:00:00Z"
+        })).unwrap();
+        assert!(Reported::All.covers(&connection));
+        assert!(Reported::Environment("env-a").covers(&connection));
+        assert!(Reported::Environment("env-b").covers(&connection));
+        assert!(!Reported::Environment("env-started").covers(&connection), "starting another environment must not fail on it");
+        assert!(Reported::Connection("conn-old").covers(&connection));
+        assert!(!Reported::Connection("conn-new").covers(&connection));
+        assert!(!Reported::Nothing.covers(&connection));
+    }
 
     #[test]
     fn deletion_cleanup_warnings_do_not_turn_committed_deletion_into_failure() {

@@ -284,7 +284,7 @@ pub async fn connect_remote_share(
         for connection_id in linked {
             let _ = runtime.remove_environment_connection(&connection_id, "", "", false).await;
         }
-        let _ = crate::commands::reconcile_connections(&store, &runtime).await;
+        let _ = crate::commands::reconcile_connections(&store, &runtime, crate::commands::Reported::Nothing).await;
         return store.snapshot();
     }
     result
