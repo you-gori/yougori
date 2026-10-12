@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "52ce8c75fd523ea1b22e24041d0dff024bd7fdcd",
+  "sourceCommit": "38b6cf688d9902e92b5c3e3c6c1b6acf0115be85",
   "sourceCommitMeaning": "Collection base revision; exact candidate contents are identified by the application source manifest, including uncommitted reviewed changes. Public release metadata requires a clean committed checkout.",
   "scope": "Current checkout runtime bytes; not a blanket certification of previous releases",
   "inputs": [
