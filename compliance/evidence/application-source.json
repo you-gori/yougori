@@ -79,7 +79,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "b9769d63ee083f336a70102b84fd43375d8c82d39d2ed23ade84e2b84654d49f",
+      "sha256": "876687b31e0075875e7c11b86b0c3714f8b72a18b361b83222947dc1dbc07f75",
       "bytes": 10922,
       "mode": 420
     },
@@ -799,13 +799,13 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "0c680b87c2ec10ae366db5cff4d666901646b7b1a2376fc3f962304cfe83c003",
+      "sha256": "efc273cc88f3d6746a66c6f79f6e527dc14d482fa52c02c6724d69dc6db8c8d2",
       "bytes": 89764,
       "mode": 420
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "bbb25c1922f0cef1247b828bc6c20757aef1e259fea8cd120c118ccc5487a101",
+      "sha256": "b7cb220371ca16a83702bdc5d4c31c52222c7e7eeb949fe01299e3fe3570b904",
       "bytes": 1252,
       "mode": 420
     },
@@ -1879,13 +1879,13 @@
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "8a8e48669685f36e7a7ede1ffad7ed77a4540de205b7cfc40a98402c4ab5729b",
+      "sha256": "7cbabcc11b377cd61b8b54ad00adc167af66387b0ff54a3b40e10b51bcbd7a02",
       "bytes": 194672,
       "mode": 420
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "ca6617f590f9ccb15ace4c0ae97cc25e37e366f4b10a921ea19ace11b7380982",
+      "sha256": "7036c810a3478b49053ab891d85f5c60b0ea1c6898710d6fc08feb6c1cf1cf26",
       "bytes": 691,
       "mode": 420
     },
@@ -2227,13 +2227,13 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "ebc36cf6f60a03fc5f907728f2ed53bd882572a9cb4bed15e60d10de0f8123dd",
+      "sha256": "17fea2726b5010aa28e1ddfb55a62558ef2bb1b3c706d8b8bad34802c87f99bf",
       "bytes": 193017,
       "mode": 420
     },
     {
       "path": "package.json",
-      "sha256": "e96513a13a71c9acd74417c4f1f3dfc41e8e47bab92d210872cc009440f87edc",
+      "sha256": "5475b1548fcc1a6f7a88206e9a71b7e56039ea9b753d0ea90b4d8c7c1dc1a0f8",
       "bytes": 7400,
       "mode": 420
     },
@@ -3511,13 +3511,13 @@
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "d0e313085889bb9c854bfda119a011c70ad9812825efc4efd9f6cca74f0e28ee",
+      "sha256": "b8969461b6d7039ba436e95b7409df41f458b9555e22e0bea2f593dc4f3b3e93",
       "bytes": 197107,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "03b26ccdfae0472b333e215aeba94b0b26babfd7874db285ce0665b5c5e6ced0",
+      "sha256": "2c71f4e4e85791699e02233d15e3f38219acfa57f9543a60f90ce48f6b9e5540",
       "bytes": 3255,
       "mode": 420
     },
@@ -5040,6 +5040,12 @@
       "mode": 420
     },
     {
+      "path": "src-tauri/src/swarm/live_target.rs",
+      "sha256": "601a81f3e3f676596669c3c29be900f50a142910d5dbd7e1ea6985d63e4fe6fd",
+      "bytes": 25808,
+      "mode": 420
+    },
+    {
       "path": "src-tauri/src/swarm/memory.rs",
       "sha256": "b550c99f0e44a36398ea5896316ff0cf3f310cd1d12825f22bc5f2d470fe5314",
       "bytes": 5718,
@@ -5047,8 +5053,8 @@
     },
     {
       "path": "src-tauri/src/swarm/mod.rs",
-      "sha256": "0d36732a62eb90a0151b011cf2e43bf9b4c2e6d3ec632f3b3a92459954da7df6",
-      "bytes": 62243,
+      "sha256": "15fd9ff919ddf2226507158b6fffe972889d0869682540bb7d37b53e137d395a",
+      "bytes": 62260,
       "mode": 420
     },
     {
@@ -5059,8 +5065,8 @@
     },
     {
       "path": "src-tauri/src/swarm/practice.rs",
-      "sha256": "163b580b1c3e0c85567e57b95bfa10717062e9c037798d3d63aa21127c162c51",
-      "bytes": 31776,
+      "sha256": "1fac09f25c84b2b26502a29e96ca2979390b3437ff5f998949f0673f52c924f5",
+      "bytes": 31922,
       "mode": 420
     },
     {
@@ -5071,8 +5077,8 @@
     },
     {
       "path": "src-tauri/src/swarm/runner.rs",
-      "sha256": "f0bf5eb19c8964f917652e8b263d9678b671065ddfdd0581032b9329506dc8ab",
-      "bytes": 43082,
+      "sha256": "87ce02a0971f9953b9db88ca7eb76c87859970043cbfe50492a1ce52aeaddd7a",
+      "bytes": 44569,
       "mode": 420
     },
     {
@@ -5197,7 +5203,7 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "27ab80d4ecbce83818513b3b891e23aeb31a6eff2cf50c4ef8d689f9eef11661",
+      "sha256": "26972d7e130b137ca14473515108be25ad5ac0dc318ffb520e2973a863ef6368",
       "bytes": 1692,
       "mode": 420
     },
@@ -7267,13 +7273,13 @@
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "9be0f10433b7466638b72f87e23bd0e590d1f3e00a1773260c8317182ab8d75e",
+      "sha256": "986f6ca6be595b4abbd819d86da487e399daba4c97c6d79c3a61bde7c487f771",
       "bytes": 80515,
       "mode": 420
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "3d79ddb7b6b325727e39dfdb260199d55bfe379f00f07a643ed1f19fa056f41e",
+      "sha256": "db4a3832883bbc34aad43505251de07524a1da01cd7e7d663501ea68f9c9b57a",
       "bytes": 1876,
       "mode": 420
     },
