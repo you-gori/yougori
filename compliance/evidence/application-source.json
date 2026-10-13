@@ -79,7 +79,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "1721d646d83ccc34961a3bd1156ff5716581aee59d77a24b30bbaac76c3801ee",
+      "sha256": "b9769d63ee083f336a70102b84fd43375d8c82d39d2ed23ade84e2b84654d49f",
       "bytes": 10922,
       "mode": 420
     },
@@ -732,6 +732,36 @@
       "mode": 420
     },
     {
+      "path": "build/macos-native-ci/38146039235/arm64/macos-native-acceptance.json",
+      "sha256": "9593c1f33be7d787de34def3fc999e0e4a0b0db11b17fb917f170dfc984dc675",
+      "bytes": 2273,
+      "mode": 420
+    },
+    {
+      "path": "build/macos-native-ci/38146039235/intel/macos-native-acceptance.json",
+      "sha256": "76ed8c48de4f51b02b6ab02941a3761d765997edf22bf5663711ff9e0430aac0",
+      "bytes": 2425,
+      "mode": 420
+    },
+    {
+      "path": "build/macos-native-ci/38146435183/arm64/macos-native-acceptance.json",
+      "sha256": "5177da47513fa610530898bd575532a5ec062ee26ccdb9f131fac1df5854e5df",
+      "bytes": 4428,
+      "mode": 420
+    },
+    {
+      "path": "build/macos-native-ci/38146853917/arm64/macos-native-acceptance.json",
+      "sha256": "b550e238cb24fb18b96d13c8edfe8eb7b2c24544266d127cb29120083d31fe9f",
+      "bytes": 5038,
+      "mode": 420
+    },
+    {
+      "path": "build/macos-native-ci/38146853917/intel/macos-native-acceptance.json",
+      "sha256": "6c587c779a56a79f5d7b8c983daccd73b6a9bb12c37e67ec19a38b197fdd34ee",
+      "bytes": 2714,
+      "mode": 420
+    },
+    {
       "path": "build/release-audit-2026-09-22/AUDIT.txt",
       "sha256": "a60c5b37615a81a726fb06108a871eb511a1e0467dd1208ec2336cc95650f223",
       "bytes": 6807,
@@ -769,13 +799,13 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "ef9df5fba3e21b970061e1c2f895f0cdfa25c16ac9265fa79534757453737d38",
+      "sha256": "0c680b87c2ec10ae366db5cff4d666901646b7b1a2376fc3f962304cfe83c003",
       "bytes": 89764,
       "mode": 420
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "b119b4935601c540795051e1dea85a820467bd988b274caf0e5a4721d1ecc705",
+      "sha256": "bbb25c1922f0cef1247b828bc6c20757aef1e259fea8cd120c118ccc5487a101",
       "bytes": 1252,
       "mode": 420
     },
@@ -793,8 +823,14 @@
     },
     {
       "path": "cli/src/bounty.rs",
-      "sha256": "ca2e7bc6aabd82e7a1373a45a085c0459154dc41036813a762b95bc9cd4705e1",
-      "bytes": 219496,
+      "sha256": "7790d054a87b1e305a6ad36d3e4a0304299f2cd7ef65d2f772950aabcb963353",
+      "bytes": 205207,
+      "mode": 420
+    },
+    {
+      "path": "cli/src/bounty_console.rs",
+      "sha256": "ab8343eecec9c6d27e7cefa62251ea40f38a1a2f197cc6048918e42a12cf75a8",
+      "bytes": 43025,
       "mode": 420
     },
     {
@@ -805,8 +841,8 @@
     },
     {
       "path": "cli/src/bounty_practice.rs",
-      "sha256": "89dbd9b147c9748f0450de8dc9a811d523a4cd7e786d13ed62efc607e9008055",
-      "bytes": 40723,
+      "sha256": "ebfa7d1f446894a9c21ca870b75d615f206f3ead72b3e6771f2d5465a38272bc",
+      "bytes": 36028,
       "mode": 420
     },
     {
@@ -961,8 +997,14 @@
     },
     {
       "path": "cli/src/launcher/chat.rs",
-      "sha256": "dace90e652266a1a9c31b981df788234d75e130e4e2ac3f7c5d7954f9c8eefeb",
-      "bytes": 70194,
+      "sha256": "2272b1b3c3c66009913af795062bd03991ae2e4583bdcdc96c1110c28807a071",
+      "bytes": 64102,
+      "mode": 420
+    },
+    {
+      "path": "cli/src/launcher/composer.rs",
+      "sha256": "a637a9dc19b4f731ddcd63d7dd6ed848b9e27bb78857e2faa8f613c03ca35ded",
+      "bytes": 7159,
       "mode": 420
     },
     {
@@ -1075,8 +1117,8 @@
     },
     {
       "path": "cli/src/launcher/ui.rs",
-      "sha256": "6549610c0bbfdc38447a44ecd01e80ef0838b98e28c74b033168462f66c63248",
-      "bytes": 102723,
+      "sha256": "609c6f1913b8bac71ad3ba3eac951ad3308f9e4c1b2cd29c1ec1b4e00e0b5915",
+      "bytes": 103062,
       "mode": 420
     },
     {
@@ -1099,8 +1141,8 @@
     },
     {
       "path": "cli/src/lib.rs",
-      "sha256": "49244a5dde8b00af681b42cbf55c8eacc380253f0dc9ebb38d2c471022299fd8",
-      "bytes": 1022,
+      "sha256": "556c71182a040888a3873e04dbbd3312093ce5dfa607e1c147d9589bfcb9b7ba",
+      "bytes": 1093,
       "mode": 420
     },
     {
@@ -1177,8 +1219,8 @@
     },
     {
       "path": "cli/src/presentation.rs",
-      "sha256": "340951402931be9c8108b87b80096a774bd6781af1258cf2e5dcf2843be93f12",
-      "bytes": 4554,
+      "sha256": "ffedd73f47584cf541a07f60306de0bfb0d675cd04e2400a80f398b44110a2a5",
+      "bytes": 4627,
       "mode": 420
     },
     {
@@ -1837,13 +1879,13 @@
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "0005d05823e5949a2d331569138efe3101bae4dc8cea17bf1707caa64ce221a7",
+      "sha256": "8a8e48669685f36e7a7ede1ffad7ed77a4540de205b7cfc40a98402c4ab5729b",
       "bytes": 194672,
       "mode": 420
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "c8c9f20b1f593a0ef64798a6d7f9f55cc0f365c3ad1b05b8e434db3e9362ab80",
+      "sha256": "ca6617f590f9ccb15ace4c0ae97cc25e37e366f4b10a921ea19ace11b7380982",
       "bytes": 691,
       "mode": 420
     },
@@ -2185,13 +2227,13 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "6988ca113e328d6e378aa1936218219fab85f418d1b6a0ad4a723680ee707883",
+      "sha256": "ebc36cf6f60a03fc5f907728f2ed53bd882572a9cb4bed15e60d10de0f8123dd",
       "bytes": 193017,
       "mode": 420
     },
     {
       "path": "package.json",
-      "sha256": "651004436450076cade4feaafd49ef1fc9a6ea3dc7e50cd9c626a0b96f56d9b6",
+      "sha256": "e96513a13a71c9acd74417c4f1f3dfc41e8e47bab92d210872cc009440f87edc",
       "bytes": 7400,
       "mode": 420
     },
@@ -3463,19 +3505,19 @@
     },
     {
       "path": "skills/yougori/references/cli.txt",
-      "sha256": "df7766ba3ecb51642ab09289c300fb587944357a5c39a5ae418810f7f7bd2680",
-      "bytes": 139877,
+      "sha256": "204054e2f2b9465c5760ba96303eea301020c1a620f83caee96053a77c580ea3",
+      "bytes": 139966,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "e6f29eaac4e2a940072a96755b93eeefc9cf395f5c2859926683933e569b2fe4",
+      "sha256": "d0e313085889bb9c854bfda119a011c70ad9812825efc4efd9f6cca74f0e28ee",
       "bytes": 197107,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "0c030a413f4f672a7ae5ee22e0862be2b670e854a4e46394326021411e1b7018",
+      "sha256": "03b26ccdfae0472b333e215aeba94b0b26babfd7874db285ce0665b5c5e6ced0",
       "bytes": 3255,
       "mode": 420
     },
@@ -4987,8 +5029,8 @@
     },
     {
       "path": "src-tauri/src/swarm/activity.rs",
-      "sha256": "43b00ed0dbcb9eeed94685118de72a497f3766e3bdc21cdfcb4a8f92acb16c89",
-      "bytes": 5085,
+      "sha256": "b16b99099a652d39e0ce47e6f75c83f9e74e310c5a2526b14532f8926e20c7e8",
+      "bytes": 7451,
       "mode": 420
     },
     {
@@ -5005,8 +5047,8 @@
     },
     {
       "path": "src-tauri/src/swarm/mod.rs",
-      "sha256": "297247941e2f1a08f250709d18a1afed13cf35c72fb430bcf1eced611a3330c0",
-      "bytes": 61824,
+      "sha256": "0d36732a62eb90a0151b011cf2e43bf9b4c2e6d3ec632f3b3a92459954da7df6",
+      "bytes": 62243,
       "mode": 420
     },
     {
@@ -5017,8 +5059,8 @@
     },
     {
       "path": "src-tauri/src/swarm/practice.rs",
-      "sha256": "4ea6a81eaa5498b427003dfbbdde527a886cc052c5a839a692baef26dcfac727",
-      "bytes": 8681,
+      "sha256": "163b580b1c3e0c85567e57b95bfa10717062e9c037798d3d63aa21127c162c51",
+      "bytes": 31776,
       "mode": 420
     },
     {
@@ -5155,7 +5197,7 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "01db5a10ee42b2a6a6351e2ed185302d16ebe352840f0b50410763a2995b6b1f",
+      "sha256": "27ab80d4ecbce83818513b3b891e23aeb31a6eff2cf50c4ef8d689f9eef11661",
       "bytes": 1692,
       "mode": 420
     },
@@ -7225,13 +7267,13 @@
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "a2d4d2957551ad7c4acd3b9a177d664f51c818f638abd073487f0e994d610330",
+      "sha256": "9be0f10433b7466638b72f87e23bd0e590d1f3e00a1773260c8317182ab8d75e",
       "bytes": 80515,
       "mode": 420
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "6007d183cd0fcc5e073ac6d1175154ce826cb4af6a889ca54142533c93ffbed9",
+      "sha256": "3d79ddb7b6b325727e39dfdb260199d55bfe379f00f07a643ed1f19fa056f41e",
       "bytes": 1876,
       "mode": 420
     },
