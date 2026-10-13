@@ -4,8 +4,9 @@
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 /// Events kept per worker; a console that falls further behind skips to the oldest kept one.
@@ -19,6 +20,10 @@ struct Log {
     next: u64,
     inputs: Vec<String>,
     practice: Option<CancellationToken>,
+    /// The participant started typing: the practice waits for their message.
+    held: bool,
+    /// Ends the practice attempt that is streaming now.
+    attempt: Option<Arc<Notify>>,
 }
 
 static LOGS: LazyLock<Mutex<BTreeMap<String, Log>>> = LazyLock::new(Default::default);
@@ -60,14 +65,17 @@ pub(crate) fn read(worker: &str, after: u64, limit: usize) -> Value {
     })
 }
 
-/// Registers a practice session; false when one is already running.
-pub(crate) fn begin_practice(worker: &str, cancel: CancellationToken) -> bool {
+/// Registers a practice session that starts with the participant's `first` message, if any;
+/// false when one is already running.
+pub(crate) fn begin_practice(worker: &str, cancel: CancellationToken, first: Option<&str>) -> bool {
     with(worker, |log| {
         if log.practice.is_some() {
             return false;
         }
-        log.inputs.clear();
+        log.inputs = first.map(str::to_owned).into_iter().collect();
         log.practice = Some(cancel);
+        log.held = false;
+        log.attempt = None;
         true
     })
 }
@@ -76,7 +84,38 @@ pub(crate) fn end_practice(worker: &str) {
     with(worker, |log| {
         log.practice = None;
         log.inputs.clear();
+        log.held = false;
+        log.attempt = None;
     })
+}
+
+/// The practice attempt streaming now, which [`interrupt_practice`] ends; None once it ended.
+pub(crate) fn set_attempt(worker: &str, attempt: Option<Arc<Notify>>) {
+    with(worker, |log| log.attempt = attempt)
+}
+
+/// The participant started typing: the streaming attempt ends at once and the next one waits
+/// for their message. False when no practice runs.
+pub(crate) fn interrupt_practice(worker: &str) -> bool {
+    with(worker, |log| {
+        if log.practice.is_none() {
+            return false;
+        }
+        log.held = true;
+        if let Some(attempt) = &log.attempt {
+            attempt.notify_one();
+        }
+        true
+    })
+}
+
+/// The participant cleared what they were typing: the practice goes on without a message.
+pub(crate) fn resume_practice(worker: &str) {
+    with(worker, |log| log.held = false)
+}
+
+pub(crate) fn held(worker: &str) -> bool {
+    with(worker, |log| log.held)
 }
 
 pub(crate) fn practicing(worker: &str) -> bool {
@@ -98,6 +137,7 @@ pub(crate) fn add_input(worker: &str, text: &str) -> Result<(), String> {
             return Err("Your worker has not read your earlier messages yet; wait for its next attempt".to_string());
         }
         log.inputs.push(text.to_owned());
+        log.held = false;
         Ok(())
     });
     if accepted.is_ok() {
@@ -128,13 +168,31 @@ mod tests {
         assert_eq!(rest["events"].as_array().unwrap().len(), KEEP - 100);
         assert_eq!(read(worker, rest["next"].as_u64().unwrap(), 10)["events"], json!([]));
         let cancel = CancellationToken::new();
-        assert!(begin_practice(worker, cancel.clone()));
-        assert!(!begin_practice(worker, CancellationToken::new()), "one practice per worker");
+        assert!(begin_practice(worker, cancel.clone(), None));
+        assert!(!begin_practice(worker, CancellationToken::new(), None), "one practice per worker");
+        let attempt = Arc::new(Notify::new());
+        set_attempt(worker, Some(attempt.clone()));
+        assert!(interrupt_practice(worker) && held(worker));
+        assert!(futures_now(attempt.notified()), "typing ends the streaming attempt");
         add_input(worker, "look at auth.js").unwrap();
+        assert!(!held(worker), "a sent message releases the practice");
         assert_eq!(take_inputs(worker), ["look at auth.js"]);
         assert!(take_inputs(worker).is_empty());
         assert!(stop_practice(worker) && cancel.is_cancelled());
         end_practice(worker);
-        assert!(!practicing(worker) && !stop_practice(worker));
+        assert!(!practicing(worker) && !stop_practice(worker) && !interrupt_practice(worker));
+        assert!(begin_practice(worker, CancellationToken::new(), Some("try auth.js")));
+        assert_eq!(take_inputs(worker), ["try auth.js"], "a practice can start with a message");
+        interrupt_practice(worker);
+        resume_practice(worker);
+        assert!(!held(worker));
+        end_practice(worker);
+    }
+
+    /// Whether `future` is ready without waiting.
+    fn futures_now(future: impl std::future::Future) -> bool {
+        let mut future = std::pin::pin!(future);
+        let waker = std::task::Waker::noop();
+        future.as_mut().poll(&mut std::task::Context::from_waker(waker)).is_ready()
     }
 }

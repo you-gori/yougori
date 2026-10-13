@@ -9,7 +9,10 @@ use std::{
     io::{self, IsTerminal},
     time::{Duration, Instant},
 };
-use yougori_cli::{network, public};
+use yougori_cli::{
+    composer::{Editor, Input},
+    network, public,
+};
 
 const CODE: ui::Rgb = ui::Rgb(0xa5, 0xb4, 0xfc);
 
@@ -743,136 +746,6 @@ async fn wait_ready(id: &str, name: &str) -> Result<Result<Value, Exit>, String>
     }
 }
 
-/// The message being typed, with a cursor and the messages sent this session.
-#[derive(Default)]
-struct Editor {
-    text: String,
-    cursor: usize,
-    sent: Vec<String>,
-    recall: Option<usize>,
-}
-
-enum Input {
-    Send(String),
-    Leave,
-    None,
-}
-
-impl Editor {
-    fn key(&mut self, key: &KeyEvent) -> Input {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('c' | 'd') if ctrl => return Input::Leave,
-            KeyCode::Char('u') if ctrl => self.set(String::new()),
-            KeyCode::Enter => {
-                let text = self.text.trim().to_owned();
-                if !text.is_empty() {
-                    self.sent.push(text.clone());
-                    self.recall = None;
-                    self.set(String::new());
-                    return Input::Send(text);
-                }
-            }
-            KeyCode::Esc => self.set(String::new()),
-            KeyCode::Backspace => {
-                if let Some(c) = self.text[..self.cursor].chars().next_back() {
-                    self.cursor -= c.len_utf8();
-                    self.text.remove(self.cursor);
-                }
-            }
-            KeyCode::Delete => {
-                if self.cursor < self.text.len() {
-                    self.text.remove(self.cursor);
-                }
-            }
-            KeyCode::Left => {
-                if let Some(c) = self.text[..self.cursor].chars().next_back() {
-                    self.cursor -= c.len_utf8();
-                }
-            }
-            KeyCode::Right => {
-                if let Some(c) = self.text[self.cursor..].chars().next() {
-                    self.cursor += c.len_utf8();
-                }
-            }
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.text.len(),
-            KeyCode::Up if !self.sent.is_empty() => {
-                let at = self.recall.map_or(self.sent.len() - 1, |i| i.saturating_sub(1));
-                self.recall = Some(at);
-                self.set(self.sent[at].clone());
-            }
-            KeyCode::Down => match self.recall {
-                Some(i) if i + 1 < self.sent.len() => {
-                    self.recall = Some(i + 1);
-                    self.set(self.sent[i + 1].clone());
-                }
-                _ => {
-                    self.recall = None;
-                    self.set(String::new());
-                }
-            },
-            KeyCode::Tab => self.insert(' '),
-            KeyCode::Char(c) if !ctrl && !c.is_control() && self.text.len() < 30_000 => {
-                self.insert(c)
-            }
-            _ => {}
-        }
-        Input::None
-    }
-
-    fn set(&mut self, text: String) {
-        self.cursor = text.len();
-        self.text = text;
-    }
-
-    fn insert(&mut self, c: char) {
-        self.text.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-    }
-
-    /// The message wrapped to the terminal, with the cursor shown as a highlighted cell.
-    fn lines(&self, name: &str, columns: usize) -> Vec<String> {
-        let prompt = ui::paint("›", ui::SKY);
-        let caret = |c: &str| {
-            if ui::color() {
-                format!("\x1b[7m{c}\x1b[27m")
-            } else {
-                format!("[{c}]")
-            }
-        };
-        if self.text.is_empty() {
-            return vec![format!(
-                "{prompt} {}{}",
-                caret(" "),
-                ui::muted(&format!("Message {name}"))
-            )];
-        }
-        let mut lines = Vec::new();
-        let mut start = 0;
-        for (row, used) in ui::wrap(&format!("{} ", self.text), columns.saturating_sub(4)) {
-            let end = start + row.len();
-            let shown = if (start..end).contains(&self.cursor) {
-                let at = self.cursor - start;
-                let c = row[at..].chars().next().map_or(" ".into(), String::from);
-                format!("{}{}{}", &row[..at], caret(&c), &row[at + c.len()..])
-            } else if self.cursor >= end && self.cursor < start + used {
-                format!("{row}{}", caret(" "))
-            } else {
-                row
-            };
-            lines.push(format!(
-                "{} {shown}",
-                if start == 0 { prompt.clone() } else { " ".into() }
-            ));
-            start += used;
-        }
-        // Long messages show their end, where the typing is.
-        let keep = lines.len().saturating_sub(8);
-        lines.split_off(keep)
-    }
-}
-
 /// Model text as it streams: finished rows join the log, the row being written stays live.
 #[derive(Default)]
 struct Writer {
@@ -1184,7 +1057,7 @@ async fn read(block: &ui::Block, editor: &mut Editor, name: &str) -> Result<Opti
         let columns = crossterm::terminal::size()
             .map(|(c, _)| usize::from(c))
             .unwrap_or(80);
-        let lines = editor.lines(name, columns);
+        let lines = editor.lines(&format!("Message {name}"), columns);
         if lines != shown {
             block.set(lines.clone());
             shown = lines;
@@ -1202,11 +1075,7 @@ async fn read(block: &ui::Block, editor: &mut Editor, name: &str) -> Result<Opti
                     }
                     Input::None => {}
                 },
-                Event::Paste(text) => {
-                    for c in text.chars() {
-                        editor.insert(if c.is_control() { ' ' } else { c });
-                    }
-                }
+                Event::Paste(text) => editor.paste(&text),
                 Event::Resize(..) => ui::refresh(),
                 _ => {}
             }
@@ -1420,13 +1289,6 @@ mod tests {
         assert!(leave);
     }
 
-    fn press(editor: &mut Editor, code: KeyCode) -> Option<String> {
-        match editor.key(&KeyEvent::new(code, KeyModifiers::NONE)) {
-            Input::Send(text) => Some(text),
-            _ => None,
-        }
-    }
-
     #[test]
     fn only_interactive_model_commands_open_the_chat_screen() {
         let args = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
@@ -1471,37 +1333,6 @@ mod tests {
         assert!(options(&args(&["--nowfree","--listen"])).unwrap().listen);
         for flags in [vec!["--listen"],vec!["--now","--listen"],vec!["--nowfree","--listen","--listen"]] {assert!(options(&args(&flags)).is_err());}
     }
-    #[test]
-    fn the_editor_moves_recalls_and_sends() {
-        let mut editor = Editor::default();
-        for c in "helo".chars() {
-            press(&mut editor, KeyCode::Char(c));
-        }
-        press(&mut editor, KeyCode::Left);
-        press(&mut editor, KeyCode::Char('l'));
-        assert_eq!(editor.text, "hello");
-        press(&mut editor, KeyCode::Home);
-        press(&mut editor, KeyCode::Delete);
-        press(&mut editor, KeyCode::Char('H'));
-        assert_eq!(press(&mut editor, KeyCode::Enter).as_deref(), Some("Hello"));
-        assert_eq!(press(&mut editor, KeyCode::Enter), None, "empty messages are not sent");
-        press(&mut editor, KeyCode::Up);
-        assert_eq!(editor.text, "Hello");
-        press(&mut editor, KeyCode::Down);
-        assert_eq!(editor.text, "");
-        for c in "é日".chars() {
-            press(&mut editor, KeyCode::Char(c));
-        }
-        press(&mut editor, KeyCode::Backspace);
-        assert_eq!(editor.text, "é");
-        let lines = editor.lines("Model", 40);
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains('é'));
-        assert!(editor.lines("Model", 12).len() == 1);
-        editor.set("word ".repeat(30));
-        assert!(editor.lines("Model", 30).len() > 1, "long messages wrap");
-    }
-
     #[test]
     fn streamed_text_is_committed_only_when_rows_are_final() {
         let mut writer = Writer::default();

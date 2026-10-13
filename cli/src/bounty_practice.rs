@@ -1,242 +1,154 @@
-//! A self-contained Swarm Mining practice bounty.
+//! A self-contained Swarm Mining practice bounty, in the shape of a real live-target bounty.
 //!
 //! It is offered once a newly prepared worker is waiting for offers, and runs with
-//! `yougori bounty practice WORKER`. No account, server or money is involved. It
-//! writes a tiny deliberately-flawed Node project to a temporary folder and lets
-//! you try to crack it yourself. Then the worker's own model, loaded for this job
-//! only, investigates the same files and records a report through a function call.
-//! The report is checked against the planted flaw and, when it qualifies, credited
-//! as a no-value practice award. This is defensive-education only; see the
-//! responsible use rules at https://yougori.com/swarm/rules.
+//! `yougori bounty practice WORKER`. No account, server or money is involved. The runtime starts
+//! a tiny deliberately-flawed web service as the target and plants a per-run flag that only the
+//! intended break-in reveals. The worker's own model, loaded for this job only, attacks the
+//! service **black-box**: it never sees the source, only the service's responses, through an
+//! `http_request` tool the runtime proxies to the target. It records what it tries, and when it
+//! captures the flag it reports the finding; the runtime proves the break-in by checking the
+//! captured flag against the planted one. This is defensive-education only; see the responsible
+//! use rules at https://yougori.com/swarm/rules.
 
 use crate::cli_ui as ui;
 use serde_json::{json, Value};
 use std::{future::Future, time::Duration};
 
-/// The example project a worker would receive. One planted flaw: the password is
-/// compared against a hardcoded literal in the source, so anyone reading the file
-/// can log in as the admin. The source does not label the flaw, so the user can
-/// try to find it themselves.
-const EXAMPLE_FILES: &[(&str, &str)] = &[
+/// The target service a worker attacks. Black-box: the model never receives this source, only
+/// the service's HTTP responses. One planted flaw — the admin account keeps its factory-default
+/// password, and `GET /` discloses that — lets an attacker log in and read the admin-only flag
+/// at `GET /flag`. The flag and the admin token are injected from the environment per run, so
+/// the only way to the flag is the live break-in.
+pub const TARGET_FILES: &[(&str, &str)] = &[
     (
         "README.md",
-        "# practice-login\n\nA minimal login service for the Swarm Mining practice bounty.\n\n- `node server.js` starts it on port 3000.\n- `POST /login` with `{ \"user\": \"admin\", \"password\": \"...\" }`.\n- `npm test` runs the offline check.\n\nThis is a teaching fixture with a planted flaw. Do not deploy it.\n",
-    ),
-    (
-        "auth.js",
-        "// Checks a login for the practice service.\nconst ADMIN_USER = 'admin'\nconst ADMIN_PASSWORD = 'correct-horse-battery-staple'\n\nfunction authenticate(user, password) {\n  return user === ADMIN_USER && password === ADMIN_PASSWORD\n}\n\nmodule.exports = { authenticate }\n",
+        "# acme-login\n\nA minimal login service used as the Swarm Mining practice target.\n\n- `node server.js` starts it (PORT from the environment).\n- `GET /` lists the endpoints.\n- `POST /login` with `{ \"user\": \"admin\", \"password\": \"...\" }` returns a token.\n- `GET /flag` returns the admin-only flag to a valid admin token.\n\nThis is a teaching target with a planted flaw. Do not deploy it.\n",
     ),
     (
         "server.js",
-        "const http = require('node:http')\nconst { authenticate } = require('./auth')\n\nconst server = http.createServer((req, res) => {\n  if (req.method !== 'POST' || req.url !== '/login') {\n    res.writeHead(404).end('not found')\n    return\n  }\n  let body = ''\n  req.on('data', chunk => { body += chunk })\n  req.on('end', () => {\n    let user, password\n    try {\n      ({ user, password } = JSON.parse(body))\n    } catch {\n      res.writeHead(400).end('bad request')\n      return\n    }\n    const ok = authenticate(user, password)\n    res.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' })\n    res.end(JSON.stringify({ ok }))\n  })\n})\n\nserver.listen(3000, () => console.log('practice-login on :3000'))\n",
-    ),
-    (
-        "test.js",
-        "// Offline check: a correct login is accepted, a wrong one is rejected.\nconst assert = require('node:assert')\nconst { authenticate } = require('./auth')\n\nassert.equal(authenticate('admin', 'correct-horse-battery-staple'), true)\nassert.equal(authenticate('admin', 'wrong'), false)\nassert.equal(authenticate('guest', 'correct-horse-battery-staple'), false)\n\nconsole.log('ok')\n",
+        "const http = require('node:http')\n\n// Injected per run; the flag is only reachable by logging in as admin.\nconst FLAG = process.env.FLAG || 'YGR{missing}'\nconst ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin-token'\nconst ADMIN_USER = 'admin'\n// The admin account still uses its factory-default password: the planted flaw.\nconst ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin'\n\nfunction send(res, code, body) {\n  res.writeHead(code, { 'content-type': 'application/json' })\n  res.end(JSON.stringify(body))\n}\n\nconst server = http.createServer((req, res) => {\n  const path = (req.url || '/').split('?')[0]\n  if (req.method === 'GET' && path === '/') {\n    return send(res, 200, {\n      service: 'acme-login',\n      endpoints: ['POST /login', 'GET /flag (admin only)'],\n      notice: 'The admin account still uses the factory-default password.',\n    })\n  }\n  if (req.method === 'POST' && path === '/login') {\n    let body = ''\n    req.on('data', chunk => { body += chunk; if (body.length > 100000) req.destroy() })\n    req.on('end', () => {\n      let user, password\n      try { ({ user, password } = JSON.parse(body || '{}')) } catch { return send(res, 400, { ok: false, error: 'invalid JSON body' }) }\n      if (user === ADMIN_USER && password === ADMIN_PASSWORD) return send(res, 200, { ok: true, token: ADMIN_TOKEN })\n      return send(res, 401, { ok: false, error: 'invalid credentials' })\n    })\n    return\n  }\n  if (req.method === 'GET' && path === '/flag') {\n    if ((req.headers['authorization'] || '') === 'Bearer ' + ADMIN_TOKEN) return send(res, 200, { flag: FLAG })\n    return send(res, 401, { error: 'a valid admin token is required; log in as admin first' })\n  }\n  send(res, 404, { error: 'not found', hint: 'this path does not exist; see GET / for the real endpoints' })\n})\n\nconst port = Number(process.env.PORT) || 3000\nserver.listen(port, '127.0.0.1', () => console.log('acme-login on :' + server.address().port))\n",
     ),
     (
         "package.json",
-        "{\n  \"name\": \"practice-login\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"description\": \"Swarm Mining practice bounty fixture\",\n  \"scripts\": {\n    \"start\": \"node server.js\",\n    \"test\": \"node test.js\"\n  }\n}\n",
+        "{\n  \"name\": \"acme-login\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"description\": \"Swarm Mining practice target\",\n  \"scripts\": {\n    \"start\": \"node server.js\"\n  }\n}\n",
     ),
 ];
+
+/// The host the model is told to attack. The runtime proxies `http_request` paths to the target
+/// it started on loopback, so the model only ever supplies a method and a path.
+pub const TARGET_HOST: &str = "http://target";
+
+/// Rejected findings a script will wait through before giving up.
+pub const MAX_ATTEMPTS: usize = 5;
+
+/// A captured flag's shape, so the model knows what to look for and report.
+pub const FLAG_PREFIX: &str = "YGR";
+
+/// Wraps a random token in the flag's shape, e.g. `YGR{ab12…}`.
+pub fn format_flag(token: &str) -> String {
+    format!("{FLAG_PREFIX}{{{token}}}")
+}
+
+/// Writes the target files into `root`, creating it. Used to run the service and to let a
+/// curious participant read it; the attacking model never receives it.
+pub fn write_target(root: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(root)?;
+    for (name, content) in TARGET_FILES {
+        std::fs::File::create(root.join(name))?.write_all(content.as_bytes())?;
+    }
+    Ok(())
+}
 
 /// The published offer a worker would review and accept, all synthetic.
 fn offer() -> Value {
     json!({
         "bountyId": "practice",
         "companyName": "Yougori Practice (example, not a real company)",
-        "title": "Find the authentication flaw in practice-login",
-        "objective": "A small Node login service is supplied as a local snapshot. Find a flaw that lets someone authenticate as the admin without being given the password, and report it with evidence.",
-        "qualifyingCriteria": "A report that identifies a concrete, reproducible way to authenticate as admin from the supplied source, names the exact file and line, and shows the planted flaw.",
-        "sourceRevision": "practice-v1",
+        "title": "Break into acme-login and capture the flag",
+        "objective": "A small login web service is running as the target. Reaching it only over the network, find a way to authenticate as the administrator, then read the admin-only flag at GET /flag and report it as proof.",
+        "qualifyingCriteria": "A report whose captured flag exactly matches the one planted in this run. The only way to obtain it is to break in and read GET /flag as admin.",
+        "sourceRevision": "practice-v2",
         "reward": {"amount": "0", "currency": "PRACTICE", "note": "No monetary value. This is a practice reward only."},
-        "scopeMode": "local_source_only",
-        "exclusions": "Local supplied snapshot and offline checks only. No live systems, third-party services, or real data. Synthetic fixture.",
+        "scopeMode": "live_target_only",
+        "exclusions": "The supplied practice target only. No live systems, third-party services, or real data. Synthetic fixture.",
         "serviceRules": "https://yougori.com/swarm/rules"
     })
 }
 
-/// The 1-based line in auth.js that holds the hardcoded password, read from the
-/// bundled source so the report can never point at the wrong line.
-fn password_line() -> usize {
-    let auth = EXAMPLE_FILES
-        .iter()
-        .find(|(name, _)| *name == "auth.js")
-        .map(|(_, content)| *content)
-        .unwrap_or_default();
-    auth.lines()
-        .position(|line| line.starts_with("const ADMIN_PASSWORD"))
-        .map_or(0, |index| index + 1)
+/// The endpoints the participant is shown (the model discovers them itself).
+pub fn endpoints() -> [&'static str; 3] {
+    ["GET /  — lists the service", "POST /login  — {user, password} → token", "GET /flag  — admin-only flag"]
 }
 
-/// A qualifying report for this bounty, the reference for `verify`.
-#[cfg(test)]
-fn report() -> Value {
-    let line = password_line();
-    json!({
-        "title": "Hardcoded admin password in auth.js",
-        "component": "auth.js",
-        "file": "auth.js",
-        "line": line,
-        "sourceRevision": "practice-v1",
-        "reproduction": format!("Open auth.js. The admin password is assigned to ADMIN_PASSWORD as a string literal on line {line}. POST {{\"user\":\"admin\",\"password\":\"correct-horse-battery-staple\"}} to /login returns {{\"ok\":true}}."),
-        "observed": format!("Anyone able to read the source can authenticate as the administrator, because the password is embedded in auth.js (line {line}) rather than stored as a salted hash outside the code."),
-        "expected": "Credentials should be verified against a salted password hash kept out of the source tree; the source should contain no usable secret.",
-        "impact": "Full administrator authentication bypass for any reader of the source.",
-        "limitations": "Found by source review of the supplied local snapshot only; no live system was tested.",
-        "evidence": [
-            {"name": "auth.js", "note": format!("The hardcoded literal on line {line}.")},
-            {"name": "login-proof.txt", "note": "A /login call with the literal returning ok:true."}
-        ]
-    })
+/// The tools the attacking model may call: probe the target, note a try, report the finding.
+pub fn tools() -> Vec<Value> {
+    vec![http_request_tool(), record_attempt_tool(), report_finding_tool()]
 }
 
-/// What the worker's model receives first: the offer and the project files, each line numbered.
-pub fn investigation() -> Value {
-    conversation(&[])
+/// Sends one HTTP request to the target and returns its status and body. The model's only way
+/// to reach the service.
+pub fn http_request_tool() -> Value {
+    json!({"type":"function","function":{"name":"http_request","description":"Send one HTTP request to the target service and get its status and body back. This is the only way to reach the target.","parameters":{"type":"object","properties":{
+        "method":{"type":"string","enum":["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"],"description":"HTTP method"},
+        "path":{"type":"string","description":"Request path on the target, e.g. /login or /flag"},
+        "headers":{"type":"object","description":"Optional request headers, as a flat name→value object","additionalProperties":{"type":"string"}},
+        "body":{"type":"string","description":"Optional raw request body, e.g. a JSON string"}
+    },"required":["method","path"],"additionalProperties":false}}})
 }
 
-/// The investigation plus each earlier report and the verifier's feedback on it, so a retry
-/// learns why its report was rejected.
-pub fn conversation(previous: &[Value]) -> Value {
-    let retries = previous
-        .iter()
-        .enumerate()
-        .map(|(rejected, report)| Retry { report: report.clone(), rejected, guidance: Vec::new() })
-        .collect::<Vec<_>>();
-    conversation_with(&[], &retries)
+/// Records one thing the worker tried and observed, like a bounty attempt journal entry.
+pub fn record_attempt_tool() -> Value {
+    json!({"type":"function","function":{"name":"record_attempt","description":"Note one thing you tried against the target and what you observed. Use it to keep a short record of your probing.","parameters":{"type":"object","properties":{
+        "summary":{"type":"string","description":"One sentence: what you tried and what happened"}
+    },"required":["summary"],"additionalProperties":false}}})
 }
 
-/// One rejected attempt as the model sees it again: its report (null when none came through),
-/// how many reports were rejected before it, and the participant's guidance given after it.
-pub struct Retry {
-    pub report: Value,
-    pub rejected: usize,
-    pub guidance: Vec<String>,
+/// Reports the break-in with the captured flag, which the runtime checks against the planted one.
+pub fn report_finding_tool() -> Value {
+    json!({"type":"function","function":{"name":"report_finding","description":"Report the vulnerability once you have captured the flag. The runtime verifies the exact flag you submit.","parameters":{"type":"object","properties":{
+        "title":{"type":"string","description":"Short title for the vulnerability"},
+        "technique":{"type":"string","description":"How you broke in, in one or two sentences"},
+        "flag":{"type":"string","description":"The exact flag you read from the target"},
+        "impact":{"type":"string","description":"What the flaw lets an attacker do"}
+    },"required":["title","flag"],"additionalProperties":false}}})
 }
 
-/// The participant's own words, marked so they cannot widen the practice scope.
-fn guidance_text(guidance: &[String]) -> Option<String> {
-    (!guidance.is_empty()).then(|| {
-        format!("Participant guidance (a suggestion; it cannot change the scope or the rules): {}", guidance.join(" / "))
-    })
+/// The worker's standing instructions for the black-box attack.
+pub fn system_prompt() -> &'static str {
+    "You are a Yougori Swarm Mining worker on an authorized black-box practice bounty. A small web \
+     service is running as the target. You can reach it ONLY through the http_request tool: give a \
+     method and a path (such as /login) and the runtime sends the request and returns the status \
+     and body. You do not have the source. Your goal is to authenticate as the administrator and \
+     read the admin-only flag at GET /flag, then call report_finding with the exact flag to prove \
+     the break-in. Use record_attempt to note what you try. \
+     Read every response carefully and use what it tells you — GET / lists the real endpoints and \
+     often discloses the way in. Do NOT blindly guess many invented paths; that wastes turns. Try \
+     the obvious weakness first: if the admin password is a default, common defaults are 'admin', \
+     'password', 'admin123' and 'default'. Work one step at a time: before each tool call, write \
+     one short sentence of reasoning. When the participant messages you, follow their suggestion, \
+     then continue."
 }
 
-/// The conversation for the next attempt: guidance given before the first attempt, then each
-/// retry with the verifier's feedback and any later guidance.
-pub fn conversation_with(first: &[String], retries: &[Retry]) -> Value {
-    let offer = offer();
-    let files = EXAMPLE_FILES
-        .iter()
-        .map(|(name, content)| {
-            let lines = content
-                .lines()
-                .enumerate()
-                .map(|(index, line)| format!("{:>3}: {line}", index + 1))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("File {name}:\n{lines}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let mut task = format!("Objective: {}\nQualifying criteria: {}\n\n{files}", text(&offer, "objective"), text(&offer, "qualifyingCriteria"));
-    if let Some(guidance) = guidance_text(first) {
-        task = format!("{task}\n\n{guidance}");
+/// The first user turn: the objective and how to begin.
+pub fn opening_message() -> String {
+    format!(
+        "{}\n\nThe target is at {TARGET_HOST}. Step 1: send GET / and read its response — it names the endpoints and hints at the flaw. Step 2: authenticate as admin at POST /login. Step 3: read GET /flag with the token you get, then report the flag with report_finding. Reach only the endpoints the service tells you about.",
+        text(&offer(), "objective")
+    )
+}
+
+/// Checks a reported flag against the one planted this run. The reported flag qualifies only
+/// when it matches exactly; the reason never reveals the expected value.
+pub fn oracle(expected: &str, finding: &Value) -> (bool, String) {
+    let submitted = finding["flag"].as_str().unwrap_or_default().trim();
+    if submitted.is_empty() {
+        return (false, "No flag was reported. Read the admin-only flag at GET /flag and report its exact value.".into());
     }
-    let mut messages = vec![
-        json!({"role":"system","content":"You are a Yougori Swarm Mining worker on an authorized practice bounty. Review only the supplied files; there is no live system. Find one concrete, reproducible flaw that meets the qualifying criteria and record it by calling bounty_report. Use the exact file name and the 1-based line number printed before each line. Keep every field brief: one or two sentences, with the exact request that proves the flaw in reproduction."}),
-        json!({"role":"user","content":task}),
-    ];
-    for retry in retries {
-        let said = feedback(retry.report.is_object().then_some(&retry.report), retry.rejected);
-        let guidance = guidance_text(&retry.guidance);
-        if retry.report.is_object() {
-            let id = format!("practice_{}", retry.rejected + 1);
-            messages.push(json!({"role":"assistant","content":"","tool_calls":[{"id":id,"type":"function","function":{"name":"bounty_report","arguments":retry.report.to_string()}}]}));
-            messages.push(json!({"role":"tool","tool_call_id":id,"content":said}));
-            if let Some(guidance) = guidance {
-                messages.push(json!({"role":"user","content":guidance}));
-            }
-        } else {
-            messages.push(json!({"role":"assistant","content":"I did not record a report."}));
-            let content = match guidance { Some(guidance) => format!("{said}\n\n{guidance}"), None => said };
-            messages.push(json!({"role":"user","content":content}));
-        }
-    }
-    Value::Array(messages)
-}
-
-/// The one function the model may call: its report, as a company would receive it.
-pub fn report_tool() -> Value {
-    json!({"type":"function","function":{"name":"bounty_report","description":"Record one evidenced finding for this practice bounty.","parameters":{"type":"object","properties":{
-        "title":{"type":"string"},
-        "file":{"type":"string","description":"Exact file name"},
-        "line":{"type":"integer","description":"1-based line of the flaw"},
-        "reproduction":{"type":"string","description":"Exact steps, including the request that proves the flaw"},
-        "impact":{"type":"string"}
-    },"required":["title","file","line","reproduction","impact"],"additionalProperties":false}}})
-}
-
-/// Attempts until a report qualifies, the first included. A practice without a console is
-/// stopped after this many rejected reports.
-pub const MAX_ATTEMPTS: usize = 5;
-
-enum Verdict {
-    Qualifies,
-    WrongFile(String),
-    WrongLine(Option<u64>),
-    NotReproducible,
-}
-
-/// The qualifying criteria: the exact file and line of the planted flaw, and a reproduction
-/// that actually logs in with the hardcoded password.
-fn assess(report: &Value) -> Verdict {
-    let file = report["file"].as_str().unwrap_or_default().trim().replace('\\', "/");
-    let file = file.rsplit('/').next().unwrap_or_default();
-    let line = report["line"].as_u64().or_else(|| report["line"].as_str().and_then(|line| line.trim().parse().ok()));
-    let reproducible = ["reproduction", "title", "impact"]
-        .iter()
-        .any(|key| report[*key].as_str().is_some_and(|value| value.contains("correct-horse-battery-staple")));
-    if !file.eq_ignore_ascii_case("auth.js") {
-        Verdict::WrongFile(if file.is_empty() { "no file".into() } else { crate::bounty::safe(file) })
-    } else if line != Some(password_line() as u64) {
-        Verdict::WrongLine(line)
-    } else if !reproducible {
-        Verdict::NotReproducible
+    if submitted == expected.trim() {
+        (true, "The reported flag matches the one planted on the target. The break-in is confirmed; the finding qualifies.".into())
     } else {
-        Verdict::Qualifies
-    }
-}
-
-/// The verdict for the participant, who may see where the flaw is.
-pub fn verify(report: &Value) -> (bool, String) {
-    let expected = password_line();
-    match assess(report) {
-        Verdict::Qualifies => (true, format!("It names auth.js line {expected} and reproduces the admin login with the hardcoded password. It qualifies.")),
-        Verdict::WrongFile(named) => (false, format!("It names {named}, not the file that holds the flaw. It does not qualify.")),
-        Verdict::WrongLine(line) => {
-            let named = line.map_or_else(|| "no line".to_string(), |line| format!("line {line}"));
-            (false, format!("It names auth.js but {named}; the flaw is on line {expected}. It does not qualify."))
-        }
-        Verdict::NotReproducible => (false, format!("It names auth.js line {expected} but gives no login that reproduces it. It does not qualify.")),
-    }
-}
-
-/// The verifier's feedback for the model's next attempt, after `rejected` earlier rejections.
-/// It says why a report was rejected and, like a tutor, hints more each time, but never gives
-/// the line number or the password.
-pub fn feedback(report: Option<&Value>, rejected: usize) -> String {
-    let reason = match report.map(assess) {
-        None => "No report came through: the answer was cut off or did not call bounty_report. Call it once, with one short sentence per field.".to_string(),
-        Some(Verdict::Qualifies) => return "Accepted: the report meets the qualifying criteria.".into(),
-        Some(Verdict::WrongFile(named)) => format!("Rejected: {named} does not hold the flaw. Review the other files and call bounty_report again."),
-        Some(Verdict::WrongLine(_)) => "Rejected: that line of auth.js is not where the flaw is. Find the exact line that gives away admin access and call bounty_report again.".into(),
-        Some(Verdict::NotReproducible) => "Rejected: the reproduction does not log in as admin. Give the exact request that succeeds and call bounty_report again.".into(),
-    };
-    match rejected {
-        0 => reason,
-        1 => format!("{reason} Hint: the flaw is a secret written directly into the source, not the comparison logic."),
-        _ => format!("{reason} Hint: auth.js assigns the admin password as a string literal. Report the line of that assignment, and log in with that exact password in reproduction."),
+        (false, "That is not the flag planted on the target. Keep probing until GET /flag returns it to you, then report that exact value.".into())
     }
 }
 
@@ -273,7 +185,7 @@ async fn offer_practice_with(worker: &str, interactive: bool) -> Result<Value, S
     ui::gap();
     ui::step("You're online and waiting for offers.");
     let choices = [
-        ui::Choice::new("Try a practice bounty", "your worker investigates a safe offline example; no money"),
+        ui::Choice::new("Try a practice bounty", "your worker attacks a safe offline target; no money"),
         ui::Choice::new("No thanks, keep waiting", "watch for real offers"),
     ];
     let declined = json!({"practice": false, "offered": true, "accepted": false});
@@ -306,35 +218,35 @@ pub async fn practice(worker: &str) -> Result<Value, String> {
     }
 }
 
-/// The guided practice: the example and offer, a chance to look yourself, then a live console
-/// where the worker investigates until its report qualifies. Returns a machine-readable summary.
+/// The guided practice: the target and offer, a chance to look yourself, then a live console
+/// where the worker attacks until it captures the flag. Returns a machine-readable summary.
 /// `nested`: the waiting view opens after it, so the console's Ctrl+] goes back there.
 pub async fn walkthrough(worker: &str, nested: bool) -> Result<Value, String> {
-    let directory = write_example()?;
+    let directory = write_target_example()?;
     let path_text = directory.display().to_string();
     let offer = offer();
 
     ui::intro(
         "Practice bounty",
-        "your worker on a safe example, without a real target or reward",
+        "your worker attacks a safe target, without a real system or reward",
     );
-    ui::step("A tiny, deliberately-flawed Node project was written for you to examine.");
-    ui::info(&format!("Example project: {path_text}"));
-    ui::info("Files: auth.js, server.js, test.js, package.json, README.md");
+    ui::step("A tiny, deliberately-flawed login service runs as the target.");
+    ui::info("Your worker reaches it only over the network — it never sees the source.");
+    ui::info(&format!("Target source, if you want to peek: {path_text}"));
     ui::info("It is a self-contained fixture. Nothing is uploaded and no real company is involved.");
     ui::gap();
 
     ui::step(&format!("The offer (synthetic): \"{}\".", text(&offer, "title")));
     ui::info(&format!("Objective: {}", text(&offer, "objective")));
-    ui::info("Reward: 0 PRACTICE — no monetary value. Scope: the local snapshot only.");
+    ui::info("Reward: 0 PRACTICE — no monetary value. Scope: the practice target only.");
     ui::gap();
 
-    ui::step("Try it yourself first: open auth.js and read the login check.");
-    ui::info("Hint: a real service never ships a usable password in its source code.");
+    ui::step("Try it yourself first: the admin account uses a default password.");
+    ui::info("Hint: log in as admin, then read GET /flag with the token you get back.");
     if ui::can_prompt() {
         let choices = [
-            ui::Choice::new("Let my worker investigate", "it keeps trying until its report qualifies"),
-            ui::Choice::new("I'll read the code first", "same next step"),
+            ui::Choice::new("Let my worker attack", "it probes the target until it captures the flag"),
+            ui::Choice::new("I'll look first", "same next step"),
         ];
         let _ = ui::select("Ready to continue?", &[], &choices, 0)?;
     }
@@ -344,16 +256,17 @@ pub async fn walkthrough(worker: &str, nested: bool) -> Result<Value, String> {
 
 /// The waiting view's T key: start a live practice console straight away.
 pub async fn practice_now(worker: &str) -> Result<Value, String> {
-    let path_text = write_example()?.display().to_string();
-    ui::step("Practice bounty: your worker investigates a safe offline example until its report qualifies.");
-    ui::info(&format!("Example project: {path_text} · reward 0 PRACTICE, no money"));
+    let path_text = write_target_example()?.display().to_string();
     live(worker, &path_text, true).await
 }
 
-/// Starts the engine's practice session, then opens the live console over its activity.
+/// Starts the engine's practice session, then opens the live console over its activity from
+/// this practice on; earlier practices stay off screen.
 async fn live(worker: &str, path_text: &str, nested: bool) -> Result<Value, String> {
+    let latest = crate::bounty::dispatch(json!({"action":"activity","workerId":worker,"after":u64::MAX})).await?;
     crate::bounty::dispatch(json!({"action":"practiceStart","workerId":worker})).await?;
-    let mut summary = crate::bounty::console(worker, true, nested).await?;
+    let after = latest["latest"].as_u64().unwrap_or(0);
+    let mut summary = crate::bounty_console::console(worker, true, nested, after, Some(path_text)).await?;
     summary["practice"] = true.into();
     summary["exampleProject"] = path_text.into();
     Ok(summary)
@@ -364,7 +277,7 @@ pub const SCRIPT_MINUTES: u64 = 30;
 
 /// When a practice followed without a console gives up.
 struct Limits {
-    /// Rejected reports.
+    /// Rejected findings.
     attempts: usize,
     time: Duration,
     /// Between reads of the activity log.
@@ -389,11 +302,11 @@ enum End {
     Interrupted,
 }
 
-/// For scripts: runs the practice to its end without a console, returning every attempt. A
-/// practice already running for this worker is followed instead. After MAX_ATTEMPTS rejected
-/// reports, SCRIPT_MINUTES or Ctrl+C the practice is stopped, so the model does not keep
-/// working once the script is gone; `bounty practice WORKER --stop` ends one a killed script
-/// left.
+/// For scripts: runs the practice to its end without a console, returning every reported
+/// finding. A practice already running for this worker is followed instead. After MAX_ATTEMPTS
+/// rejected findings, SCRIPT_MINUTES or Ctrl+C the practice is stopped, so the model does not
+/// keep working once the script is gone; `bounty practice WORKER --stop` ends one a killed
+/// script left.
 pub async fn headless(worker: &str) -> Result<Value, String> {
     let limits = Limits {
         attempts: MAX_ATTEMPTS,
@@ -480,17 +393,17 @@ where
             return Ok(End::Finished);
         }
         let rejected = seen.attempts.iter().filter(|verdict| verdict["qualifies"] != true).count();
-        // A report that qualified ends the practice by itself; its end line follows once the
+        // A finding that qualified ends the practice by itself; its end line follows once the
         // engine released the model.
         let qualified = seen.attempts.last().is_some_and(|verdict| verdict["qualifies"] == true);
         if rejected >= limits.attempts && !qualified {
             return Ok(End::Limit(format!(
-                "No report qualified after {rejected} attempts, so the practice was stopped. Your worker is waiting for offers."
+                "No finding qualified after {rejected} tries, so the practice was stopped. Your worker is waiting for offers."
             )));
         }
         if tokio::time::Instant::now() >= deadline {
             return Ok(End::Limit(format!(
-                "No report qualified within {} minutes, so the practice was stopped. Your worker is waiting for offers.",
+                "No finding qualified within {} minutes, so the practice was stopped. Your worker is waiting for offers.",
                 limits.time.as_secs() / 60
             )));
         }
@@ -511,23 +424,12 @@ fn text(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_string()
 }
 
-/// Write the example project to a fresh temporary folder. Returns its path.
-fn write_example() -> Result<std::path::PathBuf, String> {
-    use std::io::Write;
-    let base = std::env::temp_dir().join(format!(
-        "yougori-practice-bounty-{}",
-        std::process::id()
-    ));
-    let root = base.join("practice-login");
-    std::fs::create_dir_all(&root).map_err(|e| format!("Could not create the example folder: {e}"))?;
-    for (name, content) in EXAMPLE_FILES {
-        let file = root.join(name);
-        let mut handle = std::fs::File::create(&file)
-            .map_err(|e| format!("Could not write {name}: {e}"))?;
-        handle
-            .write_all(content.as_bytes())
-            .map_err(|e| format!("Could not write {name}: {e}"))?;
-    }
+/// Write the target to a fresh temporary folder for the curious participant. Returns its path.
+fn write_target_example() -> Result<std::path::PathBuf, String> {
+    let root = std::env::temp_dir()
+        .join(format!("yougori-practice-target-{}", std::process::id()))
+        .join("acme-login");
+    write_target(&root).map_err(|e| format!("Could not write the target files: {e}"))?;
     Ok(root)
 }
 
@@ -541,6 +443,47 @@ mod tests {
         let result = offer_practice_with("worker-test", false).await.unwrap();
         assert_eq!(result["practice"], false);
         assert_eq!(result["offered"], false);
+    }
+
+    #[test]
+    fn the_offer_and_tools_describe_the_zero_value_break_in() {
+        assert_eq!(offer()["bountyId"], "practice");
+        assert_eq!(offer()["reward"]["currency"], "PRACTICE");
+        assert_eq!(offer()["reward"]["amount"], "0");
+        let tools = tools();
+        let names: Vec<&str> = tools.iter().map(|tool| tool["function"]["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["http_request", "record_attempt", "report_finding"]);
+        // http_request requires a method and a path; report_finding requires the flag.
+        assert_eq!(http_request_tool()["function"]["parameters"]["required"], json!(["method", "path"]));
+        let required = report_finding_tool()["function"]["parameters"]["required"].as_array().unwrap().clone();
+        assert!(required.contains(&json!("flag")));
+        // The opening turn points the model at the target host and goal without leaking the flag.
+        assert!(opening_message().contains(TARGET_HOST) && opening_message().contains("/flag"));
+        assert!(system_prompt().contains("http_request") && system_prompt().to_ascii_lowercase().contains("admin"));
+    }
+
+    #[test]
+    fn the_target_hides_the_flag_behind_the_planted_flaw() {
+        let server = TARGET_FILES.iter().find(|(name, _)| *name == "server.js").unwrap().1;
+        // The flag is injected from the environment, never written as a literal into the source.
+        assert!(server.contains("process.env.FLAG"));
+        assert!(!server.contains("YGR{") || server.contains("YGR{missing}"), "no real flag literal in the source");
+        // It is served only at /flag behind the admin token, and the planted flaw is the default password.
+        assert!(server.contains("'/flag'") && server.contains("Bearer ' + ADMIN_TOKEN"));
+        assert!(server.contains("factory-default") && server.contains("notice"));
+    }
+
+    #[test]
+    fn the_oracle_only_passes_the_exact_planted_flag() {
+        let flag = format_flag("abc123");
+        assert!(flag.starts_with("YGR{") && flag.ends_with('}'));
+        let (ok, reason) = oracle(&flag, &json!({"flag": flag.clone()}));
+        assert!(ok && reason.contains("confirmed"), "{reason}");
+        assert!(oracle(&flag, &json!({"flag": format!("  {flag}  ")})).0, "surrounding space is trimmed");
+        let (ok, reason) = oracle(&flag, &json!({"flag": "YGR{wrong}"}));
+        assert!(!ok && reason.contains("not the flag") && !reason.contains(&flag), "must not reveal the flag: {reason}");
+        let (ok, reason) = oracle(&flag, &json!({}));
+        assert!(!ok && reason.contains("No flag"), "{reason}");
     }
 
     fn event(seq: u64, kind: &str, rest: Value) -> Value {
@@ -592,7 +535,7 @@ mod tests {
         let pages = vec![
             json!({"events":[event(1, "practice", json!({})), verdict(2, false), event(3, "practiceEnd", json!({"outcome":"stopped","text":"Practice stopped."}))],"latest":5}),
             json!({"events":[event(4, "practice", json!({})), verdict(5, false)],"latest":5}),
-            json!({"events":[verdict(6, true), event(7, "practiceEnd", json!({"outcome":"qualified","text":"Your worker's report qualified after 2 attempts.\u{1b}[2J"}))],"latest":7}),
+            json!({"events":[verdict(6, true), event(7, "practiceEnd", json!({"outcome":"qualified","text":"Your worker captured the flag after 2 tries.\u{1b}[2J"}))],"latest":7}),
         ];
         let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
         let summary = result.unwrap();
@@ -601,21 +544,21 @@ mod tests {
         assert_eq!(summary["reward"]["monetaryValue"], false);
         assert_eq!((summary["workerId"].as_str(), summary["handle"].as_str()), (Some("worker-1"), Some("happy-turtle")));
         let message = summary["message"].as_str().unwrap();
-        assert!(message.starts_with("Your worker's report qualified") && !message.contains('\u{1b}'), "{message}");
+        assert!(message.starts_with("Your worker captured the flag") && !message.contains('\u{1b}'), "{message}");
         assert!(!actions(&requests).contains(&"practiceStop"), "a finished practice needs no stop");
         // An earlier practice's end can be recorded after this one started (the engine records
         // it once that one released the model): while this one runs, it is not taken for its own.
         let pages = vec![
             json!({"events":[event(1, "practice", json!({})), verdict(2, false), event(3, "practice", json!({})),
                 event(4, "practiceEnd", json!({"outcome":"stopped","text":"Practice stopped."}))],"latest":4,"practicing":true}),
-            json!({"events":[verdict(5, true), event(6, "practiceEnd", json!({"outcome":"qualified","text":"Qualified."}))],"latest":6,"practicing":false}),
+            json!({"events":[verdict(5, true), event(6, "practiceEnd", json!({"outcome":"qualified","text":"Captured."}))],"latest":6,"practicing":false}),
         ];
         let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
         let summary = result.unwrap();
         assert_eq!((summary["status"].as_str(), summary["attempts"].as_array().map(Vec::len)), (Some("qualified"), Some(1)), "{summary}");
         assert!(!actions(&requests).contains(&"practiceStop"));
         // One already running is followed instead of refused.
-        let pages = vec![json!({"events":[event(1, "practice", json!({})), verdict(2, true), event(3, "practiceEnd", json!({"outcome":"qualified","text":"Qualified."}))],"latest":3})];
+        let pages = vec![json!({"events":[event(1, "practice", json!({})), verdict(2, true), event(3, "practiceEnd", json!({"outcome":"qualified","text":"Captured."}))],"latest":3})];
         let (result, _) = scripted(false, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
         assert_eq!(result.unwrap()["status"], "qualified");
         // The engine's error ends it too.
@@ -627,7 +570,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_script_stops_the_practice_at_its_limits_or_on_ctrl_c() {
-        // MAX_ATTEMPTS rejected reports: the practice is stopped in the engine, not left running.
+        // MAX_ATTEMPTS rejected findings: the practice is stopped in the engine, not left running.
         let rejected: Vec<Value> = std::iter::once(event(1, "practice", json!({})))
             .chain((2..2 + MAX_ATTEMPTS as u64).map(|seq| verdict(seq, false)))
             .collect();
@@ -637,14 +580,14 @@ mod tests {
         let summary = result.unwrap();
         assert_eq!((summary["status"].as_str(), summary["reportQualifies"].as_bool()), (Some("gave_up"), Some(false)));
         assert_eq!(summary["attempts"].as_array().map(Vec::len), Some(MAX_ATTEMPTS));
-        assert!(summary["message"].as_str().unwrap().contains(&format!("after {MAX_ATTEMPTS} attempts")), "{summary}");
+        assert!(summary["message"].as_str().unwrap().contains(&format!("after {MAX_ATTEMPTS} tries")), "{summary}");
         assert_eq!(requests.last().unwrap(), &json!({"action":"practiceStop","workerId":"worker-1"}));
-        // A report that qualifies after them ends the practice by itself: its end line is awaited.
+        // A finding that qualifies after them ends the practice by itself: its end line is awaited.
         let mut qualified = rejected.clone();
         qualified.push(verdict(last + 1, true));
         let pages = vec![
             json!({"events":qualified,"latest":last + 1}),
-            json!({"events":[event(last + 2, "practiceEnd", json!({"outcome":"qualified","text":"Qualified."}))],"latest":last + 2}),
+            json!({"events":[event(last + 2, "practiceEnd", json!({"outcome":"qualified","text":"Captured."}))],"latest":last + 2}),
         ];
         let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::from_secs(60)), std::future::pending()).await;
         assert_eq!(result.unwrap()["status"], "qualified");
@@ -654,7 +597,7 @@ mod tests {
         let (result, requests) = scripted(true, pages, limits(MAX_ATTEMPTS, Duration::ZERO), std::future::pending()).await;
         assert_eq!(result.unwrap()["status"], "gave_up");
         assert_eq!(actions(&requests).last(), Some(&"practiceStop"));
-        // Ctrl+C while it runs: stopped, with the attempts so far.
+        // Ctrl+C while it runs: stopped, with the tries so far.
         let pages = vec![json!({"events":[event(1, "practice", json!({})), verdict(2, false)],"latest":2})];
         let waiting = Limits { attempts: MAX_ATTEMPTS, time: Duration::from_secs(60), poll: Duration::from_secs(3600) };
         let (result, requests) = scripted(true, pages, waiting, std::future::ready(())).await;
@@ -672,86 +615,5 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.contains("yougori bounty practice happy-turtle --stop"), "{error}");
-    }
-
-    #[test]
-    fn synthetic_offer_and_report_describe_the_zero_value_flaw() {
-        assert_eq!(offer()["bountyId"], "practice");
-        assert_eq!(offer()["reward"]["currency"], "PRACTICE");
-        assert_eq!(offer()["reward"]["amount"], "0");
-        // The report names the planted flaw's file.
-        assert_eq!(report()["component"], "auth.js");
-    }
-
-    #[test]
-    fn report_points_at_the_line_holding_the_hardcoded_password() {
-        let auth = EXAMPLE_FILES
-            .iter()
-            .find(|(name, _)| *name == "auth.js")
-            .unwrap()
-            .1;
-        let line = password_line();
-        assert!(line > 0);
-        let source_line = auth.lines().nth(line - 1).unwrap();
-        assert!(source_line.contains("'correct-horse-battery-staple'"));
-        let report = report();
-        assert_eq!(report["line"], line);
-        assert!(text(&report, "reproduction").contains(&format!("line {line}")));
-        // The source does not label the flaw for the user.
-        assert!(!auth.to_ascii_lowercase().contains("flaw"));
-    }
-
-    #[test]
-    fn only_the_exact_file_line_and_a_working_login_qualify() {
-        let mut found = json!({"title":"Hardcoded admin password","file":"auth.js","line":password_line(),
-            "reproduction":"POST {\"user\":\"admin\",\"password\":\"correct-horse-battery-staple\"} to /login","impact":"Admin login"});
-        assert!(verify(&found).0, "{}", verify(&found).1);
-        assert!(verify(&report()).0, "the reference report qualifies");
-        found["file"] = json!("practice-login\\auth.js");
-        found["line"] = json!(password_line().to_string());
-        assert!(verify(&found).0, "a folder prefix and a numeric string still name the line");
-        for (key, value) in [("file", json!("server.js")), ("line", json!(2)), ("reproduction", json!("Log in as admin"))] {
-            let mut wrong = found.clone();
-            wrong[key] = value;
-            let (qualifies, reason) = verify(&wrong);
-            assert!(!qualifies && reason.contains("does not qualify"), "{key}: {reason}");
-        }
-        assert!(!verify(&json!({})).0);
-        let messages = investigation();
-        let files = messages[1]["content"].as_str().unwrap();
-        assert!(files.contains(&format!("{:>3}: const ADMIN_PASSWORD", password_line())), "{files}");
-        assert_eq!(report_tool()["function"]["name"], "bounty_report");
-    }
-
-    #[test]
-    fn retries_get_the_reason_but_never_the_answer() {
-        let wrong_line = json!({"title":"Bypass","file":"auth.js","line":6,"reproduction":"any password","impact":"admin"});
-        let messages = conversation(&[wrong_line.clone(), Value::Null]);
-        let roles: Vec<&str> = messages.as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
-        assert_eq!(roles, ["system", "user", "assistant", "tool", "assistant", "user"]);
-        assert_eq!(messages[2]["tool_calls"][0]["id"], messages[3]["tool_call_id"]);
-        let arguments: Value = serde_json::from_str(messages[2]["tool_calls"][0]["function"]["arguments"].as_str().unwrap()).unwrap();
-        assert_eq!(arguments, wrong_line);
-        let line = password_line().to_string();
-        for rejected in 0..MAX_ATTEMPTS {
-            for report in [Some(&wrong_line), Some(&json!({"file":"server.js","line":1})), Some(&json!({"file":"auth.js","line":password_line()})), None] {
-                let said = feedback(report, rejected);
-                assert!(said.contains("bounty_report"), "{said}");
-                assert!(!said.contains(&format!("line {line}")) && !said.contains("correct-horse-battery-staple"), "{said}");
-                assert_eq!(said.contains("Hint:"), rejected > 0, "hints start after the first rejection: {said}");
-            }
-        }
-        assert!(feedback(Some(&report()), 3).starts_with("Accepted"));
-        assert_ne!(messages[3]["content"], messages[5]["content"], "the second rejection hints more");
-        assert_eq!(investigation(), conversation(&[]));
-    }
-
-    #[test]
-    fn writes_every_example_file_to_disk() {
-        let root = write_example().unwrap();
-        for (name, _) in EXAMPLE_FILES {
-            assert!(root.join(name).is_file(), "missing {name}");
-        }
-        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 }

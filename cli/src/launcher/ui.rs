@@ -19,7 +19,7 @@ const RESET: &str = "\x1b[0m";
 const TICK: Duration = Duration::from_millis(70);
 const BANNER: Duration = Duration::from_millis(650);
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-fn spinner(tick: usize) -> char {
+pub fn spinner(tick: usize) -> char {
     if presentation::ascii() { ['|', '/', '-', '\\'][tick % 4] }
     else { SPINNER[tick % SPINNER.len()] }
 }
@@ -464,8 +464,16 @@ pub fn muted(text: &str) -> String {
     paint(text, GRAY)
 }
 
+pub fn italic(text: &str) -> String {
+    if caps().color {
+        format!("[3m{text}[23m")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// A band of light that runs across text while work is in progress.
-fn shimmer(text: &str, elapsed: Duration) -> String {
+pub fn shimmer(text: &str, elapsed: Duration) -> String {
     if !caps().color || !caps().animate {
         return text.to_owned();
     }
@@ -1031,6 +1039,13 @@ pub fn write(bytes: &[u8]) {
 
 pub fn line(text: &str) {
     with(|p, out| p.lines(out, vec![text.to_owned()]))
+}
+
+/// Several finished lines at once, drawn in one go under the earlier ones.
+pub fn lines(lines: Vec<String>) {
+    if !lines.is_empty() {
+        with(|p, out| p.lines(out, lines))
+    }
 }
 
 fn rail() -> String {

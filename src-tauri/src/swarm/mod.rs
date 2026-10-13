@@ -272,6 +272,8 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
             | "activity"
             | "practiceStart"
             | "practiceInput"
+            | "practiceInterrupt"
+            | "practiceResume"
             | "practiceStop"
     ) {
         return Err("Unknown Swarm Mining action".into());
@@ -282,7 +284,7 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
     if action == "activity" && !(request["after"].is_null() || request["after"].is_u64()) {
         return Err("Read activity after a numbered event".into());
     }
-    if action == "practiceInput"
+    if (action == "practiceInput" || action == "practiceStart" && !request["content"].is_null())
         && !request["content"].as_str().is_some_and(|text| {
             !text.trim().is_empty() && text.len() <= 4000 && !text.chars().any(char::is_control)
         })
@@ -963,11 +965,18 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         return Ok(log);
     }
     if action == "practiceStart" {
-        return practice::start(&app, &worker);
+        return practice::start(&app, &worker, request["content"].as_str().map(str::trim));
     }
     if action == "practiceInput" {
         activity::add_input(id, request["content"].as_str().unwrap_or_default().trim())?;
         return Ok(json!({"queued":true}));
+    }
+    if action == "practiceInterrupt" {
+        return Ok(json!({"interrupted":activity::interrupt_practice(id)}));
+    }
+    if action == "practiceResume" {
+        activity::resume_practice(id);
+        return Ok(json!({"resumed":true}));
     }
     if action == "practiceStop" {
         return Ok(json!({"stopped":activity::stop_practice(id)}));

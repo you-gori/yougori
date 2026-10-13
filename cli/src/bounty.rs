@@ -64,11 +64,12 @@ the worker waits it is unloaded, so it holds no GPU or model memory; the next jo
 loads it from disk again. --keep-loaded, or bounty memory WORKER keep, keeps it
 loaded for faster starts; bounty memory WORKER release unloads it again.
 bounty practice WORKER, or T in the waiting view, opens a live console where the
-worker's own model investigates a planted flaw in a safe offline example. Its work
-streams as it happens; type guidance to steer it, or /stop to end it. Yougori checks
-each report and returns its feedback, without the answer, until one qualifies.
-Nothing is paid. Without a terminal the practice stops after 5 rejected reports or
-30 minutes; --stop ends a running practice. Press L (or Enter) in the waiting view
+worker's own model attacks a safe offline target: the runtime starts a flawed
+login service and plants a flag, and the model breaks in over the network and
+captures it. Its requests, the responses and its tries stream as they happen;
+typing stops it and it goes on with your message. A finding qualifies only when
+its flag matches the planted one. Nothing is paid; /endpractice leaves. Without a
+terminal it stops after 5 rejected findings or 30 minutes; --stop ends it. Press L (or Enter) in the waiting view
 to watch an accepted bounty the same way; there /stop pauses or leaves it.
 
 Without --gpu, native Mac builds probe Metal first. Other hosts use an NVIDIA GPU only when this PC passes the CUDA
@@ -917,7 +918,7 @@ fn reconnect_command(id: &str, listed: &Value, environments: &[Value]) -> String
     }
 }
 
-async fn reconnect_line(id: &str) -> String {
+pub(crate) async fn reconnect_line(id: &str) -> String {
     let (listed, environments) = workers_listing().await.unwrap_or_default();
     format!("Reconnect: {}", reconnect_command(id, &listed, &environments))
 }
@@ -2986,254 +2987,9 @@ fn interrupt_choice(index: usize) -> &'static str {
     }
 }
 
-/// One committed log line for an activity event, or None when it only streams model text.
-fn console_line(event: &Value) -> Option<String> {
-    let text = |key| safe(event[key].as_str().unwrap_or_default());
-    let kind = event["kind"].as_str().unwrap_or_default();
-    Some(match kind {
-        "practice" | "work" | "turn" => format!("{}  {}", ui::paint("◇", ui::GREEN), ui::bold(&text("text"))),
-        "attempt" if event["attempt"].is_number() => {
-            format!("{}  {}", ui::paint("◇", ui::GREEN), ui::bold(&format!("Attempt {}", event["attempt"])))
-        }
-        "status" | "feedback" | "report" | "check" | "attempt" | "turnEnd" => format!("{}  {}", ui::muted("│"), ui::muted(&text("text"))),
-        "action" => {
-            let target = text("target");
-            let status = if event["status"] == "error" { " · failed" } else { "" };
-            format!("{}  {} {}{}", ui::muted("│"), ui::paint("→", ui::SKY), ui::muted(&format!("{} {target}", text("tool"))), ui::muted(status))
-        }
-        "tool" => format!("{}  {} {}", ui::muted("│"), ui::paint("→", ui::SKY), ui::muted(&format!("calling {}", text("name")))),
-        "verdict" => {
-            let report = &event["report"];
-            let mut lines = vec![format!(
-                "{}  {} {}",
-                if event["qualifies"] == true { ui::paint("◇", ui::GREEN) } else { ui::paint("◇", ui::AMBER) },
-                ui::bold(&format!("Attempt {}: {}", event["attempt"], if event["qualifies"] == true { "report qualifies" } else { "report rejected" })),
-                ui::muted(&ui::clock(std::time::Duration::from_secs_f64(event["seconds"].as_f64().unwrap_or(0.0).max(0.0)))),
-            )];
-            if report.is_object() {
-                lines.push(format!("{}  {}", ui::muted("│"), ui::muted(&format!("Report: {} · {} line {}", safe(report["title"].as_str().unwrap_or("—")), safe(report["file"].as_str().unwrap_or("—")), report["line"]))));
-                lines.push(format!("{}  {}", ui::muted("│"), ui::muted(&format!("Reproduction: {}", ui::clip(&safe(report["reproduction"].as_str().unwrap_or("—")), 400)))));
-            }
-            lines.push(format!("{}  {}", ui::muted("│"), ui::muted(&format!("Verification: {}", text("reason")))));
-            lines.join("\n")
-        }
-        "practiceEnd" => format!("{}  {}", ui::paint("◇", if event["outcome"] == "qualified" { ui::GREEN } else { ui::AMBER }), ui::bold(&text("text"))),
-        _ => return None,
-    })
-}
-
-/// The last few lines of the model's streamed output, dimmed, for the live block.
-fn stream_tail(stream: &str, columns: usize) -> Vec<String> {
-    if stream.trim().is_empty() {
-        return Vec::new();
-    }
-    let wrapped: Vec<String> = ui::wrap(stream, columns.saturating_sub(4).max(20))
-        .into_iter()
-        .map(|(line, _)| format!("{}  {}", ui::muted("│"), ui::muted(line.trim_end())))
-        .collect();
-    let start = wrapped.len().saturating_sub(4);
-    wrapped[start..].to_vec()
-}
-
-/// The console's key line. Opened from the waiting view (`nested`), Ctrl+] goes back to it;
-/// opened on its own, Ctrl+] ends the command and leaves the engine working.
-fn console_hint(practice: bool, nested: bool) -> &'static str {
-    match (practice, nested) {
-        (true, true) => "Type guidance for your worker · /stop ends the practice · Ctrl+] goes back",
-        (true, false) => "Type guidance for your worker · /stop ends the practice · Ctrl+] detaches",
-        (false, true) => "Type to message your agent · /stop pauses or leaves the bounty · Ctrl+] goes back",
-        (false, false) => "Type to message your agent · /stop pauses or leaves the bounty · Ctrl+] detaches",
-    }
-}
-
-/// What Ctrl+] leaves on screen when the console returns to the waiting view.
-fn back_to_waiting_view(practice: bool) -> &'static str {
-    if practice {
-        "Back to the waiting view; the practice keeps running in the engine."
-    } else {
-        "Back to the waiting view; your agent keeps working in the engine."
-    }
-}
-
-/// How long a practice console waits for the end line of a practice that no longer runs. The
-/// engine releases the model before it records the end; one that restarted lost the record.
-const PRACTICE_END_WAIT: Duration = Duration::from_secs(30);
-
-/// Tells a practice console when the newest practice is over. The log keeps earlier practices
-/// too, each starting with a `practice` event. The engine records how a practice ended only
-/// once it released the model, so that end line can even come after the next practice started.
-#[derive(Default)]
-struct PracticeEnd {
-    /// The newest practice's end line is on screen.
-    ended: bool,
-    /// Since when no practice runs and the log brings nothing new.
-    quiet: Option<Instant>,
-}
-
-impl PracticeEnd {
-    /// One event the console read.
-    fn event(&mut self, kind: &str) {
-        match kind {
-            "practice" => self.ended = false,
-            "practiceEnd" => self.ended = true,
-            _ => {}
-        }
-    }
-
-    /// After one read of the log, which brought `new` events while a practice was `practicing`
-    /// or not: whether the console is done. It is once the end line is on screen with nothing
-    /// newer to show, or once no practice has run for [`PRACTICE_END_WAIT`].
-    fn done(&mut self, new: bool, practicing: bool, now: Instant) -> bool {
-        if practicing {
-            // An end line read while a practice runs is an earlier practice's.
-            self.ended = false;
-        }
-        if practicing || new {
-            self.quiet = None;
-            return false;
-        }
-        let quiet = *self.quiet.get_or_insert(now);
-        self.ended || now.saturating_duration_since(quiet) >= PRACTICE_END_WAIT
-    }
-}
-
-/// A live console over a worker's activity log, like a coding agent's: the agent's actions and
-/// the model's output stream in as they happen, and you can type guidance or a command. Used by
-/// practice (which loops until a report qualifies) and by an accepted bounty's work. `nested`:
-/// opened from the waiting view, which opens again when the console ends.
-pub(crate) async fn console(worker: &str, practice: bool, nested: bool) -> Result<Value, String> {
-    let _raw = ui::Raw::on()?;
-    let block = ui::block();
-    let mut after = 0u64;
-    let mut input = String::new();
-    let mut stream = String::new();
-    let hint = console_hint(practice, nested);
-    let mut end = PracticeEnd::default();
-    loop {
-        let log = dispatch(json!({"action":"activity","workerId":worker,"after":after})).await?;
-        for event in log["events"].as_array().into_iter().flatten() {
-            if let Some(seq) = event["seq"].as_u64() {
-                after = seq;
-            }
-            let kind = event["kind"].as_str().unwrap_or_default();
-            end.event(kind);
-            match kind {
-                "text" | "arguments" => stream.push_str(event["text"].as_str().unwrap_or_default()),
-                "attempt" | "turn" => stream.clear(),
-                "input" => continue, // Echoed locally when you send it.
-                _ => {}
-            }
-            if let Some(line) = console_line(event) {
-                block.set(Vec::new());
-                for line in line.split('\n') {
-                    ui::line(line);
-                }
-            }
-        }
-        let new = log["events"].as_array().is_some_and(|events| !events.is_empty());
-        let done = end.done(new, log["practicing"] == true, Instant::now());
-        let state = log["worker"]["state"].as_str().unwrap_or("").to_owned();
-        if practice && done {
-            return Ok(json!({"practice":true,"workerId":worker}));
-        }
-        if !practice && matches!(state.as_str(), "stopped" | "failed") {
-            return Ok(json!({"workerId":worker,"state":state}));
-        }
-        let columns = crossterm::terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
-        let mut lines = stream_tail(&stream, columns);
-        if !lines.is_empty() {
-            lines.push(ui::muted("│").to_string());
-        }
-        lines.push(format!("{}  {}{}", ui::paint("›", ui::SKY), input, ui::paint("▌", ui::GRAY)));
-        lines.push(format!("{}  {}", ui::muted("└"), ui::muted(hint)));
-        block.set(lines);
-
-        let tick = tokio::time::Instant::now() + Duration::from_millis(600);
-        while tokio::time::Instant::now() < tick {
-            if event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
-                match event::read().map_err(|e| e.to_string())? {
-                    Event::Key(key) if key.kind != KeyEventKind::Release => {
-                        if key.modifiers.contains(KeyModifiers::CONTROL) {
-                            match key.code {
-                                KeyCode::Char('c') => {
-                                    if console_stop(worker, practice, &block).await? {
-                                        return Ok(json!({"workerId":worker,"stopped":true}));
-                                    }
-                                    break;
-                                }
-                                KeyCode::Char(']') => {
-                                    drop(block);
-                                    if nested {
-                                        ui::info(back_to_waiting_view(practice));
-                                    } else {
-                                        ui::info(&format!("Detached. {}", reconnect_line(worker).await));
-                                    }
-                                    return Ok(json!({"workerId":worker,"detached":true}));
-                                }
-                                _ => {}
-                            }
-                        } else {
-                            match key.code {
-                                KeyCode::Enter => {
-                                    let entered = input.trim().to_owned();
-                                    input.clear();
-                                    if !entered.is_empty() && console_submit(worker, practice, hint, &entered, &block).await? {
-                                        return Ok(json!({"workerId":worker,"stopped":true}));
-                                    }
-                                    break;
-                                }
-                                KeyCode::Backspace => {
-                                    input.pop();
-                                }
-                                KeyCode::Char(c) if !c.is_control() && input.len() < 4000 => input.push(c),
-                                _ => {}
-                            }
-                        }
-                    }
-                    Event::Resize(..) => ui::refresh(),
-                    _ => {}
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
-    }
-}
-
-/// Handles a typed line. Returns true when the worker should be left (work `/stop` → leave).
-/// `/help` repeats the console's key line, `hint`.
-async fn console_submit(worker: &str, practice: bool, hint: &str, entered: &str, block: &ui::Block) -> Result<bool, String> {
-    block.set(Vec::new());
-    if entered.eq_ignore_ascii_case("/stop") {
-        return console_stop(worker, practice, block).await;
-    }
-    if entered == "/help" {
-        ui::info(hint);
-        return Ok(false);
-    }
-    if entered.starts_with('/') {
-        ui::info("Unknown command. Type /stop, /help, or plain text.");
-        return Ok(false);
-    }
-    ui::line(&format!("{}  {}", ui::paint("›", ui::SKY), ui::bold(&safe(entered))));
-    if practice {
-        dispatch(json!({"action":"practiceInput","workerId":worker,"content":entered})).await?;
-        ui::info("Saved; your worker reads it on its next attempt.");
-    } else {
-        let result = dispatch(json!({"action":"chat","workerId":worker,"content":entered})).await?;
-        ui::info(if result["delivered"] == true { "Your agent received the message." } else { "Saved; your agent handles it at a task checkpoint." });
-    }
-    Ok(false)
-}
-
-/// `/stop` or Ctrl+C. Practice: end the practice. Work: pause or leave the accepted bounty.
-async fn console_stop(worker: &str, practice: bool, block: &ui::Block) -> Result<bool, String> {
+/// `/stop` or Ctrl+C while watching work: pause or leave the accepted bounty. True when left.
+pub(crate) async fn console_stop(worker: &str) -> Result<bool, String> {
     ui::take_interrupt();
-    block.set(Vec::new());
-    if practice {
-        dispatch(json!({"action":"practiceStop","workerId":worker})).await?;
-        ui::info("Stopping practice after this attempt…");
-        return Ok(false);
-    }
     let handle = worker_handle(worker);
     let choice = ui::select_required(
         "Stop working on this bounty?",
@@ -3482,7 +3238,7 @@ async fn dashboard(worker: &str) -> Result<(), String> {
                     }
                     // Watch the agent work the accepted bounty live; /stop pauses or leaves it.
                     screen.show(false);
-                    match console(worker, false, true).await {
+                    match crate::bounty_console::console(worker, false, true, 0, None).await {
                         Err(e) if e == ui::CANCELLED => {
                             if ui::take_interrupt() && interrupt(worker).await? {
                                 return Ok(());
@@ -4622,48 +4378,10 @@ mod tests {
     }
 
     #[test]
-    fn leaving_a_console_or_a_preparation_inside_the_waiting_view_goes_back_to_it() {
-        for practice in [true, false] {
-            assert!(console_hint(practice, true).ends_with("Ctrl+] goes back"));
-            assert!(console_hint(practice, false).ends_with("Ctrl+] detaches"));
-            let back = back_to_waiting_view(practice);
-            assert!(back.starts_with("Back to the waiting view") && !back.contains("Reconnect"), "{back}");
-        }
-        assert!(back_to_waiting_view(true).contains("practice keeps running"));
-        assert!(back_to_waiting_view(false).contains("agent keeps working"));
+    fn leaving_a_preparation_inside_the_waiting_view_goes_back_to_it() {
         let labels = |bounty: bool| preparation_choices(bounty).map(|choice| choice.label);
         assert_eq!(labels(true), ["Cancel", "Stop preparation", "Back to the waiting view"]);
         assert_eq!(labels(false), ["Cancel", "Stop preparation", "Back to terminal"]);
-    }
-
-    #[test]
-    fn a_practice_console_ends_on_the_practice_s_own_end_line() {
-        let start = Instant::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        // The engine stops counting the practice as running before it records how it ended.
-        let mut end = PracticeEnd::default();
-        end.event("practice");
-        assert!(!end.done(true, true, at(0)));
-        assert!(!end.done(false, true, at(1)), "a practice that still runs");
-        assert!(!end.done(false, false, at(5)), "the end line is still to come");
-        end.event("practiceEnd");
-        assert!(!end.done(true, false, at(6)), "newer events are shown first");
-        assert!(end.done(false, false, at(7)));
-        // An engine that restarted lost the end.
-        let mut lost = PracticeEnd::default();
-        assert!(!lost.done(false, false, at(0)));
-        assert!(lost.done(false, false, at(0) + PRACTICE_END_WAIT));
-        // An earlier practice's end can be recorded after this one started: it is not this one's.
-        let mut late = PracticeEnd::default();
-        for kind in ["practice", "verdict", "practice", "practiceEnd"] {
-            late.event(kind);
-        }
-        assert!(!late.done(true, true, at(0)));
-        assert!(!late.done(false, true, at(1)));
-        assert!(!late.done(false, false, at(2)), "this practice's own end line is still to come");
-        late.event("practiceEnd");
-        assert!(!late.done(true, false, at(3)));
-        assert!(late.done(false, false, at(4)));
     }
 
     #[test]
@@ -4687,7 +4405,7 @@ mod tests {
         assert!(HELP.contains("yougori bounty practice WORKER [--stop]"));
         // The help states the limits a practice without a terminal stops at.
         let (attempts, minutes) = (crate::bounty_practice::MAX_ATTEMPTS, crate::bounty_practice::SCRIPT_MINUTES);
-        assert!(HELP.contains(&format!("stops after {attempts} rejected reports")) && HELP.contains(&format!("{minutes} minutes; --stop ends a running practice")));
+        assert!(HELP.contains(&format!("stops after {attempts} rejected findings or {minutes} minutes")) && HELP.contains("--stop ends it"));
     }
 
     #[test]

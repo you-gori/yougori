@@ -22,6 +22,8 @@ pub mod tool_sharing;
 pub mod sandbox_stop;
 #[path = "launcher/ui.rs"]
 pub mod cli_ui;
+#[path = "launcher/composer.rs"]
+pub mod composer;
 pub mod presentation;
 pub mod doctor;
 pub mod update;
@@ -37,6 +39,7 @@ pub mod model_registry;
 pub mod confidential;
 pub mod bounty;
 pub mod bounty_practice;
+mod bounty_console;
 pub mod legacy_names;
 pub mod bounty_map;
 pub mod security;
