@@ -86,25 +86,34 @@ pub(crate) async fn run(
                 );
             }
             model_lifecycle::ensure_ready(app, &worker, cancel).await?;
-            guest::ensure_running(app, &mut worker, cancel).await?;
-            let result = agent(app, &worker, Method::GET, "/api/swarm/agent/source", None).await?;
-            let source = &result["source"];
-            if source["revision"] != worker.policy["sourceRevision"]
-                || source["sha256"] != worker.policy["sourceDigest"]
-            {
-                return Err("The project does not match the source snapshot you accepted".into());
+            // A live-target bounty does not use the OpenCode agent container: its service runs
+            // from the source directly during the attack, so skip the container setup here.
+            if worker.policy["scopeMode"] == "live_target" {
+                worker.state = "running".into();
+                worker.stage = "Your agent is attacking the live target".into();
+                worker.error = None;
+                write(app, worker.clone()).await?;
+            } else {
+                guest::ensure_running(app, &mut worker, cancel).await?;
+                let result = agent(app, &worker, Method::GET, "/api/swarm/agent/source", None).await?;
+                let source = &result["source"];
+                if source["revision"] != worker.policy["sourceRevision"]
+                    || source["sha256"] != worker.policy["sourceDigest"]
+                {
+                    return Err("The project does not match the source snapshot you accepted".into());
+                }
+                guest::prepare_project(app, &mut worker, source, cancel).await?;
+                worker.source_files = source["files"]
+                    .as_array()
+                    .ok_or("Missing project files")?
+                    .iter()
+                    .filter_map(|f| f["path"].as_str().map(str::to_owned))
+                    .collect();
+                worker.state = "running".into();
+                worker.stage = "Your agent is reviewing the approved project".into();
+                worker.error = None;
+                write(app, worker.clone()).await?;
             }
-            guest::prepare_project(app, &mut worker, source, cancel).await?;
-            worker.source_files = source["files"]
-                .as_array()
-                .ok_or("Missing project files")?
-                .iter()
-                .filter_map(|f| f["path"].as_str().map(str::to_owned))
-                .collect();
-            worker.state = "running".into();
-            worker.stage = "Your agent is reviewing the approved project".into();
-            worker.error = None;
-            write(app, worker.clone()).await?;
         }
         handle_human(app, &mut worker, cancel).await?;
         if state["membership"].is_null() {
@@ -148,9 +157,26 @@ pub(crate) async fn run(
             }
         }
         model_lifecycle::ensure_ready(app, &worker, cancel).await?;
-        guest::ensure_running(app, &mut worker, cancel).await?;
         worker.policy = state["policy"].clone();
         worker.membership = state["membership"].clone();
+        // A live-target bounty runs the publisher's service and attacks it over the network,
+        // instead of the OpenCode source-review turn loop below.
+        if worker.policy["scopeMode"] == "live_target" {
+            let outcome = super::live_target::run(app, &worker, cancel).await;
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
+            outcome?;
+            worker.guidance.clear();
+            let checkpoint = agent(app, &worker, Method::POST, "/api/swarm/agent/checkpoint", Some(json!({"cursor":worker.cursor,"state":"running","summary":worker.summary,"idempotencyKey":operation_key(&worker,"checkpoint","")}))).await;
+            if let Err(error) = checkpoint {
+                return Err(error);
+            }
+            write(app, worker.clone()).await?;
+            sleep(cancel, Duration::from_secs(5)).await;
+            continue;
+        }
+        guest::ensure_running(app, &mut worker, cancel).await?;
         let bounty = worker.policy["bountyId"]
             .as_str()
             .filter(|id| identifier(id))

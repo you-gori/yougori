@@ -23,9 +23,9 @@ use yougori_cli::bounty_practice;
 /// How long a practice waits for a message the participant started typing and left.
 const HOLD: Duration = Duration::from_secs(600);
 /// Room for a reasoning model's thinking, a sentence of reasoning and one tool call.
-const LIVE_TOKENS: u64 = 2048;
+pub(super) const LIVE_TOKENS: u64 = 2048;
 /// Busy refusals ridden out while the model frees its slot after an interruption, ~1.2 s each.
-const BUSY_RETRIES: u32 = 50;
+pub(super) const BUSY_RETRIES: u32 = 50;
 /// Model turns a watched practice runs before it gives up, so a stuck model does not loop forever.
 const MAX_TURNS: usize = 40;
 /// How much of a target response body the model is shown, in bytes.
@@ -41,7 +41,7 @@ fn waiting(worker: &Worker) -> Result<(), String> {
 }
 
 /// The model's answer without its `<think>` blocks, for the stored conversation.
-fn answer_text(content: &str) -> String {
+pub(super) fn answer_text(content: &str) -> String {
     let mut out = String::new();
     let mut rest = content;
     while let Some(open) = rest.find("<think>") {
@@ -53,7 +53,7 @@ fn answer_text(content: &str) -> String {
 }
 
 /// Whether an error is the model refusing a new request while it finishes the previous one.
-fn is_busy(error: &str) -> bool {
+pub(super) fn is_busy(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     error.contains("busy") || error.contains("retry shortly")
 }
@@ -335,7 +335,7 @@ impl Progress {
 
 /// Keeps the model's context bounded: the system turn, the objective, then the most recent
 /// messages. A tool result is never left without the assistant turn that called it.
-fn trim_context(messages: &[Value]) -> Vec<Value> {
+pub(super) fn trim_context(messages: &[Value]) -> Vec<Value> {
     if messages.len() <= CONTEXT_KEEP + 2 {
         return messages.to_vec();
     }
@@ -350,7 +350,7 @@ fn trim_context(messages: &[Value]) -> Vec<Value> {
 }
 
 /// The assistant turn to store: its text and any tool calls it made.
-fn assistant_message(content: &str, calls: &[ToolCall]) -> Value {
+pub(super) fn assistant_message(content: &str, calls: &[ToolCall]) -> Value {
     let tool_calls: Vec<Value> = calls
         .iter()
         .map(|call| json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call.arguments.to_string()}}))
@@ -363,7 +363,7 @@ fn assistant_message(content: &str, calls: &[ToolCall]) -> Value {
 }
 
 /// A tool's result turn, as the model sees it next.
-fn tool_result(call_id: &str, name: &str, content: &Value) -> Value {
+pub(super) fn tool_result(call_id: &str, name: &str, content: &Value) -> Value {
     let content = if content.is_string() { content.as_str().unwrap_or("").to_owned() } else { content.to_string() };
     json!({"role":"tool","tool_call_id":call_id,"name":name,"content":content})
 }
@@ -371,21 +371,21 @@ fn tool_result(call_id: &str, name: &str, content: &Value) -> Value {
 /// Tool calls accumulated from the stream, keyed by their index so pieces of one call's
 /// arguments join up across deltas.
 #[derive(Default)]
-struct ToolCalls {
+pub(super) struct ToolCalls {
     calls: Vec<ToolCall>,
 }
 
 #[derive(Default, Clone)]
-struct ToolCall {
-    id: String,
-    name: String,
+pub(super) struct ToolCall {
+    pub(super) id: String,
+    pub(super) name: String,
     /// Arguments as they stream, parsed once the call is complete.
     raw: String,
-    arguments: Value,
+    pub(super) arguments: Value,
 }
 
 impl ToolCalls {
-    fn delta(&mut self, call: &Value) {
+pub(super) fn delta(&mut self, call: &Value) {
         let index = call["index"].as_u64().unwrap_or(0) as usize;
         while self.calls.len() <= index {
             self.calls.push(ToolCall::default());
@@ -403,7 +403,7 @@ impl ToolCalls {
     }
 
     /// Parses each call's arguments and drops any without a name.
-    fn finish(mut self) -> Vec<ToolCall> {
+pub(super) fn finish(mut self) -> Vec<ToolCall> {
         self.calls.retain(|call| !call.name.is_empty());
         for (index, call) in self.calls.iter_mut().enumerate() {
             call.arguments = serde_json::from_str(&call.raw).unwrap_or(Value::Null);
