@@ -5,6 +5,8 @@ mod memory;
 pub(crate) mod activity;
 mod model_lifecycle;
 mod practice;
+#[allow(dead_code)] // Foundation for live-target bounties; wired into the runner in a later step.
+mod live_target;
 #[cfg(all(test, windows, not(feature = "engine-only")))]
 mod real_tests;
 mod runner;
