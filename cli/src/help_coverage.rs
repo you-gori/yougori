@@ -14,12 +14,13 @@ const ALIASES: &[(&str, &str)] = &[("environment", "env")];
 const MAIN_COMMANDS: &[&str] = &[
     "cli", "launch", "status", "top", "doctor", "update", "uninstall", "login", "logout", "account",
     "connect", "confidential", "vault", "bounty", "schema", "skills", "terminal", "download", "agent",
-    "app", "help", "monitor", "audit", "lockdown", "unlock",
+    "app", "help", "monitor", "audit", "lockdown", "unlock", "grid",
 ];
 
 /// Subcommands parsed outside `parse` (main.rs, public.rs and their helpers). Add new ones here.
 const PUBLIC_SUBCOMMANDS: &[&[&str]] = &[
     &["start", "bounty"],
+    &["grid", "create"], &["grid", "join"], &["grid", "password"],
     &["app", "start"], &["app", "show"], &["app", "autostart"],
     &["agent", "discover"], &["agent", "inventory"],
     &["skills", "print"], &["skills", "status"], &["skills", "install"],

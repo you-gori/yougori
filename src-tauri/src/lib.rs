@@ -34,6 +34,7 @@ mod changes;
 mod releases;
 mod model_runner;
 mod market;
+mod grid;
 mod swarm;
 mod model_registry;
 mod file_export;
@@ -589,6 +590,7 @@ pub fn run() {
             app.manage(environment_download::Downloads::new(&storage_directory));
             app.manage(host_terminal::HostTerminalManager::default());
             app.manage(market::Market::default());
+            app.manage(grid::Grid::default());
             app.manage(swarm::Swarm::default());
             // Native system installers cannot provision every user's home.
             // Set up the shared skill for the user who actually runs this app
@@ -618,6 +620,7 @@ pub fn run() {
             environment_download::start_cleanup(app.handle());
             neocloud::runpod::resume(app.handle());
             market::start(app.handle());
+            grid::start(app.handle());
             model_runner::optimizer::start(app.handle());
             let workspace_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -807,6 +810,7 @@ pub fn run() {
             commands::workloads::get_environment_logs,
             commands::read_environment_console,
             workspace::terminal_action,
+            workspace::terminal_stream::terminal_stream_follow,
             workspace::installers::prepare_terminal_installer,
             guest_apps::micro_vm_apps,
             guest_apps::open_micro_vm_app_window,

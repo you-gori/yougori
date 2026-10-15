@@ -472,3 +472,19 @@ fn help_flags_after_the_separator_belong_to_the_guest_command() {
     assert!(!String::from_utf8_lossy(&output.stdout).contains("Public commands"));
     assert!(cli(&["exec", "--help"]).status.success());
 }
+#[test]
+fn closed_neo_grid_joins_refuse_passwords_in_arguments_before_any_engine_call() {
+    let help = cli(&["acme", "--neogrid", "--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("yougori COMPANY --neogrid --ip HUB_IP"));
+    let typed = cli(&["acme", "--neogrid", "--password", "hunter2hunter2", "--ip", "10.0.0.5"]);
+    assert!(!typed.status.success());
+    assert!(response(&typed)["error"].as_str().unwrap().contains("Never type the password"));
+    // Piped stdin is not a terminal: the password must be requested explicitly with --password -.
+    let piped = Command::new(env!("CARGO_BIN_EXE_yougori-cli")).args(["acme", "--neogrid", "--ip", "10.0.0.5"]).stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(response(&piped)["error"].as_str().unwrap().contains("--password -"));
+    let unconfirmed = cli(&["grid", "create", "Acme", "--ip", "10.0.0.5"]);
+    assert!(response(&unconfirmed)["error"].as_str().unwrap().contains("--yes"));
+    let twice = cli(&["acme", "globex", "--neogrid", "--ip", "10.0.0.5"]);
+    assert!(response(&twice)["error"].as_str().unwrap().contains("Name the company once"));
+}

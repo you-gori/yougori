@@ -35,6 +35,7 @@ pub mod logs;
 pub mod vault;
 pub mod model_auth;
 pub mod network;
+pub mod grid;
 pub mod model_registry;
 pub mod confidential;
 pub mod bounty;

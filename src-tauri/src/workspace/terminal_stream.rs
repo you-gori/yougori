@@ -102,7 +102,11 @@ pub(crate) async fn open(
         {
             return Ok(stream);
         }
-    } else if !crate::peer_sharing::is_shared(&env) && env.kind != EnvironmentKind::Cloud {
+    } else if env.kind == EnvironmentKind::Cloud {
+        if let Some(stream) = open_cloud(&app.state::<RuntimeManager>(), &env, session, offset).await? {
+            return Ok(stream);
+        }
+    } else if !crate::peer_sharing::is_shared(&env) {
         if let Some(stream) =
             open_guest(&app.state::<RuntimeManager>(), &env, session, offset).await?
         {
@@ -213,7 +217,109 @@ pub(crate) async fn stream_ready<S: tokio::io::AsyncRead + tokio::io::AsyncWrite
     }
 }
 
-/// Compatibility for old agents/cloud/LAN shares. Network reads never block
+/// A cloud server's connector pushes terminal output over the SSH link as it appears, so
+/// nothing is polled: output costs one trip from the server, input one trip to it. Queued
+/// keystrokes travel together, since the connector writes one batch at a time.
+async fn open_cloud(runtime: &RuntimeManager, env: &Environment, session: &str, offset: u64) -> Result<Option<Channel>, String> {
+    let cloud = runtime.cloud.session(&env.id).await?;
+    let follower = match cloud.follow_terminal(session, offset).await {
+        Ok(follower) => follower,
+        // A connector from before pushed output: poll it as before.
+        Err(error) if error.contains("Unsupported terminal operation") => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(Some(cloud_channel(cloud, session.to_owned(), follower, offset)))
+}
+
+pub(crate) fn cloud_channel(cloud: crate::runtime::cloud::Session, session: String, mut follower: crate::runtime::cloud::Follower, mut offset: u64) -> Channel {
+    let (tx, mut outgoing) = mpsc::channel::<Frame>(QUEUE);
+    let (incoming, rx) = mpsc::channel(QUEUE);
+    let errors = incoming.clone();
+    let read = tokio::spawn(async move {
+        loop {
+            let Some(event) = follower.events.recv().await else {
+                let _ = errors.send(Err("Cloud connection closed; the terminal ended".into())).await;
+                break;
+            };
+            if event["done"] == true {
+                let _ = errors.send(Ok(Frame::Done)).await;
+                break;
+            }
+            let result = match B64.decode(event["data"].as_str().unwrap_or("")) {
+                Ok(bytes) if bytes.is_empty() => continue,
+                Ok(bytes) => match event["offset"].as_u64() {
+                    Some(next) if next.checked_sub(bytes.len() as u64) == Some(offset) => {
+                        offset = next;
+                        Ok(Frame::Output { offset: next, bytes })
+                    }
+                    _ => Err("Terminal output cursor expired; reconnect to restore the screen".into()),
+                },
+                Err(_) => Err("Invalid terminal output".into()),
+            };
+            let failed = result.is_err();
+            if errors.send(result).await.is_err() || failed {
+                break;
+            }
+        }
+    });
+    let write = tokio::spawn(async move {
+        while let Some(frame) = outgoing.recv().await {
+            let request = match frame {
+                Frame::Input(mut bytes) => {
+                    // Everything typed while the previous batch was in flight goes together.
+                    while bytes.len() < 16 * 1024 {
+                        match outgoing.try_recv() {
+                            Ok(Frame::Input(more)) if bytes.len() + more.len() <= 16 * 1024 => bytes.extend(more),
+                            Ok(Frame::Input(more)) => {
+                                let _ = cloud.request("/v1/terminal/write", json!({"sessionId": session, "data": B64.encode(&bytes)})).await;
+                                bytes = more;
+                            }
+                            Ok(Frame::Resize(cols, rows)) => {
+                                let _ = cloud.request("/v1/terminal/resize", json!({"sessionId": session, "cols": cols, "rows": rows})).await;
+                            }
+                            _ => break,
+                        }
+                    }
+                    cloud.request("/v1/terminal/write", json!({"sessionId": session, "data": B64.encode(bytes)})).await
+                }
+                Frame::Resize(cols, rows) => cloud.request("/v1/terminal/resize", json!({"sessionId": session, "cols": cols, "rows": rows})).await,
+                _ => Err("Invalid client terminal frame".into()),
+            };
+            if let Err(error) = request {
+                let _ = incoming.send(Err(error)).await;
+                break;
+            }
+        }
+    });
+    Channel { tx, rx, tasks: vec![read, write] }
+}
+
+/// The desktop app follows a terminal through window events instead of polling: output
+/// frames arrive as `yougori-terminal` events for the window that owns the session.
+#[tauri::command]
+pub async fn terminal_stream_follow(environment_id: String, session_id: String, offset: u64, window: WebviewWindow, app: AppHandle) -> Result<Value, String> {
+    static FOLLOWERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+    let Ok(slot) = FOLLOWERS.try_acquire() else { return Err("Close an unused terminal first".into()) };
+    let mut back = open(&app, &environment_id, &session_id, window.label(), offset).await?;
+    tokio::spawn(async move {
+        let _slot = slot;
+        while let Some(frame) = back.rx.recv().await {
+            let payload = match frame {
+                Ok(Frame::Output { offset, bytes }) => json!({"sessionId": session_id, "offset": offset, "data": B64.encode(bytes)}),
+                Ok(Frame::Done) => json!({"sessionId": session_id, "done": true}),
+                Ok(_) => json!({"sessionId": session_id, "error": "Invalid server terminal frame"}),
+                Err(error) => json!({"sessionId": session_id, "error": error.chars().take(1000).collect::<String>()}),
+            };
+            let done = payload["done"] == true || payload["error"].is_string();
+            if window.emit_to(window.label(), "yougori-terminal", payload).is_err() || done {
+                break;
+            }
+        }
+    });
+    Ok(json!({"streaming": true}))
+}
+
+/// Compatibility for old agents and LAN shares. Network reads never block
 /// writes; the CLI still uses one persistent local connection.
 fn polling(app: AppHandle, id: String, session: String, owner: String, mut offset: u64) -> Channel {
     let (tx, mut outgoing) = mpsc::channel::<Frame>(QUEUE);

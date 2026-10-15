@@ -213,6 +213,12 @@ pub(crate) fn ensure_open(store: &PlatformStore, environment_id: &str, action: &
     Err(containment::refusal(&name, if simple { &name } else { environment_id }, &containment, action))
 }
 
+/// Whether an environment is locked down or kill-switched, without recording a refusal: for
+/// loops that re-check every few seconds.
+pub(crate) fn contained(environment_id: &str) -> bool {
+    CONTAINMENT.get().and_then(|records| records.get(environment_id)).is_some()
+}
+
 /// Local containers, GPU containers, microVMs and VMs: Internet can be cut and power paused.
 fn controllable(environment: &Environment) -> Result<(), &'static str> {
     if crate::peer_sharing::is_shared(environment) {

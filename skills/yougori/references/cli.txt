@@ -730,6 +730,74 @@ yougori model versions yg/PUBLISHER/MODEL
 | Yougori GPU environments currently require Windows x64 with WSL 2 | This PC cannot run local GPU models: use a Neocloud pod (`--neocloud`). |
 | Unknown model option (with `--change`) | `--change` exists only in the interactive setup; scripts pass `--cpu`, `--memory`, `--storage`. |
 
+# Closed Neo Grid (company computers)
+
+A company's private model grid on its own network, separate from the public Yougori Network (models topic). Three roles: the **admin** runs the hub and decides everything; **company computers** join and lend their GPU while idle; **company apps** call the hub's OpenAI-compatible API. Nothing passes through yougori.com and prompts are never recorded.
+
+```text
+yougori grid create COMPANY --ip THIS_PC_IP [--password -] [--port 7460] [--hostname NAME] --yes   # admin, once
+yougori COMPANY --neogrid --ip HUB_IP [--password -] [--port 7460] [--name NAME] [--fingerprint SHA256]   # each computer
+yougori grid join COMPANY --ip HUB_IP [--password -]                                         # same as the line above
+yougori grid                                                                                 # status, any computer
+yougori grid status
+yougori grid add-plan --model hf.co/OWNER/MODEL --percent 50 [--schedule TEXT] [--idle-after MINUTES] [--quant Q]
+yougori grid change-plan PLAN_ID [--percent P] [--schedule TEXT] [--idle-after MINUTES] [--model M] [--quant Q]
+yougori grid remove-plan PLAN_ID --yes
+yougori grid add-key --name APP
+yougori grid revoke-key KEY_ID --yes
+yougori grid remove MEMBER_ID --yes
+yougori grid password [--password -] --yes
+yougori grid leave --yes
+yougori grid delete --yes
+```
+
+## Step by step
+
+1. **Admin creates the grid** on a computer that stays on, with a fixed LAN or VPN address: `yougori grid create Acme --ip 10.0.0.5 --yes`. It asks for the company password twice (10–256 characters). `yougori grid` then shows the hub URL and its certificate **fingerprint**; tell both, and the password, to the company.
+2. **Each company computer joins**: `yougori Acme --neogrid --ip 10.0.0.5` and type the password when asked. Add `--fingerprint AB:CD:…` when the admin shared it. That is all a computer needs to do; from now on the admin's plans decide which model it downloads and runs, and when it serves. The admin's own computer joined automatically.
+3. **Admin adds a plan**: `yougori grid add-plan --model hf.co/Qwen/Qwen3-8B --percent 50 --schedule "Mon-Fri 18:00-08:00; Sat,Sun" --idle-after 15`. Half of the computers that can run models download and start Qwen3-8B and serve it on weeknights and weekends, once nobody has touched the keyboard or mouse for 15 minutes. Add more plans for more models.
+4. **Admin creates an API key** for each company app: `yougori grid add-key --name Analytics`. The answer shows the key once, the base URL (`https://10.0.0.5:7460/v1`) and the hub's certificate.
+5. **Apps call the hub** like any OpenAI-compatible API, trusting that certificate: `curl --cacert grid.pem https://10.0.0.5:7460/v1/chat/completions -H "Authorization: Bearer ygrid_…" -d '{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"Hi"}]}'` (`stream: true` works; `GET /v1/models` lists the models and how many computers are ready).
+6. **Check**: `yougori grid` on the hub lists computers (online, plan, model state, requests served), plans (computers assigned / target / ready) and keys (usage). On a member it shows the assignment and state.
+
+## Password and scripts
+
+- The password is never accepted as an argument. People are asked for it; scripts send one line on stdin with `--password -` (`yougori Acme --neogrid --ip 10.0.0.5 --password - < password.txt`).
+- The password is proven with scrypt and HMAC, never sent. The computer pins the hub's certificate only after the hub proves that it knows the password too, so a wrong company name, password or fingerprint stops before anything is saved. Ten wrong passwords from one address lock it out for 10 minutes. `grid password --yes` changes it; computers that already joined stay members.
+- Engine methods take `password` only through `--file -` or a private JSON file: `grid_create`, `grid_join`, `grid_password`.
+
+## Plans: what runs where and when
+
+- `--percent` is the share of the computers that can run models (an NVIDIA GPU with WSL 2, or Apple silicon), rounded up; other computers may join but are never picked. Plans fill in creation order; if plans ask for more than 100% the later ones get fewer, and `yougori grid` warns. Assignments are sticky: computers keep their model and its files when others join or leave.
+- `--schedule` takes weekly windows in each computer's local time: `Mon-Fri 18:00-08:00; Sat,Sun`, `weekdays 20:00-06:00`, `daily`, `weekends`. A window that ends before it starts runs past midnight. Without one, any time.
+- `--idle-after` is minutes without keyboard or mouse input before serving (default 10). `0` ignores activity: the grid may then use the model while the person works, and their own chat waits for a grid reply in progress. On Linux the idle time comes from logind; remote SSH sessions do not count as a person at the computer; a computer that cannot read activity never serves unless `--idle-after 0`.
+- The model is preflighted before the plan is saved; an unsupported model is refused with the reason.
+
+## What a member computer does, and never does
+
+- It downloads and starts the assigned model (`model run` with no API port), or reuses an environment that already runs that model. It serves only while the plan allows and the model is ready; otherwise it reports why (`person_active`, `outside_schedule`, `loading`, …).
+- When the person comes back it finishes the reply in progress, takes no new work, and unloads the model from the GPU only when the grid was the last to use it. A model the person used last stays loaded.
+- An environment the grid started is stopped after 10 minutes outside the plan's hours, and only once nobody has used the model for 10 minutes; it starts again inside the hours. If the person stops it themselves it stays stopped until Yougori restarts. An environment the person already had running is never stopped by the grid. Changing a plan's model, removing the plan, `grid leave` or `grid delete` stop only grid-started environments, and leave one alone that handled a request in the last minute; files always stay.
+- Members only ask the hub for work (no open ports), over TLS pinned to the hub's certificate, and run every request on the local model's own `/v1/chat/completions` with its own API key. A busy model (HTTP 429) hands the request back for another computer. Locked-down environments never serve.
+- A request waits up to 60 s for an idle computer; with none the hub answers HTTP 503 with the counts (`2 in use by their person, 1 outside the plan's hours`) and Retry-After. Limits: 64 KiB requests, 16 MiB replies, 32 requests per key waiting or running.
+
+## Stored and audited
+
+Private key of the hub, the password's derived key and member tokens live in the OS credential vault; `grid/hub.json` and `grid/member.json` hold settings, with API keys and member tokens as hashes only. Prompts pass through memory only. Joins, refused joins, plans, keys, assignments and grid model starts and stops are in `yougori audit`. Engine methods: `grid_status`, `grid_create`, `grid_join`, `grid_password`, `grid_plan_add`, `grid_plan_update`, `grid_plan_remove`, `grid_key_create`, `grid_key_revoke`, `grid_member_remove`, `grid_leave`, `grid_delete`. Full guide: `docs/closed-neo-grid.md`.
+
+## Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| The company name or password is wrong | Check both with the admin; ten wrong passwords lock an address out for 10 minutes. |
+| The hub's certificate fingerprint is …, not the one you gave | Do not join: the address may not be the company's hub. Ask the admin to read out `yougori grid` on the hub. |
+| Cannot open the grid hub on ADDRESS:PORT | The hub computer's address changed or the port is taken: give it a fixed LAN address, or `grid delete --yes` and create the grid again. |
+| None of the N computer(s) running this model can serve right now | Every assigned computer is in use, outside the plan's hours, offline or still loading; the reason counts say which. Raise `--percent` or widen `--schedule`. |
+| This computer is already in COMPANY's grid | One grid per computer: `yougori grid leave --yes` first. |
+| This computer does not run a grid hub | Admin commands (plans, keys, remove, password, delete) run on the hub computer only. |
+| Not in a terminal: supply the password on stdin with --password - | Scripts pipe one line: `--password - < password.txt`. |
+| Stopped by its person; the grid starts it again after Yougori restarts | The person stopped a grid-started model; the grid respects that. `yougori start ENV` or a Yougori restart resumes serving. |
+
 # Ports, domains, connections and cloud
 
 Contents: Ports and publishing · Saved domains · Connect environments · My PC folders · LAN sharing · Existing cloud servers · Neocloud pods · Troubleshooting
@@ -1080,7 +1148,7 @@ yougori remote download ENV_ID --destination ABSOLUTE_FOLDER [--path PATH]
 
 ## Terminal streaming
 
-Current engines and guest agents stream terminal bytes over persistent connections; older engines, LAN shares and cloud shells poll. Input never waits for output. Disconnects never replay input; reconnecting opens a new shell in the same sandbox. Setting `YOUGORI_TERMINAL_TRACE` (any value) prints stream timings and byte counts (no contents) when the guest session completes (not on Ctrl+] or a stop).
+Current engines and guest agents stream terminal bytes over persistent connections, and a connected cloud server's connector pushes output over its SSH link as it appears (keystrokes typed while a batch is in flight travel together); older engines and LAN shares poll. Input never waits for output. Disconnects never replay input; reconnecting opens a new shell in the same sandbox. Setting `YOUGORI_TERMINAL_TRACE` (any value) prints stream timings and byte counts (no contents) when the guest session completes (not on Ctrl+] or a stop).
 
 ## Troubleshooting
 

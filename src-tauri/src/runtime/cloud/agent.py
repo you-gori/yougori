@@ -339,14 +339,38 @@ def term_read(ident, term):
             except OSError: break
         if data is None: continue
         if not data: break
-        with lock:
-            if terminals.get(ident) is not term: break
-            term['buffer'].extend(data)
-            trim = max(0, len(term['buffer']) - 262144)
-            if trim:
-                del term['buffer'][:trim]
-                term['start'] += trim
+        # A followed terminal pushes its output to Yougori as it appears instead of
+        # waiting to be read. The emit lock keeps the catch-up in `follow` and new
+        # output in order; it is taken before the global lock, never inside it.
+        with term['emit_lock']:
+            with lock:
+                if terminals.get(ident) is not term: break
+                term['buffer'].extend(data)
+                trim = max(0, len(term['buffer']) - 262144)
+                if trim:
+                    del term['buffer'][:trim]
+                    term['start'] += trim
+                following = term['following']
+                end = term['start'] + len(term['buffer'])
+            if following: emit(dict(event='terminal', sessionId=ident, offset=end, data=encode(data)))
     term['process'].wait()
+    with term['emit_lock']:
+        with lock: following = term['following'] and terminals.get(ident) is term
+        if following: emit(dict(event='terminal', sessionId=ident, done=True))
+
+def term_follow(ident, term, offset):
+    # Everything buffered from `offset` first, then live output from term_read.
+    with term['emit_lock']:
+        with lock:
+            term['following'] = True
+            offset = max(term['start'], min(term['start'] + len(term['buffer']), offset))
+            data = bytes(term['buffer'][offset - term['start']:])
+            done = term['process'].poll() is not None
+        for position in range(0, len(data), 32768):
+            chunk = data[position:position + 32768]
+            emit(dict(event='terminal', sessionId=ident, offset=offset + position + len(chunk), data=encode(chunk)))
+        if done: emit(dict(event='terminal', sessionId=ident, done=True))
+    return dict(ok=True, offset=offset + len(data))
 
 def term_write(term, data):
     # A full/stopped PTY must not hold the global connector lock and freeze
@@ -525,7 +549,7 @@ def dispatch(path, body):
     if path.startswith('/v1/terminal/'):
         action = path.rsplit('/', 1)[1]
         ident = body['sessionId']
-        if action not in ('create', 'read', 'write', 'resize', 'close'):
+        if action not in ('create', 'read', 'write', 'resize', 'close', 'follow', 'unfollow'):
             raise ValueError('Unsupported terminal operation')
         if not ident.startswith('term-') or len(ident) > 80: raise ValueError('Invalid terminal')
         with lock:
@@ -549,8 +573,8 @@ def dispatch(path, body):
                     raise
                 finally:
                     os.close(slave)
-                term = dict(fd=master, process=process, buffer=bytearray(), start=0, closed=False,
-                            io_lock=threading.Lock(), write_lock=threading.Lock())
+                term = dict(fd=master, process=process, buffer=bytearray(), start=0, closed=False, following=False,
+                            io_lock=threading.Lock(), write_lock=threading.Lock(), emit_lock=threading.Lock())
                 terminals[ident] = term
                 threading.Thread(target=term_read, args=(ident, term), daemon=True).start()
             term = terminals.get(ident)
@@ -563,6 +587,8 @@ def dispatch(path, body):
                 return dict(data=encode(data), offset=offset + len(data), done=term['process'].poll() is not None)
             if action == 'close':
                 terminals.pop(ident)
+            if action == 'unfollow': term['following'] = False
+        if action == 'follow': return term_follow(ident, term, int(body.get('offset', 0)))
         if action in ('create', 'resize'):
             rows = max(2, min(250, int(body.get('rows', 24))))
             cols = max(2, min(500, int(body.get('cols', 80))))

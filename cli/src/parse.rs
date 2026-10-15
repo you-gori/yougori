@@ -25,6 +25,12 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
   domain list|add|edit|remember|remove  Saved Cloudflare domains (token via --file -)
   drives list|attach|detach ENV    A VM's imported-files drives (--transfer-id ID)
   lan share ENV --address IP --permission view|control --yes | list | revoke ID | import --file invitation.json --yes
+  grid status | leave --yes | delete --yes | remove MEMBER_ID --yes
+                                   Closed Neo Grid membership; admin: remove a computer or the grid
+  grid add-plan --model hf.co/OWNER/MODEL --percent 50 [--schedule TEXT] [--idle-after MINUTES] [--quant Q]
+                                   Admin: run a model on a share of the company's computers
+  grid change-plan PLAN_ID [--percent P] [--schedule TEXT] [--idle-after MINUTES] [--model M] | remove-plan PLAN_ID --yes
+  grid add-key --name APP | revoke-key KEY_ID --yes  Admin: API keys for company apps
   project list | inspect PATH       Find and validate yougori.yaml projects
   agent inventory                  JSON compute targets, capabilities and readiness without secrets
   agent setup --yes                Install/update the Yougori skill for local agents
@@ -171,6 +177,7 @@ fn credential_parameters(method: &str) -> &'static [&'static str] {
         "publish_environment_service" | "start_remote_tunnel" | "publication_preflight" => &["cloudflare.token"],
         "create_remote_share" | "add_backup_destination" => &["request"],
         "import_environment_share" => &["invitation"],
+        "grid_create" | "grid_join" | "grid_password" => &["password"],
         _ => &[],
     }
 }
@@ -242,6 +249,15 @@ fn route(group: &str, action: &str) -> Result<(&'static str, Option<&'static str
         ("lan", "list") => ("list_environment_shares", None),
         ("lan", "revoke") => ("revoke_environment_share", Some("shareId")),
         ("lan", "import") => ("import_environment_share", None),
+        ("grid", "status") => ("grid_status", None),
+        ("grid", "leave") => ("grid_leave", None),
+        ("grid", "delete") => ("grid_delete", None),
+        ("grid", "remove") => ("grid_member_remove", Some("memberId")),
+        ("grid", "add-plan") => ("grid_plan_add", None),
+        ("grid", "change-plan") => ("grid_plan_update", Some("planId")),
+        ("grid", "remove-plan") => ("grid_plan_remove", Some("planId")),
+        ("grid", "add-key") => ("grid_key_create", None),
+        ("grid", "revoke-key") => ("grid_key_revoke", Some("keyId")),
         ("project", "list") => ("discover_projects", None),
         ("project", "inspect") => ("inspect_project", Some("path")),
         ("agent", "setup") => ("set_up_agent_access", None),
@@ -1070,5 +1086,26 @@ mod tests {
         assert!(run(&["call", "delete_environment", "--environment-id", "env-A", "--environmentId", "env-B", "--yes"]).unwrap_err().contains("twice"));
         // The read-only share default remains deliberately configurable.
         assert_eq!(run(&["share", "add", "env-A", "--path", ".", "--read-only", "false", "--yes"]).unwrap().request.params["readOnly"], false);
+    }
+    #[test]
+    fn grid_admin_commands_build_typed_requests_and_keep_passwords_out_of_arguments() {
+        let plan = run(&["grid", "add-plan", "--model", "hf.co/Qwen/Qwen3-8B", "--percent", "50", "--schedule", "Mon-Fri 18:00-08:00; Sat,Sun", "--idle-after", "15"]).unwrap();
+        assert_eq!(plan.request.method, "grid_plan_add");
+        assert_eq!(plan.request.params, json!({"model":"hf.co/Qwen/Qwen3-8B","percent":50,"schedule":"Mon-Fri 18:00-08:00; Sat,Sun","idleAfter":15}));
+        let change = run(&["grid", "change-plan", "plan-1", "--percent", "75", "--schedule", ""]).unwrap();
+        assert_eq!((change.request.method.as_str(), &change.request.params), ("grid_plan_update", &json!({"planId":"plan-1","percent":75,"schedule":""})));
+        assert!(run(&["grid", "add-plan", "--model", "a/b", "--percent", "half"]).unwrap_err().contains("percent must be number"));
+        for (args, method) in [(&["grid", "remove", "member-1"][..], "grid_member_remove"), (&["grid", "remove-plan", "plan-1"], "grid_plan_remove"), (&["grid", "revoke-key", "key-1"], "grid_key_revoke"), (&["grid", "leave"], "grid_leave"), (&["grid", "delete"], "grid_delete")] {
+            assert!(run(args).unwrap_err().contains("--yes"), "{method} needs confirmation");
+            let mut confirmed = args.to_vec();
+            confirmed.push("--yes");
+            assert_eq!(run(&confirmed).unwrap().request.method, method);
+        }
+        assert_eq!(run(&["grid", "status"]).unwrap().request.method, "grid_status");
+        assert_eq!(run(&["grid", "add-key", "--name", "Analytics"]).unwrap().request.params["name"], "Analytics");
+        for method in ["grid_join", "grid_create", "grid_password"] {
+            let error = run(&["call", method, "--json", r#"{"password":"hunter2hunter2"}"#]).unwrap_err();
+            assert!(error.contains("password must be supplied through --file -"), "{method}: {error}");
+        }
     }
 }

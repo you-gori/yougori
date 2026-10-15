@@ -2,9 +2,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { GuestTerminal } from "./guest-terminal"
-import { workspaceApi, type TerminalOutput } from "@/api/workspace-api"
+import { workspaceApi, type TerminalFrame, type TerminalOutput } from "@/api/workspace-api"
 
-const terminalState = vi.hoisted(() => ({ input: undefined as ((data: string) => void) | undefined, options: {} as { disableStdin?: boolean }, osc: {} as Record<number, (data: string) => boolean> }))
+const terminalState = vi.hoisted(() => ({ input: undefined as ((data: string) => void) | undefined, options: {} as { disableStdin?: boolean }, osc: {} as Record<number, (data: string) => boolean>, written: [] as string[] }))
 const clipboard = vi.hoisted(() => ({ writeText: vi.fn(), readText: vi.fn() }))
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   options = terminalState.options
@@ -18,13 +18,13 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
   attachCustomKeyEventHandler() {}
   onData(handler: (data: string) => void) { terminalState.input = handler; return { dispose() { terminalState.input = undefined } } }
   onResize() { return { dispose() {} } }
-  write() {}
-  writeln() {}
+  write(data: Uint8Array | string, done?: () => void) { terminalState.written.push(typeof data === "string" ? data : new TextDecoder().decode(data)); done?.() }
+  writeln(text: string) { terminalState.written.push(text + "\n") }
   dispose() {}
 } }))
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }))
 vi.mock("@/components/terminal-link-cards", () => ({ TerminalLinkCards: () => null }))
-vi.mock("@/api/workspace-api", () => ({ workspaceApi: { terminal: vi.fn(), prepareInstaller: vi.fn() } }))
+vi.mock("@/api/workspace-api", () => ({ workspaceApi: { terminal: vi.fn(), terminalFollow: vi.fn(), prepareInstaller: vi.fn() } }))
 vi.mock("@/lib/terminal-clipboard", async importOriginal => ({
   ...await importOriginal<typeof import("@/lib/terminal-clipboard")>(),
   terminalClipboard: clipboard,
@@ -39,12 +39,38 @@ const output: TerminalOutput = { data: "", offset: 0, done: false }
 beforeEach(() => {
   vi.resetAllMocks()
   terminalState.options = {}
+  terminalState.written = []
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
   vi.mocked(workspaceApi.terminal).mockImplementation((_environment, _session, action) => action === "read" ? new Promise(() => {}) : Promise.resolve(output))
+  // Outside the desktop app there are no window events: the terminal polls instead.
+  vi.mocked(workspaceApi.terminalFollow).mockRejectedValue(new Error("Terminal events need the desktop app"))
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("guest terminal lifecycle", () => {
+  it("writes pushed output in order and never polls once the engine streams", async () => {
+    let frames: ((frame: TerminalFrame) => void) | undefined
+    const stop = vi.fn()
+    vi.mocked(workspaceApi.terminalFollow).mockImplementation(async (_environment, _session, offset, onFrame) => { expect(offset).toBe(0); frames = onFrame; return stop })
+    const { unmount } = render(<GuestTerminal environmentId="env-1" sessionId="tab" active />)
+    await waitFor(() => expect(frames).toBeDefined())
+    frames?.({ sessionId: "term-x", offset: 3, data: btoa("abc") })
+    frames?.({ sessionId: "term-x", offset: 5, data: btoa("de") })
+    expect(terminalState.written.join("")).toBe("abcde")
+    expect(vi.mocked(workspaceApi.terminal).mock.calls.filter(call => call[2] === "read")).toHaveLength(0)
+    frames?.({ sessionId: "term-x", done: true })
+    await waitFor(() => expect(screen.getByText("Session disconnected")).toBeTruthy())
+    expect(stop).toHaveBeenCalled()
+    unmount()
+  })
+  it("polls when the engine cannot push output", async () => {
+    const reads: number[] = []
+    vi.mocked(workspaceApi.terminal).mockImplementation((_environment, _session, action, options) => { if (action === "read") reads.push(options?.offset ?? -1); return Promise.resolve(action === "read" ? { data: btoa("hi"), offset: 2, done: false } : output) })
+    const { unmount } = render(<GuestTerminal environmentId="env-1" sessionId="tab" active />)
+    await waitFor(() => expect(reads.length).toBeGreaterThan(0))
+    await waitFor(() => expect(terminalState.written.join("")).toContain("hi"))
+    unmount()
+  })
   it("closes the owned session after installer preparation fails instead of leaving an unusable live shell", async () => {
     vi.mocked(workspaceApi.prepareInstaller).mockRejectedValue(new Error("Installer unavailable"))
     const ready = vi.fn()

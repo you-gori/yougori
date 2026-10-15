@@ -234,10 +234,12 @@ Use separate quoted arguments; credentials are not part of the HTTPS URL.
 The owner must keep their computer, Yougori, sandbox and gateway running.
 
 Updated clients and engines carry terminal input and output through a persistent
-binary stream, including the sandbox agent when it supports streaming. Keyboard
-input and output run independently. Older engines, guest agents, LAN invitations
-and SSH cloud environments use independent read/write polling as a compatibility
-path. Update both teammates' engines/CLIs and the sandbox guest agent for the full
+binary stream, including the sandbox agent when it supports streaming, and the
+desktop app's terminals receive output through window events. On a connected SSH
+cloud server the connector pushes terminal output over the SSH link as it appears,
+and keystrokes typed while a batch is in flight travel together. Keyboard input
+and output run independently. Older engines, guest agents and LAN invitations use
+independent read/write polling as a compatibility path. Update both teammates' engines/CLIs and the sandbox guest agent for the full
 streaming path; updating only the CLI still improves keyboard handling.
 
 Streams enforce the existing recipient permissions, target and terminal ownership.

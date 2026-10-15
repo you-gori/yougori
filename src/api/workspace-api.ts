@@ -10,6 +10,7 @@ export interface SetupTunnelConnection { hostname: string; hostPort: number; sta
 export interface HostShare { id: string; environmentId: string; path: string; readOnly: boolean; mountPath: string | null; guestUrl?: string }
 export interface EnvironmentServices { services: ServicePort[]; publications: Publication[]; shares: HostShare[]; notice: string }
 export interface TerminalOutput { data: string; offset: number; done: boolean }
+export interface TerminalFrame { sessionId: string; offset?: number; data?: string; done?: boolean; error?: string }
 export interface GuestWindow { label: string; title: string }
 
 const terminalFixtures = new Map<string, { output: string; input: string }>()
@@ -43,6 +44,21 @@ export const workspaceApi = {
       if (!terminalFixtures.has(sessionId)) throw new Error("The installation terminal is closed")
       return `exec sh '/tmp/yougori-install.${tool}/install.sh'`
     })
+  },
+  /// Output pushed by the engine for a terminal this window owns: data frames with the
+  /// offset after their bytes, then done or an error. Resolves to the unlisten function.
+  /// Outside the desktop app there is no event channel, so callers poll instead.
+  async terminalFollow(environmentId: string, sessionId: string, offset: number, onFrame: (frame: TerminalFrame) => void): Promise<() => void> {
+    if (!("__TAURI_INTERNALS__" in window)) throw new Error("Terminal events need the desktop app")
+    const { listen } = await import("@tauri-apps/api/event")
+    const unlisten = await listen<TerminalFrame>("yougori-terminal", event => { if (event.payload.sessionId === sessionId) onFrame(event.payload) })
+    try {
+      await run<{ streaming: boolean }>("terminal_stream_follow", { environmentId, sessionId, offset }, () => { throw new Error("Terminal events need the desktop app") })
+    } catch (reason) {
+      unlisten()
+      throw reason
+    }
+    return unlisten
   },
   terminal(environmentId: string, sessionId: string, action: "create" | "read" | "write" | "resize" | "close", options: { data?: string; offset?: number; cols?: number; rows?: number } = {}) {
     return run<TerminalOutput>("terminal_action", { environmentId, sessionId, action, ...options }, () => {

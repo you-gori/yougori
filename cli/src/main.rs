@@ -41,6 +41,17 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
     let mut args = if args.is_empty() {
         vec!["cli".into()]
     } else { args };
+    // `yougori COMPANY --neogrid …` names the company first, so it is matched before any command word.
+    if yougori_cli::grid::requested(&args) {
+        if args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")) {
+            println!("{}", yougori_cli::grid::USAGE);
+            return Ok(0);
+        }
+        // No progress spinner: the command may ask for the password first.
+        let value = yougori_cli::grid::run(&args).await?;
+        if output::stdout_terminal() { println!("{}", yougori_cli::grid::render(&value)) } else { println!("{}", wire_json(value)) }
+        return Ok(0);
+    }
     let invocation=yougori_cli::model_invocation::normalize(args)?;
     args=invocation.args;
     if invocation.needs_model {

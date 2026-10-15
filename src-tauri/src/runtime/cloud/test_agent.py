@@ -31,6 +31,12 @@ class ConnectorTests(unittest.TestCase):
             if predicate(value): return value
             self.pending.append(value)
         self.fail('Missing connector response')
+    def drain(self, predicate, quiet=.5):
+        self.pending = [v for v in self.pending if not predicate(v)]
+        while True:
+            try: value = self.messages.get(timeout=quiet)
+            except queue.Empty: return
+            if not predicate(value): self.pending.append(value)
     def rpc(self, path, body, error=False):
         ident = str(time.monotonic_ns())
         self.send(dict(requestId=ident, path=path, body=body))
@@ -141,6 +147,42 @@ class ConnectorTests(unittest.TestCase):
         result = self.receive(lambda v: v.get('requestId') == 'blocked-write')
         self.assertIn('input is full', result.get('error', ''))
         for ident in (blocked, other): self.rpc('/v1/terminal/close', dict(sessionId=ident))
+    def test_followed_terminal_pushes_output_in_order_without_reads(self):
+        ident = 'term-follow'
+        self.rpc('/v1/terminal/create', dict(sessionId=ident))
+        def write(text): self.rpc('/v1/terminal/write', dict(sessionId=ident, data=base64.b64encode(text.encode()).decode()))
+        write("printf 'BEFORE_%s\\n' FOLLOW\n")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and 'BEFORE_FOLLOW' not in base64.b64decode(self.rpc('/v1/terminal/read', dict(sessionId=ident, offset=0))['data']).decode(): time.sleep(.05)
+        # Following replays what was buffered, then pushes new output as events with contiguous offsets.
+        self.assertEqual(self.rpc('/v1/terminal/follow', dict(sessionId=ident, offset=0))['ok'], True)
+        write("printf 'AFTER_%s\\n' FOLLOW\n")
+        text, offset = '', 0
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and 'AFTER_FOLLOW' not in text:
+            event = self.receive(lambda v: v.get('event') == 'terminal' and v.get('sessionId') == ident)
+            data = base64.b64decode(event['data'])
+            self.assertEqual(event['offset'] - len(data), offset, 'Pushed output must be contiguous')
+            offset = event['offset']; text += data.decode()
+        self.assertIn('BEFORE_FOLLOW', text); self.assertIn('AFTER_FOLLOW', text)
+        self.assertGreaterEqual(self.rpc('/v1/terminal/read', dict(sessionId=ident, offset=0))['offset'], offset, 'Reads still work while following')
+        # Unfollowing stops the pushes; closing a followed terminal reports the end.
+        self.rpc('/v1/terminal/unfollow', dict(sessionId=ident))
+        write("printf 'QUIET_%s\\n' NOW\n"); time.sleep(.3)
+        # Events pushed before the unfollow took effect are not part of the replay.
+        self.drain(lambda v: v.get('event') == 'terminal' and v.get('sessionId') == ident)
+        self.rpc('/v1/terminal/follow', dict(sessionId=ident, offset=0))
+        replay, offset, deadline = '', 0, time.monotonic() + 5
+        while time.monotonic() < deadline and 'QUIET_NOW' not in replay:
+            event = self.receive(lambda v: v.get('event') == 'terminal' and v.get('sessionId') == ident)
+            data = base64.b64decode(event['data'])
+            self.assertEqual(event['offset'] - len(data), offset, 'The replay starts where the follow asked')
+            offset = event['offset']; replay += data.decode()
+        self.assertIn('QUIET_NOW', replay, 'Output while unfollowed is replayed by the next follow')
+        write('exit\n')
+        event = self.receive(lambda v: v.get('event') == 'terminal' and v.get('sessionId') == ident and v.get('done'))
+        self.assertTrue(event['done'])
+        self.rpc('/v1/terminal/close', dict(sessionId=ident))
     def test_unknown_terminal_action_is_rejected(self):
         self.assertIn('Unsupported', self.rpc('/v1/terminal/not-real', dict(sessionId='term-test'), error=True))
     def test_socks_rejects_lan_without_asking_host(self):

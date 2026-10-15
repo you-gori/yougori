@@ -81,12 +81,13 @@ pub fn core_instructions(cli: &Path) -> String { generated(cli)["SKILL.md"].clon
 
 /// Each `# ` heading of the guide starts one task reference, in this order;
 /// its `## ` sections stay with it.
-const REFERENCES: [(&str, &str); 9] = [
+const REFERENCES: [(&str, &str); 10] = [
     ("engine", "Engine, setup and agent conventions"),
     ("containers", "Containers, GPU containers, microVMs and VMs"),
     ("files", "Files, volumes and changes"),
     ("deployment", "Projects and deployments"),
     ("models", "Models and the Yougori Network"),
+    ("grid", "Closed Neo Grid (company computers)"),
     ("connections", "Ports, domains, connections and cloud"),
     ("access", "Commands, logs, terminals and automation"),
     ("tools", "AI tool sandboxes and teammate sharing"),
@@ -100,7 +101,7 @@ pub fn reference_topic_mapping() -> BTreeMap<&'static str, &'static str> {
     mapping.extend([
         ("lifecycle", "containers"), ("storage", "containers"),
         ("settings", "engine"), ("jobs", "engine"),
-        ("gpu", "models"), ("network", "models"),
+        ("gpu", "models"), ("network", "models"), ("neogrid", "grid"),
         ("cloud", "connections"),
         ("terminal", "access"), ("vault", "access"),
         ("launch", "deployment"), ("remote", "tools"), ("swarm", "bounty"),
@@ -432,6 +433,7 @@ mod tests {
             ("terminal",vec!["--guest-timeout","execution-output","--last-error"]),
             ("deployment",vec!["deployment status","ports preflight","deployment secret set"]),
             ("gpu",vec!["model preflight", "--nowfree", "market_status"]),
+            ("grid",vec!["--neogrid","grid add-plan","--idle-after","grid add-key","grid_status"]),
             ("settings",vec!["settings patch","app startup-report"]),
             ("jobs",vec!["jobs cancel","jobs result"]),
             ("files",vec!["env cancel-transfer","download on"]),

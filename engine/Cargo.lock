@@ -7732,6 +7732,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "yougori-cli",
  "yougori-cuda",
+ "yougori-grid",
  "yougori-vault",
  "zip",
  "zstd",
@@ -7781,6 +7782,31 @@ name = "yougori-engine"
 version = "1.0.21"
 dependencies = [
  "yougori",
+]
+
+[[package]]
+name = "yougori-grid"
+version = "1.0.21"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rcgen",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

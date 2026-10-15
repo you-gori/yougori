@@ -74,6 +74,12 @@ Public commands:
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
+  yougori COMPANY --neogrid --ip HUB_IP [--password -] [--port 7460] [--name NAME] [--fingerprint SHA256]
+                                   Join a company's Closed Neo Grid; asks for the company password
+  yougori grid create COMPANY --ip THIS_PC_IP [--password -] [--port 7460] [--hostname NAME] --yes
+                                   Admin: run the company's grid hub on this computer and join it
+  yougori grid join COMPANY --ip HUB_IP [--password -] | password [--password -] --yes
+  yougori grid                     This computer's grid: computers, plans and keys, or its assignment
   yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--closed-weights] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
                                    Share paid or free; --closed-weights offers chat/API without weight downloads

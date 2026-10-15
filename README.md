@@ -24,7 +24,7 @@ and put your apps online from your local project. Use the CLI or App, with acces
 
 <br>
 
-## Five main features
+## Six main features
 
 <table>
 <tr>
@@ -56,6 +56,17 @@ Run AI coding tools in isolated environments, keep their files and share access 
 ### Instant App Publishing — Put your project online
 
 Set up your project once, then run `npm run yougori` to start its development command inside a Yougori environment. Sync your project files and choose access for yourself, your local network, a public link or your own domain. Keep the running app's logs and links in your terminal.
+
+</td>
+</tr>
+<tr>
+<td colspan="2" valign="top">
+
+### Closed Neo Grid — Your company's idle GPUs
+
+Run a private grid on your company network. The admin creates it with `yougori grid create ACME --ip 10.0.0.5 --yes`, and each company computer joins with `yougori ACME --neogrid --ip 10.0.0.5` and the company password. The admin then decides which models run, on what share of the computers, in which hours and after how long without keyboard or mouse input; computers serve only while their person is away and hand the GPU back when they return. Company apps call an OpenAI-compatible API on the hub with keys the admin creates. Prompts stay on the company network: nothing passes through yougori.com and nothing is recorded.
+
+[Admin guide](docs/closed-neo-grid.md)
 
 </td>
 </tr>
@@ -245,6 +256,7 @@ npm run desktop:dev
 | [Projects, CLI and models](docs/projects-and-models.txt) | Every command, `yougori.yaml` fields and the model runner |
 | [Neocloud](docs/neocloud.md) | Renting GPUs, pods, serverless endpoints and volumes |
 | [Model publishing](docs/model-publishing.md) | Model pages, downloads, open and closed weights |
+| [Closed Neo Grid](docs/closed-neo-grid.md) | A company grid on idle office computers: joining, plans, app keys, security |
 | [Tool containers](docs/tool-containers.md) | AI tools running directly in your terminal |
 | [Remote sharing](docs/remote-sharing.txt) | Tunnels, domains, recipients and permission levels |
 | [Personal Vault](docs/personal-vault.txt) | Encrypted credential broker for agents |

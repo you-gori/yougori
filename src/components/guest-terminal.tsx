@@ -42,6 +42,7 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
       const nativeSessionId = `term-${crypto.randomUUID()}`
       let disposed = false, timer = 0, linkTimer = 0, offset = 0, ready = false, created = false
       let readFailures = 0
+      let unfollow: (() => void) | undefined
       let inputQueue = Promise.resolve()
       let completedLinks: string[] = []
       const terminal = new Terminal({ fontSize: 13, fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace', cursorBlink: true, scrollback: 3000, theme: terminalTheme })
@@ -53,6 +54,7 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
         ready = false
         terminal.options.disableStdin = true
         window.clearTimeout(timer)
+        unfollow?.(); unfollow = undefined
         if (created) {
           created = false
           void workspaceApi.terminal(environmentId, nativeSessionId, "close").catch(() => undefined)
@@ -127,6 +129,7 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
         if (disposed || linkTimer) return
         linkTimer = window.setTimeout(() => { linkTimer = 0; collectLinks() }, 250)
       }
+      const ended = () => { terminal.writeln("\r\n[Session ended]"); ready = false; onReady?.(sessionId, false, true); setDisconnected(true) }
       const poll = async () => {
         if (disposed) return
         try {
@@ -135,7 +138,7 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
           readFailures = 0
           offset = output.offset
           if (output.data) terminal.write(Uint8Array.from(atob(output.data), c => c.charCodeAt(0)), queueLinkScan)
-          if (output.done) { terminal.writeln("\r\n[Session ended]"); ready = false; onReady?.(sessionId, false, true); setDisconnected(true); return }
+          if (output.done) { ended(); return }
         } catch (reason) {
           if (disposed || !ready) return
           // Reads are safe to repeat at the same output offset. Never retry input writes.
@@ -147,9 +150,24 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
         }
         timer = window.setTimeout(() => void poll(), document.visibilityState === "hidden" ? 2000 : activeRef.current ? 150 : 900)
       }
+      // The engine pushes output as it appears; polling remains for engines without events.
+      const follow = async () => {
+        try {
+          const stop = await workspaceApi.terminalFollow(environmentId, nativeSessionId, offset, frame => {
+            if (disposed || !ready) return
+            if (frame.error) { fail(new Error(frame.error)); return }
+            if (frame.data && typeof frame.offset === "number") { offset = frame.offset; terminal.write(Uint8Array.from(atob(frame.data), c => c.charCodeAt(0)), queueLinkScan) }
+            if (frame.done) { unfollow?.(); unfollow = undefined; ended() }
+          })
+          if (disposed || !ready) { stop(); return }
+          unfollow = stop
+        } catch {
+          if (!disposed && ready) void poll()
+        }
+      }
       void workspaceApi.terminal(environmentId, nativeSessionId, "create", { cols: terminal.cols, rows: terminal.rows }).then(async () => {
         if (disposed) { void workspaceApi.terminal(environmentId, nativeSessionId, "close").catch(() => undefined); return }
-        created = true; ready = true; if (activeRef.current) terminal.focus(); void poll()
+        created = true; ready = true; if (activeRef.current) terminal.focus(); void follow()
         onReady?.(sessionId, true)
         if (modelChat && attempt === 0) {
           const command = modelTerminalChatInput()
@@ -182,7 +200,7 @@ export function GuestTerminal({ environmentId, sessionId, active, onReady, insta
       })
       const resize = terminal.onResize(({ cols, rows }) => { if (ready) void workspaceApi.terminal(environmentId, nativeSessionId, "resize", { cols, rows }).catch(() => undefined) })
       const observer = new ResizeObserver(() => { if (!disposed && activeRef.current && target.clientWidth) fit.fit() }); observer.observe(target)
-      return () => { disposed = true; onReady?.(sessionId, false); if (created) void workspaceApi.terminal(environmentId, nativeSessionId, "close").catch(() => undefined); ready = false; window.clearTimeout(timer); window.clearTimeout(linkTimer); hyperlink.dispose(); guestCopy.dispose(); target.removeEventListener("pointerup", gesture, true); target.removeEventListener("keydown", gesture, true); observer.disconnect(); input.dispose(); resize.dispose(); terminal.dispose(); terminalRef.current = null; fitRef.current = null }
+      return () => { disposed = true; onReady?.(sessionId, false); unfollow?.(); if (created) void workspaceApi.terminal(environmentId, nativeSessionId, "close").catch(() => undefined); ready = false; window.clearTimeout(timer); window.clearTimeout(linkTimer); hyperlink.dispose(); guestCopy.dispose(); target.removeEventListener("pointerup", gesture, true); target.removeEventListener("keydown", gesture, true); observer.disconnect(); input.dispose(); resize.dispose(); terminal.dispose(); terminalRef.current = null; fitRef.current = null }
     }
     let release: (() => void) | undefined
     const frame = requestAnimationFrame(() => { release = initialize() })

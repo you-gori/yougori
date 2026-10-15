@@ -229,6 +229,7 @@ mod tests {
                 info: Value::Null,
                 share_helper_ready: Arc::new(tokio::sync::Mutex::new(false)),
                 termination: Default::default(),
+                followers: Default::default(),
             },
             rx,
             events,

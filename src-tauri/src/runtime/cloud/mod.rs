@@ -407,6 +407,8 @@ fn ssh_hint(detail: &str) -> &'static str {
 }
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
+/// Followed terminals: the connector pushes each one's output as `terminal` events.
+type Followers = Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>;
 #[derive(Clone)]
 pub(crate) struct Session {
     pub tx: mpsc::Sender<Value>,
@@ -416,10 +418,20 @@ pub(crate) struct Session {
     pub info: Value,
     share_helper_ready: Arc<tokio::sync::Mutex<bool>>,
     termination: Arc<Mutex<Option<Result<(), String>>>>,
+    followers: Followers,
 }
 impl Session {
     pub async fn request(&self, path: &str, body: Value) -> Result<Value, String> {
         rpc(&self.tx, &self.pending, path, body).await
+    }
+    /// Asks the connector to push a terminal's output from `offset` on. Events arrive on
+    /// the receiver until it is dropped (which stops the pushes) or the session ends.
+    pub async fn follow_terminal(&self, session_id: &str, offset: u64) -> Result<Follower, String> {
+        let (sender, receiver) = mpsc::channel(256);
+        self.followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), sender);
+        let follower = Follower { events: receiver, session_id: session_id.to_owned(), followers: self.followers.clone(), tx: self.tx.clone() };
+        self.request("/v1/terminal/follow", json!({"sessionId": session_id, "offset": offset})).await?;
+        Ok(follower)
     }
     pub async fn ensure_share_helper(&self) -> Result<(), String> {
         let mut ready = self.share_helper_ready.lock().await;
@@ -442,6 +454,20 @@ impl Session {
         if let Some(stop) = self.stop.lock().unwrap().take() {
             let _ = stop.send(());
         }
+    }
+}
+/// Receives one followed terminal's events; dropping it ends the follow.
+pub(crate) struct Follower {
+    pub events: mpsc::Receiver<Value>,
+    session_id: String,
+    followers: Followers,
+    tx: mpsc::Sender<Value>,
+}
+impl Drop for Follower {
+    fn drop(&mut self) {
+        self.followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&self.session_id);
+        // Best effort, without waiting for an answer: the connector stops pushing.
+        let _ = self.tx.try_send(json!({"requestId": uuid::Uuid::new_v4().to_string(), "path": "/v1/terminal/unfollow", "body": {"sessionId": self.session_id}}));
     }
 }
 async fn rpc(
@@ -618,7 +644,9 @@ impl Cloud {
             info: Value::Null,
             share_helper_ready: Arc::new(tokio::sync::Mutex::new(false)),
             termination: Default::default(),
+            followers: Default::default(),
         };
+        let followers = session.followers.clone();
         let own = id.to_owned();
         let task_session = session.clone();
         tokio::spawn(async move {
@@ -654,7 +682,17 @@ impl Cloud {
                         let frame: Value = serde_json::from_slice(&bytes)
                             .map_err(|_| "Cloud connector returned invalid data")?;
                         if let Some(event) = frame["event"].as_str() {
-                            if event == "files" {
+                            if event == "terminal" {
+                                // Pushed output goes to its follower; a follower that cannot keep
+                                // up for 10 s is dropped rather than holding up every other reply.
+                                let id = frame["sessionId"].as_str().unwrap_or_default().to_owned();
+                                let follower = followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id).cloned();
+                                if let Some(follower) = follower {
+                                    if tokio::time::timeout(Duration::from_secs(10), follower.send(frame)).await.is_err() {
+                                        followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
+                                    }
+                                }
+                            } else if event == "files" {
                                 if tasks.len() > 32 {
                                     return Err("Too many cloud file requests".into());
                                 }
@@ -734,6 +772,65 @@ impl Cloud {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn followed_terminal_streams_pushed_output_batches_input_and_stops_on_drop() {
+        use yougori_cli::terminal_stream::Frame;
+        let (tx, mut rx) = mpsc::channel(128);
+        let (bridge, _events) = mpsc::channel(128);
+        let session = Session {
+            tx,
+            pending: Default::default(),
+            stop: Default::default(),
+            bridge,
+            info: Value::Null,
+            share_helper_ready: Arc::new(tokio::sync::Mutex::new(false)),
+            termination: Default::default(),
+            followers: Default::default(),
+        };
+        // A connector stand-in: answers every request, slowly for writes, and records them.
+        let pending = session.pending.clone();
+        let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let recorded = requests.clone();
+        tokio::spawn(async move {
+            while let Some(request) = rx.recv().await {
+                if request["path"] == "/v1/terminal/write" {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                recorded.lock().unwrap().push(request.clone());
+                let waiting = pending.lock().unwrap().remove(request["requestId"].as_str().unwrap_or_default());
+                if let Some(send) = waiting {
+                    let _ = send.send(Ok(json!({"ok": true})));
+                }
+            }
+        });
+        let follower = session.follow_terminal("term-1", 5).await.unwrap();
+        assert_eq!(requests.lock().unwrap()[0]["body"], json!({"sessionId": "term-1", "offset": 5}));
+        let pusher = session.followers.lock().unwrap().get("term-1").cloned().unwrap();
+        let mut channel = crate::workspace::terminal_stream::cloud_channel(session.clone(), "term-1".into(), follower, 5);
+        pusher.send(json!({"sessionId": "term-1", "offset": 8, "data": B64.encode(b"abc")})).await.unwrap();
+        assert_eq!(channel.rx.recv().await.unwrap().unwrap(), Frame::Output { offset: 8, bytes: b"abc".to_vec() });
+        // Keystrokes queued while a write is in flight travel together in the next one.
+        channel.tx.send(Frame::Input(b"x".to_vec())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        channel.tx.send(Frame::Input(b"y".to_vec())).await.unwrap();
+        channel.tx.send(Frame::Input(b"z".to_vec())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let writes: Vec<String> = requests.lock().unwrap().iter().filter(|r| r["path"] == "/v1/terminal/write")
+            .map(|r| String::from_utf8(B64.decode(r["body"]["data"].as_str().unwrap()).unwrap()).unwrap()).collect();
+        assert_eq!(writes, ["x", "yz"]);
+        // Output that skips ahead cannot be shown safely; the stream ends with an error.
+        pusher.send(json!({"sessionId": "term-1", "offset": 20, "data": B64.encode(b"late")})).await.unwrap();
+        assert!(channel.rx.recv().await.unwrap().unwrap_err().contains("cursor expired"));
+        drop(channel);
+        // Dropping the stream drops its follower, which tells the connector to stop pushing.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline && !requests.lock().unwrap().iter().any(|r| r["path"] == "/v1/terminal/unfollow") {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(requests.lock().unwrap().iter().any(|r| r["path"] == "/v1/terminal/unfollow"));
+        assert!(session.followers.lock().unwrap().is_empty());
+    }
+
     use super::*;
 
     #[cfg(windows)]

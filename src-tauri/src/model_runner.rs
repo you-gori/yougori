@@ -411,12 +411,36 @@ fn is_server_command(command: &str) -> bool {
 fn shell_quote(v: &str) -> String {
     format!("'{}'", v.replace('\'', "'\"'\"'"))
 }
+/// An open connection to a running model server's port and its API key, for callers that
+/// speak HTTP over it themselves (Closed Neo Grid members stream replies this way).
+pub(crate) async fn model_socket(app: &AppHandle, id: &str) -> Result<(crate::workspace::BoxStream, String), String> {
+    let (stream, _, token) = open_model(app, id).await?;
+    Ok((stream, token))
+}
 async fn model_connection(
     app: &AppHandle,
     id: &str,
     path: &str,
     body: Option<&Value>,
 ) -> Result<crate::workspace::BoxStream, String> {
+    let encoded = body.map(Value::to_string).unwrap_or_default();
+    if encoded.len() > 65536 {
+        return Err("Conversation exceeds 64 KiB; start a new chat".into());
+    }
+    let (mut stream, options, token) = open_model(app, id).await?;
+    let mut control = if path == "/v1/yougori/optimizer" { format!("X-Yougori-GPU-Control: {}\r\n", crate::projects::secrets::variable(&options,"YOUGORI_GPU_CONTROL_TOKEN")?) } else {String::new()};
+    // Servers started before the owner credential existed accept these settings with the API key.
+    if ADMIN_PATHS.contains(&path) {
+        if let Ok(admin) = crate::projects::secrets::variable(&options, ADMIN_TOKEN) { control.push_str(&format!("X-Yougori-Admin: {admin}\r\n")); }
+    }
+    let request=format!("{} {path} HTTP/1.1\r\nHost: localhost\r\n{control}Authorization: Bearer {token}\r\nX-Yougori-Client: yougori\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{encoded}",if body.is_some(){"POST"}else{"GET"},encoded.len());
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(stream)
+}
+async fn open_model(app: &AppHandle, id: &str) -> Result<(crate::workspace::BoxStream, yougori_cli::workload::Options, String), String> {
     let runtime = app.state::<RuntimeManager>();
     let env = app
         .state::<PlatformStore>()
@@ -431,11 +455,7 @@ async fn model_connection(
     let options = runtime.workload_options(env.runtime_id.as_deref().unwrap_or(id))?;
     let token = crate::projects::secrets::variable(&options,"YOUGORI_MODEL_TOKEN")?;
     if token.len()!=64 || !token.bytes().all(|c|c.is_ascii_hexdigit()) { return Err("This environment is not a Yougori model workload".into()); }
-    let encoded = body.map(Value::to_string).unwrap_or_default();
-    if encoded.len() > 65536 {
-        return Err("Conversation exceeds 64 KiB; start a new chat".into());
-    }
-    let mut stream: crate::workspace::BoxStream = if env.kind == EnvironmentKind::Cloud {
+    let stream: crate::workspace::BoxStream = if env.kind == EnvironmentKind::Cloud {
         Box::new(runtime.cloud.service_stream(&env.id, 8000).await?)
     } else {
         let (endpoint, credential) = runtime.workspace_endpoint(&env).await?;
@@ -450,17 +470,7 @@ async fn model_connection(
         "Model server is starting. Check Logs for installation/download progress and try again."
     })?)
     };
-    let mut control = if path == "/v1/yougori/optimizer" { format!("X-Yougori-GPU-Control: {}\r\n", crate::projects::secrets::variable(&options,"YOUGORI_GPU_CONTROL_TOKEN")?) } else {String::new()};
-    // Servers started before the owner credential existed accept these settings with the API key.
-    if ADMIN_PATHS.contains(&path) {
-        if let Ok(admin) = crate::projects::secrets::variable(&options, ADMIN_TOKEN) { control.push_str(&format!("X-Yougori-Admin: {admin}\r\n")); }
-    }
-    let request=format!("{} {path} HTTP/1.1\r\nHost: localhost\r\n{control}Authorization: Bearer {token}\r\nX-Yougori-Client: yougori\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{encoded}",if body.is_some(){"POST"}else{"GET"},encoded.len());
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(stream)
+    Ok((stream, options, token))
 }
 fn model_error(status_line: &str, body: &[u8]) -> Option<String> {
     if status_line.split_whitespace().nth(1) == Some("200") {

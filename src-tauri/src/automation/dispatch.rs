@@ -129,6 +129,7 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
         "model_registry_connect" | "model_registry_request" | "model_registry_upload" | "model_registry_download" | "model_registry_pause" | "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
         "security_monitor" | "security_audit" | "security_lockdown" | "security_unlock" => dispatch_group_14(app,method,p,progress),
+        "grid_status" | "grid_create" | "grid_password" | "grid_delete" | "grid_join" | "grid_leave" | "grid_plan_add" | "grid_plan_update" | "grid_plan_remove" | "grid_member_remove" | "grid_key_create" | "grid_key_revoke" => dispatch_group_15(app,method,p,progress),
         "swarm_dispatch" => Box::pin(async move {crate::swarm::swarm_dispatch(arg(p,"request")?,app.clone()).await}),
         _ => Box::pin(async move { Err(format!("No backend handler for {method}")) }),
     }
@@ -890,6 +891,26 @@ dispatch_group! { dispatch_group_14(app, method, p, progress, store, runtime, ba
     }
 }
 
+// Closed Neo Grid: the company hub on this computer and this computer's membership.
+// Passwords arrive only through stdin or private request files (see parse.rs).
+dispatch_group! { dispatch_group_15(app, method, p, progress, store, runtime, backup, manager, window) =>
+    match method {
+        "grid_status" => crate::grid::grid_status(app.clone()).await,
+        "grid_create" => crate::grid::grid_create(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "hostname")?, app.clone()).await,
+        "grid_password" => crate::grid::grid_password(arg(p, "password")?, app.clone()).await,
+        "grid_delete" => crate::grid::grid_delete(app.clone()).await,
+        "grid_join" => crate::grid::grid_join(arg(p, "company")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "name")?, arg(p, "fingerprint")?, app.clone()).await,
+        "grid_leave" => crate::grid::grid_leave(app.clone()).await,
+        "grid_plan_add" => crate::grid::grid_plan_add(arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, app.clone()).await,
+        "grid_plan_update" => crate::grid::grid_plan_update(arg(p, "planId")?, arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, app.clone()).await,
+        "grid_plan_remove" => crate::grid::grid_plan_remove(arg(p, "planId")?, app.clone()).await,
+        "grid_member_remove" => crate::grid::grid_member_remove(arg(p, "memberId")?, app.clone()).await,
+        "grid_key_create" => crate::grid::grid_key_create(arg(p, "name")?, app.clone()).await,
+        "grid_key_revoke" => crate::grid::grid_key_revoke(arg(p, "keyId")?, app.clone()).await,
+        _ => Err(format!("No backend handler for {method}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,7 +954,7 @@ mod tests {
             // Desktop plumbing with no CLI meaning: token streaming over a webview channel,
             // the one-time move of saved domains out of browser storage, and update-dialog
             // actions. The CLI performs its own release checks without backend automation.
-            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads") {
+            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads") {
                 assert!(yougori_cli::catalog::find(name).is_err());
                 continue;
             }

@@ -776,6 +776,7 @@ impl Control {
                 | "get_environment_health_check"
                 | "get_environment_log_window"
                 | "market_status"
+                | "grid_status"
                 | "swarm_dispatch"
                 // A kill switch must not wait behind an environment's long-running
                 // job lease; lockdown serializes per environment on its own.
