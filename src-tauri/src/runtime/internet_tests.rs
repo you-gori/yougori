@@ -104,17 +104,17 @@ async fn live_vm_internet_cable_preserves_process_and_display() -> Result<(), St
         let disk = manager.provision_vm(id, source.to_str().unwrap()).await?;
         for initial in [false, true, false] {
             let console = manager.start_vm_with_network(id, &disk.disk_path, &disk.source_path, &policy(), false, initial).await?;
-            let (pid, port) = { let vms = manager.vms.lock().await; let vm = vms.get(id).unwrap(); (vm.process_id, vm.qmp_port) };
+            let (pid, port) = { let vms = manager.vms.lock().await; let vm = vms.get(id).unwrap(); (vm.process_id, vm.qmp.clone()) };
             for enabled in [true, false, false, true] {
                 manager.update_vm_internet(id, enabled).await?;
                 assert_eq!(manager.vms.lock().await.get(id).unwrap().process_id, pid);
-                assert_eq!(vm::qmp_request(port, "query-status", None).await?["running"], true);
+                assert_eq!(vm::qmp_request(&port, "query-status", None).await?["running"], true);
                 let display_port: u16 = console.websocket_url.rsplit(':').next().unwrap().parse().unwrap();
                 tokio::net::TcpStream::connect(("127.0.0.1", display_port)).await.map_err(|e| e.to_string())?;
             }
             manager.vm_action(id, "pause").await?;
             manager.update_vm_internet(id, false).await?;
-            assert_eq!(vm::qmp_request(port, "query-status", None).await?["running"], false);
+            assert_eq!(vm::qmp_request(&port, "query-status", None).await?["running"], false);
             manager.vm_action(id, "stop").await?;
         }
         Ok(())

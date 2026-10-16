@@ -182,8 +182,9 @@ pulsing at an approximate home location: the Windows region's country centre, or
 time-zone reference point on macOS and Linux. That point is only drawn locally. While a
 worker waits for offers, it shares its IANA time zone (for example `Europe/Amsterdam`)
 with yougori.com, like a Neo Grid provider. The public Swarm Mining map shows ready
-workers at their time zone's reference point with a count; it never shows names,
-accounts, models or addresses. Pulses speed up while working, stop while paused and flash when offers
+workers at their time zone's reference point with a count, and the Swarm overview lists
+online workers per continent and per Hugging Face model; it never shows names, accounts
+or addresses. Pulses speed up while working, stop while paused and flash when offers
 arrive; set `YOUGORI_NO_ANIMATION=1` for a still view. In a terminal, `yougori
 bounty workers`, `status`, `offers` and `doctor WORKER` print readable views; pipes
 and scripts keep receiving JSON.

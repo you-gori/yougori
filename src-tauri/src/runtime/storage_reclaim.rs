@@ -347,17 +347,17 @@ impl RuntimeManager {
     async fn compact_idle_appliance(&self) -> Result<(), String> {
         // QEMU caches qcow2 metadata in memory. Pausing the idle runtime flushes
         // it to the file, so the size check sees the blocks the guest just trimmed.
-        let qmp_port = self.appliance.lock().await.as_ref().map(|process| process.qmp_port);
-        let paused = match qmp_port {
+        let qmp = self.appliance.lock().await.as_ref().map(|process| process.qmp.clone());
+        let paused = match &qmp {
             Some(port) => super::vm::qmp_execute_bounded(port, "stop", None, Duration::from_secs(15)).await,
             None => Err(String::new()),
         };
         // An unreachable control socket means nothing was paused (for example the
         // runtime just exited). Otherwise resume, even after a timed-out pause.
-        if let Some(port) = qmp_port.filter(|_| !matches!(&paused, Err(error) if error.is_empty() || error.starts_with("connect to virtual machine control socket"))) {
+        if let Some(port) = qmp.filter(|_| !matches!(&paused, Err(error) if error.is_empty() || error.starts_with("connect to virtual machine control socket"))) {
             let mut resumed = Err(String::new());
             for _ in 0..5 {
-                resumed = super::vm::qmp_execute_bounded(port, "cont", None, Duration::from_secs(5)).await;
+                resumed = super::vm::qmp_execute_bounded(&port, "cont", None, Duration::from_secs(5)).await;
                 if resumed.is_ok() { break; }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }

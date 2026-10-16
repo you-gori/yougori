@@ -40,12 +40,15 @@ impl Drop for MicroVmNetwork {
 impl MicroVmNetwork {
     /// `monitor_key` names this filter for monitoring: the VM's runtime ID, or
     /// `appliance:<storage root>` for a container appliance.
-    pub async fn new(enabled: bool, qmp_port: u16, monitor_key: &str) -> Result<Self, String> {
+    pub async fn new(enabled: bool, qmp: &super::qmp_socket::QmpSocket, monitor_key: &str) -> Result<Self, String> {
         // Register before taking the initial snapshot; a simultaneous address
         // change invalidates the snapshot instead of leaving an unobserved IP.
         let address_monitor = host_address_inventory::Monitor::start()?;
         let mut host_policy = HostPolicy {
             address_changes: address_monitor.state(),
+            // The container appliance pulls images from LAN registries; its
+            // containers refuse private ranges in their own namespaces.
+            private_networks: monitor_key.starts_with("appliance:"),
             ..HostPolicy::default()
         };
         host_policy
@@ -80,6 +83,7 @@ impl MicroVmNetwork {
             let failed = result.failed.clone();
             let connected = result.connected.clone();
             // QEMU rx is guest -> backend; tx is backend -> guest.
+            let qmp = qmp.clone();
             result.tasks.push(tokio::spawn(async move {
                 let ((mut reader, _), (mut writer, _)) =
                     tokio::time::timeout(Duration::from_secs(30), async {
@@ -139,7 +143,7 @@ impl MicroVmNetwork {
                     // both sockets alive on failure and additionally lower the
                     // link before waiting for normal VM teardown.
                     let _ = super::vm::qmp_execute_bounded(
-                        qmp_port,
+                        &qmp,
                         "set_link",
                         Some(serde_json::json!({"name":"net0", "up":false})),
                         Duration::from_secs(5),
@@ -212,6 +216,8 @@ fn active(grant: &Weak<AtomicBool>) -> bool {
 }
 #[derive(Default)]
 struct HostPolicy {
+    /// Private and shared address ranges are reachable with Internet on.
+    private_networks: bool,
     host_addresses: HashSet<[u8; 4]>,
     address_changes: Arc<host_address_inventory::Changes>,
     address_generation: u64,
@@ -292,6 +298,8 @@ fn internet_flow(packet: &[u8], outbound: bool) -> Option<(InternetFlow, bool)> 
     ))
 }
 
+use crate::security::network::{cloud_management_peer, private_peer};
+
 impl HostPolicy {
     fn snapshot_healthy(&self, now: Instant) -> bool {
         self.address_changes.healthy()
@@ -349,8 +357,9 @@ impl HostPolicy {
         if flow.peer == [10, 0, 2, 2]
             || flow.peer[0] == 0
             || flow.peer[0] == 127
-            || flow.peer[..2] == [169, 254]
             || flow.peer[0] >= 224
+            || cloud_management_peer(flow.peer)
+            || (!self.private_networks && private_peer(flow.peer) && flow.peer[..3] != [10, 0, 2])
         {
             return true;
         }
@@ -369,22 +378,28 @@ impl HostPolicy {
         {
             return true;
         }
-        if !self.address_changes.healthy() {
-            return false;
-        }
-        if self
-            .lookup_window
-            .is_none_or(|started| now.saturating_duration_since(started) >= Duration::from_secs(1))
-        {
-            self.lookup_window = Some(now);
-            self.address_lookups = 0;
-        }
-        if self.address_lookups >= MAX_ADDRESS_LOOKUPS_PER_SECOND {
-            return false;
-        }
-        self.address_lookups += 1;
-        if self.refresh_addresses_with(now, lookup).is_err() {
-            return false;
+        // A known flow whose lease ran out is re-verified against the current
+        // inventory. Only new flows and a stale inventory query the host, so
+        // guests with many open connections are not throttled by the budget.
+        let renewal = healthy && outbound && !syn && !internal && self.verified_flows.contains_key(&flow);
+        if !renewal {
+            if !self.address_changes.healthy() {
+                return false;
+            }
+            if self
+                .lookup_window
+                .is_none_or(|started| now.saturating_duration_since(started) >= Duration::from_secs(1))
+            {
+                self.lookup_window = Some(now);
+                self.address_lookups = 0;
+            }
+            if self.address_lookups >= MAX_ADDRESS_LOOKUPS_PER_SECOND {
+                return false;
+            }
+            self.address_lookups += 1;
+            if self.refresh_addresses_with(now, lookup).is_err() {
+                return false;
+            }
         }
         // Cache only destinations that remain Internet peers or have a live
         // explicit physical-host capability after this fresh inventory.
@@ -537,11 +552,14 @@ impl HostPolicy {
                             transport[port_offset + 1],
                         ]) == 53;
                 }
+                // Internet means the public Internet: not the user's LAN, VPNs,
+                // other VMs on this PC or the cloud host's management services.
                 if internet
                     && peer[0] != 0
                     && peer[0] != 127
-                    && peer[..2] != [169, 254]
                     && peer[0] < 224
+                    && !cloud_management_peer(peer_address)
+                    && (self.private_networks || !private_peer(peer_address))
                 {
                     return true;
                 }
@@ -656,6 +674,7 @@ mod tests {
     #[test]
     fn new_lan_flow_refreshes_inventory_and_address_changes_revoke_cached_flows() {
         let mut policy = test_policy();
+        policy.private_networks = true;
         let now = Instant::now();
         let peer = [192, 168, 1, 20];
         let packet = tcp([10, 0, 2, 15], peer, 40000, 8080, 0x10);
@@ -739,6 +758,58 @@ mod tests {
             )))
         );
         assert!(!policy.allows(&packet, true, false));
+    }
+    #[test]
+    fn internet_reaches_only_the_public_internet_from_a_vm() {
+        let guest = [10, 0, 2, 15];
+        let now = Instant::now();
+        let mut vm = test_policy();
+        for peer in [[192, 168, 1, 5], [10, 9, 9, 9], [172, 20, 0, 1], [100, 64, 0, 1], [100, 100, 100, 200], [168, 63, 129, 16], [192, 0, 0, 192], [169, 254, 169, 254]] {
+            let packet = tcp(guest, peer, 40000, 443, 2);
+            assert!(vm.preflight_with(&packet, true, true, now, || panic!("refused ranges need no host lookup")), "{peer:?}");
+            assert!(!vm.allows(&packet, true, true), "a VM reached {peer:?}");
+        }
+        let public = tcp(guest, [1, 1, 1, 1], 40000, 443, 2);
+        assert!(vm.preflight_with(&public, true, true, now, || Ok(HashSet::from([[127, 0, 0, 1]]))));
+        assert!(vm.allows(&public, true, true));
+        let mut dns = ipv4(guest, [10, 0, 2, 3]);
+        dns[34..38].copy_from_slice(&[0x9c, 0x40, 0, 53]);
+        assert!(vm.allows(&dns, true, true), "the virtual resolver stays reachable");
+        let mut appliance = test_policy();
+        appliance.private_networks = true;
+        let registry = tcp(guest, [192, 168, 1, 5], 40000, 5000, 2);
+        assert!(appliance.preflight_with(&registry, true, true, now, || Ok(HashSet::from([[127, 0, 0, 1]]))));
+        assert!(appliance.allows(&registry, true, true), "the appliance may pull from a LAN registry");
+        for peer in [[168, 63, 129, 16], [100, 100, 100, 200], [192, 0, 0, 192]] {
+            assert!(!appliance.allows(&tcp(guest, peer, 40000, 80, 2), true, true), "the appliance reached {peer:?}");
+        }
+    }
+    #[test]
+    fn established_flows_renew_their_lease_without_host_lookups() {
+        let mut policy = test_policy();
+        let now = Instant::now();
+        let flows: Vec<_> = (0..2000_u16).map(|index| tcp([10, 0, 2, 15], [1, 1, (index >> 8) as u8, index as u8], 10000 + index, 443, 0x10)).collect();
+        for packet in &flows {
+            let (flow, _) = internet_flow(packet, true).unwrap();
+            policy.verified_flows.insert(flow, now);
+        }
+        let mut lookups = 0;
+        // Leases have expired; one inventory refresh serves every renewal.
+        let later = now + Duration::from_millis(1500);
+        for packet in &flows {
+            assert!(policy.preflight_with(packet, true, true, later, || {
+                lookups += 1;
+                Ok(HashSet::from([[127, 0, 0, 1]]))
+            }));
+            assert!(policy.allows(packet, true, true));
+        }
+        assert_eq!(lookups, 1, "renewals must not spend the new-flow lookup budget");
+        let fresh = tcp([10, 0, 2, 15], [8, 8, 4, 4], 50000, 443, 0x10);
+        assert!(policy.preflight_with(&fresh, true, true, later, || {
+            lookups += 1;
+            Ok(HashSet::from([[127, 0, 0, 1]]))
+        }));
+        assert_eq!(lookups, 2, "a flow the filter has never verified still queries the host");
     }
     #[test]
     fn active_flow_lease_expires_and_new_syn_always_rechecks() {
@@ -866,7 +937,7 @@ mod tests {
     }
     #[tokio::test]
     async fn refused_and_forwarded_frames_feed_the_security_monitor() {
-        let network = MicroVmNetwork::new(true, 0, "test-filter-monitor").await.unwrap();
+        let network = MicroVmNetwork::new(true, &crate::runtime::qmp_socket::QmpSocket::unused(), "test-filter-monitor").await.unwrap();
         let mut sockets = Vec::new();
         for argument in network.arguments().iter().filter(|value| value.starts_with("socket,")) {
             let port: u16 = argument.rsplit("port=").next().unwrap().parse().unwrap();
@@ -892,7 +963,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_host_grants_end_with_the_service_and_do_not_authorize_other_ports() {
-        let network = MicroVmNetwork::new(true, 0, "test-grants").await.unwrap();
+        let network = MicroVmNetwork::new(true, &crate::runtime::qmp_socket::QmpSocket::unused(), "test-grants").await.unwrap();
         let active = Arc::new(AtomicBool::new(true));
         network
             .grant_host_service(12345, Arc::downgrade(&active))
@@ -916,7 +987,7 @@ mod tests {
     }
     #[tokio::test]
     async fn filter_failure_retains_redirect_sockets_and_rejects_policy_updates() {
-        let network = MicroVmNetwork::new(false, 0, "test-filter-failure").await.unwrap();
+        let network = MicroVmNetwork::new(false, &crate::runtime::qmp_socket::QmpSocket::unused(), "test-filter-failure").await.unwrap();
         let mut sockets = Vec::new();
         for argument in network
             .arguments()
@@ -1011,18 +1082,21 @@ mod tests {
                 .await?;
             let host_service = Arc::new(AtomicBool::new(true));
             runtime.grant_qemu_host_service("internet-test", port, Arc::downgrade(&host_service), false).await?;
-            let qmp_port = runtime.vms.lock().await.get("internet-test")
-                .ok_or("MicroVM disappeared during host isolation test")?.qmp_port;
-            // Prove this is an active management listener before testing its
-            // guest isolation; a stale/unbound port would give a false pass.
-            crate::runtime::vm::qmp_request(qmp_port, "query-status", None).await?;
+            let qmp = runtime.vms.lock().await.get("internet-test")
+                .ok_or("MicroVM disappeared during host isolation test")?.qmp.clone();
+            // QMP is a private socket file with no TCP port. Prove it answers,
+            // then use a live but ungranted host listener for the isolation probe;
+            // a stale/unbound port would give a false pass.
+            crate::runtime::vm::qmp_request(&qmp, "query-status", None).await?;
+            let ungranted = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| error.to_string())?;
+            let ungranted = ungranted.local_addr().map_err(|error| error.to_string())?.port();
             for enabled in [false, true, false, true] {
                 runtime.update_vm_internet("internet-test", enabled).await?;
                 let blocked_qmp = runtime.execute_micro_vm_command("internet-test", &format!(
-                    "command -v nc >/dev/null && command -v timeout >/dev/null || exit 42; if timeout 3 nc -w 2 10.0.2.2:{qmp_port} </dev/null; then echo HOST_SOCKET_OPEN; exit 41; fi; echo HOST_SOCKET_BLOCKED"
+                    "command -v nc >/dev/null && command -v timeout >/dev/null || exit 42; if timeout 3 nc -w 2 10.0.2.2:{ungranted} </dev/null; then echo HOST_SOCKET_OPEN; exit 41; fi; echo HOST_SOCKET_BLOCKED"
                 )).await?;
                 if blocked_qmp.exit_code != 0 || !blocked_qmp.stdout.contains("HOST_SOCKET_BLOCKED") {
-                    return Err(format!("guest reached host QMP with internet={enabled}: {blocked_qmp:?}"));
+                    return Err(format!("guest reached an ungranted host port with internet={enabled}: {blocked_qmp:?}"));
                 }
                 let management = runtime
                     .execute_micro_vm_command(

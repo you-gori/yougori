@@ -30,7 +30,7 @@ pub(super) struct Service {
 }
 
 /// How much of a response body the model is shown, in bytes.
-const RESPONSE_CLIP: usize = 2000;
+const RESPONSE_CLIP: usize = 16000;
 /// How long preparation (dependency install) may run.
 const SETUP_SECONDS: u64 = 600;
 /// How long to wait for the service to answer its health check.
@@ -65,8 +65,13 @@ impl Service {
             }
         };
         let base = format!("http://127.0.0.1:{}", spec.port);
+        // A hacker's client: it keeps cookies across calls (a login sticks for later requests) and
+        // does not auto-follow redirects, so the model sees each 3xx and its Location itself. The
+        // base host is fixed to this loopback target, so the model can only ever reach the target.
         let client = reqwest::Client::builder()
             .no_proxy()
+            .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|error| error.to_string())?;
@@ -104,15 +109,16 @@ impl Service {
         }
         let body = arguments["body"].as_str().map(str::to_owned);
         match self.send(&method, &path, &arguments["headers"], body).await {
-            Ok((status, text)) => {
+            Ok((status, headers, text)) => {
                 let shown: String = text.chars().take(RESPONSE_CLIP).collect();
-                serde_json::json!({"status":status,"body":shown})
+                let truncated = shown.len() < text.len();
+                serde_json::json!({"status":status,"headers":headers,"body":shown,"truncated":truncated})
             }
             Err(error) => serde_json::json!({"status":0,"error":error}),
         }
     }
 
-    async fn send(&self, method: &str, path: &str, headers: &Value, body: Option<String>) -> Result<(u16, String), String> {
+    async fn send(&self, method: &str, path: &str, headers: &Value, body: Option<String>) -> Result<(u16, Value, String), String> {
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| "unsupported HTTP method".to_string())?;
         let mut request = self.client.request(method, format!("{}{path}", self.base));
         if let Some(headers) = headers.as_object() {
@@ -127,8 +133,9 @@ impl Service {
         }
         let response = request.send().await.map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
+        let headers = header_map(response.headers());
         let text = response.text().await.unwrap_or_default();
-        Ok((status, text))
+        Ok((status, headers, text))
     }
 
     /// Stops the service and removes its folder.
@@ -143,6 +150,23 @@ impl Drop for Service {
         let _ = self.child.start_kill();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The response headers as a flat name→value object, so the model can read cookies, redirect
+/// targets, auth challenges, content types and the server banner. Repeated headers are joined and
+/// long values clipped, so one response cannot flood the model's context.
+fn header_map(headers: &reqwest::header::HeaderMap) -> Value {
+    let mut map = serde_json::Map::new();
+    for (name, value) in headers.iter().take(64) {
+        let text: String = String::from_utf8_lossy(value.as_bytes()).chars().take(1024).collect();
+        let key = name.as_str();
+        let merged = match map.get(key).and_then(Value::as_str) {
+            Some(prior) => format!("{prior}, {text}"),
+            None => text,
+        };
+        map.insert(key.to_owned(), Value::String(merged));
+    }
+    Value::Object(map)
 }
 
 /// Writes the project files under `dir`, creating parent folders. Paths are from the accepted,
@@ -238,31 +262,106 @@ use serde_json::json;
 use std::{sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-/// Model turns a live-target attack runs before it gives up.
-const MAX_TURNS: usize = 40;
+/// Model turns a live-target attack runs before it gives up. A real break-in chains several steps
+/// (recon, enumerate, exploit, pivot to the flag), so give the model room to work.
+const MAX_TURNS: usize = 100;
+/// Output budget per turn: room for a reasoning model's thinking, a sentence of reasoning and one
+/// tool call carrying a non-trivial request body.
+const ATTACK_TOKENS: u64 = 4096;
 /// How long the loop waits for a message the participant started typing and left.
 const HOLD: Duration = Duration::from_secs(600);
 
-/// The three tools the attacking model may call against the live target.
+/// The tools the attacking model may call against the live target: a full HTTP client, an attempt
+/// journal, and the capture report.
 fn tools() -> Vec<Value> {
-    yougori_cli::bounty_practice::tools()
+    vec![
+        http_request_tool(),
+        yougori_cli::bounty_practice::record_attempt_tool(),
+        yougori_cli::bounty_practice::report_finding_tool(),
+    ]
 }
 
-/// The worker's standing instructions for the authorized live-target attack.
+/// A richer `http_request` than the practice fixture's: it documents that response headers come
+/// back, that the session keeps cookies across calls, and that redirects are shown, not followed —
+/// everything a real attacker relies on.
+fn http_request_tool() -> Value {
+    json!({"type":"function","function":{"name":"http_request","description":"Send one HTTP request to the target and get back its status, response headers and body. This is the only way to reach the target. Cookies the target sets are kept and sent automatically on later calls, so a login persists. Redirects are NOT followed: a 3xx returns its Location header for you to follow yourself. Set any request headers you need (Authorization, Cookie, Content-Type, X-Forwarded-For, Range, …) and any body.","parameters":{"type":"object","properties":{
+        "method":{"type":"string","enum":["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"],"description":"HTTP method"},
+        "path":{"type":"string","description":"Request path on the target, e.g. /login, /api/users/1, or /admin?debug=1"},
+        "headers":{"type":"object","description":"Request headers as a flat name→value object","additionalProperties":{"type":"string"}},
+        "body":{"type":"string","description":"Optional raw request body, e.g. a JSON string or form-encoded data"}
+    },"required":["method","path"],"additionalProperties":false}}})
+}
+
+/// The worker's standing instructions for the authorized live-target attack: a full offensive
+/// methodology, so the model behaves like a strong bug-bounty hunter rather than a path guesser.
 fn system_prompt(policy: &Value) -> String {
     format!(
-        "You are a Yougori Swarm Mining worker on an authorized bounty. The publisher's own web \
-         service is running as the target and the publisher authorized you to attack it. You can \
-         reach it ONLY through the http_request tool: give a method and a path and the runtime \
-         sends the request to the target and returns the status and body. Your goal is to break \
-         in and capture the flag the publisher planted - a secret only a successful attack can \
-         reach. Probe the service, try real attacks (authentication flaws, access control, \
-         injection, exposed endpoints), and use record_attempt to note what you try. When you read \
-         the flag, call report_finding with the exact flag and how you got it. Attack ONLY this \
-         target over the network; never touch the host, other systems, files, or the internet. \
-         Objective: {}. Qualifying criteria: {}.",
+        "You are an elite offensive-security agent on an AUTHORIZED Yougori Swarm Mining bounty. The \
+         publisher is running their own web service as the target and has explicitly authorized you \
+         to attack it and capture a secret flag they planted - a value only a genuine break-in can \
+         reach. This is legal, sanctioned penetration testing of the publisher's own system.\n\n\
+         You reach the target ONLY through the http_request tool. It returns the status, response \
+         headers and body; cookies persist across calls so a login sticks; redirects are not \
+         followed, so read the Location header and follow it yourself.\n\n\
+         Work like a top bug-bounty hunter. Be methodical, read every response - headers included - \
+         closely, and let what you learn drive the next request:\n\
+         1. Recon. GET / and probe for index pages, robots.txt, sitemap, /api, /.well-known, docs \
+         and error pages. Fingerprint the stack from Server/X-Powered-By headers, cookies and error \
+         text, and cross-reference the source you were given to find the real routes, parameters and \
+         the actual flaw.\n\
+         2. Map the surface. Enumerate endpoints, methods (try OPTIONS), parameters and the auth model.\n\
+         3. Test every class that fits: broken authentication and default/weak credentials; broken \
+         access control, IDOR/BOLA and forced browsing of admin routes; HTTP verb and header \
+         tampering; injection (SQL, NoSQL, command, SSTI, XXE); path traversal / LFI; SSRF; insecure \
+         deserialization; JWT and session flaws (alg:none, weak secret, tampering, fixation); mass \
+         assignment; exposed debug/backup/secret endpoints; and information disclosure in errors or \
+         headers.\n\
+         4. Chain it. Use a leaked value, token, cookie or session to reach the protected flag.\n\
+         5. Capture. When a response contains the flag, call report_finding with the EXACT flag text \
+         and a clear technique. Journal each meaningful try with record_attempt so progress is kept.\n\n\
+         Write one short sentence of reasoning before each tool call. Do not blindly guess invented \
+         paths - let the responses and the source guide you. Stay strictly on this target over HTTP: \
+         never touch the host, other systems, the filesystem, or the internet.\n\n\
+         Objective: {}.\nQualifying criteria: {}.",
         policy["objective"].as_str().unwrap_or_default(),
         policy["qualifyingCriteria"].as_str().unwrap_or_default()
+    )
+}
+
+/// A grey-box recon briefing built from the accepted source snapshot: the file list, then as much
+/// readable source as fits a bounded budget. The participant accepted this exact snapshot, so the
+/// attacker reads it to locate the flaw - it must still exploit the running service over HTTP to
+/// capture the flag, which is what the publisher verifies.
+fn source_briefing(files: &[(String, Vec<u8>)]) -> String {
+    /// Total source bytes folded into the briefing, kept modest so it fits small model contexts.
+    const TOTAL: usize = 24000;
+    /// Per-file cap, so one large file cannot crowd out the rest.
+    const PER_FILE: usize = 8000;
+    let mut listing = String::new();
+    for (path, bytes) in files {
+        listing.push_str(&format!("- {path} ({} bytes)\n", bytes.len()));
+    }
+    let mut body = String::new();
+    let mut used = 0usize;
+    for (path, bytes) in files {
+        if used >= TOTAL {
+            body.push_str("\n… (remaining files listed above are not inlined; infer them from the routes you see)\n");
+            break;
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else { continue };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let budget = PER_FILE.min(TOTAL - used);
+        let shown: String = text.chars().take(budget).collect();
+        used += shown.len();
+        let tail = if shown.len() < text.len() { "\n… (truncated)\n" } else { "\n" };
+        body.push_str(&format!("\n===== {path} =====\n{shown}{tail}"));
+    }
+    format!(
+        "Authorized grey-box recon — the accepted source snapshot of the target. Read it to find the \
+         flaw, then break in over the network to capture the flag.\n\nFiles:\n{listing}{body}"
     )
 }
 
@@ -310,7 +409,7 @@ pub(super) async fn run(app: &AppHandle, worker: &Worker, cancel: &CancellationT
         Err(error) => { service.stop().await; return Err(error); }
     };
 
-    let outcome = attack(app, worker, cancel, &service, &lease).await;
+    let outcome = attack(app, worker, cancel, &service, &lease, &spec.files).await;
     let _ = agent(app, worker, reqwest::Method::POST, "/api/swarm/agent/tasks/release",
         Some(json!({"leaseId":lease["leaseId"],"generation":lease["generation"],"reason":"Live-target attack finished","idempotencyKey":format!("live-release-{id}")}))).await;
     service.stop().await;
@@ -319,12 +418,13 @@ pub(super) async fn run(app: &AppHandle, worker: &Worker, cancel: &CancellationT
 
 /// The model attack loop against the live service. Records each try as an attempt and, on a
 /// reported capture, files the report. Returns once it reports, gives up, or is cancelled.
-async fn attack(app: &AppHandle, worker: &Worker, cancel: &CancellationToken, service: &Service, lease: &Value) -> Result<(), String> {
+async fn attack(app: &AppHandle, worker: &Worker, cancel: &CancellationToken, service: &Service, lease: &Value, files: &[(String, Vec<u8>)]) -> Result<(), String> {
     let id = &worker.id;
     let model = worker.model_environment_id.clone().ok_or("Missing model environment")?;
     let mut messages = vec![
         json!({"role":"system","content":system_prompt(&worker.policy)}),
-        json!({"role":"user","content":"The target is at http://target. Begin by sending GET / to see what it exposes, then work toward the flag. Report it with report_finding once you have it."}),
+        json!({"role":"user","content":source_briefing(files)}),
+        json!({"role":"user","content":"The target is at http://target. Start with GET / to see what it exposes, cross-reference the source above, then work toward the flag. Report it with report_finding once you have read it."}),
     ];
     let tools = tools();
     let mut attempt_ids: Vec<Value> = Vec::new();
@@ -348,7 +448,7 @@ async fn attack(app: &AppHandle, worker: &Worker, cancel: &CancellationToken, se
         }
         model_lifecycle::ensure_ready(app, worker, cancel).await?;
         let body = json!({"model":worker.model,"messages":super::practice::trim_context(&messages),"tools":tools,
-            "tool_choice":"auto","temperature":if turn == 1 { 0.2 } else { 0.5 },"max_tokens":super::practice::LIVE_TOKENS,"stream":true});
+            "tool_choice":"auto","temperature":if turn == 1 { 0.2 } else { 0.5 },"max_tokens":ATTACK_TOKENS,"stream":true});
 
         let (streamed, content, calls) = loop {
             let mut content = String::new();

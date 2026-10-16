@@ -60,8 +60,100 @@ pub(super) fn create_private(path: &Path) -> std::io::Result<File> {
     }
 }
 
+/// A directory only the current user can open, whose new files inherit that
+/// protection, including files created by helper processes that pass no ACL.
+#[cfg(unix)]
+pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(windows)]
+pub(super) fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES},
+        Storage::FileSystem::CreateDirectoryW,
+    };
+    let sid = yougori_cli::wire::user_sid()?;
+    let sddl = format!("D:P(A;OICI;FA;;;{sid})\0").encode_utf16().collect::<Vec<_>>();
+    let path = path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    unsafe {
+        let mut descriptor = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor, bInheritHandle: 0,
+        };
+        let created = CreateDirectoryW(path.as_ptr(), &attributes);
+        let error = std::io::Error::last_os_error();
+        LocalFree(descriptor);
+        if created == 0 { return Err(error); }
+        Ok(())
+    }
+}
+
+/// Replaces an existing directory's DACL with the private one above. Windows
+/// recomputes the inherited entries of everything inside it.
+#[cfg(windows)]
+pub(super) fn protect_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW, SE_FILE_OBJECT},
+            GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        },
+    };
+    let sid = yougori_cli::wire::user_sid()?;
+    let sddl = format!("D:P(A;OICI;FA;;;{sid})\0").encode_utf16().collect::<Vec<_>>();
+    let path = path.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    unsafe {
+        let mut descriptor = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let (mut present, mut defaulted, mut dacl) = (0, 0, std::ptr::null_mut());
+        let result = if GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted) == 0 || present == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            match SetNamedSecurityInfoW(path.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(), std::ptr::null_mut(), dacl, std::ptr::null_mut()) {
+                0 => Ok(()),
+                error => Err(std::io::Error::from_raw_os_error(error as i32)),
+            }
+        };
+        LocalFree(descriptor);
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_directories_protect_files_created_inside_them() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = parent.path().join("security-test");
+        super::create_private_directory(&directory).unwrap();
+        std::fs::write(directory.join("tpm.nv"), b"state").unwrap();
+        assert!(super::create_private_directory(&directory).is_err(), "an existing directory is never adopted");
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        #[cfg(windows)] {
+            let output = std::process::Command::new("icacls").arg(directory.join("tpm.nv")).output().unwrap();
+            let acl = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            assert!(output.status.success());
+            for broad in ["users:", "everyone:", "authenticated users:", "administrators:"] {
+                assert!(!acl.contains(broad), "inherited a broad grant: {acl}");
+            }
+        }
+    }
+
     use super::*;
     #[test]
     fn firmware_credential_is_private_and_never_in_its_argument() {

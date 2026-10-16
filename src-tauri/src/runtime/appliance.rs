@@ -877,7 +877,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         let _boot_trace = PerfSpan::new("appliance boot");
         let mut port_reservations = super::vm::VmPortReservations::new();
         let agent_port = port_reservations.reserve_available(&[])?;
-        let qmp_port = port_reservations.reserve_available(&[agent_port])?;
+        let qmp = super::qmp_socket::QmpSocket::allocate()?;
         let endpoint = AgentEndpoint {
             base_url: format!("http://127.0.0.1:{agent_port}"),
             token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
@@ -901,8 +901,8 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         for gpu_enabled in if cfg!(target_os = "windows") { vec![true, false] } else { vec![false] } {
             if !gpu_enabled && gpu_launch.explicit() { break; }
             for accelerator in accelerators {
-                let internet = super::microvm_network::MicroVmNetwork::new(true, qmp_port, &format!("appliance:{}", self.data_root.display())).await?;
-                let (mut child, boot_token) = self.spawn_appliance(&endpoint, accelerator, gpu_enabled, &gpu_launch, capacity, max_memory_mib, qmp_port, internet.arguments())?;
+                let internet = super::microvm_network::MicroVmNetwork::new(true, &qmp, &format!("appliance:{}", self.data_root.display())).await?;
+                let (mut child, boot_token) = self.spawn_appliance(&endpoint, accelerator, gpu_enabled, &gpu_launch, capacity, max_memory_mib, &qmp, internet.arguments())?;
                 let boot_timeout = super::host_platform::guest_boot_timeout();
                 let boot_started = Instant::now();
                 let storage_deadline = Instant::now() + Duration::from_secs(31 * 60);
@@ -936,7 +936,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                             _boot_token: boot_token,
                             child,
                             endpoint: endpoint.clone(),
-                            qmp_port,
+                            qmp,
                             max_memory_mib,
                             _port_reservations: port_reservations,
                             capacity,
@@ -1111,7 +1111,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         gpu_launch: &super::gpu::GpuLaunch,
         capacity: super::appliance_capacity::ApplianceCapacity,
         max_memory_mib: usize,
-        qmp_port: u16,
+        qmp: &super::qmp_socket::QmpSocket,
         network_arguments: &[String],
     ) -> Result<(tokio::process::Child, super::boot_token::BootTokenFile), String> {
         let port = endpoint
@@ -1129,7 +1129,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
             .map_err(|error| format!("create {}: {error}", error_path.display()))?;
         let appliance_cpus = capacity.cpus.to_string();
         let appliance_memory = format!("{},slots=64,maxmem={}M", capacity.memory_mib, max_memory_mib);
-        let mut command = tokio::process::Command::new(&self.layout.qemu_system);
+        let mut command = super::qemu_command(&self.layout, &self.layout.qemu_system)?;
         command
             .current_dir(self.layout.qemu_system.parent().unwrap_or(&self.layout.root))
             .args([
@@ -1190,7 +1190,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                 "-monitor",
                 "none",
                 "-qmp",
-                &format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"),
+                &qmp.argument(),
                 "-no-reboot",
                 "-rtc",
                 "base=utc",
@@ -1209,7 +1209,6 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         }
         command.args(network_arguments);
         command
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(error_log));
         configure_background_process(&mut command);

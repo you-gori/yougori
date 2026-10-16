@@ -101,6 +101,11 @@ func hardenedContainerSpec(original []byte) ([]byte, error) {
 			seccomp.DefaultAction != "SCMP_ACT_KILL_PROCESS" && seccomp.DefaultAction != "SCMP_ACT_TRAP") {
 		return nil, fmt.Errorf("container has no enforcing seccomp profile; stop it and save its configuration to apply the secure runtime profile")
 	}
+	restricted, err := restrictFileAttributes(linux["seccomp"])
+	if err != nil {
+		return nil, err
+	}
+	linux["seccomp"] = restricted
 	process["noNewPrivileges"] = json.RawMessage("true")
 	var capabilities map[string][]string
 	if raw := process["capabilities"]; len(raw) > 0 && json.Unmarshal(raw, &capabilities) != nil {
@@ -204,6 +209,99 @@ func hardenedContainerSpec(original []byte) ([]byte, error) {
 	return json.Marshal(spec)
 }
 
+// Storage limits are ext4 project quotas. Without a user namespace a
+// container's root owns its files and could move them to the unlimited
+// project 0 (chattr -p 0, or chattr -P on a directory) and fill the shared
+// store. Changing file attributes is refused; reading them (lsattr) works.
+var deniedAttributeIoctls = []uint32{
+	0x401c5820, // FS_IOC_FSSETXATTR: project ID and inheritance
+	0x40086602, // FS_IOC_SETFLAGS
+	0x40046602, // FS_IOC32_SETFLAGS
+}
+
+// file_setattr (Linux 6.17) is the system-call form of FS_IOC_FSSETXATTR.
+var deniedAttributeSyscalls = map[string]bool{"ioctl": true, "file_setattr": true}
+
+// restrictFileAttributes rewrites the profile's ioctl permission so every
+// command except the attribute setters is allowed. A seccomp rule cannot say
+// "unless cmd is X or Y" (runc turns several conditions on one argument into
+// separate rules that each allow), so the permitted commands are covered by
+// masked prefix rules and the denied ones fall through to the errno default.
+// The kernel truncates cmd to 32 bits; the masks ignore the upper half.
+func restrictFileAttributes(raw json.RawMessage) (json.RawMessage, error) {
+	var profile map[string]json.RawMessage
+	if json.Unmarshal(raw, &profile) != nil || profile == nil {
+		return nil, fmt.Errorf("cannot read the container seccomp profile")
+	}
+	var rules []map[string]json.RawMessage
+	if existing := profile["syscalls"]; len(existing) > 0 && string(existing) != "null" && json.Unmarshal(existing, &rules) != nil {
+		return nil, fmt.Errorf("cannot read the container seccomp rules")
+	}
+	kept := make([]any, 0, len(rules)+64)
+	for _, rule := range rules {
+		var action string
+		var names []string
+		if json.Unmarshal(rule["action"], &action) != nil || json.Unmarshal(rule["names"], &names) != nil {
+			return nil, fmt.Errorf("invalid container seccomp rule")
+		}
+		if action == "SCMP_ACT_ALLOW" || action == "SCMP_ACT_LOG" {
+			remaining := make([]string, 0, len(names))
+			for _, name := range names {
+				if !deniedAttributeSyscalls[name] {
+					remaining = append(remaining, name)
+				}
+			}
+			if len(remaining) == 0 {
+				continue
+			}
+			rule["names"], _ = json.Marshal(remaining)
+		}
+		kept = append(kept, rule)
+	}
+	for _, prefix := range permittedIoctlPrefixes(deniedAttributeIoctls) {
+		kept = append(kept, map[string]any{
+			"names":  []string{"ioctl"},
+			"action": "SCMP_ACT_ALLOW",
+			"args":   []map[string]any{{"index": 1, "value": prefix[0], "valueTwo": prefix[1], "op": "SCMP_CMP_MASKED_EQ"}},
+		})
+	}
+	profile["syscalls"], _ = json.Marshal(kept)
+	return json.Marshal(profile)
+}
+
+// permittedIoctlPrefixes returns {mask, value} pairs whose union is every
+// 32-bit command except the denied ones.
+func permittedIoctlPrefixes(denied []uint32) [][2]uint32 {
+	var prefixes [][2]uint32
+	var cover func(value uint32, length uint, denied []uint32)
+	cover = func(value uint32, length uint, denied []uint32) {
+		if len(denied) == 0 {
+			mask := uint32(0)
+			if length > 0 {
+				mask = ^uint32(0) << (32 - length)
+			}
+			prefixes = append(prefixes, [2]uint32{mask, value})
+			return
+		}
+		if length == 32 {
+			return
+		}
+		bit := uint32(1) << (31 - length)
+		var clear, set []uint32
+		for _, command := range denied {
+			if command&bit == 0 {
+				clear = append(clear, command)
+			} else {
+				set = append(set, command)
+			}
+		}
+		cover(value, length+1, clear)
+		cover(value|bit, length+1, set)
+	}
+	cover(0, 0, denied)
+	return prefixes
+}
+
 func secureSavedContainer(ctx context.Context, containerNamespace, name string) error {
 	output, err := run(ctx, "nerdctl", "--namespace", containerNamespace, "inspect", "--format", "{{.Id}}", name)
 	if err != nil {
@@ -243,4 +341,50 @@ func secureSavedContainer(ctx context.Context, containerNamespace, name string) 
 		return fmt.Errorf("save container security configuration: %w", err)
 	}
 	return nil
+}
+
+// savedContainerResources reads a container's CPU and memory limits, or the
+// smallest standard allocation when it has none or no longer exists.
+func savedContainerResources(ctx context.Context, containerNamespace, name string) (float64, int64) {
+	const fallbackCPUs, fallbackMemory = 1.0, int64(1 << 30)
+	output, err := run(ctx, "nerdctl", "--namespace", containerNamespace, "inspect", "--format", "{{.Id}}", name)
+	id := strings.TrimSpace(output.Stdout)
+	if err != nil || !safeID.MatchString(id) {
+		return fallbackCPUs, fallbackMemory
+	}
+	connection, err := grpc.NewClient("unix://"+containerdSocket, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fallbackCPUs, fallbackMemory
+	}
+	defer connection.Close()
+	ctx = metadata.AppendToOutgoingContext(ctx, "containerd-namespace", containerNamespace)
+	current, err := containers.NewContainersClient(connection).Get(ctx, &containers.GetContainerRequest{ID: id})
+	if err != nil || current.GetContainer().GetSpec() == nil {
+		return fallbackCPUs, fallbackMemory
+	}
+	cpus, memory := specResources(current.Container.Spec.Value)
+	if !validContainerResources(cpus, memory) {
+		return fallbackCPUs, fallbackMemory
+	}
+	return cpus, memory
+}
+
+func specResources(spec []byte) (float64, int64) {
+	var saved struct {
+		Linux struct {
+			Resources struct {
+				CPU struct {
+					Quota  int64  `json:"quota"`
+					Period uint64 `json:"period"`
+				} `json:"cpu"`
+				Memory struct {
+					Limit int64 `json:"limit"`
+				} `json:"memory"`
+			} `json:"resources"`
+		} `json:"linux"`
+	}
+	if json.Unmarshal(spec, &saved) != nil || saved.Linux.Resources.CPU.Period == 0 || saved.Linux.Resources.CPU.Quota <= 0 {
+		return 0, 0
+	}
+	return float64(saved.Linux.Resources.CPU.Quota) / float64(saved.Linux.Resources.CPU.Period), saved.Linux.Resources.Memory.Limit
 }

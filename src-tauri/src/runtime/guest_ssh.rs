@@ -52,7 +52,7 @@ impl RuntimeManager {
             let (stdout, stderr, status) = result?;
             Ok(CommandResult { exit_code: status.code().unwrap_or(1), stdout: String::from_utf8_lossy(&stdout).into_owned(), stderr: String::from_utf8_lossy(&stderr).into_owned() })
         }.await;
-        Self::remove_workspace_vm_port(qmp, port).await;
+        Self::remove_workspace_vm_port(&qmp, port).await;
         result
     }
 }

@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -97,10 +98,12 @@ func TestSavedSecurityUpgradePreservesWorkloadAndDropsDangerousCapabilities(t *t
 		t.Fatal("upgrade added or lost safe capabilities")
 	}
 	bl, al := before["linux"].(map[string]any), after["linux"].(map[string]any)
-	for _, field := range []string{"devices", "seccomp"} {
-		if !reflect.DeepEqual(bl[field], al[field]) {
-			t.Fatalf("security upgrade changed Linux %s", field)
-		}
+	if !reflect.DeepEqual(bl["devices"], al["devices"]) {
+		t.Fatal("security upgrade changed Linux devices")
+	}
+	seccomp := al["seccomp"].(map[string]any)
+	if seccomp["defaultAction"] != "SCMP_ACT_ERRNO" || !reflect.DeepEqual(seccomp["syscalls"].([]any)[0], bl["seccomp"].(map[string]any)["syscalls"].([]any)[0]) {
+		t.Fatal("security upgrade changed unrelated seccomp rules")
 	}
 	resources := al["resources"].(map[string]any)
 	if resources["pids"].(map[string]any)["limit"] != float64(4096) || resources["memory"].(map[string]any)["swap"] != float64(4294967296) {
@@ -136,5 +139,93 @@ func TestContainerResourcesRejectNonFiniteAndOutOfRangeCPU(t *testing.T) {
 	}
 	if !validContainerResources(0.15, 64<<20) || validContainerResources(1, 63<<20) {
 		t.Fatal("incorrect resource allocation bounds")
+	}
+}
+
+// A seccomp rule set as runc loads it: rules are alternatives, the conditions
+// of one rule must all hold, and anything unmatched gets the errno default.
+func seccompAllows(t *testing.T, profile []byte, name string, command uint64) bool {
+	t.Helper()
+	var parsed struct {
+		Syscalls []struct {
+			Names  []string
+			Action string
+			Args   []struct {
+				Index           int
+				Value, ValueTwo uint64
+				Op              string
+			}
+		}
+	}
+	if err := json.Unmarshal(profile, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range parsed.Syscalls {
+		if rule.Action != "SCMP_ACT_ALLOW" || !slices.Contains(rule.Names, name) {
+			continue
+		}
+		matched := true
+		for _, arg := range rule.Args {
+			if arg.Index != 1 || arg.Op != "SCMP_CMP_MASKED_EQ" {
+				t.Fatalf("unexpected seccomp condition %+v", arg)
+			}
+			matched = matched && command&arg.Value == arg.ValueTwo
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func TestContainersCannotMoveFilesOutOfTheirStorageProject(t *testing.T) {
+	original := []byte(`{"defaultAction":"SCMP_ACT_ERRNO","defaultErrnoRet":1,"architectures":["SCMP_ARCH_X86_64"],"syscalls":[{"names":["read","ioctl","file_setattr","file_getattr"],"action":"SCMP_ACT_ALLOW"},{"names":["ioctl"],"action":"SCMP_ACT_ALLOW","args":[{"index":1,"value":4294967295,"valueTwo":1075866144,"op":"SCMP_CMP_MASKED_EQ"}]},{"names":["ptrace"],"action":"SCMP_ACT_ERRNO"}]}`)
+	restricted, err := restrictFileAttributes(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range deniedAttributeIoctls {
+		for _, high := range []uint64{0, 1 << 32, 0xffffffff << 32} {
+			if seccompAllows(t, restricted, "ioctl", high|uint64(command)) {
+				t.Fatalf("ioctl %#x is still allowed", high|uint64(command))
+			}
+		}
+	}
+	if seccompAllows(t, restricted, "file_setattr", 0) {
+		t.Fatal("file_setattr is still allowed")
+	}
+	for _, name := range []string{"read", "file_getattr"} {
+		if !seccompAllows(t, restricted, name, 0) {
+			t.Fatalf("%s lost its permission", name)
+		}
+	}
+	if !strings.Contains(string(restricted), `"names":["ptrace"],"action":"SCMP_ACT_ERRNO"`) && !strings.Contains(string(restricted), `"action":"SCMP_ACT_ERRNO","names":["ptrace"]`) {
+		t.Fatal("unrelated rules were dropped", string(restricted))
+	}
+	samples := []uint64{0, 1, 0x5401 /* TCGETS */, 0x541b /* FIONREAD */, 0x801c581f /* FS_IOC_FSGETXATTR */, 0x80086601 /* FS_IOC_GETFLAGS */, 0xffffffff}
+	for _, command := range deniedAttributeIoctls {
+		samples = append(samples, uint64(command)-1, uint64(command)+1, uint64(command)^0x80000000, uint64(command)^1<<16)
+	}
+	random := uint64(0x9e3779b97f4a7c15)
+	for range 20000 {
+		random ^= random << 13
+		random ^= random >> 7
+		random ^= random << 17
+		samples = append(samples, random)
+	}
+	for _, command := range samples {
+		if slices.Contains(deniedAttributeIoctls, uint32(command)) {
+			continue
+		}
+		if !seccompAllows(t, restricted, "ioctl", command) {
+			t.Fatalf("ioctl %#x was refused", command)
+		}
+	}
+	again, err := restrictFileAttributes(restricted)
+	if err != nil || string(again) != string(restricted) {
+		t.Fatal("seccomp restriction is not idempotent", err)
+	}
+	if rules := len(permittedIoctlPrefixes(deniedAttributeIoctls)); rules > 96 {
+		t.Fatalf("%d ioctl rules would bloat every container's filter", rules)
 	}
 }

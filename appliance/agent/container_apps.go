@@ -94,7 +94,7 @@ func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'
 
 // One shell keeps the display, window manager and bind mount in a single
 // namespace and process group, so stopping the app removes all of them.
-func containerDisplayScript(directory, socket, home string, display int, drop []string) string {
+func containerDisplayScript(directory, socket, home, windowManagerConfig string, display int, drop []string) string {
 	quoted := make([]string, 0, len(drop))
 	for _, argument := range drop {
 		quoted = append(quoted, shellQuote(argument))
@@ -110,9 +110,82 @@ while [ ! -S %s/X%d ] && [ "$attempt" -lt 150 ] && kill -0 "$display" 2>/dev/nul
   sleep 0.1
   attempt=$((attempt+1))
 done
-DISPLAY=:%d %s openbox &
+DISPLAY=:%d %s openbox --config-file %s &
 wait "$display"
-`, shellQuote(directory), containerDisplayMount, shellQuote(home), privileged, display, shellQuote(socket), containerDisplayMount, display, display, privileged)
+`, shellQuote(directory), containerDisplayMount, shellQuote(home), privileged, display, shellQuote(socket), containerDisplayMount, display, display, privileged, shellQuote(windowManagerConfig))
+}
+
+// The window manager runs in the appliance, outside the container, and any X
+// client of the display can drive it with synthetic input. Openbox's stock
+// configuration opens a root menu with a terminal and binds keys to commands,
+// which would run a program in the appliance. This one only manages windows:
+// no menu entries, key bindings or actions that start a program.
+const containerWindowManagerDirectory = "/run/yougori-apps/openbox"
+
+const containerWindowManagerMenu = `<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Yougori"/>
+</openbox_menu>
+`
+
+const containerWindowManagerRC = `<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <focus><focusNew>yes</focusNew><followMouse>no</followMouse></focus>
+  <placement><policy>Smart</policy></placement>
+  <theme><titleLayout>LIMC</titleLayout></theme>
+  <desktops><number>1</number></desktops>
+  <keyboard/>
+  <mouse>
+    <dragThreshold>8</dragThreshold>
+    <doubleClickTime>200</doubleClickTime>
+    <context name="Frame">
+      <mousebind button="A-Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="A-Left" action="Drag"><action name="Move"/></mousebind>
+    </context>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind>
+      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
+      <mousebind button="Left" action="DoubleClick"><action name="ToggleMaximize"/></mousebind>
+    </context>
+    <context name="Top"><mousebind button="Left" action="Drag"><action name="Resize"><edge>top</edge></action></mousebind></context>
+    <context name="Bottom"><mousebind button="Left" action="Drag"><action name="Resize"><edge>bottom</edge></action></mousebind></context>
+    <context name="Left"><mousebind button="Left" action="Drag"><action name="Resize"><edge>left</edge></action></mousebind></context>
+    <context name="Right"><mousebind button="Left" action="Drag"><action name="Resize"><edge>right</edge></action></mousebind></context>
+    <context name="BRCorner"><mousebind button="Left" action="Drag"><action name="Resize"/></mousebind></context>
+    <context name="Client"><mousebind button="Left" action="Press"><action name="Focus"/><action name="Raise"/></mousebind></context>
+    <context name="Close"><mousebind button="Left" action="Click"><action name="Close"/></mousebind></context>
+    <context name="Maximize"><mousebind button="Left" action="Click"><action name="ToggleMaximize"/></mousebind></context>
+    <context name="Iconify"><mousebind button="Left" action="Click"><action name="Iconify"/></mousebind></context>
+  </mouse>
+  <menu><file>` + containerWindowManagerDirectory + `/menu.xml</file></menu>
+</openbox_config>
+`
+
+func containerWindowManagerConfig() (string, error) {
+	if err := os.MkdirAll(containerWindowManagerDirectory, 0o755); err != nil {
+		return "", err
+	}
+	for name, contents := range map[string]string{"menu.xml": containerWindowManagerMenu, "rc.xml": containerWindowManagerRC} {
+		temporary, err := os.CreateTemp(containerWindowManagerDirectory, "."+name+"-")
+		if err != nil {
+			return "", err
+		}
+		_, err = temporary.WriteString(contents)
+		if closeErr := temporary.Close(); err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = os.Chmod(temporary.Name(), 0o644)
+		}
+		if err == nil {
+			err = os.Rename(temporary.Name(), filepath.Join(containerWindowManagerDirectory, name))
+		}
+		if err != nil {
+			_ = os.Remove(temporary.Name())
+			return "", err
+		}
+	}
+	return filepath.Join(containerWindowManagerDirectory, "rc.xml"), nil
 }
 
 func containerAppArguments(container string, display int, commandLine string) []string {
@@ -149,7 +222,11 @@ func (a *graphicalApp) startContainerDisplay(spawn func(*exec.Cmd) (*exec.Cmd, e
 	if err != nil {
 		return nil, err
 	}
-	command := exec.Command("/bin/sh", "-c", containerDisplayScript(directory, socket, home, a.Display, drop))
+	config, err := containerWindowManagerConfig()
+	if err != nil {
+		return nil, err
+	}
+	command := exec.Command("/bin/sh", "-c", containerDisplayScript(directory, socket, home, config, a.Display, drop))
 	command.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + home, "LANG=C.UTF-8"}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Unshareflags: syscall.CLONE_NEWNS}
 	return spawn(command)

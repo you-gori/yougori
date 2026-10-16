@@ -153,6 +153,13 @@ impl RuntimeManager {
                 "Restart this environment to load the updated guest agent (terminal, sharing and apps).".into(),
             );
         }
+        if response.status() == reqwest::StatusCode::NOT_IMPLEMENTED {
+            // The guest refused before doing anything.
+            let detail = response.json::<serde_json::Value>().await.ok()
+                .and_then(|body| body["error"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "This environment's guest does not support that yet".into());
+            return Err(format!("YOUGORI_UNSUPPORTED_EXECUTION_CAPABILITY: {detail}. Nothing was started."));
+        }
         if !response.status().is_success() {
             return Err(response.text().await.unwrap_or_default());
         }
@@ -163,7 +170,7 @@ impl RuntimeManager {
         &self,
         environment: &Environment,
         guest_port: u16,
-    ) -> Result<(u16, u16), String> {
+    ) -> Result<(super::QmpSocket, u16), String> {
         if let Some(engine) = self.storage_runtime(environment.runtime_id.as_deref().unwrap_or(&environment.id))? { return Box::pin(engine.forward_workspace_vm_port(environment, guest_port)).await; }
 
         let id = environment.runtime_id.as_deref().unwrap_or(&environment.id);
@@ -173,9 +180,10 @@ impl RuntimeManager {
             .await
             .get(id)
             .ok_or("VM is not running")?
-            .qmp_port;
+            .qmp
+            .clone();
         let port = available_port()?;
-        let reply = tokio::time::timeout(Duration::from_secs(5), super::vm::qmp_request(qmp,"human-monitor-command",Some(json!({"command-line":format!("hostfwd_add net0 tcp:127.0.0.1:{port}-:{guest_port}")})))).await.map_err(|_| "VM port forwarding timed out")??;
+        let reply = tokio::time::timeout(Duration::from_secs(5), super::vm::qmp_request(&qmp,"human-monitor-command",Some(json!({"command-line":format!("hostfwd_add net0 tcp:127.0.0.1:{port}-:{guest_port}")})))).await.map_err(|_| "VM port forwarding timed out")??;
         if reply
             .as_str()
             .is_some_and(|message| !message.trim().is_empty())
@@ -185,7 +193,7 @@ impl RuntimeManager {
         Ok((qmp, port))
     }
 
-    pub async fn remove_workspace_vm_port(qmp: u16, port: u16) {
+    pub async fn remove_workspace_vm_port(qmp: &super::QmpSocket, port: u16) {
         let _ = super::vm::qmp_execute_bounded(
             qmp,
             "human-monitor-command",

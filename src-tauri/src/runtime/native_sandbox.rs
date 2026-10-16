@@ -59,6 +59,43 @@ fn is_volume_root(path: &Path) -> bool {
         && components.next().is_none()
 }
 
+/// A folder that holds more than one program's files or the user's own data.
+/// An application there receives read access to its own executable only:
+/// picking `Downloads\tool.exe` must not expose the rest of Downloads.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn shared_application_folder(directory: &Path) -> bool {
+    shared_application_folder_with(directory, |name| {
+        std::env::var_os(name).map(PathBuf::from).and_then(|path| path.canonicalize().ok())
+    })
+}
+
+fn shared_application_folder_with(directory: &Path, known: impl Fn(&str) -> Option<PathBuf>) -> bool {
+    let same = |left: &Path, right: &Path| path_is_within(left, right) && path_is_within(right, left);
+    let parent = directory.parent();
+    if is_volume_root(directory) || parent.is_some_and(is_volume_root) {
+        return true;
+    }
+    // A profile or OneDrive root, any folder above one, or a folder directly
+    // inside one: Desktop, Documents, Downloads, .ssh, AppData and so on.
+    for name in ["USERPROFILE", "PUBLIC", "OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+        if let Some(root) = known(name) {
+            if path_is_within(&root, directory) || parent.is_some_and(|parent| same(parent, &root)) {
+                return true;
+            }
+            if name == "USERPROFILE" && same(directory, &root.join("AppData").join("LocalLow")) {
+                return true;
+            }
+        }
+    }
+    for name in ["APPDATA", "LOCALAPPDATA", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+        if known(name).is_some_and(|root| same(directory, &root) || (name == "LOCALAPPDATA" && same(directory, &root.join("Programs")))) {
+            return true;
+        }
+    }
+    // Everything under Windows and the temporary folders belongs to many programs.
+    ["SystemRoot", "TEMP", "TMP"].iter().any(|name| known(name).is_some_and(|root| path_is_within(directory, &root)))
+}
+
 fn path_is_within(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
     {
@@ -499,7 +536,11 @@ mod platform {
         let application_directory = executable
             .parent()
             .ok_or("the selected application has no parent folder")?;
-        run_icacls(application_directory, &identity, "(OI)(CI)(RX)", false)?;
+        if super::shared_application_folder(application_directory) {
+            run_icacls(executable, &identity, "(RX)", false)?;
+        } else {
+            run_icacls(application_directory, &identity, "(OI)(CI)(RX)", false)?;
+        }
         for share in &policy.shares {
             let permission = match share.access {
                 SandboxFileAccess::ReadOnly => "(OI)(CI)(RX)",
@@ -520,7 +561,13 @@ mod platform {
         let identity = identity?;
         let mut errors = Vec::new();
         if let Some(policy) = policy {
-            if let Some(parent) = Path::new(&policy.executable).parent() {
+            let executable = Path::new(&policy.executable);
+            if executable.is_file() {
+                if let Err(error) = run_icacls(executable, &identity, "", true) {
+                    errors.push(error);
+                }
+            }
+            if let Some(parent) = executable.parent() {
                 if parent.exists() {
                     if let Err(error) = run_icacls(parent, &identity, "", true) {
                         errors.push(error);
@@ -1001,6 +1048,42 @@ mod tests {
             assert!(is_volume_root(Path::new("/")));
             assert!(!is_volume_root(Path::new("/tmp")));
         }
+    }
+
+    #[test]
+    fn applications_in_shared_folders_get_only_their_own_executable() {
+        let profile = std::env::temp_dir().join("yougori-sandbox-profile").join("someone");
+        let program_files = std::env::temp_dir().join("yougori-sandbox-programs");
+        let system = std::env::temp_dir().join("yougori-sandbox-windows");
+        let known = |name: &str| match name {
+            "USERPROFILE" => Some(profile.clone()),
+            "LOCALAPPDATA" => Some(profile.join("AppData").join("Local")),
+            "ProgramFiles" => Some(program_files.clone()),
+            "SystemRoot" => Some(system.clone()),
+            _ => None,
+        };
+        for shared in [
+            profile.clone(),
+            profile.parent().unwrap().to_path_buf(),
+            profile.join("Downloads"),
+            profile.join(".ssh"),
+            profile.join("AppData").join("Local"),
+            profile.join("AppData").join("LocalLow"),
+            profile.join("AppData").join("Local").join("Programs"),
+            program_files.clone(),
+            system.join("System32"),
+        ] {
+            assert!(shared_application_folder_with(&shared, known), "{}", shared.display());
+        }
+        for dedicated in [
+            profile.join("Downloads").join("tool"),
+            profile.join("AppData").join("Local").join("Programs").join("Editor"),
+            program_files.join("Vendor App"),
+        ] {
+            assert!(!shared_application_folder_with(&dedicated, known), "{}", dedicated.display());
+        }
+        #[cfg(windows)]
+        assert!(shared_application_folder_with(Path::new("D:\\Tools"), |_| None));
     }
 
     #[test]

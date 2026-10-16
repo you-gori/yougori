@@ -3,7 +3,7 @@
 # scripts/macos-runtime/inputs.json: QEMU and the few libraries it needs, native for
 # this Mac's CPU and macOS 14 or newer. Nothing from Homebrew or another prefix enters
 # it. Writes OUTPUT (default build/macos-runtime/qemu):
-#   qemu-system-x86_64, qemu-img, lib/*.dylib, share/ (firmware), licenses/, SOURCES.json
+#   qemu-system-x86_64, qemu-img, yougori-supervise, lib/*.dylib, share/ (firmware), licenses/, SOURCES.json
 # and yougori-macos-runtime-sources-ARCH.tar beside OUTPUT with the exact sources used.
 # Signing, which also writes SHA256SUMS, is a separate step (scripts/sign-macos-runtime.sh).
 set -euo pipefail
@@ -125,6 +125,10 @@ mkdir -p "$sources/qemu/_build"
 echo "== collect runtime"
 install -m 0755 "$stage/bin/qemu-system-x86_64" "$output/qemu-system-x86_64"
 install -m 0755 "$stage/bin/qemu-img" "$output/qemu-img"
+# macOS has no parent-death signal: this supervisor stops a guest when the app dies.
+supervisor_flags=(-std=c11 -D_DARWIN_C_SOURCE -Wall -Wextra -Werror -O2)
+if [[ "$system" == Darwin ]]; then supervisor_flags+=(-mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET"); fi
+"${CC:-cc}" "${supervisor_flags[@]}" $privacy "$repo/runtime/macos/supervise.c" -o "$output/yougori-supervise"
 # The same firmware set the Windows runtime ships for these x86-64 machines.
 mkdir -p "$output/share"
 for file in bios.bin bios-256k.bin bios-microvm.bin edk2-i386-vars.fd edk2-licenses.txt \

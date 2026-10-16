@@ -64,7 +64,7 @@ pub(super) fn read_regular(path: &Path, maximum: usize) -> Result<Vec<u8>, Strin
     Ok(bytes)
 }
 
-fn redirected(meta: &fs::Metadata) -> bool {
+pub(super) fn redirected(meta: &fs::Metadata) -> bool {
     if meta.file_type().is_symlink() { return true; }
     #[cfg(windows)] {
         use std::os::windows::fs::MetadataExt;
@@ -149,8 +149,22 @@ impl Profile {
         {
             return Err("VM security identity must stay inside its environment".into());
         }
+        protect_generation(&path)?;
         Ok(path)
     }
+}
+
+/// Generations created before their directory was private inherited the
+/// storage folder's ACL, and with it tpm.nv. Replace it with owner-only access.
+#[cfg(windows)]
+fn protect_generation(path: &Path) -> Result<(), String> {
+    super::boot_token::protect_private_directory(path).map_err(|e| format!("Protect VM security identity: {e}"))
+}
+
+#[cfg(not(windows))]
+fn protect_generation(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| format!("Protect VM security identity: {e}"))
 }
 
 /// Official Windows 10/11 x64 media share this volume identifier. Original
@@ -361,7 +375,8 @@ fn new_generation(directory: &Path, digest: String) -> Result<(Profile, PathBuf)
         firmware_sha256: digest,
     };
     let target = directory.join(format!("security-{}", profile.generation));
-    fs::create_dir(&target).map_err(|e| format!("Create private VM security directory: {e}"))?;
+    // The TPM helper creates tpm.nv without its own ACL; it inherits this one.
+    super::boot_token::create_private_directory(&target).map_err(|e| format!("Create private VM security directory: {e}"))?;
     Ok((profile, target))
 }
 
@@ -571,6 +586,31 @@ pub(super) fn embed_backup(path: &Path, backup: &Backup) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn legacy_identity_directories_become_owner_only_and_stay_readable() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = parent.path().join("security-legacy");
+        let icacls = |path: &Path, args: &[&str]| {
+            let output = std::process::Command::new("icacls").arg(path).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+            String::from_utf8_lossy(&output.stdout).to_lowercase()
+        };
+        // A broad storage folder grants everyone access by inheritance; an
+        // explicit extra entry is removed as well.
+        icacls(parent.path(), &["/grant", "*S-1-1-0:(OI)(CI)R"]);
+        fs::create_dir(&directory).unwrap();
+        icacls(&directory, &["/grant", "*S-1-5-32-545:(OI)(CI)R"]);
+        fs::write(directory.join("tpm.nv"), b"identity").unwrap();
+        assert!(icacls(&directory.join("tpm.nv"), &[]).contains("everyone"));
+        protect_generation(&directory).unwrap();
+        for path in [directory.clone(), directory.join("tpm.nv")] {
+            let acl = icacls(&path, &[]);
+            assert!(!acl.contains("everyone") && !acl.contains("users:"), "{acl}");
+        }
+        assert_eq!(fs::read(directory.join("tpm.nv")).unwrap(), b"identity");
+    }
+
     #[test]
     fn firmware_updates_preserve_pinned_images_and_reject_mismatches() {
         let temp = tempfile::tempdir().unwrap();

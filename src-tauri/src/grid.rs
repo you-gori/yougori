@@ -455,7 +455,7 @@ async fn follow(app: &AppHandle, membership: &Membership, saved: &Saved, activit
     };
     let id = environment.id.clone();
     let running = environment.status == EnvironmentStatus::Running;
-    let locked = crate::security::contained(&id);
+    let locked = crate::security::is_contained(&id);
     let health_due = grid.inner.lock().await.work.health_at.is_none_or(|at| at.elapsed() >= HEALTH);
     let health = if running && health_due {
         Some(tokio::time::timeout(Duration::from_secs(15), crate::model_runner::model_status(id.clone(), app.clone())).await.ok().and_then(Result::ok))

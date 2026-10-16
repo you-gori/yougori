@@ -215,8 +215,37 @@ pub(crate) fn ensure_open(store: &PlatformStore, environment_id: &str, action: &
 
 /// Whether an environment is locked down or kill-switched, without recording a refusal: for
 /// loops that re-check every few seconds.
-pub(crate) fn contained(environment_id: &str) -> bool {
-    CONTAINMENT.get().and_then(|records| records.get(environment_id)).is_some()
+pub(crate) fn is_contained(environment_id: &str) -> bool {
+    CONTAINMENT.get().is_some_and(|records| records.get(environment_id).is_some())
+}
+
+/// Tells the runtimes which guests are locked down, so no shutdown or
+/// maintenance path resumes one that containment paused.
+pub(crate) fn sync_runtime_containment(platform: &PlatformState) {
+    let contained = CONTAINMENT.get().map(containment::Store::all).unwrap_or_default();
+    crate::runtime::set_contained_runtimes(platform.environments.iter()
+        .filter(|environment| contained.contains_key(&environment.id))
+        .map(|environment| environment.runtime_id.clone().unwrap_or_else(|| environment.id.clone()))
+        .collect());
+}
+
+/// Internet is not the only way out of a guest: while it is locked down its
+/// private links are removed and its PC folders answer nothing.
+async fn hold_grants(app: &AppHandle, environment: &Environment, held: bool) -> Result<(), String> {
+    let store = app.state::<PlatformStore>();
+    let runtime = app.state::<RuntimeManager>();
+    if let Ok(platform) = store.snapshot() {
+        sync_runtime_containment(&platform);
+    }
+    app.state::<crate::workspace::WorkspaceManager>().set_environment_shares_suspended(&environment.id, held).await;
+    let runtime_id = environment.runtime_id.as_deref().unwrap_or(&environment.id);
+    let shares = runtime.set_workload_shares_suspended(runtime_id, held).await;
+    let connections = if held {
+        commands::suspend_environment_connections(&store, &runtime, &environment.id).await
+    } else {
+        commands::reconcile_connections(&store, &runtime, commands::Reported::Nothing).await
+    };
+    shares.and(connections)
 }
 
 /// Local containers, GPU containers, microVMs and VMs: Internet can be cut and power paused.
@@ -301,12 +330,16 @@ pub(crate) async fn contain(app: &AppHandle, id: &str, level: Level, reason: &st
     let existing = records.get(id);
     let (steps, containment) = containment::plan_contain(target(&environment), existing.as_ref(), level, reason, via, rule, &now_text());
     records.set(id, Some(containment.clone()))?;
+    let held = hold_grants(app, &environment, true).await;
     let mut outcomes = Vec::new();
     for step in steps {
         let result = acting_as(via, apply(step, id, &store, &runtime)).await;
         outcomes.push((step, result));
     }
-    let ok = outcomes.iter().all(|(_, result)| result.is_ok());
+    let ok = outcomes.iter().all(|(_, result)| result.is_ok()) && held.is_ok();
+    if let Err(error) = held {
+        record(Event::new("containment.grants").env(id).via(via).text("error", &crate::lifecycle::safe_diagnostic(&error)).succeeded(false));
+    }
     let mut event = Event::new(if via == "policy" { "killswitch.applied" } else { "lockdown.applied" }).env(id).via(via)
         .text("level", containment.level.label()).text("reason", reason).object("steps", steps_report(&outcomes)).succeeded(ok);
     if let Some(rule) = rule {
@@ -340,7 +373,11 @@ pub(crate) async fn release(app: &AppHandle, id: &str, via: &'static str) -> Res
         let result = acting_as(via, apply(step, id, &store, &runtime)).await;
         outcomes.push((step, result));
     }
-    let ok = outcomes.iter().all(|(_, result)| result.is_ok());
+    let restored = hold_grants(app, &environment, false).await;
+    let ok = outcomes.iter().all(|(_, result)| result.is_ok()) && restored.is_ok();
+    if let Err(error) = restored {
+        record(Event::new("containment.grants").env(id).via(via).text("error", &crate::lifecycle::safe_diagnostic(&error)).succeeded(false));
+    }
     record(Event::new("lockdown.released").env(id).via(via).text("previous", existing.level.label()).object("steps", steps_report(&outcomes)).succeeded(ok));
     Ok(json!({"id": id, "name": environment.name, "unlocked": true, "steps": steps_report(&outcomes), "ok": ok,
         "automaticActionsPausedMinutes": monitor::UNLOCK_GRACE / 60}))
@@ -491,6 +528,7 @@ fn tick(app: &AppHandle, now: u64) -> Vec<(String, monitor::Decision)> {
     let Ok(platform) = app.state::<PlatformStore>().snapshot() else { return Vec::new() };
     let settings = platform.settings.security_monitoring.clone();
     let contained = CONTAINMENT.get().map(containment::Store::all).unwrap_or_default();
+    sync_runtime_containment(&platform);
     let mut guard = monitor_state().lock().unwrap_or_else(|error| error.into_inner());
     let state = &mut *guard;
     let by_runtime: HashMap<&str, &Environment> = platform.environments.iter()

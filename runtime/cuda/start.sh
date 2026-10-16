@@ -12,6 +12,8 @@ export YOUGORI_CUDA_LISTEN="127.0.0.1:$cuda_port"
 mkdir -p /run/cdi
 /usr/local/sbin/yougori-agent --prepare-container-storage
 /usr/local/bin/nvidia-ctk cdi generate --nvidia-cdi-hook-path=/usr/local/bin/nvidia-cdi-hook --output=/run/cdi/nvidia.yaml
+# Also for runtimes installed before the agent applied restart policies itself.
+printf '%s\n' 'version = 3' 'disabled_plugins = ["io.containerd.cri.v1.images", "io.containerd.cri.v1.runtime", "io.containerd.grpc.v1.cri", "io.containerd.monitor.container.v1.restart"]' > /etc/containerd/config.toml
 containerd --config /etc/containerd/config.toml &
 containerd_pid=$!
 agent_pid=''

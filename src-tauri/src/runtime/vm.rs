@@ -13,14 +13,14 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sysinfo::{Pid, ProcessesToUpdate};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::AsyncReadExt,
     net::TcpStream,
 };
 use uuid::Uuid;
 
 use super::{
-    available_port, command_output, configure_background_process, path_string, AgentEndpoint,
-    PerfSpan, RuntimeManager, VmProcess,
+    available_port, command_output, configure_background_process, path_string, qmp_socket::QmpSocket,
+    AgentEndpoint, PerfSpan, RuntimeManager, VmProcess,
 };
 use crate::models::{CommandResult, ResourcePolicy};
 
@@ -44,6 +44,8 @@ const MICRO_VM_MANIFEST_VERSION: u8 = 1;
 const VM_RESTORE_TRANSACTION_VERSION: u8 = 2;
 const SOURCE_SAMPLE_BYTES: usize = 64 * 1024;
 const MAX_MICRO_VM_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// Sparse qcow2 for a guest provisioned without a base image.
+const EMPTY_MICRO_VM_DISK_SIZE: &str = "8G";
 const MAX_RUNTIME_IDENTIFIER_BYTES: usize = 160;
 const VM_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const WHPX_STARTUP_TIMEOUT: Duration = Duration::from_secs(25);
@@ -168,12 +170,37 @@ struct MicroVmSourceManifest {
     cmdline: String,
 }
 
+/// Which bundled guest a built-in microVM boots. Older manifests omit the
+/// field and mean the Alpine guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MicroVmKind {
+    #[default]
+    Alpine,
+}
+
+impl MicroVmKind {
+    fn is_alpine(&self) -> bool {
+        *self == Self::Alpine
+    }
+}
+
+impl ManagedMicroVmManifest {
+    /// The verified Alpine payload needs 512 MiB; custom guests keep the
+    /// requested allocation.
+    fn needs_alpine_memory_floor(&self) -> bool {
+        self.builtin && self.kind.is_alpine()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ManagedMicroVmManifest {
     version: u8,
     #[serde(default)]
     builtin: bool,
+    #[serde(default, skip_serializing_if = "MicroVmKind::is_alpine")]
+    kind: MicroVmKind,
     kernel: PathBuf,
     #[serde(default)]
     initrd: Option<PathBuf>,
@@ -199,7 +226,6 @@ pub struct VmArtifact {
 
 #[derive(Debug, Deserialize)]
 struct ImageInfo {
-    format: String,
     #[serde(default, rename = "virtual-size")]
     virtual_size: u64,
     #[serde(default, rename = "actual-size")]
@@ -255,11 +281,11 @@ impl RuntimeManager {
         self.grow_disk(disk, capacity_gb, false).await
     }
 
-    async fn live_vm_qmp_port(&self, id: &str) -> Option<u16> {
+    async fn live_vm_qmp(&self, id: &str) -> Option<QmpSocket> {
         let mut processes = self.vms.lock().await;
         processes.get_mut(id).and_then(|process| {
             if process.child.try_wait().ok().flatten().is_none() {
-                Some(process.qmp_port)
+                Some(process.qmp.clone())
             } else {
                 None
             }
@@ -608,7 +634,7 @@ impl RuntimeManager {
             (
                 self.layout.appliance_kernel.clone(),
                 Some(self.layout.appliance_initramfs.clone()),
-                self.layout.appliance_base.clone(),
+                Some(self.layout.appliance_base.clone()),
                 default_builtin_micro_vm_cmdline(),
             )
         } else {
@@ -674,7 +700,7 @@ impl RuntimeManager {
             (
                 managed_kernel,
                 managed_initrd,
-                managed_disk,
+                Some(managed_disk),
                 manifest.cmdline,
             )
         };
@@ -683,7 +709,7 @@ impl RuntimeManager {
         for (label, path) in [
             ("kernel", Some(kernel.as_path())),
             ("initramfs", initrd.as_deref()),
-            ("root disk", Some(backing_disk.as_path())),
+            ("root disk", backing_disk.as_deref()),
         ] {
             if let Some(path) = path {
                 if !path.is_file() {
@@ -693,25 +719,38 @@ impl RuntimeManager {
         }
 
         let disk_path = environment_directory.join("system.qcow2");
-        command_output(
-            &self.layout.qemu_img,
-            &[
-                "create".into(),
-                "-f".into(),
-                "qcow2".into(),
-                "-F".into(),
-                "qcow2".into(),
-                "-b".into(),
-                path_string(&backing_disk),
-                path_string(&disk_path),
-            ],
-            "create copy-on-write microVM root disk",
-        )
-        .await?;
+        match &backing_disk {
+            Some(backing_disk) => {
+                command_output(
+                    &self.layout.qemu_img,
+                    &[
+                        "create".into(),
+                        "-f".into(),
+                        "qcow2".into(),
+                        "-F".into(),
+                        "qcow2".into(),
+                        "-b".into(),
+                        path_string(backing_disk),
+                        path_string(&disk_path),
+                    ],
+                    "create copy-on-write microVM root disk",
+                )
+                .await?;
+            }
+            None => {
+                command_output(
+                    &self.layout.qemu_img,
+                    &["create".into(), "-f".into(), "qcow2".into(), path_string(&disk_path), EMPTY_MICRO_VM_DISK_SIZE.into()],
+                    "create empty microVM disk",
+                )
+                .await?;
+            }
+        }
 
         let managed_manifest = ManagedMicroVmManifest {
             version: MICRO_VM_MANIFEST_VERSION,
             builtin: source == "builtin:alpine",
+            kind: MicroVmKind::Alpine,
             kernel,
             initrd,
             cmdline,
@@ -757,6 +796,7 @@ impl RuntimeManager {
         let managed_manifest = ManagedMicroVmManifest {
             version: MICRO_VM_MANIFEST_VERSION,
             builtin: true,
+            kind: MicroVmKind::Alpine,
             kernel: self.layout.appliance_kernel.clone(),
             initrd: Some(self.layout.appliance_initramfs.clone()),
             cmdline: default_builtin_micro_vm_cmdline(),
@@ -990,31 +1030,38 @@ impl RuntimeManager {
             Some(_) => return Err("managed VM base is empty".into()),
             None => {}
         }
+        // A disk image can name other files (backing files, external data files,
+        // VMDK extents) that qemu-img would read and flatten into the guest disk.
+        // Decide the format from the header before QEMU opens anything, then name
+        // the driver and a plain file protocol explicitly so nothing is probed.
+        let format = import_disk_format(source_path)?;
+        let image = import_image_options(format, source_path);
         let info = command_output(
             &self.layout.qemu_img,
             &[
                 "info".into(),
                 "--output=json".into(),
-                path_string(source_path),
+                "--image-opts".into(),
+                image.clone(),
             ],
             "inspect source virtual disk",
         )
         .await
         .and_then(|output| {
-            serde_json::from_slice::<ImageInfo>(&output.stdout)
+            serde_json::from_slice::<serde_json::Value>(&output.stdout)
                 .map_err(|error| format!("decode virtual disk information: {error}"))
         })?;
+        validate_import_info(&info, format, source_path)?;
         let temporary = bases.join(format!(".{}.qcow2.part", Uuid::new_v4().simple()));
         if let Err(error) = command_output(
             &self.layout.qemu_img,
             &[
                 "convert".into(),
-                "-f".into(),
-                info.format,
+                "--image-opts".into(),
+                image,
                 "-O".into(),
                 "qcow2".into(),
                 "-c".into(),
-                path_string(source_path),
                 path_string(&temporary),
             ],
             "import virtual disk into managed storage",
@@ -1028,13 +1075,18 @@ impl RuntimeManager {
             let _ = tokio::fs::remove_file(&temporary).await;
             return Err(error);
         }
-        if let Err(error) = command_output(
-            &self.layout.qemu_img,
-            &["check".into(), "-q".into(), path_string(&temporary)],
-            "verify imported virtual disk",
-        )
-        .await
-        {
+        let verified = match ensure_standalone_qcow2(&temporary) {
+            Ok(()) => {
+                command_output(
+                    &self.layout.qemu_img,
+                    &["check".into(), "-q".into(), path_string(&temporary)],
+                    "verify imported virtual disk",
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = verified {
             let _ = tokio::fs::remove_file(&temporary).await;
             return Err(error);
         }
@@ -1170,7 +1222,7 @@ impl RuntimeManager {
         }
         verify_environment_artifact(&self.data_root, id, manifest_path, "managed microVM manifest")?;
         let manifest = read_managed_micro_vm_manifest(manifest_path).await?;
-        super::vm_memory::microvm_startup_gb(policy.memory_gb.preferred, policy.memory_gb.max, manifest.builtin)
+        super::vm_memory::microvm_startup_gb(policy.memory_gb.preferred, policy.memory_gb.max, manifest.needs_alpine_memory_floor())
     }
 
     /// Starts a provisioned direct-kernel microVM. The `manifest_path` must be the
@@ -1278,7 +1330,7 @@ impl RuntimeManager {
         self.check_external_vm(id, false).await?;
         let memory_gb = match &profile {
             VmLaunchProfile::Micro(manifest, _) => super::vm_memory::microvm_startup_gb(
-                resource_policy.memory_gb.preferred, resource_policy.memory_gb.max, manifest.builtin,
+                resource_policy.memory_gb.preferred, resource_policy.memory_gb.max, manifest.needs_alpine_memory_floor(),
             )?,
             VmLaunchProfile::Full { .. } => resource_policy.memory_gb.preferred,
         };
@@ -1309,16 +1361,16 @@ impl RuntimeManager {
             None
         };
         let mut port_reservations = VmPortReservations::new();
-        let (websocket_port, qmp_port, display, console_password, headless, micro_endpoint) =
+        let (websocket_port, qmp, display, console_password, headless, micro_endpoint) =
             match &profile {
                 VmLaunchProfile::Full { .. } => {
                     let websocket_port = port_reservations.reserve_available(&[])?;
-                    let qmp_port = port_reservations.reserve_available(&[websocket_port])?;
+                    let qmp = QmpSocket::allocate()?;
                     let (display, _rfb_port) =
-                        port_reservations.reserve_vnc_display(&[websocket_port, qmp_port])?;
+                        port_reservations.reserve_vnc_display(&[websocket_port])?;
                     (
                         websocket_port,
-                        qmp_port,
+                        qmp,
                         display,
                         vnc_console_password(),
                         false,
@@ -1326,28 +1378,28 @@ impl RuntimeManager {
                     )
                 }
                 VmLaunchProfile::Micro(manifest, _) => {
-                    let qmp_port = port_reservations.reserve_available(&[])?;
+                    let qmp = QmpSocket::allocate()?;
+                    // Two independent UUIDs provide the guest agent's required
+                    // 256-bit bearer secret. The endpoint itself is never exposed
+                    // through console metadata or written to a log.
+                    let credential = || format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
                     let endpoint = if manifest.builtin {
-                        let control_port = port_reservations.reserve_available(&[qmp_port])?;
-                        Some(AgentEndpoint {
-                            base_url: format!("http://127.0.0.1:{control_port}"),
-                            // Two independent UUIDs provide the guest agent's required
-                            // 256-bit bearer secret. The endpoint itself is never exposed
-                            // through console metadata or written to a log.
-                            token: format!(
-                                "{}{}",
-                                Uuid::new_v4().simple(),
-                                Uuid::new_v4().simple()
-                            ),
-                        })
+                        let control_port = port_reservations.reserve_available(&[])?;
+                        Some(AgentEndpoint { base_url: format!("http://127.0.0.1:{control_port}"), token: credential() })
                     } else {
                         None
                     };
-                    (0, qmp_port, 0, String::new(), true, endpoint)
+                    (0, qmp, 0, String::new(), true, endpoint)
                 }
             };
-        let private_port = port_reservations.reserve_available(&[qmp_port, websocket_port])?;
+        let private_port = port_reservations.reserve_available(&[websocket_port])?;
         let guest_control_available = micro_endpoint.is_some();
+        // Like the appliance, a microVM receives its credential through firmware:
+        // a kernel command line is readable in the host's process list.
+        let mut boot_token = match &micro_endpoint {
+            Some(endpoint) => Some(super::boot_token::BootTokenFile::create(&self.data_root.join("environments").join(id), &endpoint.token)?),
+            None => None,
+        };
         let accelerators = super::host_platform::x86_accelerators(std::env::consts::OS, std::env::consts::ARCH, headless);
         let mut last_error = String::new();
         let gpu_enabled = matches!(&profile, VmLaunchProfile::Full { gpu_access: true, .. });
@@ -1355,8 +1407,8 @@ impl RuntimeManager {
         for accelerator in accelerators {
             super::vm_memory::check_available(startup_memory, super::vm_memory::available_commit_bytes(), full_vm)?;
             let internet = match &profile {
-                VmLaunchProfile::Micro(_, enabled) => Some(super::microvm_network::MicroVmNetwork::new(*enabled, qmp_port, id).await?),
-                VmLaunchProfile::Full { network_access, .. } => Some(super::microvm_network::MicroVmNetwork::new(*network_access, qmp_port, id).await?),
+                VmLaunchProfile::Micro(_, enabled) => Some(super::microvm_network::MicroVmNetwork::new(*enabled, &qmp, id).await?),
+                VmLaunchProfile::Full { network_access, .. } => Some(super::microvm_network::MicroVmNetwork::new(*network_access, &qmp, id).await?),
             };
             let mut child = match &profile {
                 VmLaunchProfile::Full {
@@ -1370,7 +1422,7 @@ impl RuntimeManager {
                     min_cpus,
                     max_cpus,
                     max_memory_gb,
-                    qmp_port,
+                    &qmp,
                     websocket_port,
                     display,
                     accelerator,
@@ -1387,9 +1439,10 @@ impl RuntimeManager {
                     min_cpus,
                     max_cpus,
                     memory_gb,
-                    qmp_port,
+                    &qmp,
                     accelerator,
                     micro_endpoint.as_ref(),
+                    boot_token.as_ref(),
                     private_port,
                     internet.as_ref().map(|network| network.arguments()).unwrap_or(&[]),
                 ),
@@ -1402,7 +1455,7 @@ impl RuntimeManager {
             let is_whpx = *accelerator == "whpx";
             if let Err(error) = wait_for_vm_startup(
                 &mut child,
-                qmp_port,
+                &qmp,
                 (!headless).then_some(websocket_port),
                 &error_path,
                 is_whpx,
@@ -1453,6 +1506,7 @@ impl RuntimeManager {
                 VmProcess {
                     internet,
                     child,
+                    _boot_token: boot_token.take(),
                     _branch_block_server: branch_block_server.take(),
                     _port_reservations: port_reservations,
                     is_micro_vm: headless,
@@ -1462,7 +1516,7 @@ impl RuntimeManager {
                     process_id,
                     allocated_cpus: cpus.round().max(1.0) as usize,
                     allocated_micro_memory_gb: headless.then_some(memory_gb),
-                    qmp_port,
+                    qmp: qmp.clone(),
                     websocket_port,
                     console_password: console_password.clone(),
                 },
@@ -1476,7 +1530,7 @@ impl RuntimeManager {
                 // omits ACPI DIMM hotplug. CPU affinity remains dynamically adjustable.
                 apply_process_cpu_limit(process_id, cpus)
             } else {
-                apply_vm_resource_limits(process_id, qmp_port, cpus, memory_gb).await
+                apply_vm_resource_limits(process_id, &qmp, cpus, memory_gb).await
             };
             if let Err(error) = resource_result {
                 let detail = read_log_tail(&error_path);
@@ -1489,7 +1543,7 @@ impl RuntimeManager {
             }
             if !headless {
                 if let Err(error) = qmp_execute(
-                    qmp_port,
+                    &qmp,
                     "set_password",
                     Some(json!({ "protocol": "vnc", "password": console_password })),
                 )
@@ -1758,7 +1812,7 @@ impl RuntimeManager {
             self.vms.lock().await.remove(id);
             return Ok(());
         }
-        let (qmp_port, is_micro_vm, micro_endpoint) = {
+        let (qmp, is_micro_vm, micro_endpoint) = {
             let mut processes = self.vms.lock().await;
             let process = processes
                 .get_mut(id)
@@ -1772,15 +1826,15 @@ impl RuntimeManager {
                 return Err("virtual machine is not running".into());
             }
             (
-                process.qmp_port,
+                process.qmp.clone(),
                 process.is_micro_vm,
                 process.micro_endpoint.clone(),
             )
         };
         match action {
-            "pause" => return qmp_execute(qmp_port, "stop", None).await,
-            "resume" => return qmp_execute(qmp_port, "cont", None).await,
-            "restart" => return qmp_execute(qmp_port, "system_reset", None).await,
+            "pause" => return qmp_execute(&qmp, "stop", None).await,
+            "resume" => return qmp_execute(&qmp, "cont", None).await,
+            "restart" => return qmp_execute(&qmp, "system_reset", None).await,
             "stop" => {}
             _ => return Err("unsupported virtual machine lifecycle action".into()),
         }
@@ -1799,7 +1853,7 @@ impl RuntimeManager {
             // fail before its agent is ready. Flush the host block graph before a bounded
             // VMM quit so QCOW2 metadata is consistent; the guest filesystem journal
             // performs recovery on its next boot.
-        } else if qmp_execute_bounded(qmp_port, "system_powerdown", None, Duration::from_secs(3))
+        } else if qmp_execute_bounded(&qmp, "system_powerdown", None, Duration::from_secs(3))
             .await
             .is_ok()
             && self
@@ -1809,8 +1863,8 @@ impl RuntimeManager {
             return Ok(());
         }
 
-        quiesce_and_flush_vm(qmp_port, is_micro_vm).await;
-        let _ = qmp_execute_bounded(qmp_port, "quit", None, Duration::from_secs(2)).await;
+        quiesce_and_flush_vm(&qmp, is_micro_vm).await;
+        let _ = qmp_execute_bounded(&qmp, "quit", None, Duration::from_secs(2)).await;
         if self
             .wait_for_registered_vm_exit(id, Duration::from_secs(3))
             .await?
@@ -1935,9 +1989,9 @@ impl RuntimeManager {
         if super::vm_security::profile(disk_path.parent().ok_or("Missing VM directory")?)?.is_some() {
             return Err("This VM has a virtual TPM. Use a stopped-VM local or cloud backup, which includes its disk, TPM identity and Secure Boot state. Disk-only snapshots are not safe for encrypted VMs.".into());
         }
-        let qmp_port = self.live_vm_qmp_port(id).await;
-        if let Some(port) = qmp_port {
-            live_vm_snapshot(port, LiveSnapshot::Save, snapshot_id).await?;
+        let qmp = self.live_vm_qmp(id).await;
+        if let Some(port) = qmp {
+            live_vm_snapshot(&port, LiveSnapshot::Save, snapshot_id).await?;
         } else {
             command_output(
                 &self.layout.qemu_img,
@@ -1973,9 +2027,9 @@ impl RuntimeManager {
         if super::vm_security::profile(disk_path.parent().ok_or("Missing VM directory")?)?.is_some() {
             return Err("Restore a complete local or cloud backup for this TPM-enabled VM; a disk-only snapshot cannot restore its security identity.".into());
         }
-        let qmp_port = self.live_vm_qmp_port(id).await;
-        if let Some(port) = qmp_port {
-            live_vm_snapshot(port, LiveSnapshot::Load, snapshot_id).await
+        let qmp = self.live_vm_qmp(id).await;
+        if let Some(port) = qmp {
+            live_vm_snapshot(&port, LiveSnapshot::Load, snapshot_id).await
         } else {
             command_output(
                 &self.layout.qemu_img,
@@ -2006,9 +2060,9 @@ impl RuntimeManager {
         let _lifecycle_guard = lifecycle_lock.lock().await;
         ensure_no_pending_vm_restore(&self.data_root, id)?;
         verify_environment_artifact(&self.data_root, id, disk_path, "virtual machine disk")?;
-        let qmp_port = self.live_vm_qmp_port(id).await;
-        if let Some(port) = qmp_port {
-            live_vm_snapshot(port, LiveSnapshot::Delete, snapshot_id).await
+        let qmp = self.live_vm_qmp(id).await;
+        if let Some(port) = qmp {
+            live_vm_snapshot(&port, LiveSnapshot::Delete, snapshot_id).await
         } else {
             match command_output(
                 &self.layout.qemu_img,
@@ -2583,7 +2637,7 @@ impl RuntimeManager {
             Ok(None) => {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
-                    let port = process.qmp_port;
+                    let port = process.qmp.clone();
                     drop(processes);
                     // Older distro QEMU cannot exit-failure on panic. Keep the
                     // disk open/inspectable, but report the QMP failure honestly.
@@ -2658,7 +2712,7 @@ impl RuntimeManager {
         }
         let lifecycle_lock = self.vm_lifecycle_mutex(id).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
-        let (process_id, qmp_port, headless) = {
+        let (process_id, qmp, headless) = {
             let mut processes = self.vms.lock().await;
             let process = processes
                 .get_mut(id)
@@ -2671,7 +2725,7 @@ impl RuntimeManager {
             {
                 return Err("virtual machine is not running".into());
             }
-            (process.process_id, process.qmp_port, process.is_micro_vm)
+            (process.process_id, process.qmp.clone(), process.is_micro_vm)
         };
         if headless {
             // The direct-kernel microVM profile has a fixed, minimal memory footprint.
@@ -2681,7 +2735,7 @@ impl RuntimeManager {
             let _ = memory_gb;
             apply_process_cpu_limit(process_id, cpus)?;
         } else {
-            apply_vm_resource_limits(process_id, qmp_port, cpus, memory_gb).await?;
+            apply_vm_resource_limits(process_id, &qmp, cpus, memory_gb).await?;
         }
         if let Some(process) = self.vms.lock().await.get_mut(id) {
             process.allocated_cpus = cpus.round().max(1.0) as usize;
@@ -2699,7 +2753,7 @@ impl RuntimeManager {
         cpus: f64,
         max_cpus: f64,
         memory_gb: f64,
-        qmp_port: u16,
+        qmp: &QmpSocket,
         websocket_port: u16,
         display: u16,
         accelerator: &str,
@@ -2849,7 +2903,7 @@ impl RuntimeManager {
                 "127.0.0.1:{display},websocket=127.0.0.1:{websocket_port},share=force-shared,password=on"
             ),
             "-qmp".into(),
-            format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"),
+            qmp.argument(),
             "-monitor".into(),
             "none".into(),
             "-action".into(),
@@ -2949,13 +3003,12 @@ impl RuntimeManager {
         };
         #[cfg(test)]
         arguments.extend(["-serial".into(), format!("file:{}", environment_directory.join("firmware-serial.log").display())]);
-        let mut command = tokio::process::Command::new(&executable);
+        let mut command = super::qemu_command(&self.layout, &executable)?;
         arguments.extend_from_slice(network_arguments);
         arguments.extend(super::fabric::qemu_args(id, private_port, false));
         command
             .current_dir(executable.parent().unwrap_or(&self.layout.root))
             .args(arguments)
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(error_log));
         configure_background_process(&mut command);
@@ -2977,9 +3030,10 @@ impl RuntimeManager {
         cpus: f64,
         max_cpus: f64,
         memory_gb: f64,
-        qmp_port: u16,
+        qmp: &QmpSocket,
         accelerator: &str,
         endpoint: Option<&AgentEndpoint>,
+        boot_token: Option<&super::boot_token::BootTokenFile>,
         private_port: u16,
         network_arguments: &[String],
     ) -> Result<tokio::process::Child, String> {
@@ -3023,13 +3077,13 @@ impl RuntimeManager {
         } else {
             manifest.cmdline.clone()
         };
-        let cmdline = match endpoint {
-            Some(endpoint) => format!(
-                "{} softlevel=microvm yougori.mode=microvm yougori.token={} yougori.time={}",
-                kernel_cmdline, endpoint.token,
-                SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs()
+        let unix_time = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+        let cmdline = match (endpoint, boot_token) {
+            (Some(_), Some(_)) => format!(
+                "{kernel_cmdline} softlevel=microvm yougori.mode=microvm yougori.token-source=fwcfg yougori.time={unix_time}"
             ),
-            None => kernel_cmdline,
+            (Some(_), None) => return Err("microVM control credential is unavailable".into()),
+            (None, _) => kernel_cmdline,
         };
         let netdev = match endpoint {
             Some(endpoint) => {
@@ -3040,14 +3094,18 @@ impl RuntimeManager {
                     .ok_or_else(|| "microVM guest control endpoint has no port".to_string())?;
                 format!("user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:7443")
             }
-            None => "user,id=net0".into(),
+            _ => "user,id=net0".into(),
         };
         let mut arguments = vec![
             "-name".into(),
             format!("Yougori microVM {id}"),
             "-machine".into(),
             format!(
-                "microvm{machine_accelerator_options},graphics=off,acpi=off,pcie=off,usb=off,{},x-option-roms=off",
+                "microvm{machine_accelerator_options},graphics=off,{},pcie=off,usb=off,{}",
+                // The bundled Linux kernel finds fw_cfg, and with it the credential,
+                // only through ACPI; its direct boot then uses the linuxboot ROM.
+                // Custom kernels keep the minimal board without ACPI.
+                if boot_token.is_some() { "acpi=on" } else { "acpi=off,x-option-roms=off" },
                 // Nested KVM and older CPUs may not expose TSC_DEADLINE. Keep
                 // legacy timers so boot does not silently stall on these hosts.
                 if cfg!(any(target_os = "linux", target_os = "macos")) { "pic=on,pit=on,rtc=on" } else { "pic=off,pit=off,rtc=off" }
@@ -3085,7 +3143,7 @@ impl RuntimeManager {
             "-serial".into(),
             format!("file:{}", path_string(&serial_path)),
             "-qmp".into(),
-            format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"),
+            qmp.argument(),
             "-monitor".into(),
             "none".into(),
             "-action".into(),
@@ -3095,11 +3153,14 @@ impl RuntimeManager {
         if let Some(initrd) = initrd {
             arguments.extend(["-initrd".into(), path_string(initrd)]);
         }
+        if let Some(boot_token) = boot_token {
+            arguments.extend(["-fw_cfg".into(), boot_token.argument()]);
+        }
         arguments.extend(["-cpu".into(), full_vm_cpu_model(accelerator).into()]);
         arguments.extend(["-L".into(), path_string(&self.layout.qemu_data())]);
         arguments.extend_from_slice(network_arguments);
         arguments.extend(super::fabric::qemu_args(id, private_port, true));
-        let mut command = tokio::process::Command::new(&self.layout.qemu_system);
+        let mut command = super::qemu_command(&self.layout, &self.layout.qemu_system)?;
         command
             .current_dir(
                 self.layout
@@ -3108,7 +3169,6 @@ impl RuntimeManager {
                     .unwrap_or(&self.layout.root),
             )
             .args(arguments)
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(error_log));
         configure_background_process(&mut command);
@@ -3917,7 +3977,7 @@ async fn finalize_content_addressed_import(
 
 async fn wait_for_vm_startup(
     child: &mut tokio::process::Child,
-    qmp_port: u16,
+    qmp: &QmpSocket,
     websocket_port: Option<u16>,
     error_path: &Path,
     is_whpx: bool,
@@ -3953,13 +4013,13 @@ async fn wait_for_vm_startup(
         // A full VM starts with -S. Set its cable before running the first
         // instruction, then use the normal accelerator stability checks.
         if let Some(enabled) = initial_network {
-            if tokio::time::timeout(Duration::from_millis(250), qmp_request(qmp_port, "query-status", None)).await.is_ok_and(|result| result.is_ok()) {
-                qmp_execute_bounded(qmp_port, "set_link", Some(json!({ "name": "net0", "up": enabled })), Duration::from_secs(5)).await?;
-                qmp_execute_bounded(qmp_port, "cont", None, Duration::from_secs(5)).await?;
+            if tokio::time::timeout(Duration::from_millis(250), qmp_request(qmp, "query-status", None)).await.is_ok_and(|result| result.is_ok()) {
+                qmp_execute_bounded(qmp, "set_link", Some(json!({ "name": "net0", "up": enabled })), Duration::from_secs(5)).await?;
+                qmp_execute_bounded(qmp, "cont", None, Duration::from_secs(5)).await?;
                 initial_network = None;
             }
         }
-        let qmp_ready = initial_network.is_none() && qmp_reports_running(qmp_port).await;
+        let qmp_ready = initial_network.is_none() && qmp_reports_running(qmp).await;
         let console_ready = match websocket_port {
             Some(port) if qmp_ready => tokio::time::timeout(
                 Duration::from_millis(250),
@@ -4005,7 +4065,7 @@ async fn wait_for_vm_startup(
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            if qmp_reports_running(qmp_port).await {
+            if qmp_reports_running(qmp).await {
                 return Ok(());
             }
         }
@@ -4028,11 +4088,9 @@ async fn wait_for_vm_startup(
     }
 }
 
-async fn qmp_reports_running(port: u16) -> bool {
-    tokio::time::timeout(
-        Duration::from_millis(500),
-        qmp_request(port, "query-status", None),
-    )
+async fn qmp_reports_running(qmp: &QmpSocket) -> bool {
+    let timeout = Duration::from_millis(500);
+    tokio::time::timeout(timeout, qmp_request_until(qmp, "query-status", None, timeout))
     .await
     .is_ok_and(|result| {
         result.is_ok_and(|status| {
@@ -4040,6 +4098,7 @@ async fn qmp_reports_running(port: u16) -> bool {
         })
     })
 }
+
 
 pub(super) fn branch_disk_graph(
     disk_path: &Path,
@@ -4076,19 +4135,97 @@ pub(super) fn ensure_standalone_qcow2(path: &Path) -> Result<(), String> {
     File::open(path)
         .and_then(|mut file| file.read_exact(&mut header))
         .map_err(|error| format!("Invalid virtual machine backup header: {error}"))?;
+    if !standalone_qcow2_header(&header) {
+        return Err("Virtual machine backups must be standalone, unencrypted QCOW2 disks without backing files or external data files".into());
+    }
+    Ok(())
+}
+
+fn standalone_qcow2_header(header: &[u8]) -> bool {
+    if header.len() < 104 || &header[..4] != b"QFI\xfb" {
+        return false;
+    }
     let version = u32::from_be_bytes(header[4..8].try_into().unwrap());
     let backing_offset = u64::from_be_bytes(header[8..16].try_into().unwrap());
     let backing_size = u32::from_be_bytes(header[16..20].try_into().unwrap());
     let encryption = u32::from_be_bytes(header[32..36].try_into().unwrap());
     let incompatible_features = u64::from_be_bytes(header[72..80].try_into().unwrap());
-    if &header[..4] != b"QFI\xfb"
-        || !matches!(version, 2 | 3)
-        || backing_offset != 0
-        || backing_size != 0
-        || encryption != 0
-        || (version == 3 && incompatible_features & 4 != 0)
+    matches!(version, 2 | 3)
+        && backing_offset == 0
+        && backing_size == 0
+        && encryption == 0
+        && !(version == 3 && incompatible_features & 4 != 0)
+}
+
+/// The QEMU driver for a user-supplied disk, chosen from its header. Formats
+/// that can reference other host files or need a secret are refused; anything
+/// unrecognized is imported as raw bytes, which cannot reference anything.
+fn import_disk_format(path: &Path) -> Result<&'static str, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| format!("inspect virtual disk: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Select a regular virtual disk file".into());
+    }
+    let mut header = Vec::with_capacity(512);
+    File::open(path)
+        .and_then(|file| file.take(512).read_to_end(&mut header))
+        .map_err(|error| format!("read virtual disk header: {error}"))?;
+    disk_format_from_header(&header)
+}
+
+fn disk_format_from_header(header: &[u8]) -> Result<&'static str, String> {
+    const STANDALONE: &str = "Import a standalone, unencrypted disk: this image references other files or needs a secret";
+    if header.starts_with(b"QFI\xfb") {
+        return if standalone_qcow2_header(header) { Ok("qcow2") } else { Err(STANDALONE.into()) };
+    }
+    if header.starts_with(b"KDMV") {
+        // A zero capacity makes QEMU parse an embedded descriptor that may
+        // name other extent files.
+        let capacity = header.get(12..20).map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()));
+        return if capacity.is_some_and(|capacity| capacity != 0) { Ok("vmdk") } else { Err(STANDALONE.into()) };
+    }
+    if header.starts_with(b"conectix") {
+        // Accept fixed (2) and dynamic (3) VHDs; a differencing VHD (4) has a parent.
+        let kind = header.get(60..64).map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()));
+        return if matches!(kind, Some(2 | 3)) { Ok("vpc") } else { Err(STANDALONE.into()) };
+    }
+    if header.starts_with(b"vhdxfile") {
+        return Ok("vhdx");
+    }
+    if header.get(0x40..0x44) == Some(&0xbeda_107f_u32.to_le_bytes()[..]) {
+        return Ok("vdi");
+    }
+    if header.starts_with(b"COWD")
+        || header.starts_with(b"QED\0")
+        || header.starts_with(b"LUKS\xba\xbe")
+        || header.starts_with(b"# Disk DescriptorFile")
     {
-        return Err("Virtual machine backups must be standalone, unencrypted QCOW2 disks without backing files or external data files".into());
+        return Err(STANDALONE.into());
+    }
+    Ok("raw")
+}
+
+/// `--image-opts` with an explicit file protocol: a source name can never be
+/// read as a `json:` or network specification.
+fn import_image_options(format: &str, path: &Path) -> String {
+    format!("driver={format},file.driver=file,file.filename={}", path_string(path).replace(',', ",,"))
+}
+
+fn validate_import_info(info: &serde_json::Value, format: &str, path: &Path) -> Result<(), String> {
+    let refused = || Err("Import a standalone, unencrypted disk: this image references other files or needs a secret".to_string());
+    if info["format"].as_str() != Some(format) || info["encrypted"].as_bool() == Some(true) {
+        return refused();
+    }
+    if ["backing-filename", "full-backing-filename"].iter().any(|key| info.get(*key).is_some_and(|value| !value.is_null()))
+        || info.pointer("/format-specific/data/data-file").is_some()
+    {
+        return refused();
+    }
+    if format == "vmdk" {
+        let source = path_string(path);
+        let extents = info.pointer("/format-specific/data/extents").and_then(|value| value.as_array());
+        if extents.is_some_and(|extents| extents.len() != 1 || extents[0]["filename"].as_str() != Some(source.as_str())) {
+            return refused();
+        }
     }
     Ok(())
 }
@@ -4136,18 +4273,18 @@ const LIVE_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// those commands always failed, and HMP reports failures only as text. Use
 /// QMP snapshot jobs limited to the qcow2 system disks instead. The pflash
 /// variables travel in the VM state and are written back after a load.
-async fn live_vm_snapshot(port: u16, action: LiveSnapshot, tag: &str) -> Result<(), String> {
-    let nodes = qmp_request(port, "query-named-block-nodes", Some(json!({ "flat": true }))).await?;
+async fn live_vm_snapshot(qmp: &QmpSocket, action: LiveSnapshot, tag: &str) -> Result<(), String> {
+    let nodes = qmp_request(qmp, "query-named-block-nodes", Some(json!({ "flat": true }))).await?;
     let nodes = nodes.as_array().ok_or("virtual machine returned an invalid block device list")?;
     let devices: Vec<&str> = LIVE_SNAPSHOT_NODES
         .into_iter()
         .filter(|name| nodes.iter().any(|node| node["node-name"] == *name && node["ro"] == false && node["drv"] == "qcow2"))
         .collect();
     let Some((command, arguments)) = live_snapshot_plan(action, tag, nodes, &devices)? else { return Ok(()) };
-    match qmp_snapshot_job(port, command, arguments).await {
+    match qmp_snapshot_job(qmp, command, arguments).await {
         Err(error) if error.contains("CommandNotFound") => {
             let verb = match action { LiveSnapshot::Save => "savevm", LiveSnapshot::Load => "loadvm", LiveSnapshot::Delete => "delvm" };
-            qmp_human_command(port, &format!("{verb} {tag}")).await
+            qmp_human_command(qmp, &format!("{verb} {tag}")).await
         }
         // WHPX and GPU acceleration cannot save a running VM's state. Take an
         // atomic, crash-consistent snapshot of the disks instead; restoring
@@ -4157,7 +4294,7 @@ async fn live_vm_snapshot(port: u16, action: LiveSnapshot, tag: &str) -> Result<
                 .iter()
                 .map(|device| json!({ "type": "blockdev-snapshot-internal-sync", "data": { "device": device, "name": tag } }))
                 .collect();
-            qmp_request(port, "transaction", Some(json!({ "actions": actions }))).await.map(|_| ())
+            qmp_request(qmp, "transaction", Some(json!({ "actions": actions }))).await.map(|_| ())
         }
         Err(error) if action == LiveSnapshot::Load && live_state_blocked(&error) => Err(format!(
             "Stop the virtual machine to restore this snapshot; its running state cannot be replaced live. {error}"
@@ -4218,22 +4355,22 @@ fn live_snapshot_plan(
     }))
 }
 
-async fn qmp_snapshot_job(port: u16, command: &str, arguments: serde_json::Value) -> Result<(), String> {
+async fn qmp_snapshot_job(qmp: &QmpSocket, command: &str, arguments: serde_json::Value) -> Result<(), String> {
     let id = arguments["job-id"].as_str().unwrap_or_default().to_owned();
     // QEMU saves/loads VM state in its main loop, so the monitor may not answer the
     // command or a poll until a multi-GB state transfer completes.
-    qmp_request_until(port, command, Some(arguments), LIVE_SNAPSHOT_TIMEOUT).await?;
+    qmp_request_until(qmp, command, Some(arguments), LIVE_SNAPSHOT_TIMEOUT).await?;
     let started = Instant::now();
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        let jobs = qmp_request_until(port, "query-jobs", None, LIVE_SNAPSHOT_TIMEOUT).await?;
+        let jobs = qmp_request_until(qmp, "query-jobs", None, LIVE_SNAPSHOT_TIMEOUT).await?;
         let job = jobs
             .as_array()
             .and_then(|jobs| jobs.iter().find(|job| job["id"] == id.as_str()))
             .cloned()
             .ok_or_else(|| format!("virtual machine {command} job ended without a result"))?;
         if job["status"] == "concluded" {
-            let _ = qmp_request(port, "job-dismiss", Some(json!({ "id": id }))).await;
+            let _ = qmp_request(qmp, "job-dismiss", Some(json!({ "id": id }))).await;
             return match job["error"].as_str() {
                 Some(error) => Err(format!("virtual machine {command} failed: {error}")),
                 None => Ok(()),
@@ -4246,9 +4383,9 @@ async fn qmp_snapshot_job(port: u16, command: &str, arguments: serde_json::Value
 }
 
 /// QEMU builds without snapshot jobs. HMP reports failures only in its text.
-async fn qmp_human_command(port: u16, command: &str) -> Result<(), String> {
+async fn qmp_human_command(qmp: &QmpSocket, command: &str) -> Result<(), String> {
     let reply = qmp_request_until(
-        port,
+        qmp,
         "human-monitor-command",
         Some(json!({ "command-line": command })),
         LIVE_SNAPSHOT_TIMEOUT,
@@ -4275,29 +4412,31 @@ fn human_command_result(command: &str, reply: &serde_json::Value) -> Result<(), 
 }
 
 pub(super) async fn qmp_execute(
-    port: u16,
+    qmp: &QmpSocket,
     command: &str,
     arguments: Option<serde_json::Value>,
 ) -> Result<(), String> {
-    qmp_request(port, command, arguments).await.map(|_| ())
+    qmp_request(qmp, command, arguments).await.map(|_| ())
 }
 
 pub(super) async fn qmp_execute_bounded(
-    port: u16,
+    qmp: &QmpSocket,
     command: &str,
     arguments: Option<serde_json::Value>,
     timeout: Duration,
 ) -> Result<(), String> {
-    tokio::time::timeout(timeout, qmp_execute(port, command, arguments))
+    tokio::time::timeout(timeout, qmp_request_until(qmp, command, arguments, timeout))
         .await
         .map_err(|_| format!("virtual machine control command '{command}' timed out"))?
+        .map(|_| ())
 }
 
-pub(super) async fn quiesce_and_flush_vm(port: u16, is_micro_vm: bool) {
+
+pub(super) async fn quiesce_and_flush_vm(qmp: &QmpSocket, is_micro_vm: bool) {
     // Once vCPUs are stopped, no guest write can race the final host block flush.
     // Optional full-VM nodes are best-effort because install media/branch disks vary,
     // while the primary writable system node is present in every launch profile.
-    let _ = qmp_execute_bounded(port, "stop", None, Duration::from_secs(2)).await;
+    let _ = qmp_execute_bounded(qmp, "stop", None, Duration::from_secs(2)).await;
     let nodes: &[&str] = if is_micro_vm {
         &["yougori-microvm-disk"]
     } else {
@@ -4309,7 +4448,7 @@ pub(super) async fn quiesce_and_flush_vm(port: u16, is_micro_vm: bool) {
     };
     for node in nodes {
         let _ = qmp_execute_bounded(
-            port,
+            qmp,
             "blockdev-flush",
             Some(json!({ "node-name": node })),
             Duration::from_secs(2),
@@ -4319,87 +4458,26 @@ pub(super) async fn quiesce_and_flush_vm(port: u16, is_micro_vm: bool) {
 }
 
 pub(super) async fn qmp_request(
-    port: u16,
+    qmp: &QmpSocket,
     command: &str,
     arguments: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    qmp_request_until(port, command, arguments, Duration::from_secs(10)).await
+    qmp_request_until(qmp, command, arguments, Duration::from_secs(10)).await
 }
 
 async fn qmp_request_until(
-    port: u16,
+    qmp: &QmpSocket,
     command: &str,
     arguments: Option<serde_json::Value>,
     timeout: Duration,
 ) -> Result<serde_json::Value, String> {
-    let stream = TcpStream::connect(("127.0.0.1", port))
-        .await
-        .map_err(|error| format!("connect to virtual machine control socket: {error}"))?;
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    // A long operation (VM state save/load) also delays the monitor's handshake.
-    let handshake = if timeout > Duration::from_secs(10) { timeout } else { Duration::from_secs(5) };
-    tokio::time::timeout(handshake, reader.read_line(&mut line))
-        .await
-        .map_err(|_| "virtual machine control greeting timed out".to_string())?
-        .map_err(|error| format!("read virtual machine control greeting: {error}"))?;
-    write_qmp(&mut writer, json!({ "execute": "qmp_capabilities" })).await?;
-    read_qmp_result_until(&mut reader, handshake.max(Duration::from_secs(10))).await?;
-    let mut request = json!({ "execute": command });
-    if let Some(arguments) = arguments {
-        request["arguments"] = arguments;
-    }
-    write_qmp(&mut writer, request).await?;
-    read_qmp_result_until(&mut reader, timeout).await
+    super::qmp_socket::request(qmp, command, arguments, timeout).await
 }
 
-async fn write_qmp(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    value: serde_json::Value,
-) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(&value)
-        .map_err(|error| format!("encode virtual machine command: {error}"))?;
-    bytes.push(b'\n');
-    writer
-        .write_all(&bytes)
-        .await
-        .map_err(|error| format!("write virtual machine command: {error}"))
-}
-
-async fn read_qmp_result_until(
-    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
-    timeout: Duration,
-) -> Result<serde_json::Value, String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("virtual machine control command timed out".into());
-        }
-        let mut line = String::new();
-        let count = tokio::time::timeout(remaining, reader.read_line(&mut line))
-            .await
-            .map_err(|_| "virtual machine control command timed out".to_string())?
-            .map_err(|error| format!("read virtual machine response: {error}"))?;
-        if count == 0 {
-            return Err("virtual machine control connection closed".into());
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if let Some(error) = value.get("error") {
-            return Err(format!("virtual machine rejected the command: {error}"));
-        }
-        if let Some(result) = value.get("return") {
-            return Ok(result.clone());
-        }
-    }
-}
 
 async fn apply_vm_resource_limits(
     process_id: u32,
-    qmp_port: u16,
+    qmp: &QmpSocket,
     desired_cpus: f64,
     desired_memory_gb: f64,
 ) -> Result<(), String> {
@@ -4407,7 +4485,7 @@ async fn apply_vm_resource_limits(
     let memory_bytes = (desired_memory_gb * 1_073_741_824.0)
         .round()
         .clamp(256.0 * 1024.0 * 1024.0, u64::MAX as f64) as u64;
-    qmp_execute(qmp_port, "balloon", Some(json!({ "value": memory_bytes }))).await
+    qmp_execute(qmp, "balloon", Some(json!({ "value": memory_bytes }))).await
 }
 
 /// Indexes of the host CPUs a VM process may use. Each VM gets a contiguous
@@ -4541,6 +4619,73 @@ fn read_file_tail(path: &Path, maximum_bytes: u64) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_headers_that_reference_other_files_are_refused() {
+        let mut qcow2 = vec![0_u8; 104];
+        qcow2[..4].copy_from_slice(b"QFI\xfb");
+        qcow2[4..8].copy_from_slice(&3_u32.to_be_bytes());
+        assert_eq!(super::disk_format_from_header(&qcow2), Ok("qcow2"));
+        let mut backed = qcow2.clone();
+        backed[8..16].copy_from_slice(&512_u64.to_be_bytes());
+        backed[16..20].copy_from_slice(&12_u32.to_be_bytes());
+        assert!(super::disk_format_from_header(&backed).is_err());
+        let mut data_file = qcow2.clone();
+        data_file[72..80].copy_from_slice(&4_u64.to_be_bytes());
+        assert!(super::disk_format_from_header(&data_file).is_err());
+        assert!(super::disk_format_from_header(&qcow2[..80]).is_err());
+        let mut sparse = vec![0_u8; 512];
+        sparse[..4].copy_from_slice(b"KDMV");
+        assert!(super::disk_format_from_header(&sparse).is_err(), "zero capacity opens an embedded descriptor");
+        sparse[12..20].copy_from_slice(&128_u64.to_le_bytes());
+        assert_eq!(super::disk_format_from_header(&sparse), Ok("vmdk"));
+        let mut vhd = vec![0_u8; 512];
+        vhd[..8].copy_from_slice(b"conectix");
+        vhd[60..64].copy_from_slice(&3_u32.to_be_bytes());
+        assert_eq!(super::disk_format_from_header(&vhd), Ok("vpc"));
+        vhd[60..64].copy_from_slice(&4_u32.to_be_bytes());
+        assert!(super::disk_format_from_header(&vhd).is_err());
+        for refused in [&b"# Disk DescriptorFile\nversion=1"[..], b"COWD\x01", b"QED\0", b"LUKS\xba\xbe\0\x01"] {
+            assert!(super::disk_format_from_header(refused).is_err());
+        }
+        assert_eq!(super::disk_format_from_header(b"json:{\"driver\":\"file\"}"), Ok("raw"));
+        assert_eq!(super::disk_format_from_header(&[]), Ok("raw"));
+        let options = super::import_image_options("raw", std::path::Path::new("/disks/a,b.img"));
+        assert!(options.ends_with("file.driver=file,file.filename=/disks/a,,b.img"), "{options}");
+    }
+
+    #[tokio::test]
+    async fn imported_disks_never_read_other_host_files() {
+        let data = tempfile::tempdir().unwrap();
+        let manager = super::RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        if !manager.layout.qemu_img.is_file() {
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let secret = work.path().join("secret.raw");
+        std::fs::write(&secret, vec![0x5a_u8; 1 << 20]).unwrap();
+        let qemu_img = |args: &[&str]| {
+            let output = std::process::Command::new(&manager.layout.qemu_img).current_dir(work.path()).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        qemu_img(&["create", "-q", "-f", "qcow2", "-F", "raw", "-b", &secret.to_string_lossy(), "backed.qcow2"]);
+        qemu_img(&["create", "-q", "-f", "qcow2", "-o", &format!("data_file={},data_file_raw=on", secret.to_string_lossy()), "external.qcow2", "1M"]);
+        qemu_img(&["create", "-q", "-f", "vmdk", "-o", "subformat=monolithicFlat", "flat.vmdk", "1M"]);
+        std::fs::write(work.path().join("descriptor.vmdk"), format!(
+            "# Disk DescriptorFile\nversion=1\nCID=fffffffe\nparentCID=ffffffff\ncreateType=\"monolithicFlat\"\nRW 2048 FLAT \"{}\" 0\n",
+            secret.to_string_lossy())).unwrap();
+        for name in ["backed.qcow2", "external.qcow2", "flat.vmdk", "descriptor.vmdk"] {
+            let error = manager.import_vm_source(&work.path().join(name), "qcow2").await.unwrap_err();
+            assert!(error.contains("standalone"), "{name}: {error}");
+        }
+        qemu_img(&["create", "-q", "-f", "qcow2", "plain.qcow2", "1M"]);
+        qemu_img(&["create", "-q", "-f", "vmdk", "sparse.vmdk", "1M"]);
+        std::fs::write(work.path().join("plain.img"), vec![7_u8; 1 << 20]).unwrap();
+        for name in ["plain.qcow2", "sparse.vmdk", "plain.img"] {
+            let base = manager.import_vm_source(&work.path().join(name), "qcow2").await.unwrap();
+            super::ensure_standalone_qcow2(&base).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn vm_stop_is_idempotent_without_a_live_runtime() {
         let data = tempfile::tempdir().unwrap();
@@ -4638,6 +4783,7 @@ mod tests {
             manager.vms.lock().await.insert(
                 id.into(),
                 super::VmProcess {
+                    _boot_token: None,
                     internet: None,
                     child,
                     _branch_block_server: None,
@@ -4649,7 +4795,7 @@ mod tests {
                     process_id,
                     allocated_cpus: 1,
                     allocated_micro_memory_gb: Some(1.0),
-                    qmp_port: 0,
+                    qmp: QmpSocket::unused(),
                     websocket_port: 0,
                     console_password: String::new(),
                 },
@@ -4905,6 +5051,7 @@ mod tests {
         let saved = ManagedMicroVmManifest {
             version: MICRO_VM_MANIFEST_VERSION,
             builtin: true,
+            kind: MicroVmKind::Alpine,
             kernel: directory.path().join("removed-install/kernel"),
             initrd: Some(directory.path().join("removed-install/initrd")),
             cmdline: "root=/dev/vda rw console=ttyS0 custom-option=keep".into(),
@@ -5048,7 +5195,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "launches the bundled QEMU runtime"]
     async fn bundled_qemu_exposes_qmp_and_vnc_websocket() {
-        use tokio::io::AsyncReadExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let app_data = tempfile::tempdir().unwrap();
         let manifest_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -5269,8 +5416,8 @@ mod tests {
         assert!(console.headless);
         assert!(console.websocket_url.is_empty());
         assert!(console.guest_control_available);
-        let qmp_port = manager.vms.lock().await.get("micro-runtime-test").unwrap().qmp_port;
-        let memory = qmp_request(qmp_port, "query-memory-size-summary", None).await.unwrap();
+        let qmp = manager.vms.lock().await.get("micro-runtime-test").unwrap().qmp.clone();
+        let memory = qmp_request(&qmp, "query-memory-size-summary", None).await.unwrap();
         assert_eq!(memory["base-memory"].as_u64(), Some(512 * 1024 * 1024));
         assert_eq!(manager.micro_vm_startup_memory_gb("micro-runtime-test", &restored_manifest, &policy).await.unwrap(), 0.5);
         let serial_path = console.serial_log_path.as_ref().unwrap();

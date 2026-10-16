@@ -45,7 +45,7 @@ func TestContainerRunningIsRequiredBeforeApps(t *testing.T) {
 }
 
 func TestContainerDisplayScriptStaysInsideItsNamespace(t *testing.T) {
-	script := containerDisplayScript("/var/lib/yougori/app-displays/env-a", "/tmp/yougori-app-1/display.sock", "/home/yougori-apps", 21, []string{"/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--clear-groups", "--"})
+	script := containerDisplayScript("/var/lib/yougori/app-displays/env-a", "/tmp/yougori-app-1/display.sock", "/home/yougori-apps", "/run/yougori-apps/openbox/rc.xml", 21, []string{"/usr/bin/setpriv", "--reuid=1000", "--regid=1000", "--clear-groups", "--"})
 	for _, fragment := range []string{
 		"mount --bind '/var/lib/yougori/app-displays/env-a' /tmp/.X11-unix",
 		"export HOME='/home/yougori-apps'",
@@ -54,7 +54,7 @@ func TestContainerDisplayScriptStaysInsideItsNamespace(t *testing.T) {
 		"-nolisten tcp",
 		"[ ! -S /tmp/.X11-unix/X21 ]",
 		"DISPLAY=:21",
-		"openbox &",
+		"openbox --config-file '/run/yougori-apps/openbox/rc.xml' &",
 	} {
 		if !strings.Contains(script, fragment) {
 			t.Fatalf("missing %q in\n%s", fragment, script)
@@ -65,9 +65,26 @@ func TestContainerDisplayScriptStaysInsideItsNamespace(t *testing.T) {
 	if !strings.Contains(script, "-rfbport -1") {
 		t.Fatal("display must not open a VNC port", script)
 	}
-	quoted := containerDisplayScript("/var/lib/yougori/app-displays/env-a'; touch /tmp/pwned; '", "/tmp/s", "/home/yougori-apps", 22, []string{"su-exec", "1000:1000"})
+	quoted := containerDisplayScript("/var/lib/yougori/app-displays/env-a'; touch /tmp/pwned; '", "/tmp/s", "/home/yougori-apps", "/run/rc.xml", 22, []string{"su-exec", "1000:1000"})
 	if strings.Contains(quoted, "; touch /tmp/pwned;") && !strings.Contains(quoted, `'\''`) {
 		t.Fatal("directory was not quoted", quoted)
+	}
+}
+
+func TestContainerWindowManagerCannotStartPrograms(t *testing.T) {
+	for _, config := range []string{containerWindowManagerRC, containerWindowManagerMenu} {
+		for _, forbidden := range []string{"Execute", "<command", "ShowMenu", "<keybind", "Restart", "<item"} {
+			if strings.Contains(config, forbidden) {
+				t.Fatalf("window manager configuration contains %q", forbidden)
+			}
+		}
+	}
+	if !strings.Contains(containerWindowManagerRC, containerWindowManagerDirectory+"/menu.xml") {
+		t.Fatal("the stock menu must not be loaded")
+	}
+	packages, err := appPackages("base", true)
+	if err != nil || strings.Contains(strings.Join(packages, " "), "xterm") {
+		t.Fatalf("container displays must not install a terminal in the appliance: %v %v", packages, err)
 	}
 }
 

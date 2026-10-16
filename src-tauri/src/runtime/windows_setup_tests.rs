@@ -60,7 +60,7 @@ fn probe_log(disk: &[u8]) -> Option<String> {
     (bytes.len() == size).then(|| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-async fn keys(port: u16, codes: &[&str]) -> Result<(), String> {
+async fn keys(port: &crate::runtime::QmpSocket, codes: &[&str]) -> Result<(), String> {
     let keys: Vec<_> = codes
         .iter()
         .map(|code| json!({"type":"qcode","data":code}))
@@ -70,7 +70,7 @@ async fn keys(port: u16, codes: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-async fn start_observer(port: u16) -> Result<(), String> {
+async fn start_observer(port: &crate::runtime::QmpSocket) -> Result<(), String> {
     keys(port, &["shift", "f10"]).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
     // A previous attempt may have arrived before WinPE finished initializing
@@ -210,22 +210,22 @@ async fn windows_setup_reaches_visible_installer() {
             if !accelerated { return Err("The Windows Setup regression test requires WHPX; refusing to mistake a software-emulation fallback for a successful fast boot".into()); }
             eprintln!("WHPX hardware acceleration verified");
         }
-        let port = manager.vms.lock().await.get(id).unwrap().qmp_port;
-        qmp_request(port, "blockdev-add", Some(json!({
+        let port = manager.vms.lock().await.get(id).unwrap().qmp.clone();
+        qmp_request(&port, "blockdev-add", Some(json!({
             "driver":"raw", "node-name":"setup-probe", "file":{"driver":"file","filename":path_string(&probe_copy)}
         }))).await?;
-        qmp_request(port, "device_add", Some(json!({"driver":"usb-storage","id":"setup-probe","drive":"setup-probe"}))).await?;
+        qmp_request(&port, "device_add", Some(json!({"driver":"usb-storage","id":"setup-probe","drive":"setup-probe"}))).await?;
         let restart_test = std::env::var_os("YOUGORI_TEST_WINDOWS_RESTART").is_some();
         let mut restarted = false;
         let mut next_observer = 45;
         let mut last_log = String::new();
         let mut boot_log = String::new();
         while started.elapsed() < Duration::from_secs(if restart_test { 360 } else { 180 }) {
-            if let Ok(trace) = qmp_request(port, "ringbuf-read", Some(json!({"device":"yougori-boot-log","size":4096}))).await {
+            if let Ok(trace) = qmp_request(&port, "ringbuf-read", Some(json!({"device":"yougori-boot-log","size":4096}))).await {
                 if let Some(text) = trace.as_str() { boot_log.push_str(text); }
             }
             if started.elapsed() > Duration::from_secs(next_observer) && last_log.is_empty() {
-                start_observer(port).await?;
+                start_observer(&port).await?;
                 next_observer += 35;
             }
             if let Ok(bytes) = fs::read(&probe_copy) {
@@ -240,10 +240,10 @@ async fn windows_setup_reaches_visible_installer() {
                         }
                         if !restarted {
                             eprintln!("Windows Setup/security verified before guest restart in {:.1}s", started.elapsed().as_secs_f64());
-                            keys(port, &["ctrl", "c"]).await?;
-                            keys(port, &["esc"]).await?;
+                            keys(&port, &["ctrl", "c"]).await?;
+                            keys(&port, &["esc"]).await?;
                             for key in ["w","p","e","u","t","i","l","spc","r","e","b","o","o","t","ret"] {
-                                keys(port, &[key]).await?;
+                                keys(&port, &[key]).await?;
                             }
                             restarted = true;
                             next_observer = started.elapsed().as_secs() + 50;
@@ -255,8 +255,8 @@ async fn windows_setup_reaches_visible_installer() {
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        let stats = qmp_request(port, "query-blockstats", None).await;
-        let status = qmp_request(port, "query-status", None).await;
+        let stats = qmp_request(&port, "query-blockstats", None).await;
+        let status = qmp_request(&port, "query-status", None).await;
         Err(format!("Windows Setup and security were not verified before the deadline. Observer: {last_log}; Boot: {boot_log}; Status: {status:?}; Storage: {stats:?}; QEMU: {}; Firmware: {}", fs::read_to_string(disk.disk_path.parent().unwrap().join("qemu.log")).unwrap_or_default(), fs::read_to_string(disk.disk_path.parent().unwrap().join("firmware-serial.log")).unwrap_or_default()))
     }.await;
     manager.shutdown_all().await;

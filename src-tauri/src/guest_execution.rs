@@ -210,7 +210,7 @@ async fn run_guest_job(
     let id = environment.runtime_id.as_deref().unwrap_or(&environment.id);
     let start=runtime.workspace_request(&environment,"/v1/exec/start",json!({"id":id,"executionId":execution_id,"command":request.command,"timeoutSeconds":timeout}));
     tokio::select! {
-        result=start=>{result.map_err(|e|format!("YOUGORI_OPERATION_INTERRUPTED:Guest execution submission failed; inspect execution {execution_id} before repeating: {e}"))?;},
+        result=start=>{result.map_err(|e|if e.starts_with("YOUGORI_UNSUPPORTED_EXECUTION_CAPABILITY"){e}else{format!("YOUGORI_OPERATION_INTERRUPTED:Guest execution submission failed; inspect execution {execution_id} before repeating: {e}")})?;},
         _=cancellation.cancelled()=>{let cancelled=cancel_bounded(&runtime,&environment,&execution_id).await;if completed_before_cancellation(&cancelled){cancellation_raced_completion=true;}else{return Err(cancellation_outcome(&execution_id,cancelled));}}
     }
     crate::security::record(crate::security::Event::new("exec.started").env(&environment.id).command(&request.command)

@@ -50,6 +50,9 @@ pub struct HostFolderServer {
     pub token: String,
     task: JoinHandle<()>,
     network_access: Arc<std::sync::atomic::AtomicBool>,
+    /// Set while the environment is locked down: every request is refused,
+    /// and the guest's mount stays in place for when it is unlocked.
+    suspended: Arc<std::sync::atomic::AtomicBool>,
     relays: std::sync::Mutex<std::collections::HashMap<String, (String, JoinHandle<()>)>>,
 }
 pub type FileForward = Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), String>> + Send>> + Send + Sync>;
@@ -71,6 +74,9 @@ impl HostFolderServer {
         let mut relays=self.relays.lock().unwrap();
         for (_,task) in relays.values(){task.abort();}
         relays.clear();
+    }
+    pub fn set_suspended(&self, suspended: bool) {
+        self.suspended.store(suspended, std::sync::atomic::Ordering::Release);
     }
     pub fn relay_endpoint(&self, key: &str) -> Option<String> {
         self.relays.lock().unwrap().get(key).filter(|(_, task)| !task.is_finished()).map(|(url, _)|url.clone())
@@ -424,6 +430,8 @@ impl HostFolderServer {
         let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
         let secret = token.clone();
         let network_access = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let suspended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refused = suspended.clone();
         let service_lifetime = ServiceLifetime(network_access.clone());
         let task = tokio::spawn(async move {
             let _service_lifetime = service_lifetime;
@@ -435,8 +443,13 @@ impl HostFolderServer {
                         if clients.len() >= 64 { continue }
                         let secret = secret.clone();
                         let forward = forward.clone();
+                        let refused = refused.clone();
                         clients.spawn(async move {
                             let Ok(Ok((header, body))) = tokio::time::timeout(std::time::Duration::from_secs(15), read_http(&mut socket)).await else { return };
+                            if refused.load(std::sync::atomic::Ordering::Acquire) {
+                                respond(&mut socket, 403, "application/json", b"{\"error\":\"This environment is locked down\"}".to_vec()).await;
+                                return;
+                            }
                             if !header.starts_with("POST /files HTTP/1.") || !header.lines().any(|line| line.split_once(':').is_some_and(|(key, value)| key.eq_ignore_ascii_case("authorization") && value.trim() == format!("Bearer {secret}"))) {
                                 respond(&mut socket, 403, "application/json", b"{\"error\":\"Forbidden\"}".to_vec()).await;
                                 return;
@@ -456,7 +469,7 @@ impl HostFolderServer {
                 }
             }
         });
-        Ok(Self { port, token, task, network_access, relays: std::sync::Mutex::new(std::collections::HashMap::new()) })
+        Ok(Self { port, token, task, network_access, suspended, relays: std::sync::Mutex::new(std::collections::HashMap::new()) })
     }
     pub async fn start(root: PathBuf, read_only: bool) -> Result<Self, String> {
         if !root.is_dir() {
@@ -477,6 +490,8 @@ impl HostFolderServer {
         );
         let secret = token.clone();
         let network_access = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let suspended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refused = suspended.clone();
         let service_lifetime = ServiceLifetime(network_access.clone());
         let operation_lock = Arc::new(std::sync::Mutex::new(()));
         let task = tokio::spawn(async move {
@@ -484,7 +499,8 @@ impl HostFolderServer {
             let mut clients = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
-                    result=listener.accept()=>{let Ok((mut socket,_))=result else{break};let root=root.clone();let secret=secret.clone();let operation_lock=operation_lock.clone();if clients.len()>=64{continue}clients.spawn(async move{let Ok(Ok((header,body)))=tokio::time::timeout(std::time::Duration::from_secs(15),read_http(&mut socket)).await else{return};
+                    result=listener.accept()=>{let Ok((mut socket,_))=result else{break};let root=root.clone();let secret=secret.clone();let operation_lock=operation_lock.clone();let refused=refused.clone();if clients.len()>=64{continue}clients.spawn(async move{let Ok(Ok((header,body)))=tokio::time::timeout(std::time::Duration::from_secs(15),read_http(&mut socket)).await else{return};
+                        if refused.load(std::sync::atomic::Ordering::Acquire){respond(&mut socket,403,"application/json",b"{\"error\":\"This environment is locked down\"}".to_vec()).await;return}
                         let mut first=header.lines().next().unwrap_or("").split_whitespace();let method=first.next().unwrap_or("");let uri=first.next().unwrap_or("");
                         if method=="POST" && uri=="/files"{
                             if !header.lines().any(|line|line.split_once(':').is_some_and(|(k,v)|k.eq_ignore_ascii_case("authorization")&&v.trim()==format!("Bearer {secret}"))){respond(&mut socket,403,"text/plain",b"Forbidden".to_vec()).await;return}
@@ -516,7 +532,7 @@ impl HostFolderServer {
                 }
             }
         });
-        Ok(Self { port, token, task, network_access, relays: Default::default() })
+        Ok(Self { port, token, task, network_access, suspended, relays: Default::default() })
     }
 }
 
@@ -723,6 +739,26 @@ mod tests {
             assert!(client.post(format!("{base}/files")).bearer_auth(&server.token).json(&replace).send().await.is_err());
         }
     }
+    #[tokio::test]
+    async fn a_locked_down_environment_reaches_none_of_its_pc_folders() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("code.txt"), "selected content").unwrap();
+        let server = HostFolderServer::start(directory.path().into(), false).await.unwrap();
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(2)).build().unwrap();
+        let base = format!("http://127.0.0.1:{}", server.port);
+        let read = || client.post(format!("{base}/files")).bearer_auth(&server.token).json(&json!({"operation":"read","path":"code.txt","length":100})).send();
+        let view = || client.get(format!("{base}/{}/code.txt", server.token)).send();
+        assert_eq!(read().await.unwrap().status(), 200);
+        server.set_suspended(true);
+        let refused = read().await.unwrap();
+        assert_eq!(refused.status(), 403);
+        assert!(refused.text().await.unwrap().contains("locked down"));
+        assert_eq!(view().await.unwrap().status(), 403);
+        server.set_suspended(false);
+        assert_eq!(read().await.unwrap().status(), 200);
+        assert_eq!(view().await.unwrap().text().await.unwrap(), "selected content");
+    }
+
     #[tokio::test]
     async fn host_folder_http_is_authenticated_scoped_and_revocable() {
         let directory = tempfile::tempdir().unwrap();

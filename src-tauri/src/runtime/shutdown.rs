@@ -1,6 +1,23 @@
 use super::{vm, RuntimeManager, VmProcess};
 use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+/// Runtime IDs of locked-down environments, kept current by the security
+/// engine. Shared by every storage pool's runtime manager.
+fn contained_runtimes() -> &'static Mutex<HashSet<String>> {
+    static CONTAINED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    CONTAINED.get_or_init(Default::default)
+}
+
+pub(crate) fn set_contained_runtimes(ids: HashSet<String>) {
+    *contained_runtimes().lock().unwrap_or_else(|error| error.into_inner()) = ids;
+}
+
+fn runtime_contained(id: &str) -> bool {
+    contained_runtimes().lock().unwrap_or_else(|error| error.into_inner()).contains(id)
+}
 
 fn outcome(provider: &str, root: &str, id: Option<&str>, status: &str, error: Option<String>) -> Value {
     let stopped = error.is_none() && matches!(status, "stopped" | "forcedStopped" | "disconnected");
@@ -84,17 +101,27 @@ impl RuntimeManager {
 
     async fn shutdown_vm_report(&self, id: String, mut process: VmProcess) -> Value {
         let root = self.data_root.display().to_string();
-        let _ = vm::qmp_execute_bounded(process.qmp_port, "cont", None, Duration::from_secs(2)).await;
-        let graceful_requested = if process.is_micro_vm {
+        // A guest that lockdown paused stays paused. Resuming it for a graceful
+        // power-off would let it run, with its shares and links, until the deadline.
+        let held = runtime_contained(&id) && !matches!(
+            tokio::time::timeout(Duration::from_secs(2), vm::qmp_request(&process.qmp, "query-status", None)).await,
+            Ok(Ok(status)) if status["running"] == true
+        );
+        if !held {
+            let _ = vm::qmp_execute_bounded(&process.qmp, "cont", None, Duration::from_secs(2)).await;
+        }
+        let graceful_requested = if held {
+            false
+        } else if process.is_micro_vm {
             match &process.micro_endpoint { Some(endpoint) => self.request_micro_vm_shutdown(endpoint).await.is_ok(), None => false }
         } else {
-            vm::qmp_execute_bounded(process.qmp_port, "system_powerdown", None, Duration::from_secs(3)).await.is_ok()
+            vm::qmp_execute_bounded(&process.qmp, "system_powerdown", None, Duration::from_secs(3)).await.is_ok()
         };
         let graceful_timeout = if process.is_micro_vm {Duration::from_secs(8)} else {Duration::from_secs(12)};
         let graceful = graceful_requested && tokio::time::timeout(graceful_timeout, process.child.wait()).await.is_ok_and(|result| result.is_ok());
         if !graceful {
-            vm::quiesce_and_flush_vm(process.qmp_port, process.is_micro_vm).await;
-            let _ = vm::qmp_execute_bounded(process.qmp_port, "quit", None, Duration::from_secs(2)).await;
+            vm::quiesce_and_flush_vm(&process.qmp, process.is_micro_vm).await;
+            let _ = vm::qmp_execute_bounded(&process.qmp, "quit", None, Duration::from_secs(2)).await;
             let exited = tokio::time::timeout(Duration::from_secs(3), process.child.wait()).await.is_ok_and(|result| result.is_ok());
             if !exited {
                 let kill = process.child.kill().await;
@@ -116,6 +143,14 @@ impl RuntimeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_locked_down_runtimes_are_held_paused_at_shutdown() {
+        set_contained_runtimes(HashSet::from(["env-held".to_string()]));
+        assert!(runtime_contained("env-held"));
+        assert!(!runtime_contained("env-other"));
+        set_contained_runtimes(HashSet::new());
+        assert!(!runtime_contained("env-held"));
+    }
     #[test]
     fn a_failed_cuda_shutdown_is_incomplete_with_its_provider_root_and_recovery_action() {
         let failed = outcome("yougoriCuda", "D:/private/runtime", None, "failed", Some("WSL refused stop: https://secret@private/token".into()));

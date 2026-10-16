@@ -5,6 +5,7 @@ pub(crate) mod cloud;
 pub(crate) mod cuda;
 mod host_relay;
 mod microvm_network;
+mod qmp_socket;
 #[cfg(test)]
 mod cuda_tests;
 pub(crate) mod fabric;
@@ -50,6 +51,8 @@ mod file_import;
 mod snapshot_export;
 #[cfg(test)]
 pub(crate) use snapshot_export::SnapshotExports;
+pub(crate) use shutdown::set_contained_runtimes;
+pub(crate) use qmp_socket::QmpSocket;
 mod duplication_disk;
 mod import_drive;
 pub use import_drive::ImportedDrive;
@@ -127,7 +130,7 @@ struct ApplianceProcess {
     internet: microvm_network::MicroVmNetwork,
     _boot_token: boot_token::BootTokenFile,
     endpoint: AgentEndpoint,
-    qmp_port: u16,
+    qmp: qmp_socket::QmpSocket,
     max_memory_mib: usize,
     _port_reservations: vm::VmPortReservations,
     capacity: appliance_capacity::ApplianceCapacity,
@@ -143,6 +146,8 @@ struct AgentEndpoint {
 
 struct VmProcess {
     child: Child,
+    /// The microVM agent's boot credential, read by QEMU from firmware.
+    _boot_token: Option<boot_token::BootTokenFile>,
     internet: Option<microvm_network::MicroVmNetwork>,
     _branch_block_server: Option<BranchBlockServer>,
     _port_reservations: vm::VmPortReservations,
@@ -154,7 +159,7 @@ struct VmProcess {
     allocated_cpus: usize,
     // Direct-kernel guests have fixed boot RAM; full VMs retain balloon control.
     allocated_micro_memory_gb: Option<f64>,
-    qmp_port: u16,
+    qmp: qmp_socket::QmpSocket,
     websocket_port: u16,
     console_password: String,
 }
@@ -732,6 +737,27 @@ fn available_port() -> Result<u16, String> {
         .local_addr()
         .map(|address| address.port())
         .map_err(|error| format!("read local control port: {error}"))
+}
+
+/// The command that starts QEMU. macOS has no parent-death signal or
+/// kill-on-close job, so there the bundled supervisor execs QEMU in place (it
+/// keeps its PID) and stops its process group once this app's end of the stdin
+/// pipe closes, including after a crash or a forced quit.
+fn qemu_command(layout: &RuntimeLayout, executable: &Path) -> Result<tokio::process::Command, String> {
+    if cfg!(target_os = "macos") {
+        if let Some(bundled) = &layout.bundled_qemu {
+            let supervisor = bundled.join("yougori-supervise");
+            if !supervisor.is_file() {
+                return Err("The QEMU supervisor is missing from this runtime. Reinstall Yougori to restore its runtime files.".into());
+            }
+            let mut command = tokio::process::Command::new(supervisor);
+            command.arg(executable).stdin(std::process::Stdio::piped());
+            return Ok(command);
+        }
+    }
+    let mut command = tokio::process::Command::new(executable);
+    command.stdin(std::process::Stdio::null());
+    Ok(command)
 }
 
 fn configure_background_process(command: &mut tokio::process::Command) {

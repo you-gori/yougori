@@ -172,7 +172,7 @@ async fn pc_guest(
     disk: &Path,
 ) -> Result<(u16, String), String> {
     let control = available_port()?;
-    let qmp = available_port()?;
+    let qmp = super::super::qmp_socket::QmpSocket::allocate()?;
     let token = format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
@@ -183,7 +183,7 @@ async fn pc_guest(
         "-kernel".into(), runtime.layout.appliance_kernel.to_string_lossy().into_owned(), "-initrd".into(), runtime.layout.appliance_initramfs.to_string_lossy().into_owned(), "-append".into(), format!("root=/dev/vda rw rootfstype=ext4 console=ttyS0 quiet modules=virtio_pci,virtio_blk,virtio_net,ext4 softlevel=microvm yougori.mode=microvm yougori.token={token}"),
         "-blockdev".into(), json!({"driver":"qcow2","node-name":"guest-disk","file":{"driver":"file","filename":disk}}).to_string(), "-device".into(), "virtio-blk-pci,drive=guest-disk".into(),
         "-netdev".into(), format!("user,id=net0,hostfwd=tcp:127.0.0.1:{control}-:7443"), "-device".into(), "virtio-net-pci,netdev=net0".into(),
-        "-device".into(), "qemu-xhci,p2=15,p3=15".into(), "-qmp".into(), format!("tcp:127.0.0.1:{qmp},server=on,wait=off")];
+        "-device".into(), "qemu-xhci,p2=15,p3=15".into(), "-qmp".into(), qmp.argument()];
     args.extend(import_drive::drive_arguments(&root)?);
     let mut command = tokio::process::Command::new(&runtime.layout.qemu_system);
     command
@@ -202,6 +202,7 @@ async fn pc_guest(
     runtime.vms.lock().await.insert(
         env.id.clone(),
         VmProcess {
+            _boot_token: None,
             internet: None,
             child,
             _branch_block_server: None,
@@ -216,7 +217,7 @@ async fn pc_guest(
             process_id,
             allocated_cpus: 1,
             allocated_micro_memory_gb: None,
-            qmp_port: qmp,
+            qmp,
             websocket_port: 0,
             console_password: String::new(),
         },

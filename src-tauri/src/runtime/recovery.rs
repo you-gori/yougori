@@ -411,13 +411,17 @@ mod windows {
         check_named(disk, executables, recover, "Yougori Internal OCI Runtime")
     }
 
-    // Use only a loopback QMP endpoint read from the verified process arguments.
+    // Use only a QMP endpoint read from the verified process arguments: the
+    // private socket, or loopback TCP from a runtime an older version started.
     fn request_power(args: &[OsString], command: &str) -> Result<(), String> {
         use std::io::{BufRead, BufReader, Write};
         use std::net::{SocketAddr, TcpStream};
         use std::time::Duration;
-        let address = args.windows(2).find(|p| p[0] == "-qmp")
-            .and_then(|p| p[1].to_str()).and_then(|s| s.strip_prefix("tcp:127.0.0.1:"))
+        let endpoint = args.windows(2).find(|p| p[0] == "-qmp").and_then(|p| p[1].to_str()).ok_or("No verified QMP endpoint")?;
+        if let Some(socket) = super::super::qmp_socket::path_from_argument(endpoint) {
+            return super::super::qmp_socket::request_blocking(&socket, command, None, Duration::from_secs(2)).map(drop);
+        }
+        let address = endpoint.strip_prefix("tcp:127.0.0.1:")
             .and_then(|s| s.split(',').next()).and_then(|s| s.parse::<u16>().ok())
             .ok_or("No verified QMP endpoint")?;
         let mut stream = TcpStream::connect_timeout(&SocketAddr::from(([127,0,0,1],address)), Duration::from_secs(2)).map_err(|e| e.to_string())?;

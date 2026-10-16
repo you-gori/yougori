@@ -133,6 +133,19 @@ impl RuntimeManager {
         lock
     }
 
+    /// A locked-down container keeps its PC folder mounts, but they answer nothing.
+    pub async fn set_workload_shares_suspended(&self, id: &str, suspended: bool) -> Result<(), String> {
+        if let Some(engine) = self.storage_runtime(id)? {
+            return Box::pin(engine.set_workload_shares_suspended(id, suspended)).await;
+        }
+        if let Some((_, servers)) = self.workload_shares.lock().await.get(id) {
+            for server in servers {
+                server.set_suspended(suspended);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn prepare_workload_binds(&self, id: &str) -> Result<serde_json::Value, String> {
         if let Some(engine) = self.storage_runtime(id)? {
             return Box::pin(engine.prepare_workload_binds(id)).await;

@@ -61,8 +61,9 @@ QEMU explicitly excludes TCG emulation from its supported guest-isolation
 security guarantees. Yougori retains software emulation for compatibility and
 does not describe it as a hardware security boundary. QMP/HMP can exercise the
 host user's privileges: guest access to these interfaces must be denied.
-Loopback binding alone does not protect a QMP port from another local process
-running as the same user. The local host/user remain trusted in this design.
+A loopback TCP port is open to every local process, including another user's
+on Windows, so QMP is a socket file in a directory only the user can open.
+The local host/user remain trusted in this design.
 
 Threat model and protected assets
 
@@ -79,7 +80,8 @@ Implemented controls
 
 1. The host enforces the control/Internet NIC policy for the internal OCI VM,
    microVMs and full VMs. Internet permission never automatically grants access
-   to the SLIRP host gateway's arbitrary TCP/UDP ports, including QMP and VNC.
+   to the SLIRP host gateway's arbitrary TCP/UDP ports, including VNC. QMP has
+   no TCP port at all (see the 2026-10-15 section).
    Only explicit service/share ports and tracked replies to host-initiated TCP
    sessions are permitted. Guest-chosen source ports do not create reply grants.
    Bounded flow tables, expiry, strict framing and fail-closed filter failures
@@ -87,17 +89,20 @@ Implemented controls
    Error-aware native IPv4 inventories include software, VPN and loopback
    interfaces. New outbound flows query current host addresses; Windows/Linux
    address notifications invalidate active leases, and other Unix hosts poll at
-   250 ms. Active flows have a one-second lease. Inventory failure blocks
-   Internet traffic, while explicit virtual-gateway grants remain available.
+   250 ms. Active flows have a one-second lease; a flow the filter already
+   verified renews it against the current inventory without a new host query.
+   Inventory failure blocks Internet traffic, while explicit virtual-gateway
+   grants remain available.
    A 4096-flow bound and 256-lookups-per-second budget limit enumeration abuse.
    Source-zero traffic is restricted to DHCP bootstrap broadcasts.
 
 2. Host folder grants follow the service lifetime, including stop, drop and
    task completion. Private fabric listeners retain only their own grant.
    Local service port lists are replaced when publication policy changes.
-   DNS is limited to the virtual resolver when Internet is allowed. Unsupported
-   IPv6, IPv4 options/fragments, spoofed source addresses, loopback aliases and
-   link-local/metadata targets cannot bypass this filter.
+   The virtual resolver answers only while Internet is allowed; public resolvers
+   are then ordinary Internet destinations. Unsupported IPv6, IPv4
+   options/fragments, spoofed source addresses, loopback aliases, link-local and
+   cloud management targets cannot bypass this filter.
 
 3. Guest VMX/SVM are masked across supported CPU/accelerator profiles to reduce
    nested-virtualization exposure. Linux QEMU uses its maintained seccomp sandbox
@@ -115,7 +120,9 @@ Implemented controls
    set, use private cgroup namespaces, cap process count at 4096, prohibit core
    dumps and restrict swap to the allocated memory budget. Required image USER,
    entrypoints, writable files, package managers and GPU/CDI access are preserved.
-   Saved OCI security specifications are tightened before the next task launch.
+   Saved OCI security specifications are tightened before every task launch:
+   containerd's own restart monitor is disabled and the agent applies restart
+   policies through the same start path.
    A missing/non-enforcing seccomp profile fails rather than silently bypassing
    protection. It requires explicit workload reconfiguration through the engine.
    Unprivileged datagram ICMP is enabled for iputils ping. BusyBox's raw-socket
@@ -290,6 +297,70 @@ deletes, resets or restarts an environment; `yougori lockdown`/`unlock` is the
 manual panic switch. Containers are masqueraded and filtered inside their own
 network namespace, and the guest agent reports neither process-limit hits nor
 sent bytes, so those signals need a separately built and verified agent update.
+
+Sandbox review fixes (2026-10-15)
+
+A code review of the container, microVM and VM layers found sixteen issues.
+Each is fixed below; "verified" names the real check that was run.
+
+Containers
+- Disk limits are ext4 project quotas, and without a user namespace a
+  container's root could move its files to the unlimited project 0 (chattr -p 0,
+  or chattr -P on a directory). The seccomp profile now refuses FS_IOC_FSSETXATTR,
+  FS_IOC_SETFLAGS and file_setattr; every other ioctl command stays allowed
+  through masked prefix rules, as a seccomp rule cannot exclude two values.
+  Verified with runc 1.5.1, libseccomp 2.6.1 and Linux 6.18 on a quota-limited
+  overlay: the stock profile let a container write past its limit, the new one
+  refuses chattr and stops the write at the limit. lsattr still works.
+- containerd's restart monitor started containers without the agent: no saved
+  spec hardening, storage check or PC-folder mounts. It is disabled in the
+  appliance and CUDA configurations, and the agent applies the same policies
+  and labels. A container whose PC folders the host has not attached again
+  stays stopped. Verified with containerd 2.3.6 introspection; if an older
+  configuration still runs the monitor, the agent leaves restarts to it.
+- Named volumes were treated as one container's private storage, so a second
+  environment mounting one could never start. Only anonymous volumes (64 hex
+  digits, a name now refused for named volumes) are private; a named volume an
+  earlier agent stamped returns to shared storage when a container adopts it.
+- Storage-project walks used path names a running workload could redirect
+  through a symlinked parent. They now descend through directory descriptors
+  with no-follow opens and inode checks.
+- A restored snapshot was created without CPU and memory limits. It keeps the
+  limits of the container it replaces (1 CPU and 1 GiB if there is none).
+- Container app displays run openbox in the appliance; its stock menu could
+  start xterm outside the container. It now uses a fixed configuration with no
+  menu entries, key bindings or commands, and xterm is not installed for it.
+
+MicroVMs and VMs
+- Imported disks were converted with a probed format, so a qcow2 backing file,
+  external data file or VMDK extent could read host files (or a network share)
+  into the guest disk. The format comes from the header, formats that reference
+  other files or need a secret are refused, and qemu-img receives an explicit
+  driver and file protocol. Verified with the bundled qemu-img.
+- QMP is a socket file in a private directory instead of loopback TCP, on
+  Windows through AF_UNIX. Verified with real microVM, full-VM and appliance
+  boots, including memory hotplug and live snapshots.
+- The built-in microVM receives its credential through fw_cfg like the
+  appliance, never on QEMU's command line. The bundled kernel finds fw_cfg only
+  through ACPI, so built-in microVMs boot with ACPI; custom kernels keep the
+  board without it. Verified by a real boot and authenticated agent command.
+- Internet means the public Internet for microVMs and VMs: private, shared
+  (CGNAT/Tailscale) and IETF ranges and cloud management addresses (Azure
+  168.63.129.16, Alibaba 100.100.100.200, Oracle 192.0.0.192) are refused, as
+  containers already did. The appliance itself may still reach a LAN registry.
+- Shutdown no longer resumes a guest that lockdown paused, and a running VM
+  cannot be backed up while locked down (the backup would restart it).
+- Lockdown now also removes the environment's private links, refuses new ones,
+  and makes its PC folders answer nothing until it is unlocked.
+- The Windows native sandbox granted the program's whole folder. A program in a
+  shared folder (a drive's top level, the profile or a folder directly in it,
+  OneDrive, AppData, Program Files, Windows, temp) gets its own .exe only.
+- TPM state directories are owner-only; existing ones are corrected on use.
+- On macOS, QEMU starts through the bundled supervisor, which stops it if the
+  app dies. The runtime build and signing scripts include it. Not run on macOS.
+
+Guest-side fixes take effect only in rebuilt appliance and CUDA payloads. The
+host and agent changes keep the existing host-agent protocol.
 
 Verification and deployment evidence
 

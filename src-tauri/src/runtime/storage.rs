@@ -76,7 +76,7 @@ impl RuntimeManager {
         let path = self.data_root.join("appliance/system.qcow2");
         let before = self.inspect_storage(&path, true).await?;
         if before.maximum_gb > before.capacity_gb {
-            super::vm::qmp_execute(process.qmp_port, "block_resize", Some(serde_json::json!({
+            super::vm::qmp_execute(&process.qmp, "block_resize", Some(serde_json::json!({
                 "node-name": "yougori-appliance-disk", "size": storage_bytes(before.maximum_gb)?
             }))).await?;
         }

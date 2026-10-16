@@ -7,14 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -83,12 +81,7 @@ func kernelProjectQuota(device string, project uint32, limit *uint64) (diskQuota
 	return quota, nil
 }
 
-func fileProject(path string, requested *uint32, directory, reassign bool) (uint32, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return 0, err
-	}
-	defer unix.Close(fd)
+func fileProject(fd int, requested *uint32, directory, reassign bool) (uint32, error) {
 	var attrs projectAttributes
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), 0x801c581f, uintptr(unsafe.Pointer(&attrs))) // FS_IOC_FSGETXATTR
 	if errno != 0 {
@@ -118,14 +111,8 @@ func assignContainerProject(roots []string, project uint32) error {
 
 func assignProject(roots []string, project uint32, reassign bool) error {
 	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if !entry.IsDir() && !entry.Type().IsRegular() {
-				return nil // Never follow a guest symlink or open a FIFO/device.
-			}
-			_, err := fileProject(path, &project, entry.IsDir(), reassign)
+		err := walkStorage(root, true, func(fd int, _ *unix.Stat_t, directory bool) error {
+			_, err := fileProject(fd, &project, directory, reassign)
 			return err
 		})
 		if err != nil {
@@ -133,6 +120,106 @@ func assignProject(roots []string, project uint32, reassign bool) error {
 		}
 	}
 	return nil
+}
+
+const maxStorageDepth = 1024
+
+// walkStorage visits root and everything below it through directory
+// descriptors. No path component is ever followed through a symlink, so a
+// running workload that swaps a directory for a link cannot redirect the walk
+// into another container's storage. Only directories and regular files are
+// opened; sameDevice also stops at mount points.
+func walkStorage(root string, sameDevice bool, visit func(fd int, stat *unix.Stat_t, directory bool) error) error {
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		unix.Close(fd)
+		return err
+	}
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFDIR:
+		return walkStorageDirectory(fd, &stat, stat.Dev, sameDevice, visit, 0)
+	case unix.S_IFREG:
+		defer unix.Close(fd)
+		return visit(fd, &stat, false)
+	default:
+		unix.Close(fd)
+		return nil
+	}
+}
+
+// walkStorageDirectory owns fd and visits the directory before its children,
+// so files created during the walk inherit an already assigned project.
+func walkStorageDirectory(fd int, stat *unix.Stat_t, device uint64, sameDevice bool, visit func(int, *unix.Stat_t, bool) error, depth int) error {
+	defer unix.Close(fd)
+	if depth > maxStorageDepth {
+		return errors.New("storage directory tree is too deep")
+	}
+	if err := visit(fd, stat, true); err != nil {
+		return err
+	}
+	names, err := directoryNames(fd)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		var child unix.Stat_t
+		if err := unix.Fstatat(fd, name, &child, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			return err
+		}
+		kind := child.Mode & unix.S_IFMT
+		if (kind != unix.S_IFDIR && kind != unix.S_IFREG) || (sameDevice && child.Dev != device) {
+			continue
+		}
+		flags := unix.O_RDONLY | unix.O_NONBLOCK | unix.O_NOFOLLOW | unix.O_CLOEXEC
+		if kind == unix.S_IFDIR {
+			flags |= unix.O_DIRECTORY
+		}
+		childFD, err := unix.Openat(fd, name, flags, 0)
+		if err != nil {
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
+				continue // Replaced while walking; never follow the replacement.
+			}
+			return err
+		}
+		var opened unix.Stat_t
+		if err := unix.Fstat(childFD, &opened); err != nil {
+			unix.Close(childFD)
+			return err
+		}
+		if opened.Dev != child.Dev || opened.Ino != child.Ino {
+			unix.Close(childFD)
+			continue
+		}
+		if kind == unix.S_IFDIR {
+			if err := walkStorageDirectory(childFD, &opened, device, sameDevice, visit, depth+1); err != nil {
+				return err
+			}
+			continue
+		}
+		err = visit(childFD, &opened, false)
+		unix.Close(childFD)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func directoryNames(fd int) ([]string, error) {
+	duplicate, err := unix.Dup(fd)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(duplicate), "")
+	defer directory.Close()
+	return directory.Readdirnames(-1)
 }
 
 // Folders a container can write outside its writable layer, such as its app
@@ -164,54 +251,54 @@ type inspectedStorageContainer struct {
 	State struct{ Running, Paused bool }
 }
 
-func privateContainerStorage(ctx context.Context, id string) (inspectedStorageContainer, []string, error) {
+func privateContainerStorage(ctx context.Context, id string) (inspectedStorageContainer, []string, []string, error) {
 	var inspected []inspectedStorageContainer
 	output, err := run(ctx, "nerdctl", "--namespace", namespace, "inspect", id)
 	if err != nil {
-		return inspectedStorageContainer{}, nil, err
+		return inspectedStorageContainer{}, nil, nil, err
 	}
 	if err := json.Unmarshal([]byte(output.Stdout), &inspected); err != nil || len(inspected) != 1 || len(inspected[0].ID) != 64 || strings.Trim(inspected[0].ID, "0123456789abcdef") != "" {
-		return inspectedStorageContainer{}, nil, errors.New("cannot identify the container's private storage")
+		return inspectedStorageContainer{}, nil, nil, errors.New("cannot identify the container's private storage")
 	}
 	container := inspected[0]
 	connection, err := grpc.NewClient("unix://"+containerdSocket, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return container, nil, err
+		return container, nil, nil, err
 	}
 	defer connection.Close()
 	ctx = metadata.AppendToOutgoingContext(ctx, "containerd-namespace", namespace)
 	current, err := containers.NewContainersClient(connection).Get(ctx, &containers.GetContainerRequest{ID: container.ID})
 	if err != nil {
-		return container, nil, err
+		return container, nil, nil, err
 	}
 	config := current.GetContainer()
 	if config.GetSnapshotter() != "overlayfs" || config.GetSnapshotKey() == "" {
-		return container, nil, errors.New("this container's snapshotter does not support independent storage limits")
+		return container, nil, nil, errors.New("this container's snapshotter does not support independent storage limits")
 	}
 	mounts, err := snapshots.NewSnapshotsClient(connection).Mounts(ctx, &snapshots.MountsRequest{Snapshotter: config.Snapshotter, Key: config.SnapshotKey})
 	if err != nil {
-		return container, nil, err
+		return container, nil, nil, err
 	}
-	var roots []string
+	var roots, shared []string
 	for _, mount := range mounts.Mounts {
 		for _, option := range mount.Options {
 			key, path, ok := strings.Cut(option, "=")
 			if ok && (key == "upperdir" || key == "workdir") {
 				if !strings.HasPrefix(path, "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/") {
-					return container, nil, errors.New("container writable storage is outside the managed snapshot directory")
+					return container, nil, nil, errors.New("container writable storage is outside the managed snapshot directory")
 				}
 				roots = append(roots, path)
 			}
 		}
 	}
 	if len(roots) != 2 {
-		return container, nil, errors.New("container writable layer is unavailable")
+		return container, nil, nil, errors.New("container writable layer is unavailable")
 	}
 	var spec struct {
 		Mounts []struct{ Source, Type string }
 	}
 	if config.GetSpec() == nil || json.Unmarshal(config.Spec.Value, &spec) != nil {
-		return container, nil, errors.New("cannot read private container volumes")
+		return container, nil, nil, errors.New("cannot read private container volumes")
 	}
 	for _, mount := range spec.Mounts {
 		// Image-declared anonymous volumes are private storage too. Explicit
@@ -220,34 +307,82 @@ func privateContainerStorage(ctx context.Context, id string) (inspectedStorageCo
 		// Identify its owned volume path rather than assuming type "bind".
 		if isPrivateContainerVolume(mount.Source) {
 			roots = append(roots, mount.Source)
+		} else if isNamedContainerVolume(mount.Source) {
+			shared = append(shared, mount.Source)
 		}
 	}
 	logs, err := filepath.Glob("/var/lib/nerdctl/*/containers/" + namespace + "/" + container.ID)
 	if err != nil {
-		return container, nil, err
+		return container, nil, nil, err
 	}
 	roots = append(roots, logs...)
 	for _, root := range roots {
 		if filepath.Clean(root) != root {
-			return container, nil, errors.New("private storage path is not canonical")
+			return container, nil, nil, errors.New("private storage path is not canonical")
 		}
 		resolved, err := filepath.EvalSymlinks(root)
 		if err != nil || resolved != root {
-			return container, nil, errors.New("private storage path was redirected")
+			return container, nil, nil, errors.New("private storage path was redirected")
 		}
 		if err := requireContainerStorePath(root); err != nil {
-			return container, nil, err
+			return container, nil, nil, err
 		}
 	}
-	return container, roots, nil
+	for _, volume := range shared {
+		if resolved, err := filepath.EvalSymlinks(volume); err != nil || resolved != volume {
+			return container, nil, nil, errors.New("shared volume path was redirected")
+		}
+	}
+	return container, roots, shared, nil
 }
 
+// Only anonymous volumes are one container's private storage. nerdctl names
+// them with 64 hex digits, a name refused for named volumes, which several
+// environments may share (model caches) and which no container owns.
 func isPrivateContainerVolume(path string) bool {
+	return isContainerVolume(path) && anonymousVolumeName(filepath.Base(filepath.Dir(path)))
+}
+
+func isNamedContainerVolume(path string) bool {
+	return isContainerVolume(path) && !anonymousVolumeName(filepath.Base(filepath.Dir(path)))
+}
+
+func isContainerVolume(path string) bool {
 	if filepath.Clean(path) != path {
 		return false
 	}
 	matched, _ := filepath.Match("/var/lib/nerdctl/*/volumes/"+namespace+"/*/_data", path)
 	return matched
+}
+
+func anonymousVolumeName(name string) bool {
+	return len(name) == 64 && strings.Trim(name, "0123456789abcdef") == ""
+}
+
+// Earlier agents stamped a shared named volume with the first mounting
+// container's project, which refused every other environment and charged
+// their writes to that one limit. Return such a volume to shared storage.
+func releaseSharedVolumes(volumes []string) error {
+	for _, volume := range volumes {
+		if err := requireContainerStorePath(volume); err != nil {
+			return err
+		}
+		root, err := unix.Open(volume, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return err
+		}
+		project, err := fileProject(root, nil, true, false)
+		unix.Close(root)
+		if err != nil {
+			return err
+		}
+		if project != 0 {
+			if err := assignProject([]string{volume}, 0, true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func loadContainerQuota(id string) (containerQuota, error) {
@@ -315,9 +450,14 @@ func configureContainerStorage(ctx context.Context, id string, limit uint64, all
 	if err != nil {
 		return result, err
 	}
-	container, roots, err := privateContainerStorage(ctx, id)
+	container, roots, shared, err := privateContainerStorage(ctx, id)
 	if err != nil {
 		return result, err
+	}
+	if !container.State.Running && !container.State.Paused {
+		if err := releaseSharedVolumes(shared); err != nil {
+			return result, fmt.Errorf("release shared volume storage: %w", err)
+		}
 	}
 	config, err := loadContainerQuota(id)
 	if err != nil && !os.IsNotExist(err) {
@@ -504,15 +644,7 @@ func allocatedStorageBytes(roots []string) (uint64, error) {
 	seen := make(map[[2]uint64]bool)
 	var total uint64
 	for _, root := range roots {
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			stat := info.Sys().(*syscall.Stat_t)
+		err := walkStorage(root, false, func(_ int, stat *unix.Stat_t, _ bool) error {
 			key := [2]uint64{uint64(stat.Dev), stat.Ino}
 			if !seen[key] {
 				seen[key] = true

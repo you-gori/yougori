@@ -33,7 +33,9 @@ printf '%s\n' 'deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyri
 apt-get update
 # CDI needs only the base tools, never a Linux GPU driver or privileged runtime.
 apt-get install -y --no-install-recommends nvidia-container-toolkit-base=1.20.0-1
-printf '%s\n' 'version = 2' 'disabled_plugins = ["io.containerd.grpc.v1.cri"]' > /etc/containerd/config.toml
+# The agent applies restart policies through its own start path, which
+# enforces storage limits and saved security settings.
+printf '%s\n' 'version = 3' 'disabled_plugins = ["io.containerd.cri.v1.images", "io.containerd.cri.v1.runtime", "io.containerd.grpc.v1.cri", "io.containerd.monitor.container.v1.restart"]' > /etc/containerd/config.toml
 printf '%s\n' 'cgroup_manager = "cgroupfs"' > /etc/nerdctl/nerdctl.toml
 apt-get clean
 touch /etc/yougori-cuda-ready

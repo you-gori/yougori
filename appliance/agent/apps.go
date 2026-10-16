@@ -163,10 +163,13 @@ func (s *server) appsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{"ready": appsReady(), "browserReady": browserErr == nil, "container": false, "installing": s.apps.installing, "error": s.apps.installError, "apps": items})
 }
 func appPackages(target string, container bool) ([]string, error) {
-	packages := []string{"tigervnc", "openbox", "dbus", "font-dejavu", "xterm"}
+	packages := []string{"tigervnc", "openbox", "dbus", "font-dejavu"}
 	if container {
 		// su-exec drops the display to the apps account after the bind mount.
+		// No terminal: container apps come from the container's own image.
 		packages = append(packages, "su-exec")
+	} else {
+		packages = append(packages, "xterm")
 	}
 	if target == "browser" {
 		if container {

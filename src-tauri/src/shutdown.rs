@@ -50,6 +50,9 @@ pub(crate) async fn run(app: &AppHandle) -> Value {
         .await,
     );
     let runtime = app.state::<crate::runtime::RuntimeManager>();
+    if let Ok(platform) = app.state::<crate::store::PlatformStore>().snapshot() {
+        crate::security::sync_runtime_containment(&platform);
+    }
     stages.push(
         stage(
             "publications_and_sessions",

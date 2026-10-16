@@ -203,7 +203,7 @@ impl RuntimeManager {
             if vm.child.try_wait().map_err(|e| e.to_string())?.is_some() {
                 return Err("The VM stopped before the copy completed".into());
             }
-            vm.qmp_port
+            vm.qmp.clone()
         };
         let environment_root = self.data_root.join("environments").join(id);
         if import_drives(&environment_root)?.len() >= 12 {
@@ -223,8 +223,8 @@ impl RuntimeManager {
         fs::rename(source, &target).map_err(|e| e.to_string())?;
         let node = format!("import-{}", &transfer[..16]);
         let attach = async {
-            vm::qmp_execute_bounded(qmp, "blockdev-add", Some(json!({"driver":"raw","node-name":node,"file":{"driver":"file","filename":target}})), Duration::from_secs(10)).await?;
-            vm::qmp_execute_bounded(qmp, "device_add", Some(json!({"driver":"usb-storage","drive":node,"id":format!("usb-{node}"),"removable":true})), Duration::from_secs(10)).await
+            vm::qmp_execute_bounded(&qmp, "blockdev-add", Some(json!({"driver":"raw","node-name":node,"file":{"driver":"file","filename":target}})), Duration::from_secs(10)).await?;
+            vm::qmp_execute_bounded(&qmp, "device_add", Some(json!({"driver":"usb-storage","drive":node,"id":format!("usb-{node}"),"removable":true})), Duration::from_secs(10)).await
         }.await;
         if let Err(error) = attach {
             // Keep the independently copied image: a timed-out QMP command may

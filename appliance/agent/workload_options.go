@@ -117,7 +117,7 @@ func (o workloadOptions) arguments() ([]string, error) {
 	}
 	targets := map[string]bool{}
 	for _, v := range o.Volumes {
-		if !workloadName.MatchString(v.Source) || !workloadPath(v.Target) || targets[v.Target] {
+		if !workloadName.MatchString(v.Source) || anonymousVolumeName(v.Source) || !workloadPath(v.Target) || targets[v.Target] {
 			return nil, fmt.Errorf("invalid volume")
 		}
 		targets[v.Target] = true

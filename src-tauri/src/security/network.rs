@@ -109,7 +109,7 @@ pub(crate) fn classify(packet: &[u8], host_addresses: &HashSet<[u8; 4]>, interne
         result.class = Denial::Spoofed;
         return result;
     }
-    result.class = if peer[..2] == [169, 254] {
+    result.class = if cloud_management_peer(peer) {
         Denial::Metadata
     } else if peer == [10, 0, 2, 2] || peer[0] == 127 || peer[0] == 0 || host_addresses.contains(&peer) {
         Denial::HostPort
@@ -125,6 +125,22 @@ pub(crate) fn classify(packet: &[u8], host_addresses: &HashSet<[u8; 4]>, interne
         Denial::InternetOff
     };
     result
+}
+
+/// Cloud instance metadata and host agents: link-local space, Azure's
+/// WireServer, Alibaba Cloud's metadata service and Oracle's legacy address.
+pub(crate) fn cloud_management_peer(peer: [u8; 4]) -> bool {
+    peer[..2] == [169, 254] || matches!(peer, [168, 63, 129, 16] | [100, 100, 100, 200] | [192, 0, 0, 192])
+}
+
+/// Private, shared (CGNAT, Tailscale) and IETF-reserved IPv4 ranges: the user's
+/// LAN, VPNs and other VMs on this PC. Containers refuse the same ranges.
+pub(crate) fn private_peer(peer: [u8; 4]) -> bool {
+    peer[0] == 10
+        || (peer[0] == 100 && (64..128).contains(&peer[1]))
+        || (peer[0] == 172 && (16..32).contains(&peer[1]))
+        || peer[..2] == [192, 168]
+        || peer[..3] == [192, 0, 0]
 }
 
 const MAX_ATTEMPTS: usize = 2048;

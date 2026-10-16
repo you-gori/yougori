@@ -2411,6 +2411,9 @@ pub async fn create_connection(
         .iter()
         .find(|item| item.id == request.target_id)
         .ok_or("Target environment not found")?;
+    for endpoint in [source, target] {
+        crate::security::ensure_open(&store, &endpoint.id, "Connecting it to another environment")?;
+    }
     if [&source.id, &target.id].iter().any(|id| state.neocloud_deployments.get(*id).is_some_and(|deployment| deployment.product == "serverless")) {
         return Err("A serverless model API has no private VM network interface. Connect to its HTTPS endpoint from your application instead".into());
     }
@@ -3170,6 +3173,9 @@ pub async fn run_backup(
                 previous_status,
                 EnvironmentStatus::Running | EnvironmentStatus::Paused
             ) {
+                // The backup restarts the VM afterwards, which would boot a
+                // locked-down guest. Stop it first; a stopped VM backs up as is.
+                crate::security::ensure_open(&store, &environment.id, "Backing it up while it runs")?;
                 runtime.vm_action(runtime_id(&environment), "stop").await?;
             }
             let export = async {
@@ -4419,10 +4425,48 @@ pub(crate) async fn reconcile_connections(
     reconcile_connections_locked(store, runtime, reported).await
 }
 
+const CONNECTION_SUSPENDED: &str = "Suspended while an endpoint is locked down; it returns when that environment is unlocked";
+
+/// A locked-down environment keeps no private links: Internet is not the only
+/// way out of a guest. Its connections stay saved and return on unlock.
+pub(crate) async fn suspend_environment_connections(store: &PlatformStore, runtime: &RuntimeManager, environment_id: &str) -> Result<(), String> {
+    let _serial = connection_operations().lock().await;
+    let state = store.snapshot()?;
+    for connection in state.connections.iter().filter(|item| item.active && (item.source_id == environment_id || item.target_id == environment_id)) {
+        suspend_connection(store, runtime, &state, connection).await?;
+    }
+    Ok(())
+}
+
+async fn suspend_connection(store: &PlatformStore, runtime: &RuntimeManager, state: &PlatformState, connection: &Connection) -> Result<(), String> {
+    let _ = runtime
+        .remove_environment_connection(
+            &connection.id,
+            connection_runtime_id(state, &connection.source_id),
+            connection_runtime_id(state, &connection.target_id),
+            container_connection(state, &connection.source_id, &connection.target_id),
+        )
+        .await;
+    let id = connection.id.clone();
+    store.mutate(|state| {
+        if let Some(item) = state.connections.iter_mut().find(|item| item.id == id) {
+            item.enforcement_status = Some(EnforcementStatus::Pending);
+            item.provider_rule_ids.clear();
+            item.last_error = Some(CONNECTION_SUSPENDED.into());
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 async fn reconcile_connections_locked(store: &PlatformStore, runtime: &RuntimeManager, reported: Reported<'_>) -> Result<(),String> {
     let state = store.snapshot()?;
     let mut failure = None;
     for connection in state.connections.iter().filter(|item| item.active) {
+        if crate::security::is_contained(&connection.source_id) || crate::security::is_contained(&connection.target_id) {
+            suspend_connection(store, runtime, &state, connection).await?;
+            continue;
+        }
         let Some(source) = state
             .environments
             .iter()

@@ -54,6 +54,7 @@ type server struct {
 	snapshotExports snapshotExportManager
 	healthMu        sync.Mutex
 	runtimeReady    uint32
+	restartAttempts restartAttempts
 }
 
 type keyedLocker struct {
@@ -301,6 +302,7 @@ func main() {
 		}
 	}
 	go s.watchRestartedContainers()
+	go s.superviseRestartPolicies()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/cli/context", s.auth(method(http.MethodPost, s.configureCLI)))
 	mux.HandleFunc("/v1/fabric/attach", s.auth(method(http.MethodPost, s.attachFabric)))
@@ -655,6 +657,7 @@ func (s *server) action(w http.ResponseWriter, r *http.Request) {
 	}
 	unlock := s.locks.lock(containerLockKey(request.ID))
 	defer unlock()
+	s.restartAttempts.forget(request.ID)
 	ctx, cancel := context.WithTimeout(r.Context(), s.lifecycleTimeout(request.Action))
 	defer cancel()
 	if request.Action == "start" || request.Action == "restart" || request.Action == "resume" {
@@ -1036,7 +1039,12 @@ func (s *server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	args := []string{"--namespace", namespace, "create", "--pull", "never", "--name", temporaryID, "--label", managedLabel + "=true", "--label", retainedImageLabel + "=" + retainedTag, "--network", containerNetwork, "--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount}
+	// A restored container is never created without limits: the host's
+	// follow-up resource update can fail, and a later start would run
+	// unbounded. It keeps the limits of the container it replaces.
+	cpus, memoryBytes := savedContainerResources(ctx, namespace, request.ID)
+	args := []string{"--namespace", namespace, "create", "--pull", "never", "--name", temporaryID, "--label", managedLabel + "=true", "--label", retainedImageLabel + "=" + retainedTag, "--network", containerNetwork, "--volume", containerDisplayDirectory(request.ID) + ":" + containerDisplayMount,
+		"--cpus", strconv.FormatFloat(cpus, 'f', 2, 64), "--memory", strconv.FormatInt(memoryBytes, 10), "--memory-swap", strconv.FormatInt(memoryBytes, 10)}
 	args = append(args, containerSecurityArguments()...)
 	args = append(args, containerNetworkSecurityArguments()...)
 	args = append(args, gpuArgs...)
@@ -1798,7 +1806,9 @@ fi`
 		"127.0.0.0/8",
 		"169.254.0.0/16",
 		"172.16.0.0/12",
+		"192.0.0.0/24",
 		"192.168.0.0/16",
+		"168.63.129.16/32",
 	} {
 		if _, err := namespaceIptables(ctx, pid, "-A", chain, "-d", subnet, "-j", "REJECT"); err != nil {
 			return err

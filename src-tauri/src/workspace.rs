@@ -67,12 +67,12 @@ struct LivePublication {
 }
 struct ListenerTask(JoinHandle<()>);
 impl Drop for ListenerTask { fn drop(&mut self) { self.0.abort(); } }
-struct VmForward(u16, u16);
+struct VmForward(crate::runtime::QmpSocket, u16);
 impl Drop for VmForward {
     fn drop(&mut self) {
-        let (qmp, port) = (self.0, self.1);
+        let (qmp, port) = (self.0.clone(), self.1);
         tokio::spawn(async move {
-            RuntimeManager::remove_workspace_vm_port(qmp, port).await;
+            RuntimeManager::remove_workspace_vm_port(&qmp, port).await;
         });
     }
 }
@@ -171,6 +171,12 @@ pub struct WorkspaceManager {
     local_ports_key: Mutex<String>,
 }
 impl WorkspaceManager {
+    /// PC folders stay mounted in a locked-down environment but answer nothing.
+    pub(crate) async fn set_environment_shares_suspended(&self, environment_id: &str, suspended: bool) {
+        for share in self.shares.lock().await.values().filter(|share| share.info.environment_id == environment_id) {
+            share._server.set_suspended(suspended);
+        }
+    }
     /// The environment storage folder, which guests and recipients must never reach.
     pub(crate) fn storage_directory(&self) -> &Path { &self.root }
     pub(crate) async fn download_tunnel(&self, domain: Option<&str>, store: &PlatformStore) -> Result<(TcpListener, cloudflare::Started), String> {

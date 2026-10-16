@@ -14,8 +14,9 @@ for library in "$runtime"/lib/*.dylib; do
   codesign "${options[@]}" "$library"
 done
 codesign "${options[@]}" "$runtime/qemu-img"
+codesign "${options[@]}" "$runtime/yougori-supervise"
 codesign "${options[@]}" --entitlements "$repo/scripts/macos-runtime/qemu.entitlements" "$runtime/qemu-system-x86_64"
-for binary in "$runtime"/lib/*.dylib "$runtime/qemu-img" "$runtime/qemu-system-x86_64"; do
+for binary in "$runtime"/lib/*.dylib "$runtime/qemu-img" "$runtime/yougori-supervise" "$runtime/qemu-system-x86_64"; do
   codesign --verify --strict "$binary"
 done
 (cd "$runtime" && rm -f SHA256SUMS && find . -type f ! -name SHA256SUMS | LC_ALL=C sort | sed 's#^\./##' |

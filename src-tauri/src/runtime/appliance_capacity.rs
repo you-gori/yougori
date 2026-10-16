@@ -101,7 +101,7 @@ impl RuntimeManager {
         if check["memoryRangesOnline"].as_bool().is_none() {
             return Err("The container runtime needs its updated memory helper. Close Yougori normally and reopen the updated app, then retry. Container files were kept.".into());
         }
-        let summary = super::vm::qmp_request(process.qmp_port, "query-memory-size-summary", None).await?;
+        let summary = super::vm::qmp_request(&process.qmp, "query-memory-size-summary", None).await?;
         let base_mib = summary["base-memory"].as_u64().ok_or("Runtime base RAM size is missing")? / 1_048_576;
         let reserved = base_mib + summary["plugged-memory"].as_u64().unwrap_or(0) / 1_048_576;
         // Round small changes into enough-sized DIMMs that repeated slider
@@ -115,20 +115,20 @@ impl RuntimeManager {
                 return Err(format!("Not enough free RAM to add {:.3} GB to the container runtime. Lower the memory allocation or close another workload.", added_mib as f64 / 1024.0));
             }
             let id = format!("yougori-memory-{}", uuid::Uuid::new_v4().simple());
-            super::vm::qmp_execute(process.qmp_port, "object-add", Some(json!({
+            super::vm::qmp_execute(&process.qmp, "object-add", Some(json!({
                 "qom-type": "memory-backend-ram", "id": id, "size": added_mib * 1_048_576
             }))).await?;
-            if let Err(error) = super::vm::qmp_execute(process.qmp_port, "device_add", Some(json!({
+            if let Err(error) = super::vm::qmp_execute(&process.qmp, "device_add", Some(json!({
                 "driver": "pc-dimm", "id": format!("dimm-{id}"), "memdev": id
             }))).await {
                 // object-del refuses a backend referenced by an attached DIMM.
                 // A retry queries actual RAM first, avoiding duplicate growth
                 // if the device_add response was lost after QEMU accepted it.
-                let _ = super::vm::qmp_execute(process.qmp_port, "object-del", Some(json!({"id": id}))).await;
+                let _ = super::vm::qmp_execute(&process.qmp, "object-del", Some(json!({"id": id}))).await;
                 return Err(format!("Could not add runtime RAM while containers were running: {error}"));
             }
         }
-        let devices = super::vm::qmp_request(process.qmp_port, "query-memory-devices", None).await?;
+        let devices = super::vm::qmp_request(&process.qmp, "query-memory-devices", None).await?;
         let ranges = hotplug_memory_ranges(&devices, target_mib.saturating_sub(base_mib) * 1_048_576)?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {

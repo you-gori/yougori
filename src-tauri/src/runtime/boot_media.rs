@@ -128,7 +128,7 @@ mod tests {
     use crate::runtime::{command_output, path_string, RuntimeManager};
     use std::time::{Duration, Instant};
 
-    async fn boot_trace(port: u16) -> String {
+    async fn boot_trace(port: &crate::runtime::QmpSocket) -> String {
         super::super::vm::qmp_request(
             port,
             "ringbuf-read",
@@ -199,11 +199,11 @@ mod tests {
             manager
                 .start_vm_with_network(id, &disk.disk_path, &source, &policy, false, false)
                 .await?;
-            let port = manager.vms.lock().await.get(id).unwrap().qmp_port;
+            let port = manager.vms.lock().await.get(id).unwrap().qmp.clone();
             let deadline = Instant::now() + Duration::from_secs(45);
             let mut trace = String::new();
             while Instant::now() < deadline {
-                trace.push_str(&boot_trace(port).await);
+                trace.push_str(&boot_trace(&port).await);
                 if trace.contains("YOUGORI_BOOT_NO_INSTALLER")
                     || trace.contains("YOUGORI_BOOT_TEST_OS")
                 {
@@ -282,7 +282,7 @@ mod tests {
                 "priority":"normal","dynamic":false
             })).unwrap();
             let console = manager.start_vm(id, &disk.disk_path, &iso, &policy, false).await?;
-            let (pid, port) = { let processes = manager.vms.lock().await; let process = processes.get(id).unwrap(); (process.process_id, process.qmp_port) };
+            let (pid, port) = { let processes = manager.vms.lock().await; let process = processes.get(id).unwrap(); (process.process_id, process.qmp.clone()) };
             let display_port: u16 = console.websocket_url.rsplit(':').next().unwrap().parse().unwrap();
             let deadline = Instant::now() + Duration::from_secs(180);
             let mut trace = String::new();
@@ -292,12 +292,12 @@ mod tests {
                 assert_eq!(manager.vm_console(id).await?.websocket_url, console.websocket_url);
                 assert_eq!(manager.vm_console(id).await?.password, console.password);
                 tokio::net::TcpStream::connect(("127.0.0.1", display_port)).await.map_err(|e| e.to_string())?;
-                let chunk = super::super::vm::qmp_request(port, "ringbuf-read", Some(serde_json::json!({"device":"yougori-boot-log","size":4096,"format":"utf8"}))).await?;
+                let chunk = super::super::vm::qmp_request(&port, "ringbuf-read", Some(serde_json::json!({"device":"yougori-boot-log","size":4096,"format":"utf8"}))).await?;
                 let chunk = chunk.as_str().unwrap_or_default();
                 if !chunk.is_empty() { eprintln!("{chunk}"); }
                 trace.push_str(chunk);
                 if trace.contains("RESTART_TEST_COMPLETE") { break; }
-                let state = super::super::vm::qmp_request(port, "query-status", None).await?;
+                let state = super::super::vm::qmp_request(&port, "query-status", None).await?;
                 if state["status"] == "paused" || state["status"] == "internal-error" {
                     let log = fs::read_to_string(temp.path().join("runtime/environments").join(id).join("qemu.log")).unwrap_or_default();
                     return Err(format!("Guest stopped executing: {state}\n{trace}\n{log}"));
@@ -398,11 +398,11 @@ mod tests {
                 .start_vm(id, &disk.disk_path, &source, &policy, false)
                 .await
                 .unwrap();
-            let port = manager.vms.lock().await.get(id).unwrap().qmp_port;
+            let port = manager.vms.lock().await.get(id).unwrap().qmp.clone();
             let deadline = Instant::now() + Duration::from_secs(30);
             let mut trace = String::new();
             while Instant::now() < deadline {
-                trace.push_str(&boot_trace(port).await);
+                trace.push_str(&boot_trace(&port).await);
                 if trace.contains("YOUGORI_BOOT_TEST_OS")
                     || trace.contains("YOUGORI_BOOT_NO_INSTALLER")
                 {
@@ -472,19 +472,20 @@ mod tests {
             .await
             .get("env-boot-test")
             .unwrap()
-            .qmp_port;
+            .qmp
+            .clone();
         let deadline = Instant::now() + Duration::from_secs(90);
         let mut passed = false;
         let mut trace = String::new();
         while Instant::now() < deadline {
-            trace.push_str(&boot_trace(port).await);
+            trace.push_str(&boot_trace(&port).await);
             if trace.contains("YOUGORI_BOOT_NO_INSTALLER")
                 || trace.contains("YOUGORI_BOOT_INSTALLER_RETURNED")
             {
                 break;
             }
             if trace.contains("YOUGORI_BOOT_WINDOWS_HANDOFF") {
-                let stats = super::super::vm::qmp_request(port, "query-blockstats", None)
+                let stats = super::super::vm::qmp_request(&port, "query-blockstats", None)
                     .await
                     .unwrap();
                 let read = stats
@@ -507,7 +508,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         eprintln!("Boot trace: {trace}");
-        let status = super::super::vm::qmp_request(port, "query-status", None)
+        let status = super::super::vm::qmp_request(&port, "query-status", None)
             .await
             .unwrap();
         eprintln!("Final CPU status: {status}");
@@ -520,13 +521,13 @@ mod tests {
         if !passed {
             eprintln!(
                 "Block stats: {}",
-                super::super::vm::qmp_request(port, "query-blockstats", None)
+                super::super::vm::qmp_request(&port, "query-blockstats", None)
                     .await
                     .unwrap()
             );
             eprintln!(
                 "CPU status: {}",
-                super::super::vm::qmp_request(port, "query-status", None)
+                super::super::vm::qmp_request(&port, "query-status", None)
                     .await
                     .unwrap()
             );

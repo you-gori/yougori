@@ -6,6 +6,9 @@ disabled_plugins = [
   "io.containerd.cri.v1.runtime",
   "io.containerd.grpc.v1.cri",
   "io.containerd.nri.v1.nri",
+  # The agent applies restart policies through its own start path, which
+  # enforces storage limits, saved security settings and PC folder mounts.
+  "io.containerd.monitor.container.v1.restart",
 ]
 
 [grpc]

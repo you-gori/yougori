@@ -213,10 +213,10 @@ mod tests {
         let credential = "ab".repeat(32);
         *engine.appliance.lock().await = Some(ApplianceProcess {
             child: stand_in_process(),
-            internet: MicroVmNetwork::new(true, 0, "test-drive-appliance").await?,
+            internet: MicroVmNetwork::new(true, &crate::runtime::qmp_socket::QmpSocket::unused(), "test-drive-appliance").await?,
             _boot_token: BootTokenFile::create(local.path(), &credential)?,
             endpoint: AgentEndpoint { base_url: fake_fabric_agent(credential.clone()).await, token: credential },
-            qmp_port: 0,
+            qmp: crate::runtime::qmp_socket::QmpSocket::unused(),
             max_memory_mib: 512,
             _port_reservations: VmPortReservations::new(),
             capacity: Default::default(),
@@ -226,8 +226,9 @@ mod tests {
         let micro = stand_in_process();
         let process_id = micro.id().unwrap_or_default();
         engine.vms.lock().await.insert("env-drive-micro".into(), VmProcess {
+            _boot_token: None,
             child: micro,
-            internet: Some(MicroVmNetwork::new(true, 0, "test-drive-microvm").await?),
+            internet: Some(MicroVmNetwork::new(true, &crate::runtime::qmp_socket::QmpSocket::unused(), "test-drive-microvm").await?),
             _branch_block_server: None,
             _port_reservations: VmPortReservations::new(),
             is_micro_vm: true,
@@ -237,7 +238,7 @@ mod tests {
             process_id,
             allocated_cpus: 1,
             allocated_micro_memory_gb: Some(1.0),
-            qmp_port: 0,
+            qmp: crate::runtime::qmp_socket::QmpSocket::unused(),
             websocket_port: 0,
             console_password: String::new(),
         });
