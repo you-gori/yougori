@@ -20,6 +20,50 @@ use yougori_cli::workload::Options;
 const OWNER: &str = "YOUGORI_SWARM_MODEL_OWNER";
 static CLEANUP_TASKS: OnceLock<StdMutex<BTreeSet<String>>> = OnceLock::new();
 
+/// Renewable demand protects the model between HTTP requests as well as during inference.
+/// Dropping the worker task cancels renewal; the runner also expires leases after 20 seconds.
+pub(crate) struct ResidencyGuard(CancellationToken);
+impl Drop for ResidencyGuard {
+    fn drop(&mut self) { self.0.cancel(); }
+}
+
+pub(crate) fn retain_for_worker(app: &AppHandle, worker_id: &str) -> ResidencyGuard {
+    let cancel = CancellationToken::new();
+    let done = cancel.clone();
+    let app = app.clone();
+    let worker_id = worker_id.to_owned();
+    tauri::async_runtime::spawn(async move {
+        let lease = format!("swarm-resident-{}", uuid::Uuid::new_v4().simple());
+        let mut model = None;
+        loop {
+            if done.is_cancelled() { break; }
+            if let Ok(worker) = super::read(&app, &worker_id).await {
+                if worker.gpu == "nvidia" && worker.rented_gpu().is_none() && holds_residency(&worker) {
+                    if let Some(id) = worker.model_environment_id.as_deref() {
+                        model = Some(id.to_owned());
+                        let _ = tokio::select! {
+                            _ = done.cancelled() => break,
+                            result = tokio::time::timeout(Duration::from_secs(5), crate::model_runner::model_request(
+                                &app, id, "/v1/yougori/prepare", Some(json!({"lease":lease})))) => result,
+                        };
+                    }
+                }
+            }
+            tokio::select! { _ = done.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(5)) => {} }
+        }
+        if let Some(id) = model {
+            let _ = tokio::time::timeout(Duration::from_secs(5), crate::model_runner::model_request(
+                &app, &id, "/v1/yougori/release", Some(json!({"lease":lease})))).await;
+        }
+    });
+    ResidencyGuard(cancel)
+}
+
+fn holds_residency(worker: &Worker) -> bool {
+    !matches!(worker.state.as_str(), "stopped" | "failed")
+        && (worker.keep_resident || matches!(worker.state.as_str(), "preparing" | "preparing_bounty" | "running"))
+}
+
 fn same_files(encoded: Option<&String>, expected: &Value) -> bool {
     let Some(actual) = encoded.and_then(|value| serde_json::from_str::<Value>(value).ok()) else {
         return false;
@@ -212,7 +256,9 @@ fn cleanup_current(current: Option<&Worker>, target: &Worker) -> bool {
     current.is_none_or(|current| {
         current.model_environment_id != target.model_environment_id
             || matches!(current.state.as_str(), "stopped" | "failed")
-            || current.state == "paused" && current.server_id.is_none()
+            // A paused worker that never finished preparing: a private worker carries its
+            // member ID in `server_id` from the start, so an unbuilt sandbox is what says so.
+            || current.state == "paused" && (current.server_id.is_none() || current.environment_id.is_none())
     })
 }
 
@@ -476,9 +522,10 @@ pub(crate) async fn stop_if_unused(app: &AppHandle, worker: &Worker) -> Result<(
     .and_then(Result::ok);
     // A cancelled initial setup can have no HTTP server yet. This exception
     // is limited to our tagged private model before any agent is registered;
-    // it stops startup while retaining partial, resumable downloads.
-    let initial_setup = worker.server_id.is_none()
-        && worker.environment_id.is_none()
+    // it stops startup while retaining partial, resumable downloads. A private
+    // worker's `server_id` is its membership, not a model server, so what marks
+    // setup is that no agent sandbox exists yet.
+    let initial_setup = worker.environment_id.is_none()
         && options
             .environment
             .get("YOUGORI_MODEL_AGENT_API")
@@ -525,8 +572,10 @@ fn may_stop_runtime(health: Option<&Value>, initial_setup: bool) -> bool {
 }
 
 pub(crate) async fn release_while_waiting(app: &AppHandle, worker: &Worker) -> Result<(), String> {
-    // A practice between attempts keeps its model; it releases the model when it ends.
-    if super::activity::practicing(&worker.id) {
+    // A worker set to keep its model resident never unloads it automatically — it stays loaded for
+    // as long as the worker runs, and is released only when the worker is stopped or removed. A
+    // practice between attempts likewise keeps its model until it ends.
+    if worker.keep_resident || super::activity::practicing(&worker.id) {
         return Ok(());
     }
     let Some(id) = worker.model_environment_id.as_deref() else {
@@ -591,6 +640,13 @@ pub(crate) async fn ensure_ready(
     worker: &Worker,
     cancel: &CancellationToken,
 ) -> Result<(), String> {
+    if worker.development_previous_model.is_some() && !cfg!(debug_assertions) {
+        return Err("This API model test requires the development build; restore the local model to use a release build".into());
+    }
+    // A model on a rented GPU has its own readiness: the pod running, the model able to call tools.
+    if worker.rented_gpu().is_some() {
+        return super::rented::ensure_ready(app, worker, cancel).await;
+    }
     let id = worker
         .model_environment_id
         .as_deref()
@@ -607,7 +663,16 @@ pub(crate) async fn ensure_ready(
     if cancel.is_cancelled() {
         return Err("Worker model preparation cancelled".into());
     }
-    if environment.status != EnvironmentStatus::Running {
+    if environment.status == EnvironmentStatus::Running {
+        let health = crate::model_runner::model_status(id.into(), app.clone()).await?;
+        if crashed_model(&health) {
+            let reason = crate::lifecycle::safe_diagnostic(health["error"].as_str().unwrap_or("The model process crashed."));
+            super::activity::emit(&worker.id, "modelRecovery", json!({"text":format!("{reason} Restarting from saved files before retrying.")}));
+            crate::model_runner::stop_model(id.into(), app.clone()).await?;
+            if cancel.is_cancelled() { return Err("Worker model preparation cancelled".into()); }
+            crate::model_runner::start_model(id.into(), app.clone()).await?;
+        }
+    } else {
         crate::model_runner::start_model(id.into(), app.clone()).await?;
     }
     let lease = format!("swarm-{}", uuid::Uuid::new_v4().simple());
@@ -625,6 +690,12 @@ pub(crate) async fn ensure_ready(
         .await;
     }
     result
+}
+
+fn crashed_model(health: &Value) -> bool {
+    health["status"] == "error"
+        && health["optimizer"]["loading"] != true
+        && health["optimizer"]["active"].as_u64().unwrap_or(0) == 0
 }
 
 async fn wait_ready(
@@ -697,6 +768,31 @@ fn should_clear_idle_timeout(health: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn active_work_holds_residency_between_requests_until_stopped() {
+        for state in ["preparing", "preparing_bounty", "running"] {
+            assert!(holds_residency(&worker("worker-test", state, false)));
+        }
+        assert!(holds_residency(&worker("worker-test", "ready_waiting", true)));
+        assert!(!holds_residency(&worker("worker-test", "ready_waiting", false)));
+        assert!(!holds_residency(&worker("worker-test", "stopped", true)));
+    }
+    #[test]
+    fn recovery_restarts_failed_models_but_not_loading_or_active_inference() {
+        let failed = json!({"status":"error","optimizer":{"active":0,"loading":false}});
+        assert!(crashed_model(&failed));
+        for state in ["ready", "idle", "loading", "queued"] {
+            let mut health = failed.clone();
+            health["status"] = json!(state);
+            assert!(!crashed_model(&health));
+        }
+        let mut active = failed.clone();
+        active["optimizer"]["active"] = json!(1);
+        assert!(!crashed_model(&active));
+        let mut loading = failed;
+        loading["optimizer"]["loading"] = json!(true);
+        assert!(!crashed_model(&loading));
+    }
     fn worker(id: &str, state: &str, keep: bool) -> Worker {
         serde_json::from_value(json!({"id":id,"name":"Fixture","model":"owner/model-GGUF","state":state,"stage":"Ready","site":"https://example.test","gpu":"cpu","resources":{"cpu":4,"memoryGb":8},"quotaGb":20,"keepResident":keep,"modelEnvironmentId":"env-model","environmentId":format!("env-agent-{id}")})).unwrap()
     }

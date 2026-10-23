@@ -199,6 +199,28 @@ impl WorkspaceManager {
         let started = cloudflare::start(&executable, &self.root, port, account.as_ref()).await?;
         Ok((listener, started))
     }
+    /// A Cloudflare tunnel to the Closed Neo Grid hub's loopback entry on `port`, which the hub
+    /// opens itself: a Quick Tunnel, or `domain`'s saved account tunnel, whose route must
+    /// already point at that port. As for downloads, a domain serving an environment is refused.
+    pub(crate) async fn grid_tunnel(&self, domain: Option<&str>, port: u16, store: &PlatformStore) -> Result<cloudflare::Started, String> {
+        let _serial = self.operations.lock().await;
+        let account = if let Some(domain) = domain {
+            let saved = cloudflare::find_domain(store, domain)?;
+            let (options, route) = cloudflare::domain_account(store, domain)?;
+            if route != port {
+                return Err(format!("The domain's tunnel routes to port {route}, but the grid's tunnel entry is on port {port}. Delete the grid and create it again with this domain."));
+            }
+            Some(cloudflare::Account::resolve(&saved.credential_environment_id, saved.port, Some(route), options)?)
+        } else { None };
+        if let Some(account) = &account {
+            if self.publications.lock().await.values().any(|p| p.tunnel_id.as_deref() == Some(account.tunnel_id.as_str())) {
+                return Err("This domain is serving an environment. Disconnect that publication or choose another domain for the grid.".into());
+            }
+            cloudflare::finish_setup(self, account).await?;
+        }
+        let executable = cloudflared(&self.root).await?;
+        cloudflare::start(&executable, &self.root, port, account.as_ref()).await
+    }
     pub async fn host_shares_for(&self, environment_id: &str) -> Vec<HostShare> {
         let mut shares = self
             .shares
@@ -625,14 +647,24 @@ fn log_window(text:&str,cursor:Option<&str>,limit:usize,tail:usize)->Result<Valu
     let mut start=if let Some(previous)=previous{
         let bytes=previous.anchor_bytes;
         if bytes>128{return Err("Log cursor is invalid".into())}
-        let matches=|end:usize|end>=bytes&&text.as_bytes().get(end-bytes..end).is_some_and(|part|format!("{:x}",Sha256::digest(part))==previous.anchor);
+        let anchor=hex::decode(&previous.anchor).map_err(|_|"Log cursor is invalid")?;
+        let matches=|end:usize|end>=bytes&&text.as_bytes().get(end-bytes..end).is_some_and(|part|Sha256::digest(part).as_slice()==anchor.as_slice());
         if matches(previous.offset){previous.offset}else{
+            // The text moved: these logs are a sliding tail, which only ever drops text from the
+            // start, so the place read up to is now at or before the old offset. The nearest match
+            // there is found after about as many steps as new bytes arrived, and in a run of
+            // identical lines it can only pass over copies of the same line, never replay the run.
             rotated=true;
-            (bytes..=text.len()).rev().find(|end|matches(*end)).unwrap_or_else(||text.len().saturating_sub(tail))
+            (bytes..=previous.offset.min(text.len())).rev().find(|end|matches(*end))
+                .or_else(||(bytes..=text.len()).rev().find(|end|matches(*end)))
+                .unwrap_or_else(||text.len().saturating_sub(tail))
         }
     }else{text.len().saturating_sub(tail)};
     while start<text.len()&&!text.is_char_boundary(start){start+=1}
     let mut end=(start+limit).min(text.len());while end>start&&!text.is_char_boundary(end){end-=1}
+    // A limit smaller than the next character still returns that whole character, so the
+    // cursor always moves while output remains.
+    if end==start&&start<text.len(){end=start+1;while !text.is_char_boundary(end){end+=1}}
     let bytes=end.min(128);
     let next=LogCursor{offset:end,anchor:format!("{:x}",Sha256::digest(&text.as_bytes()[end-bytes..end])),anchor_bytes:bytes};
     let next_cursor=base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&next).map_err(|e|e.to_string())?);
@@ -865,6 +897,11 @@ async fn publish_service_with_intent(
         return Err("Choose an application port, not the guest control port".into());
     }
     let _operation = manager.operations.lock().await;
+    // A restore checked containment before it waited for this lock; a lockdown may have come
+    // since, and a contained environment gets no new route (not even an unanswered quick link).
+    if !persist_intent && crate::security::is_contained(&environment_id) {
+        return Err(SAVED_CONNECTION_REMOVED.into());
+    }
     if manager.publications.lock().await.len() >= 128 {
         return Err("Disconnect an unused service first".into());
     }
@@ -963,24 +1000,32 @@ async fn publish_service_with_intent(
     let host_port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let local_only = kind == PublicationKind::Local;
     let id = runtime_id(&env).to_owned();
+    let open_id = environment_id.clone();
     let forwarded_port = vm_forward.as_ref().map(|f| f.1);
     let task = Arc::new(ListenerTask(tokio::spawn(async move {
         let mut clients = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 result=listener.accept()=>{
-                    let Ok((mut client,peer))=result else{break};
+                    // A failed accept (a reset client, a full socket table) is transient: the
+                    // route still shows as active, so keep listening rather than going dark.
+                    let Ok((mut client,peer))=result else{tokio::time::sleep(Duration::from_millis(100)).await;continue};
                     if local_only&&!private_peer(peer.ip()){continue}
                     if clients.len()>=256{continue}
-                    let agent=agent.clone();let id=id.clone();let cloud=cloud.clone();
+                    // Locked down or cut off, the link stays but answers nothing, and an open
+                    // connection is closed; unlocked, the same address answers again.
+                    if crate::security::is_contained(&open_id){continue}
+                    let agent=agent.clone();let id=id.clone();let cloud=cloud.clone();let open_id=open_id.clone();
                     clients.spawn(async move{
-                        let connection=tokio::time::timeout(Duration::from_secs(12),async{
-                            let stream: BoxStream = if let Some(cloud)=cloud { Box::new(cloud.connect()?) }
-                            else if let Some((base,token))=agent { Box::new(agent_stream(&base,&token,&id,port).await?) }
-                            else { Box::new(TcpStream::connect(("127.0.0.1",forwarded_port.unwrap())).await.map_err(|e|e.to_string())?) };
-                            Ok::<_,String>(stream)
+                        crate::security::while_open(&open_id,async{
+                            let connection=tokio::time::timeout(Duration::from_secs(12),async{
+                                let stream: BoxStream = if let Some(cloud)=cloud { Box::new(cloud.connect()?) }
+                                else if let Some((base,token))=agent { Box::new(agent_stream(&base,&token,&id,port).await?) }
+                                else { Box::new(TcpStream::connect(("127.0.0.1",forwarded_port.unwrap())).await.map_err(|e|e.to_string())?) };
+                                Ok::<_,String>(stream)
+                            }).await;
+                            if let Ok(Ok(mut upstream))=connection{let _=tokio::io::copy_bidirectional(&mut client,&mut upstream).await;}
                         }).await;
-                        if let Ok(Ok(mut upstream))=connection{let _=tokio::io::copy_bidirectional(&mut client,&mut upstream).await;}
                     });
                 },
                 _=clients.join_next(),if !clients.is_empty()=>{}
@@ -1056,15 +1101,25 @@ async fn publish_service_with_intent(
             return Err(format!("The connection started but could not be saved for the next node start: {error}"));
         }
     }
-    manager
-        .publications
-        .lock()
-        .await
-        .insert(info.id.clone(), live);
+    {
+        let mut routes = manager.publications.lock().await;
+        // A restore works from a saved list read before it waited for the operation lock, and
+        // the user may have disconnected this service since. Unpublish forgets the saved entry
+        // before it drops the route, so checking under the route lock never brings one back.
+        if !persist_intent && !saved_intent_exists(store, &info.id)? {
+            drop(routes);
+            drop(live);
+            return Err(SAVED_CONNECTION_REMOVED.into());
+        }
+        routes.insert(info.id.clone(), live);
+    }
     if kind == PublicationKind::Local {
         if let Err(error) = manager.sync_local_ports(store, runtime).await {
             manager.publications.lock().await.remove(&info.id);
-            let _ = store.mutate(|state| { state.saved_environment_services.retain(|saved| saved.id != info.id); Ok(()) });
+            // A restore keeps the saved intent: the next cleanup tick retries it.
+            if persist_intent {
+                let _ = store.mutate(|state| { state.saved_environment_services.retain(|saved| saved.id != info.id); Ok(()) });
+            }
             return Err(format!(
                 "Local guest access could not be configured: {error}"
             ));
@@ -1074,11 +1129,26 @@ async fn publish_service_with_intent(
     }.await;
     if result.is_err() {
         if let Some(previous)=previous {
-            manager.publications.lock().await.insert(previous.info.id.clone(),previous);
-            if let Some(intent)=prior_intent { store.mutate(|state|{state.saved_environment_services.retain(|saved|saved.id!=intent.id);state.saved_environment_services.push(intent);Ok(())}).map_err(|_|"The previous live publication was restored but its saved intent needs reconciliation")?; }
+            if persist_intent {
+                manager.publications.lock().await.insert(previous.info.id.clone(),previous);
+                if let Some(intent)=prior_intent { store.mutate(|state|{state.saved_environment_services.retain(|saved|saved.id!=intent.id);state.saved_environment_services.push(intent);Ok(())}).map_err(|_|"The previous live publication was restored but its saved intent needs reconciliation")?; }
+            } else {
+                // A restore never changed the saved intent; put the old route back only while
+                // the user still wants it, so a disconnect made meanwhile stays disconnected.
+                let mut routes = manager.publications.lock().await;
+                if saved_intent_exists(store, &previous.info.id).unwrap_or(false) {
+                    routes.insert(previous.info.id.clone(), previous);
+                }
+            }
         }
     }
     result
+}
+
+const SAVED_CONNECTION_REMOVED: &str = "This saved connection was disconnected while it was reconnecting";
+
+fn saved_intent_exists(store: &PlatformStore, id: &str) -> Result<bool, String> {
+    Ok(store.snapshot()?.saved_environment_services.iter().any(|saved| saved.id == id))
 }
 
 /// Reconnect the non-secret service settings saved for a node.
@@ -1088,19 +1158,29 @@ pub(crate) async fn restore_environment_publications(
     runtime: &RuntimeManager,
     manager: &WorkspaceManager,
 ) -> Result<(), String> {
+    // A locked-down environment gets no new route (a fresh quick link, say) while it is contained;
+    // its saved services reconnect once it is unlocked.
+    if crate::security::is_contained(environment_id) {
+        return Ok(());
+    }
     let saved = store.snapshot()?.saved_environment_services.into_iter()
         .filter(|service| service.environment_id == environment_id)
         .collect::<Vec<_>>();
     let mut failures = Vec::new();
+    // One broken saved service is reported and skipped; the others still reconnect.
     for service in saved {
         let cloudflare = if service.kind == PublicationKind::Cloudflare {
             if let Some(domain) = service.domain.as_deref() {
-                let (options, port) = cloudflare::domain_account(store, domain)?;
-                if port != service.host_port { return Err("The saved domain's tunnel port changed. Update this node's connection before reconnecting.".into()); }
+                let (options, port) = match cloudflare::domain_account(store, domain) {
+                    Ok(account) => account,
+                    Err(error) => { failures.push(error); continue; }
+                };
+                if port != service.host_port { failures.push("The saved domain's tunnel port changed. Update this node's connection before reconnecting.".into()); continue; }
                 Some(options)
             } else if service.remembered_account {
+                let Some(hostname) = service.cloudflare_hostname.clone() else { failures.push("Saved Cloudflare hostname is missing".into()); continue; };
                 Some(cloudflare::AccountOptions {
-                    hostname: service.cloudflare_hostname.clone().ok_or("Saved Cloudflare hostname is missing")?,
+                    hostname,
                     token: None,
                     preset_id: None,
                     preset_source_environment_id: None,
@@ -1121,7 +1201,7 @@ pub(crate) async fn restore_environment_publications(
             manager,
             Some(service.id),
             false,
-        ).await { failures.push(error); }
+        ).await { if error != SAVED_CONNECTION_REMOVED { failures.push(error); } }
     }
     if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) }
 }
@@ -1133,10 +1213,17 @@ pub async fn unpublish_environment_service(
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<(), String> {
-    // The route is dropped (listener and tunnel stopped) at once, as before; keep only its labels.
+    unpublish(publication_id, &manager, &store, &runtime).await
+}
+
+pub(crate) async fn unpublish(publication_id: String, manager: &WorkspaceManager, store: &PlatformStore, runtime: &RuntimeManager) -> Result<(), String> {
+    // Forget the saved intent first: a restore that is reconnecting this service checks it
+    // under the route lock, so it cannot bring the route back after it is dropped below.
+    let saved = store.snapshot().ok().and_then(|state| state.saved_environment_services.into_iter().find(|saved| saved.id == publication_id));
+    let forgotten = store.mutate(|state| { state.saved_environment_services.retain(|saved| saved.id != publication_id); Ok(()) });
+    // The route is dropped (listener and tunnel stopped) at once, even if saving failed;
+    // keep only its labels.
     let removed = manager.publications.lock().await.remove(&publication_id).map(|route| (route.info.environment_id.clone(), route.info.port));
-    let saved = store.snapshot()?.saved_environment_services.into_iter().find(|saved| saved.id == publication_id);
-    store.mutate(|state| { state.saved_environment_services.retain(|saved| saved.id != publication_id); Ok(()) })?;
     let environment = removed.as_ref().map(|(environment, _)| environment.clone()).or_else(|| saved.as_ref().map(|saved| saved.environment_id.clone()));
     let port = removed.as_ref().map(|(_, port)| *port).or_else(|| saved.as_ref().map(|saved| saved.port));
     let mut event = crate::security::Event::new("port.unpublished").env(environment.as_deref().unwrap_or_default()).text("publication", &publication_id);
@@ -1144,7 +1231,16 @@ pub async fn unpublish_environment_service(
         event = event.number("port", u64::from(port));
     }
     crate::security::record(event);
-    manager.sync_local_ports(&store, &runtime).await
+    // A publish of this service that is running now may still put its previous route and saved
+    // intent back when it fails, or add a new one when it succeeds. It holds the operation lock,
+    // so once that is free remove both again: a disconnect stays a disconnect.
+    {
+        let _operation = manager.operations.lock().await;
+        manager.publications.lock().await.remove(&publication_id);
+        store.mutate(|state| { state.saved_environment_services.retain(|saved| saved.id != publication_id); Ok(()) })?;
+    }
+    forgotten?;
+    manager.sync_local_ports(store, runtime).await
 }
 
 #[tauri::command]
@@ -1178,8 +1274,8 @@ pub(crate) async fn attach_folder(
         .map_err(|e| e.to_string())?;
     // The same rule as remote recipients: guests never see app state, sharing
     // grants, credentials or other environments' disks, even read-only.
-    let mut yougori_roots = vec![manager.root.clone(), store.data_folder("")];
-    yougori_roots.extend(runtime.storage_pool_roots());
+    let mut yougori_roots = crate::host_files::yougori_folders(runtime);
+    yougori_roots.extend([manager.root.clone(), store.data_folder("")]);
     crate::host_files::ensure_shareable_folder(&folder, &yougori_roots, false)?;
     if manager.shares.lock().await.len() >= 64 {
         return Err("Disconnect an unused shared folder first".into());
@@ -1224,6 +1320,11 @@ pub(crate) async fn attach_folder(
     if let Err(error) = environment(store, &info.environment_id) {
         manager.remove_share(&info.id, runtime).await;
         return Err(error);
+    }
+    // Locked down while this was mounting: the lockdown suspended the shares it found, not this one.
+    if crate::security::is_contained(&info.environment_id) {
+        manager.remove_share(&info.id, runtime).await;
+        return Err("The environment was locked down while the folder was being shared; unlock it and share it again".into());
     }
     crate::security::record(crate::security::Event::new("share.folder.attached").env(&info.environment_id)
         .text("share", &info.id).path("path", &info.path).flag("readOnly", info.read_only));
@@ -1286,7 +1387,10 @@ pub fn open_workspace_url(url: String) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        std::process::Command::new("explorer.exe")
+        // `explorer.exe URL` can open a File Explorer window instead of the browser. The URL
+        // protocol handler always opens the default browser and takes the URL as one argument.
+        std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
             .arg(url.as_str())
             .creation_flags(0x08000000)
             .spawn()

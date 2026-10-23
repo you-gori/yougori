@@ -130,8 +130,29 @@ fn cli(args: &[&str], seconds: u64) -> impl std::future::Future<Output = Result<
     async move { cli_args(&args, seconds).await }
 }
 
+/// A runpodctl that refused `--output`, so it is no longer asked for it in this run.
+static NO_OUTPUT_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// runpodctl turned the command down for the `--output` flag alone, before running anything.
+fn unknown_output_flag(output: &Output) -> bool {
+    let said = format!("{}\n{}", output.stdout, output.stderr).to_ascii_lowercase();
+    !output.success && said.contains("unknown flag") && said.contains("output")
+}
+
 async fn cli_args(args: &[String], seconds: u64) -> Result<Value, String> {
-    let output = cli_output(args, seconds, None).await?;
+    // JSON asked for by name, so a format set in the person's own runpodctl config cannot change
+    // what Yougori reads. A release without the flag refuses it before doing anything, so asking
+    // again without it never runs a command twice.
+    let flagged = !NO_OUTPUT_FLAG.load(std::sync::atomic::Ordering::Relaxed);
+    let mut asked = args.to_vec();
+    if flagged {
+        asked.extend(["--output".to_owned(), "json".to_owned()]);
+    }
+    let mut output = cli_output(&asked, seconds, None).await?;
+    if flagged && unknown_output_flag(&output) {
+        NO_OUTPUT_FLAG.store(true, std::sync::atomic::Ordering::Relaxed);
+        output = cli_output(args, seconds, None).await?;
+    }
     if !output.success {
         return Err(failure(&output));
     }
@@ -158,8 +179,32 @@ fn number(value: &Value) -> Option<f64> {
     value.as_f64().filter(|n| n.is_finite())
 }
 
+/// For showing things only. A decision about whether something exists reads the list with
+/// `named`, which never takes "could not read" for "none".
 fn array(value: &Value) -> Vec<Value> {
     value.as_array().cloned().unwrap_or_default()
+}
+
+/// Names compared the way RunPod may store them: trimmed, in any case.
+fn same_name(listed: &Value, name: &str) -> bool {
+    listed.as_str().is_some_and(|listed| listed.trim().eq_ignore_ascii_case(name.trim()))
+}
+
+/// The ID of the one live pod or endpoint called `name` in a RunPod list, or none. Anything that
+/// is not a list is an error, never "none": a table, a message or an empty answer read as an empty
+/// account would let a pod that bills go unseen. A name more than one live entry carries is an
+/// error too, since taking the wrong one would stop or delete somebody else's.
+fn named(listing: &Value, name: &str, what: &str) -> Result<Option<String>, String> {
+    let rows = listing.as_array().ok_or_else(|| format!("Neocloud's {what} list could not be read"))?;
+    let mut live = rows.iter().filter(|row| same_name(&row["name"], name) && row["desiredStatus"] != "TERMINATED");
+    let first = live.next();
+    if live.next().is_some() {
+        return Err(format!("More than one {what} named {name} is in your Neocloud account, so Yougori cannot tell which one is this node's"));
+    }
+    match first {
+        None => Ok(None),
+        Some(row) => row["id"].as_str().filter(|id| !id.is_empty()).map(|id| Some(id.to_owned())).ok_or_else(|| format!("Neocloud listed a {what} named {name} without its ID")),
+    }
 }
 
 fn safe_id(value: &str, max: usize) -> bool {
@@ -820,7 +865,7 @@ pub async fn runpod_create_pod(
     };
     // Template ports are kept when web ports are added; an image gets SSH plus its web ports.
     // An unreadable template could hide a public Jupyter port, so creation stops instead.
-    let mut ports: Vec<Value> = if request.template_id.is_empty() {
+    let template_ports: Vec<Value> = if request.template_id.is_empty() {
         vec![json!({"port":22,"kind":"tcp","name":"SSH"})]
     } else {
         runpod_template(request.template_id.clone())
@@ -828,19 +873,7 @@ pub async fn runpod_create_pod(
             .map(|t| array(&t["ports"]))
             .map_err(|error| format!("Cannot read this template's ports ({error}). No pod was created; try again."))?
     };
-    for port in &request.http_ports {
-        if !ports.iter().any(|p| p["port"] == *port) {
-            ports.push(json!({"port":port,"kind":"http","name":default_port_name(*port, "http")}));
-        }
-    }
-    if !ports.iter().any(|p| p["port"] == 22) {
-        ports.push(json!({"port":22,"kind":"tcp","name":"SSH"}));
-    }
-    let explicit_ports = if request.template_id.is_empty() || !request.http_ports.is_empty() {
-        ports.iter().map(|p| format!("{}/{}", p["port"], text(&p["kind"]))).collect()
-    } else {
-        Vec::new()
-    };
+    let (ports, explicit_ports) = pod_ports(template_ports, !request.template_id.is_empty(), &request.http_ports);
     let mut env = request.env.clone();
     let id = format!("env-{}", uuid::Uuid::new_v4());
     let provider_name = provider_pod_name(&request.name, &id);
@@ -932,31 +965,15 @@ pub async fn runpod_create_pod(
         }
     })?;
     if let Err(error) = result {
+        emit(&app, &state);
         // An error does not prove nothing was created: a failed or garbled response can still
-        // leave a billing pod. Only a confirmed absence removes the node; an unanswered or
-        // unverifiable request is kept for checking.
+        // leave a billing pod, and one RunPod has just made may not be listed yet. So the node
+        // stays, "Needs inspection", while Yougori looks for its pod a few times over two minutes
+        // on its own, and the person hears about the failure now. An unanswered request is kept
+        // for the person to check.
         if !error.starts_with(TIMED_OUT) {
-            match created_pod(&provider_name).await {
-                Ok(None) => {
-                    let _ = jupyter_entry(&id).map(|e| e.delete_credential());
-                    emit(&app, &forget(&store, &id)?);
-                }
-                Ok(Some(pod)) => {
-                    let state = update(&store, &id, |environment, deployment| {
-                        deployment.resource_id = pod.clone();
-                        deployment.state = "Starting".into();
-                        deployment.last_error = None;
-                        environment.status = EnvironmentStatus::Stopped;
-                        environment.last_error = None;
-                    })?;
-                    emit(&app, &state);
-                    watch(app, id);
-                    return Ok(state);
-                }
-                Err(_) => emit(&app, &state),
-            }
-        } else {
-            emit(&app, &state);
+            let (app, id) = (app.clone(), id.clone());
+            tauri::async_runtime::spawn(async move { settle_failed_create(app, id, provider_name).await });
         }
         return Err(error);
     }
@@ -965,12 +982,65 @@ pub async fn runpod_create_pod(
     Ok(state)
 }
 
-/// The live pod created under this node's unique RunPod name, if any.
+/// Seconds between looks for a pod a failed create may have made: about two minutes in all.
+const CREATE_LOOKS: [u64; 5] = [0, 15, 30, 30, 45];
+
+/// The live pod created under this node's unique RunPod name. A pod RunPod has just made may not be
+/// listed yet, so none counts only after every look in `CREATE_LOOKS` missed; a list that cannot be
+/// read is an error, never "none".
 async fn created_pod(provider_name: &str) -> Result<Option<String>, String> {
-    Ok(array(&cli(&["pod", "list", "--all", "--name", provider_name], 40).await?)
-        .into_iter()
-        .find(|p| p["name"] == provider_name && p["desiredStatus"] != "TERMINATED")
-        .and_then(|p| p["id"].as_str().map(str::to_owned)))
+    for wait in CREATE_LOOKS {
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+        if let Some(pod) = named(&cli(&["pod", "list", "--all", "--name", provider_name], 40).await?, provider_name, "pod")? {
+            return Ok(Some(pod));
+        }
+    }
+    Ok(None)
+}
+
+/// What a failed create's node becomes once Yougori has looked for its pod: attached when it is
+/// there, removed when every look over two minutes missed (nothing was made), and otherwise kept
+/// for the person to check, with the message it already has.
+async fn settle_failed_create(app: AppHandle, id: String, provider_name: String) {
+    let Ok(found) = created_pod(&provider_name).await else { return };
+    let Ok(Some(state)) = after_failed_create(&app.state::<PlatformStore>(), &id, found.as_deref()) else { return };
+    emit(&app, &state);
+    if found.is_some() {
+        watch(app.clone(), id);
+    } else {
+        let _ = jupyter_entry(&id).map(|e| e.delete_credential());
+    }
+}
+
+/// Settles a failed create's node from what the looks found: attaches the pod they found, or
+/// removes the node when they found none. Only while the node is still unattached: one that a
+/// `recover` attached meanwhile is tracked as it is, never forgotten or attached over. Returns the
+/// state when it changed.
+fn after_failed_create(store: &PlatformStore, id: &str, found: Option<&str>) -> Result<Option<PlatformState>, String> {
+    let mut changed = false;
+    let state = store.mutate(|state| {
+        if !state.neocloud_deployments.get(id).is_some_and(|deployment| deployment.resource_id.is_empty()) {
+            return Ok(());
+        }
+        match found {
+            None => {
+                state.neocloud_deployments.remove(id);
+                state.environments.retain(|e| e.id != id);
+            }
+            Some(pod) => {
+                let environment = state.environments.iter_mut().find(|e| e.id == id).ok_or("Environment not found")?;
+                environment.status = EnvironmentStatus::Stopped;
+                environment.last_error = None;
+                let deployment = state.neocloud_deployments.get_mut(id).ok_or("Neocloud resource not found")?;
+                deployment.resource_id = pod.to_owned();
+                deployment.state = "Starting".into();
+                deployment.last_error = None;
+            }
+        }
+        changed = true;
+        Ok(())
+    })?;
+    Ok(changed.then_some(state))
 }
 
 /// Follows a pod until SSH answers (or it stops), then saves the connection so the
@@ -1019,7 +1089,7 @@ async fn follow(app: &AppHandle, id: &str) -> Result<(), String> {
         let Some(deployment) = store.snapshot()?.neocloud_deployments.get(id).cloned() else {
             return Ok(());
         };
-        if deployment.resource_id.is_empty() || deployment.state == "Deleted" || deployment.product != "pod" {
+        if deployment.resource_id.is_empty() || deleting(&deployment) || deployment.product != "pod" {
             return Ok(());
         }
         let value = match cli(&["pod", "get", &deployment.resource_id], 40).await {
@@ -1035,8 +1105,18 @@ async fn follow(app: &AppHandle, id: &str) -> Result<(), String> {
         let status = pod_status(&value);
         let ip = text(&value["ssh"]["ip"]);
         let port = value["ssh"]["port"].as_u64().and_then(|p| u16::try_from(p).ok());
-        let state = update(&store, id, |_, d| describe_pod(d, &value))?;
+        // A delete that began while `pod get` ran owns the state now; this reading is stale.
+        let mut deleted = false;
+        let state = update(&store, id, |_, d| {
+            deleted = deleting(d);
+            if !deleted {
+                describe_pod(d, &value);
+            }
+        })?;
         emit(app, &state);
+        if deleted {
+            return Ok(());
+        }
         match status.as_str() {
             "stopped" | "terminated" | "exited" => return Ok(()),
             "running" if !ip.is_empty() && port.is_some() => {
@@ -1069,7 +1149,32 @@ fn pod_status(value: &Value) -> String {
         .to_ascii_lowercase()
 }
 
-fn describe_pod(d: &mut Deployment, value: &Value) {
+/// A pod's ports, and the `--ports` list to send with it. A template's own ports reach the pod
+/// by themselves, so the list goes only with an image, added web ports, or SSH the template
+/// lacked; without it a pod from such a template never opens 22/tcp.
+fn pod_ports(mut ports: Vec<Value>, template: bool, http_ports: &[u16]) -> (Vec<Value>, Vec<String>) {
+    for port in http_ports {
+        if !ports.iter().any(|p| p["port"] == *port) {
+            ports.push(json!({"port":port,"kind":"http","name":default_port_name(*port, "http")}));
+        }
+    }
+    let ssh_added = !ports.iter().any(|p| p["port"] == 22);
+    if ssh_added {
+        ports.push(json!({"port":22,"kind":"tcp","name":"SSH"}));
+    }
+    let explicit = if !template || !http_ports.is_empty() || ssh_added {
+        ports.iter().map(|p| format!("{}/{}", p["port"], text(&p["kind"]))).collect()
+    } else {
+        Vec::new()
+    };
+    (ports, explicit)
+}
+
+fn deleting(d: &Deployment) -> bool {
+    d.state == "Deleted" || d.state.starts_with("Delete requested")
+}
+
+pub(super) fn describe_pod(d: &mut Deployment, value: &Value) {
     let status = pod_status(value);
     d.state = match status.as_str() {
         "running" => "Running",
@@ -1505,7 +1610,8 @@ pub async fn runpod_action(
         return Err("Type the name to delete it".into());
     }
     if deployment.resource_id.is_empty() && deployment.state != "Deleted" {
-        let state = reconcile(&environment_id, &deployment, &store).await?;
+        // Deleting one is the person confirming there is nothing left to keep, by its name.
+        let state = reconcile(&environment_id, &deployment, &store, action == "delete").await?;
         emit(&app, &state);
         if state.neocloud_deployments.get(&environment_id).is_some_and(|d| d.product == "pod" && !d.resource_id.is_empty()) {
             watch(app, environment_id);
@@ -1530,7 +1636,11 @@ pub async fn runpod_action(
         "start" | "restart" => {
             runtime.cloud.disconnect(&environment_id).await;
             cli(&["pod", if action == "start" { "start" } else { "restart" }, &pod], 90).await?;
-            update(&store, &environment_id, |_, d| {
+            // The SSH session closed above; a Running node without one reads as interrupted.
+            update(&store, &environment_id, |environment, d| {
+                if environment.status == EnvironmentStatus::Running {
+                    environment.status = EnvironmentStatus::Stopped;
+                }
                 d.state = "Starting".into();
                 d.extra["sshReady"] = json!(false);
                 d.last_error = None;
@@ -1539,7 +1649,10 @@ pub async fn runpod_action(
         "stop" => {
             runtime.cloud.disconnect(&environment_id).await;
             cli(&["pod", "stop", &pod], 90).await?;
-            let mut state = update(&store, &environment_id, |_, d| {
+            let mut state = update(&store, &environment_id, |environment, d| {
+                if environment.status == EnvironmentStatus::Running {
+                    environment.status = EnvironmentStatus::Stopped;
+                }
                 d.state = "Stopping".into();
                 d.extra["sshReady"] = json!(false);
             })?;
@@ -1574,33 +1687,61 @@ pub async fn runpod_action(
     Ok(state)
 }
 
-/// A create that went unanswered: find the pod or endpoint by its name. Found, it is
-/// attached; absent, nothing was created and the node can be removed.
-async fn reconcile(environment_id: &str, deployment: &Deployment, store: &PlatformStore) -> Result<PlatformState, String> {
-    let found = if deployment.product == "serverless" {
-        array(&cli(&["serverless", "list"], 40).await?)
-            .into_iter()
-            .find(|e| e["name"] == deployment.name.as_str())
-    } else {
-        // Nodes created before unique pod names recorded only the chosen name.
-        let name = deployment.extra["providerName"].as_str().unwrap_or(&deployment.name);
-        array(&cli(&["pod", "list", "--all", "--name", name], 40).await?)
-            .into_iter()
-            .find(|p| p["name"] == name && p["desiredStatus"] != "TERMINATED")
-    };
-    update(store, environment_id, |environment, d| {
-        environment.last_error = None;
-        environment.status = EnvironmentStatus::Stopped;
-        d.last_error = None;
-        match found.as_ref().and_then(|f| f["id"].as_str()) {
-            Some(id) => {
-                d.resource_id = id.into();
-                d.state = if d.product == "serverless" { "Ready" } else { "Starting" }.into();
-                if d.product == "serverless" {
-                    d.extra["urls"] = invoke_urls(id, d.extra["category"].as_str().unwrap_or(""));
-                }
+/// What a node without a provider ID becomes after one look at the RunPod list.
+#[derive(Debug, PartialEq)]
+enum Reconciled {
+    /// Its pod or endpoint is there under the unique name Yougori gave it.
+    Attach(String),
+    /// Nothing to remove and nothing to attach on this look alone: the person is told what to check.
+    Inspect(String),
+    /// The person asked to delete it and confirmed by name, and the list shows nothing by its name.
+    Deleted,
+}
+
+/// `unique`: the name was made unique by Yougori; a name the person chose may belong to another
+/// pod of theirs. `confirmed`: the person typed the node's name to delete it. Nothing is declared
+/// gone on a look alone, because a list can come back without a pod that bills: one RunPod has just
+/// made, or one stored under a name written differently.
+fn reconciled(found: Option<String>, name: &str, what: &str, unique: bool, confirmed: bool) -> Reconciled {
+    match found {
+        Some(id) if unique => Reconciled::Attach(id),
+        Some(_) => Reconciled::Inspect(format!("A {what} named {name} is in your Neocloud account, but Yougori cannot be sure it is this node's. If it is, add it from your account list; this node then has nothing left to do and can be removed.")),
+        None if confirmed => Reconciled::Deleted,
+        None => Reconciled::Inspect(format!("No {what} named {name} is in your Neocloud account. If you see one there, it may be billing: add it from your account list or delete it there. If there is none, delete this node by typing its name.")),
+    }
+}
+
+/// A create that went unanswered: look for the pod or endpoint by the name it was made under.
+async fn reconcile(environment_id: &str, deployment: &Deployment, store: &PlatformStore, confirmed: bool) -> Result<PlatformState, String> {
+    let serverless = deployment.product == "serverless";
+    let what = if serverless { "endpoint" } else { "pod" };
+    // Pods get a unique RunPod name; endpoints, and pods made before that, carry the person's own.
+    let provider_name = deployment.extra["providerName"].as_str().filter(|_| !serverless);
+    let name = provider_name.unwrap_or(&deployment.name);
+    let listing = if serverless { cli(&["serverless", "list"], 40).await? } else { cli(&["pod", "list", "--all", "--name", name], 40).await? };
+    let outcome = reconciled(named(&listing, name, what)?, name, what, provider_name.is_some(), confirmed);
+    update(store, environment_id, |environment, d| match &outcome {
+        Reconciled::Attach(id) => {
+            environment.last_error = None;
+            environment.status = EnvironmentStatus::Stopped;
+            d.last_error = None;
+            d.resource_id = id.clone();
+            d.state = if serverless { "Ready" } else { "Starting" }.into();
+            if serverless {
+                d.extra["urls"] = invoke_urls(id, d.extra["category"].as_str().unwrap_or(""));
             }
-            None => d.state = "Deleted".into(),
+        }
+        Reconciled::Inspect(message) => {
+            d.state = "Needs inspection".into();
+            d.last_error = Some(message.clone());
+            environment.status = EnvironmentStatus::Error;
+            environment.last_error = Some(message.clone());
+        }
+        Reconciled::Deleted => {
+            environment.last_error = None;
+            environment.status = EnvironmentStatus::Stopped;
+            d.last_error = None;
+            d.state = "Deleted".into();
         }
     })
 }
@@ -1618,7 +1759,8 @@ pub async fn runpod_resources(store: State<'_, PlatformStore>) -> Result<Value, 
         .filter(|d| d.provider == PROVIDER && d.state != "Deleted")
         .map(|d| d.resource_id.clone())
         .collect();
-    let pods = array(&pods?)
+    let pods = pods?;
+    let pods = pods.as_array().ok_or("Neocloud's pod list could not be read")?
         .iter()
         .map(|p| json!({"id":p["id"],"name":p["name"],"status":p["desiredStatus"],"gpu":p["gpuTypeId"],"gpuCount":p["gpuCount"],"hourlyUsd":p["costPerHr"],"image":p["imageName"],"attached":attached.contains(p["id"].as_str().unwrap_or(""))}))
         .collect::<Vec<_>>();
@@ -1768,6 +1910,68 @@ pub async fn runpod_registry(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_failed_create_never_forgets_a_node_attached_while_it_looked() {
+        let folder = tempfile::tempdir().unwrap();
+        let store = PlatformStore::load(folder.path().join("state.json")).unwrap();
+        let add = |id: &str, name: &str| insert(&store, node(id, name, "Neocloud · 1 × RTX A6000", true, "Neocloud GPU pod"), deployment("pod", name, "image", "NVIDIA RTX A6000", "", json!({}))).unwrap();
+        add("env-a", "night-a");
+        // A `recover` attaches the pod while the looks run.
+        update(&store, "env-a", |_, d| d.resource_id = "pod-9".into()).unwrap();
+        assert!(after_failed_create(&store, "env-a", None).unwrap().is_none(), "nothing changes");
+        assert!(after_failed_create(&store, "env-a", Some("pod-1")).unwrap().is_none(), "and nothing is attached over it");
+        assert_eq!(store.snapshot().unwrap().neocloud_deployments["env-a"].resource_id, "pod-9");
+        // Still unattached: a pod the looks found is attached, and none found removes the node.
+        add("env-b", "night-b");
+        let attached = after_failed_create(&store, "env-b", Some("pod-2")).unwrap().expect("attached");
+        assert_eq!((attached.neocloud_deployments["env-b"].resource_id.as_str(), attached.neocloud_deployments["env-b"].state.as_str()), ("pod-2", "Starting"));
+        add("env-c", "night-c");
+        let removed = after_failed_create(&store, "env-c", None).unwrap().expect("removed");
+        assert!(!removed.neocloud_deployments.contains_key("env-c") && !removed.environments.iter().any(|e| e.id == "env-c"));
+    }
+
+    #[test]
+    fn a_pod_list_that_cannot_be_read_is_never_an_empty_account() {
+        let listed = json!([
+            {"id": "pod-old", "name": "Lab-ygabc", "desiredStatus": "TERMINATED"},
+            {"id": "pod-1", "name": " lab-YGABC ", "desiredStatus": "EXITED"},
+            {"id": "pod-2", "name": "other", "desiredStatus": "RUNNING"},
+        ]);
+        // The one live pod by that name, read the way RunPod may have stored it.
+        assert_eq!(named(&listed, "lab-ygabc", "pod"), Ok(Some("pod-1".into())));
+        assert_eq!(named(&json!([]), "lab-ygabc", "pod"), Ok(None), "a real empty list is none");
+        // Empty output, a table or a message, an object: unreadable, never "no pod".
+        for unreadable in [Value::Null, json!("NAME  STATUS
+lab-ygabc RUNNING"), json!({"pods": []})] {
+            assert!(named(&unreadable, "lab-ygabc", "pod").unwrap_err().contains("could not be read"), "{unreadable}");
+        }
+        // Two live pods by one name: neither is taken.
+        let twice = json!([{"id": "a", "name": "lab", "desiredStatus": "RUNNING"}, {"id": "b", "name": "lab", "desiredStatus": "EXITED"}]);
+        assert!(named(&twice, "lab", "pod").unwrap_err().contains("More than one pod named lab"));
+        // Listed without an ID is not a pod Yougori can stop or delete.
+        assert!(named(&json!([{"name": "lab", "desiredStatus": "RUNNING"}]), "lab", "pod").is_err());
+    }
+
+    #[test]
+    fn a_node_is_declared_gone_only_when_its_person_confirms() {
+        // Missing on a look: kept, with what to check, never "Deleted".
+        let missing = reconciled(None, "lab-ygabc", "pod", true, false);
+        assert!(matches!(&missing, Reconciled::Inspect(message) if message.contains("No pod named lab-ygabc") && message.contains("may be billing")), "{missing:?}");
+        assert_eq!(reconciled(None, "lab-ygabc", "pod", true, true), Reconciled::Deleted, "the person confirmed by name");
+        assert_eq!(reconciled(Some("pod-1".into()), "lab-ygabc", "pod", true, false), Reconciled::Attach("pod-1".into()));
+        // A name the person chose may be another pod of theirs: never attached on a match alone.
+        assert!(matches!(reconciled(Some("pod-1".into()), "lab", "pod", false, false), Reconciled::Inspect(_)));
+        assert!(matches!(reconciled(Some("pod-1".into()), "lab", "pod", false, true), Reconciled::Inspect(_)), "nor deleted while a pod by that name exists");
+    }
+
+    #[test]
+    fn json_is_asked_for_and_a_release_without_the_flag_is_asked_again_without_it() {
+        let refused = |stderr: &str| Output { success: false, stdout: String::new(), stderr: stderr.into() };
+        assert!(unknown_output_flag(&refused("Error: unknown flag: --output")));
+        assert!(!unknown_output_flag(&refused("Error: pod not found")), "any other failure is the command's own");
+        assert!(!unknown_output_flag(&Output { success: true, stdout: "[]".into(), stderr: String::new() }));
+    }
+
     #[tokio::test]
     #[ignore = "Read-only RunPod availability diagnostic using the saved account"]
     async fn live_gpu_availability_diagnostic() {
@@ -1787,6 +1991,22 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn a_template_without_ssh_sends_its_ports_with_ssh_added() {
+        let template = vec![json!({"port":8888,"kind":"http","name":"Jupyter"})];
+        let (ports, explicit) = pod_ports(template, true, &[]);
+        assert!(ports.iter().any(|p| p["port"] == 22));
+        assert_eq!(explicit, ["8888/http", "22/tcp"]);
+        let with_ssh = vec![json!({"port":22,"kind":"tcp","name":"SSH"}), json!({"port":8888,"kind":"http","name":"Jupyter"})];
+        assert!(pod_ports(with_ssh.clone(), true, &[]).1.is_empty(), "a complete template's own ports apply");
+        assert_eq!(pod_ports(with_ssh, true, &[7860]).1, ["22/tcp", "8888/http", "7860/http"]);
+        assert_eq!(pod_ports(vec![json!({"port":22,"kind":"tcp","name":"SSH"})], false, &[]).1, ["22/tcp"]);
+        let mut gone = deployment("pod", "gone", "", "", "", Value::Null);
+        gone.state = "Delete requested — verification pending".into();
+        assert!(deleting(&gone));
+        gone.state = "Running".into();
+        assert!(!deleting(&gone));
+    }
     #[test]
     fn pods_are_argument_arrays_with_the_chosen_template_gpu_and_storage() {
         let request = pod();

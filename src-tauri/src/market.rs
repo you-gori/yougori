@@ -93,6 +93,11 @@ struct Inner {
     auth_generation: u64,
     shares: BTreeMap<String, Share>,
     emitted: String,
+    /// Why the list of shares could not be read this time. While it stands, nothing is written
+    /// over that list and nothing about sharing changes.
+    unreadable: Option<String>,
+    /// What became of a list that was damaged, for as long as this engine runs.
+    notice: Option<String>,
 }
 
 #[derive(Clone)]
@@ -221,27 +226,78 @@ fn shares_file(app: &AppHandle) -> std::path::PathBuf {
     app.state::<PlatformStore>().data_folder("network").join("shares.json")
 }
 
+/// What `shares.json` holds, read without ever taking "could not read it" for "nothing is shared".
+enum Saved {
+    /// The shares, or none when there is no file.
+    Shares(Vec<Share>),
+    /// The file is there and could not be read this time. It is left exactly as it is, nothing is
+    /// written over it, and it is read again next time.
+    Unreadable(String),
+    /// The file could not be parsed. It was moved aside with every byte kept, and the models it
+    /// listed may still be online.
+    Damaged(String),
+}
+
+/// Reads the shares at `path`. An unreadable or damaged list used to read as no shares, and the
+/// next share wrote its one entry over the file: every other shared model went offline with its
+/// node secret left behind and its public link still open, restored at every start, with nothing
+/// on the Network page to close it.
+fn read_shares(path: &std::path::Path, at: i64) -> Saved {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Saved::Shares(Vec::new()),
+        Err(error) => {
+            return Saved::Unreadable(format!("Yougori could not read its list of models shared on the Yougori Network ({error}), so nothing about sharing was changed. It tries again shortly; until then, sharing, stopping a share and signing out wait."))
+        }
+    };
+    let why = match serde_json::from_slice::<Vec<Share>>(&bytes) {
+        Ok(shares) => return Saved::Shares(shares),
+        Err(error) => error,
+    };
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let kept = format!("{name}.damaged-{at}");
+    if std::fs::rename(path, path.with_file_name(&kept)).is_err() {
+        return Saved::Unreadable(format!("Yougori's list of models shared on the Yougori Network is damaged ({why}) and could not be moved aside, so nothing about sharing was changed. Move {name} out of Yougori's network folder, then try again."));
+    }
+    Saved::Damaged(format!("Yougori's list of models shared on the Yougori Network was damaged ({why}). It was kept as {kept} in Yougori's network folder. The models it listed may still be online with their public links open: turn off each one's public link on its model page, then share it again here if you want it shared."))
+}
+
 async fn ensure_loaded(app: &AppHandle) {
     let market = app.state::<Market>();
     let mut inner = market.inner.lock().await;
     if inner.loaded {
         return;
     }
-    inner.loaded = true;
-    if let Ok(bytes) = std::fs::read(shares_file(app)) {
-        if let Ok(shares) = serde_json::from_slice::<Vec<Share>>(&bytes) {
-            inner.shares = shares.into_iter().map(|share| (share.environment_id.clone(), share)).collect();
+    match read_shares(&shares_file(app), yougori_grid::now()) {
+        Saved::Shares(shares) => inner.shares = shares.into_iter().map(|share| (share.environment_id.clone(), share)).collect(),
+        Saved::Damaged(notice) => inner.notice = Some(notice),
+        // Read again next time: a file held for a moment, by an antivirus scan say, reads then.
+        Saved::Unreadable(notice) => {
+            inner.unreadable = Some(notice);
+            return;
         }
     }
+    inner.unreadable = None;
+    inner.loaded = true;
 }
 
-fn persist(app: &AppHandle, shares: &BTreeMap<String, Share>) -> Result<(), String> {
-    let path = shares_file(app);
+/// Refuses a change to sharing while the list of shares could not be read.
+fn readable(inner: &Inner) -> Result<(), String> {
+    inner.unreadable.clone().map_or(Ok(()), Err)
+}
+
+fn persist(app: &AppHandle, inner: &Inner) -> Result<(), String> {
+    write_shares(&shares_file(app), inner)
+}
+
+/// Writes the shares, unless the list on disk could not be read: that one is never written over.
+fn write_shares(path: &std::path::Path, inner: &Inner) -> Result<(), String> {
+    readable(inner)?;
     let folder = path.parent().ok_or("Invalid network folder")?;
     std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let mut file = tempfile::NamedTempFile::new_in(folder).map_err(|e| e.to_string())?;
-    std::io::Write::write_all(&mut file, &serde_json::to_vec(&shares.values().collect::<Vec<_>>()).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    file.persist(&path).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec(&inner.shares.values().collect::<Vec<_>>()).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -280,6 +336,7 @@ fn snapshot(inner: &Inner) -> Value {
         "account": inner.account,
         "login": login,
         "shares": inner.shares.values().map(describe).collect::<Vec<_>>(),
+        "notice": inner.unreadable.as_ref().or(inner.notice.as_ref()),
     })
 }
 
@@ -453,11 +510,17 @@ pub async fn market_sign_out(app: AppHandle) -> Result<Value, String> {
     }
     let token = session();
     let _guard = market.sync.lock().await;
-    let shares = std::mem::take(&mut market.inner.lock().await.shares);
+    let shares = {
+        let mut inner = market.inner.lock().await;
+        // Signing out takes every shared model off the network. With the list unreadable, the
+        // models in it would stay online with nothing left to stop them, so nothing happens.
+        readable(&inner)?;
+        std::mem::take(&mut inner.shares)
+    };
     for share in shares.values() {
         leave(&app, share, token.as_deref()).await;
     }
-    persist(&app, &BTreeMap::new())?;
+    persist(&app, &*market.inner.lock().await)?;
     if let Some(token) = &token {
         let _ = api(reqwest::Method::POST, "/api/market/logout", Some(token), Some(&json!({}))).await;
     }
@@ -527,6 +590,7 @@ async fn share_model(environment_id: String, mode: String, listen: Option<bool>,
     {
         let market = app.state::<Market>();
         let mut inner = market.inner.lock().await;
+        readable(&inner)?;
         let share = inner.shares.entry(environment_id.clone()).or_insert_with(|| Share {
             environment_id: environment_id.clone(),
             model: model.clone(),
@@ -550,7 +614,7 @@ async fn share_model(environment_id: String, mode: String, listen: Option<bool>,
             share.live = Live::default();
             share.node_id = None;
         }
-        persist(&app, &inner.shares)?;
+        persist(&app, &inner)?;
     }
     {
         if let Err(error) = sync_one(&app, &environment_id).await {
@@ -578,8 +642,9 @@ async fn unshare_model(environment_id: String, app: AppHandle) -> Result<Value, 
     let _guard = market.sync.lock().await;
     let share = {
         let mut inner = market.inner.lock().await;
+        readable(&inner)?;
         let share = inner.shares.remove(&environment_id).ok_or("This model is not shared on the Yougori Network")?;
-        persist(&app, &inner.shares)?;
+        persist(&app, &inner)?;
         share
     };
     leave(&app, &share, session().as_deref()).await;
@@ -601,7 +666,7 @@ async fn forget(app: &AppHandle, environment_id: &str, reason: &str) {
         let market = app.state::<Market>();
         let mut inner = market.inner.lock().await;
         let removed = inner.shares.remove(environment_id);
-        let _ = persist(app, &inner.shares);
+        let _ = persist(app, &inner);
         removed
     };
     if let Some(share) = removed {
@@ -662,7 +727,9 @@ async fn sync_one(app: &AppHandle, environment_id: &str) -> Result<(), String> {
         forget(app, environment_id, "its environment was deleted").await;
         return Ok(());
     };
-    let running = env.status == EnvironmentStatus::Running;
+    // A locked-down model is listed as stopped and is not published again: its links answer
+    // nothing until it is unlocked, and a refused republish on every pass would flood the audit log.
+    let running = env.status == EnvironmentStatus::Running && !crate::security::is_contained(environment_id);
     let health = if running {
         tokio::time::timeout(Duration::from_secs(20), crate::model_runner::model_status(environment_id.to_owned(), app.clone())).await.ok().and_then(Result::ok)
     } else {
@@ -861,7 +928,7 @@ async fn store_share(app: &AppHandle, share: Share) -> Result<(), String> {
         *current = share;
     }
     if saved {
-        persist(app, &inner.shares)?;
+        persist(app, &inner)?;
     }
     Ok(())
 }
@@ -942,6 +1009,47 @@ mod tests {
         live.reconnected=Some(Instant::now());assert!(!reconnect_due(&live));
         live.reconnected=Some(Instant::now()-Duration::from_secs(121));assert!(reconnect_due(&live));
         live.link_failures=1;assert!(!reconnect_due(&live));
+    }
+    /// PROVES that a list of shares that could not be read is never taken for "nothing is shared",
+    /// and is never written over.
+    ///
+    /// An unreadable or damaged shares.json read as no shares, and the next share wrote its one
+    /// entry over the file. Every other shared model then went offline with its node secret left in
+    /// the vault and its public link still open, restored at every start, with nothing on the
+    /// Network page to close it.
+    #[test]
+    fn a_shares_file_that_cannot_be_read_is_never_taken_for_none_or_written_over() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("shares.json");
+        assert!(matches!(read_shares(&path, 7), Saved::Shares(shares) if shares.is_empty()), "no file is nothing shared");
+
+        // Damaged: moved aside with every byte kept, and said, naming the links that may be open.
+        let damaged = b"[{\"environmentId\": \"env-1\", \"model\": ";
+        std::fs::write(&path, damaged).unwrap();
+        let Saved::Damaged(notice) = read_shares(&path, 7) else { panic!("a damaged list is not an empty one") };
+        assert!(notice.contains("shares.json.damaged-7") && notice.contains("public link"), "{notice}");
+        assert_eq!(std::fs::read(folder.path().join("shares.json.damaged-7")).unwrap(), damaged);
+
+        // Unreadable this time (a folder stands where the file should): left exactly as it is.
+        std::fs::create_dir(&path).unwrap();
+        let Saved::Unreadable(notice) = read_shares(&path, 8) else { panic!("an unreadable list is not an empty one") };
+        assert!(path.is_dir());
+
+        // While a list could not be read, nothing is written over the file that holds it.
+        let held = folder.path().join("held.json");
+        std::fs::write(&held, b"[]").unwrap();
+        let share = Share { environment_id: "env-2".into(), model: "owner/model".into(), mode: "free".into(), listen: false, node_id: Some("nd_2".into()), publish: None, registry_version: None, published: Some("pub-2".into()), live: Live::default() };
+        let mut inner = Inner { unreadable: Some(notice), ..Inner::default() };
+        inner.shares.insert(share.environment_id.clone(), share);
+        assert!(write_shares(&held, &inner).is_err(), "nothing is written over a list that could not be read");
+        assert_eq!(std::fs::read(&held).unwrap(), b"[]");
+        assert!(readable(&inner).is_err(), "and sharing, stopping a share and signing out wait for it");
+        assert!(snapshot(&inner)["notice"].as_str().is_some_and(|said| said.contains("could not read")), "the status says why");
+
+        // Read whole, it is written whole.
+        inner.unreadable = None;
+        write_shares(&held, &inner).unwrap();
+        assert!(matches!(read_shares(&held, 9), Saved::Shares(shares) if shares.len() == 1 && shares[0].published.as_deref() == Some("pub-2")));
     }
     fn pending_login(generation: u64) -> Login {
         Login {

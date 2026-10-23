@@ -19,6 +19,7 @@ MANIFEST = 'YOUGORI_SOURCE_MANIFEST.json'
 EXCLUDED_FILES = (EVIDENCE, 'compliance/release.json')
 EXCLUDED_PREFIXES = ('src-tauri/resources/runtime/', 'compliance/source-updates/')
 REQUIRED = (
+    'distribution.txt', 'distribution.rs',
     'LICENSE', 'COPYING', 'NOTICE', 'COMMERCIAL_LICENSE.txt', 'docs/rebuilding-third-party.txt',
     'package.json', 'package-lock.json', 'index.html', 'vite.config.ts',
     'tsconfig.json', 'src/main.tsx', 'src-tauri/src/lib.rs', 'src-tauri/src/main.rs',
@@ -82,7 +83,7 @@ def inventory(root):
     if missing:
         raise ValueError('Required application source missing from Git: ' + ', '.join(missing))
     untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z'], cwd=root).decode().split('\0')
-    pending = [n for n in untracked if n.startswith(('src/', 'src-tauri/src/', 'src-tauri/icons/', 'assets/', 'public/', 'cli/src/', 'engine/', 'crates/', '.cargo/', '.github/', 'vault/', 'vendor/', 'skills/', 'runtime/', 'scripts/'))
+    pending = [n for n in untracked if n in ('distribution.txt', 'distribution.rs') or n.startswith(('src/', 'src-tauri/src/', 'src-tauri/icons/', 'assets/', 'public/', 'cli/src/', 'engine/', 'crates/', '.cargo/', '.github/', 'vault/', 'vendor/', 'skills/', 'runtime/', 'scripts/'))
                or ('/' not in n and Path(n).suffix.lower() in ('.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.otf'))]
     if pending:
         raise ValueError('Stage new source files before collecting: ' + ', '.join(pending))

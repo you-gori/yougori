@@ -10,7 +10,6 @@ import { runpodApi } from "@/api/runpod-api"
 const create = vi.hoisted(() => vi.fn())
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => ({ createEnvironment: create, state: { environments: [], host: { totalCpu: 8, totalMemoryGb: 16 } } }) }))
 vi.mock("@/api/runpod-api", async importOriginal => ({ ...await importOriginal<typeof import("@/api/runpod-api")>(), runpodApi: { status: vi.fn(), connect: vi.fn(), catalog: vi.fn(), resources: vi.fn() } }))
-vi.mock("@/components/host-terminal-canvas", () => ({ HostTerminalCanvas: () => <div /> }))
 vi.mock("@/api/gpu-api", () => ({ gpuApi: { cudaStatus: vi.fn(), installCuda: vi.fn() } }))
 vi.mock("@/api/platform-api", () => ({ platformApi: { getStorageAllocation: vi.fn() } }))
 // Resource drag gestures have their own tests; keep these tests focused on

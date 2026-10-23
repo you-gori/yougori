@@ -1,6 +1,5 @@
 import { cloneElement, useEffect, useRef, useState, type MouseEvent, type ReactElement, type ReactNode } from "react"
 import { ContextMenu } from "@base-ui/react/context-menu"
-import { DownloadIcon, Trash2Icon } from "lucide-react"
 import { EnvironmentDownloadDialog } from "@/components/dialogs/environment-download-dialog"
 import { usePlatform } from "@/context/platform-context"
 import type { Environment } from "@/types/platform"
@@ -46,8 +45,8 @@ export function EnvironmentNodeMenu({ environment, disabled, asChild, children }
     {nativeMenu ? asChild ? cloneElement(children as ReactElement<{ onContextMenu?(event: MouseEvent): void }>, { onContextMenu: markContext }) : <div onContextMenu={markContext}>{children}</div> : <ContextMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
       {asChild ? <ContextMenu.Trigger render={children as ReactElement<Record<string, unknown>>} /> : <ContextMenu.Trigger>{children}</ContextMenu.Trigger>}
       {menuOpen && <MenuPopup align="start" finalFocus={confirm ? false : undefined} className="nodrag nopan" onPointerDown={event => event.stopPropagation()}>
-        <MenuItem disabled={busy} onClick={() => { setMenuOpen(false); setDownload(true) }}><DownloadIcon aria-hidden="true" />Create a download link</MenuItem>
-        <MenuItem variant="destructive" disabled={busy} onClick={() => { setMenuOpen(false); setConfirm(true) }}><Trash2Icon aria-hidden="true" />Delete node</MenuItem>
+        <MenuItem disabled={busy} onClick={() => { setMenuOpen(false); setDownload(true) }}>Create a download link</MenuItem>
+        <MenuItem variant="destructive" disabled={busy} onClick={() => { setMenuOpen(false); setConfirm(true) }}>Delete node</MenuItem>
       </MenuPopup>}
     </ContextMenu.Root>}
     {download && <EnvironmentDownloadDialog environment={environment} onClose={() => setDownload(false)} />}
@@ -57,7 +56,7 @@ export function EnvironmentNodeMenu({ environment, disabled, asChild, children }
           <AlertDialogTitle>Delete {environment.name}?</AlertDialogTitle>
           <AlertDialogDescription>{environment.kind === "cloud"
             ? "This removes the node and its Yougori connections. The remote server and its data are not deleted."
-            : "This permanently removes the environment and its local data, snapshots, and connection permissions. Your original installer files, exported backups, and shared PC files are kept."}</AlertDialogDescription>
+            : "This removes the environment with its local data, snapshots and connection permissions, and cannot be undone. Your original installer files, exported backups and shared PC files are kept."}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <Button variant="outline" disabled={deleting} onClick={() => setConfirm(false)}>Cancel</Button>

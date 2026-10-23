@@ -90,7 +90,7 @@ impl Session {
         let output = self.stream.feed(&data);
         if result["done"] == true {
             return Err(
-                "The project terminal ended. Run yougori launch again to reconnect.".into(),
+                "The project terminal ended; start the project again to reconnect.".into(),
             );
         }
         Ok(output)
@@ -236,7 +236,7 @@ impl Drop for StartupProgress {
     fn drop(&mut self) { self.clear(); }
 }
 
-fn failure_details(event: &str) -> Option<(String, Vec<String>)> {
+fn failure_details(event: &str, change: &str) -> Option<(String, Vec<String>)> {
     let parts: Vec<_> = event.split(':').collect();
     let ["failure", phase, code, reason, memory, cpu] = parts.as_slice() else { return None };
     let phase = match *phase {
@@ -269,7 +269,7 @@ fn failure_details(event: &str) -> Option<(String, Vec<String>)> {
     }
     if !limits.is_empty() { details.push(format!("Container limit: {}.", limits.join(" · "))); }
     if matches!(*reason, "oom" | "killed") {
-        details.push("Memory usage can drop immediately after a process is killed. Press q, then run yougori launch --change to increase RAM before retrying.".into());
+        details.push(format!("Memory usage can drop immediately after a process is killed. Press q, then run {change} to increase RAM before retrying."));
     }
     Some((summary, details))
 }
@@ -292,6 +292,19 @@ async fn execute(id: &str, command: &str) -> Result<(), String> {
 
 /// The supervisor's settings. `files` is what the container has of the project, which decides the
 /// package folders to install; with two-way sync the container's copy of scripts stays unchanged.
+/// The baseline a one-way pass records. A file held back because it could not be read to tell
+/// whether it is a database keeps its earlier entry, or none, so the next pass sees it as changed
+/// and tries it again rather than taking it as sent.
+fn keep_unread(mut files: sync::Manifest, previous: &sync::Manifest, unread: &std::collections::BTreeSet<String>) -> sync::Manifest {
+    for path in unread {
+        match previous.get(path) {
+            Some(stamp) => files.insert(path.clone(), *stamp),
+            None => files.remove(path),
+        };
+    }
+    files
+}
+
 fn environment(folder: &Path, project: &package::Project, files: &sync::Manifest, two_way: bool, port: u16, nonce: &str) -> String {
     let python = if project.is_python() { "export PATH=/yougori/venv/bin:$PATH\nexport PYTHONUNBUFFERED=1\nexport PIP_NO_CACHE_DIR=1\n" } else { "" };
     let installs = plan::lines(&plan::installs(folder, project, files));
@@ -512,10 +525,13 @@ impl Live {
 
     /// Sends the files that differ from the container's copy; returns how many changed.
     pub async fn sync_to(&mut self, manifest: sync::Manifest) -> Result<usize, String> {
-        self.discover_databases(&manifest).await;
+        let unread = self.discover_databases(&manifest).await;
         self.database_files.extend(self.saved.databases.keys().cloned());
         let (mut changed, mut removed) = self.saved.changes(&manifest);
         changed.retain(|p| !sync::database_member(p, &self.database_files));
+        // A file that could not be read to tell whether it is a database waits for a pass that
+        // can read it: sent as a plain file, a database replaces the container's live copy whole.
+        changed.retain(|p| !unread.contains(p));
         // Links are not followed. A folder replaced by a link keeps the container's
         // earlier copy rather than deleting it there.
         removed.retain(|p| !sync::database_member(p, &self.database_files) && !sync::under_link(&self.folder, p));
@@ -543,8 +559,9 @@ impl Live {
             self.receiver.barrier().await?;
         } else if !self.saved.token.is_empty() && !self.saved.two_way
             && self.saved.environment == self.receiver.environment && !restart {
-            if self.saved.files != manifest {
-                self.saved.files = manifest;
+            let files = keep_unread(manifest, &self.saved.files, &unread);
+            if self.saved.files != files {
+                self.saved.files = files;
                 self.saved.save(&self.state_path)?;
             }
             return Ok(self.sync_databases(false).await? + self.sync_folders(false).await?);
@@ -606,7 +623,7 @@ impl Live {
             copy_version: sync::COPY_VERSION,
             token,
             environment: self.receiver.environment.clone(),
-            files: manifest,
+            files: keep_unread(manifest, &self.saved.files, &unread),
             databases: std::mem::take(&mut self.saved.databases),
             directories: std::mem::take(&mut self.saved.directories),
             ..Default::default()
@@ -739,15 +756,15 @@ impl Live {
         };
         let local = format!("http://127.0.0.1:{local_port}");
         let mut links = self.all_links(&local).await;
-        let change_command = if self.container.is_some() {
-            "yougori launch --cloud --change"
-        } else if project.as_ref().is_some_and(|project|
-            project.package["scripts"]["yougori-change"] == "yougori launch --change"
-        ) {
-            "npm run yougori-change"
-        } else {
-            "yougori launch --change"
+        // The project's own commands, local or cloud, through its shortcut when it really has
+        // one. The footer keeps its keys for the whole session, so this one is kept as well.
+        let cloud = self.container.is_some();
+        let hint = |args: &str| match &project {
+            Some(project) => project.launch_hint(&self.folder, args),
+            None => format!("yougori launch {args}").trim_end().to_owned(),
         };
+        let change_command: &'static str = Box::leak(hint(if cloud { "--cloud --change" } else { "--change" }).into_boxed_str());
+        let again = hint(if cloud { "--cloud" } else { "" });
         // Usage is sampled beside the loop so the log never waits for it.
         let _footer = super::Footer::open(
             name,
@@ -796,7 +813,7 @@ impl Live {
             for event in events {
                 match event.as_str() {
                     event if event.starts_with("failure:") => {
-                        if let Some((summary, mut details)) = failure_details(event) {
+                        if let Some((summary, mut details)) = failure_details(event, change_command) {
                             ui::warn(&summary);
                             let context = diagnose::Context { root: &self.folder, env_files, node, change: change_command };
                             let log = self.view.as_ref().map(|view| String::from_utf8_lossy(&view.log).into_owned()).unwrap_or_default();
@@ -884,7 +901,7 @@ impl Live {
                 }
             }
             if ended {
-                return Err("The project supervisor exited. Run yougori launch again.".into());
+                return Err(format!("The project supervisor exited. Start it again with {again}."));
             }
             for event in rx.try_iter() {
                 match event {
@@ -1143,17 +1160,17 @@ mod tests {
 
     #[test]
     fn failures_explain_memory_evidence_limits_and_next_steps() {
-        let (summary, details) = failure_details("failure:install:137:oom:1073741824:1.00").unwrap();
+        let (summary, details) = failure_details("failure:install:137:oom:1073741824:1.00", "yougori launch --change").unwrap();
         assert!(summary.contains("Dependency installation: out of memory"));
         assert!(details.iter().any(|s| s.contains("OOM counter increased")));
         assert!(details.iter().any(|s| s.contains("1 CPU · 1.0 GB RAM")));
         assert!(details.iter().any(|s| s.contains("yougori launch --change")));
-        let (summary, details) = failure_details("failure:install:137:killed::").unwrap();
+        let (summary, details) = failure_details("failure:install:137:killed::", "yougori launch --change").unwrap();
         assert!(!summary.contains("out of memory"));
         assert!(details.iter().any(|s| s.contains("did not confirm")));
         assert!(!details.iter().any(|s| s.contains("Container limit")));
-        let (_, details) = failure_details("failure:run:127:exit:max:").unwrap();
+        let (_, details) = failure_details("failure:run:127:exit:max:", "yougori launch --change").unwrap();
         assert!(details[0].contains("command was not found"));
-        assert!(failure_details("failure:run:bad:exit::").is_none());
+        assert!(failure_details("failure:run:bad:exit::", "yougori launch --change").is_none());
     }
 }

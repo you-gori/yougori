@@ -102,7 +102,9 @@ async fn run_checked(model:String,port:Option<u16>,mut resources:ModelResources,
         if resources.agent_api { continue; }
         if env.kind!=EnvironmentKind::Container || env.description!=format!("Hugging Face · {model}") {continue}
         let options=runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
+        // The revision covers the whole folder, so every GGUF quant in it shares one; compare the quant too.
         if options.environment.get("YOUGORI_MODEL_REVISION")==check["revision"].as_str().map(String::from).as_ref()
+            && options.environment.get("YOUGORI_MODEL_QUANT").map(String::as_str)==check["quant"].as_str()
             && options.environment.get("YOUGORI_NATIVE_BACKEND").map(String::as_str) == native.then_some(backend.name())
             && env.gpu_access == cuda
             && resources.cpu.is_none_or(|cpu| env.resource_policy.cpu.preferred == cpu)

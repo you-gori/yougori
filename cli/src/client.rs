@@ -11,6 +11,55 @@ use std::{
 /// Interactive screens show their own progress; notes on stderr would break their layout.
 pub static QUIET: AtomicBool = AtomicBool::new(false);
 
+/// A command typed at an interactive prompt that waits on Yougori shows `label` with a spinner
+/// once the wait takes a moment, instead of silence or progress notes, and Ctrl+C stops waiting
+/// with [`crate::cli_ui::CANCELLED`]: work Yougori already accepted carries on there. Menus and
+/// the launcher draw their own activity and set [`QUIET`]; piped output is left as it is.
+pub async fn waiting<T>(label: &str, work: impl Future<Output = Result<T, String>>) -> Result<T, String> {
+    use std::io::IsTerminal;
+    if QUIET.load(Ordering::Relaxed) || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return work.await;
+    }
+    /// The notes come back when the wait ends, however it ends.
+    struct Speak;
+    impl Drop for Speak {
+        fn drop(&mut self) {
+            QUIET.store(false, Ordering::Relaxed);
+        }
+    }
+    QUIET.store(true, Ordering::Relaxed);
+    let _speak = Speak;
+    crate::cli_ui::busy(label, work).await
+}
+
+/// What a person waits for while a job runs, in words rather than the engine's method name.
+pub fn job_label(method: &str) -> &'static str {
+    match method {
+        "manage_oci_images" => "Working on images",
+        "run_workload" => "Starting the workload",
+        "create_environment" => "Creating the environment",
+        "delete_environment" => "Deleting the environment and cleaning up its data",
+        "set_environment_status" => "Updating the environment",
+        "restart_environment" => "Restarting the environment",
+        "recover_environment_runtime" => "Recovering the environment",
+        "duplicate_environment" | "duplicate_local_environment" => "Copying the environment",
+        "run_model" | "start_model" | "run_neocloud_model" => "Starting the model",
+        "stop_model" => "Stopping the model",
+        "model_chat" => "Waiting for the model",
+        "project_action" => "Applying the project",
+        "reclaim_storage" => "Reclaiming storage",
+        "install_environment_skills" => "Installing skills",
+        "publish_environment_service" => "Publishing the service",
+        "create_neocloud_environment" => "Creating the cloud pod",
+        "security_lockdown" => "Locking down",
+        "security_unlock" => "Unlocking",
+        method if method.starts_with("copy_files") => "Copying files",
+        method if method.contains("snapshot") => "Working on the snapshot",
+        method if method.contains("backup") => "Working on the backup",
+        _ => "Waiting for Yougori",
+    }
+}
+
 tokio::task_local! {
     static ERROR_CAUSE: RefCell<Option<(String, wire::ErrorDetails)>>;
 }
@@ -35,6 +84,16 @@ pub async fn capture_errors<T>(future: impl Future<Output = Result<T, String>>) 
 fn clear_error_cause() {
     let _ = ERROR_CAUSE.try_with(|slot| slot.borrow_mut().take());
 }
+/// The machine details of the last failure of this command, without taking them: `--explain`
+/// shows the engine's own code beside the sentence rather than guessing one from the wording.
+pub fn latest_error_details() -> Option<wire::ErrorDetails> {
+    ERROR_CAUSE.try_with(|slot| slot.borrow().as_ref().map(|(_, details)| details.clone())).ok().flatten()
+}
+/// Remembers the machine details of a refusal the CLI decided for itself, so that a command
+/// refused here carries the same contract as one the engine refused. The sentence is unchanged.
+pub fn remember_error(error: String, details: wire::ErrorDetails) -> String {
+    error_cause(error, details)
+}
 fn error_cause(error: String, details: wire::ErrorDetails) -> String {
     let _ = ERROR_CAUSE.try_with(|slot| *slot.borrow_mut() = Some((error.clone(), details)));
     error
@@ -44,15 +103,36 @@ pub async fn call_at(endpoint: &str, request: &Request) -> Result<Value, String>
     clear_error_cause();
     let response=exchange_at(endpoint,request).await?;
     if response.version != wire::VERSION {
-        return Err("CLI/engine protocol mismatch. Update both Yougori and its CLI.".into());
+        return Err(coded("CLI/engine protocol mismatch. Update both Yougori and its CLI.", wire::Code::IncompatibleEngine));
     }
     if response.ok {
         Ok(response.result.unwrap_or(Value::Null))
     } else {
-        let error = engine_error(&request.method, response.error.unwrap_or_else(|| "Yougori operation failed".into()));
-        let details = response.error_details.unwrap_or_else(|| wire::ErrorDetails::from_message(&error));
+        let said = response.error.unwrap_or_else(|| "Yougori operation failed".into());
+        let error = engine_error(&request.method, said.clone());
+        // An engine older than this CLI answered "unknown method"; what the person and a program
+        // need to know is that the engine is out of date, not that the request was wrong.
+        let details = if error != said {
+            wire::ErrorDetails::of(wire::Code::IncompatibleEngine)
+        } else {
+            response.error_details.unwrap_or_else(|| wire::ErrorDetails::from_message(&error))
+        };
         Err(error_cause(error, details))
     }
+}
+
+/// An error this file makes, with its code attached where it is made rather than read back from
+/// its words later.
+fn coded(said: &str, code: wire::Code) -> String {
+    error_cause(said.to_owned(), wire::ErrorDetails::of(code))
+}
+
+/// Whether `error` already carries machine details remembered for it in this command, so a
+/// broader tag added on the way out does not replace a more exact one added where it was made.
+pub fn remembered(error: &str) -> bool {
+    ERROR_CAUSE
+        .try_with(|slot| slot.borrow().as_ref().is_some_and(|(message, _)| !message.is_empty() && error.contains(message.as_str())))
+        .unwrap_or(false)
 }
 
 /// Discovery alone can inspect a legacy engine. Mutations never use this
@@ -80,6 +160,15 @@ type ControlStream = tokio::net::windows::named_pipe::NamedPipeClient;
 #[cfg(unix)]
 type ControlStream = tokio::net::UnixStream;
 
+/// The engine could not be reached: when nothing is listening, say it is not running.
+fn unreachable_engine(error: &std::io::Error) -> String {
+    let said = if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) {
+        "Cannot reach the Yougori engine because it is not running. Start it with yougori app start.".to_owned()
+    } else {
+        format!("Cannot reach the Yougori engine ({error}). Start it with yougori app start, or restart Yougori.")
+    };
+    coded(&said, wire::Code::EngineUnavailable)
+}
 async fn connect_at(endpoint: &str) -> Result<ControlStream, String> {
     #[cfg(windows)]
     let stream = {
@@ -88,16 +177,14 @@ async fn connect_at(endpoint: &str) -> Result<ControlStream, String> {
             match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
                 Ok(stream)=>break stream,
                 Err(error) if error.raw_os_error()==Some(231) && Instant::now()<deadline => tokio::time::sleep(Duration::from_millis(50)).await,
-                Err(error)=>return Err(format!("Cannot reach the Yougori engine: {error}. Start/update Yougori, or run yougori app start.")),
+                Err(error)=>return Err(unreachable_engine(&error)),
             }
         }
     };
     #[cfg(unix)]
     let stream = tokio::net::UnixStream::connect(endpoint)
         .await
-        .map_err(|error| {
-            format!("Cannot reach the Yougori engine: {error}. Run yougori app start.")
-        })?;
+        .map_err(|error| unreachable_engine(&error))?;
     #[cfg(windows)]
     wire::verify_pipe_server(&stream).map_err(|error| {
         format!("Cannot verify Yougori engine ownership: {error}. No request was sent.")
@@ -142,7 +229,9 @@ async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, Stri
     let reply=tokio::time::timeout(request_timeout(request), async {
         wire::write_frame(&mut stream,&bytes,wire::MAX_REQUEST).await?;
         wire::read_frame(&mut stream,wire::MAX_RESPONSE).await
-    }).await.map_err(|_|"Yougori control request timed out. The outcome may be unknown; inspect jobs and state before repeating a mutation.")?.map_err(|e|format!("Yougori connection ended: {e}. Inspect jobs/state before repeating a mutation."))?;
+    }).await
+        .map_err(|_| coded("Yougori did not answer in time, so the outcome may be unknown. Check with yougori ps (or yougori jobs list) before trying again.", wire::Code::OutcomeUnknown))?
+        .map_err(|e| coded(&format!("Yougori's connection ended ({e}), so the outcome may be unknown. Check with yougori ps before trying again."), wire::Code::OutcomeUnknown))?;
     let response: Response =
         serde_json::from_slice(&reply).map_err(|_| "Invalid Yougori control response")?;
     Ok(response)
@@ -150,7 +239,7 @@ async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, Stri
 
 fn engine_error(method: &str, error: String) -> String {
     if error.starts_with(&format!("Unknown method '{method}'.")) && crate::catalog::find(method).is_ok() {
-        return format!("The running Yougori engine does not support {method}, but this CLI does. Restart Yougori to load the updated engine: `yougori app quit --yes`, then `yougori app start`. Quitting stops running environments and disconnects sessions. If this continues after restarting, update both the CLI and engine.");
+        return format!("The running Yougori engine does not support this yet ({method}); it is older than this CLI. Restart Yougori to load the updated engine: `yougori app quit --yes`, then `yougori app start`. Quitting stops running environments and disconnects sessions. If this continues after restarting, update both the CLI and the engine.");
     }
     error
 }
@@ -173,7 +262,9 @@ fn request_timeout(request: &Request) -> Duration {
         | "market_status" => guest_timeout,
         // Practice loads the worker's model and waits for its report; releasing a model
         // waits for its runtime.
-        "swarm_dispatch" if request.params["request"]["action"] == "practice" => Duration::from_secs(900),
+        // A practice runs to its own 30-minute budget; the client waits past that, so a valid
+        // run is never cut off by its caller.
+        "swarm_dispatch" if request.params["request"]["action"] == "practice" => Duration::from_secs(crate::bounty_practice::SCRIPT_MINUTES * 60 + 300),
         "swarm_dispatch" if request.params["request"]["action"] == "memory" => guest_timeout,
         // Pausing releases the model; stopping and deleting also stop and remove the
         // worker's environments first.
@@ -183,6 +274,9 @@ fn request_timeout(request: &Request) -> Duration {
         "jobs_get" => {
             Duration::from_millis(20_000 + request.params["wait"].as_u64().unwrap_or(0).min(30_000))
         }
+        // The company hub answers within seconds, or says to check back; a slow hub still
+        // gets its full connection and answer time.
+        "access_status" | "access_use" | "access_check" | "access_reveal" => Duration::from_secs(45),
         _ => Duration::from_secs(20),
     }
 }
@@ -244,7 +338,7 @@ async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mu
         } else {
             call_at(endpoint, &request("jobs_get", json!({"jobId":id}))).await
         }
-        .map_err(|e| format!("{e} Accepted job: {id}."))?;
+        .map_err(|e| format!("{e} Yougori had accepted the work; check it with yougori jobs get {id}."))?;
         if let Some(measurement) = job.get("progress").filter(|v| !v.is_null()) {
             progress(measurement);
         }
@@ -286,14 +380,14 @@ async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mu
             None => {}
         }
         if started.elapsed() >= Duration::from_secs(seconds) {
-            return Err(error_cause(format!("Still running: {id}. The operation was NOT cancelled. Check 'yougori jobs get {id}' before retrying."), wire::ErrorDetails {
+            return Err(error_cause(format!("Still running after the wait limit; Yougori keeps working on it. Check it with yougori jobs get {id} before trying again."), wire::ErrorDetails {
                 code: "job_wait_timeout".into(), affected_resource: Some(format!("job:{id}")), retryable: false, outcome: "running".into(),
             }));
         }
         if last_progress.elapsed() >= Duration::from_secs(5) && !QUIET.load(Ordering::Relaxed) {
             eprintln!(
-                "Yougori: {} — {}s ({id})",
-                job["method"].as_str().unwrap_or("working"),
+                "Yougori: {} ({}s, job {id})",
+                job_label(job["method"].as_str().unwrap_or("")),
                 started.elapsed().as_secs()
             );
             last_progress = Instant::now();
@@ -305,7 +399,12 @@ async fn wait_job_observed(endpoint: &str, id: &str, seconds: u64, wait: u64, mu
     }
 }
 pub async fn wait_job(id: &str, seconds: u64) -> Result<Value, String> {
-    wait_job_at(&wire::endpoint().map_err(|e| e.to_string())?, id, seconds).await
+    wait_job_labelled(id, seconds, "Waiting for Yougori").await
+}
+/// [`wait_job`] showing `label` while a typed command waits (see [`waiting`]).
+pub async fn wait_job_labelled(id: &str, seconds: u64, label: &str) -> Result<Value, String> {
+    let endpoint = wire::endpoint().map_err(|e| e.to_string())?;
+    waiting(label, wait_job_at(&endpoint, id, seconds)).await
 }
 
 /// The installed Yougori app executable (or the development build in a checkout).
@@ -354,7 +453,7 @@ fn desktop_path(explicit: Option<&str>) -> Result<PathBuf, String> {
             .join("../src-tauri/target/release")
             .join(name),
     ]);
-    candidates.into_iter().find(|path|path.is_file() && path.canonicalize().ok() != exe.canonicalize().ok()).ok_or_else(||"Cannot find the desktop engine. Use 'app start --app ABSOLUTE_PATH_TO_YOUGORI' or start 'npm run desktop:dev' in the source checkout.".into())
+    candidates.into_iter().find(|path|path.is_file() && path.canonicalize().ok() != exe.canonicalize().ok()).ok_or_else(||"Cannot find the Yougori app on this computer. Reinstall Yougori, or point to it with yougori app start --app PATH_TO_YOUGORI.".into())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -485,7 +584,8 @@ pub async fn start_with(explicit: Option<&str>, prefer_engine: bool) -> Result<V
             .or_else(engine_executable)
             .ok_or(NOT_INSTALLED)?
     };
-    wait_for_engine(launch(&executable, &["--headless"])?).await
+    let child = launch(&executable, &["--headless"])?;
+    waiting("Starting Yougori", wait_for_engine(child)).await
 }
 
 /// Opens the dashboard. A standalone engine has none: with nothing running it steps aside and
@@ -909,6 +1009,27 @@ mod macos_path_tests {
         }
         assert!(swarm("doctor") > Duration::from_secs(35));
         assert_eq!(swarm("status"), Duration::from_secs(20));
+    }
+    #[test]
+    fn jobs_are_described_in_words_not_method_names() {
+        for (method, words) in [
+            ("run_workload", "Starting the workload"),
+            ("copy_files_between_environments", "Copying files"),
+            ("restore_snapshot", "Working on the snapshot"),
+            ("export_local_backup", "Working on the backup"),
+            ("some_future_method", "Waiting for Yougori"),
+        ] {
+            assert_eq!(job_label(method), words);
+            assert!(!job_label(method).contains('_'));
+        }
+    }
+    #[tokio::test]
+    async fn waiting_without_a_terminal_leaves_output_and_progress_notes_alone() {
+        // Tests run without a terminal: the work runs as it is and nothing is drawn.
+        let before = QUIET.load(Ordering::Relaxed);
+        assert_eq!(waiting("Working", async { Ok::<_, String>(7) }).await.unwrap(), 7);
+        assert_eq!(QUIET.load(Ordering::Relaxed), before);
+        assert_eq!(waiting("Working", async { Err::<(), _>("refused".to_string()) }).await.unwrap_err(), "refused");
     }
     #[test]
     fn finds_engine_in_relocated_bundle_with_spaces() {

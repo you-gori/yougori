@@ -15,6 +15,22 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// Yougori's own folders, recorded as they come into use: app data, environment storage and
+/// every runtime this process opens. Code without the app at hand (a container's PC volumes)
+/// refuses the same folders the dashboard does.
+static YOUGORI_FOLDERS: std::sync::RwLock<std::collections::BTreeSet<PathBuf>> = std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+pub(crate) fn protect_folder(folder: &Path) {
+    YOUGORI_FOLDERS.write().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(folder.to_path_buf());
+}
+
+/// Every folder of Yougori's own that no guest may see: those recorded and `runtime`'s storage.
+pub(crate) fn yougori_folders(runtime: &crate::runtime::RuntimeManager) -> Vec<PathBuf> {
+    let mut folders = YOUGORI_FOLDERS.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    folders.extend(runtime.storage_pool_roots());
+    folders.into_iter().collect()
+}
+
 /// One rule for every PC folder offered to a guest or a remote recipient, in any
 /// permission mode. `folder` is canonical. It may not be a whole drive, lie inside
 /// or contain Yougori's own data (`yougori_roots`: app state, sharing grants,

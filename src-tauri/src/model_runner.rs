@@ -12,7 +12,7 @@ mod compute;
 pub(crate) mod huggingface;
 pub(crate) mod preflight;
 mod vllm;
-pub(crate) use neocloud::{start_model, stop_model};
+pub(crate) use neocloud::{agent_preflight, run_neocloud_agent_model, start_model, stop_model};
 /// Owner settings (recording, publisher downloads, usage reset) require a second credential that
 /// stays in the container and this engine. The API key is shared with apps and the network.
 pub(crate) const ADMIN_TOKEN: &str = "YOUGORI_MODEL_ADMIN_TOKEN";
@@ -490,7 +490,10 @@ pub(crate) async fn model_request(
     body: Option<Value>,
 ) -> Result<Value, String> {
     let stream = model_connection(app, id, path, body.as_ref()).await?;
-    tokio::time::timeout(std::time::Duration::from_secs(if body.is_some() {1800} else {15}), async {
+    model_response(stream, body.is_some()).await
+}
+async fn model_response(stream: crate::workspace::BoxStream, posted: bool) -> Result<Value, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(if posted {1800} else {15}), async {
         let mut bytes = Vec::new();
         stream
             .take(2 * 1024 * 1024 + 1)
@@ -515,7 +518,10 @@ pub(crate) async fn model_request(
 }
 /// Owner setting: requires the engine-held admin credential, not only the API key.
 pub(crate) async fn configure_publishing(app: &AppHandle, id: &str, open: bool) -> Result<Value,String> {
-    model_request(app,id,"/v1/yougori/publishing",Some(json!({"downloads":open}))).await.map_err(|_|"Stop this model and run it again to enable publisher-hosted pages; its container and files are kept".to_owned())
+    // A stopped or still-starting model says so; only a server that answers but refuses the
+    // setting predates publisher-hosted pages and needs a fresh run.
+    let stream = model_connection(app, id, "/v1/yougori/publishing", Some(&json!({"downloads":open}))).await?;
+    model_response(stream, true).await.map_err(|_|"Stop this model and run it again to enable publisher-hosted pages; its container and files are kept".to_owned())
 }
 /// Only the local engine may lease optional free-provider recording: the server requires the
 /// engine-held admin credential in addition to the API key.
@@ -533,7 +539,16 @@ pub async fn model_status(environment_id: String, app: AppHandle) -> Result<Valu
         let token = crate::projects::secrets::variable(&options,"YOUGORI_MODEL_TOKEN")?;
         return session.request("model/status", json!({"token":token})).await;
     }
-    model_request(&app, &environment_id, "/health", None).await
+    let health = model_request(&app, &environment_id, "/health", None).await?;
+    Ok(with_waiting(health, optimizer::waiting_for(&environment_id)))
+}
+
+/// A model waiting for the GPU says why, and only while it waits.
+fn with_waiting(mut health: Value, reason: Option<String>) -> Value {
+    if let Some(reason) = reason.filter(|_| health["status"] == "queued" && health["optimizer"].is_object()) {
+        health["optimizer"]["waitingFor"] = json!(reason);
+    }
+    health
 }
 #[tauri::command]
 pub async fn model_api(environment_id: String, port: u16, app: AppHandle) -> Result<Value, String> {
@@ -902,7 +917,8 @@ pub(crate) async fn stream_deltas(
 struct PolledReply {
     text: String,
     outcome: Option<Result<Value, String>>,
-    started: std::time::Instant,
+    /// When the reply began or a reader last asked for it.
+    touched: std::time::Instant,
 }
 static POLLED_REPLIES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PolledReply>>> =
     std::sync::LazyLock::new(Default::default);
@@ -918,8 +934,15 @@ pub async fn model_chat_begin(
     let request_id = format!("poll-{}", uuid::Uuid::new_v4().simple());
     {
         let mut replies = POLLED_REPLIES.lock().map_err(|e| e.to_string())?;
-        // Readers that went away leave replies behind; keep only recent ones.
-        replies.retain(|_, reply| reply.started.elapsed() < std::time::Duration::from_secs(900));
+        // Readers that went away leave replies behind. A reply that is still being read is
+        // kept however long it runs; an abandoned one that is still generating is stopped.
+        let mut abandoned = Vec::new();
+        replies.retain(|id, reply| {
+            let keep = reply.touched.elapsed() < std::time::Duration::from_secs(900);
+            if !keep && reply.outcome.is_none() { abandoned.push(id.clone()); }
+            keep
+        });
+        for id in abandoned { let _ = model_chat_cancel(id); }
         if replies.len() >= 16 {
             return Err("Too many replies are streaming; wait for one to finish".into());
         }
@@ -928,7 +951,7 @@ pub async fn model_chat_begin(
             PolledReply {
                 text: String::new(),
                 outcome: None,
-                started: std::time::Instant::now(),
+                touched: std::time::Instant::now(),
             },
         );
     }
@@ -964,8 +987,9 @@ pub fn model_chat_read(request_id: String, offset: Option<usize>, stop: Option<b
     }
     let mut replies = POLLED_REPLIES.lock().map_err(|e| e.to_string())?;
     let reply = replies
-        .get(&request_id)
+        .get_mut(&request_id)
         .ok_or("This reply is no longer available")?;
+    reply.touched = std::time::Instant::now();
     let offset = offset.unwrap_or(0).min(reply.text.len());
     if !reply.text.is_char_boundary(offset) {
         return Err("Invalid reply offset".into());
@@ -995,6 +1019,14 @@ pub fn model_chat_cancel(request_id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_model_waiting_for_the_gpu_says_why_only_while_it_waits() {
+        let said = with_waiting(json!({"status":"queued","optimizer":{"pending":1}}), Some("Model A is using the GPU. This model loads once it is free.".into()));
+        assert_eq!(said["optimizer"]["waitingFor"], "Model A is using the GPU. This model loads once it is free.");
+        let ready = with_waiting(json!({"status":"ready","optimizer":{}}), Some("a reason from the last pass".into()));
+        assert!(ready["optimizer"].get("waitingFor").is_none(), "a model that stopped waiting shows nothing stale");
+        assert!(with_waiting(json!({"status":"queued","optimizer":{}}), None)["optimizer"].get("waitingFor").is_none());
+    }
     #[test] fn registry_verifier_digest_is_portable_and_matches_the_embedded_runner() {
         use sha2::{Digest,Sha256};
         let source=include_str!("model_runner/registry_snapshot.py").replace("\r\n","\n");

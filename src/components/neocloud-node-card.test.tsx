@@ -36,6 +36,22 @@ it("shows a running pod's price, Jupyter link and power controls", async () => {
   await waitFor(() => expect(runpodApi.action).toHaveBeenCalledWith("env-1", "stop", undefined))
 })
 
+it("lets the person settle a pod Neocloud never confirmed: look again, or confirm by name that there is none", async () => {
+  deployments.value = { "env-1": { ...base, resourceId: "", product: "pod", state: "Needs inspection",
+    lastError: "No pod named pod-1-ygabc is in your Neocloud account. If you see one there, it may be billing: add it from your account list or delete it there. If there is none, delete this node by typing its name.",
+    extra: { kind: "pod", compute: "gpu", providerName: "pod-1-ygabc" } } }
+  render(<NeocloudNodeCard environmentId="env-1" />)
+  // Nothing is called removed before the person has confirmed it.
+  expect(screen.queryByText(/nothing was created and you can remove this node/)).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Check again" }))
+  await waitFor(() => expect(runpodApi.action).toHaveBeenCalledWith("env-1", "inspect", undefined))
+  const confirm = screen.getByRole("button", { name: "Mark as not created" })
+  expect(confirm).toHaveProperty("disabled", true)
+  fireEvent.change(screen.getByRole("textbox", { name: "Name to confirm there is no such pod" }), { target: { value: "pod-1" } })
+  fireEvent.click(confirm)
+  await waitFor(() => expect(runpodApi.action).toHaveBeenCalledWith("env-1", "delete", "pod-1"))
+})
+
 it("gives an endpoint its API addresses and a test request", async () => {
   deployments.value = { "env-1": { ...base, product: "serverless", state: "Ready", extra: { kind: "endpoint", title: "vLLM", category: "language", workersMax: 1, workersMin: 0, idleTimeout: 5,
     urls: { run: "https://api.runpod.ai/v2/abc123/run", runsync: "https://api.runpod.ai/v2/abc123/runsync", health: "", openai: "https://api.runpod.ai/v2/abc123/openai/v1" } } } }

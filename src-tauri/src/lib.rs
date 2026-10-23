@@ -24,6 +24,7 @@ mod shutdown;
 mod tray;
 mod peer_sharing;
 mod remote_access;
+mod rollout;
 mod isolated_cli;
 mod cloud_deployment;
 mod cloud_options;
@@ -34,14 +35,31 @@ mod changes;
 mod releases;
 mod model_runner;
 mod market;
+mod bounty;
+mod bounty_project;
+mod desks;
+mod deskgrid;
+mod hub_tunnel;
 mod grid;
+mod grid_neocloud;
+mod rented_gpu;
+/// One door onto all four grids (see docs/grid-core/0002-one-namespace.md).
+mod grids;
+/// What this computer already measures, handed to a realm through Grid Core's probe seam.
+mod grid_hardware;
+/// Whether the grids on this computer are healthy, for an operator and for a monitoring agent.
+mod grid_observe;
 mod swarm;
 mod model_registry;
+mod template_hub;
 mod file_export;
 mod ignore_rules;
 mod vault;
 mod vault_gateway;
 mod vault_setup;
+/// The operating system's credential vault, as Grid Core's broker asks for it.
+mod core_vault;
+mod accessgrid;
 #[cfg(target_os = "windows")]
 mod vault_notifications;
 mod store;
@@ -415,7 +433,17 @@ pub fn run() {
             {
                 #[cfg(target_os = "windows")]
                 node_context_menu::install(webview);
-                let _ = webview.window().show();
+                // The frame paints this while a page loads or the window resizes. It follows the
+                // system theme so loading shows the workspace's own ground, never the other mode.
+                let window = webview.window();
+                let ground = if matches!(window.theme(), Ok(tauri::Theme::Dark)) {
+                    tauri::window::Color(14, 15, 17, 255)
+                } else {
+                    tauri::window::Color(255, 255, 255, 255)
+                };
+                let _ = window.set_background_color(Some(ground));
+                let _ = webview.set_background_color(Some(ground));
+                let _ = window.show();
             }
         });
     let builder = builder
@@ -462,6 +490,10 @@ pub fn run() {
                 backup::BackupManager::new(&app_directory).map_err(std::io::Error::other)?;
             let mut state = store.snapshot().map_err(std::io::Error::other)?;
             runtime.restore_container_routes(&state).map_err(std::io::Error::other)?;
+            // No guest is ever offered Yougori's own data, from whichever path a folder comes.
+            for folder in [app_directory.clone(), storage_directory.clone()].into_iter().chain(runtime.storage_pool_roots()) {
+                host_files::protect_folder(&folder);
+            }
             // A durable state intent brackets every disk replacement. If the process
             // stopped before the restored state committed, reactivate the old disk;
             // if state committed first, finish deleting the retained rollback disk.
@@ -591,7 +623,13 @@ pub fn run() {
             app.manage(host_terminal::HostTerminalManager::default());
             app.manage(market::Market::default());
             app.manage(grid::Grid::default());
+            app.manage(grid_neocloud::RentedGpus::default());
+            app.manage(std::sync::Arc::new(grid_observe::Observation::default()));
             app.manage(swarm::Swarm::default());
+            app.manage(bounty::ClosedBounty::default());
+        app.manage(desks::DeskHost::default());
+        app.manage(desks::uploads::Uploads::default());
+        app.manage(deskgrid::DeskGrid::default());
             // Native system installers cannot provision every user's home.
             // Set up the shared skill for the user who actually runs this app
             // or engine. Development checkouts do not change installed skills.
@@ -606,6 +644,7 @@ pub fn run() {
             }
             app.manage(vault_gateway::GatewayState::default());
             app.manage(vault_setup::SetupState::default());
+            app.manage(accessgrid::AccessGrid::default());
             #[cfg(target_os = "windows")]
             vault_notifications::start(app.handle());
             automation::start(app.handle(), headless).map_err(std::io::Error::other)?;
@@ -621,7 +660,12 @@ pub fn run() {
             neocloud::runpod::resume(app.handle());
             market::start(app.handle());
             grid::start(app.handle());
+            grid_neocloud::start(app.handle());
+            swarm::rented::start(app.handle());
+            deskgrid::start(app.handle());
+            desks::uploads::start_cleanup(app.handle());
             model_runner::optimizer::start(app.handle());
+            accessgrid::start(app.handle());
             let workspace_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let shutdown=automation::shutdown_signal(&workspace_app);
@@ -653,6 +697,54 @@ pub fn run() {
             releases::check_release_update,
             releases::remind_release_update_later,
             releases::open_release_downloads,
+            grid::commands::grid_status,
+            grid::commands::grid_suggested_address,
+            grid::commands::grid_create,
+            grid::commands::grid_join,
+            grid::commands::grid_leave,
+            grid::commands::grid_delete,
+            grid::commands::grid_restore,
+            grid::commands::grid_plan_add,
+            grid::commands::grid_plan_remove,
+            grid::commands::grid_member_remove,
+            grid::commands::grid_member_exclude,
+            grid::commands::grid_member_include,
+            grid_neocloud::commands::grid_neocloud_status,
+            grid_neocloud::commands::grid_neocloud_add,
+            grid_neocloud::commands::grid_neocloud_remove,
+            grid_neocloud::commands::grid_neocloud_stop_all,
+            grid::commands::grid_swarm_add,
+            grid::commands::grid_swarm_remove,
+            grid::commands::grid_swarm_run,
+            deskgrid::commands::desks_status,
+            deskgrid::commands::desks_manage,
+            deskgrid::commands::desks_suggested_address,
+            deskgrid::commands::desks_create,
+            deskgrid::commands::desks_join,
+            deskgrid::commands::desks_leave,
+            deskgrid::commands::desks_delete,
+            deskgrid::commands::desks_restore,
+            deskgrid::commands::desks_adopt_membership,
+            deskgrid::commands::desks_member_remove,
+            deskgrid::commands::desks_member_share,
+            desks::commands::desks_person_add,
+            desks::commands::desks_person_password,
+            desks::commands::desks_person_remove,
+            desks::commands::desks_add,
+            desks::commands::desks_assign,
+            desks::commands::desks_retry,
+            desks::commands::desks_remove,
+            desks::commands::desk_login,
+            desks::commands::desk_refresh,
+            desks::commands::desk_logout,
+            swarm::swarm_dispatch,
+            bounty::commands::bounty_dispatch,
+            bounty::commands::bounty_status,
+            bounty::commands::bounty_suggested_address,
+            bounty::commands::bounty_host,
+            bounty::commands::bounty_member_remove,
+            bounty::commands::bounty_delete,
+            rollout::commands::grids_rollout,
             vault::vault_status,
             vault::vault_control,
             vault::vault_add_items,
@@ -660,6 +752,16 @@ pub fn run() {
             vault_setup::vault_bootstrap,
             vault_setup::vault_create,
             vault_setup::vault_connection,
+            accessgrid::commands::access_status,
+            accessgrid::commands::access_create,
+            accessgrid::commands::access_delete,
+            accessgrid::commands::access_signin,
+            accessgrid::commands::access_signout,
+            accessgrid::commands::access_manage,
+            accessgrid::commands::access_account,
+            accessgrid::commands::access_restore,
+            accessgrid::commands::access_backup,
+            accessgrid::commands::access_restore_backup,
             model_runner::run_model,
             model_runner::run_neocloud_model,
             model_runner::model_api,
@@ -671,6 +773,8 @@ pub fn run() {
             model_runner::model_usage,
             market::market_status,
             model_registry::model_registry_request,
+            template_hub::open_hub_console,
+            template_hub::hub_instances,
             model_registry::model_registry_connect,
             model_registry::model_registry_pause,
             model_registry::model_registry_upload,
@@ -689,14 +793,6 @@ pub fn run() {
             model_runner::save_model_chat_history,
             model_runner::model_status,
             changes::environment_changes,
-            projects::inspect_project,
-            projects::discover_projects,
-            projects::import_compose,
-            projects::project_action,
-            host_terminal::get_host_terminal_info,
-            host_terminal::validate_edit_app_folder,
-            host_terminal::set_up_agent_access,
-            host_terminal::host_terminal_action,
             commands::get_platform_state,
             commands::cloud::scan_cloud_host,
             commands::cloud::test_cloud_connection,
@@ -794,7 +890,6 @@ pub fn run() {
             commands::execute_environment_command,
             file_import::cancel_file_transfer,
             lifecycle::patch_settings,
-            projects::deployment_status,
             projects::secrets::set_deployment_secret,
             projects::secrets::delete_deployment_secret,
             model_runner::preflight::model_preflight,
@@ -868,8 +963,6 @@ pub fn run() {
             let app = app_handle.clone();
             let label = label.clone();
             tauri::async_runtime::spawn(async move {
-                let host_app=app.clone();let owner=label.clone();
-                let _=tokio::task::spawn_blocking(move ||host_app.state::<host_terminal::HostTerminalManager>().close_owner(&owner)).await;
                 app.state::<workspace::WorkspaceManager>().close_window(&label, &app.state::<PlatformStore>(), &app.state::<runtime::RuntimeManager>()).await;
             });
         }

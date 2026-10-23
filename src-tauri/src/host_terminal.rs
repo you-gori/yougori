@@ -1,5 +1,5 @@
-//! Host shells are intentionally separate from guest terminals. Only the main
-//! dashboard and the same-user CLI can access them; output is never broadcast.
+//! Host shells are intentionally separate from guest terminals. Only the same-user
+//! CLI can open them, through automation; output is never broadcast.
 mod process;
 #[cfg(test)]
 mod tests;
@@ -14,7 +14,7 @@ use std::{
     sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
 };
 use tauri::Manager;
-use crate::{AppHandle, WebviewWindow};
+use crate::AppHandle;
 
 const MAX_SESSIONS: usize = 4;
 const BUFFER_LIMIT: usize = 256 * 1024;
@@ -141,22 +141,6 @@ impl HostTerminalManager {
     pub(crate) fn project_directories(&self) -> Vec<PathBuf> {
         self.sessions.lock().unwrap().values().map(|s| s.cwd.clone()).collect()
     }
-    pub fn close_owner(&self, owner: &str) {
-        let mut sessions = self.sessions.lock().unwrap();
-        let ids: Vec<_> = sessions
-            .iter()
-            .filter(|(_, s)| s.owner == owner)
-            .map(|(id, _)| id.clone())
-            .collect();
-        let closing: Vec<_> = ids
-            .into_iter()
-            .filter_map(|id| sessions.remove(&id))
-            .collect();
-        drop(sessions);
-        for session in closing {
-            session.close();
-        }
-    }
     pub fn shutdown(&self) {
         self.closing.store(true, Ordering::SeqCst);
         let sessions = std::mem::take(&mut *self.sessions.lock().unwrap());
@@ -195,7 +179,7 @@ impl HostTerminalManager {
                     ..Default::default()
                 })
             } else {
-                Err("Host terminal is closed. Open a new tab.".into())
+                Err("Host terminal is closed. Create a new host session.".into())
             };
         };
         if session.owner != owner {
@@ -376,7 +360,7 @@ fn host_command_paths() -> Vec<PathBuf> {
         if !paths.contains(&path) { paths.insert(0, path); }
     }
     // Finder does not inherit shell profiles. Do not execute a login shell to
-    // discover PATH, nor source arbitrary startup scripts in the CLI panel.
+    // discover PATH, nor source arbitrary startup scripts for host sessions.
     if cfg!(target_os = "macos") {
         for path in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
             let path = PathBuf::from(path);
@@ -578,7 +562,7 @@ fn spawn_shell(owner: &str, config: ShellConfig, size: PtySize) -> Result<Arc<Se
     initialized_rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .map_err(|_| {
-            "Host terminal did not initialize. Close this tab and try again.".to_string()
+            "Host terminal did not initialize. Close this session and try again.".to_string()
         })??;
     Ok(session)
 }
@@ -603,34 +587,8 @@ pub(crate) fn info(app: &AppHandle, owner: &str) -> Result<serde_json::Value, St
         .map(|(id, session)| serde_json::json!({"sessionId":id,"cwd":session.cwd}))
         .collect();
     Ok(
-        serde_json::json!({"shell":if cfg!(windows){"PowerShell"}else{"Shell"},"cwd":workspace_directory(&home_directory()?)?,"sourceCheckout":development_source_checkout(),"cliPath":cli,"cliVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":yougori_cli::wire::VERSION,"elevated":process::is_elevated()?,"maxSessions":MAX_SESSIONS,"sessions":sessions,"skill":skill,"canonicalSkill":yougori_cli::skills::descriptor(&cli)?,"managedCopies":yougori_cli::skills::discovery_copies(&cli)?,"agentInstructions":format!("Read the canonical Yougori skill at {}. Version {} (protocol {}). Fetch only the task's reference with `yougori skills print --topic TOPIC`; `--all` explicitly fetches the complete guide. Carry existing task authorization forward.",yougori_cli::skills::default_directory()?.join("SKILL.md").display(),env!("CARGO_PKG_VERSION"),yougori_cli::wire::VERSION),"agents":[{"id":"codex","name":"Codex","available":search_command("codex").is_some()},{"id":"claude","name":"Claude","available":search_command("claude").is_some()},{"id":"gemini","name":"Gemini","available":search_command("gemini").is_some()}]}),
+        serde_json::json!({"shell":if cfg!(windows){"PowerShell"}else{"Shell"},"cwd":workspace_directory(&home_directory()?)?,"cliPath":cli,"cliVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":yougori_cli::wire::VERSION,"elevated":process::is_elevated()?,"maxSessions":MAX_SESSIONS,"sessions":sessions,"skill":skill,"canonicalSkill":yougori_cli::skills::descriptor(&cli)?,"managedCopies":yougori_cli::skills::discovery_copies(&cli)?,"agentInstructions":format!("Read the canonical Yougori skill at {}. Version {} (protocol {}). Fetch only the task's reference with `yougori skills print --topic TOPIC`; `--all` explicitly fetches the complete guide. Carry existing task authorization forward.",yougori_cli::skills::default_directory()?.join("SKILL.md").display(),env!("CARGO_PKG_VERSION"),yougori_cli::wire::VERSION),"agents":[{"id":"codex","name":"Codex","available":search_command("codex").is_some()},{"id":"claude","name":"Claude","available":search_command("claude").is_some()},{"id":"gemini","name":"Gemini","available":search_command("gemini").is_some()}]}),
     )
-}
-fn validate_source_checkout(path: &Path) -> Result<PathBuf, String> {
-    let root = path.canonicalize().map_err(|_| "Choose an existing Yougori source folder".to_string())?;
-    if !root.join("package.json").is_file()
-        || !root.join("src-tauri/Cargo.toml").is_file()
-        || !root.join("src/components/host-cli-view.tsx").is_file()
-    {
-        return Err("This folder is not a Yougori source checkout. Choose the folder containing package.json and src-tauri.".into());
-    }
-    let package: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("package.json")).map_err(|e| e.to_string())?)
-        .map_err(|_| "The selected source checkout has an invalid package.json".to_string())?;
-    if package.get("name").and_then(|name| name.as_str()) != Some("yougori") {
-        return Err("The selected folder is not a Yougori source checkout".into());
-    }
-    Ok(root)
-}
-fn development_source_checkout() -> Option<PathBuf> {
-    #[cfg(debug_assertions)]
-    { return Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|path| validate_source_checkout(path).ok()); }
-    #[cfg(not(debug_assertions))]
-    { None }
-}
-#[tauri::command]
-pub fn validate_edit_app_folder(window: WebviewWindow, path: PathBuf) -> Result<PathBuf, String> {
-    require_dashboard(window.label())?;
-    validate_source_checkout(&path)
 }
 pub(crate) async fn setup_access(
     app: &AppHandle,
@@ -664,7 +622,6 @@ pub(crate) async fn action_for_owner(
     };
     let app = app.clone();
     let (action, session) = (request.action.clone(), request.session_id.clone());
-    let via = if owner == "cli-host" { "cli" } else { "app" };
     let result = tokio::task::spawn_blocking(move || {
         app.state::<HostTerminalManager>()
             .action(request, &owner, config)
@@ -674,32 +631,7 @@ pub(crate) async fn action_for_owner(
     // Host shells are outside guest isolation: their opening and closing are audited.
     if matches!(action.as_str(), "create" | "close") && (action == "close" || result.is_ok()) {
         crate::security::record(crate::security::Event::new(if action == "create" { "host.terminal.opened" } else { "host.terminal.closed" })
-            .via(via).text("session", &crate::security::session_label(&session)).outcome(&result));
+            .via("cli").text("session", &crate::security::session_label(&session)).outcome(&result));
     }
     result
-}
-#[tauri::command]
-pub fn get_host_terminal_info(
-    window: WebviewWindow,
-    app: AppHandle,
-) -> Result<serde_json::Value, String> {
-    require_dashboard(window.label())?;
-    info(&app, window.label())
-}
-#[tauri::command]
-pub async fn set_up_agent_access(
-    window: WebviewWindow,
-    app: AppHandle,
-) -> Result<yougori_cli::skills::SkillStatus, String> {
-    require_dashboard(window.label())?;
-    setup_access(&app).await
-}
-#[tauri::command]
-pub async fn host_terminal_action(
-    window: WebviewWindow,
-    app: AppHandle,
-    request: HostRequest,
-) -> Result<HostOutput, String> {
-    require_dashboard(window.label())?;
-    action_for_owner(&app, request, window.label().into()).await
 }

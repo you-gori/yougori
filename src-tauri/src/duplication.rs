@@ -425,14 +425,83 @@ pub async fn inspect_duplication_source(
     Ok(json!({"disk": disk, "ready": true, "bootMode":vm["yougoriBootMode"]}))
 }
 
-async fn cleanup_transfer(op: &mut Operation<'_>, runtime: &RuntimeManager) -> Result<(), String> {
+/// The provider as a person knows it.
+fn provider_name(provider: &str) -> &str {
+    match provider {
+        "aws" => "AWS",
+        "azure" => "Azure",
+        "google" => "Google Cloud",
+        _ => "the provider",
+    }
+}
+
+/// What a recorded step left at the provider, in the words a refusal uses.
+fn stage(key: &str, target: Option<&str>) -> String {
+    match key {
+        "export" => "an export from AWS that may still be running".into(),
+        "import" if target == Some("azure") => "a disk it imported into Azure".into(),
+        "import" => "an image import that may still be running".into(),
+        "upload" => "a disk it uploaded to Azure".into(),
+        "target-disk" => "a disk it made at Azure".into(),
+        "destination-vm" => "the new VM".into(),
+        _ => "a step this version of Yougori cannot undo".into(),
+    }
+}
+
+/// Whether a copy that stopped part way may be given up: it is not running, no step's result went
+/// unwritten, and everything it recorded is something the cleanup plan removes.
+///
+/// A step that was sent and never recorded may have made something no record names, and some work
+/// at a provider goes on after it starts (an AWS export, an AWS or Google image import). Removing
+/// what is recorded and then forgetting the copy would leave such a thing billing with nothing left
+/// that knows of it, so those states are refused, each with what to do instead. The plan removes
+/// only what this copy recorded as it went: the images, snapshots and objects it made, by the ID
+/// each was created or found with (a resource found again is adopted only with this copy's tag),
+/// and the objects under its own `yougori-duplication/` prefix. Nothing is matched by a name a
+/// person chose or by what else is in the account.
+fn abandonable(id: &str, job: &Job) -> Result<(), String> {
+    let target = job.request.target.as_ref().map(|target| target.provider.as_str());
+    let name = provider_name(target.or(job.request.source.as_ref().map(|source| source.provider.as_str())).unwrap_or(""));
+    if job.status == "running" {
+        return Err("This copy is still running. Wait for it to stop before giving it up; nothing was removed.".into());
+    }
+    if let Some(step) = &job.pending {
+        return Err(format!("This copy stopped in the middle of a step ({step}) whose result was never written down, so Yougori cannot be sure what it made at {name}. Nothing was removed. Resume it once: before going on, it looks for what that step made and records it. Or remove what it made in {name}'s console, where it carries this copy's ID, {id}."));
+    }
+    let source_aws = job.request.source.as_ref().is_some_and(|source| source.provider == "aws");
+    for key in job.completed.keys() {
+        let covered = match key.as_str() {
+            "source-image" | "destination-image" | "download" | "converted" | "local-export" | "inspected-source" | "cleanup" => true,
+            done if done.starts_with("cleaned-") => true,
+            // AWS records its export when it starts; only the download after it shows it ended.
+            "export" => !source_aws || job.completed.contains_key("download"),
+            // Uploaded objects are removed, but Azure's upload is into the disk it imported.
+            "upload" => target.is_some_and(|target| target != "azure"),
+            // AWS's and Google's imports go on after they start; only the image they made, once
+            // recorded, shows they ended. Azure's import is a disk, which the plan never removes.
+            "import" => target.is_some_and(|target| target != "azure") && job.completed.contains_key("destination-image"),
+            _ => false,
+        };
+        if !covered {
+            return Err(format!("This copy got as far as {}, which Yougori cannot remove on its own. Nothing was removed. Resume it to finish, or remove what it made in {name}'s console, where it carries this copy's ID, {id}.", stage(key, target)));
+        }
+    }
+    Ok(())
+}
+
+/// Removes a copy's temporary transfer resources. A copy that stopped part way keeps what it made, so
+/// it can be resumed, unless `abandon` is set: its person giving it up, from Yougori's own window
+/// after a confirmation, and then only in a state `abandonable` allows.
+async fn cleanup_transfer(op: &mut Operation<'_>, runtime: &RuntimeManager, abandon: bool) -> Result<(), String> {
     if op.job.request.local_files.is_some() {
         return files::cleanup(op, runtime);
     }
-    if op.job.status != "complete"
-        && (!op.job.resources.is_empty() || op.job.status == "running" || op.job.pending.is_some())
-    {
-        return Err("Finish the copy before removing its transfer resources. Failed operations retain their disks so they can be resumed.".into());
+    if op.job.status != "complete" {
+        if abandon {
+            abandonable(&op.id, &op.job)?;
+        } else if !op.job.resources.is_empty() || op.job.status == "running" || op.job.pending.is_some() {
+            return Err("Finish the copy before removing its transfer resources. Failed operations retain their disks so they can be resumed.".into());
+        }
     }
     let request = op.job.request.clone();
     let name = key(&op.id);
@@ -648,9 +717,15 @@ async fn cleanup_transfer(op: &mut Operation<'_>, runtime: &RuntimeManager) -> R
         op.job.error = None;
         op.save()?;
         Ok(())
-    } else {
+    } else if op.job.status == "complete" {
         Err(format!(
             "The environment was copied. Some transfer resources still need cleanup:\n{}",
+            errors.join("\n")
+        ))
+    } else {
+        // Giving the copy up stopped part way: it is kept, with what is left, for another try.
+        Err(format!(
+            "Some of what this copy made could not be removed, so the copy is kept until it can be:\n{}",
             errors.join("\n")
         ))
     }
@@ -659,9 +734,30 @@ async fn cleanup_transfer(op: &mut Operation<'_>, runtime: &RuntimeManager) -> R
 #[tauri::command]
 pub async fn cleanup_environment_duplication(
     operation_id: String,
+    abandon: Option<bool>,
+    window: crate::WebviewWindow,
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
 ) -> Result<PlatformState, String> {
+    let abandon = abandon == Some(true);
+    // Giving a copy up removes what it made at the provider, so it is asked for only from Yougori's
+    // own window, after its confirmation. Nothing automated reaches it: the command line and agents
+    // come in through `clean_up_copy`, which never gives a copy up.
+    if abandon && window.label() != "main" {
+        return Err("A copy can be given up only from Yougori's own window".into());
+    }
+    clean_copy(operation_id, abandon, &store, &runtime).await
+}
+
+/// Removes a copy's temporary transfer resources, as the command line and other automation ask for
+/// it: a copy that can still be resumed keeps what it made.
+pub(crate) async fn clean_up_copy(operation_id: String, store: &PlatformStore, runtime: &RuntimeManager) -> Result<PlatformState, String> {
+    clean_copy(operation_id, false, store, runtime).await
+}
+
+/// Removes a copy's transfer resources and, for a copy that never finished, forgets it, but only once
+/// every one of them is gone: a copy whose removal stopped part way is kept, with why.
+async fn clean_copy(operation_id: String, abandon: bool, store: &PlatformStore, runtime: &RuntimeManager) -> Result<PlatformState, String> {
     uuid::Uuid::parse_str(&operation_id).map_err(|_| "Invalid operation ID")?;
     let job = store
         .snapshot()?
@@ -679,10 +775,10 @@ pub async fn cleanup_environment_duplication(
         .ok_or("Copy operation not found")?;
     let mut op = Operation {
         id: operation_id,
-        store: &store,
+        store,
         job,
     };
-    let result = cleanup_transfer(&mut op, &runtime).await;
+    let result = cleanup_transfer(&mut op, runtime, abandon).await;
     if let Err(error) = &result {
         op.job.error = Some(error.clone());
         op.save()?;
@@ -2106,8 +2202,11 @@ async fn run_copy(
                     &snapshot_id,
                 )
                 .await?;
-            if crate::runtime::backup_has_vm_security(&artifact.path)? {
+            let secure = crate::runtime::backup_has_vm_security(&artifact.path);
+            if !matches!(secure, Ok(false)) {
+                // Neither a failed check nor a TPM identity may leave the exported disk behind.
                 let _ = runtime.remove_snapshot_artifact(&artifact.path).await;
+                secure?;
                 return Err("This VM's backup includes a virtual TPM identity. Copy it locally; a cloud disk import cannot preserve that identity.".into());
             }
             let result = async {
@@ -2147,6 +2246,9 @@ async fn run_copy(
             scratch
                 .convert_duplication_disk(&disk, &path, "qcow2")
                 .await?;
+            // The copy's ID is this job's own and is not recorded yet, so storage under it can
+            // only be an earlier attempt of this job that stopped before it was recorded.
+            runtime.delete_vm(&op.job.environment_id).await?;
             let prepared = runtime
                 .provision_vm(&op.job.environment_id, &path.to_string_lossy())
                 .await?;
@@ -2193,7 +2295,7 @@ async fn run_copy(
                 priority: Priority::Normal,
                 dynamic: false,
             };
-            op.store.mutate(|state| {
+            let recorded = op.store.mutate(|state| {
                 if state
                     .environments
                     .iter()
@@ -2203,7 +2305,12 @@ async fn run_copy(
                 }
                 state.environments.push(copied);
                 Ok(())
-            })?;
+            });
+            if let Err(error) = recorded {
+                // Nothing records this disk: remove it rather than leave an unreachable VM.
+                let _ = runtime.delete_vm(&op.job.environment_id).await;
+                return Err(error);
+            }
         }
     } else {
         let image = import_cloud(
@@ -2347,7 +2454,7 @@ pub async fn duplicate_environment(
         })?;
         return Err(error);
     }
-    if let Err(error) = cleanup_transfer(&mut op, &runtime).await {
+    if let Err(error) = cleanup_transfer(&mut op, &runtime, false).await {
         op.job.error = Some(error);
         op.save()?;
     }

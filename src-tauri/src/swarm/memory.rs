@@ -63,9 +63,13 @@ pub(super) fn record(path: &Path, events: &Value, after: u64) -> Result<u64, Str
         if sequence <= cursor {
             return Err("Channel events are out of order; cursor was not advanced".into());
         }
-        let bytes = serde_json::to_vec(event).map_err(|e| e.to_string())?;
+        let mut bytes = serde_json::to_vec(event).map_err(|e| e.to_string())?;
         if bytes.len() > 32 * 1024 {
-            return Err("Channel event exceeds its memory limit".into());
+            // One oversized shared event must not stop this worker for good: it is recorded as
+            // a note that it was too long to keep, and the cursor moves past it.
+            let note = json!({"id":event["id"],"sequence":sequence,"type":event["type"],"workerId":event["workerId"],"serverReceivedAt":event["serverReceivedAt"],
+                "body":{"omitted":true,"bytes":bytes.len(),"note":"This shared event was too long to record; read it on the bounty's page if you need it."}});
+            bytes = serde_json::to_vec(&note).map_err(|e| e.to_string())?;
         }
         buffer.extend_from_slice(&bytes);
         buffer.push(b'\n');
@@ -106,7 +110,7 @@ pub(super) fn projection(path: &Path) -> Result<Value, String> {
         let value: Value = serde_json::from_slice(line).map_err(|_| "Invalid journal event")?;
         if matches!(
             value["type"].as_str(),
-            Some("attempt_result" | "verification_result" | "policy_changed")
+            Some("attempt_result" | "verification_result" | "policy_changed" | "observation")
         ) {
             events.push(json!({"id":value["id"],"sequence":value["sequence"],"type":value["type"],"body":value["body"]}));
         }

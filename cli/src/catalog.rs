@@ -28,8 +28,22 @@ pub fn methods() -> Vec<Method> {
             });
         };
     }
+    // The grids namespace. Each noun's verbs, and the fields each takes, are read from the table
+    // the CLI parses (see `grids_summary`), so the schema and the command cannot disagree.
+    macro_rules! grids_method {
+        ($name:ident, $noun:literal, $about:literal, $notes:literal, $example:expr) => {
+            list.push(Method {
+                name: stringify!($name),
+                summary: grids_summary($noun, $about, $notes),
+                parameters: "grid?:string request:object",
+                example: $example,
+                mutating: true,
+                confirmation: None,
+            });
+        };
+    }
     let env = json!({"environmentId":"env-ID"});
-    method!(swarm_dispatch, "Prepare private local Swarm Mining workers, browse published metadata and apply for exact-version publisher approval without accepting work, review and explicitly accept bounty offers, immutable publisher source authorization, responsible use rules and direct-payment risk, talk to your own agent, and manage worker lifecycle. Acceptance requires confirmed:true, rulesAccepted:true, rulesVersion, rulesDigest, authorizationAccepted:true, authorizationDigest and directPaymentAccepted:true from the exact offer. Publisher promises USDC and pays externally; Yougori never funds, holds or transfers new bounty rewards. Legacy obligations require manual resolution. Authorized local defensive research only; open source modification rights remain. Worker channel credentials stay in the engine; participants cannot read raw agent channels through human sessions; bounty publishers have scoped read-only website access for versions that explicitly disclose it.", "request:object", json!({"request":{"action":"workers"}}), true, None);
+    method!(swarm_dispatch, "Prepare private local Swarm Mining workers; debug builds also accept developmentModel {workerId, modelEnvironmentId?, confirmed:true} to select an owned API relay for a paused private test worker or restore its local model. External model context requires explicit confirmation. Browse published metadata and apply for exact-version publisher approval without accepting work, review and explicitly accept bounty offers, immutable publisher source authorization, responsible use rules and direct-payment risk, talk to your own agent, and manage worker lifecycle. Acceptance requires confirmed:true, rulesAccepted:true, rulesVersion, rulesDigest, authorizationAccepted:true, authorizationDigest and directPaymentAccepted:true from the exact offer. Publisher promises USDC and pays externally; Yougori never funds, holds or transfers new bounty rewards. Legacy obligations require manual resolution. Authorized local defensive research only; open source modification rights remain. Worker channel credentials stay in the engine; participants cannot read raw agent channels through human sessions; bounty publishers have scoped read-only website access for versions that explicitly disclose it.", "request:object", json!({"request":{"action":"workers"}}), true, None);
     method!(model_registry_request, "Read or manage model publications, versions and wallet access grants using this computer's signed-in account.", "path:string body?:object", json!({"path":"/models?mine=1"}), true, None);
     method!(model_registry_connect, "Connect a publisher-controlled OpenAI-compatible API. The gateway keeps its URL and credentials private, verifies a synthetic response and benchmarks it.", "model:string endpoint:string apiKey:string", json!({"model":"yg/alice/my-model","endpoint":"https://provider.example/v1","apiKey":"private-key"}), true, None);
     method!(model_registry_upload, "Upload a folder of safe model files as an immutable publication version. resume continues an existing upload ID.", "modelId:string folder:string label:string quant?:string resume?:string", json!({"modelId":"rm-ID","folder":"C:/Models/my-model","label":"v1"}), true, None);
@@ -67,15 +81,53 @@ pub fn methods() -> Vec<Method> {
     method!(market_share_model, "Share a running or starting model on the Yougori Network through a private public link that only yougori.com sees. paid lists priced models at the network price (others are shared free); free lets anyone use it without a wallet. Requires market_sign_in.", "environmentId:string mode:paid|free listen?:bool publish?:bool", json!({"environmentId":"env-ID","mode":"free"}), true, Some("Lets other people send requests to this model on your GPU through the Yougori Network."));
     method!(market_unshare_model, "Stop sharing a model on the Yougori Network and close the public link Yougori opened for it.", "environmentId:string", env.clone(), true, None);
     method!(grid_status, "Closed Neo Grid on this computer: as the admin's hub, its computers, plans, models, API keys and queue; as a member, its grid, assignment from the admin's plans and serving state. Never returns secrets.", "", json!({}), false, None);
-    method!(grid_create, "Create a company's Closed Neo Grid hub on this computer's private LAN or VPN address (port defaults to 7460) and join it. Company computers join with the company name, this address and the password; apps call https://ADDRESS:PORT/v1 with keys from grid_key_create. Supply the password through stdin.", "name:string address:string password:string port?:port hostname?:string", json!({"name":"Acme","address":"10.0.0.5","password":"SUPPLY_ON_STDIN"}), true, Some("Opens a grid service on this computer's network address that computers with the company password can join; the admin's plans then run models on them."));
+    method!(grid_suggested_address, "This computer's address on its private LAN or VPN, as suggested for a Closed Neo Grid hub; null when it has none. Nothing is sent to find it.", "", json!({}), false, None);
+    method!(grid_create, "Create a company's Closed Neo Grid hub on this computer's private LAN or VPN address (port defaults to 7460) and join it. tunnel also lets computers outside the network join: quick for a temporary trycloudflare.com address that changes when this computer restarts, or a saved domain whose Cloudflare tunnel routes to http://127.0.0.1:HOST_PORT; the tunnel only relays the grid's own pinned TLS. The status's hub.invite is what company computers join with; apps call https://ADDRESS:PORT/v1 on the LAN with keys from grid_key_create. Supply the password through stdin.", "name:string address:string password:string port?:port hostname?:string tunnel?:string", json!({"name":"Acme","address":"10.0.0.5","password":"SUPPLY_ON_STDIN","tunnel":"quick"}), true, Some("Opens a grid service on this computer's network address, and through a tunnel when one is chosen, that computers with the company password can join; the admin's plans then run models on them."));
     method!(grid_password, "Admin: change the company password new computers join with. Joined computers stay members. Supply the password through stdin.", "password:string", json!({"password":"SUPPLY_ON_STDIN"}), true, Some("New computers must use the new password to join."));
-    method!(grid_delete, "Admin: close this computer's grid hub and forget its computers, plans and API keys.", "", json!({}), true, Some("Deletes the grid: every computer leaves it and every API key stops working."));
-    method!(grid_join, "Join a company's Closed Neo Grid with the company name, the hub's address and the company password, which is proven, never sent. From then on the admin's plans decide which model this computer downloads and runs, in which hours and after how long without keyboard or mouse input. fingerprint pins the hub's certificate when the admin shared it. Supply the password through stdin.", "company:string address:string password:string port?:port name?:string fingerprint?:string", json!({"company":"Acme","address":"10.0.0.5","password":"SUPPLY_ON_STDIN"}), true, None);
+    method!(grid_delete, "Admin: delete this computer's grid. when is later (default: paused for three days, nothing serves and no API key works, and grid_restore brings everything back), now (deleted at once), or forget (stop waiting for computers still away and remove the hub right now). Once deleted, each computer is told at its next check-in: it leaves and removes the model environment the grid created. The hub keeps telling computers that come back for up to 30 days, then removes itself.", "when?:string", json!({"when":"later"}), true, Some("Deletes the grid: every computer leaves it, removes the model it installed, and every API key stops working."));
+    method!(grid_restore, "Admin: take back a deletion while the grid is still paused (within its three days): computers serve again at their next check-in.", "", json!({}), false, None);
+    method!(grid_join, "Join a company's Closed Neo Grid with the invite the admin shared and the company password, which is proven, never sent. The invite names the company, the hub's address (on the LAN or an https:// tunnel) and its certificate fingerprint; without one, give company, address and optionally fingerprint. An invite for the grid this computer is already in only moves it to the hub's current address (a Quick Tunnel gets a new one after a restart) and needs no password. From then on the admin's plans decide which model this computer downloads and runs, in which hours and after how long without keyboard or mouse input. Supply the password through stdin.", "company?:string address?:string password?:string port?:port name?:string fingerprint?:string invite?:string", json!({"invite":"grid-invite:…","password":"SUPPLY_ON_STDIN"}), true, None);
     method!(grid_leave, "Leave the grid: stop serving it, stop the model environment the grid started and forget the membership.", "", json!({}), true, Some("Stops serving the grid; joining again needs the company password."));
-    method!(grid_plan_add, "Admin: run a model on percent of the grid's computers that can run models. schedule is weekly local hours such as 'Mon-Fri 18:00-08:00; Sat,Sun' (default any time); idleAfter is minutes without keyboard or mouse input before a computer serves (default 10; 0 ignores activity). Assigned computers download, start and serve the model.", "model:string percent:number schedule?:string idleAfter?:number quant?:string", json!({"model":"hf.co/Qwen/Qwen3-8B","percent":50,"schedule":"Mon-Fri 18:00-08:00; Sat,Sun","idleAfter":15}), true, None);
+    method!(grid_plan_add, "Admin: run a model on percent of the grid's computers that can run models, or on exactly the computers listed in computers (IDs from grid_status), which then leave any model they ran. scope remaining counts only the computers nobody picked; all (default) counts every computer, though picked ones keep their pick. schedule is weekly local hours such as 'Mon-Fri 18:00-08:00; Sat,Sun' (default any time); idleAfter is minutes without keyboard or mouse input before a computer serves (default 10; 0 ignores activity). Assigned computers download, start and serve the model.", "model:string percent?:number schedule?:string idleAfter?:number quant?:string scope?:all|remaining computers?:string[]", json!({"model":"hf.co/Qwen/Qwen3-8B","percent":50,"schedule":"Mon-Fri 18:00-08:00; Sat,Sun","idleAfter":15}), true, None);
     method!(grid_plan_update, "Admin: change a plan's model, share of computers, hours or idle minutes. An empty schedule or quant clears it; a new model makes its computers switch.", "planId:string model?:string percent?:number schedule?:string idleAfter?:number quant?:string", json!({"planId":"plan-ID","percent":75}), true, None);
     method!(grid_plan_remove, "Admin: remove a plan; its computers stop the model environments the grid started.", "planId:string", json!({"planId":"plan-ID"}), true, Some("Stops this model on every computer running the plan."));
     method!(grid_member_remove, "Admin: remove a computer from the grid; it needs the company password to join again.", "memberId:string", json!({"memberId":"member-ID"}), true, Some("Removes this computer from the grid and stops its work for it."));
+    method!(grid_member_exclude, "Admin: leave a computer out of the grid's work. It gets no model and no work, so it drops the model the grid gave it (a grid-created model environment is deleted with its weights, a download in progress included). It stays a member; grid_member_include brings it back.", "memberId:string", json!({"memberId":"member-ID"}), true, Some("The computer stops serving and drops the model the grid gave it."));
+    method!(grid_member_include, "Admin: bring a computer left out back into the grid's work, so plans and picks may give it a model again.", "memberId:string", json!({"memberId":"member-ID"}), true, None);
+    method!(grid_neocloud_status, "Admin: the rented GPUs working in this grid, what each one costs an hour and what it is doing, and the RunPod GPU pods you have rented that are not in the grid yet. hourlyUsd counts only the pods that are running. A grid holds at most 8 rented GPUs.", "", json!({}), false, None);
+    method!(grid_neocloud_add, "Admin: put a GPU pod you have already rented in NeoCloud to work in this grid, so its plans may give it a model. It never rents a pod and never starts a stopped one; while the pod runs, RunPod charges its hourly price as usual.", "environmentId:string", json!({"environmentId":"env-ID"}), true, None);
+    method!(grid_neocloud_remove, "Admin: take a rented GPU out of this grid and stop its pod, which ends its hourly charge. The pod and its disk stay in NeoCloud; start it there to use it again.", "environmentId:string", json!({"environmentId":"env-ID"}), true, Some("Stops this rented GPU's pod and the work it is doing for the grid."));
+    method!(grid_neocloud_stop_all, "Admin: stop every rented GPU in this grid, which ends their hourly charges. They stay in the grid, offline, until you start them in NeoCloud.", "", json!({}), true, Some("Stops every rented GPU in the grid and the work they are doing."));
+    method!(grid_swarm_add, "Admin: a swarm harness that company apps call as the model swarm/NAME, so one call runs a team of models on several computers. strategy plan (default): the lead model splits the request into independent tasks with briefs, workers solve them in parallel and the lead combines the results. strategy mixture: the workers each answer the request and the lead writes one answer from all of them. computers caps the requests in flight, so how many computers work on one call; tasks caps tasks per round (plan) or answers per layer (mixture), default computers; rounds is 1-3 rounds (plan) or 1-2 layers (mixture), default 1. lead and workers must run on the grid through plans; missing lists those that do not yet.", "name:string lead:string workers:string[] computers:number strategy?:plan|mixture tasks?:number rounds?:number", json!({"name":"research","lead":"hf.co/Qwen/Qwen3-32B","workers":["hf.co/Qwen/Qwen3-8B"],"computers":5,"strategy":"plan","rounds":2}), true, None);
+    method!(grid_swarm_remove, "Admin: remove a swarm harness, by its ID or its name.", "harnessId:string", json!({"harnessId":"research"}), true, Some("Apps calling this swarm model get an error from then on."));
+    method!(grid_swarm_run, "Admin: run a swarm harness once on a prompt. Returns the answer and a trace of the plan, which computer did each task, and how long each took.", "harness:string prompt:string", json!({"harness":"research","prompt":"Compare three ways to cut our cloud bill"}), false, None);
+    method!(bounty_dispatch, "Import a project folder/file/ZIP, inspect its suggested run recipe, host an isolated private source/web/API bounty on this PC or LAN, connect through a pinned invite and explicitly start a worker on the reviewed snapshot. Public builds reject live URL targets and external-target policies, including joins and resumes. Passwords travel only in a request body or stdin. Actions: inspectProject, hostProject, hostSource, connect, localConnect, discardConnection, startWorker, status.", "request:object", json!({"request":{"action":"status"}}), true, None);
+    method!(bounty_status, "Closed Bounty hosted on this computer: the published source, the computers working it (with the model each chose), and the findings they reported. Returns an invite to share. Never returns secrets.", "", json!({}), false, None);
+    method!(bounty_suggested_address, "This computer's private LAN or VPN address, suggested as a closed bounty host address; null when it has none. Nothing is sent to find it.", "", json!({}), false, None);
+    method!(bounty_host, "Admin: host a Closed Bounty on this computer so other computers can join with the company password and work the source. title names it; instructions and authorization tell workers what to do and what they may test; files is the source as [{path, data}] with data base64 of each file's bytes. The host runs no model. Shares an invite (bounty-invite:...); joiners paste it, enter the password and choose their own model.", "name:string address:string password:string title:string files:array instructions?:string authorization?:string", json!({"name":"Acme","address":"192.168.1.20","password":"SUPPLY_ON_STDIN","title":"Review checkout","files":[{"path":"src/app.py","data":"cHJpbnQoMSk="}]}), true, None);
+    method!(bounty_member_remove, "Admin: remove a computer from the closed bounty, by its ID from bounty_status.", "memberId:string", json!({"memberId":"member-ID"}), true, Some("The computer stops working this bounty."));
+    method!(bounty_delete, "Admin: stop hosting the closed bounty and delete it from this computer.", "", json!({}), true, Some("Computers working it can no longer reach the host."));
+    method!(desks_manage, "Manage Sandbox Grid with named administrator permissions: status, personAdd/personUpdate/personPassword/personRemove, imageAdd/imageImport/imageRemove, roleAdd/roleRemove, deskOrder/deskAssign/deskRetry/deskRemove, computerShare/computerRemove/computerLimit, connectionAdd/connectionCredential/connectionTest/connectionProvision/connectionRevoke/connectionRemove, parkingSet/parkingClear, cloudFallbackSet/cloudFallbackClear, ssoSet/ssoClear, mfaReset. personUpdate also sets a person's email, which the identity provider and the connectors know them by. connectionAdd/connectionCredential take credential {…} with the provider's identifiers and secret (clientSecret or password): the secret goes to the hub computer's vault, never the record; connectionTest signs in with it and says what it reaches; connectionProvision/connectionRevoke {id, personId} assign the person at the provider or take it back (queued; the outcome is in status enterprise.provisioning). The one management core: desks_person_add, desks_add, desks_member_share, desks_member_remove and the rest go through the same rules and audit. personAdd and deskOrder take a workspace roleId or a plain spec {kind,cpu,memoryGb,diskGb,gpu,image} for a desk of that size without a catalog; computerRemove puts the computer's desks back into waiting with their data still on it. Uses the local owner or the signed-in remote administrator. Supply passwords only through JSON stdin. Prepared VM images require HTTPS and SHA-256, or imageImport with a local owner disk path (checksum computed automatically); OCI images require an immutable digest.", "request:object", json!({"request":{"action":"status"}}), true, None);
+    method!(desks_status, "Sandbox Grid on this computer: as the admin's hub, its computers (each with its live capacity: cores and cpuUsedPercent, memoryGb and usedMemoryGb, gpu and gpuUsedPercent, freeDiskGb, inUse; and its share: what the grid may take, shareSet false while it is still the suggestion), people and desks, and the invite to share; as a member, the grid it hosts desks for; and this computer's own desk sign-in. Never returns secrets.", "", json!({}), false, None);
+    method!(desks_suggested_address, "This computer's address on its private LAN or VPN, as suggested for a Sandbox Grid hub; null when it has none. Nothing is sent to find it.", "", json!({}), false, None);
+    method!(desks_create, "Admin: host a Sandbox Grid on this computer's private LAN or VPN address (port 7463), separate from any Closed Neo Grid. Company computers join it with the password and host desks within the share the admin sets for each (desks_member_share), in use or not; this computer joins too. tunnel is quick (a temporary public link, for computers anywhere) or a saved Cloudflare domain; without it the grid is reachable on this network only. Returns the invite (desk-invite:...) to share.", "name:string address:string password:string tunnel?:string", json!({"name":"Acme","address":"192.168.1.20","password":"SUPPLY_ON_STDIN","tunnel":"quick"}), true, None);
+    method!(desks_join, "Join a company's Sandbox Grid with the invite (desk-invite:...) the admin shared and the password: this computer then reports what it has and is using, and builds and shares desks within the share the admin sets for it, whether or not someone is using it. name is how the admin sees it (default: the hostname).", "invite:string password:string name?:string", json!({"invite":"desk-invite:...","password":"SUPPLY_ON_STDIN","name":"Design laptop"}), true, Some("This computer hosts sandboxes for the grid's people within the share its admin sets."));
+    method!(desks_leave, "Leave the Sandbox Grid: stop sharing the desks on this computer (their sandboxes stay) and forget the membership.", "", json!({}), true, Some("Desks hosted here are placed again elsewhere."));
+    method!(desks_delete, "Admin: delete this computer's Sandbox Grid. when is later (default: paused for three days, desks stopped and unshared but kept, nobody signs in, and desks_restore brings everything back), now (deleted at once), or forget (stop waiting for computers still away and remove the hub right now). Once deleted, each computer is told at its next check-in: it leaves and deletes the desks it hosted, with their data; people's desk entries are removed when their app next refreshes. The hub keeps telling computers that come back for up to 30 days, then removes itself.", "when?:string", json!({"when":"later"}), true, Some("Deletes every desk on every computer, with its data, once the grid is gone."));
+    method!(desks_adopt_membership, "Take up a Sandbox Grid membership the hub made ahead of time, on a computer the hub created (its cloud fallback): membership is {company, gridId, address, fingerprint, memberId, memberToken, name}, supplied on stdin with --file -. The token stands in for the company password; the hub's certificate is pinned by the fingerprint before anything is sent.", "membership:object", json!({"membership":{"company":"Acme","address":"https://acme.trycloudflare.com","fingerprint":"AB…","memberId":"member-ID","memberToken":"SUPPLY_ON_STDIN","name":"yougori-desk-1"}}), true, Some("This computer joins the sandbox grid and hosts desks."));
+    method!(desks_restore, "Admin: take back a deletion while the Sandbox Grid is still paused (within its three days): computers start and share their desks again at their next check-in.", "", json!({}), false, None);
+    method!(desks_member_remove, "Admin: remove a computer from the Sandbox Grid; its desks are placed again elsewhere and it needs the password to join again.", "memberId:string", json!({"memberId":"member-ID"}), true, None);
+    method!(desks_member_share, "Admin: what the Sandbox Grid may take from a computer for desks, whether or not its person is using it: cpu cores, memoryGb, diskGb, gpu, and idleOnly (take desks only while nobody is using it; default false). Fields left out keep their current values; suggested true goes back to the automatic share (half its cores, half its memory with 2 GB kept back, half its free disk, the GPU if it has one). Desks already on the computer stay. The computer's live use is in desks_status as capacity.", "memberId:string cpu?:number memoryGb?:number diskGb?:number gpu?:bool idleOnly?:bool suggested?:bool", json!({"memberId":"member-ID","cpu":2,"memoryGb":4,"diskGb":50,"gpu":false,"idleOnly":false}), true, None);
+    method!(desks_person_add, "Admin: add a person who signs in to open their desk, with a username and password (10-256 characters), and order their desk in the same step: give any of cpu cores, memoryGb, diskGb, gpu or kind (container, microvm, vm) and a desk named after them is ordered with those (defaults: a container of 2 cores, 4 GB, 20 GB, no GPU), placed on the computer with the most room left in its share. With none of them, only the person is added. name is how they are shown; it defaults to the username. Returns the person, with the desk under desk.", "username:string name?:string password:string kind?:string cpu?:number memoryGb?:number diskGb?:number gpu?:bool", json!({"username":"ada.lovelace","name":"Ada Lovelace","password":"SUPPLY_ON_STDIN","cpu":2,"memoryGb":4,"diskGb":20,"gpu":false}), true, Some("Orders a sandbox for the person on a company computer."));
+    method!(desks_person_password, "Admin: change a person's password, by their username or ID. Their desks are untouched.", "person:string password:string", json!({"person":"ada.lovelace","password":"SUPPLY_ON_STDIN"}), true, None);
+    method!(desks_person_remove, "Admin: remove a person, by their username or ID. Their desks stay, unassigned, with their data.", "person:string", json!({"person":"ada.lovelace"}), true, Some("The person can no longer sign in."));
+    method!(desks_add, "Admin: order a desk, a sandbox hosted on a company computer, for a person. kind is container (default), microvm or vm; cpu cores (default 2), memoryGb (default 4), diskGb (default 20), gpu (default false) and image (an OCI image or bootable media; a default per kind) size it. It is built on the computer with the most room left in its share (desks_member_share).", "name:string person?:string kind?:string cpu?:number memoryGb?:number diskGb?:number gpu?:bool image?:string", json!({"name":"Design desk","person":"ada.lovelace","kind":"container","cpu":2,"memoryGb":4,"diskGb":20,"gpu":false,"image":"docker.io/library/ubuntu:24.04"}), true, Some("Builds a sandbox on a company computer and shares it with the person."));
+    method!(desks_assign, "Admin: give a desk to a person by username or ID, or to nobody when person is empty. Its data stays.", "desk:string person?:string", json!({"desk":"desk-ID","person":"ada.lovelace"}), true, None);
+    method!(desks_retry, "Admin: try a failed desk again on any computer with room in its share.", "desk:string", json!({"desk":"desk-ID"}), true, None);
+    method!(desks_remove, "Admin: remove a desk; its computer deletes the sandbox and its data.", "desk:string", json!({"desk":"desk-ID"}), true, Some("Deletes the desk's sandbox and everything in it."));
+    method!(desk_refresh, "Refresh assigned desks and enterprise launch connections using the current revocable desk session. Reimports renewed invitations; retires revoked local entries. Does not return credentials.", "", json!({}), true, None);
+    method!(desk_login, "Person: sign in to the Sandbox Grid the admin's invite (desk-invite:...) names with your username and password, and open your desks: each ready desk becomes a shared environment in this computer's sandbox list. With two-step sign-in on, code is the six digits from your authenticator app; without it the answer is 'Enter the code from your authenticator app'. With sso true the company's identity provider signs you in instead: the browser opens on it and no username or password is given. Use desk_refresh after a desk moves or its share is renewed; the desktop refreshes automatically.", "invite:string username?:string password?:string code?:string sso?:bool", json!({"invite":"desk-invite:...","username":"ada.lovelace","password":"SUPPLY_ON_STDIN"}), true, None);
+    method!(desk_logout, "Person: forget the sign-in and remove the desk entries from this computer. The desks and their data stay on their computers.", "", json!({}), true, Some("Removes your desk entries from this computer."));
     method!(grid_key_create, "Admin: create an API key for a company app. The key is shown once, with the hub's URL and the certificate apps must trust.", "name:string", json!({"name":"Analytics"}), true, None);
     method!(grid_key_revoke, "Admin: revoke a company app's API key immediately.", "keyId:string", json!({"keyId":"key-ID"}), true, Some("Apps using this key stop working immediately."));
     method!(model_api_status, "A model's private API key and any localhost and public (Cloudflare) API addresses currently serving it.", "environmentId:string", json!({"environmentId":"env-ID"}), false, None);
@@ -105,7 +157,7 @@ pub fn methods() -> Vec<Method> {
     method!(connect_remote_share, "Connect using an HTTPS link and share credentials; persist a remote sidebar entry and save only its session in the OS vault. Send credentials via stdin/file.", "link:string username:string password:string environmentId?:string", json!({"link":"https://example.com/share/share-ID","username":"teammate","password":"provided-by-owner"}), true, None);
     method!(reconnect_remote_share, "Reconnect an existing shared environment using its saved link and credentials. The existing node is updated rather than duplicated.", "environmentId:string", json!({"environmentId":"env-ID"}), true, None);
     method!(download_remote_folder, "Download a remote shared folder into a fresh local subfolder. Existing files are never overwritten; partial downloads are kept on failure.", "environmentId:string path:string destination:string", json!({"environmentId":"env-ID","path":"","destination":"C:/Users/me/Downloads"}), true, None);
-    method!(remote_share_request, "Inspect remote permissions, perform bounded file operations, or log out. File paths are relative to the owner's selected folder. Existing exec/terminal/power/logs commands work within granted permissions.", "environmentId:string method:inspect|files|desktop|logout params:object", json!({"environmentId":"env-ID","method":"files","params":{"operation":"list","path":""}}), true, None);
+    method!(remote_share_request, "Inspect remote permissions, use the desktop, perform permitted file operations, upload files or folders to a managed desk, or log out. Upload uses begin/chunk/finish/cancel; there is no upload read operation. Restricted desks refuse file reads, exec, terminal, power and logs. File paths for ordinary shares are relative to the owner's selected folder.", "environmentId:string method:inspect|files|desktop|logout|upload params:object", json!({"environmentId":"env-ID","method":"files","params":{"operation":"list","path":""}}), true, None);
     method!(create_environment_share, "Share only this environment over pinned TLS on this PC's private LAN/VPN address. view grants summary/logs; control also grants guest commands, terminal and power. Invitation expires after 24 hours or engine exit; copy it securely.", "environmentId:string address:string permission:view|control", json!({"environmentId":"env-ID","address":"192.168.1.20","permission":"view"}), true, Some("Shares this selected environment with anyone receiving its private invitation."));
     method!(list_environment_shares, "List live sharing grants, excluding secret invitations.", "", json!({}), false, None);
     method!(revoke_environment_share, "Revoke a grant, abort its TLS connections and close its terminals. Previously started processes/files remain.", "shareId:string", json!({"shareId":"share-ID"}), true, None);
@@ -129,6 +181,38 @@ pub fn methods() -> Vec<Method> {
         None
     );
     method!(vault_summary, "Personal Vault broker reachability and the number of requests waiting for approval. No item names, clients or values.", "", json!({}), false, None);
+    method!(access_status, "Access Grid on this computer: the hub it runs (company, address, port 7465, fingerprint, counts, invite, tunnel) and this person's sign-in with what they may use (credentials, never values), their own requests and, for approvers, auditors and admins, the people, credentials, rules, waiting requests and activity. Never returns values, hashes or keys.", "", json!({}), false, None);
+    method!(access_create, "Admin: run an Access Grid on this computer's private LAN or VPN address (port 7465) and sign this computer in as its first admin. It keeps the company's credentials sealed with a key in the OS vault; people's agents use them through it without ever seeing them. tunnel is quick or a saved Cloudflare domain for people outside the network. Supply password on stdin.", "company:string address:string username:string password:string name?:string tunnel?:string", json!({"company":"Acme","address":"192.168.1.20","username":"ada","password":"SUPPLY_ON_STDIN"}), true, Some("Hosting an Access Grid opens a service on this computer's network that keeps the company's credentials."));
+    method!(access_delete, "Admin: delete this computer's Access Grid. when later (default) pauses it for three days: nobody signs in or uses its credentials, and access_restore takes it back; then it is deleted. now wipes its credentials, people and rules at once and tells people's computers for 30 days; forget removes it from this computer at once.", "when?:later|now|forget", json!({"when":"later"}), true, Some("The Access Grid stops serving its credentials; with now or forget, they are deleted."));
+    method!(access_restore, "Admin: take back a deletion while the Access Grid is still paused (within its three days).", "", json!({}), true, None);
+    method!(access_account, "Your own Access Grid account. request.action: twoStepStart (a secret and otpauth link for your authenticator app), twoStepConfirm {code}, twoStepOff {code}, password {password, code?} (other computers must sign in again), signOutOthers, deviceForget {device}. Password on stdin only.", "request:object", json!({"request":{"action":"twoStepStart"}}), true, None);
+    method!(access_backup, "Admin, on the hub's computer: write an encrypted backup of the Access Grid (people, credentials, rules, activity log and both keys) to output, sealed with passphrase (on stdin). Restoring it on any computer brings the grid back; people's computers keep trusting it.", "output:string passphrase:string", json!({"output":"D:/backups/acme-access.backup","passphrase":"SUPPLY_ON_STDIN"}), true, None);
+    method!(access_restore_backup, "Admin: run an Access Grid on this computer from a backup file, at this computer's LAN or VPN address. People sign in with the new invite; their computers move without a password.", "file:string passphrase:string address:string", json!({"file":"D:/backups/acme-access.backup","passphrase":"SUPPLY_ON_STDIN","address":"192.168.1.20"}), true, Some("This computer runs the Access Grid from the backup, with every credential it holds."));
+    method!(access_signin, "Sign in to the company's Access Grid with the admin's invite (access-invite:...): username and password (code is the two-step code when it is on), or sso true to sign in through the company's identity provider in the browser. This computer then stays signed in (30 days after its last use) and your agents use the credentials the rules allow you through yougori access mcp. Supply password on stdin.", "invite:string username?:string password?:string code?:string sso?:bool", json!({"invite":"access-invite:...","username":"ada","password":"SUPPLY_ON_STDIN"}), true, None);
+    method!(access_signout, "Sign out of the Access Grid on this computer; its agents can no longer use the company's credentials.", "", json!({}), true, Some("Agents on this computer can no longer use the company's credentials."));
+    method!(access_manage, "Manage the Access Grid as its owner or with your permission. request.action: overview, activityExport {limit?}, activityVerify (approvers, auditors, admins); decide {request, approve, hours?, reason?} (approvers and admins; never your own request while someone else can approve); admins: personAdd {username, password, name?, email?, permission member|approver|auditor|admin, teams?}, personUpdate {person, name?, email?, permission?, teams?}, personPassword {person, password}, personTwoStepReset {person}, personSignOut {person}, deviceRevoke {person, device}, personRemove {person}, credentialAdd {name, kind bearer|header|basic|query|oauth|github-app|aws, field?, destinations, value, config?, note?}, credentialUpdate {credential, name?, kind?, field?, destinations?, value?, config?, note?}, credentialRemove {credential}, ruleAdd {credential, who everyone|team:NAME|USERNAME, methods?, path?, decision allow|ask|never, reveal?, limit?, hours?, note?}, ruleRemove {rule}, settingsSet {requireTwoStep}, ssoSet {issuer, clientId, claim?, passwordless?}, ssoClear. config: oauth {tokenUrl, clientId, scope?, audience?, auth basic|body}; github-app {appId, installationId, apiUrl?}; aws {region, service?, roleArn?, externalId?, sessionSeconds?}. Passwords and values on stdin only.", "request:object", json!({"request":{"action":"ruleAdd","credential":"GitHub","who":"team:Research","methods":["GET"],"path":"/repos/acme","decision":"allow"}}), true, None);
+    method!(access_use, "Send an HTTP request with a company credential through the Access Grid: the hub adds the credential, sends it to one of the credential's destinations and returns {state, answer:{status, headers, body|bodyBase64, truncated}} with the value hidden. state waiting or running returns an id for access_check.", "credential:string url:string method?:string headers?:object body?:string bodyBase64?:string agent?:string", json!({"credential":"GitHub","method":"GET","url":"https://api.github.com/repos/acme/app"}), true, None);
+    method!(access_check, "The state of an Access Grid request by its id: waiting, running, or its answer (handed over once), denial or error.", "id:string", json!({"id":"req-0123456789abcdef"}), true, None);
+    method!(access_reveal, "Ask for a company credential to use outside Access Grid, only where a rule allows it; an approver always decides. oauth, github-app and aws credentials hand out a short-lived token or temporary keys, never the credential; others hand out the value, which cannot be recalled. Prefer access_use.", "credential:string reason?:string agent?:string", json!({"credential":"Database","reason":"configure the migration tool"}), true, None);
+    // One namespace over the four grids. The noun is the method; the verb is request.do, which
+    // is the shape desks_manage, access_manage, swarm_dispatch and bounty_dispatch already use.
+    // grid names the grid by the company name its admin typed, its short handle or its id, and
+    // may be left out when exactly one grid on this computer can answer. Every word the four
+    // products ship keeps working unchanged; this is a second door onto the same handlers.
+    // Passwords and credential values arrive only through stdin or a private request file.
+    grids_method!(grids_realm, "realm", "The grid itself, whichever of the four it is.", "manage reads the administrator's raw request from a private file. Passwords and passphrases arrive on stdin only. Refused in words when the grid does not do what the verb needs.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_people, "people", "The people of a grid: accounts, their passwords, their two-step sign-in and the identity provider.", "Passwords arrive on stdin only. A grid that neither hosts workspaces nor brokers credentials refuses these in words.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_computers, "computers", "The computers that belong to a grid, and the computers a person signs in from.", "computer takes the computer's ID, as list shows it. Removing a computer stops what it was running and puts its desks back into waiting.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_share, "share", "What an enrolled computer gives the grid.", "computer takes the computer's ID, as yougori grids computers list shows it. drain stops using a computer and bring-back uses it again. A share is what the admin allows, never what the computer has.", json!({"request":{"do":"show"}}));
+    grids_method!(grids_models, "models", "Model plans, teams of models, API keys and rented GPUs on a grid that serves models.", "plan and key take IDs, as list shows them; team takes a team's name or ID. gpus lists the GPUs rented in NeoCloud for this grid; gpu takes a rented GPU's environment ID, as gpus shows it. remove-gpu and stop-gpus stop the pods and their hourly charges.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_desks, "desks", "Desks: sandboxes built for named people on the company's computers.", "desk takes the desk's ID, as list shows it. Passwords arrive on stdin only.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_credentials, "credentials", "Company credentials an agent uses without ever seeing them.", "Values arrive on stdin only.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_requests, "requests", "What is waiting for somebody to agree, and the deciding of it.", "Nobody decides their own request while another approver can.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_research, "research", "Swarm Mining workers on this computer, read and steered but never started here.", "Starting a worker keeps its own guided setup, yougori start bounty.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_connectors, "connectors", "The systems a grid reaches on somebody else's computers, and the accounts it makes there.", "The identifiers go in the record and the secret goes to the hub computer's vault, never the record.", json!({"request":{"do":"list"}}));
+    grids_method!(grids_work, "work", "The engine's own journal of what a grids command queued.", "Cancelling is not undoing; inspect what was already done.", json!({"request":{"do":"list"}}));
+    method!(grids_rollout, "Moving this computer's four products onto Grid Core, one stage at a time. request.do: status, survey (an inventory of this computer, written to a file and sent nowhere), rehearse (copy every record and run the whole move on the copies), backup {keepForDays?, stage?}, verify {stamp}, restore {product, stamp}, observe (run both paths over the same questions and write down every difference), coverage {profile}, read {product, stamp?}, advance {profile}, back {profile}, retire {profile, keepForDays?}, unretire {stamp}, forget {stamp, force?}. A profile is models, workspaces, research or credentials; a product is neo, sandbox, swarm or access. Nothing here reaches a network, nothing is uploaded, and forget is the only verb that deletes anything and refuses until the retention has run out.", "request:object", json!({"request":{"do":"status"}}), true, None);
+    grids_method!(grids_log, "log", "What a grid recorded, and whether the record is whole.", "command is one typed command's name, such as keen-heron-3f1a, and finds everything that command caused. Exporting the record is the Access Grid's own door; other grids keep their history in the engine's audit log.", json!({"request":{"do":"show"}}));
     method!(open_personal_vault, "Bring the Yougori dashboard forward on Personal Vault (home, approvals or add). The person decides there; approvals and item entry never happen from the CLI.", "view?:home|approvals|add", json!({"view":"approvals"}), false, None);
     method!(
         get_connection_skills,
@@ -401,7 +485,7 @@ pub fn methods() -> Vec<Method> {
         true,
         Some("Restores backup data over the existing environment.")
     );
-    method!(update_settings, "Save the complete settings object from get_platform_state, modifying only intended fields.", "settings:object", json!({"settings":{"theme":"system","launchAtStartup":false,"minimizeToTray":false,"pauseOnBattery":false,"telemetryEnabled":false,"dataDirectory":"","snapshotRetention":20,"bandwidthLimitMbps":0}}), true, None);
+    method!(update_settings, "Save the complete settings object from get_platform_state, modifying only intended fields. Pass expectedRevision (settingsRevision from the same read) to refuse the write if settings changed since; patch_settings is preferred.", "settings:object expectedRevision?:integer", json!({"settings":{"theme":"system","launchAtStartup":false,"minimizeToTray":false,"pauseOnBattery":false,"telemetryEnabled":false,"dataDirectory":"","snapshotRetention":20,"bandwidthLimitMbps":0}}), true, None);
     method!(
         refresh_host_metrics,
         "Refresh host usage and enforce dynamic resource limits.",
@@ -574,7 +658,7 @@ pub fn methods() -> Vec<Method> {
     method!(set_environment_health_check, "Save an application probe with port, local path, GET/HEAD/POST, expected_status, timeout_seconds, wait_seconds and optional bearer_secret reference. Omit health to remove the saved probe; values never belong in metadata.", "environmentId:string health?:object", json!({"environmentId":"env-ID","health":{"port":8000,"path":"/health","method":"GET","expected_status":200,"timeout_seconds":10,"wait_seconds":120}}), true, Some("Changes this environment's saved health probe and its automatic startup verification; protected references require their authorized scope."));
     method!(publication_preflight, "Check domain availability and listener ownership, then report a precise transition preserving unrelated publications. An optional saved domain resolves its protected listener configuration.", "environmentId:string port:port kind:loopback|local|cloudflare hostPort?:port cloudflare?:object domain?:string", json!({"environmentId":"env-ID","port":3000,"kind":"loopback","hostPort":3000}), false, None);
     method!(host_share_credentials, "Explicitly retrieve this user's selected host-folder access capability. Routine metadata never includes the bearer URL.", "shareId:string", json!({"shareId":"share-ID"}), false, Some("Reveals the selected host-folder access capability."));
-    method!(model_preflight, "Inspect model task, architecture, runner compatibility, dependencies and likely resources before creating a runtime or downloading weights. quant chooses a GGUF quantization such as Q4_K_M.", "model:string quant?:string folder?:string", json!({"model":"hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"}), false, None);
+    method!(model_preflight, "Inspect model task, architecture, runner compatibility, dependencies and likely resources before creating a runtime or downloading weights. quant chooses a GGUF quantization such as Q4_K_M. resources.workerMemoryGbRecommended estimates total Swarm RAM including 4 GiB for agent/test sandboxes.", "model:string quant?:string folder?:string", json!({"model":"hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0"}), false, None);
     method!(model_support_task, "Prepare an isolated architecture-support skill and public checkpoint request for the selected coding agent. Does not launch an agent or enable unverified code.", "model:string agent:string quant?:string", json!({"model":"hf.co/OWNER/MODEL","agent":"codex"}), true, None);
     method!(set_deployment_secret, "Store a protected application secret binding. Supply value through stdin or a private request file; values are never returned.", "name:string value:string", json!({"name":"api-token","value":"EXAMPLE-NOT-A-SECRET"}), true, Some("Stores this application credential in the user's protected vault."));
     method!(delete_deployment_secret, "Remove a protected deployment secret reference; applications using it require a new binding.", "name:string", json!({"name":"api-token"}), true, Some("Removes this protected application credential."));
@@ -587,6 +671,50 @@ pub fn methods() -> Vec<Method> {
         None
     );
     list
+}
+
+/// One grids method's summary: what it is for, the verbs `request.do` takes with the fields of
+/// each, and what to know. Fields are as typed, in kebab-case; `?` marks one that may be left out,
+/// and a field with a fixed set of answers lists them. Made once per noun.
+fn grids_summary(noun: &'static str, about: &str, notes: &str) -> &'static str {
+    static MADE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<&'static str, &'static str>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut made = MADE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    made.entry(noun).or_insert_with(|| Box::leak(format!("{about} request.do: {}. {notes}", grids_verbs(noun)).into_boxed_str()))
+}
+
+/// The verbs of one grids noun, as `request.do` takes them.
+fn grids_verbs(noun: &str) -> String {
+    crate::grids::verbs_of(noun)
+        .iter()
+        .map(|verb| {
+            let fields: Vec<String> = verb
+                .targets
+                .iter()
+                .map(|field| grids_field(verb.verb, field, false))
+                .chain(verb.options.iter().map(|field| grids_field(verb.verb, field, true)))
+                .collect();
+            if fields.is_empty() { verb.verb.to_owned() } else { format!("{} {{{}}}", verb.verb, fields.join(", ")) }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One field, `?` when it may be left out, with its answers when there is a fixed set of them.
+fn grids_field(verb: &str, field: &str, optional: bool) -> String {
+    let answers = match (verb, field) {
+        (_, "serve") => Some("models|desks|credentials|research"),
+        ("delete", "when") => Some("later|now|forget"),
+        ("two-step", "step") => Some("on|confirm|off"),
+        ("cloud-fallback" | "parking", "step") => Some("set|clear"),
+        ("memory", "step") => Some("release|keep"),
+        _ => None,
+    };
+    let mark = if optional { "?" } else { "" };
+    match answers {
+        Some(answers) => format!("{field}{mark} {answers}"),
+        None => format!("{field}{mark}"),
+    }
 }
 
 pub fn find(name: &str) -> Result<Method, String> {
@@ -643,6 +771,12 @@ impl Method {
         Ok(())
     }
     pub fn confirmation_for(&self, params: &Value) -> Option<&'static str> {
+        // One namespace, one table: what `yougori grids …` asks a person to confirm is read from
+        // the verb table itself, so the terminal, the queue and the engine cannot disagree.
+        if let Some(noun) = crate::grids::noun_for(self.name) {
+            let verb = params["request"]["do"].as_str().unwrap_or_default();
+            return crate::grids::find(noun, verb).and_then(|known| known.confirmation);
+        }
         if self.name == "host_terminal_action"
             && !matches!(
                 params["request"]["action"].as_str(),
@@ -674,6 +808,37 @@ impl Method {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// PROVES that the grids schema says what the command takes: every verb of every noun, in the
+    /// words `request.do` accepts, and nothing that is not one. It was written by hand in
+    /// camelCase (addKey, bringBack) that the parser refuses, kept a `limit` verb that was gone and
+    /// left out the rented-GPU verbs altogether.
+    #[test]
+    fn the_grids_schema_lists_exactly_the_verbs_the_command_takes() {
+        for noun in crate::grids::NOUNS {
+            let summary = find(&format!("grids_{noun}")).unwrap().summary;
+            let listed = summary.split(" request.do: ").nth(1).unwrap_or_else(|| panic!("grids_{noun} lists no verbs"));
+            for verb in crate::grids::verbs_of(noun) {
+                assert!(
+                    listed.starts_with(&format!("{} ", verb.verb)) || listed.starts_with(&format!("{},", verb.verb)) || listed.contains(&format!(", {} ", verb.verb)) || listed.contains(&format!(", {},", verb.verb)) || listed.contains(&format!(", {}.", verb.verb)),
+                    "grids_{noun} does not list {}: {summary}",
+                    verb.verb
+                );
+            }
+        }
+        let models = find("grids_models").unwrap().summary;
+        for words in ["add-key {app?}", "revoke-key {key}", "gpus", "add-gpu {gpu}", "remove-gpu {gpu}", "stop-gpus", "set {plan, model?, percent?, schedule?, idle-after?, quant?}"] {
+            assert!(models.contains(words), "{words}: {models}");
+        }
+        for camel in ["addKey", "revokeKey", "addTeam", "idleAfter"] {
+            assert!(!models.contains(camel), "{camel}: {models}");
+        }
+        let share = find("grids_share").unwrap().summary;
+        assert!(share.contains("bring-back {computer}") && !share.contains("bringBack") && !share.contains("limit"), "{share}");
+        assert!(find("grids_people").unwrap().summary.contains("two-step {step on|confirm|off, code?}"));
+        // The schema is only text: what the command accepts is what the parser accepts.
+        let typed = crate::grids::words::parse(&["models".into(), "add-key".into(), "--app".into(), "billing".into()]).unwrap();
+        assert_eq!(typed.params()["request"]["do"], "add-key");
+    }
     #[test]
     fn cuda_checks_and_updates_target_the_requested_storage_drive() {
         for name in ["get_cuda_runtime_status","install_cuda_runtime"] {
@@ -733,6 +898,35 @@ mod tests {
         assert!(action.validate(&json!({"environmentId":"env-ID", "action":"terminate"})).is_err());
         assert!(find("runpod_endpoint_run").unwrap().validate(&json!({"environmentId":"env-ID", "input":"invalid"})).is_err());
         assert!(find("runpod_attach").unwrap().validate(&json!({"kind":"volume", "resourceId":"id"})).is_err());
+    }
+
+    /// A kind the validator does not know is read as a list of allowed words, so a parameter
+    /// written `sso?:boolean` would only ever accept the literal text "boolean". A kind with no
+    /// `|` in it is therefore one of the kinds the validator names, every time.
+    #[test]
+    fn every_parameter_names_a_kind_the_validator_knows() {
+        const KINDS: [&str; 8] = ["string", "string[]", "bool", "object", "array", "number", "integer", "port"];
+        for method in methods() {
+            for definition in method.parameters.split_whitespace() {
+                let (name, kind) = definition.split_once(':').expect("every parameter is name:kind");
+                assert!(
+                    kind.contains('|') || KINDS.contains(&kind),
+                    "{} takes {name} as {kind}, which the validator reads as the only word it will accept",
+                    method.name,
+                );
+            }
+        }
+    }
+
+    /// Signing in through the company's identity provider sends a JSON boolean, the way the
+    /// Access Grid's own sign-in does, and both doors have to take it.
+    #[test]
+    fn signing_in_with_the_company_account_is_a_yes_rather_than_the_word_boolean() {
+        for name in ["desk_login", "access_signin"] {
+            let method = find(name).unwrap();
+            method.validate(&json!({"invite": "desk-invite:x", "sso": true})).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(method.validate(&json!({"invite": "desk-invite:x", "sso": "yes"})).is_err(), "{name}");
+        }
     }
 }
 

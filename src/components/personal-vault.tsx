@@ -14,8 +14,15 @@ const name = (path: string) => path.split(/[\\/]/).pop() || path
 const localUrl = "http://127.0.0.1:49732/mcp"
 const stdioConfig = JSON.stringify({ mcpServers: { yougori: { command: "yougori", args: ["vault", "mcp"] } } }, null, 2)
 
-export function PersonalVault({ startupError }: { startupError?: string | null } = {}) {
+/** Set when the toolbar's create action hands a new vault over to its row; the row's copy opens
+ *  its dialog when it mounts or hears of it, whichever comes first. */
+let carryOnPending = false
+const CARRY_ON = "yougori-vault-carry-on"
+
+export function PersonalVault({ startupError, asRowName = false, asCreate = false }: { startupError?: string | null; asRowName?: boolean; asCreate?: boolean } = {}) {
   const [open, setOpen] = useState(false)
+  // Whether this is the create action's copy of a vault that now exists (see `handedOver`).
+  const handedOverRef = useRef(false)
   const topic = useTopicWalkthroughModal(open)
   const [status, setStatus] = useState<VaultStatus>(empty)
   const [loaded, setLoaded] = useState(false)
@@ -74,6 +81,8 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
     let disposed = false
     let unlisten: (() => void) | undefined
     void listen<string>("yougori-open-vault", event => {
+      // Once the vault exists, its row's copy answers; the create action's copy stays shut.
+      if (handedOverRef.current) return
       setOpen(true)
       if (event.payload === "add") setEditingItems(true)
       void refresh().catch(() => undefined)
@@ -84,6 +93,7 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
     let disposed = false
     let unlisten: (() => void) | undefined
     void listen<number>("vault-approval-needed", () => {
+      if (handedOverRef.current) return
       void refresh().catch(() => undefined)
       if (!document.hasFocus()) setOpen(true)
     }).then(stop => { if (disposed) stop(); else unlisten = stop }).catch(() => undefined)
@@ -109,6 +119,24 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
   }
   const code = (value: string, label: string) => <div className="vault-code"><code data-multiline={value.includes("\n") || undefined}>{value}</code><button type="button" aria-label={`Copy ${label}`} onClick={() => void copy(value)}>{copied === value ? "Copied" : "Copy"}</button></div>
   const created = Boolean(status.setup?.created)
+  // The create action only lives until the vault exists. Its dialog then closes and hands over
+  // to the row's copy, so nothing stays open unseen and polling, and nothing pops up again after
+  // a later delete.
+  const handedOver = asCreate && created
+  useEffect(() => {
+    handedOverRef.current = handedOver
+    if (!handedOver || !open) return
+    setOpen(false)
+    carryOnPending = true
+    window.dispatchEvent(new CustomEvent(CARRY_ON))
+  }, [handedOver, open])
+  useEffect(() => {
+    if (!asRowName) return
+    const carryOn = () => { if (carryOnPending) { carryOnPending = false; setOpen(true) } }
+    carryOn()
+    window.addEventListener(CARRY_ON, carryOn)
+    return () => window.removeEventListener(CARRY_ON, carryOn)
+  }, [asRowName])
   const ready = status.running && status.gateway?.running
   const publicUrl = status.setup?.publicUrl
   const activeMode = publicUrl ? status.setup?.mode : mode
@@ -141,12 +169,26 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
   const connectionKeyButton = <Button size="sm" variant="outline" className="vault-key-button" disabled={Boolean(busy) || !ready || Boolean(status.updateRequired)} onClick={() => void perform("Showing connection key...", async () => { const result = await vaultApi.control("credentials"); if (result.token) setKey(result.token) })}>Show connection key</Button>
   const statusLabel = !loaded ? "Loading" : !created ? "Not set up" : status.updateRequired ? "Update needed" : ready ? "Running" : "Offline"
   const statusTone = !loaded || !created ? "idle" : status.updateRequired ? "warning" : ready ? "ok" : "error"
+  // As the create action the vault only offers itself until it exists. Once it is set up the
+  // sandbox row takes over, so nothing is mounted here at all; and nothing is offered before
+  // the first status arrives, so an existing vault never flashes a "create" button.
+  if (asCreate && (!loaded || created)) return null
   return <>
-    <Button variant="outline" size="sm" className="dashboard-action relative" aria-label="Personal Vault MCP" title="Personal Vault MCP" onClick={() => changeOpen(true)}>
-      Personal Vault MCP
-      {status.pending.length > 0 && <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-[10px] text-primary-foreground">{status.pending.length}</span>}
-      {startupError && !ready && <span className="absolute -right-1 -top-1 size-2 rounded-full bg-destructive" aria-label="Personal Vault needs attention" />}
-    </Button>
+    {asRowName ? (
+      // In the sandbox list the vault's name behaves like any row name: a plain button.
+      <button type="button" data-list-focus data-instruction="vault-trigger" aria-label="Personal Vault MCP" title="Personal Vault MCP" onClick={() => changeOpen(true)}>
+        Personal Vault MCP
+        {status.pending.length > 0 && <span className="environment-list-tag">{status.pending.length}</span>}
+      </button>
+    ) : asCreate ? (
+      <Button variant="outline" size="sm" className="dashboard-action" data-instruction="vault-trigger" aria-label="Create my personal vault MCP" title="Create my personal vault MCP" onClick={() => changeOpen(true)}>Create my personal vault MCP</Button>
+    ) : (
+      <Button variant="outline" size="sm" className="dashboard-action relative" data-instruction="vault-trigger" aria-label="Personal Vault MCP" title="Personal Vault MCP" onClick={() => changeOpen(true)}>
+        Personal Vault MCP
+        {status.pending.length > 0 && <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-primary px-1 text-[10px] text-primary-foreground">{status.pending.length}</span>}
+        {startupError && !ready && <span className="absolute -right-1 -top-1 size-2 rounded-full bg-destructive" aria-label="Personal Vault needs attention" />}
+      </Button>
+    )}
     <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) changeOpen(value) }}>
       <DialogPopup data-instruction="vault-dialog" bottomStickOnMobile={false} showCloseButton={false} className="vault-popup max-w-none">
         <header className="vault-header">
@@ -160,9 +202,9 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
           {error && <div role="alert" className="vault-banner" data-tone="error"><span>{error}</span><button type="button" aria-label="Dismiss vault error" onClick={() => setError("")}>Dismiss</button></div>}
           {startupError && !ready && <section aria-label="Vault recovery" className="vault-banner" data-tone="error"><div><strong>Vault unavailable</strong><p>The container didn’t start. Your data is untouched.</p><details className="vault-disclosure"><summary>Details</summary><pre>{startupError}</pre></details></div></section>}
           {busy && <p role="status" className="vault-busy">{busy}</p>}
-          {status.pending.some(p => p.ready) && <section aria-label="Pending vault requests" className="vault-requests">
+          {status.pending.some(p => p.ready && p.client) && <section aria-label="Pending vault requests" className="vault-requests">
             <h2>Requests waiting for you</h2>
-            {status.pending.filter(p => p.ready).map(p => <div key={p.id} className="vault-request">
+            {status.pending.filter(p => p.ready && p.client).map(p => <div key={p.id} className="vault-request">
               <p className="vault-request-title">{p.title ?? p.operation.replaceAll("_", " ")}</p>
               <p className="vault-muted">Requested by {name(p.client.executable)}</p>
               {p.description && <p className="vault-request-description">{p.description}</p>}
@@ -227,7 +269,7 @@ export function PersonalVault({ startupError }: { startupError?: string | null }
                     <summary>How to connect ChatGPT or Claude</summary>
                     <section aria-label="ChatGPT and Claude setup" className="vault-guide">
                       <div className="vault-segmented vault-segmented-small" role="group" aria-label="Connection guide"><button type="button" aria-pressed={guide === "chatgpt"} onClick={() => setGuide("chatgpt")}>ChatGPT</button><button type="button" aria-pressed={guide === "claude"} onClick={() => setGuide("claude")}>Claude</button></div>
-                      {status.updateRequired ? <p className="vault-muted">Click Update vault above to activate the new MCP tools and restore public access.</p> : !publicUrl ? <p className="vault-muted">Connect a tunnel above to get your server address.</p> : !status.oauthReady ? <p className="vault-muted">Vault sign-in isn’t ready yet. Start or update the vault first.</p> : <>
+                      {status.updateRequired ? <p className="vault-muted">Click Update vault above to activate the new MCP tools and restore public access.</p> : !publicUrl ? <p className="vault-muted">Connect a tunnel above to get your server address.</p> : !status.oauthReady ? <p className="vault-muted">{status.oauthUnavailable ? `Vault sign-in is off: ${status.oauthUnavailable}` : "Vault sign-in isn’t ready yet. Start or update the vault first."}</p> : <>
                         {guide === "chatgpt" ? <ol className="vault-steps"><li>In ChatGPT, enable Developer mode in Settings → Security and login, then open Apps / Plugins and create a custom connection.</li><li>Name it <strong>Yougori Personal Vault</strong> and paste the full server URL above, including <code>/mcp</code>.</li><li>Set Authentication to <strong>OAuth</strong>. Leave Client ID and Client Secret blank for automatic registration.</li><li>Follow the Yougori sign-in page, click Continue on my PC, and allow the matching request here.</li><li>Enable Yougori from the tools menu in a new chat.</li></ol> : <ol className="vault-steps"><li>In Claude, open Settings → Connectors → Add custom connector.</li><li>Name it <strong>Yougori Personal Vault</strong> and paste the full server URL above.</li><li>Leave the OAuth Client ID and Client Secret in Advanced settings blank.</li><li>Click Connect, then Continue on my PC, and allow the matching request here.</li><li>Enable the connector in your chat.</li></ol>}
                         <p className="vault-muted">Keep Yougori open and this PC awake.</p>
                       </>}

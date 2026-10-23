@@ -78,7 +78,9 @@ fn path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("personal-vault-setup.json"))
 }
 pub fn configuration(app: &AppHandle) -> Result<Configuration, String> {
-    let path = path(app)?;
+    load(&path(app)?)
+}
+fn load(path: &std::path::Path) -> Result<Configuration, String> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
             "Personal Vault settings could not be read; restore personal-vault-setup.json".into()
@@ -98,6 +100,118 @@ fn save(app: &AppHandle, config: &Configuration) -> Result<(), String> {
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path).map_err(|e| e.to_string())?;
     Ok(())
+}
+/// After the broker destroyed the vault: the public link and the gateway stop, the vault
+/// domain's saved tunnel token leaves the OS vault, and the vault reads as never created.
+///
+/// The vault and every secret in it are already gone, so nothing here can fail the deletion: a
+/// bare error would read as "the delete failed" and send the person to approve deleting a vault
+/// that is already empty. Each thing that could not be removed is returned instead, one
+/// sentence apiece naming it, where it is and how to remove it.
+pub(crate) async fn forget(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<SetupState>();
+    let _operation = state.operations.lock().await;
+    let hostname = configuration(app).map(|config| config.hostname).unwrap_or_default();
+    let mut left = Vec::new();
+    // The vault is gone: it reads as never created even if a later step fails.
+    left.extend(match path(app) {
+        Ok(path) => settings_left(&path, forget_settings(&path)),
+        Err(_) => Some(SETTINGS_NOT_FOUND.into()),
+    });
+    left.extend(stop_access_unlocked(app).await);
+    if let Err(path) = note_destroy_unfinished(app, false) {
+        left.push(format!("A note that an earlier deletion was unfinished is still at {path}. It holds nothing secret; delete it, or start Personal Vault once and Yougori clears it."));
+    }
+    left.extend(
+        crate::workspace::cloudflare::forget_saved_token(crate::vault_gateway::ID, crate::vault_gateway::HTTP_PORT)
+            .iter()
+            .map(|entry| token_left(&hostname, entry)),
+    );
+    left
+}
+
+/// Stops everything that reaches the vault from outside, its public link and its gateway, as
+/// after a destroy that stopped part way: nothing may reach what is left. The setup stays.
+/// Returns a sentence for each that is still running.
+pub(crate) async fn stop_access(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<SetupState>();
+    let _operation = state.operations.lock().await;
+    stop_access_unlocked(app).await
+}
+
+async fn stop_access_unlocked(app: &AppHandle) -> Vec<String> {
+    let mut left: Vec<String> = stop_tunnel(app).await.into_iter().collect();
+    if let Err(error) = crate::vault_gateway::stop(app).await {
+        left.push(gateway_left(&error));
+    }
+    left
+}
+
+/// Kept in this app's data folder while the broker reports a destroy that stopped part way, so
+/// the vault row can say so when the broker is not running. The broker's answer, read from the
+/// vault folder, always wins; this only stands in for it.
+fn unfinished_note(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|folder| folder.join("personal-vault-delete-unfinished"))
+}
+
+/// Writes or removes the note. Fails with the note's path when it cannot.
+pub(crate) fn note_destroy_unfinished(app: &AppHandle, unfinished: bool) -> Result<(), String> {
+    match unfinished_note(app) {
+        Some(path) => note_unfinished_at(&path, unfinished),
+        None if unfinished => Err("Yougori's app data folder".into()),
+        None => Ok(()),
+    }
+}
+
+/// Whether the note says a destroy stopped part way.
+pub(crate) fn destroy_unfinished_noted(app: &AppHandle) -> bool {
+    unfinished_note(app).is_some_and(|path| path.exists())
+}
+
+fn note_unfinished_at(path: &std::path::Path, unfinished: bool) -> Result<(), String> {
+    let done = if unfinished {
+        path.exists() || std::fs::write(path, b"").is_ok()
+    } else {
+        match std::fs::remove_file(path) {
+            Ok(()) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        }
+    };
+    if done { Ok(()) } else { Err(path.display().to_string()) }
+}
+
+const SETTINGS_NOT_FOUND: &str = "The vault's settings file, personal-vault-setup.json in Yougori's app data folder, could not be located to delete it. Delete it there; until you do, Yougori lists the vault as set up.";
+
+/// The settings file that `removed` failed to delete, if it did.
+fn settings_left(path: &std::path::Path, removed: Result<(), String>) -> Option<String> {
+    removed.is_err().then(|| {
+        format!("The vault's settings file is still at {}. Delete that file; until you do, Yougori lists the vault as set up.", path.display())
+    })
+}
+
+/// The public link whose cloudflared process could not be stopped.
+fn tunnel_left(url: &str, pid: Option<u32>) -> String {
+    let process = pid.map_or_else(|| "its cloudflared process".to_owned(), |pid| format!("cloudflared process {pid}"));
+    format!("The vault's public link {url} is still connected: {process} could not be stopped. End it in Task Manager, or quit Yougori.")
+}
+
+/// The gateway container that could not be stopped.
+fn gateway_left(error: &str) -> String {
+    format!("The vault's gateway container, Personal Vault MCP gateway, could not be stopped ({error}). It never held secrets; quitting Yougori stops it.")
+}
+
+/// A saved copy of the vault domain's tunnel token that could not be removed, by the name
+/// Windows Credential Manager shows for it.
+fn token_left(hostname: &str, entry: &str) -> String {
+    let domain = if hostname.is_empty() { String::new() } else { format!(" for {hostname}") };
+    format!("The Cloudflare tunnel token{domain} is still saved in Windows Credential Manager, under Windows Credentials, as {entry}. Remove it there, and delete that tunnel in your Cloudflare dashboard if you no longer use it.")
+}
+fn forget_settings(path: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("Personal Vault settings could not be removed".into()),
+    }
 }
 pub async fn status(app: &AppHandle) -> Result<Value, String> {
     let mut value = serde_json::to_value(configuration(app)?).map_err(|e| e.to_string())?;
@@ -198,14 +312,20 @@ async fn start_container(app: &AppHandle) -> Result<(), String> {
     crate::vault_gateway::stop(app).await?;
     Err("The Personal Vault container did not respond. Retry to start it again.".into())
 }
-async fn stop_tunnel(app: &AppHandle) {
+/// Stops the vault's public link. Returns a sentence naming the link and its process when the
+/// process is still running afterwards.
+async fn stop_tunnel(app: &AppHandle) -> Option<String> {
     #[cfg(windows)]
     let _ =
         yougori_vault::client::call(&yougori_vault::protocol::Request::HttpOrigin { origin: None })
             .await;
-    if let Some(mut old) = app.state::<SetupState>().tunnel.lock().await.take() {
-        let _ = old.child.kill().await;
-        old.logs.abort();
+    let mut old = app.state::<SetupState>().tunnel.lock().await.take()?;
+    let _ = old.child.kill().await;
+    old.logs.abort();
+    // A process that had already exited cannot be killed, and that is not a problem.
+    match old.child.try_wait() {
+        Ok(Some(_)) => None,
+        _ => Some(tunnel_left(old.url.trim_end_matches('/'), old.child.id())),
     }
 }
 pub async fn shutdown(app: &AppHandle) {
@@ -419,6 +539,58 @@ pub async fn vault_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_destroyed_vault_reads_as_never_created_and_forgetting_twice_is_harmless() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("personal-vault-setup.json");
+        std::fs::write(&path, br#"{"created":true,"mode":"domain","hostname":"vault.example.com"}"#).unwrap();
+        assert!(load(&path).unwrap().created);
+        forget_settings(&path).unwrap();
+        let after = load(&path).unwrap();
+        assert!(!after.created && after.hostname.is_empty());
+        assert_eq!(serde_json::to_value(&after).unwrap()["created"], false);
+        forget_settings(&path).unwrap();
+    }
+
+    #[test]
+    fn whatever_a_deleted_vault_leaves_behind_is_named_with_how_to_remove_it() {
+        // A settings file that cannot be removed, here because a folder stands in its place.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("personal-vault-setup.json");
+        assert!(settings_left(&path, forget_settings(&path)).is_none(), "nothing to remove is not a leftover");
+        std::fs::create_dir(&path).unwrap();
+        let settings = settings_left(&path, forget_settings(&path)).unwrap();
+        assert!(settings.contains(&path.display().to_string()) && settings.contains("Delete that file"), "{settings}");
+        let entry = "yougori-private-vault-gateway-v1:49732.Yougori.CloudflareTunnel.v1";
+        let token = token_left("vault.example.com", entry);
+        assert!(token.contains("tunnel token for vault.example.com") && token.contains("Windows Credential Manager") && token.contains(entry), "{token}");
+        assert!(token_left("", entry).starts_with("The Cloudflare tunnel token is still saved"));
+        let link = tunnel_left("https://vault.example.com", Some(4242));
+        assert!(link.contains("https://vault.example.com") && link.contains("cloudflared process 4242") && link.contains("Task Manager"), "{link}");
+        assert!(tunnel_left("https://x.trycloudflare.com", None).contains("its cloudflared process"));
+        let gateway = gateway_left("the runtime did not answer");
+        assert!(gateway.contains("Personal Vault MCP gateway") && gateway.contains("the runtime did not answer") && gateway.contains("never held secrets"), "{gateway}");
+        // None of them reads as a failed deletion.
+        for sentence in [settings, token, link, gateway, SETTINGS_NOT_FOUND.to_owned()] {
+            assert!(!sentence.contains("Cannot") && !sentence.to_lowercase().contains("delete my vault"), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn the_note_of_an_unfinished_delete_follows_the_broker_and_names_itself_when_stuck() {
+        let directory = tempfile::tempdir().unwrap();
+        let note = directory.path().join("personal-vault-delete-unfinished");
+        note_unfinished_at(&note, true).unwrap();
+        assert!(note.exists());
+        note_unfinished_at(&note, true).unwrap();
+        note_unfinished_at(&note, false).unwrap();
+        assert!(!note.exists());
+        note_unfinished_at(&note, false).unwrap();
+        // A note that cannot be removed, here a folder in its place, is named by its path.
+        std::fs::create_dir(&note).unwrap();
+        assert_eq!(note_unfinished_at(&note, false), Err(note.display().to_string()));
+    }
 
     #[test]
     fn saved_domain_survives_disconnect_quick_links_and_settings_reload() {

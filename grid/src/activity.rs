@@ -63,10 +63,10 @@ mod imp {
         let mut sessions = Vec::new();
         for id in String::from_utf8_lossy(&list.stdout).lines().filter_map(|line| line.split_whitespace().next()).take(64) {
             let properties = ["Class", "Remote", "Active", "IdleHint", "IdleSinceHint"].iter().flat_map(|name| ["-p", *name]);
-            if let Ok(output) = Command::new("loginctl").arg("show-session").arg(id).args(properties).output() {
-                if output.status.success() {
-                    sessions.push(String::from_utf8_lossy(&output.stdout).into_owned());
-                }
+            // A session whose details cannot be read is not evidence that nobody is there.
+            match Command::new("loginctl").arg("show-session").arg(id).args(properties).output() {
+                Ok(output) if output.status.success() => sessions.push(String::from_utf8_lossy(&output.stdout).into_owned()),
+                _ => return Activity::Unknown(format!("systemd-logind did not describe session {id} on this computer")),
             }
         }
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();

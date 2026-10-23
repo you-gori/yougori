@@ -9,15 +9,22 @@ import os
 
 
 class Gateway:
+    # A reverse connection waits this long to be taken before Desktop replaces it; once a
+    # client takes it, that client's session limit applies instead of the time it waited.
+    IDLE_SECONDS = 1900
+    SESSION_SECONDS = 1800
+
     def __init__(self):
         self.workers = asyncio.Queue(maxsize=16)
         self.active = 0
 
     async def worker(self, reader, writer):
         done = asyncio.get_running_loop().create_future()
+        taken = asyncio.Event()
         try:
-            self.workers.put_nowait((reader, writer, done))
-            await asyncio.wait_for(asyncio.shield(done), 1900)
+            self.workers.put_nowait((reader, writer, done, taken))
+            await asyncio.wait_for(taken.wait(), self.IDLE_SECONDS)
+            await asyncio.wait_for(asyncio.shield(done), self.SESSION_SECONDS + 100)
         except (asyncio.QueueFull, TimeoutError, ConnectionError):
             pass
         finally:
@@ -43,8 +50,9 @@ class Gateway:
                 if not first:
                     return
                 while True:
-                    upstream_r, upstream_w, done = await self.workers.get()
+                    upstream_r, upstream_w, done, taken = await self.workers.get()
                     if not done.done() and not upstream_r.at_eof():
+                        taken.set()
                         break
             upstream_w.write(b"\x01" + first)
             await upstream_w.drain()
@@ -57,7 +65,7 @@ class Gateway:
             tasks = [asyncio.create_task(copy(reader, upstream_w)),
                      asyncio.create_task(copy(upstream_r, writer))]
             try:
-                async with asyncio.timeout(1800):
+                async with asyncio.timeout(self.SESSION_SECONDS):
                     await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 for task in tasks:

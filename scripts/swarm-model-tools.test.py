@@ -209,7 +209,13 @@ class ToolRoundTripTests(unittest.TestCase):
             request = [b for path, b in self.runner.seen if path == "/v1/chat/completions"][-1]
             self.assertEqual(request["chat_template_kwargs"], {"enable_thinking": False})
         with patch.dict(os.environ, {"YOUGORI_MODEL_CPU": "1", "YOUGORI_MODEL_CPU_THREADS": "invalid"}):
-            self.assertIn("2", model.llama_cpu_options())
+            # An unreadable thread setting falls back to what this computer reports, whatever
+            # that is here: the test checks the fallback happened, not one machine's core count.
+            options = model.llama_cpu_options()
+            threads = options[options.index("--threads") + 1]
+            self.assertEqual(threads, str(model.llama_threads()))
+            self.assertTrue(threads.isdigit() and 1 <= int(threads) <= 64, threads)
+            self.assertEqual(options[options.index("--threads-batch") + 1], threads)
 
 
 if __name__ == "__main__":

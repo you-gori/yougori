@@ -50,6 +50,38 @@ fn bounded_log_cursors_return_only_new_output_and_detect_rotation() {
     let unicode=log_window("αβγ",None,3,6).unwrap();assert_eq!(unicode["stdout"],"α");assert_eq!(unicode["truncated"],true);
     assert!(log_window("hello",Some("not-a-cursor"),64,64).is_err());
 }
+#[test]
+fn a_sliding_log_with_repeated_blocks_never_skips_output() {
+    let repeated="retry\n".repeat(22);
+    let first=log_window(&format!("head\n{repeated}"),None,4096,4096).unwrap();
+    // The window slid past "head" and the same block was printed again after new output.
+    let next=log_window(&format!("{repeated}new output\n{repeated}"),first["nextCursor"].as_str(),4096,4096).unwrap();
+    assert_eq!(next["rotated"],true);
+    assert_eq!(next["stdout"],format!("new output\n{repeated}"));
+}
+#[test]
+fn a_reader_of_a_sliding_log_of_identical_lines_reaches_the_end() {
+    // Heartbeats with no timestamps, in a 300-byte tail that drops 7 bytes from its start as 7 arrive.
+    let stream="heartbeat\n".repeat(100);
+    let window=|round:usize|&stream[round*7..round*7+300];
+    let first=log_window(window(0),None,150,4096).unwrap();
+    let mut cursor=first["nextCursor"].as_str().unwrap().to_owned();
+    let caught_up=(1..=12).any(|round|{
+        let next=log_window(window(round),Some(&cursor),64,4096).unwrap();
+        cursor=next["nextCursor"].as_str().unwrap().to_owned();
+        next["truncated"]==false
+    });
+    assert!(caught_up, "the reader keeps up instead of being sent back to an earlier heartbeat");
+}
+#[test]
+fn a_limit_smaller_than_a_character_still_moves_the_cursor() {
+    let text="€abc";
+    let first=log_window(text,None,1,64).unwrap();
+    assert_eq!(first["stdout"],"€");
+    assert_eq!(first["truncated"],true);
+    let next=log_window(text,first["nextCursor"].as_str(),1,64).unwrap();
+    assert_eq!(next["stdout"],"a");
+}
 #[test]fn protected_log_output_withholds_split_secrets_and_keeps_byte_cursors(){
     let secrets=vec!["protected-credential".to_owned(),"aaaa".to_owned(),"日本語-key".to_owned()];
     let first=mask_secret_output("ordinary\nprotected-cred",&secrets,true);assert_eq!(first,"ordinary\n");
@@ -343,4 +375,26 @@ async fn workspace_fullvm_forwarding_and_viewers() {
     manager.shutdown(&runtime).await;
     runtime.shutdown_all().await;
     result.unwrap();
+}
+
+#[tokio::test]
+async fn a_disconnect_made_while_the_same_service_publishes_stays_a_disconnect() {
+    let data = tempfile::tempdir().unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+    let store = PlatformStore::load(data.path().join("state.json")).unwrap();
+    let manager = WorkspaceManager::new(data.path());
+    let remember = |state: &mut crate::models::PlatformState| {
+        state.saved_environment_services.push(serde_json::from_value(json!({"id":"pub-1","environmentId":"env-1","port":3000,"kind":"loopback","hostPort":43000})).unwrap());
+    };
+    store.mutate(|state| { remember(state); Ok(()) }).unwrap();
+    // A publish of that service holds the operation lock; it fails and puts its saved intent back.
+    let publishing = manager.operations.lock().await;
+    let failing_publish = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        store.mutate(|state| { remember(state); Ok(()) }).unwrap();
+        drop(publishing);
+    };
+    let (result, ()) = tokio::join!(unpublish("pub-1".into(), &manager, &store, &runtime), failing_publish);
+    result.unwrap();
+    assert!(store.snapshot().unwrap().saved_environment_services.is_empty(), "the disconnect wins over the publish that was running");
 }

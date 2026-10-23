@@ -448,10 +448,16 @@ impl Project {
                     "{key}: View & Edit requires permissions.edit: true"
                 ));
             }
+            let mut guest_ports: BTreeMap<u16, u16> = BTreeMap::new();
             for p in &e.ports {
-                if let Some(h) = p.values()?.1 {
+                let (guest, host) = p.values()?;
+                if let Some(h) = host {
                     if !host_ports.insert(h) {
                         return Err(format!("Host port {h} is declared more than once"));
+                    }
+                    // Each guest port gets one route, so a second host port would replace the first.
+                    if let Some(first) = guest_ports.insert(guest, h) {
+                        return Err(format!("{key}: port {guest} is published twice ({first} and {h}); publish each guest port once"));
                     }
                 }
             }
@@ -534,10 +540,10 @@ pub fn read(path: &Path) -> Result<String, String> {
     use std::io::Read;
     let mut s = String::new();
     std::fs::File::open(path)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Cannot open {}: {e}. Check the path, or pass the project file with -f PATH.", path.display()))?
         .take(1024 * 1024 + 1)
         .read_to_string(&mut s)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     if s.len() > 1024 * 1024 {
         return Err("Project file exceeds 1 MiB".into());
     }
@@ -549,6 +555,17 @@ pub fn to_yaml(project: &Project) -> Result<String, String> {
 }
 
 #[cfg(test)]mod deployment_tests{
+    #[test]fn one_guest_port_is_published_once(){
+        let project=|ports:&str|format!("project: shop
+environments:
+  web:
+    image: nginx:1.27
+    ports: [{ports}]
+");
+        let twice=super::parse(&project(r#""8080:80","9090:80""#)).err().unwrap();
+        assert!(twice.contains("port 80 is published twice (8080 and 9090)"),"{twice}");
+        assert!(super::parse(&project(r#""8080:80","9090:443""#)).is_ok());
+    }
     #[test]fn internet_defaults_on_but_explicit_off_is_preserved(){
         assert!(super::Environment::default().internet);
         let offline:super::Environment=serde_json::from_value(serde_json::json!({"internet":false})).unwrap();

@@ -61,7 +61,7 @@ test("Instructions launches highlighted walkthroughs, keeps completion, and repl
   await expect(panel.getByRole("button", { name: "Set up Yougori", exact: true })).toBeVisible()
   await expect(panel.getByRole("button", { name: "Change the theme", exact: true })).toBeVisible()
   await expect(panel.getByRole("button", { expanded: true })).toHaveCount(0)
-  expect(instructionGuides).toHaveLength(19)
+  expect(instructionGuides).toHaveLength(17)
   await panel.getByRole("button", { name: "Set up Yougori", exact: true }).click()
   await panel.getByRole("button", { name: "Start walkthrough", exact: true }).click()
   const topic = page.locator('[data-instruction-topic="settings"]')
@@ -76,11 +76,11 @@ test("Instructions launches highlighted walkthroughs, keeps completion, and repl
   await expect(topic).toHaveCount(0)
   await page.getByRole("dialog", { name: "Settings", exact: true }).getByRole("button", { name: "Close", exact: true }).click()
   await page.getByRole("button", { name: "Instructions", exact: true }).click()
-  await expect(panel).toContainText("1 of 19 walkthroughs complete")
+  await expect(panel).toContainText("1 of 17 walkthroughs complete")
   await panel.getByRole("button", { name: "Close", exact: true }).click()
   await page.reload()
   await page.getByRole("button", { name: "Instructions", exact: true }).click()
-  await expect(panel).toContainText("1 of 19 walkthroughs complete")
+  await expect(panel).toContainText("1 of 17 walkthroughs complete")
   await panel.getByRole("button", { name: "Replay walkthrough", exact: true }).click()
   await step(page, "welcome")
   await guide(page).getByRole("button", { name: "Skip to hands-on", exact: true }).click()
@@ -96,7 +96,7 @@ test("container walkthrough follows the real creation form without creating a wo
   await panel.getByRole("button", { name: "Start walkthrough", exact: true }).click()
   const topic = page.locator('[data-instruction-topic="container"]')
   await expect(topic).toHaveAttribute("data-instruction-step", "1")
-  await page.getByRole("button", { name: "New environment", exact: true }).click()
+  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
   await expect(page.locator("[data-create-environment]")).toBeVisible()
   await topic.getByRole("button", { name: "Next", exact: true }).click()
   await expect(topic).toHaveAttribute("data-instruction-step", "2")
@@ -108,7 +108,7 @@ test("container walkthrough follows the real creation form without creating a wo
   await page.locator("[data-create-environment]").getByRole("button", { name: "Cancel", exact: true }).click()
   await expect(page.locator("[data-environment-id]")).toHaveCount(0)
   await page.getByRole("button", { name: "Instructions", exact: true }).click()
-  await expect(panel).toContainText("1 of 19 walkthroughs complete")
+  await expect(panel).toContainText("1 of 17 walkthroughs complete")
 })
 
 test("creation walkthroughs point to each real environment type", async ({ page }) => {
@@ -129,7 +129,7 @@ test("creation walkthroughs point to each real environment type", async ({ page 
     await panel.getByRole("button", { name: "Start walkthrough", exact: true }).click()
     const topic = page.locator(`[data-instruction-topic="${id}"]`)
     await expect(page.locator("[data-topic-highlight]")).toHaveCount(1)
-    await page.getByRole("button", { name: "New environment", exact: true }).click()
+    await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
     await expect(page.locator("[data-create-environment]")).toBeVisible()
     await topic.getByRole("button", { name: "Next", exact: true }).click()
     await expect(page.locator(`[data-instruction-kind="${kind}"]`)).toBeVisible()
@@ -141,7 +141,7 @@ test("creation walkthroughs point to each real environment type", async ({ page 
     await expect(page.locator("[data-create-environment]")).toHaveCount(0)
   }
   await page.getByRole("button", { name: "Instructions", exact: true }).click()
-  await expect(page.getByRole("dialog", { name: "Instructions", exact: true })).toContainText("0 of 19 walkthroughs complete")
+  await expect(page.getByRole("dialog", { name: "Instructions", exact: true })).toContainText("0 of 17 walkthroughs complete")
 })
 
 test("service, model, vault and theme walkthroughs stay open inside their dialogs", async ({ page }) => {
@@ -150,7 +150,7 @@ test("service, model, vault and theme walkthroughs stay open inside their dialog
   const cases = [
     ["Create a public access setup", "public", '[aria-label="Add or manage saved domain setups"]', "public-presets-dialog"],
     ["Run a Hugging Face model", "model", '[data-instruction="model-trigger"]', "model-dialog"],
-    ["Use Personal Vault MCP", "vault", '[aria-label="Personal Vault MCP"]', "vault-dialog"],
+    ["Use Personal Vault MCP", "vault", '[data-instruction="vault-trigger"]', "vault-dialog"],
     ["Change the theme", "theme", '[data-tour="theme"]', "theme-dialog"],
   ] as const
   for (const [title, id, trigger, dialog] of cases) {
@@ -219,7 +219,7 @@ async function mockWindowOpening(page: Page, failFirst = false) {
 test("Instructions is left of reclaim space; overview highlights controls without creating or connecting anything", async ({ page }) => {
   await openGuide(page)
   await expect(page).toHaveTitle("Yougori")
-  await expect(page.getByRole("banner").getByText("Yougori", { exact: true })).toBeVisible()
+  await expect(page.getByRole("complementary").getByText("Yougori", { exact: true })).toBeVisible()
   const instructions = (await page.locator('[data-tour="instructions"]').boundingBox())!
   const backup = (await page.locator('button[data-instruction="reclaim"]').boundingBox())!
   expect(instructions.x + instructions.width).toBeLessThan(backup.x)
@@ -246,7 +246,7 @@ test("Instructions is left of reclaim space; overview highlights controls withou
   await guide(page).getByRole("button", { name: "Skip", exact: true }).click()
   await expect(guide(page)).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Instructions", exact: true })).toBeFocused()
-  await page.getByRole("button", { name: "New environment", exact: true }).click()
+  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
   await expect(page.locator("[data-create-environment]")).toBeVisible({ timeout: 15000 })
 })
 

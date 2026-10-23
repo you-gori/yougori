@@ -24,7 +24,6 @@ function readPrefs(): Prefs {
 
 const columns: Array<{ key: SortKey | null; label: string; className?: string }> = [
   { key: "name", label: "Environment" },
-  { key: "status", label: "Status" },
   { key: "cpu", label: "CPU", className: "environment-list-metric" },
   { key: null, label: "GPU", className: "environment-list-metric" },
   { key: "memory", label: "Memory", className: "environment-list-metric" },
@@ -58,12 +57,17 @@ interface RowContext {
 }
 const ListContext = createContext<RowContext | null>(null)
 
-export function EnvironmentList<T extends { id: string; data: { environment: GraphEnvironment; preview?: boolean } }>({ items, connections, colors, onConnect, children }: {
+export function EnvironmentList<T extends { id: string; data: { environment: GraphEnvironment; preview?: boolean } }>({ items, connections, colors, onConnect, children, header, rows, footer }: {
   items: T[]
   connections: ListConnection[]
   colors: Record<string, string>
   onConnect(sourceId: string, targetId?: string): void
   children(item: T): ReactNode
+  /** Actions pinned above the first environment. */
+  header?: ReactNode
+  /** Extra real rows pinned after the environments, sharing the row chrome. */
+  rows?: ReactNode
+  footer?: ReactNode
 }) {
   const { setEnvironmentStatus, environmentActions } = usePlatform()
   const [prefs, setPrefs] = useState(readPrefs)
@@ -254,6 +258,7 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
               {column.key ? <button type="button" className="environment-list-sort" data-active={prefs.sort === column.key || undefined} data-descending={prefs.sort === column.key && prefs.descending || undefined} onClick={() => sortBy(column.key!)} title={`Sort by ${column.label.toLowerCase()}`}>{column.label}</button> : column.label}
             </th>)}
           </tr></thead>
+          {header ? <tbody><tr className="environment-list-footer"><td colSpan={columnCount}>{header}</td></tr></tbody> : null}
           {groups.map(group => <tbody key={group.label || "all"}>
             {group.label ? <tr className="environment-list-group"><th colSpan={columnCount} scope="rowgroup">
               <button type="button" onClick={() => setSelected(current => new Set([...current, ...group.rows.filter(environment => !previewIds.has(environment.id)).map(environment => environment.id)]))} title="Select this group">{group.label}</button><span>{group.rows.length}</span>
@@ -263,6 +268,8 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
           {environments.length && !visible.length ? <tbody><tr className="environment-list-nomatch"><td colSpan={columnCount}>
             No environments match. <Button size="xs" variant="link" onClick={() => { setQuery(""); update({ status: "all", type: "all" }) }}>Clear filters</Button>
           </td></tr></tbody> : null}
+          {rows ? <tbody>{rows}</tbody> : null}
+          {footer ? <tbody><tr className="environment-list-footer"><td colSpan={columnCount}>{footer}</td></tr></tbody> : null}
         </table>
       </div>
     </div>
@@ -332,7 +339,7 @@ export function EnvironmentListRow({ environment, preview = false, accent, canLi
   const detailsId = `environment-list-details-${environment.id}`
   return <>
     <EnvironmentNodeMenu environment={environment} disabled={preview} asChild>
-    <tr data-tour-preview={preview || undefined} onClickCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} onPointerDownCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} className="workspace-list-row" onDoubleClick={onDoubleClick} data-environment-id={environment.id} data-selected={selected || undefined} data-expanded={expanded || undefined} data-file-drop-target={fileHovered || undefined} aria-busy={busy} aria-selected={selected} style={{ "--node-accent": accent } as CSSProperties}>
+    <tr data-tour-preview={preview || undefined} onClickCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} onPointerDownCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} className="workspace-list-row" onDoubleClick={onDoubleClick} data-environment-id={environment.id} data-running={environment.status === "running" || undefined} data-selected={selected || undefined} data-expanded={expanded || undefined} data-file-drop-target={fileHovered || undefined} aria-busy={busy} aria-selected={selected} style={{ "--node-accent": accent } as CSSProperties}>
       <td className="environment-list-select-cell"><input type="checkbox" aria-label={`Select ${environment.name}`} disabled={preview} checked={selected} onChange={() => undefined} onClick={event => context.toggleSelected(environment.id, event.shiftKey)} /></td>
       <th scope="row" className="environment-list-name">
         <div className="environment-list-name-line">
@@ -340,11 +347,12 @@ export function EnvironmentListRow({ environment, preview = false, accent, canLi
           <button data-tour="node-configure" data-list-focus aria-label={`Configure ${environment.name}`} onClick={onConfigure} title={environment.name} type="button">{environment.name}</button>
         </div>
         <span className="environment-list-type">{environmentLabel(environment)}{environment.gpuAccess ? <span className="environment-list-tag">GPU</span> : null}</span>
+        {/* The line beside the name shows running or not; anything more (attention, progress) reads here. */}
+        <div className="environment-list-state">{status}</div>
         {subtitle ? <span className="environment-list-subtitle" title={subtitle}>{subtitle}</span> : null}
         {fileStatus}
         {fileHovered ? <span role="status" className="text-xs">{dropHint}</span> : null}
       </th>
-      <td className="environment-list-status">{status}{environment.lastOpenedAt ? <span className="environment-list-subtitle" title={formatDateTime(environment.lastOpenedAt)}>Opened {formatRelativeTime(environment.lastOpenedAt)}</span> : null}</td>
       <td className="environment-list-number">{cloud ? <span className="text-muted-foreground">—</span> : <Meter label="CPU" value={environment.cpuUsage} max={100} text={`${Math.round(environment.cpuUsage)}%`} dim={dim} />}</td>
       <td className="environment-list-number"><GpuUsage environment={environment} /></td>
       <td className="environment-list-number">{cloud ? <span className="text-muted-foreground">—</span> : <Meter label="Memory" value={environment.memoryUsageGb} max={memoryLimit} text={`${environment.memoryUsageGb.toFixed(1)} GB`} total={memoryLimit ? `${memoryLimit} GB` : undefined} dim={dim} />}</td>

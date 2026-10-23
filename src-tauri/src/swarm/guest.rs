@@ -1,4 +1,4 @@
-//! Worker-owned OpenCode and test sandboxes. Company code never receives model
+//! Worker-owned Hermes and test sandboxes. Company code never receives model
 //! or channel credentials; all privileged actions stay in the native supervisor.
 use super::{write, Worker};
 use crate::{
@@ -17,10 +17,25 @@ use tokio_util::sync::CancellationToken;
 use yougori_cli::workload::Options;
 
 const ROOT: &str = "/srv/yougori-swarm";
-const OPENCODE_VERSION: &str = "1.18.35";
-const INSTALLER: &str = include_str!("../workspace/install-tools.sh");
-const TOOLS: &str = include_str!("tools.ts");
-const RULES: &str = include_str!("AGENTS.md");
+pub(super) const HERMES_REVISION: &str = "4d04303818b61bf3aa09278af48356315515965b";
+#[path = "target.rs"]
+mod target;
+pub(super) use target::{ensure_target, experiment, http_probe};
+const INSTALLER: &str = include_str!("install-hermes.sh");
+const BRIDGE: &str = include_str!("hermes_bridge.py");
+const TOOLS: &str = include_str!("hermes_tools.py");
+fn harness_revision() -> String {
+    // Tool and instruction updates must reach existing workers even when the
+    // upstream Hermes binary has not changed. The agent instructions are read from the editable
+    // prompts, so an operator's edit changes this revision and running workers pick the edit up.
+    let agents = super::prompts::agents();
+    let mut hash = Sha256::new();
+    for part in [INSTALLER, BRIDGE, TOOLS, agents.as_str()] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    format!("{HERMES_REVISION}-{:x}", hash.finalize())
+}
 const SOURCE_LIMIT: usize = 64 * 1024 * 1024;
 const FILE_LIMIT: usize = 8 * 1024 * 1024;
 const RECENT_ATTEMPTS: usize = 50;
@@ -168,7 +183,7 @@ async fn stage_from(
     mode: &str,
     append: bool,
 ) -> Result<(), String> {
-    if !path.starts_with(&format!("{ROOT}/")) && !path.starts_with("/etc/opencode/") {
+    if !path.starts_with(&format!("{ROOT}/")) && !path.starts_with("/etc/yougori-hermes/") {
         return Err("Unowned staging path".into());
     }
     if path.contains(['\0', '\r', '\n']) || path.split('/').any(|p| matches!(p, "." | "..")) {
@@ -261,8 +276,8 @@ fn create_request(
         workload["hosts"]["swarm-model"] = crate::runtime::fabric::ip_text(id).into();
     }
     if !test {
-        if let Some(reference) = &worker.opencode_password_reference {
-            workload["secretEnvironment"]["OPENCODE_SERVER_PASSWORD"] = reference.clone().into();
+        if let Some(reference) = &worker.harness_password_reference {
+            workload["secretEnvironment"]["YOUGORI_HARNESS_PASSWORD"] = reference.clone().into();
         }
     }
     serde_json::from_value(json!({"name":owned_name(worker,test,false),"kind":"container","provider":"yougoriOci","runtime":"ubuntu:24.04","containerCommand":"sleep 2147483647","networkAccess":true,"gpuAccess":false,"storageDrive":worker.resources["storageDrive"],"storageGb":if test{(worker.quota_gb-2.).max(2.)}else{2.},"description":owned_description(worker,test),"resourcePolicy":{"cpu":cpu,"memoryGb":memory,"priority":"normal","dynamic":false},"workload":workload})).map_err(|e|e.to_string())
@@ -274,7 +289,7 @@ fn model_address_current(options: &Options, model_runtime_id: &str) -> bool {
     options.hosts.get("swarm-model") == Some(&crate::runtime::fabric::ip_text(model_runtime_id))
 }
 
-/// Whether a container's hosts file sends `swarm-model` only to this model. OpenCode
+/// Whether a container's hosts file sends `swarm-model` only to this model. Hermes
 /// resolves the name there.
 fn hosts_reach_model(hosts: &str, model_runtime_id: &str) -> bool {
     let address = crate::runtime::fabric::ip_text(model_runtime_id);
@@ -485,30 +500,21 @@ async fn create_owned(
     env(app, &sandbox.environment.id)
 }
 
+/// The agent config for a worker whose model runs in `model_options`' environment. The sandbox's
+/// agent gets the model's own key, read from exactly YOUGORI_MODEL_TOKEN, and no other secret of
+/// that environment: this is the one place that decides it.
+fn managed_config_for(worker: &Worker, model_options: &yougori_cli::workload::Options, context: u64) -> Result<Value, String> {
+    let model_key = crate::projects::secrets::variable(model_options, "YOUGORI_MODEL_TOKEN")?;
+    Ok(managed_config(worker, &model_key, context))
+}
+
 fn managed_config(worker: &Worker, model_api_key: &str, context: u64) -> Value {
-    // Pinned OpenCode checks read paths relative to its worktree. Our verified
-    // snapshot has no .git, so that worktree is "/", not ROOT. Absolute rules
-    // silently deny every source/context read. Include the directory itself.
-    let relative = ROOT.trim_start_matches('/');
     json!({
-        "$schema":"https://opencode.ai/config.json",
-        "model":format!("yougori/{}",worker.model),
-        "small_model":format!("yougori/{}",worker.model),
-        "enabled_providers":["yougori"],"share":"disabled","autoupdate":false,
-        "snapshot":false,"lsp":false,"formatter":false,"mcp":{},"plugin":[],
-        "instructions":[format!("{ROOT}/AGENTS.md")],"default_agent":"swarm",
-        "agent":{"swarm":{"description":"Review an authorized local bounty with bounded managed tools",
-            "mode":"primary","prompt":RULES,"steps":12}},
-        "permission":{"*":"deny","read":{"*":"deny",
-            format!("{relative}/project"):"allow",format!("{relative}/project/**"):"allow",
-            format!("{relative}/.yougori/bounty"):"allow",format!("{relative}/.yougori/bounty/**"):"allow"},
-            "glob":"allow","grep":"allow","bounty_attempt":"allow","bounty_report":"allow",
-            "bounty_reply":"allow","bounty_check":"allow"},
-        "provider":{"yougori":{"npm":"@ai-sdk/openai-compatible","name":"Yougori private local model",
-            "options":{"baseURL":"http://swarm-model:8000/v1","apiKey":model_api_key,"timeout":MODEL_TIMEOUT_SECONDS*1000},
-            "models":{&worker.model:{"name":worker.model,"tool_call":true,
-                "limit":{"context":context,"output":2048.min(context/4)},
-                "modalities":{"input":["text"],"output":["text"]}}}}}
+        "harness":"hermes", "revision":HERMES_REVISION,
+        "model":worker.model, "baseUrl":"http://swarm-model:8000/v1",
+        "apiKey":model_api_key, "context":context,
+        "requestTimeoutSeconds":MODEL_TIMEOUT_SECONDS,
+        "maxTokens":2048.min(context/4), "prompt":super::prompts::agents(),
     })
 }
 
@@ -541,14 +547,15 @@ pub(crate) async fn prepare_agent(
     let model_options = app
         .state::<RuntimeManager>()
         .workload_options(rid(&model_env))?;
-    let model_key = crate::projects::secrets::variable(&model_options, "YOUGORI_MODEL_TOKEN")?;
     let health = crate::model_runner::model_request(app, model_id, "/health", None).await?;
     let context = health["context"]
         .as_u64()
         .filter(|n| (512..=262144).contains(n))
         .ok_or("The model did not report a supported context window")?;
-    if worker.opencode_password_reference.is_none() {
-        let reference = format!("swarm-opencode-{}", worker.id.trim_start_matches("worker-"));
+    // Built before anything is created, so a key that cannot be read still stops here.
+    let config = managed_config_for(worker, &model_options, context)?;
+    if worker.harness_password_reference.is_none() {
+        let reference = format!("swarm-hermes-{}", worker.id.trim_start_matches("worker-"));
         crate::projects::secrets::store(
             &reference,
             &format!(
@@ -557,13 +564,14 @@ pub(crate) async fn prepare_agent(
                 uuid::Uuid::new_v4().simple()
             ),
         )?;
-        worker.opencode_password_reference = Some(reference);
+        worker.harness_password_reference = Some(reference);
         write(app, worker.clone()).await?;
     }
     let environment = create_owned(app, worker, false, Some(rid(&model_env))).await?;
+    stop_harness_processes(app, worker).await?;
     // Only preparation, before any bounty, reaches this sandbox. A retry keeps the pinned
-    // OpenCode it already installed; a new or incomplete sandbox downloads packages again.
-    let installed = short(app, &environment, &format!("test -x /usr/bin/python3 && test \"$(/home/yougori-agent/.opencode/bin/opencode --version 2>/dev/null)\" = {OPENCODE_VERSION} && grep -q '\"version\": \"{OPENCODE_VERSION}\"' {ROOT}/config/node_modules/@opencode-ai/plugin/package.json && echo installed || true")).await?.trim() == "installed";
+    // Hermes it already installed; a new or incomplete sandbox downloads packages again.
+    let installed = short(app, &environment, &format!("test -x {ROOT}/hermes/.venv/bin/python && test \"$(cat {ROOT}/hermes-revision 2>/dev/null)\" = {HERMES_REVISION} && echo installed || true")).await?.trim() == "installed";
     if !installed {
         if !environment.network_access {
             // An earlier attempt closed installation access after its tool checks.
@@ -576,15 +584,10 @@ pub(crate) async fn prepare_agent(
             return Err("Worker staging prerequisites could not be installed".into());
         }
     }
-    let bootstrap="set -eu; getent group yougori-agent >/dev/null || groupadd yougori-agent; id yougori-agent >/dev/null 2>&1 || useradd -m -g yougori-agent -s /bin/sh yougori-agent; usermod -a -G yougori-agent yougori-agent; mkdir -p /srv/yougori-swarm/.yougori/bounty /srv/yougori-swarm/project /srv/yougori-swarm/spool /srv/yougori-swarm/config/tools /etc/opencode; chmod 755 /srv/yougori-swarm /srv/yougori-swarm/.yougori /srv/yougori-swarm/.yougori/bounty /srv/yougori-swarm/config /srv/yougori-swarm/config/tools; chown yougori-agent:yougori-agent /srv/yougori-swarm/spool; chmod 700 /srv/yougori-swarm/spool";
+    let bootstrap="set -eu; getent group yougori-agent >/dev/null || groupadd yougori-agent; id yougori-agent >/dev/null 2>&1 || useradd -m -g yougori-agent -s /bin/sh yougori-agent; usermod -a -G yougori-agent yougori-agent; mkdir -p /srv/yougori-swarm/.yougori/bounty /srv/yougori-swarm/project /srv/yougori-swarm/spool /srv/yougori-swarm/config /etc/yougori-hermes /home/yougori-agent/.hermes; chmod 755 /srv/yougori-swarm /srv/yougori-swarm/.yougori /srv/yougori-swarm/.yougori/bounty /srv/yougori-swarm/config; chown yougori-agent:yougori-agent /home/yougori-agent/.hermes; chmod 700 /home/yougori-agent/.hermes; chown yougori-agent:yougori-agent /srv/yougori-swarm/spool; chmod 700 /srv/yougori-swarm/spool";
     short(app, &environment, bootstrap).await?;
     if !installed {
-        // Reuse the existing supported installer, selecting an explicit upstream
-        // version. It runs as the agent account before any company code is staged.
-        let script = format!(
-            "od_tool=opencode\nexport VERSION={OPENCODE_VERSION}\n{}",
-            INSTALLER.replace("\r\n", "\n")
-        );
+        let script = INSTALLER.replace("\r\n", "\n");
         stage(
             app,
             &environment,
@@ -593,33 +596,35 @@ pub(crate) async fn prepare_agent(
             "644",
         )
         .await?;
-        let command=format!("set -eu; DEBIAN_FRONTEND=noninteractive apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 nodejs npm curl ca-certificates bash git tar gzip; install -d -o yougori-agent -g yougori-agent /tmp/yougori-install.swarm; cp {ROOT}/install.sh /tmp/yougori-install.swarm/install.sh; chown yougori-agent:yougori-agent /tmp/yougori-install.swarm/install.sh; su -s /bin/sh yougori-agent -c 'sh /tmp/yougori-install.swarm/install.sh'; test \"$(/home/yougori-agent/.opencode/bin/opencode --version)\" = {OPENCODE_VERSION}; npm install --save-exact --ignore-scripts --no-audit --no-fund --prefix {ROOT}/config @opencode-ai/plugin@{OPENCODE_VERSION}");
+        let command = format!("sh {ROOT}/install.sh");
         let result = job(app, &environment.id, command, 1200, cancel).await?;
         if result["exitCode"] != 0 {
-            return Err("OpenCode installation did not complete. Verified model files and this worker's setup are preserved.".into());
+            return Err("Hermes installation did not complete. Verified model files and this worker's setup are preserved.".into());
         }
     }
+    let agents = super::prompts::agents();
     stage(
         app,
         &environment,
         &format!("{ROOT}/AGENTS.md"),
-        RULES.as_bytes(),
+        agents.as_bytes(),
         "444",
     )
     .await?;
     stage(
         app,
         &environment,
-        &format!("{ROOT}/config/tools/bounty.ts"),
+        &format!("{ROOT}/config/hermes_tools.py"),
         TOOLS.as_bytes(),
         "444",
     )
     .await?;
+    stage(app, &environment, &format!("{ROOT}/config/hermes_bridge.py"), BRIDGE.as_bytes(), "444").await?;
     stage(
         app,
         &environment,
-        "/etc/opencode/opencode.json",
-        serde_json::to_string(&managed_config(worker, &model_key, context))
+        "/etc/yougori-hermes/config.json",
+        serde_json::to_string(&config)
             .map_err(|e| e.to_string())?
             .as_bytes(),
         "640",
@@ -627,7 +632,7 @@ pub(crate) async fn prepare_agent(
     .await?;
     // Guest exec uses umask 077. Normalize only nonsecret trusted dependencies
     // for the unprivileged agent; all remain root-owned and non-writable.
-    short(app,&environment,"set -eu; chgrp yougori-agent /etc/opencode/opencode.json; chmod 750 /etc/opencode; chgrp yougori-agent /etc/opencode; chown -R root:root /srv/yougori-swarm/config; find /srv/yougori-swarm/config -type d -exec chmod 755 '{}' +; find /srv/yougori-swarm/config -type f -exec chmod a+rX '{}' +; su -m -s /bin/sh yougori-agent -c 'test -r /etc/opencode/opencode.json && test -r /srv/yougori-swarm/config/node_modules/@opencode-ai/plugin/package.json && test -x /srv/yougori-swarm/.yougori/bounty'").await?;
+    short(app,&environment,"set -eu; chgrp yougori-agent /etc/yougori-hermes/config.json; chmod 750 /etc/yougori-hermes; chgrp yougori-agent /etc/yougori-hermes; chown -R root:root /srv/yougori-swarm/config; find /srv/yougori-swarm/config -type d -exec chmod 755 '{}' +; find /srv/yougori-swarm/config -type f -exec chmod a+rX '{}' +; su -m -s /bin/sh yougori-agent -c 'test -r /etc/yougori-hermes/config.json && test -x /srv/yougori-swarm/hermes/.venv/bin/python'").await?;
     let connection:CreateConnectionRequest=serde_json::from_value(json!({"sourceId":environment.id,"targetId":model_env.id,"direction":"oneWay","permissions":["ports"],"ports":["8000"],"commands":false,"selectedFolders":[],"volume":null})).map_err(|e|e.to_string())?;
     if cancel.is_cancelled() {
         return Err("Worker preparation cancelled".into());
@@ -637,34 +642,37 @@ pub(crate) async fn prepare_agent(
     start_server(app, worker, cancel).await?;
     // Resolve provider/custom-tool packages while installation access is still
     // enabled. Private inference remains the only connection after this step.
-    worker.stage = "Initializing OpenCode provider and managed tools".into();
+    worker.stage = "Initializing Hermes provider and managed tools".into();
     write(app, worker.clone()).await?;
     let providers = tokio::select! {
-        _=cancel.cancelled()=>return Err("OpenCode provider initialization cancelled".into()),
-        result=opencode_request(app, worker, "/config/providers", None)=>result?,
+        _=cancel.cancelled()=>return Err("Hermes provider initialization cancelled".into()),
+        result=harness_request(app, worker, "/config/providers", None)=>result?,
     };
     if !private_provider_ready(&providers, &worker.model) {
         return Err(
-            "OpenCode did not load this worker's private Yougori provider and selected model"
+            "Hermes did not load this worker's private Yougori provider and selected model"
                 .into(),
         );
     }
-    let tool_path = format!("/experimental/tool?provider=yougori&model={}", worker.model);
+    let tool_path = "/tools";
     let tools = tokio::select! {
-        _=cancel.cancelled()=>return Err("OpenCode managed-tool initialization cancelled".into()),
-        result=opencode_request(app,worker,&tool_path,None)=>result?,
+        _=cancel.cancelled()=>return Err("Hermes managed-tool initialization cancelled".into()),
+        result=harness_request(app,worker,tool_path,None)=>result?,
     };
     let definitions = tools
         .as_array()
-        .ok_or("OpenCode did not return its managed tool definitions")?;
+        .ok_or("Hermes did not return its managed tool definitions")?;
     for required in [
         "bounty_attempt",
         "bounty_report",
         "bounty_reply",
         "bounty_check",
+        "bounty_http",
+        "bounty_experiment",
+        "bounty_share",
     ] {
         if !definitions.iter().any(|tool| tool["id"] == required) {
-            return Err(format!("OpenCode did not load the managed {required} tool"));
+            return Err(format!("Hermes did not load the managed {required} tool"));
         }
     }
     crate::commands::update_container_network(environment.id, false, app.state(), app.state())
@@ -672,6 +680,7 @@ pub(crate) async fn prepare_agent(
     if cancel.is_cancelled() {
         return Err("Worker preparation cancelled".into());
     }
+    worker.harness_version = harness_revision();
     write(app, worker.clone()).await?;
     Ok(())
 }
@@ -709,17 +718,19 @@ async fn start_server(
     current(app, worker, cancel).await?;
     let health = tokio::select! {
         _ = cancel.cancelled() => return Err("Worker server startup cancelled".into()),
-        result = opencode_request(app, worker, "/global/health", None) => result,
+        result = harness_request(app, worker, "/global/health", None) => result,
     };
     current(app, worker, cancel).await?;
-    if health.is_ok() {
+    if health.as_ref().is_ok_and(|value| value["harness"] == "hermes" && value["version"] == HERMES_REVISION) {
         return Ok(());
     }
     current(app, worker, cancel).await?;
     let _ = terminal(app, worker, "close", None).await;
+    stop_harness_processes(app, worker).await?;
     current(app, worker, cancel).await?;
     terminal(app, worker, "create", None).await?;
-    let command=format!("export HOME=/home/yougori-agent OPENCODE_CONFIG=/etc/opencode/opencode.json OPENCODE_CONFIG_DIR={ROOT}/config OPENCODE_DISABLE_PROJECT_CONFIG=true OPENCODE_DISABLE_CLAUDE_CODE=true OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_MODELS_FETCH=true; cd {ROOT}; exec su -m -s /bin/sh yougori-agent -c 'exec /home/yougori-agent/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096'\n");
+    // The old secret environment key remains accepted for existing sandboxes.
+    let command=format!("export HOME=/home/yougori-agent HERMES_HOME=/home/yougori-agent/.hermes; export YOUGORI_HARNESS_PASSWORD=\"${{YOUGORI_HARNESS_PASSWORD:-$OPENCODE_SERVER_PASSWORD}}\"; cd {ROOT}; exec su -m -s /bin/sh yougori-agent -c 'exec {ROOT}/hermes/.venv/bin/python {ROOT}/config/hermes_bridge.py'\n");
     current(app, worker, cancel).await?;
     terminal(app, worker, "write", Some(STANDARD.encode(command))).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -727,10 +738,10 @@ async fn start_server(
         current(app, worker, cancel).await?;
         let health = tokio::select! {
             _ = cancel.cancelled() => return Err("Worker server startup cancelled".into()),
-            value = opencode_request(app, worker, "/global/health", None) => value,
+            value = harness_request(app, worker, "/global/health", None) => value,
         };
         if let Ok(health) = health {
-            if health["healthy"] == true && health["version"] == OPENCODE_VERSION {
+            if health["healthy"] == true && health["version"] == HERMES_REVISION {
                 return Ok(());
             }
         }
@@ -741,7 +752,7 @@ async fn start_server(
         }
     }
     let _ = terminal(app, worker, "close", None).await;
-    Err("The pinned OpenCode server did not become ready in this worker".into())
+    Err("The pinned Hermes server did not become ready in this worker".into())
 }
 
 fn private_provider_ready(providers: &Value, model: &str) -> bool {
@@ -802,7 +813,7 @@ fn http_body(bytes: &[u8]) -> Result<Value, String> {
     }
     if !(200..300).contains(&status) {
         return Err(format!(
-            "OpenCode rejected this worker request (HTTP {status})"
+            "Hermes rejected this worker request (HTTP {status})"
         ));
     }
     if body.is_empty() {
@@ -941,13 +952,13 @@ async fn read_http_reply<R: tokio::io::AsyncRead + Unpin>(
         }
     }
 }
-pub(crate) async fn opencode_request(
+pub(crate) async fn harness_request(
     app: &AppHandle,
     worker: &Worker,
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
-    opencode_http(
+    harness_http(
         app,
         worker,
         path,
@@ -963,9 +974,9 @@ pub(crate) async fn delete_session(
     session: &str,
 ) -> Result<(), String> {
     if !super::identifier(session) {
-        return Err("Invalid owned OpenCode session".into());
+        return Err("Invalid owned Hermes session".into());
     }
-    let result = opencode_http(app, worker, &format!("/session/{session}"), None, "DELETE").await;
+    let result = harness_http(app, worker, &format!("/session/{session}"), None, "DELETE").await;
     let agent = env(
         app,
         worker
@@ -979,7 +990,16 @@ pub(crate) async fn delete_session(
         &format!("rm -f -- {ROOT}/.yougori/bounty/session-{session}.json"),
     )
     .await?;
-    result.map(|_| ())
+    session_deleted(result, session)
+}
+
+fn session_deleted(result: Result<Value, String>, session: &str) -> Result<(), String> {
+    match result {
+        // Pause/restart can already have removed this session. Its absence is the desired
+        // postcondition; authentication failures and other cleanup errors still propagate.
+        Err(error) if error == format!("Hermes rejected this worker request (HTTP 404) at /session/{session}") => Ok(()),
+        result => result.map(|_| ()),
+    }
 }
 
 pub(crate) async fn bind_session(
@@ -989,7 +1009,7 @@ pub(crate) async fn bind_session(
     context: &Value,
 ) -> Result<(), String> {
     if !super::identifier(session) {
-        return Err("Invalid managed OpenCode session".into());
+        return Err("Invalid managed Hermes session".into());
     }
     write(app, worker.clone()).await?;
     let agent = env(
@@ -1010,7 +1030,7 @@ pub(crate) async fn bind_session(
     .await
 }
 
-async fn opencode_http(
+async fn harness_http(
     app: &AppHandle,
     worker: &Worker,
     path: &str,
@@ -1022,7 +1042,7 @@ async fn opencode_http(
         || path.contains("..")
         || path.len() > 512
     {
-        return Err("Invalid OpenCode operation".into());
+        return Err("Invalid Hermes operation".into());
     }
     let id = worker
         .environment_id
@@ -1034,7 +1054,7 @@ async fn opencode_http(
     }
     let password = crate::projects::secrets::resolve(
         worker
-            .opencode_password_reference
+            .harness_password_reference
             .as_deref()
             .ok_or("Agent credential is missing")?,
     )?;
@@ -1046,9 +1066,9 @@ async fn opencode_http(
     if bytes.len() > 65536 {
         return Err("Agent prompt exceeds 64 KiB".into());
     }
-    let request=format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic {}\r\nx-opencode-directory: {ROOT}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bytes}",STANDARD.encode(format!("opencode:{password}")),bytes.len());
+    let request=format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bytes}",STANDARD.encode(format!("yougori:{password}")),bytes.len());
     tokio::time::timeout(
-        Duration::from_secs(opencode_timeout(path, body.is_some())),
+        Duration::from_secs(harness_timeout(path, body.is_some())),
         async {
             stream
                 .write_all(request.as_bytes())
@@ -1059,7 +1079,7 @@ async fn opencode_http(
             #[cfg(test)]
             if result.is_err()
                 && std::env::var_os("YOUGORI_SWARM_FIXTURE_PATH").is_some()
-                && (path == "/config/providers" || path.starts_with("/experimental/tool?"))
+                && (path == "/config/providers" || path == "/tools")
             {
                 // Explicit disposable QA only. Redact all relevant vault values
                 // before diagnosing SDK setup; never retain production payloads.
@@ -1090,7 +1110,7 @@ async fn opencode_http(
                     }
                 }
                 eprintln!(
-                    "Swarm QA: OpenCode setup failed at {path}: {}",
+                    "Swarm QA: Hermes setup failed at {path}: {}",
                     crate::lifecycle::safe_diagnostic(&detail)
                 );
             }
@@ -1103,12 +1123,12 @@ async fn opencode_http(
     })?
 }
 
-fn opencode_timeout(path: &str, has_body: bool) -> u64 {
+fn harness_timeout(path: &str, has_body: bool) -> u64 {
     if path.ends_with("/abort") {
         5
     } else if path.ends_with("/message") && has_body {
         TURN_TIMEOUT_SECONDS + 30
-    } else if path == "/config/providers" || path.starts_with("/experimental/tool?") {
+    } else if path == "/config/providers" || path == "/tools" {
         90
     } else if has_body {
         180
@@ -1171,9 +1191,11 @@ fn source_files(source: &Value, policy: &Value) -> Result<Vec<SourceFile>, Strin
     {
         return Err("Project does not match the accepted source revision and digest".into());
     }
+    // A live-URL (external_target) bounty may carry no source at all; every other scope needs code.
+    let allow_empty = policy["scopeMode"] == "external_target";
     let files = source["files"]
         .as_array()
-        .filter(|v| !v.is_empty() && v.len() <= 4000)
+        .filter(|v| (allow_empty || !v.is_empty()) && v.len() <= 4000)
         .ok_or("Invalid project file manifest")?;
     let mut names = BTreeSet::new();
     let mut total = 0;
@@ -1241,7 +1263,7 @@ pub(crate) async fn prepare_project(
     let files = source_files(source, &worker.policy)?;
     let test = create_owned(app, worker, true, None).await?;
     if test.network_access {
-        let result=job(app,&test.id,"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 nodejs npm ca-certificates".into(),900,cancel).await?;
+        let result=job(app,&test.id,"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-venv python3-pip nodejs npm curl ca-certificates".into(),900,cancel).await?;
         if result["exitCode"] != 0 {
             return Err("The test sandbox prerequisites could not be installed".into());
         }
@@ -1282,20 +1304,27 @@ for suffix in ('project','build'):
         .await?;
         for file in &files {
             current(app, worker, cancel).await?;
+            // A script the recipe runs directly (`./start.sh`) keeps its executable bit: the
+            // snapshot carries no file modes, so a leading `#!` is what says it is a program.
+            let mode = if file.bytes.starts_with(b"#!") { "555" } else { "444" };
             stage(
                 app,
                 target,
                 &format!("{ROOT}/project/{}", file.path),
                 &file.bytes,
-                "444",
+                mode,
             )
             .await?;
         }
         short(app,target,&format!("chown -R root:root {ROOT}/project; find {ROOT}/project -type d -exec chmod 555 '{{}}' +")).await?;
     }
     current(app, worker, cancel).await?;
-    short(app,&test,&format!("set -eu; id yougori-test >/dev/null 2>&1 || useradd -m -s /bin/sh yougori-test; cp -R -- {ROOT}/project/. {ROOT}/build/; chown -R yougori-test:yougori-test {ROOT}/build; find {ROOT}/build -type f -exec chmod 644 '{{}}' +; find {ROOT}/build -type d -exec chmod 755 '{{}}' +")).await?;
-    stage_memory(app,worker,&json!({"attempts":[],"events":[],"guidance":[],"summary":"New bounty accepted. Synchronize before work."})).await?;
+    // The writable copy keeps 644, except the scripts the project runs itself, which stay runnable.
+    short(app,&test,&format!("set -eu; id yougori-test >/dev/null 2>&1 || useradd -m -s /bin/sh yougori-test; cp -R -- {ROOT}/project/. {ROOT}/build/; chown -R yougori-test:yougori-test {ROOT}/build; find {ROOT}/build -type f -exec chmod 644 '{{}}' +; find {ROOT}/build -type d -exec chmod 755 '{{}}' +; find {ROOT}/build -type f -exec sh -c 'head -c 2 \"$1\" | grep -q \"^#!\" && chmod 755 \"$1\"' sh '{{}}' ';'")).await?;
+    target::prepare_target(app,worker,cancel).await?;
+    // The workspace is the accepted snapshot and nothing else: scripts or fixtures written in an
+    // earlier session are gone, which the agent is told so its recorded progress is not misread.
+    stage_memory(app,worker,&json!({"attempts":[],"events":[],"guidance":[],"summary":"The project workspace was built from the accepted snapshot; anything written in an earlier session is gone. Synchronize before work, and recreate what a recorded attempt relied on before building on it."})).await?;
     write(app, worker.clone()).await?;
     start_server(app, worker, cancel).await?;
     Ok(())
@@ -1367,20 +1396,24 @@ for name in names:
  identity=name[:-len(suffix)]
  try: uuid.UUID(identity)
  except ValueError: continue
- path=p+'/'+name; s=os.lstat(path)
+ path=p+'/'+name
+ try: s=os.lstat(path)
+ except FileNotFoundError: continue
  if not stat.S_ISREG(s.st_mode) or stat.S_ISLNK(s.st_mode): raise ValueError('Invalid tool acknowledgment')
  if suffix=='.ack':
   for candidate in (p+'/'+identity+'.response',path):
    try: os.unlink(candidate)
    except FileNotFoundError: pass
  elif s.st_mtime<time.time()-300 and not os.path.lexists(p+'/'+identity+'.request') and not os.path.lexists(p+'/'+identity+'.response'):
-  os.unlink(path)
+  try: os.unlink(path)
+  except FileNotFoundError: pass
 # Unknown receipts are preserved, with a hard bounded capacity instead of
 # silently deleting evidence of an ambiguous submission.
 names=sorted(os.listdir(p)); retained=0; retained_bytes=0
 for name in names:
  if name.endswith(('.request','.response','.pending')):
-  s=os.lstat(p+'/'+name)
+  try: s=os.lstat(p+'/'+name)
+  except FileNotFoundError: continue
   if not stat.S_ISREG(s.st_mode) or stat.S_ISLNK(s.st_mode): raise ValueError('Invalid retained tool receipt')
   retained+=1; retained_bytes+=s.st_size
 if retained>256 or retained_bytes>16777216: raise ValueError('Tool receipt capacity reached; unacknowledged receipts were preserved. Reconcile them before resuming.')
@@ -1389,14 +1422,15 @@ for name in names:
  try: uuid.UUID(name[:-8])
  except ValueError: continue
  if os.path.exists(p+'/'+name[:-8]+'.response'): continue
- fd=os.open(p+'/'+name,os.O_RDONLY|os.O_NOFOLLOW)
+ try: fd=os.open(p+'/'+name,os.O_RDONLY|os.O_NOFOLLOW)
+ except FileNotFoundError: continue
  try:
   s=os.fstat(fd)
   if not stat.S_ISREG(s.st_mode) or s.st_size>65536: raise ValueError('Invalid tool request')
   total+=s.st_size
   if total>131072 or len(out)>=2: break
   with os.fdopen(fd) as f: fd=-1; value=json.load(f)
-  if value.get('id')!=name[:-8] or value.get('action') not in ('attempt','report','reply','check'): raise ValueError('Invalid tool identity')
+  if value.get('id')!=name[:-8] or value.get('action') not in ('attempt','report','reply','check','http','experiment','share'): raise ValueError('Invalid tool identity')
   out.append(value)
  finally:
   if fd!=-1: os.close(fd)
@@ -1456,12 +1490,17 @@ pub(crate) async fn run_check(
         .as_str()
         .filter(|s| !s.is_empty() && s.len() <= 8000 && !s.contains('\0'))
         .ok_or("This bounty has no approved command at that index")?;
+    run_command(app,worker,command,CHECK_TIMEOUT_SECONDS,false,cancel).await
+}
+
+async fn run_command(app:&AppHandle,worker:&Worker,command:&str,seconds:u64,network:bool,cancel:&CancellationToken)->Result<Value,String> {
+    current(app,worker,cancel).await?;
     let id = worker
         .test_environment_id
         .as_deref()
         .ok_or("Test sandbox is missing")?;
     let target = env(app, id)?;
-    if target.description != owned_description(worker, true) || target.network_access {
+    if target.description != owned_description(worker, true) || target.network_access != network {
         return Err("Company code requires this worker's isolated offline test sandbox".into());
     }
     if target.status != EnvironmentStatus::Running {
@@ -1483,7 +1522,7 @@ pub(crate) async fn run_check(
     );
     current(app, worker, cancel).await?;
     let stop = cancel.child_token();
-    let work = job(app, id, wrapper, CHECK_TIMEOUT_SECONDS, &stop);
+    let work = job(app, id, wrapper, seconds, &stop);
     let mut last_renew = tokio::time::Instant::now();
     let mut result = supervise_check(work, &stop, cancel, Duration::from_secs(2), || {
         let renew = last_renew.elapsed() >= Duration::from_secs(30);
@@ -1505,7 +1544,7 @@ pub(crate) async fn run_check(
         }
         // The outer turn cannot renew while it is servicing this tool. A
         // legitimate long check must retain its 120-second task reservation.
-        if renew {
+        if renew && worker.lease["leaseId"].is_string() {
             super::agent(app, worker, reqwest::Method::POST, "/api/swarm/agent/tasks/renew",
                 Some(json!({"leaseId":worker.lease["leaseId"],"generation":worker.lease["generation"],
                     "idempotencyKey":format!("check-renew-{}-{}",worker.lease["leaseId"].as_str().unwrap_or_default(),super::now()/30)}))).await?;
@@ -1514,23 +1553,49 @@ pub(crate) async fn run_check(
         }
     })
     .await?;
+    clip_output(&mut result);
+    Ok(result)
+}
+
+/// Keeps a command's output within what the agent's tool channel can carry. Output is measured
+/// as it will be sent, escaped and inside its envelope, not as raw bytes: quotes and control
+/// characters cost several bytes each, so a stream that fits raw can still be too long to send.
+fn clip_output(result: &mut Value) {
+    const FIELD_LIMIT: usize = 24_000;
+    const ENVELOPE_LIMIT: usize = 56 * 1024;
     for field in ["stdout", "stderr"] {
         if let Some(text) = result[field].as_str() {
-            if text.len() > 24000 {
-                let mut end = 24000;
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                result[field] =
-                    format!("{}\n[Output truncated by the bounty worker]", &text[..end]).into();
+            if text.len() > FIELD_LIMIT {
+                result[field] = format!("{}\n[Output truncated by the bounty worker]", cut(text, FIELD_LIMIT)).into();
                 result["truncated"] = true.into();
             }
         }
     }
-    Ok(result)
+    // Still too long once escaped: both streams are halved until the whole answer fits.
+    let mut room = FIELD_LIMIT;
+    while serde_json::to_vec(&result).map(|bytes| bytes.len()).unwrap_or(0) > ENVELOPE_LIMIT && room > 500 {
+        room /= 2;
+        for field in ["stdout", "stderr"] {
+            if let Some(text) = result[field].as_str() {
+                if text.len() > room {
+                    result[field] = format!("{}\n[Output truncated by the bounty worker]", cut(text, room)).into();
+                    result["truncated"] = true.into();
+                }
+            }
+        }
+    }
 }
 
-async fn supervise_check<J, A, AF>(
+/// The first `limit` bytes of `text`, cut on a character boundary.
+fn cut(text: &str, limit: usize) -> &str {
+    let mut end = limit.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+pub(super) async fn supervise_check<J, A, AF>(
     work: J,
     stop: &CancellationToken,
     cancel: &CancellationToken,
@@ -1569,9 +1634,24 @@ where
     Err(reason)
 }
 
+async fn stop_harness_processes(app: &AppHandle, worker: &Worker) -> Result<(), String> {
+    let Some(id) = &worker.environment_id else { return Ok(()) };
+    let environment = env(app, id)?;
+    if environment.description != owned_description(worker, false) {
+        return Err("Worker does not own the agent environment".into());
+    }
+    if environment.status != EnvironmentStatus::Running { return Ok(()) }
+    // PTY close is not a process-lifetime guarantee (the previous harness could
+    // survive SIGHUP). This UID is exclusive to this worker's agent sandbox.
+    // Root-owned installer jobs and the separate model environment are untouched.
+    let script = "import os,pwd,signal\ntry: uid=pwd.getpwnam('yougori-agent').pw_uid\nexcept KeyError: raise SystemExit(0)\nif uid==0: raise ValueError('Unsafe agent identity')\nfor pid in os.listdir('/proc'):\n if pid.isdigit():\n  try:\n   if os.stat('/proc/'+pid).st_uid==uid: os.kill(int(pid),signal.SIGKILL)\n  except (FileNotFoundError,ProcessLookupError): pass\n";
+    short(app, &environment, &format!("if command -v python3 >/dev/null; then python3 -c {}; fi", quote(script))).await?;
+    Ok(())
+}
+
 pub(crate) async fn abort_agent(app: &AppHandle, worker: &Worker) -> Result<(), String> {
     if let Some(session) = &worker.session_id {
-        let _ = opencode_request(
+        let _ = harness_request(
             app,
             worker,
             &format!("/session/{session}/abort"),
@@ -1595,9 +1675,9 @@ pub(crate) async fn abort_agent(app: &AppHandle, worker: &Worker) -> Result<(), 
             }
         }
     }
-    // Closing this worker's hidden PTY terminates its owned OpenCode process;
-    // do not stop a potentially shared model workload or another sandbox.
+    // Close the PTY and enforce termination in this owned sandbox only.
     let _ = terminal(app, worker, "close", None).await;
+    stop_harness_processes(app, worker).await?;
     Ok(())
 }
 pub(crate) async fn stop_owned(
@@ -1652,6 +1732,10 @@ pub(crate) async fn ensure_running(
     cancel: &CancellationToken,
 ) -> Result<(), String> {
     current(app, worker, cancel).await?;
+    if worker.harness_version != harness_revision() {
+        abort_agent(app, worker).await?;
+        prepare_agent(app, worker, cancel).await?;
+    }
     let agent = env(
         app,
         worker
@@ -1680,6 +1764,19 @@ pub(crate) async fn ensure_running(
 mod tests {
     use super::*;
     #[test]
+    fn deleting_an_already_absent_session_does_not_pause_the_worker() {
+        assert!(session_deleted(Ok(json!(true)), "ses_old").is_ok());
+        assert!(session_deleted(Err("Hermes rejected this worker request (HTTP 404) at /session/ses_old".into()), "ses_old").is_ok());
+        for error in [
+            "Hermes rejected this worker request (HTTP 401) at /session/ses_old",
+            "Hermes rejected this worker request (HTTP 500) at /session/ses_old",
+            "Hermes rejected this worker request (HTTP 404) at /session/ses_other",
+            "Agent sandbox is stopped",
+        ] {
+            assert_eq!(session_deleted(Err(error.into()), "ses_old"), Err(error.into()));
+        }
+    }
+    #[test]
     fn readiness_requires_the_configured_private_provider_and_selected_model() {
         assert!(!private_provider_ready(
             &json!({"providers":[{"id":"opencode","models":{"owner/model":{}}}]}),
@@ -1696,18 +1793,18 @@ mod tests {
     }
     #[test]
     fn initialization_gets_a_bounded_warmup_without_slowing_normal_control_requests() {
-        assert_eq!(opencode_timeout("/config/providers", false), 90);
+        assert_eq!(harness_timeout("/config/providers", false), 90);
         assert_eq!(
-            opencode_timeout(
-                "/experimental/tool?provider=yougori&model=owner/model",
+            harness_timeout(
+                "/tools",
                 false
             ),
             90
         );
-        assert_eq!(opencode_timeout("/global/health", false), 10);
-        assert_eq!(opencode_timeout("/session/session-test/abort", true), 5);
+        assert_eq!(harness_timeout("/global/health", false), 10);
+        assert_eq!(harness_timeout("/session/session-test/abort", true), 5);
         assert_eq!(
-            opencode_timeout("/session/session-test/message", true),
+            harness_timeout("/session/session-test/message", true),
             TURN_TIMEOUT_SECONDS + 30
         );
     }
@@ -1766,6 +1863,28 @@ mod tests {
         .await;
         assert!(result.unwrap_err().contains("authorization"));
         assert!(acknowledged.load(Ordering::SeqCst));
+    }
+    #[tokio::test]
+    async fn supervision_rechecks_permission_while_readiness_is_still_pending() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let cancel = CancellationToken::new();
+        let stop = cancel.child_token();
+        let checks = AtomicUsize::new(0);
+        let released = AtomicBool::new(false);
+        let readiness = async {
+            stop.cancelled().await;
+            released.store(true, Ordering::SeqCst);
+            Ok(Value::Null)
+        };
+        let result = tokio::time::timeout(Duration::from_secs(1), supervise_check(
+            readiness, &stop, &cancel, Duration::from_millis(1), || {
+                std::future::ready(Ok(checks.fetch_add(1, Ordering::SeqCst) == 0))
+            },
+        )).await.unwrap();
+        assert!(result.unwrap_err().contains("authorization"));
+        assert_eq!(checks.load(Ordering::SeqCst), 2);
+        assert!(released.load(Ordering::SeqCst), "readiness must release its demand lease");
+        assert!(!cancel.is_cancelled(), "only the supervised operation is cancelled");
     }
     #[tokio::test]
     async fn participant_cancel_interrupts_an_in_flight_authorization_request_and_the_same_job() {
@@ -1863,9 +1982,20 @@ mod tests {
         serde_json::from_value(json!({"id":"worker-test","name":"Test worker","model":"example/model-GGUF","state":"preparing","stage":"Preparing","site":"https://example.test","gpu":"cpu","resources":{"cpu":4,"memoryGb":8},"quotaGb":20,"keepResident":true})).unwrap()
     }
     #[test]
+    fn old_worker_credentials_survive_the_hermes_migration() {
+        let mut saved = serde_json::to_value(worker()).unwrap();
+        saved.as_object_mut().unwrap().remove("harnessPasswordReference");
+        saved["opencodePasswordReference"] = "existing-protected-reference".into();
+        let restored: Worker = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored.harness_password_reference.as_deref(), Some("existing-protected-reference"));
+        let upgraded = serde_json::to_value(restored).unwrap();
+        assert!(upgraded.get("opencodePasswordReference").is_none());
+        assert_eq!(upgraded["harnessPasswordReference"], "existing-protected-reference");
+    }
+    #[test]
     fn test_sandbox_never_receives_model_or_worker_credentials_and_total_allocations_fit() {
         let mut worker = worker();
-        worker.opencode_password_reference = Some("private-owner-reference".into());
+        worker.harness_password_reference = Some("private-owner-reference".into());
         let test = create_request(&worker, true, None).unwrap();
         let agent = create_request(&worker, false, Some("model-runtime")).unwrap();
         // People see the worker's short name, never its long ID.
@@ -2077,53 +2207,33 @@ mod tests {
         assert_eq!(sandbox.steps, [attempt, attempt].concat());
     }
     #[test]
-    fn managed_config_has_one_local_provider_and_denies_unmanaged_actions() {
+    fn the_agent_config_carries_the_model_key_and_no_other_secret_of_the_pod() {
+        // The model's environment holds its own key beside an admin token and a provider-shaped
+        // key. Plain values stand in for vault references, so nothing here reads the OS vault.
+        let mut options = yougori_cli::workload::Options::default();
+        for (name, value) in [("YOUGORI_MODEL_TOKEN", "model-key-value"), ("YOUGORI_ADMIN_TOKEN", "admin-token-value"), ("RUNPOD_API_KEY", "provider-key-value")] {
+            options.environment.insert(name.into(), value.into());
+        }
+        let config = managed_config_for(&worker(), &options, 32768).unwrap().to_string();
+        assert!(config.contains("model-key-value"));
+        for other in ["admin-token-value", "provider-key-value"] {
+            assert!(!config.contains(other), "the sandbox never receives {other}");
+        }
+    }
+
+    #[test]
+    fn managed_config_pins_hermes_and_one_private_model() {
         let config = managed_config(&worker(), "synthetic-private-key", 32768);
-        assert_eq!(
-            config["provider"]["yougori"]["models"]["example/model-GGUF"]["limit"]["context"],
-            32768
-        );
-        assert_eq!(config["enabled_providers"], json!(["yougori"]));
-        assert_eq!(config["share"], "disabled");
-        assert_eq!(config["permission"]["*"], "deny");
-        assert_eq!(
-            config["permission"]["read"],
-            json!({
-                "*":"deny", "srv/yougori-swarm/project":"allow", "srv/yougori-swarm/project/**":"allow",
-                "srv/yougori-swarm/.yougori/bounty":"allow", "srv/yougori-swarm/.yougori/bounty/**":"allow"
-            })
-        );
-        for tool in [
-            "bounty_attempt",
-            "bounty_report",
-            "bounty_reply",
-            "bounty_check",
-        ] {
-            assert_eq!(config["permission"][tool], "allow");
-        }
-        assert!(TOOLS.contains("Date.now() + 360000"));
+        assert_eq!(config["harness"], "hermes");
+        assert_eq!(config["revision"], HERMES_REVISION);
+        assert_eq!(config["context"], 32768);
+        assert_eq!(config["maxTokens"], 2048);
+        assert_eq!(config["model"], "example/model-GGUF");
+        assert_eq!(config["baseUrl"], "http://swarm-model:8000/v1");
+        assert!(TOOLS.contains("time.monotonic() + 360"));
         assert!(CHECK_TIMEOUT_SECONDS + 45 < 360);
-        assert!(MODEL_TIMEOUT_SECONDS > 300); // Relay stream allowance.
         assert!(TURN_TIMEOUT_SECONDS > MODEL_TIMEOUT_SECONDS + CHECK_TIMEOUT_SECONDS);
-        assert_eq!(
-            config["provider"]["yougori"]["options"]["baseURL"],
-            "http://swarm-model:8000/v1"
-        );
-        assert_eq!(config["default_agent"], "swarm");
-        assert!(config["mcp"].as_object().unwrap().is_empty());
-        assert_eq!(config["lsp"], false);
-        for tool in [
-            "bash",
-            "write",
-            "edit",
-            "webfetch",
-            "websearch",
-            "task",
-            "skill",
-        ] {
-            assert!(config["permission"][tool].is_null());
-        }
-        assert!(!TOOLS.contains("swm_"));
-        assert!(!TOOLS.contains("https://"));
+        assert!(BRIDGE.contains(HERMES_REVISION));
+        assert!(INSTALLER.contains(HERMES_REVISION));
     }
 }

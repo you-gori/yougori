@@ -45,7 +45,7 @@ fn params(id: &str, port: u16, domain: Option<&str>) -> Value {
     params
 }
 fn ready_urls(publication: &Value, id: &str, port: u16) -> Result<Vec<String>, String> {
-    let inspect = format!("Inspect with yougori ports list {id} before trying again.");
+    let inspect = "See every published port with yougori ports list --all before trying again.";
     if publication["environmentId"] != id
         || publication["port"] != port
         || publication["kind"] != "cloudflare"
@@ -99,7 +99,7 @@ where
     }
     // Exactly one mutation. The backend rechecks ownership and rolls back a
     // failed replacement; never disconnect another project to claim a domain.
-    let publication=rpc("publish_environment_service",params).await.map_err(|error|format!("Public access could not finish: {error}. Inspect with yougori ports list {id} before trying again."))?;
+    let publication=rpc("publish_environment_service",params).await.map_err(|error|format!("Public access could not finish: {error}. See every published port with yougori ports list --all before trying again."))?;
     ready_urls(&publication, id, chosen_port)
 }
 
@@ -108,9 +108,24 @@ where
 async fn addresses(id: &str, chosen_port: u16) -> Result<(Vec<Choice>, Vec<Option<String>>), String> {
     let saved = call("list_saved_domains", json!({})).await?;
     let domains = saved.as_array().ok_or("Invalid saved domain list")?;
+    // A domain another sandbox holds is said with that sandbox's name, never its ID.
+    let state = if domains.is_empty() {
+        Value::Null
+    } else {
+        call("get_platform_state", json!({})).await.unwrap_or_default()
+    };
+    let holder = |owner: &str| {
+        state["environments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|env| env["id"] == owner)
+            .and_then(|env| env["name"].as_str())
+            .map(|name| name.chars().filter(|c| !c.is_control()).collect::<String>())
+    };
     let mut choices = vec![Choice::new(
         "Quick link",
-        "get a temporary trycloudflare.com address",
+        "a temporary trycloudflare.com address",
     )];
     let mut destinations = vec![None];
     for domain in domains {
@@ -126,12 +141,10 @@ async fn addresses(id: &str, chosen_port: u16) -> Result<(Vec<Choice>, Vec<Optio
             Ok(result) if result["allowed"] == true => (true, "your saved domain".to_owned()),
             Ok(result) => (
                 false,
-                format!(
-                    "in use by {}",
-                    result["owner"]["environmentId"]
-                        .as_str()
-                        .unwrap_or("another service")
-                ),
+                match result["owner"]["environmentId"].as_str().and_then(holder) {
+                    Some(name) => format!("in use by {name}"),
+                    None => "in use by another service".to_owned(),
+                },
             ),
             Err(_) => (
                 false,
@@ -153,22 +166,22 @@ pub(crate) async fn configure(id: &str, tool: &str, answers: &mut Answers) -> Re
     loop {
         let asked: Result<bool, String> = match steps.step() {
             0 => async {
-                let mut notes = vec!["Create a public HTTPS link for a website or API running inside this sandbox.".to_owned()];
+                let mut notes = vec!["A public HTTPS link to a website or API running inside this sandbox. You can add one later.".to_owned()];
                 if !answers.published.is_empty() {
-                    notes.push("Your project already has the link above. Not yet keeps it.".into());
+                    notes.push("Your project already has the link above. Not now keeps it.".into());
                 }
                 let access = step_prompt(id, || {
                     ui::select(
-                        "Want your project on the internet right away?",
+                        "Publish your project?",
                         &notes,
                         &[
                             Choice::new(
-                                "Not yet, let's build first",
-                                "continue with the current access settings",
+                                "Not now",
+                                "keep the current access settings",
                             ),
                             Choice::new(
-                                "Yes, let's give it a link",
-                                "choose a project port and public address",
+                                "Create a public link",
+                                "choose a port and an address",
                             ),
                         ],
                         answers.access_choice(),
@@ -190,7 +203,7 @@ pub(crate) async fn configure(id: &str, tool: &str, answers: &mut Answers) -> Re
                 let default = answers.port.clone().unwrap_or_else(|| default_port(tool).into());
                 let chosen = step_prompt(id, || {
                     ui::input(
-                        "Which port will your website or project API use?",
+                        "Which port does your project listen on?",
                         &default,
                         false,
                         &port,
@@ -219,7 +232,7 @@ async fn publish_step(id: &str, tool: &str, answers: &mut Answers) -> Result<(),
         .unwrap_or(default_port(tool))
         .parse::<u16>()
         .map_err(|_| "Invalid project port")?;
-    let (choices, destinations) = step_wait(id, "Finding a home for your project", || {
+    let (choices, destinations) = step_wait(id, "Checking available addresses", || {
         addresses(id, chosen_port)
     })
     .await?;
@@ -228,7 +241,7 @@ async fn publish_step(id: &str, tool: &str, answers: &mut Answers) -> Result<(),
     )];
     if destinations.len() == 1 {
         notes.push(
-            "No saved domains yet. Save one in Yougori's Public access setups to use it here."
+            "No saved domains yet. Save one from the yougori menu, under Set up my domains, to use it here."
                 .into(),
         );
     }
@@ -238,7 +251,7 @@ async fn publish_step(id: &str, tool: &str, answers: &mut Answers) -> Result<(),
         .filter(|&index| choices[index].enabled)
         .unwrap_or(0);
     let destination = step_prompt(id, || {
-        ui::select("Where should your project live?", &notes, &choices, initial)
+        ui::select("Which address should it use?", &notes, &choices, initial)
     })
     .await?;
     let domain = destinations[destination].clone();
@@ -249,8 +262,8 @@ async fn publish_step(id: &str, tool: &str, answers: &mut Answers) -> Result<(),
     ));
     let urls = finish_first(
         id,
-        "Giving your project a public link",
-        ["Your public link is ready", "Public access could not finish"],
+        &format!("Publishing port {chosen_port}"),
+        ["Public link ready", "Public access could not finish"],
         publish(id, chosen_port, domain.as_deref(), |method, params| {
             call(method, params)
         }),
@@ -261,14 +274,14 @@ async fn publish_step(id: &str, tool: &str, answers: &mut Answers) -> Result<(),
     for url in &urls {
         ui::step(url);
     }
-    ui::info(&format!("Start your website or API on port {chosen_port} inside this sandbox. This link will serve it as soon as it starts listening."));
+    ui::info(&format!("Start your website or API on port {chosen_port} inside this sandbox; the link serves it as soon as it listens."));
     ui::info(
         "Keep the owner computer and Yougori running. Quick links can change after a restart.",
     );
     step_prompt(id, || {
         ui::without_back(|| {
             ui::select(
-                "Copy your link, then let's build.",
+                "Copy the link, then continue",
                 &urls,
                 &[Choice::new(
                     format!("Continue with {tool}"),
@@ -375,7 +388,7 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert!(error.contains("Inspect with yougori ports list env-project"));
+        assert!(error.contains("See every published port with yougori ports list --all"));
         assert_eq!(calls.lock().unwrap().len(), 2);
         for value in [
             publication("other", 3000, "https://project.example.com"),

@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react"
-import { ArrowLeftRightIcon, ArrowRightIcon, ContainerIcon, DatabaseIcon, FileIcon, FolderIcon, HardDriveIcon, KeyRoundIcon, Link2Icon, NetworkIcon, ShieldCheckIcon, WaypointsIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -27,13 +26,13 @@ import "./connection-dialog.css"
 import { supportsConnections, supportsSharedConnection, connectionPermissions, isTunnelShared } from "@/lib/environment-connections"
 
 const permissionDetails = {
-  network: { icon: NetworkIcon, description: "Allow all network traffic between these environments." },
-  ports: { icon: WaypointsIcon, description: "Allow only the TCP ports you specify." },
-  files: { icon: FolderIcon, description: "Exchange files through a shared directory." },
-  volumes: { icon: HardDriveIcon, description: "Attach a shared directory for this connection." },
-  data: { icon: DatabaseIcon, description: "Exchange data through the shared directory." },
-  secrets: { icon: KeyRoundIcon, description: "Attach a separate directory for shared secrets." },
-} satisfies Record<PermissionKind, { icon: typeof NetworkIcon; description: string }>
+  network: { description: "Allow all network traffic between these environments." },
+  ports: { description: "Allow only the TCP ports you specify." },
+  files: { description: "Exchange files through a shared directory." },
+  volumes: { description: "Attach a shared directory for this connection." },
+  data: { description: "Exchange data through the shared directory." },
+  secrets: { description: "Attach a separate directory for shared secrets." },
+} satisfies Record<PermissionKind, { description: string }>
 
 type SelectedFolder = { environmentId: string; path: string }
 
@@ -68,8 +67,8 @@ export function FolderBrowser({ environment, selected, onSelect, disabled }: {
       {path === "/" ? <p className="connection-help">Open a project or data folder to share it. The entire filesystem cannot be shared.</p> : null}
       <div className="connection-folder-list" aria-label={`${environment.name} files and folders`}>
         {loading ? <p>Loading files and folders…</p> : error ? <p role="alert">{error}</p> : entries.length ? [...entries].sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name)).map(entry => entry.directory
-          ? <button type="button" key={entry.name} disabled={disabled} onClick={() => setPath(`${path === "/" ? "" : path}/${entry.name}`)}><FolderIcon aria-hidden="true" /><span className="truncate">{entry.name}</span></button>
-          : <div className="connection-folder-file" key={entry.name} title="Included when you share this folder"><FileIcon aria-hidden="true" /><span className="truncate">{entry.name}</span></div>) : <p>This folder is empty.</p>}
+          ? <button type="button" key={entry.name} disabled={disabled} onClick={() => setPath(`${path === "/" ? "" : path}/${entry.name}`)}><span className="truncate font-medium">{entry.name}</span></button>
+          : <div className="connection-folder-file" key={entry.name} title="Included when you share this folder"><span className="truncate text-muted-foreground">{entry.name}</span></div>) : <p>This folder is empty.</p>}
       </div>
     </> : <p className="connection-help">{environment.status !== "running" ? "Start or connect this environment to browse folders." : "This VM has no Yougori guest file agent. It can access folders selected from the other environment through the private file browser."}</p>}
   </div>
@@ -271,13 +270,12 @@ export function ConnectionDialog({ open, onOpenChange, initialSourceId, initialT
   const hasPorts = selectedPermissions.includes("ports") || ssh
   const hasStorage = selectedPermissions.some(permission => ["files", "volumes", "data"].includes(permission))
   const removingOnSave = Boolean(existingConnection && !selectedPermissions.length && !ssh && !commands)
-  const DirectionIcon = direction === "oneWay" ? ArrowRightIcon : ArrowLeftRightIcon
+  const arrow = direction === "oneWay" ? "→" : "↔"
 
   return (
     <Dialog onOpenChange={value => { if (!saving) onOpenChange(value) }} open={open}>
       <DialogPopup bottomStickOnMobile={false} closeProps={{ disabled: saving }} className="connection-workbench max-h-[calc(100dvh-2rem)] max-w-[1040px] overflow-hidden sm:max-w-[1040px]">
         <DialogHeader className="connection-header">
-          <Link2Icon aria-hidden="true" />
           <DialogTitle className="text-base leading-5">{existingConnection ? "Edit connection" : "New connection"}</DialogTitle>
           <DialogDescription className="connection-subtitle">Private connections between environments, including a shared environment you control.</DialogDescription>
         </DialogHeader>
@@ -288,23 +286,23 @@ export function ConnectionDialog({ open, onOpenChange, initialSourceId, initialT
                 <Field className="min-w-0">
                   <FieldLabel>From</FieldLabel>
                   <Select disabled={saving || !options.length} items={options} onValueChange={value => choosePair(value ?? "", targetId)} value={sourceId}>
-                    <SelectTrigger className="connection-endpoint"><ContainerIcon aria-hidden="true" /><SelectValue placeholder="Choose source" /></SelectTrigger>
+                    <SelectTrigger className="connection-endpoint"><SelectValue placeholder="Choose source" /></SelectTrigger>
                     <SelectPopup alignItemWithTrigger={false} className="max-w-[calc(100vw-3rem)]">{options.map(item => <SelectItem disabled={item.value === targetId} key={item.value} value={item.value}><span className="truncate">{item.label}</span></SelectItem>)}</SelectPopup>
                   </Select>
                 </Field>
-                <Button aria-label="Swap source and destination" title="Swap source and destination" className="connection-swap" disabled={saving || !sourceId || !targetId} onClick={() => { setSourceId(targetId); setTargetId(sourceId); setFormError("") }} size="icon" type="button" variant="ghost"><DirectionIcon aria-hidden="true" /></Button>
+                <Button aria-label="Swap source and destination" title="Swap source and destination" className="connection-swap" disabled={saving || !sourceId || !targetId} onClick={() => { setSourceId(targetId); setTargetId(sourceId); setFormError("") }} size="sm" type="button" variant="ghost">Swap</Button>
                 <Field className="min-w-0">
                   <FieldLabel>To</FieldLabel>
                   <Select disabled={saving || options.length < 2} items={options} onValueChange={value => choosePair(sourceId, value ?? "")} value={targetId}>
-                    <SelectTrigger className="connection-endpoint"><ContainerIcon aria-hidden="true" /><SelectValue placeholder="Choose destination" /></SelectTrigger>
+                    <SelectTrigger className="connection-endpoint"><SelectValue placeholder="Choose destination" /></SelectTrigger>
                     <SelectPopup alignItemWithTrigger={false} className="max-w-[calc(100vw-3rem)]">{options.map(item => <SelectItem disabled={item.value === sourceId} key={item.value} value={item.value}><span className="truncate">{item.label}</span></SelectItem>)}</SelectPopup>
                   </Select>
                 </Field>
               </div>
               <div className="connection-direction-row">
                 <RadioGroup aria-label="Connection direction" className="connection-directions" disabled={saving} onValueChange={value => { setDirection(value as ConnectionDirection); setFormError("") }} value={direction}>
-                  <Label className={cn("connection-direction", direction === "oneWay" && "is-selected")}><Radio className="sr-only" value="oneWay" /><ArrowRightIcon aria-hidden="true" />One-way</Label>
-                  <Label className={cn("connection-direction", direction === "bidirectional" && "is-selected")}><Radio className="sr-only" value="bidirectional" /><ArrowLeftRightIcon aria-hidden="true" />Bidirectional</Label>
+                  <Label className={cn("connection-direction", direction === "oneWay" && "is-selected")}><Radio className="sr-only" value="oneWay" />One-way</Label>
+                  <Label className={cn("connection-direction", direction === "bidirectional" && "is-selected")}><Radio className="sr-only" value="bidirectional" />Bidirectional</Label>
                 </RadioGroup>
                 <p className="connection-direction-help">{direction === "oneWay" ? "Network access goes from source to destination." : "Network access works in both directions."}</p>
               </div>
@@ -316,27 +314,22 @@ export function ConnectionDialog({ open, onOpenChange, initialSourceId, initialT
                 <div className="connection-section-heading"><h2>What can these environments do?</h2><span>{selectedPermissions.length + Number(commands)} selected</span></div>
                 <div className="connection-permission-list">
                   {!remote ? <Label className={cn("connection-permission", selectedPermissions.includes("data") && "is-selected")}>
-                    <FolderIcon aria-hidden="true" />
                     <span className="connection-permission-copy"><span id={`${descriptionId}-data-label`}>Share data</span><span>Choose specific folders below. Both sides can browse those folders through the private connection.</span></span>
                     <Checkbox aria-labelledby={`${descriptionId}-data-label`} checked={selectedPermissions.includes("data")} disabled={saving} onCheckedChange={value => togglePermission("data", Boolean(value))} />
                   </Label> : null}
                   <Label className={cn("connection-permission", commands && "is-selected")}>
-                    <KeyRoundIcon aria-hidden="true" />
                     <span className="connection-permission-copy"><span id={`${descriptionId}-commands-label`}>Run commands</span><span>Run shell commands in the other environment from Yougori or its CLI. Full VMs need verified guest SSH.</span></span>
                     <Checkbox aria-labelledby={`${descriptionId}-commands-label`} checked={commands} disabled={saving} onCheckedChange={value => { setCommands(Boolean(value)); setFormError("") }} />
                   </Label>
                   <details className="connection-advanced"><summary>Network and legacy access</summary>
                   <Label className={cn("connection-permission", ssh && "is-selected")}>
-                    <KeyRoundIcon aria-hidden="true" />
                     <span className="connection-permission-copy"><span id={`${descriptionId}-ssh-label`}>SSH / SFTP port</span><span>Open a TCP port for a guest SSH server. You manage its login and host key.</span></span>
                     <Checkbox aria-labelledby={`${descriptionId}-ssh-label`} checked={ssh} disabled={saving} onCheckedChange={value => setSsh(Boolean(value))} />
                   </Label>
                   {permissions.map(permission => {
-                    const { icon: Icon } = permissionDetails[permission]
                     const description = cloud && permission === "network" ? "Allow TCP between these nodes over SSH. Cloud terminals use a private SOCKS proxy; no UDP or LAN routing." : cloud && ["files", "volumes", "data"].includes(permission) ? "Connection-owned shared folder. Cloud servers use its browser/API, not a mounted drive." : permissionDetails[permission].description
                     const checked = selectedPermissions.includes(permission)
                     return <Label className={cn("connection-permission", checked && "is-selected")} key={permission}>
-                      <Icon aria-hidden="true" />
                       <span className="connection-permission-copy"><span id={`${descriptionId}-${permission}-label`}>{permissionLabel[permission]}</span><span id={`${descriptionId}-${permission}`}>{permission === "network" && !shared && !cloud ? "Private IPv4: TCP, UDP and ping between these two environments." : permission === "ports" && hasNetwork ? "Network access already includes every TCP port." : description}</span></span>
                       <Checkbox aria-labelledby={`${descriptionId}-${permission}-label`} aria-describedby={`${descriptionId}-${permission}`} checked={checked} disabled={saving} onCheckedChange={value => togglePermission(permission, value)} />
                     </Label>
@@ -346,9 +339,9 @@ export function ConnectionDialog({ open, onOpenChange, initialSourceId, initialT
               </section>
 
               <section aria-label="Connection details" className="connection-details">
-                <div className="connection-section-heading"><h2>Connection details</h2><ShieldCheckIcon aria-hidden="true" /></div>
+                <div className="connection-section-heading"><h2>Connection details</h2></div>
                 <div aria-label="Access summary" role="group" className="connection-summary">
-                  <p className="connection-summary-route"><span title={sourceOption?.label}>{sourceOption?.label ?? "Source"}</span><DirectionIcon aria-label={direction === "oneWay" ? "to" : "both ways"} /><span title={targetOption?.label}>{targetOption?.label ?? "Destination"}</span></p>
+                  <p className="connection-summary-route"><span title={sourceOption?.label}>{sourceOption?.label ?? "Source"}</span><span role="img" aria-label={direction === "oneWay" ? "to" : "both ways"}>{arrow}</span><span title={targetOption?.label}>{targetOption?.label ?? "Destination"}</span></p>
                   <p>{hasNetwork ? cloud ? "All TCP ports are allowed over SSH. UDP, ping and LAN routing are unavailable." : shared ? "All network traffic is allowed. The TCP port list does not restrict this connection." : "IPv4 TCP, UDP and ping are allowed. No IPv6, multicast or fragmented IP traffic." : hasPorts ? "Network access is restricted to your allowed TCP ports." : "No network traffic is granted by this connection."}</p>
                 </div>
                 {hasPorts ? <Field name="ports">
@@ -371,7 +364,7 @@ export function ConnectionDialog({ open, onOpenChange, initialSourceId, initialT
                   {peerCommandError ? <p role="alert" className="connection-error">{peerCommandError}</p> : null}
                   {peerResult ? <pre aria-label="Peer command result">{`Exit ${peerResult.exitCode}\n${peerResult.stdout}${peerResult.stderr}`}</pre> : null}
                 </div> : null}
-                <p className="connection-scope"><Link2Icon aria-hidden="true" /><span>{remote ? "Connects only these two nodes through the owner’s existing share. It does not make either guest publicly reachable." : cloud ? "Connects only these two nodes over SSH; your PC must be able to reach the cloud server. No Local network or Public access publishing." : "This connects these two environments only. It works independently of Internet access and does not publish anything."}</span></p>
+                <p className="connection-scope"><span>{remote ? "Connects only these two nodes through the owner’s existing share. It does not make either guest publicly reachable." : cloud ? "Connects only these two nodes over SSH; your PC must be able to reach the cloud server. No Local network or Public access publishing." : "This connects these two environments only. It works independently of Internet access and does not publish anything."}</span></p>
               </section>
             </div>
             {selectedPermissions.includes("data") && !remote ? <section aria-label="Choose folders to share" className="connection-folders">
@@ -392,7 +385,7 @@ export function ConnectionDialog({ open, onOpenChange, initialSourceId, initialT
               <div className="connection-actions">
                 {existingConnection && !removingOnSave ? <Button disabled={saving} onClick={() => void removeExistingConnection()} type="button" variant="ghost" className="text-destructive-foreground">Remove connection</Button> : null}
                 <DialogClose render={<Button className="rounded-full" disabled={saving} type="button" variant="ghost" />}>Cancel</DialogClose>
-                <Button aria-label={removingOnSave ? "Remove connection" : existingConnection ? "Save connection" : "Create connection"} aria-busy={saving} className="connection-submit" disabled={options.length < 2} loading={saving} type="submit" variant={removingOnSave ? "destructive" : "default"}><Link2Icon aria-hidden="true" />{removingOnSave ? "Remove connection" : existingConnection ? "Save changes" : "Create connection"}</Button>
+                <Button aria-label={removingOnSave ? "Remove connection" : existingConnection ? "Save connection" : "Create connection"} aria-busy={saving} className="connection-submit" disabled={options.length < 2} loading={saving} type="submit" variant={removingOnSave ? "destructive" : "default"}>{removingOnSave ? "Remove connection" : existingConnection ? "Save changes" : "Create connection"}</Button>
               </div>
             </div>
           </DialogFooter>

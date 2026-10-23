@@ -195,21 +195,15 @@ fn summary(p: &Project, record: Option<&Record>, path: &Path) -> Value {
     let services=p.environments.iter().map(|(name,e)|{let mut v=json!({"name":name,"type":e.kind,"image":e.image,"cpu":e.cpu,"memoryGb":manifest::gib(&e.memory).unwrap_or(0.0),"gpu":e.gpu||e.kind=="gpu","ports":e.ports,"editPc":e.permissions.edit,"variables":e.environment.keys().collect::<Vec<_>>(),"action":match record.and_then(|r|r.applied.get(name)){None=>"create",Some(old)if old==e=>"unchanged",Some(_)=>"update"}});let access=host_access(e);v["pcAccess"]=json!(access["pcFolders"].as_array().map_or(0,Vec::len));for field in ["pcFolders","projectFiles","secrets","bootSource"]{v[field]=access[field].clone();}v}).collect::<Vec<_>>();
     json!({"path":path,"project":p.project,"environments":services,"connections":p.connections.len(),"publications":p.publish.len(),"notice":"Apply preserves removed environments and data. Image/type changes create a replacement and keep the old environment stopped. down stops project workloads without deleting volumes."})
 }
-// Project files name host folders, copies and secrets: only the dashboard and the
-// same-user CLI (which calls the unchecked functions) may open them.
-#[tauri::command]
-pub async fn inspect_project(path: String, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
-    crate::host_terminal::require_dashboard(window.label())?;
-    inspect_project_file(path, app).await
-}
+// Project files name host folders, copies and secrets: only the same-user CLI,
+// through automation, may open them. No webview command reaches these functions.
 pub(crate) async fn inspect_project_file(path: String, app: AppHandle) -> Result<Value, String> {
     let (path, p) = load(&path)?;
     let r = registry(&app.state::<RuntimeManager>())?;
     Ok(summary(&p, r.projects.get(&key(&path)), &path))
 }
 
-#[tauri::command]
-pub async fn discover_projects(app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn discover_projects(app: AppHandle) -> Result<Value, String> {
     let runtime = app.state::<RuntimeManager>();
     let r = registry(&runtime)?;
     let mut paths = r
@@ -261,17 +255,6 @@ pub async fn discover_projects(app: AppHandle) -> Result<Value, String> {
     }
     Ok(json!(projects))
 }
-#[tauri::command]
-pub async fn import_compose(
-    path: String,
-    write: bool,
-    project: Option<Project>,
-    app: AppHandle,
-    window: crate::WebviewWindow,
-) -> Result<Value, String> {
-    crate::host_terminal::require_dashboard(window.label())?;
-    import_compose_file(path, write, project, app).await
-}
 pub(crate) async fn import_compose_file(
     path: String,
     write: bool,
@@ -293,6 +276,8 @@ pub(crate) async fn import_compose_file(
     let mut result = summary(&project, None, &output);
     result["generated"] = json!(false);
     if write {
+        let runtime = app.state::<RuntimeManager>();
+        import_preconditions(&output, &project.project, &registry(&runtime)?.projects)?;
         // No overwrite, including a concurrently created project file. Secrets use owner-only tempfile permissions.
         let mut f =
             tempfile::NamedTempFile::new_in(output.parent().unwrap()).map_err(|e| e.to_string())?;
@@ -302,7 +287,6 @@ pub(crate) async fn import_compose_file(
         f.as_file().sync_all().map_err(|e| e.to_string())?;
         f.persist_noclobber(&output)
             .map_err(|e| format!("Cannot create yougori.yaml (existing files are kept): {e}"))?;
-        let runtime = app.state::<RuntimeManager>();
         let lock=project_lock(&key(&output))?;
         let _guard=lock.lock().await;
         let mut r = registry(&runtime)?;
@@ -316,10 +300,100 @@ pub(crate) async fn import_compose_file(
             bindings: vec![],
             files: BTreeMap::new(),report:None,setups:BTreeMap::new(),desired:None,staging:BTreeMap::new(),
         });
-        save_record(&runtime,&key(&output),r.projects.get(&key(&output)).unwrap())?;
+        if let Err(error) = save_record(&runtime,&key(&output),r.projects.get(&key(&output)).unwrap()) {
+            // A project file nobody can use is not left behind.
+            let _ = std::fs::remove_file(&output);
+            return Err(error);
+        }
         result["generated"] = json!(true);
     }
     Ok(result)
+}
+/// The node an add or import created when its answer did not name it: the new one with the
+/// requested name, or else the one new node of that kind. Never a node that was already there,
+/// and never a guess between several new ones: another create may be running at the same time.
+fn created_node(environments: &[crate::models::Environment], before_ids: &[String], desired: &str, kind: &str) -> Result<Option<String>, String> {
+    let fresh = environments.iter().filter(|e| !before_ids.contains(&e.id)).collect::<Vec<_>>();
+    if let Some(named) = fresh.iter().find(|e| e.name == desired) {
+        return Ok(Some(named.id.clone()));
+    }
+    let of_kind = fresh.iter().filter(|e| match kind {
+        "shared" => crate::peer_sharing::is_shared(e),
+        "cloud" => e.kind == EnvironmentKind::Cloud,
+        _ => false,
+    }).collect::<Vec<_>>();
+    match of_kind.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(one.id.clone())),
+        _ => Err(format!("Several new {kind} environments appeared while {desired} was being added. Wait for the other additions to finish, then run apply again.")),
+    }
+}
+/// What a project connection grants: its permissions (network, or ports when only ports are
+/// listed) and its ports.
+fn connection_access(c: &Connection) -> (Vec<String>, Vec<String>) {
+    match c {
+        Connection::Detailed { permissions, ports, .. } => (
+            if permissions.is_empty() {
+                vec![if ports.is_empty() { "network".to_owned() } else { "ports".to_owned() }]
+            } else {
+                permissions.clone()
+            },
+            ports.iter().map(u16::to_string).collect(),
+        ),
+        _ => (vec!["network".to_owned()], vec![]),
+    }
+}
+/// Two nodes are joined by one connection, so a→b and b→a must ask for the same access to become
+/// one two-way link. Different access both ways cannot be kept: each apply would turn the one
+/// connection into the other. Refused before anything is changed, with what to do instead.
+fn two_way_conflict(p: &Project) -> Result<(), String> {
+    let links = p.connections.iter().map(|c| c.endpoints().map(|(a, b)| (a, b, connection_access(c)))).collect::<Result<Vec<_>, _>>()?;
+    for (index, (a, b, access)) in links.iter().enumerate() {
+        // Named as the person wrote the pair first, which is what they will find in their file.
+        if let Some((first, second, _)) = links[..index].iter().find(|(x, y, other)| x == b && y == a && other != access) {
+            return Err(format!("{first} and {second} are linked both ways with different access; a pair has one connection. Use the same access both ways or one two-way link."));
+        }
+    }
+    Ok(())
+}
+/// a→b and b→a with the same permissions and ports are one two-way connection. Asked for as two
+/// one-way ones, the second would update the first in place (a connection is one per pair), so
+/// only one direction would work and every apply would flip it.
+fn merge_two_way(desired: Vec<Value>) -> Vec<Value> {
+    let mut merged: Vec<Value> = Vec::new();
+    for request in desired {
+        if let Some(opposite) = merged.iter_mut().find(|other| other["direction"] == "oneWay"
+            && other["sourceId"] == request["targetId"] && other["targetId"] == request["sourceId"]
+            && other["permissions"] == request["permissions"] && other["ports"] == request["ports"])
+        {
+            opposite["direction"] = json!("bidirectional");
+            continue;
+        }
+        merged.push(request);
+    }
+    merged
+}
+/// Whether an existing connection is exactly the requested one.
+fn connection_matches(c: &crate::models::Connection, d: &Value) -> bool {
+    let direction = if d["direction"] == "bidirectional" { ConnectionDirection::Bidirectional } else { ConnectionDirection::OneWay };
+    c.source_id == d["sourceId"].as_str().unwrap_or("")
+        && c.target_id == d["targetId"].as_str().unwrap_or("")
+        && serde_json::to_value(&c.permissions).ok().as_ref() == Some(&d["permissions"])
+        && serde_json::to_value(&c.ports).ok().as_ref() == Some(&d["ports"])
+        && c.direction == direction
+        && c.active
+}
+/// What must hold before an import writes `output`. yougori.yml is found too, so a new
+/// yougori.yaml beside it would quietly take over that project's up and down; and a project
+/// name another folder already uses would make the written file unusable.
+fn import_preconditions(output: &Path, name: &str, projects: &BTreeMap<String, Record>) -> Result<(), String> {
+    if output.with_file_name("yougori.yml").try_exists().map_err(|e| e.to_string())? {
+        return Err("This folder already has a yougori.yml project. Import the Compose file in another folder, or remove yougori.yml first.".into());
+    }
+    if projects.iter().any(|(k, record)| k != &key(output) && record.project == name) {
+        return Err(format!("Another project folder already uses the project name {name}. Choose another name before importing."));
+    }
+    Ok(())
 }
 fn serde_yaml_ng_text(project: &Project) -> Result<String, String> {
     yougori_cli::manifest::to_yaml(project)
@@ -420,13 +494,15 @@ async fn configure(app: &AppHandle, id: &str, spec: &Spec, project: &str) -> Res
     }
     if env.kind == EnvironmentKind::Container {
         let runtime = app.state::<RuntimeManager>();
+        // Options are kept under the runtime ID, which a factory reset changes.
+        let options_id = env.runtime_id.as_deref().unwrap_or(&env.id);
         let mut options = spec.options(project)?;
-        let old = runtime.workload_options(&env.id)?;
+        let old = runtime.workload_options(options_id)?;
         options.hosts = old.hosts.clone();
         if options != old {
-            runtime.save_workload_options(&env.id, &options)?;
+            runtime.save_workload_options(options_id, &options)?;
             if let Err(e) = runtime.update_workload_configuration(&env).await {
-                runtime.save_workload_options(&env.id, &old)?;
+                runtime.save_workload_options(options_id, &old)?;
                 return Err(e);
             }
         }
@@ -448,31 +524,56 @@ pub(crate) async fn restore_interrupted_staging(environment_id:&str,store:&Platf
     let _provider_guard=crate::commands::environment_container_policy_guard(runtime,&environment).await?;
     let spec=record.applied.get(&name).ok_or("Interrupted staging has no applied startup specification")?;
     if environment.kind==EnvironmentKind::Container{
-        let mut options=spec.options(&record.project)?;options.hosts=runtime.workload_options(environment.runtime_id.as_deref().unwrap_or(environment_id))?.hosts;
-        runtime.save_workload_options(environment_id,&options)?;runtime.update_workload_configuration(&environment).await?;
+        let options_id=environment.runtime_id.as_deref().unwrap_or(environment_id);
+        let mut options=spec.options(&record.project)?;options.hosts=runtime.workload_options(options_id)?.hosts;
+        runtime.save_workload_options(options_id,&options)?;runtime.update_workload_configuration(&environment).await?;
     }
     record.staging.remove(environment_id);save_record(runtime,&project_key,&record)?;Ok(true)
 }
-async fn startup_intent(app:&AppHandle,p:&Project,record:&Record)->Result<(),String>{
+/// A node a newer one replaced keeps its identity and data but leaves the project: renamed and
+/// retagged, so recreating the replacement later can never adopt it by its old name and owner.
+fn retire_replaced(app: &AppHandle, id: &str, key: &str, project: &str, name: &str) -> Result<(), String> {
+    app.state::<PlatformStore>().mutate(|state| { retire(state, id, key, project, name); Ok(()) }).map(|_| ())
+}
+fn retire(state: &mut PlatformState, id: &str, key: &str, project: &str, name: &str) {
+    let ownership = format!("Yougori project {key} / {name}");
+    let suffix = format!("-replaced-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+    let retired = format!("{}{suffix}", format!("{project}-{name}").chars().take(80 - suffix.len()).collect::<String>());
+    if let Some(env) = state.environments.iter_mut().find(|env| env.id == id && env.description == ownership) {
+        env.name = retired;
+        env.description = format!("{ownership} (replaced)");
+    }
+}
+/// Which of this project's nodes start at sign-in: with `starting`, those marked
+/// `automatic_start`; without (down), none. Nodes it replaced never do.
+async fn startup_intent(app:&AppHandle,p:&Project,record:&Record,key:&str,starting:bool)->Result<(),String>{
     let store=app.state::<PlatformStore>();
     for _ in 0..3{
         let state=store.snapshot()?;
-        let mut settings=state.settings;
-        let managed=record.ids.values().collect::<Vec<_>>();
-        settings.auto_start_environment_ids.retain(|id|!managed.contains(&id));
-        for(name,spec)in &p.environments{if spec.automatic_start{settings.auto_start_environment_ids.push(record.ids[name].clone());}}
-        settings.auto_start_environment_ids.sort();settings.auto_start_environment_ids.dedup();
-        if p.environments.values().any(|s|s.automatic_start){settings.launch_at_startup=true;settings.startup_headless=true;}
+        let Some(settings)=startup_settings(&state,p,record,key,starting) else {return Ok(())};
         match crate::lifecycle::save_settings(settings,state.settings_revision,&store).await{Ok(_)=>return Ok(()),Err(e)if e.contains("YOUGORI_SETTINGS_REVISION_CONFLICT")=>continue,Err(e)=>return Err(e)}
     }
-    Err("Settings changed repeatedly; the deployment is preserved, retry apply to reconcile automatic startup".into())
+    Err(if starting {
+        "Settings changed repeatedly; the deployment is preserved, retry apply to reconcile automatic startup".into()
+    } else {
+        "Settings changed repeatedly; the nodes are stopped, but run down again so they do not start at the next sign-in".into()
+    })
 }
 
-#[tauri::command]
-pub async fn deployment_status(path:String,app:AppHandle,window:crate::WebviewWindow)->Result<Value,String>{
-    crate::host_terminal::require_dashboard(window.label())?;
-    project_deployment_status(path,app).await
+/// The settings `startup_intent` saves, or `None` when nothing about startup changes.
+fn startup_settings(state:&PlatformState,p:&Project,record:&Record,key:&str,starting:bool)->Option<AppSettings>{
+    let owned=format!("Yougori project {key} / ");
+    let mut managed=record.ids.values().cloned().collect::<Vec<_>>();
+    managed.extend(state.environments.iter().filter(|env|env.description.starts_with(&owned)).map(|env|env.id.clone()));
+    let mut settings=state.settings.clone();
+    settings.auto_start_environment_ids.retain(|id|!managed.contains(id));
+    for(name,spec)in &p.environments{if starting&&spec.automatic_start{settings.auto_start_environment_ids.push(record.ids[name].clone());}}
+    settings.auto_start_environment_ids.sort();settings.auto_start_environment_ids.dedup();
+    if starting&&p.environments.values().any(|s|s.automatic_start){settings.launch_at_startup=true;settings.startup_headless=true;}
+    let before=&state.settings;
+    (settings.auto_start_environment_ids!=before.auto_start_environment_ids||settings.launch_at_startup!=before.launch_at_startup||settings.startup_headless!=before.startup_headless).then_some(settings)
 }
+
 pub(crate) async fn project_deployment_status(path:String,app:AppHandle)->Result<Value,String>{
     let(path,p)=load(&path)?;
     let runtime=app.state::<RuntimeManager>();
@@ -503,11 +604,6 @@ async fn cancellable_deployment_report(app:&AppHandle,p:&Project,record:&Record)
     }else{Box::pin(deployment_report(app,p,record)).await}
 }
 
-#[tauri::command]
-pub async fn project_action(path: String, action: String, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
-    crate::host_terminal::require_dashboard(window.label())?;
-    run_project_action(path, action, app).await
-}
 pub(crate) async fn run_project_action(path: String, action: String, app: AppHandle) -> Result<Value, String> {
     let result=Box::pin(reconcile_project_action(path,action,app)).await;
     if let Err(error)=&result{
@@ -569,11 +665,14 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
                 status(&app, id, false).await?
             }
         }
+        // Down means down: they do not come back at the next sign-in until up or apply.
+        startup_intent(&app, &p, &record, &k, false).await?;
         return Ok(
             json!({"project":p.project,"status":"stopped","environments":record.ids,"dataPreserved":true}),
         );
     }
     // Validate all immutable/precondition checks before mutating the first node.
+    two_way_conflict(&p)?;
     for (name, spec) in &p.environments {
         // References are validated as a complete plan before creating a runtime. Values
         // stay transient; missing credentials must not leave a failed half-created node.
@@ -618,7 +717,8 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
             .cloned();
         if replace {
             if let Some(old) = &id {
-                status(&app, old, false).await?
+                status(&app, old, false).await?;
+                retire_replaced(&app, old, &k, &p.project, &name)?;
             }
             id = None;
         }
@@ -690,17 +790,7 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
                     .map(str::to_owned)
                     .or_else(|| result["id"].as_str().map(str::to_owned));
                 if id.is_none() {
-                    id = app
-                        .state::<PlatformStore>()
-                        .snapshot()?
-                        .environments
-                        .iter()
-                        .find(|e| {
-                            e.name == desired
-                                || (!before_ids.contains(&e.id)
-                                    && matches!(spec.kind.as_str(), "cloud" | "shared"))
-                        })
-                        .map(|e| e.id.clone())
+                    id = created_node(&app.state::<PlatformStore>().snapshot()?.environments, &before_ids, &desired, &spec.kind)?;
                 }
                 if let Some(id) = &id {
                     if matches!(spec.kind.as_str(), "cloud" | "shared") {
@@ -742,21 +832,23 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
             project_cancelled()?;
             let id = &record.ids[name];
             let env = node(&app, id)?;
-            let mut options = runtime.workload_options(env.runtime_id.as_deref().unwrap_or(id))?;
+            let options_id = env.runtime_id.as_deref().unwrap_or(id);
+            let mut options = runtime.workload_options(options_id)?;
+            // A node's private address follows its runtime ID (a factory reset or a shared node
+            // has its own), not the ID the project knows it by.
             let hosts = p
                 .environments
                 .keys()
                 .map(|name| {
-                    (
-                        name.clone(),
-                        crate::runtime::fabric::ip_text(&record.ids[name]),
-                    )
+                    let target = &record.ids[name];
+                    let address = node(&app, target).ok().and_then(|target| target.runtime_id).unwrap_or_else(|| target.clone());
+                    (name.clone(), crate::runtime::fabric::ip_text(&address))
                 })
                 .collect();
             if options.hosts != hosts {
                 status(&app, id, false).await?;
                 options.hosts = hosts;
-                runtime.save_workload_options(id, &options)?;
+                runtime.save_workload_options(options_id, &options)?;
                 runtime.update_workload_configuration(&env).await?;
             }
         }
@@ -764,33 +856,11 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
     let mut desired = Vec::new();
     for c in &p.connections {
         let (a, b) = c.endpoints()?;
-        let (permissions, ports) = match c {
-            Connection::Detailed {
-                permissions, ports, ..
-            } => (
-                if permissions.is_empty() {
-                    vec![if ports.is_empty() {
-                        "network".to_owned()
-                    } else {
-                        "ports".to_owned()
-                    }]
-                } else {
-                    permissions.clone()
-                },
-                ports.iter().map(u16::to_string).collect::<Vec<_>>(),
-            ),
-            _ => (vec!["network".to_owned()], vec![]),
-        };
+        let (permissions, ports) = connection_access(c);
         desired.push(json!({"sourceId":record.ids[a],"targetId":record.ids[b],"direction":"oneWay","permissions":permissions,"ports":ports}));
     }
-    let matches = |c: &crate::models::Connection, d: &Value| -> bool {
-        c.source_id == d["sourceId"].as_str().unwrap_or("")
-            && c.target_id == d["targetId"].as_str().unwrap_or("")
-            && serde_json::to_value(&c.permissions).ok().as_ref() == Some(&d["permissions"])
-            && serde_json::to_value(&c.ports).ok().as_ref() == Some(&d["ports"])
-            && c.direction == ConnectionDirection::OneWay
-            && c.active
-    };
+    let desired = merge_two_way(desired);
+    let matches = connection_matches;
     let current = app.state::<PlatformStore>().snapshot()?;
     for id in record.connections.clone() {
         project_cancelled()?;
@@ -832,7 +902,7 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
     services::reconcile(&app, &p, &mut record, &mut r, &k, false).await?;
     readiness::reconcile_project_probes(&p,&record,&runtime)?;
     project_cancelled()?;
-    startup_intent(&app,&p,&record).await?;
+    startup_intent(&app,&p,&record,&k,true).await?;
     // Keep execution outcome separate from verification: a failed probe must not imply creation failed.
     // A retry reads stable IDs and converges on this same deployment.
     record.desired=Some(p.clone());save_record(&runtime,&k,&record)?;

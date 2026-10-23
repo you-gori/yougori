@@ -10,7 +10,7 @@ use std::{
 /// NTFS, and APFS/HFS+ as normally formatted, resolve names regardless of letter case.
 pub(super) const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Change {
     Same,
     Push,
@@ -21,6 +21,23 @@ enum Change {
 fn prioritized(change: Change, priority: sync::Priority) -> Change {
     if change != Change::Conflict { return change; }
     match priority { sync::Priority::Local => Change::Push, sync::Priority::Remote => Change::Pull, sync::Priority::KeepBoth => Change::Conflict }
+}
+
+/// What happens to one path in a two-way pass. When the record of the last sync could not be
+/// read, nobody can tell which copy of a file that differs is newer, so it joins `unknown` and
+/// keeps both copies whatever the priority, until the copies match. Taking that record for a first
+/// sync let the pre-selected "This computer wins" push older copies over the container's edits.
+fn decide(ordinary: Change, path: &str, priority: sync::Priority, saved: &mut sync::Saved) -> Change {
+    match ordinary {
+        Change::Conflict if saved.unreadable => {
+            saved.unknown.insert(path.to_owned());
+        }
+        Change::Same => {
+            saved.unknown.remove(path);
+        }
+        _ => {}
+    }
+    prioritized(ordinary, if saved.unknown.contains(path) { sync::Priority::KeepBoth } else { priority })
 }
 
 fn change<'a>(base: Option<&'a str>, local: Option<&'a str>, remote: Option<&'a str>) -> Change {
@@ -675,6 +692,9 @@ impl Live {
             .prefix(".yougori-sync-")
             .tempfile_in(parent)
             .map_err(|e| e.to_string())?;
+        // A second Ctrl+C quits at once without this file's own cleanup; a half-downloaded
+        // file is never left in the project folder.
+        let _on_quit = ui::remove_on_quit(temp.path());
         let mut digest = Sha256::new();
         let mut offset = 0u64;
         let mut progress: Option<ui::Task> = None;
@@ -812,6 +832,9 @@ impl Live {
     pub(super) async fn sync_direction(&mut self, env_files: bool, direction: sync::Direction) -> Result<usize, String> {
         self.env_files = env_files;
         let progress = ui::task("Checking project changes");
+        if self.saved.unreadable {
+            ui::warn("Yougori has no record it can use of what this project last synced with this environment, so it cannot tell which copy of a changed file is newer. Files that differ keep both copies this time, whatever the sync priority says; make each pair match to resume syncing it.");
+        }
         let filter = sync::Filter::load(&self.folder, env_files)?.two_way();
         let checkpoint = (self.saved.two_way, self.saved.environment.clone(), self.saved.common.clone());
         if self.saved.environment != self.receiver.environment || !self.saved.two_way {
@@ -829,7 +852,11 @@ impl Live {
         for link in &links {
             self.hold(link, None);
         }
-        self.discover_databases(&manifest).await;
+        // A file that could not be read to tell whether it is a database sits this pass out on
+        // both sides: synced as a plain file, it would replace the other side's live database.
+        for path in self.discover_databases(&manifest).await {
+            self.hold(&path, None);
+        }
         self.database_files.extend(self.saved.databases.keys().cloned());
         self.local_hashes
             .retain(|path, _| manifest.contains_key(path));
@@ -861,7 +888,8 @@ impl Live {
                     local_hash,
                     remote_hash,
                 );
-                let action = prioritized(if ordinary != Change::Same && self.folder_conflict(&path) { Change::Conflict } else { ordinary }, self.priority);
+                let ordinary = if ordinary != Change::Same && self.folder_conflict(&path) { Change::Conflict } else { ordinary };
+                let action = decide(ordinary, &path, self.priority, &mut self.saved);
                 // Do not advance the common checkpoint for deferred changes. A later
                 // handoff in the other direction must still see them, even after restart.
                 if (action == Change::Push && !direction.sends()) || (action == Change::Pull && !direction.receives()) { continue; }
@@ -888,6 +916,8 @@ impl Live {
                         remote_hash
                     }
                 };
+                // The two copies match now, so this path has a shared version again.
+                self.saved.unknown.remove(&path);
                 if let Some(hash) = hash {
                     self.saved.common.insert(path, hash.into());
                 } else {
@@ -942,13 +972,55 @@ impl Live {
             self.receiver.write(b"K\n").await?;
         }
         progress.clear();
-        Ok(changed.len() + self.sync_databases_direction(true, direction).await? + self.sync_folders_direction(true, direction).await?)
+        let databases = self.sync_databases_direction(true, direction).await?;
+        let folders = self.sync_folders_direction(true, direction).await?;
+        // Every file and database that differed when the record could not be read is in
+        // `unknown` now, saved with it, so later passes and launches keep those apart on their own.
+        self.saved.unreadable = false;
+        Ok(changed.len() + databases + folders)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PROVES that when the record of the last sync cannot be read, a file that differs keeps
+    /// both copies whatever the priority, until the two copies match.
+    ///
+    /// An unreadable record read as a first sync: with no shared version, every file that
+    /// differed was a conflict, and the pre-selected "This computer wins" pushed this computer's
+    /// older copy over edits made in the container ("Container wins" did the reverse). Nobody can
+    /// tell which copy is newer then, so the program must not choose whose work survives.
+    #[test]
+    fn a_sync_record_that_cannot_be_read_never_chooses_which_copy_survives() {
+        let folder = tempfile::tempdir().unwrap();
+        let record = folder.path().join("sync.json");
+        fs::write(&record, b"{ damaged").unwrap();
+        let mut saved = sync::Saved::load(&record);
+        assert!(saved.unreadable, "a record that is there and cannot be read is not a first sync");
+
+        let differs = change(saved.common.get("app.js").map(String::as_str), Some("pc"), Some("container"));
+        for priority in [sync::Priority::Local, sync::Priority::Remote] {
+            assert_eq!(decide(differs, "app.js", priority, &mut saved), Change::Conflict, "{priority:?} chose a copy it could not judge");
+        }
+        // A file only one side has still syncs: nothing is lost by copying it.
+        assert_eq!(decide(change(None, Some("pc"), None), "new.js", sync::Priority::Local, &mut saved), Change::Push);
+
+        // Later passes, and later launches, read the record again; that file still keeps both copies.
+        saved.unreadable = false;
+        let mut reread: sync::Saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(!reread.unreadable);
+        assert_eq!(decide(differs, "app.js", sync::Priority::Local, &mut reread), Change::Conflict);
+        // Once the copies match, it is an ordinary file again.
+        assert_eq!(decide(Change::Same, "app.js", sync::Priority::Local, &mut reread), Change::Same);
+        assert_eq!(decide(differs, "app.js", sync::Priority::Local, &mut reread), Change::Push, "after that the chosen priority applies again");
+
+        // No record at all is a first sync, and the chosen priority applies.
+        let mut first = sync::Saved::load(&folder.path().join("missing.json"));
+        assert!(!first.unreadable);
+        assert_eq!(decide(differs, "app.js", sync::Priority::Local, &mut first), Change::Push);
+    }
 
     fn local_sql(root: &Path, sql: &str) -> Result<String, String> {
         let result = std::process::Command::new("node").args(["--no-warnings", "-e",

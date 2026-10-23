@@ -13,6 +13,8 @@ import urllib.error
 import urllib.request
 
 children = {}
+# vLLM tool-call parsers for agent tool calling: only Swarm workers on a rented GPU ask for one.
+TOOL_PARSERS = ('hermes', 'qwen3_coder', 'llama3_json', 'openai', 'gemma4')
 
 
 def root_dir():
@@ -103,6 +105,9 @@ def request(action, body):
         model_format = body.get('format', 'safetensors')
         if model_format not in ('safetensors', 'vllm'):
             raise ValueError('Unsupported model runner')
+        tool_parser = body.get('toolParser')
+        if tool_parser is not None and (model_format != 'vllm' or tool_parser not in TOOL_PARSERS):
+            raise ValueError('Unsupported tool-call parser')
         revision=body.get('revision')
         if revision is not None and not re.fullmatch(r'[a-f0-9]{40}',revision):
             raise ValueError('Model revision must be an immutable checkpoint SHA')
@@ -115,6 +120,10 @@ def request(action, body):
             saved = json.loads((root / 'config.json').read_text())
             if saved['token'] != token:
                 raise ValueError('This pod has a model managed by another Yougori installation')
+            # A server with agent tool calling also serves plain chat; one without cannot serve an agent.
+            if tool_parser and saved.get('toolParser') != tool_parser:
+                started = 'with a different tool-call parser' if saved.get('toolParser') else 'without agent tool calling'
+                raise ValueError('This pod already runs ' + model + ' ' + started + '. Stop its model, then retry.')
             return {'reused': True}
         probe = socket.socket()
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -133,7 +142,7 @@ def request(action, body):
         admin_token = body.get('adminToken')
         if admin_token is not None and (not isinstance(admin_token, str) or not re.fullmatch(r'[a-f0-9]{64}', admin_token)):
             raise ValueError('Invalid model configuration')
-        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format}))]:
+        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format, **({'toolParser': tool_parser} if tool_parser else {})}))]:
             path = root / name
             with open(path, 'w', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
                 file.write(data)
@@ -156,6 +165,8 @@ if config.get('hfToken'):
     os.environ['HF_TOKEN']=config['hfToken']
 if config.get('adminToken'):
     os.environ['YOUGORI_MODEL_ADMIN_TOKEN']=config['adminToken']
+if config.get('toolParser'):
+    os.environ['YOUGORI_TOOL_PARSER']=config['toolParser']
 (root / 'cache').mkdir(exist_ok=True)
 os.execv(str(python), [str(python), '-u', str(root / 'server.py')])
 '''

@@ -48,37 +48,120 @@ pub struct ErrorDetails {
     pub outcome: String,
 }
 
-impl ErrorDetails {
-    pub fn from_message(message: &str) -> Self {
+/// Marks an error as the person cancelling rather than as a failure. U+0018 is the CANCEL control
+/// character: no real message begins with it, and a terminal does not draw it, so a marked
+/// sentence that reaches the screen by some other door still reads as it should.
+pub const CANCELLED_SAID: char = '\u{18}';
+
+/// A cancellation that says what it left behind, such as "Cancelled. Nothing was connected.".
+/// However it is worded, it is shown muted rather than as a failure, the command exits 130, and
+/// its code is `operation_cancelled`. An empty sentence means the screen already says it.
+pub fn cancelled(said: &str) -> String {
+    format!("{CANCELLED_SAID}{said}")
+}
+
+/// What a cancellation says, without its mark; `None` for an error that is not one. The plain
+/// [`crate::cli_ui::CANCELLED`] is one too, and so is a marked one that something wrapped.
+pub fn cancellation(error: &str) -> Option<String> {
+    if error == crate::cli_ui::CANCELLED {
+        return Some(error.to_owned());
+    }
+    error.contains(CANCELLED_SAID).then(|| error.replace(CANCELLED_SAID, "").trim().to_owned())
+}
+
+/// What kind of failure an error is, for a program to act on. A code is attached where the
+/// error is made and travels beside the sentence, never inside it, so rewording a message for
+/// people cannot change what a program reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Code {
+    DurableStorageMissing,
+    UnsupportedCapability,
+    OperationCancelled,
+    OperationInterrupted,
+    OutcomeUnknown,
+    IncompatibleEngine,
+    EngineUnavailable,
+    ResourceConflict,
+    PermissionDenied,
+    InvalidRequest,
+    ResourceNotFound,
+    OperationFailed,
+}
+
+impl Code {
+    /// The code's name, whether trying again could help, and what became of the request.
+    fn parts(self) -> (&'static str, bool, &'static str) {
+        match self {
+            Code::DurableStorageMissing => ("durable_storage_missing", false, "not_started"),
+            Code::UnsupportedCapability => ("unsupported_capability", false, "not_started"),
+            Code::OperationCancelled => ("operation_cancelled", false, "cancelled"),
+            Code::OperationInterrupted => ("operation_interrupted", false, "reconciliation_required"),
+            Code::OutcomeUnknown => ("outcome_unknown", false, "unknown"),
+            Code::IncompatibleEngine => ("incompatible_engine", false, "not_started"),
+            Code::EngineUnavailable => ("engine_unavailable", true, "not_submitted"),
+            Code::ResourceConflict => ("resource_conflict", false, "not_started"),
+            Code::PermissionDenied => ("permission_denied", false, "not_started"),
+            Code::InvalidRequest => ("invalid_request", false, "not_started"),
+            Code::ResourceNotFound => ("resource_not_found", false, "not_started"),
+            Code::OperationFailed => ("operation_failed", false, "failed"),
+        }
+    }
+
+    /// The kind of an error that arrived without one attached.
+    ///
+    /// First what cannot drift: the cancellation mark and the engine's machine tokens. Then
+    /// `Usage:`, which is a form rather than a wording. Words come last, as a fallback for errors
+    /// nobody has tagged yet: an error the CLI makes itself should carry its code from where it
+    /// is made (`client::remember_error`), as the engine connection, its time limits, the command
+    /// parser and its confirmations, and environment names already do. The test below pins the
+    /// words this still relies on, so a rewording that would move a code fails there first.
+    pub fn read(message: &str) -> Code {
         let lower = message.to_ascii_lowercase();
-        let (code, retryable, outcome) = if message.starts_with("[YOUGORI_DURABLE_STORAGE_MISSING]") {
-            ("durable_storage_missing",false,"not_started")
+        if cancellation(message).is_some() {
+            Code::OperationCancelled
+        } else if message.starts_with("[YOUGORI_DURABLE_STORAGE_MISSING]") {
+            Code::DurableStorageMissing
         } else if message.starts_with("YOUGORI_UNSUPPORTED_EXECUTION_CAPABILITY") {
-            ("unsupported_capability",false,"not_started")
+            Code::UnsupportedCapability
         } else if message.starts_with("YOUGORI_OPERATION_CANCELLED") {
-            ("operation_cancelled",false,"cancelled")
+            Code::OperationCancelled
         } else if message.starts_with("YOUGORI_OPERATION_INTERRUPTED") {
-            ("operation_interrupted",false,"reconciliation_required")
+            Code::OperationInterrupted
+        } else if lower.starts_with("usage:") {
+            Code::InvalidRequest
         } else if lower.contains("timed out") || lower.contains("outcome may be unknown") || lower.contains("connection ended") {
-            ("outcome_unknown", false, "unknown")
+            Code::OutcomeUnknown
         } else if lower.contains("cancelled") || lower.contains("canceled") {
-            ("operation_cancelled", false, "cancelled")
+            Code::OperationCancelled
         } else if lower.contains("interrupted") {
-            ("operation_interrupted", false, "reconciliation_required")
+            Code::OperationInterrupted
         } else if lower.contains("protocol mismatch") || lower.contains("does not support") {
-            ("incompatible_engine", false, "not_started")
+            Code::IncompatibleEngine
         } else if lower.contains("cannot reach") {
-            ("engine_unavailable", true, "not_submitted")
+            Code::EngineUnavailable
         } else if lower.contains("another live owner") || lower.contains("already in use") || lower.contains("revision") && lower.contains("conflict") {
-            ("resource_conflict", false, "not_started")
+            Code::ResourceConflict
         } else if lower.contains("permission") || lower.contains("requires --yes") || lower.contains("repeat with --yes") || lower.contains("--yes confirmation is required") || lower.contains("ownership") {
-            ("permission_denied", false, "not_started")
-        } else if lower.starts_with("usage:") || lower.contains("unknown parameter") || lower.contains("missing parameter") || lower.contains("must be") || lower.contains("unknown command") || lower.contains("unknown method") {
-            ("invalid_request", false, "not_started")
+            Code::PermissionDenied
+        } else if lower.contains("unknown parameter") || lower.contains("unknown option") || lower.contains("missing parameter") || lower.contains("must be") || lower.contains("unknown command") || lower.contains("unknown method") {
+            Code::InvalidRequest
         } else if lower.contains("not found") {
-            ("resource_not_found", false, "not_started")
-        } else { ("operation_failed", false, "failed") };
+            Code::ResourceNotFound
+        } else {
+            Code::OperationFailed
+        }
+    }
+}
+
+impl ErrorDetails {
+    /// The details of an error whose kind is known where it is made.
+    pub fn of(code: Code) -> Self {
+        let (code, retryable, outcome) = code.parts();
         Self { code: code.into(), affected_resource: None, retryable, outcome: outcome.into() }
+    }
+    /// The details of an error that arrived without any, read from it (see [`Code::read`]).
+    pub fn from_message(message: &str) -> Self {
+        Self::of(Code::read(message))
     }
 }
 impl Response {
@@ -266,6 +349,47 @@ mod tests {
         assert_eq!(ErrorDetails::from_message("YOUGORI_OPERATION_INTERRUPTED: cleanup timed out").outcome,"reconciliation_required");
         let future:Response=serde_json::from_value(serde_json::json!({"version":VERSION,"ok":true,"result":{},"futureAdditiveField":true})).unwrap();
         assert!(future.ok);
+    }
+
+    /// PROVES that a cancellation reads as one however it is worded, and that only one does.
+    #[test]
+    fn a_cancellation_is_one_however_it_is_worded() {
+        let said = cancelled("Cancelled. Nothing was connected.");
+        assert_eq!(cancellation(&said).as_deref(), Some("Cancelled. Nothing was connected."));
+        assert_eq!(ErrorDetails::from_message(&said).code, "operation_cancelled");
+        // No word of it says "cancelled", and it still is one.
+        assert_eq!(ErrorDetails::from_message(&cancelled("Stopped. Nothing else changed.")).code, "operation_cancelled");
+        // Something wrapped it in words of its own: still one, and the mark never shows.
+        assert_eq!(cancellation(&format!("Setup ended: {}", cancelled("Nothing was created."))).as_deref(), Some("Setup ended: Nothing was created."));
+        assert_eq!(cancellation(crate::cli_ui::CANCELLED).as_deref(), Some(crate::cli_ui::CANCELLED));
+        // An empty one means the screen already says it.
+        assert_eq!(cancellation(&cancelled("")).as_deref(), Some(""));
+        assert!(cancellation("The engine stopped while copying").is_none());
+    }
+
+    /// PINS the words the fallback still reads. Each family keeps its code whatever else changes
+    /// around it; rewording one of these sentences so that it stops matching fails here, which
+    /// is the moment to attach its code where it is made instead.
+    #[test]
+    fn the_words_an_untagged_error_is_read_by_keep_their_codes() {
+        let families = [
+            ("Usage: yougori rm ENV --yes", "invalid_request"),
+            ("Unknown option --colour for yougori terminal.", "invalid_request"),
+            ("--isolation must be standard or strict.", "invalid_request"),
+            ("Deletes this environment. Repeat with --yes only if this is intended.", "permission_denied"),
+            ("Environment web was not found. See your environments with yougori ps.", "resource_not_found"),
+            ("Cannot reach the Yougori engine because it is not running. Start it with yougori app start.", "engine_unavailable"),
+            ("Yougori did not answer in time, so the outcome may be unknown.", "outcome_unknown"),
+            ("CLI/engine protocol mismatch. Update both Yougori and its CLI.", "incompatible_engine"),
+            ("Port 8080 is already in use by another environment.", "resource_conflict"),
+            ("The copy stopped partway; nothing more was copied.", "operation_failed"),
+        ];
+        for (message, code) in families {
+            assert_eq!(ErrorDetails::from_message(message).code, code, "{message}");
+        }
+        // A code attached where the error was made does not depend on any of this.
+        let details = ErrorDetails::of(Code::EngineUnavailable);
+        assert_eq!((details.code.as_str(), details.retryable, details.outcome.as_str()), ("engine_unavailable", true, "not_submitted"));
     }
     #[test]
     fn bounded_frames_roundtrip_and_reject_oversize() {

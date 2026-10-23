@@ -12,7 +12,6 @@ vi.mock("@/api/projects-api", () => ({ modelsApi: { compute: async () => ({ back
 // An in-memory engine store for chat history.
 let savedHistory: unknown = null
 beforeEach(() => { savedHistory = null; history.mockImplementation(async () => savedHistory); saveHistory.mockImplementation(async (_id: string, value: unknown) => { savedHistory = value }); preflight.mockResolvedValue({supported:true,task:"text-generation",resources:{},downloads:{}}) })
-vi.mock("@/components/host-terminal-canvas", () => ({ HostTerminalCanvas: () => null }))
 vi.mock("@/components/guest-logs", () => ({
   GuestLogs: ({ environmentId, active }: { environmentId: string; active: boolean }) =>
     <div aria-label="Live startup output">{active ? environmentId : "paused"}</div>,

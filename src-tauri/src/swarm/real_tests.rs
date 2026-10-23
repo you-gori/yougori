@@ -107,8 +107,8 @@ async fn swarm_http_direct_payment_contract_without_model_runtime() {
 }
 
 #[test]
-#[ignore = "downloads a real HF GGUF model and pinned OpenCode into disposable local sandboxes; requires YOUGORI_SWARM_FIXTURE_PATH"]
-fn swarm_real_local_model_opencode_bounty_journey() {
+#[ignore = "downloads a real HF GGUF model and pinned Hermes into disposable local sandboxes; requires YOUGORI_SWARM_FIXTURE_PATH"]
+fn swarm_real_local_model_hermes_bounty_journey() {
     let fixture = std::env::var("YOUGORI_SWARM_FIXTURE_PATH").expect(
         "Set YOUGORI_SWARM_FIXTURE_PATH to the private website's scripts/swarm-native-fixture.mjs",
     );
@@ -177,7 +177,7 @@ fn swarm_real_local_model_opencode_bounty_journey() {
                 for worker in &workers {
                     for reference in [
                         worker.credential_reference.as_ref(),
-                        worker.opencode_password_reference.as_ref(),
+                        worker.harness_password_reference.as_ref(),
                     ]
                     .into_iter()
                     .flatten()
@@ -217,7 +217,7 @@ fn swarm_real_local_model_opencode_bounty_journey() {
 /// never prompts, arguments, model reasoning, credentials or source contents.
 pub(super) async fn trace_turn(app: &AppHandle, worker: &Worker, session: &str) {
     if std::env::var_os("YOUGORI_SWARM_FIXTURE_PATH").is_none() { return; }
-    if let Ok(messages) = guest::opencode_request(app, worker, &format!("/session/{session}/message"), None).await {
+    if let Ok(messages) = guest::harness_request(app, worker, &format!("/session/{session}/message"), None).await {
         let trace = messages.as_array().into_iter().flatten().filter(|m|m["info"]["role"]=="assistant")
             .map(|m|json!({"finish":m["info"]["finish"],"tools":m["parts"].as_array().into_iter().flatten()
                 .filter(|p|p["type"]=="tool").map(|p|json!({"name":p["tool"],"status":p["state"]["status"]})).collect::<Vec<_>>()}))
@@ -304,7 +304,7 @@ async fn exercise(app: &AppHandle, fixture: &str) -> Result<(), String> {
         let line=tokio::time::timeout(Duration::from_secs(30),output.next_line()).await.map_err(|_|"Fixture setup timed out")?.map_err(|e|e.to_string())?.ok_or("Fixture setup failed")?;
         let ready:Value=serde_json::from_str(&line).map_err(|_|"Invalid fixture setup")?;
         std::env::set_var("YOUGORI_NETWORK_URL",string(&ready,"url")?);std::env::set_var("YOUGORI_SWARM_TEST_ACCOUNT",string(&ready,"accountToken")?);
-        eprintln!("Swarm QA: isolated test website ready; preparing {model} on {gpu} and OpenCode.");
+        eprintln!("Swarm QA: isolated test website ready; preparing {model} on {gpu} and Hermes.");
         let created=swarm_dispatch(json!({"action":"prepare","model":format!("hf.co/{model}"),"quant":quant,"name":"Disposable Swarm QA worker","gpu":gpu,"resources":{"cpu":4,"memoryGb":memory},"workspaceQuotaGb":8,"keepResident":true}),app.clone()).await?;
         let id=string(&created["worker"],"id")?.to_owned();
         let deadline=tokio::time::Instant::now()+Duration::from_secs(2400);let mut last=String::new();
@@ -343,7 +343,7 @@ async fn exercise(app: &AppHandle, fixture: &str) -> Result<(), String> {
             }
             if reproduced && managed_attempt && report.is_some(){
                 let report_id = report.unwrap()["id"].clone();
-                eprintln!("Swarm QA: actual model/OpenCode reproduced the local failing check, recorded an attempt and submitted a complete report.");
+                eprintln!("Swarm QA: actual model/Hermes reproduced the local failing check, recorded an attempt and submitted a complete report.");
                 let messages=swarm_dispatch(json!({"action":"chat","workerId":id,"content":"What have you checked?","idempotencyKey":"qa-human-guidance"}),app.clone()).await?;
                 assert!(messages["message"].is_object());
                 let message_id=messages["message"]["id"].clone();
@@ -371,7 +371,7 @@ async fn exercise(app: &AppHandle, fixture: &str) -> Result<(), String> {
                 eprintln!("Swarm QA: separate human chat answered, authorization isolation checked: {}",privacy.to_string());
                 return Ok(())
             }
-            if tokio::time::Instant::now()>deadline{return Err(format!("Model/OpenCode journey incomplete: reproduced={reproduced}, managedAttempt={managed_attempt}, completeReport={}. No successful end-to-end result is claimed.",report.is_some()))}
+            if tokio::time::Instant::now()>deadline{return Err(format!("Model/Hermes journey incomplete: reproduced={reproduced}, managedAttempt={managed_attempt}, completeReport={}. No successful end-to-end result is claimed.",report.is_some()))}
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
     }.await;

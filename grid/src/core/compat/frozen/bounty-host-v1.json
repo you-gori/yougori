@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "id": "bounty-0123456789abcdef",
+  "name": "Example Bounty",
+  "address": "10.0.0.6",
+  "port": 7470,
+  "hostname": "bounty.example.invalid",
+  "tunnelPort": 7471,
+  "certificate": "FIXTURE CERTIFICATE, NOT A REAL ONE",
+  "salt": "00112233445566778899aabbccddeeff",
+  "createdAt": 1700000000,
+  "bounty": {
+    "title": "Review the example service",
+    "instructions": "Look for logic flaws in the checkout path",
+    "authorization": "You may test only the source in this bounty",
+    "files": [
+      {
+        "path": "src/main.rs",
+        "data": "Zm4gbWFpbigpIHt9"
+      },
+      {
+        "path": "src/lib.rs",
+        "data": "cHViIGZuIG9uZSgpIHt9"
+      }
+    ],
+    "target": {
+      "kind": "web",
+      "setupCommand": "npm ci",
+      "startCommand": "npm start",
+      "testCommand": "npm test",
+      "port": 3000,
+      "healthPath": "/",
+      "installNetwork": true
+    }
+  },
+  "members": [
+    {
+      "id": "member-0000000000000001",
+      "name": "Computer one",
+      "platform": "linux",
+      "tokenHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "joinedAt": 1700000400,
+      "model": "example/one",
+      "findings": 2
+    },
+    {
+      "id": "member-0000000000000002",
+      "name": "Computer two",
+      "platform": "macos",
+      "tokenHash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "joinedAt": 1700000500,
+      "model": null,
+      "findings": 0
+    }
+  ],
+  "findings": [
+    {
+      "id": "finding-0000000000000001",
+      "memberId": "member-0000000000000001",
+      "memberName": "Computer one",
+      "model": "example/one",
+      "title": "An example finding",
+      "detail": "What it found",
+      "severity": "medium",
+      "createdAt": 1700000600
+    },
+    {
+      "id": "finding-0000000000000002",
+      "memberId": "member-0000000000000001",
+      "memberName": "Computer one",
+      "model": "example/one",
+      "title": "A second example finding",
+      "detail": "What else it found",
+      "severity": "",
+      "createdAt": 1700000700
+    }
+  ]
+}

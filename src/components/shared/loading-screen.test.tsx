@@ -34,19 +34,6 @@ it("shows startup errors with a working retry instead of an endless spinner", ()
   expect(retry).toHaveBeenCalledOnce()
 })
 
-it("lets the user open the app when the CLI does not start", () => {
-  const continueApp = vi.fn()
-  const retry = vi.fn()
-  render(<LoadingScreen error="Could not start the CLI: host shell blocked" onRetry={retry} onContinue={continueApp} continueKind="cli" />)
-  expect(screen.getByRole("alert").textContent).toContain("The CLI didn’t start")
-  expect(screen.getByRole("alert").textContent).toContain("host shell blocked")
-  expect(screen.queryByText("Technical details")).toBeNull()
-  fireEvent.click(screen.getByRole("button", { name: "Try again" }))
-  expect(retry).toHaveBeenCalledOnce()
-  fireEvent.click(screen.getByRole("button", { name: "Open Yougori" }))
-  expect(continueApp).toHaveBeenCalledOnce()
-})
-
 it("keeps vault disk diagnostics collapsed and lets the user open the app", () => {
   const continueApp = vi.fn()
   render(<LoadingScreen error="Could not start Personal Vault: Container disk needs recovery; Leaked cluster 15130" onContinue={continueApp} />)

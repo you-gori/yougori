@@ -9,6 +9,8 @@ pub(super) struct Helper {
     _script: tempfile::NamedTempFile,
     diagnostics: tempfile::NamedTempFile,
     failed: bool,
+    /// Both files are removed even when a second Ctrl+C quits at once.
+    _on_quit: [ui::RemoveOnQuit; 2],
 }
 impl Drop for Helper {
     fn drop(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); }
@@ -26,7 +28,8 @@ impl Helper {
         let mut child = command.spawn().map_err(|e| format!("SQLite sync needs Node.js 22.16 or newer on this computer: {e}"))?;
         let input = child.stdin.take().ok_or("Missing SQLite helper input")?;
         let output = BufReader::new(child.stdout.take().ok_or("Missing SQLite helper output")?);
-        Ok(Self { child, input, output, _script: script, diagnostics, failed: false })
+        let on_quit = [ui::remove_on_quit(script.path()), ui::remove_on_quit(diagnostics.path())];
+        Ok(Self { child, input, output, _script: script, diagnostics, failed: false, _on_quit: on_quit })
     }
     fn transport_error(&mut self, cause: &str) -> String {
         self.failed = true;
@@ -114,17 +117,31 @@ fn directed(action: Action, direction: sync::Direction) -> Action {
 impl Live {
     /// Finds the SQLite databases among new and changed files. The first pass of a launch reads
     /// the header of every file, which takes a while in a large project.
-    pub(super) async fn discover_databases(&mut self, manifest: &sync::Manifest) {
+    ///
+    /// Returns the files that could not be read to tell. They are not passed off as plain files:
+    /// no answer is kept for them, the caller holds them out of this pass, and the next pass asks
+    /// again.
+    pub(super) async fn discover_databases(&mut self, manifest: &sync::Manifest) -> BTreeSet<String> {
         self.database_probes.retain(|path, _| manifest.contains_key(path));
         let mut probed = 0;
+        let mut unread = BTreeSet::new();
         for (path, stamp) in manifest {
             if stamp.0 >= 16 && self.database_probes.get(path) != Some(stamp) {
-                if sync::sqlite_file(&self.folder.join(path)) { self.database_files.insert(path.clone()); }
-                self.database_probes.insert(path.clone(), *stamp);
+                match sync::sqlite_file(&self.folder.join(path)) {
+                    Ok(database) => {
+                        if database { self.database_files.insert(path.clone()); }
+                        self.database_probes.insert(path.clone(), *stamp);
+                    }
+                    Err(error) => {
+                        self.warn_once(format!("{} could not be read to tell whether it is a database ({error}), so it waits for a later sync.", clean(path)));
+                        unread.insert(path.clone());
+                    }
+                }
                 probed += 1;
                 breathe(probed).await;
             }
         }
+        unread
     }
     async fn database_request(&mut self, remote: bool, request: Value, progress: Option<&ui::Task>) -> Result<Value, String> {
         if remote { self.receiver.rpc_progress(request, progress).await }
@@ -234,10 +251,14 @@ impl Live {
         let mut conflicts = 0;
         let mut push = Vec::new();
         let mut pull = Vec::new();
+        // With the record of the last sync unreadable, nobody can tell which copy of a record is
+        // newer: records that differ keep both copies, as files do, until they all match.
+        let unknown = self.saved.unreadable || self.saved.unknown.contains(path);
+        let priority = if unknown { sync::Priority::KeepBoth } else { self.priority };
         for key in keys {
             let l = local.get(&key).map(String::as_str);
             let r = remote.get(&key).map(String::as_str);
-            let result = match directed(action(base.get(&key).map(String::as_str), l, r, two_way, self.priority), direction) {
+            let result = match directed(action(base.get(&key).map(String::as_str), l, r, two_way, priority), direction) {
                 Action::Ignore => continue,
                 Action::Conflict => { conflicts += 1; continue; }
                 Action::Same => l,
@@ -245,6 +266,11 @@ impl Live {
                 Action::Pull => { pull.push(json!([key, r, l])); r }
             };
             if let Some(hash) = result { next.insert(key, hash.into()); } else { next.remove(&key); }
+        }
+        if unknown && conflicts > 0 {
+            self.saved.unknown.insert(path.to_owned());
+        } else if conflicts == 0 {
+            self.saved.unknown.remove(path);
         }
         let total = (push.len() + pull.len()) as u64;
         let mut completed = 0;
@@ -335,6 +361,54 @@ mod tests {
         assert!(error.contains("Local SQLite helper stopped"), "{error}");
         assert!(helper.as_ref().unwrap().failed);
         assert_eq!(local_request(&mut helper, &root, request).unwrap()["database"], false);
+    }
+
+    /// PROVES that a file which cannot be read to tell whether it is a database is never taken
+    /// for a plain file, is held out of the pass, and is asked about again on the next one.
+    ///
+    /// Any failure to open the file (an antivirus scan holding a database the app just made, say)
+    /// read as "not a database", and that answer was kept until the file changed. Sync then sent
+    /// the database whole as a plain file, replacing the container's live copy and every row that
+    /// existed only there.
+    #[test]
+    fn a_database_that_cannot_be_read_is_held_back_and_asked_about_again() {
+        use std::{future::Future, task::{Context, Poll, Waker}};
+        let folder = tempfile::tempdir().unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut live = Live::offline(folder.path());
+        let mut search = |live: &mut Live, manifest: &sync::Manifest| {
+            let mut search = std::pin::pin!(live.discover_databases(manifest));
+            loop {
+                if let Poll::Ready(unread) = search.as_mut().poll(&mut cx) { break unread; }
+            }
+        };
+        // A folder where the database is stands in for a file that cannot be opened this time.
+        fs::create_dir(folder.path().join("app.db")).unwrap();
+        let manifest = sync::Manifest::from([("app.db".to_owned(), (100, 1))]);
+        assert_eq!(search(&mut live, &manifest).into_iter().collect::<Vec<_>>(), ["app.db"], "it is held out of this pass");
+        assert!(live.database_probes.is_empty() && live.database_files.is_empty(), "and no answer is kept for it");
+
+        // One-way sync records it as it was before, so the next pass sees it as changed again.
+        let previous = sync::Manifest::from([("app.db".to_owned(), (90, 0)), ("old.txt".to_owned(), (3, 0))]);
+        let unread = BTreeSet::from(["app.db".to_owned()]);
+        let recorded = keep_unread(sync::Manifest::from([("app.db".to_owned(), (100, 1))]), &previous, &unread);
+        assert_eq!(recorded.get("app.db"), Some(&(90, 0)));
+        assert_eq!(keep_unread(sync::Manifest::from([("new.db".to_owned(), (100, 1))]), &sync::Manifest::new(), &BTreeSet::from(["new.db".to_owned()])).get("new.db"), None);
+
+        // Readable on the next pass, with the same stamp: asked again, and found to be a database.
+        fs::remove_dir(folder.path().join("app.db")).unwrap();
+        let mut database = b"SQLite format 3\0".to_vec();
+        database.extend([0; 84]);
+        fs::write(folder.path().join("app.db"), database).unwrap();
+        assert!(search(&mut live, &manifest).is_empty());
+        assert_eq!(live.database_files.iter().collect::<Vec<_>>(), ["app.db"]);
+
+        // Gone, or too short for a header, is not a database; anything else unreadable is an error.
+        assert!(matches!(sync::sqlite_file(&folder.path().join("missing.db")), Ok(false)));
+        fs::write(folder.path().join("short.db"), b"SQLite").unwrap();
+        assert!(matches!(sync::sqlite_file(&folder.path().join("short.db")), Ok(false)));
+        fs::create_dir(folder.path().join("held.db")).unwrap();
+        assert!(sync::sqlite_file(&folder.path().join("held.db")).is_err());
     }
 
     #[test]

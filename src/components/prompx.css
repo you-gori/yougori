@@ -1,0 +1,75 @@
+/* The PrompX look across the app: pills with a round arrow, two-tone headlines, the left sidebar
+   and flat cream blocks on white, separated by hairlines. Colours come from the theme tokens. */
+
+/* Pills */
+.pill {
+  display: inline-flex; flex-shrink: 0; align-items: center; gap: 12px;
+  height: 36px; padding: 2px 2px 2px 20px; border: 0; border-radius: 75px;
+  font: inherit; font-size: 14px; font-weight: 400; letter-spacing: -0.02em; white-space: nowrap;
+  cursor: pointer; transition: opacity .2s, background-color .2s;
+}
+.pill:hover:not(:disabled) { opacity: .88; }
+.pill:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.pill:disabled { cursor: not-allowed; opacity: .4; }
+.pill-circle { display: inline-flex; width: 32px; height: 32px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 50%; transition: transform .2s; }
+.pill-circle svg { width: 16px; height: 16px; }
+.pill:hover:not(:disabled) .pill-circle { transform: translateX(2px); }
+.pill-dark { background: var(--primary); color: var(--primary-foreground); }
+.pill-dark .pill-circle { background: var(--primary-foreground); color: var(--primary); }
+.pill-light { background: var(--beige); color: var(--foreground); }
+.pill-light .pill-circle { background: var(--background); color: var(--foreground); }
+.pill-peach { background: var(--peach); color: #190301; }
+.pill-peach .pill-circle { background: #190301; color: #ffffff; }
+
+/* Every button in the app takes the pill shape and a regular weight, as on the PrompX site. */
+[data-slot="button"], [data-slot="button"]::before { border-radius: 75px; }
+[data-slot="button"] { font-weight: 450; letter-spacing: -0.01em; }
+
+/* Page headline: the statement, then a quieter line; actions and the account on the right. */
+.page-header { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px 40px; padding: 4px 0 22px; }
+/* The headline keeps a readable column: once the actions no longer fit beside it they wrap to their
+   own row, instead of shrinking the headline until its words read one per line. */
+.page-title { flex: 1 1 420px; min-width: min(100%, 22rem); max-width: 780px; margin: 0; font-size: 32px; font-weight: 350; letter-spacing: -0.04em; line-height: 1.1; }
+.page-title span { display: block; color: var(--ink-muted); text-wrap: pretty; }
+.page-aside { display: flex; flex: none; align-items: center; gap: 8px; }
+.page-actions { display: flex; flex: 1 1 auto; flex-wrap: wrap; justify-content: flex-end; min-width: min(100%, 26rem); gap: 10px; }
+
+/* Frame: a sidebar for the three sections, the page beside it. */
+.workspace-app.app-frame { display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.app-sidebar { display: flex; flex-direction: column; gap: 30px; min-width: 0; min-height: 0; padding: 18px 14px; border-right: 1px solid var(--workspace-outline); background: var(--workspace-surface); }
+.app-sidebar-brand { display: flex; align-items: center; min-height: 44px; padding: 0 8px; }
+.app-nav { display: grid; gap: 4px; }
+.app-nav-item {
+  display: grid; gap: 3px; width: 100%; padding: 11px 14px; border: 0; border-radius: 14px;
+  background: transparent; color: var(--foreground); font: inherit; text-align: left; cursor: pointer;
+  transition: background-color .2s, color .2s;
+}
+.app-nav-item:hover { background: var(--beige); }
+.app-nav-item:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.app-nav-item[aria-current="page"] { background: var(--primary); color: var(--primary-foreground); }
+.app-nav-label { font-size: 15px; font-weight: 450; letter-spacing: -0.03em; line-height: 1.2; }
+.app-nav-hint { overflow: hidden; color: var(--ink-soft); font-size: 12px; letter-spacing: -0.01em; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.app-nav-item[aria-current="page"] .app-nav-hint { color: color-mix(in srgb, var(--primary-foreground) 66%, transparent); }
+.app-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.workspace-header.app-topbar { border-bottom: 0; background: transparent; }
+.workspace-header.app-topbar > div { min-height: 56px; padding-block: 8px; }
+
+/* A section's page: the headline stays, the body scrolls. */
+.app-page { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.app-page-body { flex: 1; min-height: 0; overflow: auto; }
+/* The sandbox board, drawn as a flat block. */
+.workspace-graph { border-radius: 0; }
+
+@media (max-width: 760px) {
+  .workspace-app.app-frame { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .app-sidebar { flex-direction: row; align-items: center; gap: 10px; padding: 8px 12px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--workspace-outline); }
+  .app-sidebar-brand { min-height: 36px; padding: 0; }
+  .app-sidebar-brand .workspace-brand-text { display: none; }
+  .app-nav { display: flex; gap: 4px; }
+  .app-nav-item { padding: 7px 14px; border-radius: 75px; white-space: nowrap; }
+  .app-nav-hint { display: none; }
+  .page-title { font-size: 26px; }
+  .page-actions { justify-content: flex-start; }
+}
+
+@media (prefers-reduced-motion: reduce) { .pill-circle { transition: none; } }

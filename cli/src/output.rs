@@ -92,9 +92,9 @@ pub fn json(value: &Value, color: bool) -> String {
 pub fn help(text: &str, color: bool) -> String {
     if !color { return text.into(); }
     let mut output = String::with_capacity(text.len() + 240);
-    output.push_str(&styled("  ◆  YOUGORI", BRAND, color));
+    output.push_str(&styled("  YOUGORI", BRAND, color));
     output.push_str("\n  ");
-    output.push_str(&styled("Your compute, one command", MUTED, color));
+    output.push_str(&styled("Environments, models and Personal Vault on this computer", MUTED, color));
     output.push_str("\n\n");
     output.push_str(&section("Start here", color));
     for (command, description) in [
@@ -178,7 +178,7 @@ mod tests {
         let plain = format!("Yougori — environments, models and Personal Vault\n{}\n{}", yougori_cli::public::HELP, yougori_cli::parse::HELP);
         assert_eq!(help(&plain, false), plain);
         let rendered = without_sgr(&help(&plain, true));
-        assert!(rendered.starts_with("  ◆  YOUGORI\n  Your compute, one command"));
+        assert!(rendered.starts_with("  YOUGORI\n  Environments, models and Personal Vault on this computer"));
         assert!(rendered.contains("yougori run nginx"));
         assert!(rendered.contains("PUBLIC COMMANDS"));
         assert!(rendered.contains("ADVANCED CONTROL"));
@@ -249,7 +249,7 @@ pub fn stdout_terminal() -> bool {
 }
 
 pub fn error(message: &str, color: bool) -> String {
-    let mut output = format!("{}\n", styled("×  Yougori could not complete the command", BAD, color));
+    let mut output = format!("{}\n", styled("Yougori could not complete the command", BAD, color));
     for line in message.lines() {
         output.push_str("   ");
         output.push_str(&safe(line));
@@ -297,9 +297,7 @@ fn table_at_width(headers: &[&str], rows: &[Vec<String>], color: bool, max_width
                 format!("{}…", cell.chars().take(widths[i].saturating_sub(1)).collect::<String>())
             } else { cell.to_owned() };
             let padded = if i == last { shortened } else { format!("{shortened:<width$}", width = widths[i]) };
-            if color && status && matches!(headers[i], "STATUS" | "STATE") {
-                styled(&padded, tone(cell), true)
-            } else if color && status && headers[i].is_empty() {
+            if color && status && (matches!(headers[i], "STATUS" | "STATE") || headers[i].is_empty()) {
                 styled(&padded, tone(cell), true)
             } else { padded }
         }).collect::<Vec<_>>().join("  ").trim_end().to_owned()
@@ -370,8 +368,8 @@ fn bounty_doctor(result: &Value, color: bool) -> String {
         (result["localOnly"] != false, "Model API stays private on this computer", "Model API can be reached from outside this computer"),
         (result["publicInference"] != true, "Not shared on Neo Grid", "Also shared on Neo Grid"),
     ] {
-        let (mark, text, style) = if ok { ("✓", good, GOOD) } else { ("!", attention, WARN) };
-        output.push_str(&format!("{} {text}\n", styled(mark, style, color)));
+        let (mark, text, style) = if ok { ("OK  ", good, GOOD) } else { ("WARN", attention, WARN) };
+        output.push_str(&format!("{}  {text}\n", styled(mark, style, color)));
     }
     output
 }
@@ -405,11 +403,6 @@ fn worker_detail(worker: &Value) -> String {
         Some("ready_waiting" | "waiting" | "ready") => "waiting for bounty offers".into(),
         _ => "—".into(),
     })
-}
-
-/// The short name people type for a worker, such as keen-heron.
-fn worker_handle(worker: &Value) -> String {
-    worker["id"].as_str().map(yougori_cli::bounty::worker_handle).unwrap_or_else(|| "—".into())
 }
 
 fn bounty_workers(workers: &Value, color: bool) -> String {
@@ -447,9 +440,9 @@ fn bounty_workers(workers: &Value, color: bool) -> String {
 }
 
 fn bounty_worker(worker: &Value, color: bool) -> String {
-    // Commands name the worker by its short name, or by its ID when another worker shares that
-    // name (`handleShared`); the ID stays in the card for reference.
-    let handle = if worker["handleShared"] == true { text(&worker["id"]) } else { worker_handle(worker) };
+    // Commands name the worker by its memorable name, else its short name, or by its ID when
+    // another worker shares that name (`handleShared`); the ID stays in the card for reference.
+    let handle = yougori_cli::bounty::typed_in_result(worker);
     let state = worker_state(worker);
     let resources = &worker["resources"];
     let mut runs = vec![match worker["gpu"].as_str() {
@@ -461,9 +454,12 @@ fn bounty_worker(worker: &Value, color: bool) -> String {
     if let Some(memory) = resources["memoryGb"].as_f64() { runs.push(format!("{memory} GB")); }
     if let Some(drive) = resources["storageDrive"].as_str() { runs.push(drive.to_owned()); }
     let drafts: Vec<&str> = worker["reviewReports"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-    let mut rows = vec![
-        ("Name", text(&worker["name"])),
-        ("Worker", handle.clone()),
+    let mut rows = vec![("Name", text(&worker["name"]))];
+    // A name that is what to type is shown once.
+    if handle != text(&worker["name"]) {
+        rows.push(("Worker", handle.clone()));
+    }
+    rows.extend([
         ("State", state.clone()),
         ("Model", worker_model(worker)),
         ("Runs on", runs.join(" · ")),
@@ -473,7 +469,7 @@ fn bounty_worker(worker: &Value, color: bool) -> String {
             Some(false) => "loaded only for work".into(),
             None => "—".into(),
         }),
-    ];
+    ]);
     if !worker["bountyId"].is_null() { rows.push(("Bounty", text(&worker["bountyId"]))); }
     rows.push(("Attempts", text(&worker["completedAttempts"])));
     if !drafts.is_empty() {
@@ -525,7 +521,7 @@ pub fn ports(publications: &Value, color: bool) -> String {
         vec![text(&row["environment"]), text(&p["port"]), if p["domain"] == true { "domain".into() } else { text(&p["kind"]) }, text(&p["status"]), text(&p["id"]), p["urls"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")]
     }).collect();
     let mut output = section("Published ports", color);
-    if rows.is_empty() { output.push_str("Nothing is published. Publish a port with `yougori ports publish ENV --port N --kind local|cloudflare`.\n"); }
+    if rows.is_empty() { output.push_str("Nothing is published. Publish a port with `yougori ports publish ENV --port N --kind local|cloudflare --yes`.\n"); }
     else { output.push_str(&table(&["ENVIRONMENT", "PORT", "KIND", "STATUS", "ID", "ADDRESS"], &rows, color)); }
     output
 }
@@ -646,7 +642,7 @@ fn command_target(entry: &Value) -> String {
 pub fn monitor(snapshot: &Value, color: bool) -> String {
     let policies = &snapshot["policies"];
     let mut output = section("Security monitor", color);
-    let state = if snapshot["monitoring"] == false { styled("● Monitoring off", WARN, color) } else { styled("● Monitoring on", GOOD, color) };
+    let state = if snapshot["monitoring"] == false { styled("Monitoring off", WARN, color) } else { styled("Monitoring on", GOOD, color) };
     output.push_str(&format!("{state}  ·  kill switches: PC ports {}, metadata {}  ·  notifications {}\n\n",
         safe(&text(&policies["hostPortProbe"])), safe(&text(&policies["metadataProbe"])), if snapshot["notifications"] == false { "off" } else { "on" }));
     let mut rows = Vec::new();
@@ -721,25 +717,26 @@ fn short_time(value: &Value) -> String {
     value.as_str().map(|time| time.replacen('T', " ", 1).trim_end_matches('Z').split('.').next().unwrap_or(time).to_owned()).unwrap_or_else(|| "—".into())
 }
 
-/// `yougori audit`: optional chain check, then records oldest first.
-pub fn audit(result: &Value, color: bool) -> String {
+/// `yougori audit`: optional chain check, then records oldest first. Environments are named
+/// from the platform `state`; one that no longer exists keeps its ID.
+pub fn audit(result: &Value, state: &Value, color: bool) -> String {
     let mut output = String::new();
     let verification = &result["verification"];
     if verification.is_object() {
         output.push_str(&section("Audit log check", color));
         if verification["ok"] == true {
             output.push_str(&format!("{}  {} records (#{}–#{}) in {} segments, anchored at #{}\n",
-                styled("✓ Chain intact", GOOD, color), count(&verification["records"]), count(&verification["firstSeq"]),
+                styled("Chain intact.", GOOD, color), count(&verification["records"]), count(&verification["firstSeq"]),
                 count(&verification["lastSeq"]), count(&verification["segments"]), count(&verification["anchoredSeq"])));
         } else {
-            output.push_str(&format!("{}\n", styled("✗ The log was changed, reordered or truncated outside Yougori", BAD, color)));
+            output.push_str(&format!("{}\n", styled("Chain broken: the log was changed, reordered or truncated outside Yougori.", BAD, color)));
             for problem in verification["problems"].as_array().into_iter().flatten().take(10) {
                 let place = problem["seq"].as_u64().map(|seq| format!("record #{seq}: ")).unwrap_or_default();
                 output.push_str(&format!("  {place}{}\n", safe(&text(&problem["problem"]))));
             }
         }
         for incident in verification["incidents"].as_array().into_iter().flatten() {
-            output.push_str(&styled(&format!("! #{} {}: {}\n", count(&incident["seq"]), safe(&text(&incident["event"])), safe(&incident["detail"].to_string())), WARN, color));
+            output.push_str(&styled(&format!("Incident at record #{}, {}: {}\n", count(&incident["seq"]), safe(&text(&incident["event"])), safe(&incident["detail"].to_string())), WARN, color));
         }
         for warning in verification["warnings"].as_array().into_iter().flatten() {
             output.push_str(&styled(&format!("  note: {}\n", safe(&text(&warning["warning"]))), MUTED, color));
@@ -748,7 +745,7 @@ pub fn audit(result: &Value, color: bool) -> String {
     }
     output.push_str(&section("Audit log", color));
     let rows: Vec<Vec<String>> = result["records"].as_array().into_iter().flatten().map(|record| vec![
-        short_time(&record["time"]), record["env"].as_str().map(|id| id.chars().take(12).collect()).unwrap_or_else(|| "—".into()),
+        short_time(&record["time"]), if record["env"].is_string() { environment_name(state, &record["env"]) } else { "—".into() },
         text(&record["event"]), text(&record["via"]), audit_detail(record),
     ]).collect();
     if rows.is_empty() {
@@ -767,11 +764,11 @@ pub fn containment(result: &Value, unlock: bool, color: bool) -> String {
     for env in result["environments"].as_array().into_iter().flatten() {
         let name = env["name"].as_str().map(str::to_owned).unwrap_or_else(|| text(&env["id"]));
         let line = if let Some(reason) = env["skipped"].as_str() {
-            styled(&format!("– {}: skipped ({})", safe(&name), safe(reason)), MUTED, color)
+            styled(&format!("{}: skipped ({})", safe(&name), safe(reason)), MUTED, color)
         } else if let Some(error) = env["error"].as_str() {
-            styled(&format!("✗ {}: {}", safe(&name), safe(error)), BAD, color)
+            styled(&format!("{}: failed, {}", safe(&name), safe(error)), BAD, color)
         } else if unlock && env["unlocked"] == false {
-            styled(&format!("– {}: was not locked down", safe(&name)), MUTED, color)
+            styled(&format!("{}: was not locked down", safe(&name)), MUTED, color)
         } else {
             released |= unlock;
             let steps: Vec<String> = env["steps"].as_array().into_iter().flatten().map(|step| {
@@ -786,7 +783,7 @@ pub fn containment(result: &Value, unlock: bool, color: bool) -> String {
             }).collect();
             let summary = if steps.is_empty() { if unlock { "unlocked; nothing to restore".to_owned() } else { "already contained".to_owned() } } else { steps.join(", ") };
             let ok = env["ok"] != false;
-            styled(&format!("{} {}: {}", if ok { "✓" } else { "✗" }, safe(&name), safe(&summary)), if ok { GOOD } else { BAD }, color)
+            styled(&format!("{}: {}{}", safe(&name), safe(&summary), if ok { "" } else { " (failed)" }), if ok { GOOD } else { BAD }, color)
         };
         output.push_str(&line);
         output.push('\n');
@@ -808,7 +805,7 @@ pub fn containment(result: &Value, unlock: bool, color: bool) -> String {
 pub fn doctor(report: &Value, color: bool) -> String {
     let rows: Vec<Vec<String>> = report["checks"].as_array().into_iter().flatten().map(|c| {
         let status = match c["status"].as_str() { Some("ok") => "OK", Some("warning") => "WARN", Some("error") => "FAIL", _ => "INFO" };
-        let detail = match c["fix"].as_str() { Some(fix) => format!("{} → {fix}", text(&c["detail"])), None => text(&c["detail"]) };
+        let detail = match c["fix"].as_str() { Some(fix) => format!("{}. Fix: {fix}", text(&c["detail"]).trim_end_matches('.')), None => text(&c["detail"]) };
         vec![status.into(), text(&c["name"]), detail]
     }).collect();
     let verdict = if report["ready"] == true { "Ready" } else { "Needs attention — fix the FAIL checks first" };
@@ -818,15 +815,15 @@ pub fn doctor(report: &Value, color: bool) -> String {
 
 pub fn status(overview: &Value, color: bool) -> String {
     if overview["engine"]["running"] != true {
-        return format!("{}{}\n{}\n", section("Yougori status", color), styled("● Engine is offline", BAD, color), safe(&text(&overview["hint"])));
+        return format!("{}{}\n{}\n", section("Yougori status", color), styled("The Yougori engine is not running.", BAD, color), safe(&text(&overview["hint"])));
     }
     let envs = &overview["environments"];
     let types = envs["byType"].as_object().map(|t| t.iter().map(|(k, v)| format!("{v} {k}")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
     let sharing = &overview["sharing"];
     let domains = overview["savedDomains"].as_array().map(|d| d.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).filter(|d| !d.is_empty()).unwrap_or_else(|| "none".into());
     let mut output = format!(
-        "{}{}  Engine {}\n{} environments  ·  {} running  ·  {} connections  ·  {} active jobs\n",
-        section("Yougori status", color), styled("● Online", GOOD, color), safe(&text(&overview["engine"]["version"])), envs["total"], envs["running"], overview["connections"], overview["activeJobs"],
+        "{}{}  version {}\n{} environments  ·  {} running  ·  {} connections  ·  {} active jobs\n",
+        section("Yougori status", color), styled("Engine running", GOOD, color), safe(&text(&overview["engine"]["version"])), envs["total"], envs["running"], overview["connections"], overview["activeJobs"],
     );
     if !types.is_empty() { output.push_str(&format!("{}\n", styled(&safe(&types), MUTED, color))); }
     output.push_str(&format!("Sharing: {}  ·  Saved domains: {}\n",
@@ -842,6 +839,374 @@ pub fn status(overview: &Value, color: bool) -> String {
         output.push_str(&section("Environments", color));
         output.push_str(&table(&["NAME", "TYPE", "STATUS", "CPU", "MEMORY", "SECURITY", "PUBLISHED"], &rows, color));
     }
+    output
+}
+
+// ---- Views: read-only results as text at a terminal. `--format json` keeps the JSON. ----
+
+/// One record as labelled lines; a field without a value is left out.
+fn fields(rows: &[(&str, String)], color: bool) -> String {
+    let width = rows.iter().filter(|(_, value)| !value.is_empty()).map(|(label, _)| label.chars().count()).max().unwrap_or(0);
+    rows.iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(label, value)| format!("{}  {}\n", styled(&format!("{label:<width$}"), MUTED, color), safe(value)))
+        .collect()
+}
+/// `2026-10-19T23:01:57.18Z` as `2026-10-19 23:01`.
+fn when(value: &Value) -> String {
+    value.as_str().filter(|s| s.len() >= 16).map(|s| s[..16].replace('T', " ")).unwrap_or_else(|| "—".into())
+}
+/// An environment's name from the platform state, or its ID when the state does not have it.
+fn environment_name(state: &Value, id: &Value) -> String {
+    state["environments"].as_array().into_iter().flatten()
+        .find(|env| env["id"] == *id)
+        .and_then(|env| env["name"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| text(id))
+}
+fn on_off(value: &Value) -> String {
+    if value == true { "on".into() } else { "off".into() }
+}
+
+/// `yougori inspect ENV` and `env show`.
+pub fn details(env: &Value, color: bool) -> String {
+    let policy = &env["resourcePolicy"];
+    let range = |key: &str, unit: &str| {
+        let (min, max) = (policy[key]["min"].as_f64(), policy[key]["max"].as_f64());
+        match (min, max) {
+            (Some(min), Some(max)) if (min - max).abs() < f64::EPSILON => format!("{min} {unit}"),
+            (Some(min), Some(max)) => format!("{min} to {max} {unit}"),
+            _ => String::new(),
+        }
+    };
+    let used = |value: &Value, unit: &str| value.as_f64().filter(|v| *v > 0.0).map(|v| format!("  ·  using {v:.1} {unit}")).unwrap_or_default();
+    let mut output = section(env["name"].as_str().unwrap_or("Environment"), color);
+    output.push_str(&fields(&[
+        ("Status", text(&env["status"])),
+        ("Type", yougori_cli::overview::env_type(env).into()),
+        ("Runs", env["runtime"].as_str().unwrap_or("").into()),
+        ("CPU", format!("{}{}", range("cpu", "cores"), env["cpuUsage"].as_f64().filter(|v| *v > 0.0).map(|v| format!("  ·  using {v:.0}%")).unwrap_or_default())),
+        ("Memory", format!("{}{}", range("memoryGb", "GB"), used(&env["memoryUsageGb"], "GB"))),
+        ("Storage", env["storageLimitGb"].as_f64().map(|limit| format!("{limit} GB limit{}", used(&env["storageDeltaGb"], "GB"))).unwrap_or_default()),
+        ("Internet", on_off(&env["networkAccess"])),
+        ("GPU", on_off(&env["gpuAccess"])),
+        ("Command", env["containerCommand"].as_str().unwrap_or("").into()),
+        ("About", env["description"].as_str().unwrap_or("").into()),
+        ("Created", if env["createdAt"].as_str().is_some_and(|s| !s.is_empty()) { when(&env["createdAt"]) } else { String::new() }),
+        ("Last error", env["lastError"].as_str().unwrap_or("").into()),
+        ("ID", text(&env["id"])),
+    ], color));
+    output
+}
+
+/// `yougori logs ENV` without --follow: the output itself, and a next step when there is none.
+pub fn logs(window: &Value, name: &str, color: bool) -> String {
+    let text = window["logs"].as_str().or(window["stdout"].as_str()).unwrap_or("");
+    if text.trim().is_empty() {
+        return format!("No output from {} yet. Follow it live with yougori logs {} --follow.\n", safe(name), safe(name));
+    }
+    let mut output = text.to_owned();
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if window["truncated"] == true {
+        let next = match window["nextCursor"].as_str() {
+            Some(cursor) => format!("Newer output did not fit. Read on with yougori logs {} --cursor {}, or show more at once with --limit (up to 65536).", safe(name), safe(cursor)),
+            None => format!("Newer output did not fit. Show more at once with yougori logs {} --limit 65536.", safe(name)),
+        };
+        output.push_str(&styled(&next, MUTED, color));
+        output.push('\n');
+    }
+    output
+}
+
+/// `yougori ports list ENV`: what listens in the environment and what is published.
+pub fn services(listing: &Value, name: &str, color: bool) -> String {
+    let listening: Vec<Vec<String>> = listing["services"].as_array().into_iter().flatten().map(|service| vec![
+        text(&service["port"]),
+        service["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("—").into(),
+        service["protocol"].as_str().unwrap_or("tcp").into(),
+    ]).collect();
+    let published: Vec<Vec<String>> = listing["publications"].as_array().into_iter().flatten().map(|p| vec![
+        text(&p["port"]),
+        text(&p["kind"]),
+        text(&p["status"]),
+        p["urls"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+    ]).collect();
+    let mut output = section("Listening", color);
+    output.push_str(&if listening.is_empty() { "Nothing is listening yet.\n".to_owned() } else { table(&["PORT", "NAME", "PROTOCOL"], &listening, color) });
+    output.push('\n');
+    output.push_str(&section("Published", color));
+    output.push_str(&if published.is_empty() {
+        format!("Nothing is published. Publish a port with yougori ports publish {} --port N --kind local|cloudflare --yes.\n", safe(name))
+    } else {
+        table(&["PORT", "KIND", "STATUS", "ADDRESS"], &published, color)
+    });
+    if let Some(notice) = listing["notice"].as_str().filter(|n| !n.is_empty()) {
+        output.push_str(&format!("{}\n", styled(&safe(notice), MUTED, color)));
+    }
+    output
+}
+
+/// `yougori share list ENV`: PC folders the environment can reach.
+pub fn shares(shares: &Value, name: &str, color: bool) -> String {
+    let rows: Vec<Vec<String>> = shares.as_array().into_iter().flatten().map(|share| vec![
+        text(&share["path"]),
+        share["mountPath"].as_str().unwrap_or("—").into(),
+        if share["readOnly"] == true { "view only".into() } else { "view and edit".into() },
+        text(&share["id"]),
+    ]).collect();
+    let mut output = section("Shared PC folders", color);
+    output.push_str(&if rows.is_empty() {
+        format!("No PC folders are shared with {}. Share one with yougori share add {} --path PC_FOLDER --yes.\n", safe(name), safe(name))
+    } else {
+        table(&["PC FOLDER", "IN THE ENVIRONMENT", "ACCESS", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori snapshot list`.
+pub fn snapshots(snapshots: &Value, state: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = snapshots.as_array().into_iter().flatten().map(|snapshot| vec![
+        text(&snapshot["name"]),
+        environment_name(state, &snapshot["environmentId"]),
+        when(&snapshot["createdAt"]),
+        gigabytes(&snapshot["sizeGb"]),
+        text(&snapshot["status"]),
+        text(&snapshot["id"]),
+    ]).collect();
+    let mut output = section("Snapshots", color);
+    output.push_str(&if rows.is_empty() {
+        "No snapshots yet. Make one with yougori snapshot create ENV --name NAME --yes.\n".to_owned()
+    } else {
+        table(&["NAME", "ENVIRONMENT", "TAKEN", "SIZE", "STATUS", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori backup list`: cloud backup runs.
+pub fn backups(runs: &Value, state: &Value, color: bool) -> String {
+    let destination = |id: &Value| state["destinations"].as_array().into_iter().flatten()
+        .find(|d| d["id"] == *id).and_then(|d| d["name"].as_str()).map(str::to_owned).unwrap_or_else(|| text(id));
+    let rows: Vec<Vec<String>> = runs.as_array().into_iter().flatten().map(|run| vec![
+        environment_name(state, &run["environmentId"]),
+        destination(&run["destinationId"]),
+        when(&run["createdAt"]),
+        gigabytes(&run["transferredGb"]),
+        text(&run["status"]),
+        text(&run["id"]),
+    ]).collect();
+    let mut output = section("Cloud backups", color);
+    output.push_str(&if rows.is_empty() {
+        "No cloud backups yet. Run one with yougori backup run ENV --destination-id ID --yes (destinations: yougori backup destinations).\n".to_owned()
+    } else {
+        table(&["ENVIRONMENT", "DESTINATION", "STARTED", "SENT", "STATUS", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori backup destinations`.
+pub fn destinations(destinations: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = destinations.as_array().into_iter().flatten().map(|d| vec![
+        text(&d["name"]),
+        text(&d["provider"]),
+        text(&d["location"]),
+        if d["connected"] == true { "connected".into() } else { "not connected".into() },
+        text(&d["id"]),
+    ]).collect();
+    let mut output = section("Backup destinations", color);
+    output.push_str(&if rows.is_empty() {
+        "No backup destinations yet. Add one with yougori backup add-destination --file destination.json --yes.\n".to_owned()
+    } else {
+        table(&["NAME", "PROVIDER", "LOCATION", "STATE", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori connection list`.
+pub fn connections(connections: &Value, state: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = connections.as_array().into_iter().flatten().map(|c| vec![
+        environment_name(state, &c["sourceId"]),
+        environment_name(state, &c["targetId"]),
+        c["ports"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+        if c["active"] == true { "active".into() } else { "off".into() },
+        text(&c["id"]),
+    ]).collect();
+    let mut output = section("Connections", color);
+    output.push_str(&if rows.is_empty() {
+        "No connections yet. Let one environment reach another with yougori connection create --source SOURCE_ID --target TARGET_ID (IDs from yougori ps).\n".to_owned()
+    } else {
+        table(&["FROM", "TO", "PORTS", "STATE", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori gpu status`.
+pub fn gpu(status: &Value, color: bool) -> String {
+    let state = if status["supported"] != true { "not supported on this computer" }
+        else if status["running"] == true { "running" }
+        else if status["installed"] == true { "installed, not running" }
+        else { "not installed" };
+    let mut output = section("NVIDIA GPU runtime", color);
+    output.push_str(&fields(&[
+        ("State", state.into()),
+        ("Update", if status["updateAvailable"] == true { "available: yougori gpu setup --yes".into() } else { String::new() }),
+        ("Detail", status["detail"].as_str().unwrap_or("").into()),
+    ], color));
+    let checks: Vec<Vec<String>> = status["checks"].as_array().into_iter().flatten().map(|check| vec![
+        text(&check["name"]),
+        if check["passed"] == true { "passed".into() } else { "failed".into() },
+        check["detail"].as_str().unwrap_or("").into(),
+    ]).collect();
+    if !checks.is_empty() {
+        output.push('\n');
+        output.push_str(&table(&["CHECK", "RESULT", "DETAIL"], &checks, color));
+    }
+    if status["supported"] == true && status["installed"] != true {
+        output.push_str("Install it with yougori gpu setup --yes.\n");
+    }
+    output
+}
+
+/// `yougori jobs list`.
+pub fn jobs(jobs: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = jobs.as_array().into_iter().flatten().map(|job| vec![
+        yougori_cli::client::job_label(job["method"].as_str().unwrap_or("")).into(),
+        text(&job["status"]),
+        when(&job["createdAt"]),
+        text(&job["jobId"]),
+    ]).collect();
+    let mut output = section("Jobs", color);
+    output.push_str(&if rows.is_empty() { "No recent jobs.\n".to_owned() } else { table(&["WORK", "STATUS", "STARTED", "ID"], &rows, color) });
+    output
+}
+
+/// `yougori images`.
+pub fn images(images: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = images.as_array().into_iter().flatten().map(|image| {
+        let repository = image["Repository"].as_str().unwrap_or("<none>");
+        let tag = image["Tag"].as_str().filter(|t| !t.is_empty() && *t != "<none>");
+        vec![
+            tag.map(|t| format!("{repository}:{t}")).unwrap_or_else(|| repository.to_owned()),
+            image["Size"].as_str().unwrap_or("—").into(),
+            image["CreatedSince"].as_str().unwrap_or("—").into(),
+        ]
+    }).collect();
+    let mut output = section("Images", color);
+    output.push_str(&if rows.is_empty() { "No images yet. Pull one with yougori pull IMAGE.\n".to_owned() } else { table(&["IMAGE", "SIZE", "CREATED"], &rows, color) });
+    output
+}
+
+/// `yougori neocloud list`: rented pods, in NeoCloud's own words for their state.
+pub fn neocloud_pods(deployments: &Value, state: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = deployments.as_object().into_iter().flatten().map(|(id, pod)| {
+        let running = pod["state"].as_str().is_some_and(|s| s.eq_ignore_ascii_case("running"));
+        // A stopped pod still keeps its disk at the provider, so it is never shown as costing nothing.
+        let hourly = pod["extra"]["hourlyUsd"].as_f64().filter(|_| running).map(|usd| format!("${usd:.2} per hour")).unwrap_or_else(|| "—".into());
+        let name = pod["name"].as_str().map(str::to_owned).unwrap_or_else(|| environment_name(state, &Value::String(id.clone())));
+        vec![name, text(&pod["provider"]), text(&pod["state"]), hourly, pod["location"].as_str().unwrap_or("—").into(), id.clone()]
+    }).collect();
+    let mut output = section("Neocloud pods", color);
+    output.push_str(&if rows.is_empty() {
+        "No Neocloud pods yet. Rent one in Yougori under Sandboxes, New environment, Neocloud, or with yougori neocloud create --file request.json --yes.\n".to_owned()
+    } else {
+        table(&["NAME", "PROVIDER", "STATE", "COST", "LOCATION", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori model status ENV`.
+pub fn model_status(status: &Value, color: bool) -> String {
+    let state = status["status"].as_str().unwrap_or("unknown").replace('_', " ");
+    let download = &status["download"];
+    let progress = match (download["receivedBytes"].as_f64(), download["totalBytes"].as_f64()) {
+        (Some(done), Some(total)) if total > 0.0 => format!("{:.0}% ({} of {})", done / total * 100.0, bytes(&done.into()), bytes(&total.into())),
+        _ => String::new(),
+    };
+    let mut output = section(status["model"].as_str().unwrap_or("Model"), color);
+    output.push_str(&fields(&[
+        ("State", state),
+        ("Download", progress),
+        ("GPU", status["gpu"].as_str().unwrap_or("").into()),
+        ("Context", status["context"].as_u64().map(|n| format!("{n} tokens")).unwrap_or_default()),
+        ("Precision", status["precision"].as_str().unwrap_or("").into()),
+        ("Error", status["error"].as_str().unwrap_or("").into()),
+    ], color));
+    output
+}
+
+/// `yougori model access ENV`: the API addresses and key.
+pub fn model_access(access: &Value, color: bool) -> String {
+    let mut output = section(access["model"].as_str().unwrap_or("Model API"), color);
+    output.push_str(&fields(&[
+        ("This computer", access["apiUrl"].as_str().unwrap_or("off").into()),
+        ("Public", access["publicUrl"].as_str().unwrap_or("off").into()),
+        ("API key", access["apiKey"].as_str().unwrap_or("").into()),
+    ], color));
+    output.push_str(&styled("Keep the API key private; anyone with it can use this model.", MUTED, color));
+    output.push('\n');
+    output
+}
+
+/// `yougori model usage ENV`.
+pub fn model_usage(usage: &Value, color: bool) -> String {
+    let totals = &usage["totals"];
+    let number = |value: &Value| value.as_u64().map(|n| n.to_string()).unwrap_or_else(|| "0".into());
+    let mut output = section("Model usage", color);
+    output.push_str(&fields(&[
+        ("Requests", number(&totals["requests"])),
+        ("Prompt tokens", number(&totals["prompt_tokens"])),
+        ("Reply tokens", number(&totals["completion_tokens"])),
+        ("Errors", number(&totals["errors"])),
+        ("Refused", number(&totals["rejected"])),
+    ], color));
+    output
+}
+
+/// `yougori remote list`: folders and sandboxes shared through the tunnel.
+pub fn remote_shares(listing: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = listing["grants"].as_array().into_iter().flatten().map(|grant| vec![
+        text(&grant["username"]),
+        text(&grant["permission"]),
+        grant["folder"].as_str().unwrap_or("—").into(),
+        text(&grant["status"]),
+        if grant["expiresAt"].is_null() { "never".into() } else { when(&grant["expiresAt"]) },
+        text(&grant["id"]),
+    ]).collect();
+    let mut output = section("Remote shares", color);
+    output.push_str(&if rows.is_empty() {
+        "Nothing is shared. Share with yougori remote create --file share.json --yes.\n".to_owned()
+    } else {
+        table(&["PERSON", "ACCESS", "FOLDER", "STATUS", "EXPIRES", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori domain list`: saved Cloudflare domains.
+pub fn domains(domains: &Value, color: bool) -> String {
+    let rows: Vec<Vec<String>> = domains.as_array().into_iter().flatten().map(|domain| vec![
+        text(&domain["hostname"]),
+        text(&domain["port"]),
+        text(&domain["hostPort"]),
+        text(&domain["id"]),
+    ]).collect();
+    let mut output = section("Saved domains", color);
+    output.push_str(&if rows.is_empty() {
+        "No saved domains yet. Add one with yougori domain add HOSTNAME --tunnel-port PORT --file - --yes, giving {\"token\":\"…\"} on stdin; never put the token in the command itself.\n".to_owned()
+    } else {
+        table(&["HOSTNAME", "APP PORT", "TUNNEL PORT", "ID"], &rows, color)
+    });
+    output
+}
+
+/// `yougori ls ENV [PATH]`.
+pub fn folder(listing: &Value, name: &str, color: bool) -> String {
+    let rows: Vec<Vec<String>> = listing["entries"].as_array().into_iter().flatten().map(|entry| vec![
+        format!("{}{}", text(&entry["name"]), if entry["directory"] == true { "/" } else { "" }),
+        if entry["directory"] == true { "folder".into() } else { entry.get("size").map(bytes).unwrap_or_else(|| "file".into()) },
+    ]).collect();
+    let mut output = section(&format!("{}  {}", name, listing["path"].as_str().unwrap_or("")), color);
+    output.push_str(&if rows.is_empty() { "This folder is empty.\n".to_owned() } else { table(&["NAME", "SIZE"], &rows, color) });
     output
 }
 
@@ -890,7 +1255,7 @@ mod bounty_views {
         assert!(bounty("offers", &json!({"offers":[]}), false).unwrap().contains("No offers right now"));
         assert!(bounty("rewards", &json!({}), false).is_none(), "other results stay JSON");
         let doctor = bounty("doctor", &json!({"worker":status["worker"],"credentialConfigured":false,"localOnly":true,"publicInference":false}), false).unwrap();
-        assert!(doctor.contains("CHECKS") && doctor.contains("! Not registered with yougori.com yet") && doctor.contains("✓ Model API stays private"), "{doctor}");
+        assert!(doctor.contains("CHECKS") && doctor.contains("WARN  Not registered with yougori.com yet") && doctor.contains("OK    Model API stays private"), "{doctor}");
         assert!(bounty("doctor", &json!({"host":{}}), false).is_none(), "machine checks without a worker stay JSON");
     }
 
@@ -984,12 +1349,15 @@ mod security_views {
                 {"seq": 1, "time": "2026-10-11T12:00:05.123Z", "event": "exec.run", "env": "env-0123456789abcdef", "via": "cli", "outcome": "succeeded",
                  "detail": {"program": "npm", "commandLength": 8, "commandHash": "abc", "exitCode": 0}},
                 {"seq": 2, "time": "2026-10-11T12:01:00.000Z", "event": "lockdown.applied", "env": null, "via": "policy", "outcome": "failed", "detail": {"level": "internet cut"}}]});
-        let view = audit(&result, false);
+        let view = audit(&result, &Value::Null, false);
         assert!(view.contains("changed, reordered or truncated") && view.contains("record #7: record was changed"), "{view}");
-        assert!(view.contains("audit.truncated") && view.contains("2026-10-11 12:00:05") && view.contains("env-01234567"), "{view}");
+        assert!(view.contains("audit.truncated") && view.contains("2026-10-11 12:00:05") && view.contains("env-0123456789abcdef"), "{view}");
+        // An environment that still exists is shown by name.
+        let named = audit(&result, &json!({"environments":[{"id":"env-0123456789abcdef","name":"web"}]}), false);
+        assert!(named.contains(" web ") && !named.contains("env-0123"), "{named}");
         assert!(view.contains("program=npm") && !view.contains("commandHash"), "{view}");
         assert!(view.contains("failed  level=internet cut") && view.contains("2 records shown"), "{view}");
-        let intact = audit(&json!({"count": 0, "records": [], "verification": {"ok": true, "records": 5, "firstSeq": 1, "lastSeq": 5, "segments": 1, "anchoredSeq": 5}}), false);
+        let intact = audit(&json!({"count": 0, "records": [], "verification": {"ok": true, "records": 5, "firstSeq": 1, "lastSeq": 5, "segments": 1, "anchoredSeq": 5}}), &Value::Null, false);
         assert!(intact.contains("Chain intact") && intact.contains("#1–#5") && intact.contains("No matching records"), "{intact}");
     }
 
@@ -1001,13 +1369,13 @@ mod security_views {
             {"id": "env-3", "name": "vm", "ok": false, "steps": [{"step": "pause", "ok": false, "error": "busy"}]},
             {"id": "env-4", "name": "idle", "ok": true, "steps": []}]});
         let view = containment(&locked, false, false);
-        assert!(view.contains("✓ codex: Internet cut, paused") && view.contains("– box: skipped"), "{view}");
-        assert!(view.contains("✗ vm: could not complete \"paused\": busy") && view.contains("idle: already contained"), "{view}");
+        assert!(view.contains("codex: Internet cut, paused") && view.contains("box: skipped"), "{view}");
+        assert!(view.contains("vm: could not complete \"paused\": busy (failed)") && view.contains("idle: already contained"), "{view}");
         assert!(view.contains("yougori unlock --all --yes"), "{view}");
         let unlocked = json!({"all": false, "environments": [{"id": "env-1", "name": "codex", "unlocked": true, "ok": true,
             "steps": [{"step": "restoreInternet", "ok": true}, {"step": "resume", "ok": true}]}, {"id": "env-5", "unlocked": false}]});
         let view = containment(&unlocked, true, false);
-        assert!(view.contains("✓ codex: Internet restored, resumed") && view.contains("env-5: was not locked down") && view.contains("30 minutes"), "{view}");
+        assert!(view.contains("codex: Internet restored, resumed") && view.contains("env-5: was not locked down") && view.contains("30 minutes"), "{view}");
     }
 
     #[test]
@@ -1019,5 +1387,97 @@ mod security_views {
             "security": {"monitoring": false, "alerts": 0, "contained": []}});
         let view = top(&snapshot, false);
         assert!(view.contains("BLOCKED") && view.contains("SECURITY") && view.contains("locked down") && view.contains("monitoring off"), "{view}");
+    }
+}
+
+#[cfg(test)]
+mod views {
+    use super::*;
+    use serde_json::json;
+    fn plain(text: &str) -> bool {
+        // Words and box-drawing rules only: no check marks, crosses or decorative arrows.
+        !text.chars().any(|c| matches!(c, '\u{2713}' | '\u{2714}' | '\u{2717}' | '\u{00d7}' | '\u{2192}' | '\u{2190}' | '\u{21b3}'))
+    }
+    #[test]
+    fn environment_details_read_as_labelled_words() {
+        let env = json!({"id":"env-1","name":"web","kind":"container","provider":"yougoriOci","status":"running","runtime":"nginx:1.27",
+            "resourcePolicy":{"cpu":{"min":2.0,"max":2.0},"memoryGb":{"min":1.0,"max":4.0}},"cpuUsage":3.0,"memoryUsageGb":0.5,
+            "storageLimitGb":20.0,"networkAccess":true,"gpuAccess":false,"createdAt":"2026-10-19T23:01:57.18Z","lastError":null});
+        let text = details(&env, false);
+        for expected in ["WEB", "Status", "running", "container", "nginx:1.27", "2 cores", "1 to 4 GB", "using 0.5 GB", "20 GB limit", "Internet", "on", "2026-10-19 23:01", "env-1"] {
+            assert!(text.contains(expected), "{expected} in {text}");
+        }
+        assert!(!text.contains("Last error"), "an empty field is left out");
+        assert!(!text.contains('{') && plain(&text));
+    }
+    #[test]
+    fn empty_lists_say_what_to_do_next() {
+        let state = json!({"environments":[]});
+        assert!(snapshots(&json!([]), &state, false).contains("yougori snapshot create ENV --name NAME --yes"));
+        assert!(backups(&json!([]), &state, false).contains("yougori backup run ENV"));
+        assert!(destinations(&json!([]), false).contains("yougori backup add-destination"));
+        assert!(shares(&json!([]), "web", false).contains("yougori share add web --path PC_FOLDER --yes"));
+        assert!(images(&json!([]), false).contains("yougori pull IMAGE"));
+        assert!(logs(&json!({"logs":""}), "web", false).contains("yougori logs web --follow"));
+        // The window keeps the start of the tail, so what did not fit is the newer output.
+        let cut = logs(&json!({"logs":"first
+","truncated":true,"nextCursor":"eyJvIjoxfQ"}), "web", false);
+        assert!(cut.contains("Newer output did not fit") && cut.contains("yougori logs web --cursor eyJvIjoxfQ"), "{cut}");
+        assert!(logs(&json!({"logs":"first","truncated":true}), "web", false).contains("yougori logs web --limit 65536"));
+        assert!(gpu(&json!({"supported":true,"installed":false}), false).contains("yougori gpu setup --yes"));
+        assert!(connections(&json!([]), &state, false).contains("--source SOURCE_ID --target TARGET_ID"));
+        let listing = services(&json!({"services":[],"publications":[],"notice":"Start this environment to discover listening services or publish ports."}), "web", false);
+        assert!(listing.contains("Nothing is listening yet") && listing.contains("yougori ports publish web") && listing.contains("Start this environment"));
+    }
+    #[test]
+    fn lists_show_names_not_only_ids() {
+        let state = json!({"environments":[{"id":"env-1","name":"web"}],"destinations":[{"id":"dest-1","name":"Offsite"}]});
+        let snaps = snapshots(&json!([{"id":"snap-1","environmentId":"env-1","name":"before-change","createdAt":"2026-10-20T08:00:00Z","sizeGb":1.25,"status":"ready"}]), &state, false);
+        assert!(snaps.contains("before-change") && snaps.contains("web") && snaps.contains("1.2 GB") && snaps.contains("2026-10-20 08:00"), "{snaps}");
+        let runs = backups(&json!([{"id":"b-1","environmentId":"env-1","destinationId":"dest-1","createdAt":"2026-10-20T08:00:00Z","transferredGb":0.5,"status":"complete"}]), &state, false);
+        assert!(runs.contains("web") && runs.contains("Offsite") && runs.contains("complete"), "{runs}");
+        let links = connections(&json!([{"id":"c-1","sourceId":"env-1","targetId":"env-2","ports":["5432"],"active":true}]), &state, false);
+        assert!(links.contains("web") && links.contains("env-2") && links.contains("5432") && links.contains("active"), "{links}");
+        let job_list = jobs(&json!([{"jobId":"job-1","method":"run_workload","status":"running","createdAt":"2026-10-20T08:00:00Z"}]), false);
+        assert!(job_list.contains("Starting the workload") && !job_list.contains("run_workload"), "{job_list}");
+        let shared = shares(&json!([{"id":"share-1","path":"C:/Projects/site","mountPath":"/workspace","readOnly":true}]), "web", false);
+        assert!(shared.contains("C:/Projects/site") && shared.contains("view only"), "{shared}");
+        let listed = images(&json!([{"Repository":"docker.io/library/nginx","Tag":"1.27","Size":"72MB","CreatedSince":"2 weeks ago"}]), false);
+        assert!(listed.contains("docker.io/library/nginx:1.27") && listed.contains("72MB"), "{listed}");
+        let files = folder(&json!({"path":"/app","entries":[{"name":"src","directory":true},{"name":"main.py","directory":false,"size":2048}]}), "web", false);
+        assert!(files.contains("src/") && files.contains("folder") && files.contains("2.0 KB"), "{files}");
+        for view in [snaps, runs, links, job_list, shared, listed, files] {
+            assert!(plain(&view), "{view}");
+        }
+    }
+    #[test]
+    fn neocloud_pods_keep_their_own_state_words_and_never_read_as_free() {
+        let state = json!({"environments":[]});
+        let pods = json!({
+            "env-1":{"name":"trainer","provider":"runpod","state":"Running","location":"EU-RO-1","extra":{"hourlyUsd":0.44}},
+            "env-2":{"name":"idle","provider":"runpod","state":"Stopped","extra":{"hourlyUsd":0.44}},
+            "env-3":{"name":"gone","provider":"runpod","state":"Delete requested — verification pending"}
+        });
+        let text = neocloud_pods(&pods, &state, false);
+        assert!(text.contains("$0.44 per hour") && text.contains("Stopped") && text.contains("Delete requested — verification pending"), "{text}");
+        assert_eq!(text.matches("$0.44").count(), 1, "a stopped pod shows no price: {text}");
+        assert!(!text.contains("$0.00"));
+        assert!(neocloud_pods(&json!({}), &state, false).contains("Sandboxes, New environment, Neocloud"));
+    }
+    #[test]
+    fn model_views_read_in_words() {
+        let status = model_status(&json!({"status":"freeing_memory","model":"TinyLlama/test","error":null,"download":{"receivedBytes":512,"totalBytes":1024}}), false);
+        assert!(status.contains("freeing memory") && status.contains("50%"), "{status}");
+        let access = model_access(&json!({"model":"TinyLlama/test","apiKey":"yk-1","apiUrl":"http://127.0.0.1:8000","publicUrl":null}), false);
+        assert!(access.contains("http://127.0.0.1:8000") && access.contains("off") && access.contains("Keep the API key private"), "{access}");
+        assert!(model_usage(&json!({"totals":{"requests":3,"prompt_tokens":10,"completion_tokens":20}}), false).contains("Reply tokens"));
+        assert!(remote_shares(&json!({"grants":[]}), false).contains("yougori remote create"));
+        assert!(domains(&json!([{"id":"d-1","hostname":"app.example.com","port":80,"hostPort":8080}]), false).contains("app.example.com"));
+    }
+    #[test]
+    fn gpu_status_reads_in_words() {
+        let missing = gpu(&json!({"supported":true,"installed":false,"running":false,"updateAvailable":false,"detail":"","checks":[{"name":"Driver","passed":true,"detail":"NVIDIA 571"}]}), false);
+        assert!(missing.contains("not installed") && missing.contains("Driver") && missing.contains("passed") && missing.contains("yougori gpu setup"), "{missing}");
+        assert!(gpu(&json!({"supported":false}), false).contains("not supported on this computer"));
     }
 }

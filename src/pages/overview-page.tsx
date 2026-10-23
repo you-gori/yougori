@@ -1,32 +1,20 @@
-import { ProjectManager } from "@/components/project-manager"
-import { DuplicationActivity } from "@/components/duplication-activity"
 import { lazy, Suspense, useCallback, useMemo, useState } from "react"
 import { EnvironmentGraph } from "@/components/environment-graph"
 import { usePlatform } from "@/context/platform-context"
-import { formatBytesFromGb } from "@/lib/domain"
-import { storageDrives, driveLabel } from "@/lib/storage-drives"
-import { ConfigurationHelp } from "@/components/configuration-help"
-import { ThemePicker } from "@/components/theme-picker"
-import { Button } from "@/components/ui/button"
-import { toastManager } from "@/components/ui/toast"
-import { InstructionGuides } from "@/components/instruction-guides"
+import { WorkspaceFooter } from "@/components/workspace-footer"
+import { PageHeader, PillButton } from "@/components/prompx"
+import { useWorkspaceActions } from "@/components/use-workspace-actions"
 
 const loadConnectionDialog = () => import("@/components/dialogs/connection-dialog")
 const ConnectionDialog = lazy(async () => ({ default: (await loadConnectionDialog()).ConnectionDialog }))
 
-export function OverviewPage({ onOpenEnvironment, onSelectEnvironment }: {
+export function OverviewPage({ onOpenEnvironment, onSelectEnvironment, vaultError }: {
   onOpenEnvironment(environmentId: string): void
   onSelectEnvironment(environmentId: string): void
+  vaultError?: string | null
 }) {
-  const { state, reclaimStorage } = usePlatform()
-  const [reclaiming, setReclaiming] = useState(false)
-  const reclaim = async () => {
-    if (reclaiming) return
-    setReclaiming(true)
-    try { await reclaimStorage() }
-    catch (error) { toastManager.add({ title: "Storage cleanup could not finish", description: String(error), type: "error", timeout: 0 }) }
-    finally { setReclaiming(false) }
-  }
+  const { state } = usePlatform()
+  const { create, openModel } = useWorkspaceActions()
   const [graphErrorContainer, setGraphErrorContainer] = useState<HTMLDivElement | null>(null)
   const [connectionOpen, setConnectionOpen] = useState(false)
   const [connectionMounted, setConnectionMounted] = useState(false)
@@ -47,32 +35,24 @@ export function OverviewPage({ onOpenEnvironment, onSelectEnvironment }: {
 
   return (
     <div className="workspace-overview flex flex-col">
+      <PageHeader
+        title="My computer."
+        lead="Private environments on this computer, each with its own files, network and ports."
+        actions={<>
+          <PillButton tone="dark" data-tour="new-environment" onClick={create}>Add sandbox</PillButton>
+          <PillButton tone="light" data-instruction="model-trigger" onClick={openModel}>Run a local model</PillButton>
+        </>}
+      />
       <div className="relative">
       <div className="absolute inset-x-0 bottom-full flex h-8 items-center empty:hidden sm:h-10 [&>*]:w-full" ref={setGraphErrorContainer} />
 
       </div>
 
       <section aria-label="Environments workspace">
-        <EnvironmentGraph connections={state.connections} environments={environments} errorContainer={graphErrorContainer} onConnect={openConnection} onOpen={onOpenEnvironment} onSelect={onSelectEnvironment} footer={(openEdit, editDisabled, editActive, toggleCli, cliActive) =>
-          <section aria-label="Host resources and storage" className="workspace-footer-stats">
-            <div className="workspace-footer-resources">
-            <span className="workspace-footer-running" title={`${runningCount} running · ${environments.length - runningCount} not running`}><i aria-hidden="true" data-active={runningCount > 0} /><strong>{runningCount}</strong> running<span className="sr-only"> · {environments.length - runningCount} not running</span></span>
-            <span className="workspace-footer-metric"><span>Host CPU</span><strong>{Math.round(state.host.usedCpuPercent)}%</strong></span>
-            <span className="workspace-footer-metric"><span>Host GPU</span><strong>{state.host.gpuUsagePercent === null ? "—" : `${Math.round(state.host.gpuUsagePercent)}%`}</strong>{state.host.gpuUsagePercent === null ? <span className="sr-only">Unavailable</span> : null}</span>
-            <span className="workspace-footer-metric"><span>Memory</span><strong>{state.host.usedMemoryGb.toFixed(1)}<span className="workspace-footer-total"> / {Math.round(state.host.totalMemoryGb)} GB</span></strong></span>
-            {storageDrives(state.host).map(drive => <span key={drive.path} className="workspace-footer-metric workspace-footer-storage" title={`${drive.name} · ${drive.fileSystem} · ${formatBytesFromGb(drive.totalGb - drive.freeGb)} used / ${formatBytesFromGb(drive.totalGb)} total${drive.readOnly ? " · Read-only" : ""}${drive.removable ? " · Removable" : ""}`}><span>{drive.path ? driveLabel(drive.path) : "Storage"}</span><strong>{drive.totalGb > 0 ? `${formatBytesFromGb(drive.freeGb)} free` : "Unavailable"}</strong></span>)}
-            <ConfigurationHelp label="Storage usage details">{storageDrives(state.host).map(drive => <span className="block" key={drive.path}>{driveLabel(drive.path)}: {formatBytesFromGb(drive.freeGb)} free of {formatBytesFromGb(drive.totalGb)}{drive.readOnly ? " · Read-only" : ""}</span>)}Choose a drive in New environment. Each drive has its own free-space limit.</ConfigurationHelp>
-            </div>
-            <div className="workspace-footer-actions">
-            <Button id="host-terminal-toggle" data-instruction-view="cli" size="xs" variant="ghost" className="workspace-footer-reclaim" aria-pressed={cliActive} aria-controls="host-terminal-panel" title="CLI (Ctrl+`)" disabled={editDisabled} onClick={toggleCli} type="button">CLI</Button>
-            <ProjectManager />
-            <DuplicationActivity />
-            <Button id="edit-app-toggle" size="xs" variant="ghost" className="workspace-footer-reclaim" aria-pressed={editActive} aria-controls="edit-app-terminal-panel" disabled={editDisabled} onClick={openEdit} type="button">Edit the App</Button>
-            <InstructionGuides />
-            <Button data-instruction="reclaim" size="xs" variant="ghost" className="workspace-footer-reclaim" disabled={reclaiming} aria-busy={reclaiming} onClick={() => void reclaim()} title="Return unused disk blocks to your computer. Keeps images, snapshots and backups. Stop containers first for full compaction.">{reclaiming ? "Reclaiming…" : "Reclaim space"}</Button>
-            <ThemePicker />
-            </div>
-          </section>
+        <EnvironmentGraph connections={state.connections} environments={environments} errorContainer={graphErrorContainer} onConnect={openConnection} onOpen={onOpenEnvironment} onSelect={onSelectEnvironment} vaultError={vaultError} footer={() =>
+          <WorkspaceFooter
+            status={<span className="workspace-footer-running" title={`${runningCount} running · ${environments.length - runningCount} not running`}><i aria-hidden="true" data-active={runningCount > 0} /><strong>{runningCount}</strong> running<span className="sr-only"> · {environments.length - runningCount} not running</span></span>}
+          />
         } />
       </section>
 

@@ -290,8 +290,41 @@ async fn scan_with_ssh(host: &str, port: u16) -> Result<Vec<HostKey>, String> {
     if output.len() > 32768 { return Err("Server identity response was too large. No key was trusted.".into()); }
     Ok(scanned_keys(&output))
 }
-fn ssh_command(profile: &Profile, known: &Path) -> Result<Command, String> {
+pub(crate) fn ssh_command(profile: &Profile, known: &Path) -> Result<Command, String> {
     ssh_service_command(profile, known, None)
+}
+
+/// The pinned host-key file of a saved cloud profile.
+pub(crate) fn known_hosts(cloud: &Cloud, id: &str) -> Result<PathBuf, String> {
+    Ok(cloud.directory(id)?.join("known_hosts"))
+}
+
+/// Runs one shell script on the server with `stdin` on its standard input, with the same strict
+/// SSH settings as a session, and returns what it printed. Used to set up a computer the hub
+/// created; the membership token travels on stdin, never in a command line.
+pub(crate) async fn run_script(profile: &Profile, known: &Path, script: &str, stdin: String) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+    validate(profile, true)?;
+    let mut cmd = ssh_command(profile, known)?;
+    cmd.arg(format!("sh -c {}", shell_quote(script)));
+    cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("OpenSSH client is required: {e}"))?;
+    if let Some(mut input) = child.stdin.take() {
+        let _ = input.write_all(stdin.as_bytes()).await;
+        let _ = input.shutdown().await;
+    }
+    let output = tokio::time::timeout(Duration::from_secs(15 * 60), child.wait_with_output()).await.map_err(|_| "The server did not finish the script in 15 minutes".to_owned())?.map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&output.stdout).chars().take(4096).collect::<String>();
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr).lines().rev().take(3).collect::<Vec<_>>().join(" | ");
+        return Err(format!("The script failed ({}): {}", output.status, error.chars().take(600).collect::<String>()));
+    }
+    Ok(text)
+}
+
+/// Single-quotes a string for a POSIX shell.
+pub(crate) fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 fn ssh_service_command(profile: &Profile, known: &Path, port: Option<u16>) -> Result<Command, String> {
     let identity = identity_path(&profile.identity_file, known.parent().ok_or("Missing SSH metadata directory")?)?;
@@ -407,8 +440,33 @@ fn ssh_hint(detail: &str) -> &'static str {
 }
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>;
-/// Followed terminals: the connector pushes each one's output as `terminal` events.
-type Followers = Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>;
+/// Followed terminals: the connector pushes each one's output as `terminal` events, and every
+/// viewer of that terminal (a second window, an overlapping reconnect) receives them under its
+/// own token.
+type Followers = Arc<Mutex<HashMap<String, Vec<(u64, mpsc::Sender<Value>)>>>>;
+static NEXT_VIEWER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Pushed output goes to every viewer of its terminal; one that cannot keep up for 10 s is
+/// dropped rather than holding up every other reply.
+async fn push_terminal(followers: &Followers, frame: Value) {
+    let id = frame["sessionId"].as_str().unwrap_or_default().to_owned();
+    let viewers = followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id).cloned().unwrap_or_default();
+    for (token, viewer) in viewers {
+        if tokio::time::timeout(Duration::from_secs(10), viewer.send(frame.clone())).await.is_err() {
+            forget_viewer(followers, &id, token);
+        }
+    }
+}
+/// Removes one viewer; true when nobody is left watching that terminal.
+fn forget_viewer(followers: &Followers, id: &str, token: u64) -> bool {
+    let mut followers = followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(viewers) = followers.get_mut(id) else { return true };
+    viewers.retain(|(own, _)| *own != token);
+    if !viewers.is_empty() {
+        return false;
+    }
+    followers.remove(id);
+    true
+}
 #[derive(Clone)]
 pub(crate) struct Session {
     pub tx: mpsc::Sender<Value>,
@@ -428,8 +486,9 @@ impl Session {
     /// the receiver until it is dropped (which stops the pushes) or the session ends.
     pub async fn follow_terminal(&self, session_id: &str, offset: u64) -> Result<Follower, String> {
         let (sender, receiver) = mpsc::channel(256);
-        self.followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), sender);
-        let follower = Follower { events: receiver, session_id: session_id.to_owned(), followers: self.followers.clone(), tx: self.tx.clone() };
+        let token = NEXT_VIEWER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(session_id.to_owned()).or_default().push((token, sender));
+        let follower = Follower { events: receiver, session_id: session_id.to_owned(), token, followers: self.followers.clone(), tx: self.tx.clone() };
         self.request("/v1/terminal/follow", json!({"sessionId": session_id, "offset": offset})).await?;
         Ok(follower)
     }
@@ -456,16 +515,19 @@ impl Session {
         }
     }
 }
-/// Receives one followed terminal's events; dropping it ends the follow.
+/// Receives one followed terminal's events; dropping the last viewer of a terminal ends the follow.
 pub(crate) struct Follower {
     pub events: mpsc::Receiver<Value>,
     session_id: String,
+    token: u64,
     followers: Followers,
     tx: mpsc::Sender<Value>,
 }
 impl Drop for Follower {
     fn drop(&mut self) {
-        self.followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&self.session_id);
+        if !forget_viewer(&self.followers, &self.session_id, self.token) {
+            return;
+        }
         // Best effort, without waiting for an answer: the connector stops pushing.
         let _ = self.tx.try_send(json!({"requestId": uuid::Uuid::new_v4().to_string(), "path": "/v1/terminal/unfollow", "body": {"sessionId": self.session_id}}));
     }
@@ -683,15 +745,7 @@ impl Cloud {
                             .map_err(|_| "Cloud connector returned invalid data")?;
                         if let Some(event) = frame["event"].as_str() {
                             if event == "terminal" {
-                                // Pushed output goes to its follower; a follower that cannot keep
-                                // up for 10 s is dropped rather than holding up every other reply.
-                                let id = frame["sessionId"].as_str().unwrap_or_default().to_owned();
-                                let follower = followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id).cloned();
-                                if let Some(follower) = follower {
-                                    if tokio::time::timeout(Duration::from_secs(10), follower.send(frame)).await.is_err() {
-                                        followers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
-                                    }
-                                }
+                                push_terminal(&followers, frame).await;
                             } else if event == "files" {
                                 if tasks.len() > 32 {
                                     return Err("Too many cloud file requests".into());
@@ -773,6 +827,56 @@ impl Cloud {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn every_viewer_of_a_terminal_gets_its_output_and_only_the_last_one_unfollows() {
+        use yougori_cli::terminal_stream::Frame;
+        let (tx, mut rx) = mpsc::channel(128);
+        let (bridge, _events) = mpsc::channel(128);
+        let session = Session {
+            tx,
+            pending: Default::default(),
+            stop: Default::default(),
+            bridge,
+            info: Value::Null,
+            share_helper_ready: Arc::new(tokio::sync::Mutex::new(false)),
+            termination: Default::default(),
+            followers: Default::default(),
+        };
+        let pending = session.pending.clone();
+        let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let recorded = requests.clone();
+        tokio::spawn(async move {
+            while let Some(request) = rx.recv().await {
+                recorded.lock().unwrap().push(request.clone());
+                let waiting = pending.lock().unwrap().remove(request["requestId"].as_str().unwrap_or_default());
+                if let Some(send) = waiting {
+                    let _ = send.send(Ok(json!({"ok": true})));
+                }
+            }
+        });
+        let unfollowed = || requests.lock().unwrap().iter().any(|r| r["path"] == "/v1/terminal/unfollow");
+        let mut first = session.follow_terminal("term-1", 0).await.unwrap();
+        let second = session.follow_terminal("term-1", 3).await.unwrap();
+        push_terminal(&session.followers, json!({"sessionId": "term-1", "offset": 3, "data": B64.encode(b"abc")})).await;
+        assert_eq!(first.events.recv().await.unwrap()["offset"], 3);
+        // The second viewer's follow replays what the first already has; it shows only new output.
+        let mut channel = crate::workspace::terminal_stream::cloud_channel(session.clone(), "term-1".into(), second, 3);
+        push_terminal(&session.followers, json!({"sessionId": "term-1", "offset": 3, "data": B64.encode(b"abc")})).await;
+        push_terminal(&session.followers, json!({"sessionId": "term-1", "offset": 5, "data": B64.encode(b"bcde")})).await;
+        assert_eq!(channel.rx.recv().await.unwrap().unwrap(), Frame::Output { offset: 5, bytes: b"de".to_vec() });
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!unfollowed(), "the other viewer still watches this terminal");
+        push_terminal(&session.followers, json!({"sessionId": "term-1", "offset": 6, "data": B64.encode(b"f")})).await;
+        assert_eq!(channel.rx.recv().await.unwrap().unwrap(), Frame::Output { offset: 6, bytes: b"f".to_vec() });
+        drop(channel);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline && !unfollowed() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(unfollowed(), "the last viewer stops the pushes");
+        assert!(session.followers.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
     async fn followed_terminal_streams_pushed_output_batches_input_and_stops_on_drop() {
         use yougori_cli::terminal_stream::Frame;
         let (tx, mut rx) = mpsc::channel(128);
@@ -805,7 +909,7 @@ mod tests {
         });
         let follower = session.follow_terminal("term-1", 5).await.unwrap();
         assert_eq!(requests.lock().unwrap()[0]["body"], json!({"sessionId": "term-1", "offset": 5}));
-        let pusher = session.followers.lock().unwrap().get("term-1").cloned().unwrap();
+        let pusher = session.followers.lock().unwrap().get("term-1").and_then(|viewers| viewers.first().map(|(_, sender)| sender.clone())).unwrap();
         let mut channel = crate::workspace::terminal_stream::cloud_channel(session.clone(), "term-1".into(), follower, 5);
         pusher.send(json!({"sessionId": "term-1", "offset": 8, "data": B64.encode(b"abc")})).await.unwrap();
         assert_eq!(channel.rx.recv().await.unwrap().unwrap(), Frame::Output { offset: 8, bytes: b"abc".to_vec() });

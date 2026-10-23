@@ -91,6 +91,9 @@ pub(super) struct OAuth {
     signin: (i64, usize),
     /// Failed token requests; valid exchanges and refreshes are never throttled.
     token_failures: (i64, usize),
+    /// Why the saved sign-ins could not be loaded. While set, remote sign-in stays off and
+    /// nothing is saved, so the file that could not be read is never written over.
+    unavailable: Option<String>,
 }
 impl Default for OAuth {
     fn default() -> Self {
@@ -102,6 +105,7 @@ impl Default for OAuth {
             path: None,
             signin: (0, 0),
             token_failures: (0, 0),
+            unavailable: None,
         }
     }
 }
@@ -117,9 +121,20 @@ impl OAuth {
     pub(super) fn configured(&self) -> bool {
         self.origin.is_some()
     }
+    /// Remote sign-in switched off because its saved sign-ins could not be loaded (`reason`).
+    pub(super) fn unavailable(reason: String) -> Self {
+        Self { unavailable: Some(reason), ..Default::default() }
+    }
+    pub(super) fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable.as_deref()
+    }
     pub(super) fn load() -> Result<Self, String> {
-        let path = platform::data_directory()?.join("oauth.dpapi");
-        let db = if path.exists() {
+        Self::load_from(&platform::data_directory()?.join("oauth.dpapi"))
+    }
+    pub(super) fn load_from(path: &std::path::Path) -> Result<Self, String> {
+        let path = path.to_owned();
+        // Sign-ins that could not be checked never load as none: the next save would erase them.
+        let db = if crate::storage::present(&path)? {
             let bytes = crate::storage::dpapi(
                 &crate::storage::bounded_read(&path, 4 * 1024 * 1024)?,
                 false,
@@ -145,7 +160,18 @@ impl OAuth {
         }
         Ok(())
     }
+    /// Forgets every registration, grant and code; the destroyed vault's file is wiped apart.
+    pub(super) fn reset(&mut self) {
+        let path = self.path.take();
+        let unavailable = self.unavailable.take();
+        *self = Self { path, unavailable, ..Default::default() };
+    }
     pub(super) fn set_origin(&mut self, origin: Option<String>) -> Result<(), String> {
+        // Sign-ins that could not be loaded keep remote sign-in off; the status says why. The
+        // public link itself is not refused for it.
+        if self.unavailable.is_some() {
+            return Ok(());
+        }
         if let Some(origin) = &origin {
             let url = reqwest::Url::parse(origin).map_err(|_| "Invalid OAuth public origin")?;
             if url.scheme() != "https"
@@ -584,6 +610,7 @@ async fn consent(
         connected: AtomicBool::new(true),
         allowed: AtomicBool::new(false),
         admission: AtomicU64::new(0),
+        vault: AtomicU64::new(0),
     });
     // Anyone with the tunnel address can reach this page. Wait for the Desktop
     // decision outside the single operation worker; only the approved result

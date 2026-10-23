@@ -198,15 +198,16 @@ impl Messages {
     }
 }
 
-/// A quiet line under the item before it.
+/// A quiet line under the item before it, indented under its text.
 fn note(text: &str) -> String {
-    format!("  {} {}", ui::muted("↳"), ui::muted(text))
+    format!("    {}", ui::muted(text))
 }
 
 /// What the console shows: the state the transcript is in and the live area's content.
 struct View {
     practice: bool,
     answer: Answer,
+    streamed: std::collections::BTreeMap<String, String>,
     /// The report's fields as the model writes them.
     arguments: String,
     /// A passing status such as loading the model, shown on the status line.
@@ -226,6 +227,7 @@ impl View {
         Self {
             practice,
             answer: Answer::default(),
+            streamed: Default::default(),
             arguments: String::new(),
             status: None,
             since: Instant::now(),
@@ -245,16 +247,17 @@ impl View {
 
     /// The card the console opens with.
     fn header(&self, worker: &str, view: &Value, project: Option<&str>, columns: usize) -> Vec<String> {
+        // The worker as commands name it.
+        let name = if view["id"].is_string() { bounty::typed_in_result(view) } else { bounty::worker_handle(worker) };
         let title = format!(
-            "{} {}{}",
-            ui::paint(">_", ui::SKY),
+            "{}{}",
             ui::bold(if self.practice { "Practice bounty" } else { "Bounty work" }),
-            ui::muted(&format!(" · {}", bounty::worker_handle(worker)))
+            ui::muted(&format!(" · {name}"))
         );
         let model = safe(view["model"].as_str().unwrap_or("—"));
         let mut rows = vec![("model", model_name(&model))];
         if self.practice {
-            rows.push(("target", "acme-login · black-box, network only".into()));
+            rows.push(("target", "Northstar Ledger · black-box, network only".into()));
             if let Some(project) = project {
                 rows.push(("source", safe(project)));
             }
@@ -264,7 +267,7 @@ impl View {
         }
         let mut lines = card(&title, &rows, columns);
         let intro = if self.practice {
-            "Your worker attacks the live target over the network and captures the planted flag. Type to talk to it: it stops and reads your message."
+            "Your worker investigates the live target over the network and writes up what it can prove from its own receipts. Type to talk to it: it stops and reads your message."
         } else {
             "Your agent works on the accepted bounty. Type to message it; it reads your message at its next checkpoint."
         };
@@ -275,6 +278,21 @@ impl View {
 
     /// One activity event, as transcript lines added to `out`.
     fn event(&mut self, event: &Value, out: &mut Vec<String>, columns: usize) {
+        // Desktop readers replace full snapshots; terminal transcripts append
+        // only the new suffix. Legacy practice events are already deltas.
+        let mut delta;
+        let event = if let Some(id) = event["streamId"].as_str() {
+            let full = event["text"].as_str().unwrap_or_default();
+            let previous = self.streamed.entry(id.to_owned()).or_default();
+            let suffix = full.strip_prefix(previous.as_str()).unwrap_or(full).to_owned();
+            *previous = full.to_owned();
+            delta = event.clone();
+            delta["text"] = suffix.into();
+            &delta
+        } else {
+            if event["kind"] == "turn" { self.streamed.clear(); }
+            event
+        };
         let text = |key: &str| safe(event[key].as_str().unwrap_or_default());
         let kind = event["kind"].as_str().unwrap_or_default();
         match kind {
@@ -326,7 +344,7 @@ impl View {
             "request" => {
                 self.status = None;
                 out.push(String::new());
-                out.push(ui::clip(&format!("{} {} {}", ui::paint("→", ui::SKY), ui::bold(&text("method")), ui::muted(&text("path"))), columns.saturating_sub(1)));
+                out.push(ui::clip(&format!("{} {} {}", ui::paint("Request", ui::SKY), ui::bold(&text("method")), ui::muted(&text("path"))), columns.saturating_sub(1)));
                 let body = text("body");
                 if !body.trim().is_empty() {
                     out.extend(indented(&body, "    ", "    ", columns, ui::muted));
@@ -336,7 +354,11 @@ impl View {
                 self.status = None;
                 let status = event["status"].as_i64().unwrap_or(0);
                 let tone = if (200..300).contains(&status) { ui::GREEN } else { ui::AMBER };
-                out.push(format!("{} {}", ui::paint("←", tone), ui::bold(&if status == 0 { "no response".into() } else { status.to_string() })));
+                out.push(if status == 0 {
+                    ui::paint("No response", tone)
+                } else {
+                    format!("{} {}", ui::paint("Response", tone), ui::bold(&status.to_string()))
+                });
                 let body = text("body");
                 if !body.trim().is_empty() {
                     out.extend(indented(&body, "    ", "    ", columns, ui::muted));
@@ -828,10 +850,10 @@ fn you(text: &str, columns: usize) -> Vec<String> {
 /// it; opened on its own, Ctrl+] ends the command and leaves the engine working.
 fn hints(practice: bool, nested: bool) -> &'static str {
     match (practice, nested) {
-        (true, true) => "⏎ send · esc interrupt · /endpractice ends it · ctrl+] back · /help",
-        (true, false) => "⏎ send · esc interrupt · /endpractice ends it · ctrl+] detach · /help",
-        (false, true) => "⏎ message your agent · /stop pause or leave · ctrl+] back · /help",
-        (false, false) => "⏎ message your agent · /stop pause or leave · ctrl+] detach · /help",
+        (true, true) => "enter send · esc interrupt · /endpractice ends it · ctrl+] back · /help",
+        (true, false) => "enter send · esc interrupt · /endpractice ends it · ctrl+] detach · /help",
+        (false, true) => "enter message your agent · /stop pause or leave · ctrl+] back · /help",
+        (false, false) => "enter message your agent · /stop pause or leave · ctrl+] detach · /help",
     }
 }
 
@@ -866,6 +888,19 @@ pub(crate) fn back_to_waiting_view(practice: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_snapshots_append_only_new_text() {
+        let mut view = View::new(false);
+        let mut out = Vec::new();
+        for text in ["Hello", "Hello world", "Hello world"] {
+            view.event(&json!({"kind":"text", "streamId":"s:1", "text":text}), &mut out, 80);
+        }
+        view.answer.finish(&mut out, 80);
+        let rendered = out.join("\n");
+        assert_eq!(rendered.matches("Hello").count(), 1);
+        assert!(rendered.contains("Hello world"));
+    }
 
     fn streamed(pieces: &[&str], columns: usize) -> (Vec<String>, Answer) {
         let mut answer = Answer::default();
@@ -936,8 +971,9 @@ mod tests {
         view.event(&json!({"kind":"response","status":200,"body":"{\"ok\":true,\"token\":\"abc\"}"}), &mut out, 80);
         view.event(&json!({"kind":"tried","text":"default credentials admin/admin logged in"}), &mut out, 80);
         let text = out.join("\n");
-        assert!(text.contains("POST") && text.contains("/login") && text.contains("admin"), "{text}");
-        assert!(text.contains("200") && text.contains("token"), "{text}");
+        assert!(text.contains("Request") && text.contains("POST") && text.contains("/login") && text.contains("admin"), "{text}");
+        assert!(text.contains("Response") && text.contains("200") && text.contains("token"), "{text}");
+        assert!(!text.contains('→') && !text.contains('←'), "labels, not arrows: {text}");
         assert!(text.contains("Tried: default credentials"), "{text}");
         // A rejected finding and then a captured flag.
         let mut out = Vec::new();

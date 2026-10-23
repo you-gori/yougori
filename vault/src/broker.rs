@@ -2,7 +2,7 @@ use crate::{
     native, platform,
     policy::{Identity, Operation, QUEUE_LIMIT, REQUEST_LIFETIME},
     protocol::{self, ItemInput, Request},
-    storage::{Audit, Contents, Item, Store},
+    storage::{Audit, Contents, Item, Store, Unfinished},
 };
 use serde_json::{json, Value};
 use std::{
@@ -25,6 +25,8 @@ struct Session {
     connected: AtomicBool,
     allowed: AtomicBool,
     admission: AtomicU64,
+    /// The vault this client was approved for; a destroyed vault's approvals do not carry over.
+    vault: AtomicU64,
 }
 struct Pending {
     summary: Mutex<Value>,
@@ -41,6 +43,12 @@ struct Shared {
     remote_stop: Mutex<Option<tokio::task::AbortHandle>>,
     revocations: Mutex<BTreeMap<String, u64>>,
     http: tokio::sync::Mutex<Value>,
+    /// The HTTP MCP server, so destroying the vault can stop it.
+    http_server: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Advances whenever the vault is destroyed, voiding every client approval made before.
+    vault: AtomicU64,
+    /// A destroy was approved but could not finish; deleting again completes it.
+    incomplete: AtomicBool,
     oauth: Mutex<oauth::OAuth>,
 }
 impl Shared {
@@ -77,6 +85,10 @@ impl Shared {
             .collect::<Vec<_>>());
         status["remote"] = self.remote.lock().unwrap().clone();
         status["oauthReady"] = json!(self.oauth.lock().unwrap().configured());
+        // Why remote sign-ins are off when they could not be loaded; null when they could.
+        status["oauthUnavailable"] = json!(self.oauth.lock().unwrap().unavailable_reason());
+        status["destroyIncomplete"] = json!(self.incomplete.load(Ordering::SeqCst));
+        status["onDisk"] = json!(crate::storage::on_disk());
         if let Ok(activity) = crate::storage::recent() {
             status["activity"] = json!(activity);
         }
@@ -99,6 +111,7 @@ enum Action {
     Remote,
     Revoke(String),
     Remove(String),
+    Destroy,
 }
 struct Job {
     id: String,
@@ -128,7 +141,13 @@ pub(crate) fn run() -> Result<(), String> {
         remote_stop: Mutex::new(None),
         revocations: Mutex::new(BTreeMap::new()),
         http: tokio::sync::Mutex::new(Value::Null),
-        oauth: Mutex::new(oauth::OAuth::load()?),
+        http_server: Mutex::new(None),
+        vault: AtomicU64::new(0),
+        // A destroy that stopped part way is remembered across restarts.
+        incomplete: AtomicBool::new(crate::storage::destroy_unfinished()),
+        // Remote sign-ins that cannot be loaded are switched off, with the reason in the status;
+        // they never keep the vault itself from starting.
+        oauth: Mutex::new(oauth::OAuth::load().unwrap_or_else(oauth::OAuth::unavailable)),
     });
     let (sender, receiver) = std::sync::mpsc::sync_channel::<Job>(QUEUE_LIMIT);
     let worker_state = shared.clone();
@@ -176,6 +195,7 @@ pub(crate) fn run() -> Result<(), String> {
                 connected: AtomicBool::new(true),
                 allowed: AtomicBool::new(false),
                 admission: AtomicU64::new(0),
+                vault: AtomicU64::new(0),
             });
             let sender = sender.clone();
             let shared = shared.clone();
@@ -279,6 +299,7 @@ async fn enqueue(
         Action::Remote => "remote_access",
         Action::Revoke(_) => "revoke",
         Action::Remove(_) => "remove",
+        Action::Destroy => "destroy",
     };
     {
         let mut pending = shared.pending.lock().unwrap();
@@ -304,7 +325,18 @@ async fn enqueue(
     }
     received
         .await
-        .map_err(|_| "Protected approval service stopped".to_string())?
+        .map_err(|_| SERVICE_STOPPED.to_string())?
+}
+use protocol::SERVICE_STOPPED;
+/// Every error of a destroy says which outcome it was. One that already says so, and a service
+/// that stopped while the request was out (whose outcome is unknown, so the app reads the vault
+/// folder to settle it), pass as they are; any other came before a file was touched.
+fn destroy_error(error: String) -> String {
+    if error.starts_with(protocol::DESTROY_NOT_STARTED) || error.starts_with(protocol::DESTROY_UNFINISHED) || error == SERVICE_STOPPED {
+        error
+    } else {
+        format!("{} {error}", protocol::DESTROY_NOT_STARTED)
+    }
 }
 async fn handle(
     request: Request,
@@ -397,7 +429,23 @@ async fn handle(
             enqueue(Action::Revoke(client), session, sender, shared).await
         }
         Request::Remove { item } => enqueue(Action::Remove(item), session, sender, shared).await,
+        // Desktop only asks; the worker deletes nothing until this request is approved there.
+        Request::Destroy {} => {
+            // Each refusal says what to do about it: a Desktop the vault does not know is told to
+            // register, not to come to the front it is already at.
+            if !session.desktop {
+                return Err(format!("{} Personal Vault does not recognize this copy of Yougori yet. Choose Update vault to register it, then choose Delete my vault again.", protocol::DESTROY_NOT_STARTED));
+            }
+            if !native::unlocked_desktop() {
+                return Err(format!("{} Unlock Windows, then choose Delete my vault again.", protocol::DESTROY_NOT_STARTED));
+            }
+            if !platform::desktop_foreground(&session.identity, session.desktop) {
+                return Err(format!("{} Bring Yougori to the front, then choose Delete my vault again.", protocol::DESTROY_NOT_STARTED));
+            }
+            enqueue(Action::Destroy, session, sender, shared).await.map_err(destroy_error)
+        }
         Request::Mcp { message } => {
+            refresh_approval(session, shared);
             let id = message.get("id").cloned();
             if message["jsonrpc"] != "2.0" || !message.is_object() {
                 return Ok(
@@ -486,7 +534,8 @@ fn valid(job: &Job, shared: &Shared) -> bool {
         .get(&job.session.identity.id)
         .unwrap_or(&0);
     (!job.session.allowed.load(Ordering::SeqCst)
-        || job.session.admission.load(Ordering::SeqCst) == epoch)
+        || (job.session.admission.load(Ordering::SeqCst) == epoch
+            && job.session.vault.load(Ordering::SeqCst) == shared.vault.load(Ordering::SeqCst)))
         && !job.response.is_closed()
         && !job.cancel.load(Ordering::SeqCst)
         && !job.session.cancelled.load(Ordering::SeqCst)
@@ -494,6 +543,15 @@ fn valid(job: &Job, shared: &Shared) -> bool {
         && Instant::now() < job.deadline
         && job.generation == shared.generation.load(Ordering::SeqCst)
         && !native::workstation_locked()
+}
+/// A client approved for a vault that has since been destroyed starts over and asks again,
+/// so it lands in the new vault's client list where it can be revoked.
+fn refresh_approval(session: &Session, shared: &Shared) {
+    if session.allowed.load(Ordering::SeqCst)
+        && session.vault.load(Ordering::SeqCst) != shared.vault.load(Ordering::SeqCst)
+    {
+        session.allowed.store(false, Ordering::SeqCst);
+    }
 }
 fn desktop_decision(job: &Job, shared: &Shared, title: &str, content: &str, allow: &str) -> Result<bool, String> {
     let pending = shared.pending.lock().unwrap().get(&job.id).cloned().ok_or("Request is no longer pending")?;
@@ -505,6 +563,8 @@ fn desktop_decision(job: &Job, shared: &Shared, title: &str, content: &str, allo
         "description": content,
         "allowLabel": allow,
         "ready": true,
+        // The delete dialog finds this approval by it and shows it there, where the person is.
+        "destroy": matches!(job.action, Action::Destroy),
         "expiresAt": (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339(),
     });
     while valid(job, shared) {
@@ -552,6 +612,79 @@ fn mcp_result_fits(value: &Value) -> bool {
         .is_ok_and(|bytes| bytes.len() < protocol::MAX_FRAME - 1024);
     protocol::wipe(&mut wrapper);
     fits
+}
+const DESTROY_TITLE: &str = "Delete your Personal Vault?";
+const DESTROY_ALLOW: &str = "Delete everything";
+const DESTROY_CONTENT: &str = "This permanently deletes every item in Personal Vault, every approved client, its connection keys and sign-ins, and the vault's encryption keys. Nothing is kept as a backup and it cannot be undone. Agents lose access at once. The activity record is kept, without any secrets, and notes the deletion.\n\nDeny keeps everything.";
+/// After its approval: nothing that held a vault key stays in memory or on disk, every session
+/// and waiting request is cut off, and the vault reads as never created. When deleting cannot
+/// begin, nothing is cut off and nothing is deleted. Returns a sentence for anything small left
+/// behind once every secret is gone.
+fn destroy_vault(shared: &Arc<Shared>, state: &mut Option<Store>) -> Result<Vec<String>, Unfinished> {
+    let root = crate::storage::begin_destroy()?;
+    cut_off(shared, state);
+    let left = root.map_or_else(|| Ok(Vec::new()), |root| crate::storage::finish_destroy(&root));
+    shared.snapshot.lock().unwrap()["activity"] = json!(crate::storage::recent().unwrap_or_default());
+    left
+}
+
+/// What the person who approved a destroy is told, so "are my secrets gone?" never needs a
+/// guess: that it finished, naming anything small left behind (`recorded` notes the deletion in
+/// the activity record, and a record that cannot be written is one of those); that nothing was
+/// deleted, and why; or that it stopped part way, naming every secret file left.
+fn destroy_answer(destroyed: Result<Vec<String>, Unfinished>, recorded: impl FnOnce() -> Result<(), String>) -> Result<Value, String> {
+    match destroyed {
+        Ok(mut left) => {
+            if let Err(error) = recorded() {
+                left.push(format!("The activity record could not note this deletion ({error}); the deletion itself finished."));
+            }
+            let mut answer = json!({"destroyed": true});
+            if !left.is_empty() {
+                answer["leftBehind"] = json!(left);
+            }
+            Ok(answer)
+        }
+        Err(Unfinished::NotStarted(reason)) => Err(format!("{} {reason}", protocol::DESTROY_NOT_STARTED)),
+        Err(Unfinished::Partial { key_gone, left, unlisted, reason }) => Err(partly_deleted(key_gone, &left, unlisted.as_deref(), &reason)),
+    }
+}
+
+/// A destroy that stopped part way: every secret file left, by its full path, whether they can
+/// still be read, a folder that could not be listed (more may remain there unseen), and a way to
+/// finish that does not depend on asking again.
+fn partly_deleted(key_gone: bool, left: &[std::path::PathBuf], unlisted: Option<&str>, reason: &str) -> String {
+    let files = left.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join(", ");
+    let mut state = match (key_gone, left.is_empty()) {
+        (_, true) => "No secret file could be found, but deleting could not confirm that none is left.".to_owned(),
+        (true, false) => format!("Its key is gone, so what remains can no longer be read, but these files are still there: {files}."),
+        (false, false) => format!("Its key may still be there, so these files may still be readable: {files}. The vault stays closed until deleting finishes."),
+    };
+    if let Some(unlisted) = unlisted {
+        state.push_str(&format!(" The vault folder could not be listed ({unlisted}), so other secret files may remain there too."));
+    }
+    format!(
+        "{} {state} Deleting stopped: {reason}. Run Delete my vault again to finish; if it stops the same way, delete those files yourself as an administrator.",
+        protocol::DESTROY_UNFINISHED
+    )
+}
+/// What the destroyed vault held in memory goes first. Locking advances the generation, so
+/// every request admitted before (a connected MCP client's included) is no longer valid, and
+/// waiting requests are cancelled; endpoints stop and sign-ins are forgotten.
+fn cut_off(shared: &Arc<Shared>, state: &mut Option<Store>) {
+    // Items zeroize as the store drops.
+    *state = None;
+    shared.vault.fetch_add(1, Ordering::SeqCst);
+    shared.lock();
+    if let Some(stop) = shared.remote_stop.lock().unwrap().take() {
+        stop.abort();
+    }
+    *shared.remote.lock().unwrap() = Value::Null;
+    if let Some(server) = shared.http_server.lock().unwrap().take() {
+        server.abort();
+    }
+    *shared.http.blocking_lock() = Value::Null;
+    shared.oauth.lock().unwrap().reset();
+    *shared.snapshot.lock().unwrap() = json!({"items":[],"clients":[],"activity":[],"protection":"Protected Windows broker; one-time approval for each request","transport":"Local MCP stdio"});
 }
 const CONNECT_TITLE: &str = "Allow this client to submit requests?";
 const CONNECT_ALLOW: &str = "Allow Requests";
@@ -614,6 +747,98 @@ async fn connection_decision(shared: &Arc<Shared>, session: &Arc<Session>) -> Re
     }
 }
 #[cfg(test)]
+mod destroy_tests {
+    use super::*;
+    #[test]
+    fn a_destroy_says_whether_it_finished_stopped_part_way_or_deleted_nothing() {
+        // Finished: a record that cannot note it is named, never turned into a failure.
+        assert_eq!(destroy_answer(Ok(Vec::new()), || Ok(())), Ok(json!({"destroyed": true})));
+        let unrecorded = destroy_answer(Ok(Vec::new()), || Err("disk full".into())).unwrap();
+        assert_eq!(unrecorded["destroyed"], true);
+        let note = unrecorded["leftBehind"][0].as_str().unwrap();
+        assert!(note.contains("activity record") && note.contains("disk full") && note.contains("the deletion itself finished"), "{note}");
+        let left = destroy_answer(Ok(vec!["A note is still at C:/v/destroying.".into()]), || Ok(())).unwrap();
+        assert_eq!(left["leftBehind"], json!(["A note is still at C:/v/destroying."]));
+        // Nothing deleted: said first, so it can never be mistaken for a partial delete.
+        let refused = destroy_answer(Err(Unfinished::NotStarted("The vault folder is not protected.".into())), || panic!("nothing to record")).unwrap_err();
+        assert!(refused.starts_with(protocol::DESTROY_NOT_STARTED) && refused.contains("not protected"), "{refused}");
+        // Stopped part way: every file left by its full path, and whether it can still be read.
+        let data = std::path::PathBuf::from("C:/ProgramData/YougoriVault/S-1/contents.age");
+        let partial = destroy_answer(Err(Unfinished::Partial { key_gone: true, left: vec![data.clone()], unlisted: None, reason: "Cannot overwrite vault file".into() }), || panic!("not finished")).unwrap_err();
+        assert!(partial.starts_with(protocol::DESTROY_UNFINISHED), "{partial}");
+        assert!(partial.contains("can no longer be read") && partial.contains(&data.display().to_string()) && partial.contains("Cannot overwrite vault file"), "{partial}");
+        assert!(partial.contains("delete those files yourself as an administrator"), "a way out that is not asking again: {partial}");
+        let readable = partly_deleted(false, &[std::path::PathBuf::from("C:/v/key.dpapi")], None, "locked");
+        assert!(readable.contains("may still be readable") && readable.contains("stays closed"), "{readable}");
+        // Never "none is left" when that could not be checked, and an unlisted folder is said.
+        let unseen = partly_deleted(false, &[], Some("Cannot list vault files"), "Cannot list vault files");
+        assert!(!unseen.contains("No secret file is left") && unseen.contains("could not be listed") && unseen.contains("may remain"), "{unseen}");
+    }
+    #[test]
+    fn identities_keys_and_sign_ins_that_could_not_be_checked_are_never_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let unknowable = root.path().join("unknowable\0");
+        assert!(tls_identity_at(&unknowable).is_err(), "the TLS identity paired devices pin");
+        assert!(super::http::create_key_at(&unknowable).is_err(), "the MCP connection key");
+        assert!(super::oauth::OAuth::load_from(&unknowable).is_err(), "the remote sign-ins");
+        // Sign-ins that cannot load switch remote sign-in off, say why, and never save.
+        let off = super::oauth::OAuth::unavailable("could not check oauth.dpapi".into());
+        assert_eq!(off.unavailable_reason(), Some("could not check oauth.dpapi"));
+        assert!(!off.configured());
+    }
+    #[test]
+    fn every_error_of_a_destroy_says_which_outcome_it_was() {
+        // Refusals that came before a file was touched say nothing was deleted.
+        for refusal in ["The approval queue is full", "Request is no longer pending", "Request cancelled, expired, or Windows is locked", "Cannot write the activity record"] {
+            assert_eq!(destroy_error(refusal.into()), format!("{} {refusal}", protocol::DESTROY_NOT_STARTED));
+        }
+        // An answer that already says, and a service that stopped mid-request, pass unchanged:
+        // the second's outcome is unknown, and the app reads the vault folder to settle it.
+        let partial = format!("{} Its key is gone.", protocol::DESTROY_UNFINISHED);
+        assert_eq!(destroy_error(partial.clone()), partial);
+        let refused = format!("{} The deletion was declined or timed out.", protocol::DESTROY_NOT_STARTED);
+        assert_eq!(destroy_error(refused.clone()), refused);
+        assert_eq!(destroy_error(SERVICE_STOPPED.into()), SERVICE_STOPPED);
+    }
+    #[test]
+    fn approving_a_destroy_cuts_off_connected_clients_and_forgets_what_memory_held() {
+        let (state, _jobs) = super::http::tests::fixture();
+        let shared = state.shared.clone();
+        let session = Arc::new(Session {
+            identity: Identity { id: "agent".into(), executable: "agent.exe".into(), digest: "a".repeat(64), device: "Laptop".into(), user: "SID".into(), process: 7, environment: "Host".into() },
+            desktop: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            connected: AtomicBool::new(true),
+            allowed: AtomicBool::new(true),
+            admission: AtomicU64::new(0),
+            vault: AtomicU64::new(0),
+        });
+        // An approved MCP client with a request admitted, and another request waiting.
+        let (response, _reply) = oneshot::channel();
+        let admitted = Job { id: "admitted".into(), session: session.clone(), action: Action::Browse, cancel: Arc::new(AtomicBool::new(false)), deadline: Instant::now() + Duration::from_secs(60), generation: shared.generation.load(Ordering::SeqCst), response };
+        let waiting = Arc::new(AtomicBool::new(false));
+        shared.pending.lock().unwrap().insert("waiting".into(), Arc::new(Pending { summary: Mutex::new(json!({"ready":true})), decision: AtomicU8::new(0), cancel: waiting.clone(), session: std::sync::Weak::new() }));
+        *shared.http.blocking_lock() = json!({"brokerPort": 1});
+        *shared.snapshot.lock().unwrap() = json!({"items":[{"label":"GitHub"}],"clients":[{"id":"agent"}]});
+        assert!(native::workstation_locked() || valid(&admitted, &shared));
+        cut_off(&shared, &mut None);
+        assert!(!valid(&admitted, &shared), "the connected client's admitted request is void");
+        assert!(waiting.load(Ordering::SeqCst), "waiting requests are cancelled");
+        assert!(shared.locked.load(Ordering::SeqCst));
+        assert!(shared.http.blocking_lock().is_null());
+        assert!(!shared.oauth.lock().unwrap().configured());
+        assert_eq!(shared.snapshot.lock().unwrap()["items"], json!([]));
+        assert_eq!(shared.snapshot.lock().unwrap()["clients"], json!([]));
+        // A request the same client makes afterwards is void too, and its next MCP message
+        // sends it back through the "Allow this client" consent for the new vault.
+        let (response, _reply) = oneshot::channel();
+        let later = Job { id: "later".into(), session: session.clone(), action: Action::Browse, cancel: Arc::new(AtomicBool::new(false)), deadline: Instant::now() + Duration::from_secs(60), generation: shared.generation.load(Ordering::SeqCst), response };
+        assert!(!valid(&later, &shared), "an approval for the destroyed vault admits nothing new");
+        refresh_approval(&session, &shared);
+        assert!(!session.allowed.load(Ordering::SeqCst));
+    }
+}
+#[cfg(test)]
 mod inventory_tests {
     use super::*;
     #[test]
@@ -671,6 +896,7 @@ fn worker(
             Action::Remote => "remote_access",
             Action::Revoke(_) => "revoke",
             Action::Remove(_) => "remove",
+            Action::Destroy => "destroy",
         };
         let entry = Audit {
             time: chrono::Utc::now().to_rfc3339(),
@@ -680,7 +906,8 @@ fn worker(
             outcome: "requested".into(),
         };
         let result = crate::storage::record(&entry).and_then(|_| work(&job, &shared, &mut store, &runtime, &sender));
-        if result.is_err() {
+        // A destroy that stopped part way already says so in the record.
+        if result.as_ref().is_err_and(|error| !error.starts_with(protocol::DESTROY_UNFINISHED)) {
             let mut denied = entry;
             denied.time = chrono::Utc::now().to_rfc3339();
             denied.outcome = "rejected_or_cancelled".into();
@@ -703,13 +930,42 @@ fn work(
     if !valid(job, shared) {
         return Err("Request cancelled, expired, or Windows is locked".into());
     }
+    if matches!(job.action, Action::Destroy) {
+        if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) {
+            return Err(format!("{} Open Yougori Desktop to delete Personal Vault.", protocol::DESTROY_NOT_STARTED));
+        }
+        if !desktop_decision(job, shared, DESTROY_TITLE, DESTROY_CONTENT, DESTROY_ALLOW)? || !valid(job, shared) {
+            return Err(format!("{} The deletion was declined or timed out. Run Delete my vault again when you're ready.", protocol::DESTROY_NOT_STARTED));
+        }
+        let record = |outcome: &str| crate::storage::record(&Audit {
+            time: chrono::Utc::now().to_rfc3339(),
+            client: job.session.identity.id.clone(),
+            request: job.id.clone(),
+            operation: "destroy".into(),
+            outcome: outcome.into(),
+        });
+        // Nothing is deleted unless the approval is on record first.
+        if let Err(error) = record("approved_once") {
+            return Err(format!("{} The activity record could not note your approval ({error}), so deleting did not begin. Try again once the drive has space.", protocol::DESTROY_NOT_STARTED));
+        }
+        let destroyed = destroy_vault(shared, state);
+        match &destroyed {
+            Ok(_) => shared.incomplete.store(false, Ordering::SeqCst),
+            Err(Unfinished::Partial { .. }) => {
+                shared.incomplete.store(true, Ordering::SeqCst);
+                let _ = record("destroy_incomplete");
+            }
+            Err(Unfinished::NotStarted(_)) => {}
+        }
+        return destroy_answer(destroyed, || record("destroyed"));
+    }
     if matches!(job.action, Action::HttpSetup | Action::HttpCredentials) {
         let setup = matches!(job.action, Action::HttpSetup);
         if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) {
             return Err("Open Yougori Desktop to manage the vault".into());
         }
         if setup {
-            *state = Some(Store::open()?);
+            *state = Some(Store::open(true)?);
             shared.locked.store(false, Ordering::SeqCst);
             http::create_key()?;
         }
@@ -722,7 +978,7 @@ fn work(
     if matches!(job.action, Action::Browse) {
         if !platform::desktop_foreground(&job.session.identity, job.session.desktop) || !valid(job, shared) { return Err("Open Yougori Desktop to view vault items".into()); }
         if state.is_none() {
-            *state = Some(Store::open()?);
+            *state = Some(Store::open(false)?);
         }
         shared.locked.store(false, Ordering::SeqCst);
         return Ok(json!({"ready":true}));
@@ -732,7 +988,7 @@ fn work(
             return Err("Open Yougori Desktop to add vault items".into());
         }
         if state.is_none() {
-            *state = Some(Store::open()?);
+            *state = Some(Store::open(false)?);
             shared.locked.store(false, Ordering::SeqCst);
         }
         let items: Vec<Item> = inputs.iter().map(|input| Item { id: uuid::Uuid::new_v4().to_string(), label: input.label.clone(), kind: input.kind.clone(), resource: input.resource.clone(), value: input.value.clone() }).collect();
@@ -765,7 +1021,7 @@ fn work(
         return Ok(json!({"added":ids}));
     }
     if state.is_none() || shared.locked.load(Ordering::SeqCst) {
-        *state = Some(Store::open()?);
+        *state = Some(Store::open(false)?);
         if !matches!(job.action, Action::Connect | Action::ApprovedConnect | Action::Tool(_)) {
             shared.locked.store(false, Ordering::SeqCst);
         }
@@ -817,6 +1073,7 @@ fn work(
                     .unwrap_or(&0),
                 Ordering::SeqCst,
             );
+            job.session.vault.store(shared.vault.load(Ordering::SeqCst), Ordering::SeqCst);
             job.session.allowed.store(true, Ordering::SeqCst);
             Ok(json!({"allowedRequests":true}))
         }
@@ -969,32 +1226,30 @@ fn work(
             }
             result
         }
-        Action::AddItems(_) | Action::Browse | Action::HttpSetup | Action::HttpCredentials => {
+        Action::AddItems(_) | Action::Browse | Action::HttpSetup | Action::HttpCredentials | Action::Destroy => {
             unreachable!()
         }
     }
+}
+/// The broker's TLS identity at `path`, made the first time. An identity that could not be
+/// checked is never replaced: paired devices pin it.
+fn tls_identity_at(path: &std::path::Path) -> Result<crate::transport::DeviceKey, String> {
+    use crate::{storage, transport::DeviceKey};
+    if storage::present(path)? {
+        return serde_json::from_slice(&storage::dpapi(&storage::bounded_read(path, 32768)?, false)?)
+            .map_err(|_| "Invalid protected TLS identity".into());
+    }
+    let identity = DeviceKey::generate()?;
+    let bytes = zeroize::Zeroizing::new(serde_json::to_vec(&identity).map_err(|_| "Cannot encode TLS identity")?);
+    storage::atomic_write(path, &storage::dpapi(&bytes, true)?)?;
+    Ok(identity)
 }
 async fn start_remote(
     shared: Arc<Shared>,
     sender: std::sync::mpsc::SyncSender<Job>,
 ) -> Result<Value, String> {
-    use crate::{storage, transport::DeviceKey};
     use sha2::{Digest, Sha256};
-    let path = platform::data_directory()?.join("server-identity.dpapi");
-    let identity: DeviceKey = if path.exists() {
-        serde_json::from_slice(&storage::dpapi(
-            &storage::bounded_read(&path, 32768)?,
-            false,
-        )?)
-        .map_err(|_| "Invalid protected TLS identity")?
-    } else {
-        let identity = DeviceKey::generate()?;
-        let bytes = zeroize::Zeroizing::new(
-            serde_json::to_vec(&identity).map_err(|_| "Cannot encode TLS identity")?,
-        );
-        storage::atomic_write(&path, &storage::dpapi(&bytes, true)?)?;
-        identity
-    };
+    let identity = tls_identity_at(&platform::data_directory()?.join("server-identity.dpapi"))?;
     let fingerprint = identity.fingerprint()?;
     let config = Arc::new(crate::transport::server_config(&identity)?);
     // Only the desktop's container relay reaches this socket. Its contents are
@@ -1053,6 +1308,7 @@ async fn start_remote(
                     connected: AtomicBool::new(true),
                     allowed: AtomicBool::new(false),
                     admission: AtomicU64::new(0),
+                    vault: AtomicU64::new(0),
                 });
                 let _ = serve(stream, session.clone(), sender, shared, true).await;
                 session.connected.store(false, Ordering::SeqCst);

@@ -1,0 +1,63 @@
+/* What every popup shares: groups with a heading, choices as cards that show what each one gives
+   you, a preview of the result before the main button is pressed, and the one thing still
+   needed, said beside that button. Colours come from the theme tokens, so every palette works. */
+
+.popup-stack { display: grid; gap: 20px; }
+
+.popup-group { display: grid; gap: 10px; min-width: 0; }
+.popup-group + .popup-group { padding-top: 18px; border-top: 1px solid var(--border); }
+.popup-group-head { display: grid; gap: 3px; }
+.popup-group-title { margin: 0; color: var(--foreground); font-size: 13.5px; font-weight: 550; letter-spacing: -0.015em; }
+.popup-group-hint { margin: 0; color: var(--muted-foreground); font-size: 12.5px; line-height: 1.5; text-wrap: pretty; }
+
+.popup-field { display: grid; gap: 8px; min-width: 0; }
+.popup-label { color: var(--foreground); font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
+/* A choice that stands as its own group takes the group heading's weight. */
+.popup-group > .popup-field > .popup-label { font-size: 13.5px; font-weight: 550; letter-spacing: -0.015em; }
+
+/* Choices: every card says what it is, how it works and what it gives you. */
+.popup-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 10px; }
+.popup-choice {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 13px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, background-color .15s, box-shadow .15s;
+}
+.popup-choice:hover:not(:disabled) { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+.popup-choice:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.popup-choice[aria-checked="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 6%, var(--popover)); box-shadow: 0 0 0 1px var(--primary); }
+.popup-choice:disabled { cursor: not-allowed; opacity: .55; }
+.popup-choice-title { font-size: 13.5px; font-weight: 550; letter-spacing: -0.015em; }
+.popup-choice-detail { color: var(--muted-foreground); font-size: 12.5px; line-height: 1.5; text-wrap: pretty; }
+.popup-choice-preview { display: block; min-width: 0; margin-top: 2px; padding-top: 8px; border-top: 1px dashed var(--border); }
+@media (prefers-reduced-motion: reduce) { .popup-choice { transition: none; } }
+
+/* An address, link or code exactly as it will appear. A slot is the part a service fills in. */
+.popup-address { display: inline; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, var(--foreground) 6%, transparent); color: var(--foreground); font-family: var(--font-mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.popup-slot { color: var(--muted-foreground); font-style: italic; }
+/* The same preview under a plain radio row, as the create wizard uses. */
+.grid-choice-preview { display: block; margin-top: 4px; line-height: 1.7; }
+.popup-quiet { color: var(--muted-foreground); font-size: 12px; }
+
+/* The result, said before the main button is pressed. */
+.popup-outcome { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--foreground) 3%, var(--popover)); }
+.popup-outcome-title { color: var(--muted-foreground); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.popup-outcome-body { margin: 0; color: var(--foreground); font-size: 12.5px; line-height: 1.55; text-wrap: pretty; }
+.popup-outcome-body > * + * { margin-top: 4px; }
+
+.popup-note { margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.5; text-wrap: pretty; }
+.popup-status { margin: 0; color: var(--foreground); font-size: 12.5px; line-height: 1.5; }
+
+/* Sits at the start of the footer, beside the buttons, so a disabled button always has its
+   reason in sight rather than in a tooltip. */
+.popup-needed { margin: 0; margin-inline-end: auto; align-self: center; color: var(--muted-foreground); font-size: 12px; line-height: 1.4; text-wrap: pretty; }
+@media (max-width: 639px) { .popup-needed { margin-inline-end: 0; text-align: center; } }

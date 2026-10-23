@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useCloudProfileDraft } from "@/lib/cloud-profile-draft"
 import { parseSshCommand } from "@/lib/ssh-command"
+import { Outcome, StillNeeded } from "@/components/popup-kit"
 
 type Vendor = CloudProfile["vendor"]
 const defaultUser: Record<Vendor, string> = { aws: "ec2-user", google: "", azure: "azureuser", other: "" }
@@ -96,11 +97,15 @@ export function CloudEnvironmentDialog({ open, onOpenChange, environmentId, init
               <p className="text-xs text-muted-foreground">{aws ? "The instance's security group must allow inbound SSH (TCP 22) from your IP. Amazon Linux and Ubuntu include the OpenSSH server and Python 3 that Yougori needs." : "Pasted public keys use the matching private key in this PC’s SSH agent. Otherwise, browse for your private key file. Requires OpenSSH and Python 3 on the server."}</p>
             </div>
           </fieldset>
-          <p className="text-xs leading-relaxed text-muted-foreground">Private connections to your local nodes and selected shared data only. Local network and Public access are unavailable for cloud nodes. Nothing is installed as a background service.</p>
+          <Outcome title="What a cloud node can do">
+            <p>Connect privately to your local nodes and the shared data you choose. Local network and Public access are not available for cloud nodes, and nothing is installed on the server as a background service.</p>
+            <p>Connecting and disconnecting never power the server on or off; that stays with your cloud provider.</p>
+          </Outcome>
           {connected ? <p role="status" className="text-sm text-emerald-600 dark:text-emerald-400">Connection successful</p> : null}
           {error ? <p role="alert" className="text-sm text-destructive whitespace-pre-wrap">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
+          <StillNeeded>{busy || connected ? "" : `Test the connection with Connect, then ${environmentId ? "save it" : "add the node"}.`}</StillNeeded>
           <Button disabled={Boolean(busy)} type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button type="submit" variant={connected ? "outline" : "default"} disabled={Boolean(busy)} loading={busy === "connect"}>Connect</Button>
           <Button type="button" disabled={Boolean(busy) || !connected} loading={busy === "save"} onClick={save}>{environmentId ? "Save SSH access" : "Add cloud node"}</Button>

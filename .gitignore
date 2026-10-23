@@ -33,7 +33,7 @@ src-tauri/resources/cli/
 
 # Development-agent configuration is local, not part of the product source.
 /.agents/
-# Ship the app-editing skill used by Edit the App; keep other local agent files private.
+# Ship the repo-editing skill for coding agents working on Yougori; keep other local agent files private.
 !/.agents/
 /.agents/*
 !/.agents/skills/
@@ -84,6 +84,9 @@ Desktop.ini
 *.swp
 *.swo
 *~
+# Test folders made beside the crate (the share validator refuses the OS temp folder on
+# Windows). They clean themselves up, except when a test process is killed outright.
+src-tauri/.tmp*/
 engine/target/
 grid/target/
 crates/*/target/

@@ -166,22 +166,13 @@ fn download_dry_run_returns_versioned_output_without_publication() {
 }
 
 #[test]
-fn private_device_identity_is_structured_when_piped() {
+fn the_remote_vault_client_and_its_device_identity_are_gone() {
+    // Nothing could ever open the remote vault gateway it needed, so the client was removed.
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("device.json");
     let output = cli(&["vault", "identity", "--output", path.to_str().unwrap()]);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
-    let value = response(&output);
-    assert_eq!(value["version"], yougori_cli::wire::VERSION);
-    assert_eq!(value["ok"], true);
-    assert_eq!(value["result"]["path"], path.to_str().unwrap());
-    assert_eq!(value["result"]["canApprove"], false);
-    assert!(value["result"]["fingerprint"].as_str().is_some_and(|pin| pin.len() == 64));
-    let identity: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert!(identity.get("private_key").is_some());
-    assert!(value["result"].get("key").is_none());
-    assert!(value["result"].get("privateKey").is_none());
-    assert!(value["result"].get("private_key").is_none());
+    assert!(!output.status.success());
+    assert!(!path.exists(), "no identity file is written");
 }
 
 #[test]

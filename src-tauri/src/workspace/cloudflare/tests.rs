@@ -608,3 +608,11 @@ fn saved_domains_keep_one_hostname_and_one_tunnel_port_each() {
     assert!(domain_conflict(&full, &domain("new", "new.example.com", 60000)).is_err());
     assert!(domain_conflict(&full, &domain("0", "d0.example.com", 10_000)).is_ok());
 }
+
+#[test]
+fn a_token_left_behind_is_named_as_windows_credential_manager_shows_it() {
+    // keyring's Windows store joins the account and the service with a dot; the vault names a
+    // leftover token by this, so the person can find it under Windows Credentials.
+    let account = credential_key("yougori-private-vault-gateway-v1", 49732).unwrap();
+    assert_eq!(credential_target(&account, VAULT_SERVICE), "yougori-private-vault-gateway-v1:49732.Yougori.CloudflareTunnel.v1");
+}

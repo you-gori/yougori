@@ -80,14 +80,12 @@ impl CopyPlan {
     }
 }
 
-fn linked(metadata: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return true;
-        }
-    }
+/// Symbolic links, junctions and mount points lead somewhere else and are never followed. On
+/// Windows `is_symlink` is exactly that: a reparse point whose tag is a name surrogate. Other
+/// reparse points hold their own data (OneDrive files on demand, deduplicated or compressed
+/// files) and are copied like any file. Opening still never follows a reparse point, and the
+/// open handle's final path must be the planned one, so a link swapped in later is refused.
+pub(crate) fn linked(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 

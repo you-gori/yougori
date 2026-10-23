@@ -23,7 +23,7 @@ export function GuestAppLauncher({ environment }: { environment: Environment }) 
   useEffect(() => {
     if (!open) return
     let disposed = false, timer = 0
-    const refresh = () => { void guestAppsApi.status(environment.id).then(next => { if (!disposed) setStatus(next) }).catch(reason => { if (!disposed) setError(String(reason)) }).finally(() => { if (!disposed) timer = window.setTimeout(refresh, 2500) }) }
+    const refresh = () => { void guestAppsApi.status(environment.id).then(next => { if (!disposed) { setStatus(next); setError("") } }).catch(reason => { if (!disposed) setError(String(reason)) }).finally(() => { if (!disposed) timer = window.setTimeout(refresh, 2500) }) }
     refresh()
     return () => { disposed = true; window.clearTimeout(timer) }
   }, [open, environment.id, revision])

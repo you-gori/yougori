@@ -24,7 +24,33 @@ pub async fn connect() -> Result<NamedPipeClient, String> {
     platform::verify_server(stream.as_raw_handle())?;
     Ok(stream)
 }
+/// What became of a request when it matters whether it reached the broker at all.
+#[derive(Debug, PartialEq)]
+pub enum Asked {
+    /// The broker could not be reached, or the request could not be written: nothing was asked.
+    NotSent(String),
+    /// The broker answered: its result, or its refusal.
+    Answered(Result<Value, String>),
+    /// Sent, and no answer came: what the broker did is unknown.
+    Unanswered(String),
+}
+
+/// Asks the broker `request` and says whether it was never sent, answered, or left unanswered.
+pub async fn ask(request: &Request) -> Asked {
+    match connect().await {
+        Ok(mut stream) => send(&mut stream, request).await,
+        Err(error) => Asked::NotSent(error),
+    }
+}
+
 pub async fn exchange(stream: &mut NamedPipeClient, request: &Request) -> Result<Value, String> {
+    match send(stream, request).await {
+        Asked::Answered(result) => result,
+        Asked::NotSent(error) | Asked::Unanswered(error) => Err(error),
+    }
+}
+
+async fn send(stream: &mut NamedPipeClient, request: &Request) -> Asked {
     if matches!(
         request,
         Request::Manage {}
@@ -33,6 +59,7 @@ pub async fn exchange(stream: &mut NamedPipeClient, request: &Request) -> Result
             | Request::HttpCredentials {}
             | Request::Remote {}
             | Request::Remove { .. }
+            | Request::Destroy {}
             | Request::Mcp { .. }
     ) {
         // A foreground Desktop can transfer focus permission to its already
@@ -49,23 +76,35 @@ pub async fn exchange(stream: &mut NamedPipeClient, request: &Request) -> Result
         }
     }
     // Added items carry credentials: wipe the serialized copy after sending.
-    let mut message = serde_json::to_value(request).map_err(|e| e.to_string())?;
+    let mut message = match serde_json::to_value(request) {
+        Ok(message) => message,
+        Err(error) => return Asked::NotSent(error.to_string()),
+    };
     let written = protocol::write(stream, &message).await;
     protocol::wipe(&mut message);
-    written?;
-    let timeout = if matches!(request, Request::Manage {}) {
-        480
-    } else {
-        135
-    };
-    let bytes = tokio::time::timeout(Duration::from_secs(timeout), protocol::read(stream))
-        .await
-        .map_err(|_| "Vault request timed out; inspect activity before retrying an action")??;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid vault response")?;
-    if let Some(error) = value.get("error").and_then(Value::as_str) {
-        return Err(error.into());
+    // A frame not written whole is never read by the broker: nothing was asked.
+    if let Err(error) = written {
+        return Asked::NotSent(error);
     }
-    Ok(value)
+    // A destroy waits for its approval (up to two minutes) and then deletes, so it is given
+    // longer than other approvals: an answer cut off mid-delete leaves its outcome unknown.
+    let timeout = match request {
+        Request::Manage {} => 480,
+        Request::Destroy {} => 300,
+        _ => 135,
+    };
+    let bytes = match tokio::time::timeout(Duration::from_secs(timeout), protocol::read(stream)).await {
+        Err(_) => return Asked::Unanswered("Vault request timed out; inspect activity before retrying an action".into()),
+        Ok(Err(error)) => return Asked::Unanswered(error),
+        Ok(Ok(bytes)) => bytes,
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Asked::Unanswered("Invalid vault response".into());
+    };
+    match value.get("error").and_then(Value::as_str) {
+        Some(error) => Asked::Answered(Err(error.into())),
+        None => Asked::Answered(Ok(value)),
+    }
 }
 pub async fn call(request: &Request) -> Result<Value, String> {
     exchange(&mut connect().await?, request).await

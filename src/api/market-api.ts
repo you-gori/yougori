@@ -42,6 +42,9 @@ export interface NetworkStatus {
   account: { email: string; wallet: string | null; creditMicros: number; earningsMicros: number; availableMicros: number } | null
   login: { userCode: string; verificationUrl: string; verificationUrlComplete: string; expiresIn: number; error: string | null } | null
   shares: NetworkShare[]
+  /** Why the list of shared models could not be read, and what to check: models in it may still
+   *  have public links open. Absent when the list was read. */
+  notice?: string | null
 }
 const desktop = () => { throw new Error("Open Yougori Desktop to use Neo Grid") }
 export const marketApi = {

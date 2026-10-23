@@ -33,9 +33,15 @@ pub mod discovery;
 pub mod execution;
 pub mod logs;
 pub mod vault;
+pub mod access;
 pub mod model_auth;
 pub mod network;
 pub mod grid;
+pub mod grids;
+pub mod rollout;
+pub mod closed_bounty;
+#[path = "../../distribution.rs"]
+pub mod distribution;
 pub mod model_registry;
 pub mod confidential;
 pub mod bounty;
@@ -44,6 +50,7 @@ mod bounty_console;
 pub mod legacy_names;
 pub mod bounty_map;
 pub mod security;
+pub mod hub;
 #[cfg(test)]
 mod help_coverage;
 

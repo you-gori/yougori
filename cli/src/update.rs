@@ -11,7 +11,21 @@
 //! `-engine` assets are archives of the standalone engine for installs without the desktop app.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::{io::Write, sync::atomic::{AtomicBool, Ordering}};
+
+/// Set once an update or an uninstall starts replacing or removing Yougori: from there on,
+/// stopping part way would leave Yougori broken, so the command finishes even after Ctrl+C.
+static COMMITTED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process has started replacing or removing Yougori (see [`COMMITTED`]).
+pub fn committed() -> bool {
+    COMMITTED.load(Ordering::SeqCst)
+}
+
+/// Marks the point of no return, right before the step that stops or replaces Yougori.
+fn commit() {
+    COMMITTED.store(true, Ordering::SeqCst);
+}
 
 pub const DEFAULT_MANIFEST: &str = "https://yougori.com/releases/latest.json";
 
@@ -180,23 +194,37 @@ pub async fn install(yes: bool) -> Result<Value, String> {
     remove_stale_downloads();
     let folder = tempfile::Builder::new().prefix(UPDATE_PREFIX).tempdir().map_err(|e| e.to_string())?.keep();
     let installer = folder.join(download_name(&url));
+    // Ctrl+C during the download leaves nothing behind. The spinner this runs under abandons the
+    // whole call rather than returning here, so the removal has to happen on the way out: a plain
+    // `remove_dir_all` after an early return would simply never run. Disarmed once the files are
+    // in place, because after that point the folder is the installer the update is running from.
+    let mut downloaded = Scratch(Some(folder.clone()));
     if let Err(error) = download(&url, status["sha256"].as_str().unwrap_or(""), &installer).await {
-        let _ = std::fs::remove_dir_all(&folder);
         return Err(error);
     }
     if engine_only_install() {
         // The archive and its unpacked copy are not needed once the files are in place.
-        let result = replace_engine(&installer, &folder, &status).await;
-        let _ = std::fs::remove_dir_all(&folder);
-        return result;
+        commit();
+        return replace_engine(&installer, &folder, &status).await;
     }
     #[cfg(windows)]
     {
-        let current = crate::client::desktop_executable(None)?;
-        let expected = signer(&current).map_err(|_| "This Yougori is a development build without a signature; update it from source instead".to_string())?;
-        if signer(&installer)? != expected {
-            return Err("The installer is signed by a different publisher than your Yougori; nothing was installed".into());
+        // An installer that fails its signature check is not kept on disk.
+        let verified = (|| {
+            let current = crate::client::desktop_executable(None)?;
+            let expected = signer(&current).map_err(|_| "This Yougori is a development build without a signature; update it from source instead".to_string())?;
+            if signer(&installer)? != expected {
+                return Err("The installer is signed by a different publisher than your Yougori; nothing was installed".to_string());
+            }
+            Ok(())
+        })();
+        if let Err(error) = verified {
+            return Err(error);
         }
+        // The installer is this folder's reason to exist from here on, and it runs after this
+        // command returns, so the folder stays. `remove_stale_downloads` collects it next time.
+        downloaded.0 = None;
+        commit();
         // Workloads stop gracefully before files are replaced.
         let mut quit = crate::client::request("app_quit", json!({}));
         quit.confirmed = true;
@@ -206,7 +234,23 @@ pub async fn install(yes: bool) -> Result<Value, String> {
         return Ok(json!({"installing": status["latest"], "installer": installer, "next": "The installer runs in the background. Run `yougori doctor` when it finishes."}));
     }
     #[cfg(not(windows))]
-    Ok(json!({"downloaded": installer, "version": status["latest"], "next": "Open the downloaded installer to finish updating."}))
+    {
+        // The person opens this installer themselves, so it must still be there afterwards.
+        downloaded.0 = None;
+        Ok(json!({"downloaded": installer, "version": status["latest"], "next": "Open the downloaded installer to finish updating."}))
+    }
+}
+
+/// A download folder that is removed however this call ends, including when the spinner around it
+/// gives up on Ctrl+C and never returns here. Set to `None` once the folder is the installer the
+/// person or the update is about to run from.
+struct Scratch(Option<std::path::PathBuf>);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Some(folder) = self.0.take() {
+            let _ = std::fs::remove_dir_all(folder);
+        }
+    }
 }
 
 async fn quit_engine() {
@@ -392,6 +436,7 @@ pub async fn uninstall(yes: bool) -> Result<Value, String> {
     if !yes {
         return Ok(json!({"next": "Run `yougori uninstall --yes` to remove Yougori. Environments and their data stay on disk; the result shows where."}));
     }
+    commit();
     let data = crate::public::call("get_storage_location", json!({})).await.ok();
     if let Ok(mut settings) = crate::public::call("get_platform_state", json!({})).await.map(|s| s["settings"].clone()) {
         settings["launchAtStartup"] = false.into();
@@ -408,7 +453,7 @@ pub async fn uninstall(yes: bool) -> Result<Value, String> {
         let command = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         let executable = command.trim_matches('"').split("\" ").next().unwrap_or("").trim_matches('"').to_owned();
         if executable.is_empty() || !std::path::Path::new(&executable).is_file() {
-            return Err("Yougori's uninstaller was not found. Remove it from Windows Settings → Apps.".into());
+            return Err("Yougori's uninstaller was not found. Remove it in Windows Settings, under Apps.".into());
         }
         std::process::Command::new(&executable).arg("/S").spawn().map_err(|e| e.to_string())?;
         return Ok(json!({"uninstalling": true, "dataKept": data, "next": "Environments and their data were kept. Delete that folder yourself only if you no longer need them."}));

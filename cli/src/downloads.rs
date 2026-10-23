@@ -32,8 +32,8 @@ pub async fn run(args: &[String]) -> Result<(), String> {
     client::start(None).await?;
     let state = call("get_platform_state", json!({})).await?;
     let matches: Vec<_> = state["environments"].as_array().ok_or("Invalid environment list")?.iter()
-        .filter(|item| item["id"] == environment || item["name"] == environment).collect();
-    if matches.len() != 1 { return Err("Choose an exact, unambiguous environment ID or name".into()); }
+        .filter(|item| item["id"] == environment || item["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(&environment))).collect();
+    if matches.len() != 1 { return Err(format!("Environment {environment} was not found, or more than one matches. See your environments with yougori ps.")); }
     let id = matches[0]["id"].as_str().ok_or("Missing environment ID")?;
     if matches[0]["status"] != "stopped" { return Err("Stop this environment before creating its consistent download copy. Run `yougori stop ENV`.".into()); }
     let owner = owner();

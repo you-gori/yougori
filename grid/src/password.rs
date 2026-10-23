@@ -7,6 +7,9 @@ use sha2::Sha256;
 
 /// scrypt with N = 2^15, r = 8, p = 1: about 32 MiB and a fraction of a second per guess.
 const LOG_N: u8 = 15;
+/// For a file that may be stolen and guessed at offline (a backup holding every key): N = 2^17,
+/// about 128 MiB and most of a second per guess.
+pub const OFFLINE_LOG_N: u8 = 17;
 pub const MIN_LENGTH: usize = 10;
 pub const MAX_LENGTH: usize = 256;
 
@@ -18,14 +21,34 @@ pub fn validate(password: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A UUID v4 in hex, so its version and variant digits are fixed (see [`shaped_like_a_salt`]).
 pub fn new_salt() -> String {
     crate::token()[..32].to_owned()
+}
+
+/// 32 hex digits from a hash, given the fixed digits a real salt has: `4` at index 12 and one of
+/// 8, 9, a or b at index 16. A sign-in answers an unknown username with such a decoy, and the
+/// shape alone would otherwise tell real salts from decoys, and so who exists.
+pub fn shaped_like_a_salt(hex: &str) -> String {
+    let mut digits: Vec<u8> = hex.bytes().take(32).collect();
+    if digits.len() == 32 {
+        digits[12] = b'4';
+        // The hash's own digit picks among the four, evenly, as a UUID's random bits would.
+        let value = char::from(digits[16]).to_digit(16).unwrap_or(0) as usize;
+        digits[16] = b"89ab"[value % 4];
+    }
+    String::from_utf8(digits).unwrap_or_default()
 }
 
 /// The 32-byte key both sides prove knowledge of, as hex for the OS vault. Slow on purpose:
 /// run it on a blocking thread.
 pub fn derive(password: &str, salt: &str) -> Result<String, String> {
-    let params = scrypt::Params::new(LOG_N, 8, 1, 32).map_err(|_| "Invalid key settings")?;
+    derive_with(password, salt, LOG_N)
+}
+
+/// [`derive`] at another cost, `log_n` being log2 of scrypt's N. Slow on purpose.
+pub fn derive_with(password: &str, salt: &str, log_n: u8) -> Result<String, String> {
+    let params = scrypt::Params::new(log_n, 8, 1, 32).map_err(|_| "Invalid key settings")?;
     let mut key = [0u8; 32];
     scrypt::scrypt(password.as_bytes(), salt.as_bytes(), &params, &mut key).map_err(|_| "Cannot derive the grid key")?;
     Ok(hex::encode(key))

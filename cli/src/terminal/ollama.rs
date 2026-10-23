@@ -113,8 +113,8 @@ async fn ensure(id: &str) -> Result<(SessionExit, Option<String>), String> {
                 if crate::sandbox_stop::menu(id).await? {return Ok((SessionExit::Stopped,None));}
             }
             if let Some(ready)=probe(id,"version").await? {return Ok((SessionExit::Completed,ready["version"].as_str().map(str::to_owned)));}
-            if frame["done"]==true {return Err("Ollama exited before its API became ready. The sandbox and files remain; inspect its server before trying again.".into());}
-            if Instant::now()>=deadline {return Err("Ollama's API did not become ready within two minutes. The sandbox and files remain.".into());}
+            if frame["done"]==true {return Err("Ollama exited before its model API was ready; the sandbox and its files are kept.".into());}
+            if Instant::now()>=deadline {return Err("Ollama's model API was not ready within two minutes; the sandbox and its files are kept.".into());}
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
     }.await;
@@ -151,7 +151,10 @@ fn model_names(tags: &Value) -> Vec<String> {
 pub(super) async fn open(id: &str, name: &str) -> Result<SessionExit, String> {
     let _raw = ui::Raw::on()?;
     let _visible = ui::Visible::new();
-    let (exit, version) = ensure(id).await?;
+    let (exit, version) = match ensure(id).await {
+        Ok(ready) => ready,
+        Err(error) => return Err(format!("{error} {}", super::retry_steps(id, "ollama").await)),
+    };
     if exit != SessionExit::Completed {
         return Ok(exit);
     }
@@ -163,7 +166,11 @@ pub(super) async fn open(id: &str, name: &str) -> Result<SessionExit, String> {
     ui::info("Run a model to chat, or open the sandbox shell to build and run your website. Leaving this menu keeps the server and sandbox running.");
     loop {
         let checking = ui::loading_task("Checking your Ollama models");
-        let tags=probe(id,"tags").await?.ok_or("Ollama's server is no longer responding. Reconnect to check it before starting another server.")?;
+        let tags = match probe(id, "tags").await {
+            Ok(Some(tags)) => tags,
+            Ok(None) => return Err(format!("Ollama's model server stopped answering. {}", super::retry_steps(id, "ollama").await)),
+            Err(error) => return Err(error),
+        };
         let models = model_names(&tags);
         checking.clear();
         let notes = if models.is_empty() {
@@ -200,17 +207,23 @@ pub(super) async fn open(id: &str, name: &str) -> Result<SessionExit, String> {
         };
         match action {
             0 => {
-                let Some(selected) = share_prompt(id, || {
-                    ui::input(
-                        "Which Ollama model?",
-                        models.first().map(String::as_str).unwrap_or(""),
-                        false,
-                        &model,
-                    )
+                // Asked straight from this menu, so Back (Esc) returns to it.
+                let selected = share_prompt(id, || {
+                    ui::with_back(|| {
+                        ui::input(
+                            "Which Ollama model?",
+                            models.first().map(String::as_str).unwrap_or(""),
+                            false,
+                            &model,
+                        )
+                    })
                 })
-                .await?
-                else {
-                    return Ok(SessionExit::Detached);
+                .await;
+                let selected = match selected {
+                    Err(error) if error == ui::BACK => continue,
+                    Ok(Some(selected)) => selected,
+                    Ok(None) => return Ok(SessionExit::Detached),
+                    Err(error) => return Err(error),
                 };
                 let exit =
                     super::attach_prepared_tool(id, "ollama", &["run".into(), selected]).await?;

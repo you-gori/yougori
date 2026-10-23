@@ -93,6 +93,20 @@ it("turns the link on with a domain saved for another app", async () => {
   localStorage.clear()
 })
 
+it("says so when the link is on but its token could not be kept", async () => {
+  const id = "3f1c2b8e-4a5d-4e6f-9a7b-1c2d3e4f5a6b"
+  localStorage.setItem("yougori.public-access-presets.v1", JSON.stringify([{ id, credentialEnvironmentId: "public-presets", port: 5281, hostname: "crm.prompx.com", hostPort: 5281 }]))
+  vi.mocked(remoteAccessApi.list).mockResolvedValue({ grants: [{ id: "share-test", targetId: "my-pc", username: "teammate", permission: "view", folder: "C:/Projects", expiresAt: null, status: "offline", link: null, connectedUsers: 0 }], url: null, port: null, audit: [] })
+  vi.mocked(remoteAccessApi.start).mockResolvedValue({ url: "https://crm.prompx.com", port: 5281, warning: "Connected, but credentials could not be saved in the OS vault." })
+  const user = userEvent.setup({ delay: null })
+  render(<SharingPanel environmentId="my-pc" />)
+  await user.click(screen.getByRole("button", { name: "Share My PC via Tunnel" }))
+  await user.click(await screen.findByRole("button", { name: "Use crm.prompx.com" }))
+  await user.click(screen.getByRole("button", { name: "Enable tunnel" }))
+  expect(await screen.findByText("Link is on. Connected, but credentials could not be saved in the OS vault.")).toBeInTheDocument()
+  localStorage.clear()
+})
+
 it("removes people whose access was revoked or expired", async () => {
   const grant = (id: string, username: string, status: "revoked" | "expired" | "online") => ({ id, targetId: "my-pc", username, permission: "view" as const, folder: "C:/Projects", expiresAt: null, status, link: null, connectedUsers: 0 })
   vi.mocked(remoteAccessApi.list).mockResolvedValue({ grants: [grant("share-a", "alice", "revoked"), grant("share-b", "bob", "expired"), grant("share-c", "carol", "online")], url: null, port: null, audit: [] })

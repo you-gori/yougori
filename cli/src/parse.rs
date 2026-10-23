@@ -25,12 +25,41 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
   domain list|add|edit|remember|remove  Saved Cloudflare domains (token via --file -)
   drives list|attach|detach ENV    A VM's imported-files drives (--transfer-id ID)
   lan share ENV --address IP --permission view|control --yes | list | revoke ID | import --file invitation.json --yes
-  grid status | leave --yes | delete --yes | remove MEMBER_ID --yes
+  grid status | leave --yes | remove MEMBER_ID --yes
+  grid delete [--when later|now|forget] --yes | restore  Admin: pause for three days then delete (restore undoes it), or delete now
                                    Closed Neo Grid membership; admin: remove a computer or the grid
+  grid exclude MEMBER_ID --yes | include MEMBER_ID  Admin: leave a computer out of the grid's work, or bring it back
   grid add-plan --model hf.co/OWNER/MODEL --percent 50 [--schedule TEXT] [--idle-after MINUTES] [--quant Q]
                                    Admin: run a model on a share of the company's computers
-  grid change-plan PLAN_ID [--percent P] [--schedule TEXT] [--idle-after MINUTES] [--model M] | remove-plan PLAN_ID --yes
+  grid change-plan PLAN_ID [--percent P] [--schedule TEXT] [--idle-after MINUTES] [--model M] [--quant Q] | remove-plan PLAN_ID --yes
+  grid add-swarm --name NAME --lead MODEL --workers '["MODEL"]' --computers 5 [--strategy plan|mixture] [--tasks N] [--rounds N]
+                                   Admin: apps call swarm/NAME; one call runs a team on several computers
+  grid run-swarm NAME --prompt TEXT | remove-swarm NAME --yes
   grid add-key --name APP | revoke-key KEY_ID --yes  Admin: API keys for company apps
+  desks create COMPANY --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] --yes  Admin: host a Sandbox Grid; company computers host desks within the share you set
+  desks join --invite INVITE [--password -] [--name NAME]  Join this computer to a company's Sandbox Grid
+  desks status | leave --yes | remove MEMBER_ID --yes
+  desks delete [--when later|now|forget] --yes | restore  Admin: pause for three days then delete (restore undoes it), or delete now
+  desks adopt --file - --yes       A computer the hub created takes up its ready-made membership (JSON with the token on stdin)
+  desks share MEMBER_ID [--cpu 2] [--memory-gb 4] [--disk-gb 50] [--gpu true] [--idle-only true] | share MEMBER_ID --suggested true
+                                   Admin: what the grid may take from a computer, in use or not; or back to the automatic share
+  desks add-person --username USER [--name NAME] [--password -] [--cpu 2] [--memory-gb 4] [--disk-gb 20] [--gpu true] [--kind container|microvm|vm]
+                                   Admin: a person who signs in to open their desk; sized, their desk is ordered with them
+  desks person-password USER [--password -] --yes | remove-person USER --yes
+  desks add-desk --name NAME --person USER [--kind container|microvm|vm] [--cpu 2] [--memory-gb 4] [--disk-gb 20] [--gpu true] [--image IMG]
+                                   Admin: a desk (sandbox) for a person, built on a company computer with room in its share
+  desks assign-desk DESK_ID [--person USER] | retry-desk DESK_ID | remove-desk DESK_ID --yes
+  desks manage --file request.json --yes  Named administrators, workspace roles, images, computers and enterprise connections
+  desk refresh                     Refresh desk assignments and enterprise launch connections
+  desk login --invite INVITE --username USER [--password -] [--code 123456] | desk | desk logout --yes
+                                   Person: open your desks on this computer, see them, or forget the sign-in
+  bounty host COMPANY --title TITLE --ip THIS_PC_IP [--source DIR] [--url URL [--health PATH]] [--instructions TEXT] [--authorization TEXT] [--password -] --yes
+                                   Publish a Closed Bounty (--source, --url or both): computers join with the password and choose a model
+  call bounty_dispatch --file request.json  Project import, private hosting, connect and managed workers (secrets via --file -)
+  bounty hosted | remove-hunter MEMBER_ID --yes | unhost --yes  The hosted bounty and its findings; admin manages it
+  grids list|status|address|new|join|password|leave|delete|restore|backup|restore-backup|settings|manage  One way of asking all four grids the same questions
+  grids people|computers|share|models|desks|credentials|requests|research|connectors|work|log VERB [TARGET] [--grid NAME]
+                                   Twelve nouns over the four grids; yougori grids NOUN --help lists a noun's verbs
   project list | inspect PATH       Find and validate yougori.yaml projects
   agent inventory                  JSON compute targets, capabilities and readiness without secrets
   agent setup --yes                Install/update the Yougori skill for local agents
@@ -47,8 +76,8 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
   neocloud install --provider P --yes | account --provider P | login --file - --yes
   neocloud forget-account --provider P --yes
   neocloud prices|compare [--product gpu|cpu] [--provider P] [--hours N]
-                                   [--max-hourly USD] [--min-vram-gb GB] [--limit N] [--format table|json]
-  neocloud quote --provider P --offer ID [--hours N] [--product gpu|cpu]
+                                   [--max-hourly USD] [--min-vram-gb GB] [--limit N] [--format json|table|text]
+  neocloud quote --provider P --offer ID [--hours N] [--product gpu|cpu] [--format json|table|text]
   neocloud plan --file request.json | create --file request.json --yes | inspect|start|stop ENV
   neocloud delete ENV --confirmation EXACT_NAME --yes | recover ENV --resource-id ID
   storage location [--set PATH --yes] | storage reclaim --yes
@@ -177,7 +206,16 @@ fn credential_parameters(method: &str) -> &'static [&'static str] {
         "publish_environment_service" | "start_remote_tunnel" | "publication_preflight" => &["cloudflare.token"],
         "create_remote_share" | "add_backup_destination" => &["request"],
         "import_environment_share" => &["invitation"],
-        "grid_create" | "grid_join" | "grid_password" => &["password"],
+        "grid_create" | "grid_join" | "grid_password" | "desks_create" | "desks_join" | "desks_person_add" | "desks_person_password" | "desk_login" => &["password"],
+        "desks_manage" => &["request.password", "request.key", "request.accessKey", "request.secretKey", "request.credential"],
+        "desks_adopt_membership" => &["membership.memberToken"],
+        "access_create" | "access_signin" => &["password"],
+        "access_manage" => &["request.password", "request.value", "request.key"],
+        "access_account" => &["request.password", "request.key"],
+        "access_backup" | "access_restore_backup" => &["passphrase"],
+        // The one namespace carries the verb and its words inside `request`, so a secret in it
+        // is refused exactly as it is on every other door.
+        "grids_realm" | "grids_people" | "grids_credentials" | "grids_desks" | "grids_connectors" => &["request.password", "request.value", "request.passphrase", "request.key"],
         _ => &[],
     }
 }
@@ -252,12 +290,33 @@ fn route(group: &str, action: &str) -> Result<(&'static str, Option<&'static str
         ("grid", "status") => ("grid_status", None),
         ("grid", "leave") => ("grid_leave", None),
         ("grid", "delete") => ("grid_delete", None),
+        ("grid", "restore") => ("grid_restore", None),
         ("grid", "remove") => ("grid_member_remove", Some("memberId")),
+        ("grid", "exclude") => ("grid_member_exclude", Some("memberId")),
+        ("grid", "include") => ("grid_member_include", Some("memberId")),
         ("grid", "add-plan") => ("grid_plan_add", None),
         ("grid", "change-plan") => ("grid_plan_update", Some("planId")),
         ("grid", "remove-plan") => ("grid_plan_remove", Some("planId")),
+        ("grid", "add-swarm") => ("grid_swarm_add", None),
+        ("grid", "remove-swarm") => ("grid_swarm_remove", Some("harnessId")),
+        ("grid", "run-swarm") => ("grid_swarm_run", Some("harness")),
         ("grid", "add-key") => ("grid_key_create", None),
         ("grid", "revoke-key") => ("grid_key_revoke", Some("keyId")),
+        ("desks", "manage") => ("desks_manage", None),
+        ("desks", "status") => ("desks_status", None),
+        ("desks", "leave") => ("desks_leave", None),
+        ("desks", "delete") => ("desks_delete", None),
+        ("desks", "restore") => ("desks_restore", None),
+        ("desks", "adopt") => ("desks_adopt_membership", None),
+        ("desks", "remove") => ("desks_member_remove", Some("memberId")),
+        ("desks", "share") => ("desks_member_share", Some("memberId")),
+        ("desks", "remove-person") => ("desks_person_remove", Some("person")),
+        ("desks", "add-desk") => ("desks_add", None),
+        ("desks", "assign-desk") => ("desks_assign", Some("desk")),
+        ("desks", "retry-desk") => ("desks_retry", Some("desk")),
+        ("desks", "remove-desk") => ("desks_remove", Some("desk")),
+        ("desk", "refresh") => ("desk_refresh", None),
+        ("desk", "logout") => ("desk_logout", None),
         ("project", "list") => ("discover_projects", None),
         ("project", "inspect") => ("inspect_project", Some("path")),
         ("agent", "setup") => ("set_up_agent_access", None),
@@ -322,11 +381,53 @@ fn route(group: &str, action: &str) -> Result<(&'static str, Option<&'static str
         ("jobs", "cancel") => ("jobs_cancel", Some("jobId")),
         ("jobs", "result") => ("jobs_result", Some("jobId")),
         ("env" | "environment", "cancel-transfer") => ("cancel_file_transfer", Some("environmentId")),
-        _ => return Err(format!("Unknown command '{group} {action}'. Run yougori help.")),
+        _ => return Err(format!("Unknown command '{}'. Run yougori help.", format!("{group} {action}").trim())),
     })
 }
 
+/// How a usage line names a required word: `environmentId` is ENV_ID, `snapshotId` SNAPSHOT_ID.
+fn placeholder(key: &str) -> String {
+    if key == "environmentId" {
+        return "ENV_ID".into();
+    }
+    key.chars().fold(String::new(), |mut out, c| {
+        if c.is_ascii_uppercase() {
+            out.push('_');
+        }
+        out.push(c.to_ascii_uppercase());
+        out
+    })
+}
+/// What a value of a catalog type looks like, for an error that says how to write it.
+fn kind_words(kind: &str) -> String {
+    match kind {
+        "number" => "a number, for example 2".into(),
+        "integer" => "a whole number, for example 2".into(),
+        "bool" => "true or false".into(),
+        "port" => "a port number from 1 to 65535".into(),
+        "object" => "a JSON object, for example {}".into(),
+        "array" | "string[]" => "a JSON list, for example []".into(),
+        other => other.to_owned(),
+    }
+}
+
+/// One command, as the engine request it stands for. A refusal here is a request that cannot
+/// be sent as typed, so it carries `invalid_request`, or `permission_denied` for an effect that
+/// needs --yes, attached here rather than read back from its words.
 pub fn parse(
+    args: &[String],
+    read_json: impl Fn(&str) -> Result<Value, String>,
+) -> Result<Invocation, String> {
+    parse_words(args, read_json).map_err(|refused| {
+        if crate::client::remembered(&refused) {
+            refused
+        } else {
+            crate::client::remember_error(refused, crate::wire::ErrorDetails::of(crate::wire::Code::InvalidRequest))
+        }
+    })
+}
+
+fn parse_words(
     args: &[String],
     read_json: impl Fn(&str) -> Result<Value, String>,
 ) -> Result<Invocation, String> {
@@ -375,7 +476,7 @@ pub fn parse(
     let input = match (flags.remove("json"), flags.remove("file")) {
         (Some(_), Some(_)) => return Err("Use either --json or --file, not both".into()),
         (Some(text), None) => {
-            serde_json::from_str(&text).map_err(|e| format!("Invalid JSON: {e}"))?
+            serde_json::from_str(&text).map_err(|e| format!("--json is not valid JSON ({e}). Quote it for your shell, or pass a file with --file PATH (- reads stdin)."))?
         }
         (None, Some(path)) => read_json(&path)?,
         (None, None) => json!({}),
@@ -611,8 +712,8 @@ pub fn parse(
             "set_environment_status"
         }
         ("neocloud", "quote") => {
-            if !flags.get("provider").is_some_and(|value| !value.trim().is_empty())
-                || !flags.get("offer").is_some_and(|value| !value.trim().is_empty()) {
+            if flags.get("provider").is_none_or(|value| value.trim().is_empty())
+                || flags.get("offer").is_none_or(|value| value.trim().is_empty()) {
                 return Err("neocloud quote requires --provider and --offer".into());
             }
             "neocloud_prices"
@@ -681,6 +782,7 @@ pub fn parse(
     }
     let meta = catalog::find(method)?;
     for (key, value) in flags {
+        let flag = key.clone();
         let key = camel(&key);
         let kind = meta
             .parameters
@@ -689,11 +791,11 @@ pub fn parse(
                 let (name, kind) = spec.split_once(':')?;
                 (name.trim_end_matches('?') == key).then_some(kind)
             })
-            .ok_or_else(|| format!("Unknown option for {method}: {key}"))?;
+            .ok_or_else(|| format!("Unknown option --{flag} for yougori {group} {action}. See its options with yougori schema {method}."))?;
         let value = if kind == "string" || kind.contains('|') {
             Value::String(value)
         } else {
-            serde_json::from_str(&value).map_err(|_| format!("{key} must be {kind}"))?
+            serde_json::from_str(&value).map_err(|_| format!("--{flag} must be {}", kind_words(kind)))?
         };
         // An explicit verb/positional target cannot be redirected by a flag.
         // `call METHOD` remains available for raw backend parameters.
@@ -711,6 +813,14 @@ pub fn parse(
         }
     }
     let mut params = Value::Object(params);
+    // A command's own required word, such as the environment for `env start`, comes as usage.
+    if let Some(key) = positional {
+        let required = meta.parameters.split_whitespace().any(|spec| spec.split_once(':').is_some_and(|(name, _)| name == key));
+        if required && params.get(key).is_none_or(Value::is_null) {
+            let hint = if key == "environmentId" { ". Find it with yougori ps." } else { "." };
+            return Err(format!("Usage: yougori {group} {action} {}{hint}", placeholder(key)));
+        }
+    }
     // Local paths are relative to the CLI caller, never to the desktop engine's
     // working directory. Raw JSON can use absolute paths for reproducible plans.
     let absolute = |value: &str| -> Result<String, String> {
@@ -743,11 +853,15 @@ pub fn parse(
             params["request"]["runtime"] = absolute(value)?.into();
         }
     }
+    if method == "desks_manage" && params["request"]["action"] == "imageImport" {
+        if let Some(path) = params["request"]["path"].as_str() { params["request"]["path"] = absolute(path)?.into(); }
+    }
     meta.validate(&params)?;
     if !confirmed && !dry_run {
         if let Some(reason) = meta.confirmation_for(&params) {
-            return Err(format!(
-                "{reason} Repeat with --yes only if this is intended."
+            return Err(crate::client::remember_error(
+                format!("{reason} Repeat with --yes only if this is intended."),
+                crate::wire::ErrorDetails::of(crate::wire::Code::PermissionDenied),
             ));
         }
     }
@@ -927,6 +1041,16 @@ mod tests {
         }
     }
     #[test]
+    fn development_worker_model_selection_uses_the_existing_swarm_wire() {
+        let request = parse(&["call", "swarm_dispatch", "--file", "-"].map(str::to_owned), |_| {
+            Ok(json!({"request":{"action":"developmentModel","workerId":"worker-test",
+                "modelEnvironmentId":"env-relay","confirmed":true}}))
+        }).unwrap();
+        assert_eq!(request.request.method, "swarm_dispatch");
+        assert_eq!(request.request.params["request"]["modelEnvironmentId"], "env-relay");
+    }
+
+    #[test]
     fn protected_deployment_values_never_accept_shell_argument_input() {
         assert!(run(&["call","set_deployment_secret","--json",r#"{"name":"x","value":"private"}"#,"--yes"]).unwrap_err().contains("never shell arguments"));
         for args in [
@@ -942,6 +1066,9 @@ mod tests {
     #[test]
     fn credentials_are_refused_from_the_command_line_but_accepted_from_stdin() {
         for args in [
+            vec!["desks", "manage", "--json", r#"{"request":{"action":"personAdd","password":"synthetic-secret"}}"#],
+            vec!["desks", "manage", "--request", r#"{"action":"personPassword","password":"synthetic-secret"}"#],
+            vec!["call", "desk_login", "--password", "synthetic-secret"],
             vec!["neocloud", "login", "--provider", "runpod", "--api-key", "rp_secret", "--yes"],
             vec!["neocloud", "login", "--json", r#"{"provider":"runpod","apiKey":"rp_secret"}"#, "--yes"],
             vec!["domain", "add", "app.example.com", "--tunnel-port", "45000", "--token", "cf_secret", "--yes"],
@@ -963,6 +1090,14 @@ mod tests {
         let published = run(&["ports", "publish", "env-1", "--port", "3000", "--cloudflare", r#"{"hostname":"a.example.com","remember":true,"routesReviewed":true}"#, "--yes"]).unwrap();
         assert_eq!(published.request.params["cloudflare"]["hostname"], "a.example.com");
         assert!(run(&["window", "capture", "environment-env-1-main", "--token", "capture-token"]).is_ok());
+    }
+    #[test]
+    fn grid_management_uses_private_inputs_and_refresh_has_a_public_route() {
+        let refresh=run(&["desk","refresh"]).unwrap();assert_eq!(refresh.request.method,"desk_refresh");
+        let admin=parse(&["desks","manage","--file","-","--yes"].map(str::to_owned), |_|Ok(json!({"request":{"action":"personAdd","password":"synthetic-secret"}}))).unwrap();
+        assert_eq!(admin.request.method,"desks_manage");assert_eq!(admin.request.params["request"]["password"],"synthetic-secret");
+        let image=parse(&["desks","manage","--file","-","--yes"].map(str::to_owned), |_|Ok(json!({"request":{"action":"imageImport","path":"prepared.qcow2"}}))).unwrap();
+        assert!(std::path::Path::new(image.request.params["request"]["path"].as_str().unwrap()).is_absolute());
     }
     #[test]
     fn connection_folders_takes_one_environment_and_an_optional_path() {
@@ -1094,7 +1229,10 @@ mod tests {
         assert_eq!(plan.request.params, json!({"model":"hf.co/Qwen/Qwen3-8B","percent":50,"schedule":"Mon-Fri 18:00-08:00; Sat,Sun","idleAfter":15}));
         let change = run(&["grid", "change-plan", "plan-1", "--percent", "75", "--schedule", ""]).unwrap();
         assert_eq!((change.request.method.as_str(), &change.request.params), ("grid_plan_update", &json!({"planId":"plan-1","percent":75,"schedule":""})));
-        assert!(run(&["grid", "add-plan", "--model", "a/b", "--percent", "half"]).unwrap_err().contains("percent must be number"));
+        assert!(run(&["grid", "add-plan", "--model", "a/b", "--percent", "half"]).unwrap_err().contains("--percent must be a number, for example 2"));
+        let unknown = run(&["grid", "add-plan", "--model", "a/b", "--percentage", "5"]).unwrap_err();
+        assert!(unknown.contains("--percentage") && unknown.contains("yougori grid add-plan") && !unknown.contains("percentage:"), "{unknown}");
+        assert_eq!(run(&["env", "start"]).unwrap_err(), "Usage: yougori env start ENV_ID. Find it with yougori ps.");
         for (args, method) in [(&["grid", "remove", "member-1"][..], "grid_member_remove"), (&["grid", "remove-plan", "plan-1"], "grid_plan_remove"), (&["grid", "revoke-key", "key-1"], "grid_key_revoke"), (&["grid", "leave"], "grid_leave"), (&["grid", "delete"], "grid_delete")] {
             assert!(run(args).unwrap_err().contains("--yes"), "{method} needs confirmation");
             let mut confirmed = args.to_vec();

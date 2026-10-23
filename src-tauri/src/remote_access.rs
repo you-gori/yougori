@@ -3,7 +3,8 @@
 pub(crate) mod client;
 pub(crate) mod bridge;
 mod terminal;
-mod desktop;
+pub(crate) mod desktop;
+mod rfb_guard;
 mod files;
 #[cfg(test)]
 mod tests;
@@ -286,6 +287,47 @@ impl RemoteAccess {
                 .await;
         }
     }
+    /// Signs out every recipient of a share that reaches `environment_id`, for a lockdown: their
+    /// terminal, desktop and private connections close within a second. They may sign in again,
+    /// but every request is refused (see `target`) until it is unlocked.
+    pub(crate) async fn end_sessions_for(&self, app: &AppHandle, environment_id: &str) {
+        let grants: Vec<String> = self.db.lock().await.grants.iter().filter(|grant| grant.target_id == environment_id).map(|grant| grant.id.clone()).collect();
+        // Signed out at once: every stream watches its session and its cancel token.
+        let ended: Vec<(String, String)> = {
+            let mut sessions = self.sessions.lock().await;
+            let keys: Vec<String> = sessions.iter().filter(|(_, session)| grants.contains(&session.grant)).map(|(key, _)| key.clone()).collect();
+            keys.into_iter().filter_map(|key| sessions.remove(&key)).map(|session| {
+                session.cancel.cancel();
+                (session.grant.clone(), session.owner.clone())
+            }).collect()
+        };
+        let mut shares: Vec<&str> = ended.iter().map(|(grant, _)| grant.as_str()).collect();
+        shares.sort_unstable();
+        shares.dedup();
+        for share in shares {
+            self.audit(share, "recipients signed out: the environment was locked down", true).await;
+        }
+        // Closing their desktops and terminals waits on the guest: done apart, so the lockdown does not.
+        let owners: Vec<String> = ended.into_iter().map(|(_, owner)| owner).collect();
+        if owners.is_empty() {
+            return;
+        }
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let manager = app.state::<RemoteAccess>();
+            for owner in owners {
+                let _ = tokio::time::timeout(Duration::from_secs(30), async {
+                    desktop::close_owner(&manager, &owner).await;
+                    app.state::<WorkspaceManager>().close_window(&owner, &app.state::<PlatformStore>(), &app.state::<RuntimeManager>()).await;
+                })
+                .await;
+            }
+        });
+    }
+    /// Closes the desktop sessions `owner` opened, a desk share's among them.
+    pub(crate) async fn close_desktops(&self, owner: &str) {
+        desktop::close_owner(self, owner).await;
+    }
 }
 fn push_audit(db: &mut Database, id: &str, event: &str, success: bool) {
     // Mirror sharing changes, sign-ins and recipient activity into the engine's audit log.
@@ -336,6 +378,12 @@ fn target(app: &AppHandle, id: &str) -> Result<Environment, String> {
     if crate::peer_sharing::is_shared(&env) || env.kind == EnvironmentKind::ComputerBranch {
         return Err("This target cannot be reshared".into());
     }
+    // Every recipient request, terminal, desktop and private connection comes through here: a
+    // locked-down or cut-off environment answers none of them until it is unlocked. Recipients
+    // are not told why.
+    if crate::security::is_contained(&env.id) {
+        return Err(format!("{} is unavailable right now", env.name));
+    }
     Ok(env)
 }
 async fn check_control_scope(app: &AppHandle, id: &str, acknowledged: bool) -> Result<(), String> {
@@ -379,8 +427,9 @@ pub async fn create_remote_share(
         }
         files::validate_pc_root(request.folder.as_deref().unwrap(), &files::yougori_roots(&app))?;
     } else {
-        let env = target(&app, &request.target_id)?;
+        // The containment refusal first: it is audited and says how to unlock.
         crate::security::ensure_open(&app.state::<PlatformStore>(), &request.target_id, "Sharing it remotely")?;
+        let env = target(&app, &request.target_id)?;
         if request.folder.is_some() && env.kind == EnvironmentKind::FullVm {
             return Err("File sharing needs a Yougori guest agent; this full VM currently supports lifecycle sharing only".into());
         }
@@ -464,47 +513,54 @@ pub async fn start_remote_tunnel(
         }
         live.take();
     }
-    if !manager.db.lock().await.grants.iter().any(Grant::active) {
-        return Err("Create a recipient before enabling remote access".into());
-    }
-    let account = cloudflare
-        .map(|options| {
-            workspace::cloudflare::Account::resolve("remote-access", 7445, host_port, options)
-        })
-        .transpose()?;
-    let workspace = app.state::<workspace::WorkspaceManager>();
-    let _workspace_operation = workspace.operations.lock().await;
-    if let Some(account) = &account {
-        workspace::cloudflare::finish_setup(&workspace, account).await?;
-    }
-    let listener = TcpListener::bind(("127.0.0.1", host_port.unwrap_or(0)))
-        .await
-        .map_err(|_| "The local tunnel port is unavailable")?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let executable = workspace::cloudflared(&manager.root).await?;
-    let serving_app = app.clone();
-    let task = tokio::spawn(serve(listener, serving_app));
-    let tunnel = match workspace::cloudflare::start(
-        &executable,
-        &manager.root,
-        port,
-        account.as_ref(),
-    )
-    .await
-    {
-        Ok(tunnel) => tunnel,
-        Err(error) => {
-            task.abort();
-            return Err(error);
+    // Every attempt to turn the link on is audited, whether or not the tunnel comes up.
+    let started = async {
+        if !manager.db.lock().await.grants.iter().any(Grant::active) {
+            return Err("Create a recipient before enabling remote access".into());
         }
-    };
-    let result = json!({"url":tunnel.url,"port":port});
-    *live = Some(Live { task, tunnel, port });
-    if let Some(account) = account {
-        account.remember("remote-access", 7445)?;
-    }
-    manager.audit("", "tunnel enabled", true).await;
-    Ok(result)
+        let account = cloudflare
+            .map(|options| {
+                workspace::cloudflare::Account::resolve("remote-access", 7445, host_port, options)
+            })
+            .transpose()?;
+        let workspace = app.state::<workspace::WorkspaceManager>();
+        let _workspace_operation = workspace.operations.lock().await;
+        if let Some(account) = &account {
+            workspace::cloudflare::finish_setup(&workspace, account).await?;
+        }
+        let listener = TcpListener::bind(("127.0.0.1", host_port.unwrap_or(0)))
+            .await
+            .map_err(|_| "The local tunnel port is unavailable")?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let executable = workspace::cloudflared(&manager.root).await?;
+        let serving_app = app.clone();
+        let task = tokio::spawn(serve(listener, serving_app));
+        let tunnel = match workspace::cloudflare::start(
+            &executable,
+            &manager.root,
+            port,
+            account.as_ref(),
+        )
+        .await
+        {
+            Ok(tunnel) => tunnel,
+            Err(error) => {
+                task.abort();
+                return Err(error);
+            }
+        };
+        let mut result = json!({"url":tunnel.url,"port":port});
+        *live = Some(Live { task, tunnel, port });
+        // The tunnel is already live: a vault failure is a warning, never an error that hides it.
+        if let Some(account) = account {
+            if let Err(error) = account.remember("remote-access", 7445) {
+                result["warning"] = json!(error);
+            }
+        }
+        Ok::<_, String>(result)
+    }.await;
+    manager.audit("", "tunnel enabled", started.is_ok()).await;
+    started
 }
 #[tauri::command]
 pub async fn stop_remote_tunnel(
@@ -639,7 +695,8 @@ async fn serve(listener: TcpListener, app: AppHandle) {
     let mut clients = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
-            result=listener.accept()=>{let Ok((mut socket,peer))=result else{break}; if !peer.ip().is_loopback() || clients.len()>=32 {continue} let app=app.clone(); clients.spawn(async move {
+            // A failed accept (a reset client, a full socket table) is transient: keep the gateway up.
+            result=listener.accept()=>{let Ok((mut socket,peer))=result else{tokio::time::sleep(Duration::from_millis(100)).await;continue}; if !peer.ip().is_loopback() || clients.len()>=32 {continue} let app=app.clone(); clients.spawn(async move {
                 let mut preface = [0_u8; 32];
                 let Ok(Ok(websocket)) = tokio::time::timeout(Duration::from_secs(12), async {
                     loop {

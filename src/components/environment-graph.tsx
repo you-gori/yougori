@@ -3,9 +3,12 @@ import { EnvironmentDuplicateAction, type DuplicateDestination } from "@/compone
 import { DuplicateEnvironmentDialog } from "@/components/dialogs/duplicate-environment-dialog"
 import { ConfigurationHelp } from "@/components/configuration-help"
 import { EnvironmentList, EnvironmentListRow } from "@/components/environment-list"
+import { EnvironmentCopyStatus } from "@/components/environment-copy-status"
+import { PersonalVault } from "@/components/personal-vault"
+import { VaultSandboxRow } from "@/components/vault-sandbox-row"
 import type { ReactNode } from "react"
-import { EyeIcon, EyeOffIcon, TerminalIcon, ListIcon, PlayIcon, PlusIcon, SquareIcon, SettingsIcon, XIcon } from "lucide-react"
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { EyeIcon, EyeOffIcon, TerminalIcon, PlayIcon, PlusIcon, SquareIcon, SettingsIcon, XIcon } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { allCapabilities, capabilityEnabled, capabilityIssue, type GraphEnvironment, type CapabilityKind } from "@/components/graph-capabilities"
 import { useWorkspaceFeatures } from "@/components/use-workspace-features"
@@ -95,7 +98,8 @@ function EnvironmentCard({ data }: { data: EnvironmentNodeData }) {
     data.onSelect(environment.id)
   }
 
-  const statusSummary = action ? <span className="shrink-0 text-[10px] text-muted-foreground" role="status">{environmentActionLabel[action]}</span> : environment.status === "error" ? <span className="environment-needs-attention">Needs attention</span> : runpod ? <span className="text-[11px] text-muted-foreground">{running ? "Connected" : runpodState}{runpod.product === "pod" && runpodState === "Running" && runpodExtra(runpod).hourlyUsd ? ` · ${money(runpodExtra(runpod).hourlyUsd)}/hr` : ""}</span> : neocloud?.product === "serverless" ? <span className="text-[11px] text-muted-foreground">{neocloud.state}</span> : cloud ? <span className="text-[11px] text-muted-foreground">{environment.status === "running" ? "Connected" : "Disconnected"}</span> : <Status compact status={environment.status} />
+  // Running or stopped shows in the line beside the name, so only screen readers hear it; anything else reads under the name.
+  const statusSummary = action ? <span className="shrink-0 text-[10px] text-muted-foreground" role="status">{environmentActionLabel[action]}</span> : environment.status === "error" ? <span className="environment-needs-attention">Needs attention</span> : runpod ? <span className="text-[11px] text-muted-foreground">{running ? "Connected" : runpodState}{runpod.product === "pod" && runpodState === "Running" && runpodExtra(runpod).hourlyUsd ? ` · ${money(runpodExtra(runpod).hourlyUsd)}/hr` : ""}</span> : neocloud?.product === "serverless" ? <span className="text-[11px] text-muted-foreground">{neocloud.state}</span> : cloud ? <span className="sr-only">{environment.status === "running" ? "Connected" : "Disconnected"}</span> : environment.status === "running" || environment.status === "stopped" ? <span className="sr-only">{environment.status === "running" ? "Running" : "Stopped"}</span> : <Status compact status={environment.status} />
   const services = !cloud && environment.workspace?.services.length ? <div aria-label={`Services in ${environment.name}`} className="nodrag flex flex-wrap gap-x-3 gap-y-4 border-b px-3 pb-2 pt-3">
         {environment.workspace.services.map(service => {
           return <div className="relative min-w-14" data-service-card={`${environment.id}:${service.port}`} key={service.port}>
@@ -142,7 +146,7 @@ function EnvironmentCard({ data }: { data: EnvironmentNodeData }) {
     canLink={canConnect}
     busy={Boolean(data.pending || busy || data.fileCopy?.busy)}
     fileHovered={data.fileHovered}
-    fileStatus={<NodeFileCopyStatus copy={data.fileCopy} />}
+    fileStatus={<><NodeFileCopyStatus copy={data.fileCopy} />{data.preview ? null : <EnvironmentCopyStatus environment={environment} onOpen={data.onDuplicate} />}</>}
     dropHint={dropHint}
     status={statusSummary}
     access={access}
@@ -154,28 +158,21 @@ function EnvironmentCard({ data }: { data: EnvironmentNodeData }) {
 
 }
 
-const HostCliView = lazy(() => import("@/components/host-cli-view"))
-
-export function EnvironmentGraph({ environments, connections, errorContainer, onConnect, onOpen, onSelect, footer }: {
-  footer?: (openEdit: () => void, disabled: boolean, editActive: boolean, toggleCli: () => void, cliActive: boolean) => ReactNode
+export function EnvironmentGraph({ environments, connections, errorContainer, onConnect, onOpen, onSelect, footer, vaultError }: {
+  footer?: () => ReactNode
   errorContainer: HTMLElement | null
   environments: Environment[]
   connections: Array<{ id: string; sourceId: string; targetId: string; direction: "oneWay" | "bidirectional"; active: boolean; enforcementStatus?: "enforced" | "pending" | "error" }>
   onConnect(sourceId: string, targetId?: string): void
   onOpen(environmentId: string): void
   onSelect(environmentId: string): void
+  vaultError?: string | null
 }) {
   const { updateContainerNetwork } = usePlatform()
   const [duplicate, setDuplicate] = useState<{ environmentId: string; destination: DuplicateDestination } | null>(null)
   const openDuplicate = useCallback((environmentId: string, destination: DuplicateDestination) => setDuplicate({ environmentId, destination }), [])
   const duplicateSource = environments.find(environment => environment.id === duplicate?.environmentId)
   const tour = useInstructionsTour()
-  const [preferredView, setPreferredView] = useState<"list" | "cli" | "edit">(() => {
-    try { const saved = localStorage.getItem("yougori.workspace-view"); if (saved === "nodes") localStorage.setItem("yougori.workspace-view", "list"); return saved === "cli" || saved === "edit" ? saved : "list" } catch { return "list" }
-  })
-  const [cliMounted, setCliMounted] = useState(preferredView === "cli")
-  const [editMounted, setEditMounted] = useState(preferredView === "edit")
-  const view = tour?.active ? "list" : preferredView
   const preview = useMemo(() => tourPreviewEnvironment(tour), [tour])
   const graphContainerRef = useRef<HTMLDivElement>(null)
   const fileDrop = useNodeFileDrop(graphContainerRef, environments)
@@ -221,31 +218,6 @@ export function EnvironmentGraph({ environments, connections, errorContainer, on
     finally { pendingRef.current.delete(environmentId); setPending(new Set(pendingRef.current)) }
   }, [decorated, setCapability])
 
-  const selectView = useCallback((mode: "list" | "cli" | "edit") => {
-    if (mode === "cli") setCliMounted(true)
-    else if (mode === "edit") setEditMounted(true)
-    setPreferredView(mode)
-    try { localStorage.setItem("yougori.workspace-view", mode) } catch { /* Storage may be unavailable. */ }
-  }, [])
-  const hideCli = useCallback(() => {
-    selectView("list")
-    document.getElementById("host-terminal-toggle")?.focus()
-  }, [selectView])
-  const hideEditor = useCallback(() => {
-    selectView("list")
-    document.getElementById("edit-app-toggle")?.focus()
-  }, [selectView])
-  useEffect(() => {
-    const shortcut = (event: KeyboardEvent) => {
-      if (!tour?.active && event.ctrlKey && !event.altKey && !event.metaKey && event.code === "Backquote" && !event.repeat) {
-        event.preventDefault()
-        selectView(preferredView === "cli" ? "list" : "cli")
-      }
-    }
-    window.addEventListener("keydown", shortcut)
-    return () => window.removeEventListener("keydown", shortcut)
-  }, [preferredView, selectView, tour])
-
   const openEnvironmentService = useCallback((id: string, port: number) => openService(id, tour?.active && tour.step === "demo-port-open" ? 0 : port), [openService, tour])
 
   const [savedDomains, setSavedDomains] = useState(readPublicAccessPresets)
@@ -284,7 +256,7 @@ export function EnvironmentGraph({ environments, connections, errorContainer, on
       <div
         className="workspace-graph relative isolate w-full overflow-hidden rounded-lg border bg-background"
         data-environment-graph
-        data-view={view}
+        data-view="list"
         ref={graphContainerRef}
       >
         <div className="workspace-view-toolbar">
@@ -296,31 +268,21 @@ export function EnvironmentGraph({ environments, connections, errorContainer, on
               <Button aria-label="Add or manage saved domain setups" title="Add a domain" className="workspace-domain-add" size="icon-xs" variant="outline" onClick={() => window.dispatchEvent(new Event("yougori-open-public-presets-manager"))}><PlusIcon aria-hidden="true" /></Button>
             </div>
           </div>
-          {view !== "list" ? <Button data-instruction-view="list" size="xs" variant="ghost" disabled={Boolean(tour?.active)} onClick={() => selectView("list")}><ListIcon aria-hidden="true" />Environments</Button> : null}
+          {/* Until the vault exists it is offered here instead of as an empty row in the list. */}
+          <PersonalVault asCreate startupError={vaultError} />
         </div>
         <div
           className="relative z-10 h-[clamp(460px,calc(100dvh-400px),1200px)]"
           data-environment-canvas
         >
-          {cliMounted ? <div hidden={view !== "cli"} className="workspace-cli-view h-full min-h-0">
-            <Suspense fallback={<div role="status" className="grid h-full place-items-center text-sm text-muted-foreground">Loading CLI…</div>}>
-              <HostCliView visible={view === "cli"} onHide={hideCli} />
-            </Suspense>
-          </div> : null}
-          {editMounted ? <div hidden={view !== "edit"} className="workspace-cli-view h-full min-h-0">
-            <Suspense fallback={<div role="status" className="grid h-full place-items-center text-sm text-muted-foreground">Loading editor…</div>}>
-              <HostCliView mode="edit" visible={view === "edit"} onHide={hideEditor} />
-            </Suspense>
-          </div> : null}
-          {view === "list" ? <EnvironmentList items={items} connections={connections} colors={colors} onConnect={onConnect}>
+          <EnvironmentList items={items} connections={connections} colors={colors} onConnect={onConnect} rows={<VaultSandboxRow startupError={vaultError} />} header={!environments.length && !preview ? <div className="workspace-empty flex flex-col items-center justify-center gap-2 px-6 py-8 text-center"><p className="text-base font-medium">Your workspace starts here</p><p className="max-w-sm text-sm leading-6 text-muted-foreground">Add your first sandbox above.</p><p className="mt-2 text-xs text-muted-foreground">Then connect its files, network and service ports here.</p></div> : undefined}>
             {item => <EnvironmentCard key={item.id} data={item.data} />}
-          </EnvironmentList> : null}
-          {view === "list" && !environments.length && !preview ? <div className="workspace-empty pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center"><p className="text-base font-medium">Your workspace starts here</p><p className="max-w-sm text-sm leading-6 text-muted-foreground">Choose New environment above to create a container, VM or MicroVM.</p><p className="mt-2 text-xs text-muted-foreground">Then connect its files, network and service ports here.</p></div> : null}
+          </EnvironmentList>
         </div>
         <div className="workspace-graph-caption flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2 text-[11px] text-muted-foreground">
           <span className="workspace-footer-counts"><span><strong>{environments.length}</strong> {environments.length === 1 ? "environment" : "environments"}</span><span aria-hidden="true">·</span><span><strong>{connections.length}</strong> {connections.length === 1 ? "connection" : "connections"}</span></span>
-          {footer?.(() => selectView(view === "edit" ? "list" : "edit"), Boolean(tour?.active), view === "edit", () => selectView(view === "cli" ? "list" : "cli"), view === "cli")}
-          <ConfigurationHelp label="Workspace controls">{view === "cli" ? "Ctrl+` toggles the CLI. Switch views to keep your terminal session running." : view === "edit" ? "Edit this app from a source checkout. Terminal sessions keep running when you switch views." : "Double-click a row to configure. Use the row controls to start, stop, or manage files and service ports."}</ConfigurationHelp>
+          {footer?.()}
+          <ConfigurationHelp label="Workspace controls">Double-click a row to configure. Use the row controls to start, stop, or manage files and service ports.</ConfigurationHelp>
         </div>
       </div>
       <PublicAccessPresets environments={decorated} refresh={refresh} />

@@ -127,7 +127,10 @@ fn choose_supported(
                     .as_str()
                     .is_some_and(|candidate| storage::same_drive(candidate, path))
             })
-            .ok_or("Choose an available storage drive")?
+            .ok_or_else(|| {
+                let available = drives.iter().filter_map(|drive| drive["path"].as_str()).map(clean).collect::<Vec<_>>().join(", ");
+                format!("Storage drive {path} is not available. Choose one of: {available}.")
+            })?
     } else {
         let mut choices = drives
             .iter()

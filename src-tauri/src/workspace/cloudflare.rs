@@ -134,6 +134,27 @@ fn delete_saved_password(account: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Forgets the tunnel token saved for one service, such as a destroyed Personal Vault's domain.
+/// Returns the Windows Credential Manager name of each saved copy that could not be removed,
+/// so the person can remove it by hand; empty when none is left.
+pub(crate) fn forget_saved_token(environment_id: &str, port: u16) -> Vec<String> {
+    let Ok(account) = credential_key(environment_id, port) else { return Vec::new() };
+    [VAULT_SERVICE, PREVIOUS_VAULT_SERVICE]
+        .into_iter()
+        .filter(|service| {
+            let removed = keyring::Entry::new(service, &account).and_then(|entry| entry.delete_credential());
+            !matches!(removed, Ok(()) | Err(keyring::Error::NoEntry))
+        })
+        .map(|service| credential_target(&account, service))
+        .collect()
+}
+
+/// The name Windows Credential Manager shows for a saved credential: keyring's Windows store
+/// joins the account and the service with a dot.
+fn credential_target(account: &str, service: &str) -> String {
+    format!("{account}.{service}")
+}
+
 fn preset_key(environment_id: &str, port: u16, preset_id: &str) -> Result<String, String> {
     let id = Uuid::parse_str(preset_id).map_err(|_| "Invalid saved setup ID")?;
     // Reuse the same environment and port validation as the legacy credential key.
@@ -344,7 +365,8 @@ pub(crate) async fn copy_saved_to_preset(
     store: &PlatformStore,
     manager: &WorkspaceManager,
 ) -> Result<crate::models::SavedDomain, String> {
-    if !store.snapshot()?.environments.iter().any(|env| env.id == environment_id) {
+    // The remote-access gateway keeps its tunnel under this scope rather than an environment.
+    if environment_id != "remote-access" && !store.snapshot()?.environments.iter().any(|env| env.id == environment_id) {
         return Err("Environment not found".into());
     }
     let _operation = manager.operations.lock().await;
@@ -447,6 +469,12 @@ pub(crate) fn find_domain(store: &PlatformStore, name: &str) -> Result<crate::mo
     store.snapshot()?.saved_domains.into_iter()
         .find(|d| d.id == name || d.hostname.eq_ignore_ascii_case(name.trim()))
         .ok_or_else(|| format!("No saved domain named {name}. List them with `yougori domain list`."))
+}
+
+/// A saved domain's public hostname and the local port its tunnel routes to.
+pub(crate) fn domain_route(store: &PlatformStore, name: &str) -> Result<(String, u16), String> {
+    let (options, port) = domain_account(store, name)?;
+    Ok((options.hostname, port))
 }
 
 /// Account-tunnel options that reuse a saved domain's vaulted token, for any app port.

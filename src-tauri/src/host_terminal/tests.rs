@@ -1,18 +1,6 @@
 use super::*;
 
 #[test]
-fn edit_app_folder_must_be_a_yougori_source_checkout() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(validate_source_checkout(dir.path()).is_err());
-    std::fs::create_dir_all(dir.path().join("src-tauri")).unwrap();
-    std::fs::create_dir_all(dir.path().join("src/components")).unwrap();
-    std::fs::write(dir.path().join("package.json"), "{\"name\":\"yougori\"}").unwrap();
-    std::fs::write(dir.path().join("src-tauri/Cargo.toml"), "").unwrap();
-    std::fs::write(dir.path().join("src/components/host-cli-view.tsx"), "").unwrap();
-    assert_eq!(validate_source_checkout(dir.path()).unwrap(), dir.path().canonicalize().unwrap());
-}
-
-#[test]
 fn host_terminal_does_not_inherit_an_automation_launchers_plain_text_mode() {
     let mut command = CommandBuilder::new("shell");
     command.env("NO_COLOR", "1");
@@ -138,6 +126,11 @@ fn host_terminal_real_powershell_cli_input_resize_and_owned_cleanup() {
         !process::is_elevated().unwrap(),
         "Run this test without elevation"
     );
+    // A runner that starts tests in their own process group passes "ignore Ctrl+C" on to every
+    // process it starts, these shells included, and the interrupt below would never arrive.
+    #[link(name = "kernel32")]
+    extern "system" { fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32; }
+    assert_ne!(unsafe { SetConsoleCtrlHandler(None, 0) }, 0, "Cannot restore Ctrl+C for the shells this test starts");
     let dir = tempfile::Builder::new()
         .prefix("Yougori host test é ")
         .tempdir()
@@ -174,9 +167,17 @@ fn host_terminal_real_powershell_cli_input_resize_and_owned_cleanup() {
         req.data = Some(STANDARD.encode(command));
         manager.action(req, "main", None).unwrap();
     };
+    // A file appears before its writer has finished (Out-File creates it first), so wait until
+    // it has content that has stopped changing.
     let wait_file = |name: &str| {
         let deadline = Instant::now() + Duration::from_secs(20);
-        while !workspace.join(name).is_file() {
+        let mut last = None;
+        loop {
+            let size = std::fs::metadata(workspace.join(name)).ok().map(|m| m.len()).filter(|&len| len > 0);
+            if size.is_some() && size == last {
+                return;
+            }
+            last = size;
             if Instant::now() >= deadline {
                 for id in ["host-real-one", "host-real-two"] {
                     let output = manager.action(request(id, "read"), "main", None).unwrap();
@@ -259,8 +260,34 @@ fn host_terminal_real_powershell_cli_input_resize_and_owned_cleanup() {
     // Ctrl+C must interrupt the command without closing either terminal.
     send("host-real-one", "[IO.File]::WriteAllText((Join-Path (Get-Location) 'sleeping.txt'), 'started'); Start-Sleep -Seconds 60\r");
     wait_file("sleeping.txt");
+    let mut offset = 0;
+    loop {
+        let mut read = request("host-real-one", "read");
+        read.offset = Some(offset);
+        let output = manager.action(read, "main", None).unwrap();
+        if output.data.is_empty() {
+            break;
+        }
+        offset = output.offset;
+    }
     send("host-real-one", "\u{3}");
-    std::thread::sleep(Duration::from_millis(300));
+    // Type the next command only at the new prompt: input that arrives while PowerShell is
+    // still stopping the command can be dropped, and a fixed pause is a guess.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut after = Vec::new();
+    loop {
+        let mut read = request("host-real-one", "read");
+        read.offset = Some(offset);
+        let output = manager.action(read, "main", None).unwrap();
+        offset = output.offset;
+        after.extend(STANDARD.decode(output.data).unwrap());
+        let text = String::from_utf8_lossy(&after);
+        if text.rfind("PS ").is_some_and(|at| text[at..].contains('>')) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Ctrl+C did not bring back the prompt: {text}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     send(
         "host-real-one",
         "[IO.File]::WriteAllText((Join-Path (Get-Location) 'interrupted.txt'), 'continued')\r",
@@ -311,7 +338,9 @@ fn host_terminal_real_powershell_cli_input_resize_and_owned_cleanup() {
         .unwrap();
     assert!(!output.done);
     assert!(!output.data.is_empty());
-    manager.close_owner("main");
+    manager
+        .action(request("host-real-two", "close"), "main", None)
+        .unwrap();
     assert!(manager.sessions.lock().unwrap().is_empty());
     assert!(manager
         .action(request("host-real-two", "read"), "main", None)

@@ -99,7 +99,7 @@ pub fn from_io(stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static) -> 
         loop {
             let result = match wire::read_frame(&mut reader, MAX_FRAME).await {
                 Ok(bytes) => Frame::decode(&bytes),
-                Err(_) => Err("Terminal connection ended. Input was not resent.".into()),
+                Err(_) => Err("it closed".into()),
             };
             let done = result.is_err();
             if incoming.send(result).await.is_err() || done {
@@ -115,9 +115,9 @@ pub fn from_io(stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static) -> 
                     wire::write_frame(&mut writer, &bytes, MAX_FRAME),
                 )
                 .await
-                .map_err(|_| "Terminal connection stalled")
-                .and_then(|v| v.map_err(|_| "Terminal write ended; input was not resent")),
-                Err(_) => Err("Invalid terminal frame"),
+                .map_err(|_| "it stalled")
+                .and_then(|v| v.map_err(|_| "input could not be sent")),
+                Err(_) => Err("an input frame was not valid"),
             };
             if let Err(error) = result {
                 let _ = errors.send(Err(error.into())).await;

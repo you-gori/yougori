@@ -569,7 +569,16 @@ where
 /// Raw input stays on until the operation finishes.
 pub(super) async fn stop_choice(id: &str) -> Result<bool, String> {
     let _raw = ui::Raw::on()?;
-    let state = call("get_platform_state", json!({})).await?;
+    // Ctrl+C is what brought most people here, and this asks the engine what is running before
+    // it can offer anything. Without a spinner that is a silent terminal straight after a
+    // keypress, which reads as the key having done nothing, and the usual answer to that is to
+    // press it again — harder.
+    let state = match super::busy("Checking what is running", call("get_platform_state", json!({}))).await {
+        Ok(state) => state,
+        // Ctrl+C again, while the choices are being prepared, means the same as Cancel below.
+        Err(error) if error == ui::CANCELLED => return Ok(false),
+        Err(error) => return Err(error),
+    };
     // Validate the target before presenting a destructive choice.
     let (stop_method, _) = stop_request(&state, id, StopAction::Stop)?;
     let cloud = stop_method == "neocloud_action";
@@ -626,7 +635,10 @@ pub enum Exit {
     Detach,
 }
 
-fn phase(phase: &str, name: &str) -> (String, String) {
+/// What a startup phase says while it runs, and once it is done. A model queued for the GPU says
+/// why when the engine does (`waiting`): which model holds the GPU and what to do about it, in
+/// the engine's own words, as the dashboard shows them.
+fn phase(phase: &str, name: &str, waiting: Option<&str>) -> (String, String) {
     match phase {
         "installing" => (
             "Installing model dependencies".into(),
@@ -635,7 +647,10 @@ fn phase(phase: &str, name: &str) -> (String, String) {
         "downloading" => (format!("Downloading {name}"), format!("{name} files ready")),
         "verifying" => ("Verifying model weights".into(), "Model checksums verified".into()),
         "idle" => ("On demand · files cached".into(), "Model available on demand".into()),
-        "queued" => ("Waiting for GPU".into(), "GPU request queued".into()),
+        "queued" => (
+            waiting.map_or_else(|| "Waiting for GPU".into(), |reason| format!("Waiting for GPU · {reason}")),
+            "GPU request queued".into(),
+        ),
         "freeing_memory" => ("Preparing GPU memory".into(), "GPU memory prepared".into()),
         "loading" => ("Loading onto the GPU".into(), "Loaded onto the GPU".into()),
         _ => (
@@ -645,10 +660,27 @@ fn phase(phase: &str, name: &str) -> (String, String) {
     }
 }
 
+/// Why a queued model waits for the GPU, as the engine says it, only while it is queued. An
+/// older engine does not say, and the plain line stays.
+fn waiting_for(status: &Value) -> Option<String> {
+    if status["status"] != "queued" {
+        return None;
+    }
+    status["optimizer"]["waitingFor"].as_str().map(clean).map(|reason| reason.trim().to_owned()).filter(|reason| !reason.is_empty())
+}
+
+/// A step's text as the dashboard's status line shows it: lowercase at the start, while names
+/// and "GPU" keep their case.
+fn as_status(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| first.to_lowercase().chain(chars).collect())
+}
+
 /// Shows each startup phase as a step. `Err(exit)` when the user leaves before the model is ready.
 async fn wait_ready(id: &str, name: &str) -> Result<Result<Value, Exit>, String> {
     let mut current = "starting".to_string();
-    let mut task = ui::task(&phase(&current, name).0);
+    let mut waiting: Option<String> = None;
+    let mut task = ui::task(&phase(&current, name, None).0);
     ui::dash(|d| d.status(ui::Tone::Busy, "starting the model server"));
     let mut check_at = Instant::now();
     let mut logs_at = Instant::now();
@@ -666,9 +698,7 @@ async fn wait_ready(id: &str, name: &str) -> Result<Result<Value, Exit>, String>
                     let next = status["status"].as_str().unwrap_or("starting").to_owned();
                     if next == "error" {
                         task.fail("The model could not load");
-                        return Err(clean(
-                            status["error"].as_str().unwrap_or("The model could not load"),
-                        ));
+                        return Err(super::model_failure(status["error"].as_str().unwrap_or(""), name));
                     }
                     if next == "ready" || (status["optimizer"]["enabled"]==true && status["weightsVerified"]==true && matches!(next.as_str(),"idle"|"queued"|"freeing_memory")) {
                         if status["sourceOnly"]==true {
@@ -682,19 +712,28 @@ async fn wait_ready(id: &str, name: &str) -> Result<Result<Value, Exit>, String>
                         if current == "loading" {
                             task.done(&format!("Loaded onto {gpu}"));
                         } else if task.elapsed() >= Duration::from_secs(1) {
-                            task.done(&phase(&current, name).1);
+                            task.done(&phase(&current, name, None).1);
                         } else {
                             task.clear();
                             ui::step(&format!("{name} is running on {gpu}"));
                         }
                         return Ok(Ok(status));
                     }
+                    let reason = waiting_for(&status);
                     if next != current {
-                        task.done(&phase(&current, name).1);
+                        task.done(&phase(&current, name, None).1);
                         current = next;
-                        let (text, _) = phase(&current, name);
+                        waiting = reason;
+                        let (text, _) = phase(&current, name, waiting.as_deref());
                         task = ui::task(&text);
-                        ui::dash(|d| d.status(ui::Tone::Busy, &text.to_lowercase()));
+                        ui::dash(|d| d.status(ui::Tone::Busy, &as_status(&text)));
+                    } else if reason != waiting {
+                        // Still waiting, for a different reason: another model began to load, or
+                        // the one holding the GPU let it go.
+                        waiting = reason;
+                        let (text, _) = phase(&current, name, waiting.as_deref());
+                        task.set(&text);
+                        ui::dash(|d| d.status(ui::Tone::Busy, &as_status(&text)));
                     }
                 }
                 Ok(Err(error))
@@ -827,7 +866,7 @@ const HINT: &str = "/terminal opens the environment shell · /api sets up API ac
 async fn new_chat(id: &str, store: &mut Value) -> Result<(), String> {
     let mut next = store.clone();
     public::start_conversation(&mut next);
-    call("save_model_chat_history", json!({"environmentId":id,"history":next})).await?;
+    super::busy("Starting a new chat", call("save_model_chat_history", json!({"environmentId":id,"history":next}))).await?;
     *store = next;
     Ok(())
 }
@@ -843,12 +882,27 @@ async fn start_new_chat(id: &str, store: &mut Value, editor: &mut Editor) {
     }
 }
 
+/// What a chat opens on, from reading the saved conversations: the history, `None` when Ctrl+C
+/// asked for the stop options instead, or why it cannot open (see [`public::saved_chat_history`]).
+fn opened(read: Result<Value, String>) -> Result<Option<Value>, String> {
+    match read {
+        Err(error) if error == ui::CANCELLED => Ok(None),
+        read => public::saved_chat_history(read).map(Some),
+    }
+}
+
 async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit, String> {
     let decision = status["task"] == "structured-decision";
-    let mut store = call("model_chat_history", json!({"environmentId":id}))
-        .await
-        .unwrap_or(Value::Null);
-    store = public::chat_history_or_default(store);
+    // Only a model with nothing saved yet starts empty. Conversations that could not be read keep
+    // the chat closed, since its first save would write over every one of them.
+    let mut store = loop {
+        let read = super::busy("Loading this model's conversations", call("model_chat_history", json!({"environmentId":id}))).await;
+        match opened(read)? {
+            Some(store) => break store,
+            // Ctrl+C opens the stop options here too; Cancel goes back to loading.
+            None => if stop_choice(id).await? { return Ok(Exit::Stopped); },
+        }
+    };
     let (max_tokens, temperature, system) = public::chat_settings(&store, status);
     let active = store["conversations"]
         .as_array()
@@ -1182,6 +1236,35 @@ async fn stream(block: &ui::Block, request: &str, writer: &mut Writer, leave: &m
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_opens_only_on_conversations_it_could_read() {
+        // Ctrl+C while they load opens the stop options, and nothing is saved.
+        assert_eq!(opened(Err(ui::CANCELLED.into())), Ok(None));
+        // Nothing saved yet: a new chat starts.
+        assert_eq!(opened(Ok(Value::Null)).unwrap().unwrap()["conversations"], json!([]));
+        // Anything the engine could not read keeps the chat closed, so nothing is saved over it.
+        assert!(opened(Err("Saved chat history is too large".into())).is_err());
+    }
+
+    #[test]
+    fn a_model_queued_for_the_gpu_says_why_when_the_engine_does() {
+        let reason = "Qwen3-8B is paused and holding the GPU. Stop it with yougori model stop qwen to release it.";
+        let queued = json!({"status": "queued", "optimizer": {"enabled": true, "waitingFor": reason}});
+        assert_eq!(waiting_for(&queued).as_deref(), Some(reason));
+        assert_eq!(phase("queued", "model", waiting_for(&queued).as_deref()).0, format!("Waiting for GPU · {reason}"));
+        // An older engine, or one with nothing to say, keeps today's plain line.
+        let plain = json!({"status": "queued", "optimizer": {"enabled": true}});
+        assert_eq!(waiting_for(&plain), None);
+        assert_eq!(phase("queued", "model", None).0, "Waiting for GPU");
+        assert_eq!(waiting_for(&json!({"status": "queued", "optimizer": {"waitingFor": "  "}})), None);
+        // Only while queued, and never with control characters.
+        assert_eq!(waiting_for(&json!({"status": "loading", "optimizer": {"waitingFor": reason}})), None);
+        assert_eq!(waiting_for(&json!({"status": "queued", "optimizer": {"waitingFor": "a\u{1b}[2Jb"}})).as_deref(), Some("a[2Jb"));
+        // The status line keeps names and GPU in their case.
+        assert_eq!(as_status(&format!("Waiting for GPU · {reason}")), format!("waiting for GPU · {reason}"));
+        assert_eq!(as_status(""), "");
+    }
 
     #[test]
     fn publication_and_local_folder_options_do_not_change_container_options() {

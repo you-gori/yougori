@@ -56,7 +56,8 @@ question, CPU and memory) and after the tool is installed (sign-in, public acces
 --share). In each group every question after the first offers Back (Esc or the
 Back row) and shows your last answer again; Esc on a group's first question
 cancels. Starting Yougori and starting or creating the sandbox show a
-spinner; Ctrl+C there stops waiting. Once the sandbox is in use, Ctrl+C opens
+spinner; Ctrl+C there stops waiting, and a sandbox still being created is
+removed again as soon as it exists. Once the sandbox is in use, Ctrl+C opens
 Cancel / Stop sandbox / Stop and delete, with Cancel selected. Cancel resumes
 without interrupting the tool. Only Enter confirms a stop/delete.
 Before the tool opens, the reconnect command is printed: `yougori TOOL` when that
@@ -101,7 +102,7 @@ impl Isolation {
         match value {
             "microvm" => Ok(Self::MicroVm),
             "container" => Ok(Self::Container),
-            _ => Err("Use --isolation microvm or --isolation container".into()),
+            _ => Err("--isolation must be microvm or container.".into()),
         }
     }
     /// The `--isolation` value, also reported by `--dry-run`.
@@ -175,7 +176,7 @@ impl Options {
                 break;
             }
             if flag != "--mount" && !seen.insert(flag.clone()) {
-                return Err(format!("{flag} supplied twice"));
+                return Err(format!("{flag} is given twice. Give it once."));
             }
             match flag.as_str() {
                 "--new" => options.fresh = true,
@@ -185,7 +186,7 @@ impl Options {
                 "--no-public" => options.ask_public = false,
                 "--name" | "--environment" | "--image" | "--isolation" | "--cpu" | "--memory" | "--storage" | "--storage-drive" | "--gpu" | "--mount" => {
                     i += 1;
-                    let value = args.get(i).filter(|value| !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_control)).ok_or_else(|| format!("{flag} requires a value"))?.clone();
+                    let value = args.get(i).filter(|value| !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_control)).ok_or_else(|| format!("{flag} needs a value: {}.", value_words(flag)))?.clone();
                     match flag.as_str() {
                         "--name" => options.name = Some(value),
                         "--environment" => options.environment = Some(value),
@@ -194,7 +195,7 @@ impl Options {
                         _ => options.creation.extend([flag.clone(), value]),
                     }
                 }
-                _ => return Err(format!("Unknown tool-container option {flag}. Put tool arguments after --. Run yougori {} --help.", options.tool)),
+                _ => return Err(format!("Unknown option {flag} for yougori {0}. Put the tool's own arguments after --; see the options with yougori {0} --help.", options.tool)),
             }
             i += 1;
         }
@@ -341,9 +342,11 @@ impl Options {
                 })
                 .collect::<Vec<_>>();
             if found.len() != 1 {
-                return Err(format!(
-                    "Expected one environment named {target}; run yougori ps"
-                ));
+                return Err(if found.is_empty() {
+                    format!("Environment {target} was not found. See your environments with yougori ps.")
+                } else {
+                    format!("More than one environment matches {target}. Use its ID from yougori ps.")
+                });
             }
             validate_environment(found[0])?;
             return Ok(Some(found[0]));
@@ -458,7 +461,8 @@ fn choose_resources(options: &mut Options, host: &Value) -> Result<bool, String>
             options.apply_resources(&sliders)?;
             Ok(true)
         }
-        Err(error) if error == ui::CANCELLED => Err(crate::tool_sharing::ENDED.into()),
+        // Nothing exists yet; the question already shows it was left.
+        Err(error) if error == ui::CANCELLED => Err(crate::wire::cancelled("")),
         Err(error) => Err(error),
     }
 }
@@ -492,7 +496,7 @@ async fn choose_ollama_gpu(options: &mut Options,environments: &[Value]) -> Resu
     let selected = if let Some(id) = current.and_then(|(env,_)|env["id"].as_str()) {
         crate::tool_sharing::step_prompt(id,prompt).await?
     } else {
-        prompt().map_err(|error| if error==ui::CANCELLED {crate::tool_sharing::ENDED.into()} else {error})?
+        prompt().map_err(|error| if error==ui::CANCELLED {crate::wire::cancelled("")} else {error})?
     };
     options.desired_gpu=Some(selected==0);
     Ok(true)
@@ -543,9 +547,33 @@ async fn prepare(options: &mut Options, environments: &[Value], host: &Value) ->
     Ok(())
 }
 
+/// How a command names this environment: its name when that finds exactly this one, else its
+/// ID. The name is returned as it is; a command built from it quotes it with
+/// `shell_words::quote`, so names such as "notes (remote)" are shown rather than an ID. A name a
+/// shell could take for an option, or one holding a quote or control character, falls back to
+/// the ID, which every shell reads the same way.
+pub fn handle(environments: &[Value], id: &str) -> String {
+    environments
+        .iter()
+        .find(|env| env["id"] == id)
+        .and_then(|env| env["name"].as_str())
+        .filter(|name| {
+            !name.is_empty()
+                && !name.starts_with('-')
+                && !name.chars().any(|c| c.is_control() || c == '\'' || c == '"')
+                && environments
+                    .iter()
+                    .filter(|env| env["id"] == **name || env["name"].as_str().is_some_and(|other| other.eq_ignore_ascii_case(name)))
+                    .count()
+                    == 1
+        })
+        .unwrap_or(id)
+        .to_owned()
+}
+
 /// The shortest command that reconnects to this sandbox: the plain shortcut when that reuses
 /// it, else its name, or its ID when another sandbox answers to that name.
-fn reconnect_command(tool: &str, id: &str, environments: &[Value]) -> String {
+pub(crate) fn reconnect_command(tool: &str, id: &str, environments: &[Value]) -> String {
     // Reuse prefers running sandboxes, so the plain shortcut must pick this one whether or not
     // the others run: once this sandbox stops, a newer stopped one would win otherwise.
     let stopped: Vec<Value> = environments
@@ -565,21 +593,50 @@ fn reconnect_command(tool: &str, id: &str, environments: &[Value]) -> String {
     if picks(environments) && picks(&stopped) {
         return format!("yougori {tool}");
     }
-    let name = environments
-        .iter()
-        .find(|env| env["id"] == id)
-        .and_then(|env| env["name"].as_str())
-        .filter(|name| {
-            !name.is_empty()
-                && !name.starts_with('-')
-                && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-                && environments
-                    .iter()
-                    .filter(|env| env["id"] == **name || env["name"].as_str().is_some_and(|other| other.eq_ignore_ascii_case(name)))
-                    .count()
-                    == 1
-        });
-    format!("yougori {tool} --environment {}", name.unwrap_or(id))
+    format!("yougori {tool} --environment {}", shell_words::quote(&handle(environments, id)))
+}
+
+/// Removes the sandbox a cancelled creation made, and only that one: the ID the engine returned
+/// for it, or else the one new sandbox under its name and description. `before` holds every
+/// environment ID taken just before the request, or `None` when that list could not be read;
+/// none of those is ever removed, and without the list nothing is. When it is not certain which
+/// sandbox is new, nothing is removed and the person is told how to remove it.
+async fn remove_cancelled<F, Fut>(
+    name: &str,
+    description: &str,
+    before: Option<&std::collections::HashSet<String>>,
+    made: Option<Value>,
+    mut rpc: F,
+) -> Result<String, String>
+where
+    F: FnMut(&'static str, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    use crate::tool_sharing::{made_by_request, Made};
+    let by_hand = format!("yougori rm {name} --yes");
+    let Some(before) = before else {
+        return Err(format!("Cancelled. Nothing was removed, because Yougori could not tell which sandboxes were there before this launch. If {name} is in yougori ps, remove it with: {by_hand}"));
+    };
+    let state = rpc("get_platform_state", json!({})).await.map_err(|error| {
+        format!("Cancelled, but your sandboxes could not be checked ({error}). If {name} is in yougori ps, remove it with: {by_hand}")
+    })?;
+    // An answer that does not list them says nothing about whether it was created.
+    let Some(environments) = state["environments"].as_array().map(Vec::as_slice) else {
+        return Err(format!("Cancelled, but your sandboxes could not be checked: Yougori's answer did not list them. If {name} is in yougori ps, remove it with: {by_hand}"));
+    };
+    let returned = made.as_ref().and_then(|created| created["id"].as_str());
+    let named = |env: &Value| env["description"] == description && env["name"].as_str().is_some_and(|other| other.eq_ignore_ascii_case(name));
+    let id = match made_by_request(environments, before, returned, named) {
+        Made::One(id) => id,
+        Made::Nothing => return Ok(format!("Cancelled. {name} was not created; if it shows up in yougori ps, remove it with: {by_hand}.")),
+        Made::Before | Made::Unclear => {
+            return Err(format!("Cancelled. Nothing was removed, because it is not certain which sandbox this launch made. If {name} is in yougori ps, remove it with: {by_hand}"));
+        }
+    };
+    crate::sandbox_stop::apply(id, crate::sandbox_stop::Action::Delete, &mut rpc)
+        .await
+        .map_err(|error| format!("Cancelled, but {name} could not be removed ({error}). Remove it with: {by_hand}"))?;
+    Ok(format!("Cancelled. {name} was removed again."))
 }
 
 fn validate_environment(environment: &Value) -> Result<(), String> {
@@ -608,6 +665,23 @@ fn validate_environment(environment: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// What a creation option takes, for the sentence that says it was given no value.
+fn value_words(flag: &str) -> &'static str {
+    match flag {
+        "--name" => "a name for the new sandbox",
+        "--environment" => "a sandbox's name or ID from yougori ps",
+        "--image" => "an image such as ubuntu:24.04",
+        "--isolation" => "microvm or container",
+        "--cpu" => "a number of CPU cores",
+        "--memory" => "a size such as 8GB",
+        "--storage" => "a size in GB such as 40",
+        "--storage-drive" => "a folder on this computer",
+        "--gpu" => "nvidia",
+        "--mount" => "PC_FOLDER:/guest/path",
+        _ => "its value",
+    }
+}
+
 pub fn launch_arguments(tool: &str, arguments: &[String]) -> Vec<String> {
     if !arguments.is_empty() {
         return arguments.to_vec();
@@ -632,12 +706,12 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     let _session = ui::Session::start(&options.tool, "local sandbox · your tools and teammates");
     ui::intro("Tool sandbox", &options.tool);
     match launch(options).await {
-        // A cancelled question or a stop action already shows on screen.
+        // A stop action, or Back from the first question, already shows on screen.
         Err(error) if error == crate::tool_sharing::ENDED || error == ui::BACK => Ok(None),
-        // Ctrl+C while waiting: say what keeps running.
+        // Ctrl+C while waiting: say what keeps running, and end as a cancellation.
         Err(error) if error == ui::CANCELLED => {
             ui::outro(&ui::muted(&error));
-            Ok(None)
+            Err(crate::wire::cancelled(""))
         }
         result => result,
     }
@@ -675,13 +749,27 @@ async fn launch(mut options: Options) -> Result<Option<Value>, String> {
     } else {
         let name = options.available_name(environments)?;
         let isolation = options.isolation();
+        let description = options.description();
+        // Taken just before the request: a cancelled creation may remove only a sandbox that
+        // is not in here.
+        let before = crate::tool_sharing::environment_ids(
+            &ui::busy("Checking your sandboxes", call("get_platform_state", json!({}))).await?,
+        );
         let started = std::time::Instant::now();
-        let result = ui::busy(
+        // Ctrl+C while the engine creates the sandbox lets it finish and then removes it, so a
+        // cancelled launch never leaves a sandbox running without its tool.
+        let result = crate::tool_sharing::create_or_undo(
             &format!("Creating {name} · {} · {}", isolation.label(), options.image_label()),
+            &crate::tool_sharing::Cleanup {
+                waiting: &format!("Cancelling · waiting for {name} to finish being created"),
+                notice: &format!("{name} is removed as soon as it exists. If you quit now, remove it later with: yougori rm {name} --yes"),
+                removing: &format!("Removing {name}"),
+            },
             call(
                 "run_workload",
                 json!({"request":options.request(&name)?,"start":true}),
             ),
+            |made| remove_cancelled(&name, &description, before.as_ref(), made, |method, params| call(method, params)),
         )
         .await?;
         ui::step(&format!("{name} sandbox ready  {}", ui::muted(&ui::clock(started.elapsed()))));
@@ -696,41 +784,140 @@ async fn launch(mut options: Options) -> Result<Option<Value>, String> {
     };
     ui::step(&format!("Using {name} · {}", isolation.label()));
     ui::info("Ctrl+C opens Cancel / Stop sandbox / Stop and delete. Ctrl+] disconnects and keeps the sandbox running.");
-    // Finish quiet setup before either sharing prompts or the interactive tool.
-    if crate::terminal::setup_tool(&id, &options.tool).await? != crate::terminal::SessionExit::Completed {
-        return Ok(None);
-    }
-    {
-        // Each question after the first offers Back. Going back asks again and never undoes
-        // what an answer already did, such as a copied sign-in or a published link.
-        let mut copy = false;
-        let mut public = crate::tool_public_access::Answers::default();
-        let mut steps = ui::Wizard::new();
-        loop {
-            let asked = match steps.step() {
-                0 if options.ask_credentials => crate::tool_credentials::configure(&id, &options.tool, options.share, &mut copy).await,
-                1 if options.ask_public => crate::tool_public_access::configure(&id, &options.tool, &mut public).await,
-                2 if options.share => crate::tool_sharing::share(&id, &name).await,
-                0..=2 => Ok(false),
-                _ => break,
-            };
-            steps.next(asked)?;
+    // The sandbox exists from here. However the launch ends, the last line says how to come
+    // back to it and how to stop it, unless the person stopped it themselves.
+    // What an optional step could not do. The tool still opens, and the person reads this first.
+    let mut link_failed: Option<String> = None;
+    let mut share_failed: Option<String> = None;
+    let ended = async {
+        // Finish quiet setup before either sharing prompts or the interactive tool.
+        if crate::terminal::setup_tool(&id, &options.tool).await? != crate::terminal::SessionExit::Completed {
+            return Ok(());
         }
+        {
+            // Each question after the first offers Back. Going back asks again and never undoes
+            // what an answer already did, such as a copied sign-in or a published link.
+            let mut copy = false;
+            let mut public = crate::tool_public_access::Answers::default();
+            let mut steps = ui::Wizard::new();
+            loop {
+                let asked = match steps.step() {
+                    0 if options.ask_credentials => crate::tool_credentials::configure(&id, &options.tool, options.share, &mut copy).await,
+                    1 if options.ask_public => optional(crate::tool_public_access::configure(&id, &options.tool, &mut public).await, &mut link_failed),
+                    2 if options.share => optional(crate::tool_sharing::share(&id, &name).await, &mut share_failed),
+                    0..=2 => Ok(false),
+                    _ => break,
+                };
+                steps.next(asked)?;
+            }
+        }
+        let state = call("get_platform_state", json!({})).await.unwrap_or_default();
+        let environments = state["environments"].as_array().map_or(&[][..], Vec::as_slice);
+        let again = reconnect_command(&options.tool, &id, environments);
+        ui::info(&format!("Reconnect: {again}"));
+        let setbacks = setbacks(link_failed.as_deref(), share_failed.as_deref(), &again);
+        if !setbacks.is_empty() {
+            // Said before the tool takes over the screen, and kept there until the person moves on.
+            let open = crate::tool_sharing::step_prompt(&id, || {
+                ui::without_back(|| {
+                    ui::select(
+                        &format!("{} is ready, but not everything was set up", options.tool),
+                        &setbacks,
+                        &[
+                            ui::Choice::new(format!("Open {}", options.tool), "continue in this terminal"),
+                            ui::Choice::new("Leave it running", "return to your PC terminal"),
+                        ],
+                        0,
+                    )
+                })
+            })
+            .await?;
+            if open != 0 {
+                return Err(crate::tool_sharing::ENDED.into());
+            }
+        }
+        if options.tool=="ollama" && (options.arguments.is_empty() || options.arguments==["serve"]) {
+            crate::terminal::open_ollama(&id,&name).await?;
+            return Ok(());
+        }
+        crate::terminal::attach_prepared_tool(
+            &id,
+            &options.tool,
+            &launch_arguments(&options.tool, &options.arguments),
+        )
+        .await?;
+        Ok(())
     }
-    let state = call("get_platform_state", json!({})).await.unwrap_or_default();
+    .await;
+    left_running(&options.tool, &id).await;
+    match ended {
+        // A question left or a wait stopped: the line above already says what to do next.
+        Err(error) if error == ui::CANCELLED => Err(crate::wire::cancelled("")),
+        // Teammates were asked for on the command line, so sharing that did not happen still
+        // ends the command as a failure, after the tool.
+        Ok(()) if options.share && share_failed.is_some() => {
+            Err(format!("Teammate access was not created. {}", sentence(share_failed.as_deref().unwrap_or(""))))
+        }
+        ended => ended.map(|()| None),
+    }
+}
+
+/// An optional step's outcome. A failure is kept, to be said before the tool opens, and the
+/// launch goes on: a ready sandbox is never given up for an extra that did not work. Leaving a
+/// question, going back or a stop action still moves or ends the launch as before.
+fn optional(result: Result<bool, String>, failed: &mut Option<String>) -> Result<bool, String> {
+    use crate::cli_ui as ui;
+    match result {
+        Err(error)
+            if error != crate::tool_sharing::ENDED && error != ui::BACK && crate::wire::cancellation(&error).is_none() =>
+        {
+            *failed = Some(error);
+            Ok(true)
+        }
+        Ok(asked) => {
+            // Asked again after Back, and it worked this time.
+            *failed = None;
+            Ok(asked)
+        }
+        other => other,
+    }
+}
+
+/// A reason as a finished sentence.
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    if text.ends_with(['.', '!', '?']) { text.to_owned() } else { format!("{text}.") }
+}
+
+/// What did not happen, and how to do it later, in the person's words.
+fn setbacks(link_failed: Option<&str>, share_failed: Option<&str>, again: &str) -> Vec<String> {
+    let mut said = Vec::new();
+    if let Some(reason) = link_failed {
+        said.push(format!("The public link was not created. {} Create one by running {again} again.", sentence(reason)));
+    }
+    if let Some(reason) = share_failed {
+        said.push(format!("Teammate access was not created. {} Share later with {again} --share.", sentence(reason)));
+    }
+    said
+}
+
+/// The launch's last line while the sandbox keeps running: how to open the tool again and how to
+/// stop the sandbox. A sandbox stopped or deleted from the stop menu gets none, as that menu
+/// already said what it did.
+async fn left_running(tool: &str, id: &str) {
+    use crate::cli_ui as ui;
+    let Ok(state) = call("get_platform_state", json!({})).await else { return };
     let environments = state["environments"].as_array().map_or(&[][..], Vec::as_slice);
-    ui::info(&format!("Reconnect: {}", reconnect_command(&options.tool, &id, environments)));
-    if options.tool=="ollama" && (options.arguments.is_empty() || options.arguments==["serve"]) {
-        crate::terminal::open_ollama(&id,&name).await?;
-        return Ok(None);
+    if let Some(line) = running_line(tool, id, environments) {
+        ui::outro(&line);
     }
-    crate::terminal::attach_prepared_tool(
-        &id,
-        &options.tool,
-        &launch_arguments(&options.tool, &options.arguments),
-    )
-    .await?;
-    Ok(None)
+}
+
+fn running_line(tool: &str, id: &str, environments: &[Value]) -> Option<String> {
+    let environment = environments.iter().find(|env| env["id"] == id).filter(|env| env["status"] == "running")?;
+    let name: String = environment["name"].as_str().unwrap_or(tool).chars().filter(|c| !c.is_control()).collect();
+    let stop = shell_words::join(["yougori", "stop", &handle(environments, id)]);
+    Some(format!("{name} keeps running · open {tool} again with {} · stop it with {stop}", reconnect_command(tool, id, environments)))
 }
 
 #[cfg(test)]
@@ -867,13 +1054,20 @@ mod tests {
         assert_eq!(reconnect_command("codex", "env-older", &running_older), "yougori codex --environment codex");
         // `yougori codex` reuses microVMs only; the container needs its name.
         assert_eq!(reconnect_command("codex", "env-container", &environments), "yougori codex --environment codex-3");
-        // A name another sandbox also answers to, or one a shell would need quoted, falls back to the ID.
+        // A name another sandbox also answers to falls back to the ID; one a shell needs quoted is quoted.
         let mut shared = environments.clone();
         shared.push(json!({"id":"env-other","name":"CODEX","kind":"container","status":"running"}));
         assert_eq!(reconnect_command("codex", "env-older", &shared), "yougori codex --environment env-older");
         let mut spaced = environments.clone();
-        spaced[0]["name"] = json!("my codex");
-        assert_eq!(reconnect_command("codex", "env-older", &spaced), "yougori codex --environment env-older");
+        spaced[0]["name"] = json!("my codex (remote)");
+        assert_eq!(reconnect_command("codex", "env-older", &spaced), "yougori codex --environment 'my codex (remote)'");
+        let quoted = shell_words::split("yougori codex --environment 'my codex (remote)'").unwrap();
+        assert_eq!(Options::parse(&quoted[1..]).unwrap().existing(&spaced).unwrap().unwrap()["id"], "env-older", "the quoted name finds the same sandbox");
+        for awkward in ["-codex", "it's mine", "say \"hi\""] {
+            let mut odd = environments.clone();
+            odd[0]["name"] = json!(awkward);
+            assert_eq!(reconnect_command("codex", "env-older", &odd), "yougori codex --environment env-older", "{awkward}");
+        }
         assert_eq!(reconnect_command("codex", "env-gone", &[]), "yougori codex --environment env-gone");
         for command in ["yougori codex --environment codex", "yougori codex --environment codex-3"] {
             let args = shell_words::split(command).unwrap();
@@ -881,6 +1075,96 @@ mod tests {
             let resolved = target.existing(&environments).unwrap().unwrap()["id"].clone();
             assert_eq!(reconnect_command("codex", resolved.as_str().unwrap(), &environments), command, "the hint resolves to the same sandbox");
         }
+    }
+    #[tokio::test]
+    async fn a_cancelled_creation_never_removes_a_sandbox_that_existed_before() {
+        let managed = Options::parse(&words("codex")).unwrap().description();
+        let old = microvm("env-old", "codex", &managed, "running");
+        let before: std::collections::HashSet<String> = ["env-old".to_owned()].into();
+        // A same-named sandbox already existed and the engine gave no answer: nothing is deleted.
+        let mut methods = vec![];
+        let said = remove_cancelled("codex", &managed, Some(&before), None, |method, _| {
+            methods.push(method);
+            std::future::ready(Ok(json!({"environments":[old.clone()]})))
+        })
+        .await;
+        assert!(said.unwrap().contains("codex was not created"));
+        assert_eq!(methods, ["get_platform_state"], "nothing was stopped or deleted");
+        // The engine answered with the sandbox that existed before: still nothing is deleted.
+        let mut methods = vec![];
+        let said = remove_cancelled("codex", &managed, Some(&before), Some(json!({"id":"env-old"})), |method, _| {
+            methods.push(method);
+            std::future::ready(Ok(json!({"environments":[old.clone()]})))
+        })
+        .await;
+        assert!(said.unwrap_err().contains("Nothing was removed"));
+        assert_eq!(methods, ["get_platform_state"]);
+        // The sandbox this launch made, by the ID the engine returned: stopped, then deleted.
+        let new = microvm("env-new", "codex", &managed, "running");
+        let mut calls = vec![];
+        let said = remove_cancelled("codex", &managed, Some(&before), Some(json!({"id":"env-new"})), |method, params| {
+            calls.push((method, params["environmentId"].clone()));
+            std::future::ready(Ok(if method == "get_platform_state" { json!({"environments":[old.clone(), new.clone()]}) } else { json!({}) }))
+        })
+        .await;
+        assert_eq!(said.unwrap(), "Cancelled. codex was removed again.");
+        // Without the list from before, or with an answer that does not list them, nothing is
+        // removed and nothing is claimed.
+        let mut methods = vec![];
+        let said = remove_cancelled("codex", &managed, None, Some(json!({"id":"env-old"})), |method, _| {
+            methods.push(method);
+            std::future::ready(Ok(json!({"environments":[old.clone()]})))
+        })
+        .await;
+        assert!(methods.is_empty() && said.unwrap_err().contains("Nothing was removed"));
+        let said = remove_cancelled("codex", &managed, Some(&before), None, |_, _| std::future::ready(Ok(json!({"error":"malformed"})))).await;
+        let said = said.unwrap_err();
+        assert!(said.contains("could not be checked") && !said.contains("was not created"), "{said}");
+        assert_eq!(
+            calls.iter().filter(|(method, _)| *method != "get_platform_state").collect::<Vec<_>>(),
+            [&("set_environment_status", json!("env-new")), &("delete_environment", json!("env-new"))]
+        );
+    }
+    #[test]
+    fn an_optional_step_that_fails_is_said_and_the_launch_goes_on() {
+        use crate::cli_ui as ui;
+        let mut failed = None;
+        assert_eq!(optional(Err("Public access could not finish: offline".into()), &mut failed), Ok(true));
+        assert_eq!(failed.as_deref(), Some("Public access could not finish: offline"));
+        // Leaving, going back and stopping are not failures of the step.
+        for left in [crate::tool_sharing::ENDED.to_owned(), ui::BACK.to_owned(), ui::CANCELLED.to_owned(), crate::wire::cancelled("")] {
+            assert_eq!(optional(Err(left.clone()), &mut failed), Err(left));
+        }
+        // Asked again after Back, and it worked: nothing is left to say.
+        assert_eq!(optional(Ok(true), &mut failed), Ok(true));
+        assert!(failed.is_none());
+        assert_eq!(
+            setbacks(Some("Public access could not finish: offline"), Some("The sharing gateway could not start (x). Nothing was shared."), "yougori codex"),
+            [
+                "The public link was not created. Public access could not finish: offline. Create one by running yougori codex again.",
+                "Teammate access was not created. The sharing gateway could not start (x). Nothing was shared. Share later with yougori codex --share.",
+            ]
+        );
+        assert!(setbacks(None, None, "yougori codex").is_empty());
+    }
+    #[test]
+    fn a_launch_that_ends_with_the_sandbox_running_says_how_to_come_back_and_stop_it() {
+        let managed = Options::parse(&words("codex")).unwrap().description();
+        let running = microvm("env-codex", "codex", &managed, "running");
+        assert_eq!(
+            running_line("codex", "env-codex", std::slice::from_ref(&running)).unwrap(),
+            "codex keeps running · open codex again with yougori codex · stop it with yougori stop codex"
+        );
+        let mut remote = running.clone();
+        remote["name"] = json!("notes (remote)");
+        remote["description"] = json!("");
+        assert_eq!(
+            running_line("codex", "env-codex", std::slice::from_ref(&remote)).unwrap(),
+            "notes (remote) keeps running · open codex again with yougori codex --environment 'notes (remote)' · stop it with yougori stop 'notes (remote)'"
+        );
+        // Stopped or deleted from the stop menu: that menu already said so.
+        assert!(running_line("codex", "env-codex", &[microvm("env-codex", "codex", &managed, "stopped")]).is_none());
+        assert!(running_line("codex", "env-codex", &[]).is_none());
     }
     #[test]
     fn only_new_sandboxes_are_sized_and_a_taken_name_fails_before_the_sliders() {

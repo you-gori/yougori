@@ -1,5 +1,6 @@
 .theme-panel { display: grid; gap: 14px; padding: 0 24px 24px; }
-.theme-basics { display: flex; gap: 5px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--muted); }
+/* The track is the popup's own surface pressed in a little, so the chosen pill on it shows in every theme. */
+.theme-basics { display: flex; gap: 5px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--foreground) 6%, var(--popover)); }
 .theme-basics button { flex: 1; min-height: 30px; border-radius: 6px; color: var(--muted-foreground); font-size: 12px; cursor: pointer; }
 .theme-basics button[aria-pressed="true"] { background: var(--popover); color: var(--foreground); box-shadow: 0 1px 4px #0002; }
 .theme-basics button:hover:not(:disabled) { color: var(--foreground); }

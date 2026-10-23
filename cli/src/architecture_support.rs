@@ -14,11 +14,19 @@ fn quote(value: &str, windows: bool) -> String {
 pub fn launch_command(id: &str, windows: bool) -> Result<String, String> {
     let id=agent(id)?;
     let flags=match id {"kilo"|"opencode"=>" --prompt", "gemini"=>" --prompt-interactive", _=>""};
-    let executable=if windows {
+    let prompt=quote(PROMPT,windows);
+    if windows {
         // npm's .ps1 wrapper may be blocked by the normal script policy; prefer its .cmd or a native binary.
-        format!("$yougoriAgentCommand = Get-Command {id}.exe,{id}.cmd,{id} -ErrorAction SilentlyContinue | Select-Object -First 1; if (!$yougoriAgentCommand) {{ Write-Host 'Install {id} and sign in, then run the command again. The architecture task is saved here.'; exit 127 }}; & $yougoriAgentCommand.Source")
-    } else { id.into() };
-    Ok(format!("{executable}{flags} {}",quote(PROMPT,windows)))
+        // No `exit`: people paste this into their own PowerShell window, which must stay open when the agent is missing.
+        return Ok(format!("$yougoriAgentCommand = Get-Command {id}.exe,{id}.cmd,{id} -ErrorAction SilentlyContinue | Select-Object -First 1; if (!$yougoriAgentCommand) {{ Write-Host 'Install {id} and sign in, then run the command again. The architecture task is saved here.' }} else {{ & $yougoriAgentCommand.Source{flags} {prompt} }}"));
+    }
+    Ok(format!("{id}{flags} {prompt}"))
+}
+/// The script `launch` runs in its own shell. On Windows it ends that shell with 127 when the
+/// agent is missing, as `sh` does for an unknown command.
+fn launch_script(id: &str, windows: bool) -> Result<String, String> {
+    let command=launch_command(id,windows)?;
+    Ok(if windows {format!("{command}; if (!$yougoriAgentCommand) {{ exit 127 }}")} else {command})
 }
 fn bounded(value: &Value) -> Value {
     let text=value.as_str().unwrap_or("");
@@ -75,7 +83,7 @@ fn prepare_at(root: &Path,preflight: &Value,id: &str,windows: bool) -> Result<Va
 }
 pub fn launch(task: &Value) -> Result<i32,String> {
     let id=task["agent"].as_str().ok_or("Missing selected agent")?;
-    let command=launch_command(id,cfg!(windows))?;
+    let command=launch_script(id,cfg!(windows))?;
     let folder=task["path"].as_str().ok_or("Missing architecture task folder")?;
     struct RestoreRaw(bool);
     impl Drop for RestoreRaw {fn drop(&mut self){if self.0 {let _=crossterm::terminal::enable_raw_mode();}}}
@@ -107,5 +115,14 @@ pub fn launch(task: &Value) -> Result<i32,String> {
     }
     #[test] fn all_five_agents_keep_interactive_mode_and_normal_permissions(){
         for(id,_)in AGENTS{for windows in [true,false]{let command=launch_command(id,windows).unwrap();assert!(command.contains(id));assert!(!command.contains("--auto"));assert!(!command.contains("--danger"));assert!(!command.contains("--yolo"));assert!(!command.contains("--print"));}}
+    }
+    #[test] fn copied_windows_command_never_closes_the_users_shell_but_launch_reports_a_missing_agent(){
+        for(id,_)in AGENTS{
+            let copied=launch_command(id,true).unwrap();
+            assert!(!copied.contains("exit"));
+            assert!(copied.contains("} else { & $yougoriAgentCommand.Source"));
+            assert!(launch_script(id,true).unwrap().ends_with("if (!$yougoriAgentCommand) { exit 127 }"));
+            assert_eq!(launch_script(id,false).unwrap(),launch_command(id,false).unwrap());
+        }
     }
 }

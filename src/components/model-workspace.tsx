@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react"
 import { ModelChat } from "@/components/model-chat"
 import { ModelArchitectureSupport } from "@/components/model-architecture-support"
 import { HuggingfaceAccess } from "@/components/huggingface-access"
@@ -24,9 +24,12 @@ export { ModelChat }
 const NeocloudForm = lazy(async () => ({ default: (await import("@/components/dialogs/neocloud-form")).NeocloudForm }))
 
 /** `compact` renders a small "Chat" trigger for use inside a graph node. */
-export function ModelWorkspace({ environmentId, compact = false }: { environmentId?: string; compact?: boolean }) {
+export function ModelWorkspace({ environmentId, compact = false, label, triggerClassName, open: openProp, onOpenChange, hideTrigger = false }: { environmentId?: string; compact?: boolean; label?: ReactNode; triggerClassName?: string; open?: boolean; onOpenChange?: (open: boolean) => void; hideTrigger?: boolean }) {
   const { state, refreshPlatform } = usePlatform()
-  const [open, setOpen] = useState(false)
+  // Controlled when a caller supplies its own trigger, so the trigger can be any element.
+  const [ownOpen, setOwnOpen] = useState(false)
+  const open = openProp ?? ownOpen
+  const setOpen = onOpenChange ?? setOwnOpen
   const topic = useTopicWalkthroughModal(open)
   const [model, setModel] = useState("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0")
   const [api, setApi] = useState(false)
@@ -116,30 +119,40 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
   const close = <DialogClose render={<Button variant="outline" size="sm" className="model-close" />}>Close</DialogClose>
   const validPort = Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535
   return <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
-    <DialogTrigger render={compact ? <Button size="xs" variant="ghost" className="node-chat nodrag" /> : <Button data-instruction="model-trigger" size="sm" variant="outline" className={environmentId ? undefined : "dashboard-action"} />}>{compact ? "Chat" : environmentId ? "Chat with model" : "Huggingface"}</DialogTrigger>
+    {hideTrigger ? null : <DialogTrigger render={compact ? <Button size="xs" variant="ghost" className="node-chat nodrag" /> : <Button data-instruction="model-trigger" size="sm" variant="outline" className={triggerClassName ?? (environmentId ? undefined : "dashboard-action")} />}>{compact ? "Chat" : environmentId ? "Chat with model" : label ?? "Huggingface"}</DialogTrigger>}
     <DialogPopup data-instruction="model-dialog" bottomStickOnMobile={false} showCloseButton={false} className={`model-popup max-w-none${visibleId ? " model-popup-chat" : ""}`}>
       <DialogTitle className="sr-only">Hugging Face</DialogTitle>
       <DialogDescription className="sr-only">Run a language model on your NVIDIA GPU.</DialogDescription>
-      {showTabs || !selected ? <header className="model-header">
-        {showTabs ? <div className="model-tabs" role="group" aria-label="Your models">
+      {selected ? null : <header className="model-dialog-header">
+        <div>
+          <h2>Run a local model</h2>
+          <p>Text-generation and supported decision models with safetensors or GGUF. Larger models select a lower precision when needed to fit the GPU.</p>
+        </div>
+        {close}
+      </header>}
+      {showTabs ? <div className="model-subbar">
+        <div className="model-tabs" role="group" aria-label="Your models">
           {models.map(e => <button key={e.id} type="button" aria-pressed={selected === e.id} disabled={busy} onClick={() => setSelected(e.id)}>{e.description.replace("Hugging Face · ", "")}</button>)}
           <button type="button" aria-pressed={!selected} disabled={busy} onClick={() => setSelected("")}>{selected ? "Run another model" : "New model"}</button>
-        </div> : null}
-        {selected ? null : close}
-      </header> : null}
+        </div>
+      </div> : null}
       <DialogPanel className="model-panel" scrollFade={false}>
         {!environmentId && !selected ? <div className="model-form">
-          <div className="model-intro">
-            <h2>Run a Hugging Face model</h2>
-            <p>Text-generation and supported decision models with safetensors or GGUF. Larger models select a lower precision when needed to fit the GPU.</p>
-          </div>
-
           <section className="model-card">
-            <label className="model-label" htmlFor="hf-model">Model</label>
-            <ModelLibrary onRun={(value, precision) => { setModel(value); setFolder(""); setQuant(precision ?? ""); setPreflight(null); setTarget("local") }} />
-            {target === "local" ? <div><label className="model-label" htmlFor="model-folder">Local weights (optional)</label><Input id="model-folder" value={folder} disabled={busy} onChange={e => {setFolder(e.target.value);setPreflight(null)}} placeholder="Leave empty to download from Hugging Face" /><Button variant="outline" disabled={busy} onClick={() => void registryApi.folder().then(value => {if(value){setFolder(value);setPreflight(null)}}).catch(e => setError(String(e)))}>Choose model folder</Button></div> : null}
-          {sharing !== "off" ? <label><input type="checkbox" checked={closedWeights} disabled={busy} onChange={e => setClosedWeights(e.target.checked)} />Closed weights — publish chat and API only</label> : null}
-          <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
+            <div className="model-field">
+              <div className="model-card-head">
+                <label className="model-label" htmlFor="hf-model">Model</label>
+                <ModelLibrary onRun={(value, precision) => { setModel(value); setFolder(""); setQuant(precision ?? ""); setPreflight(null); setTarget("local") }} />
+              </div>
+              <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
+            </div>
+            {target === "local" ? <div className="model-field">
+              <label className="model-label" htmlFor="model-folder">Local weights (optional)</label>
+              <div className="model-input-row">
+                <Input id="model-folder" value={folder} disabled={busy} onChange={e => {setFolder(e.target.value);setPreflight(null)}} placeholder="Leave empty to download from Hugging Face" />
+                <Button variant="outline" disabled={busy} onClick={() => void registryApi.folder().then(value => {if(value){setFolder(value);setPreflight(null)}}).catch(e => setError(String(e)))}>Choose model folder</Button>
+              </div>
+            </div> : null}
             <HuggingfaceAccess />
           </section>
 
@@ -149,14 +162,22 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
               <button type="button" role="radio" aria-checked={target === "local"} disabled={busy} onClick={() => { setTarget("local"); setPreflight(null) }}><strong>This computer</strong><span>{compute?.detail ?? "Local GPU or CPU"}</span></button>
               <button type="button" role="radio" aria-checked={target === "neocloud"} disabled={busy} onClick={() => { setTarget("neocloud"); setPreflight(null) }}><strong>Neo Cloud <code>--neocloud</code></strong><span>An existing RunPod GPU pod</span></button>
             </div>
-            {target === "local" ? <div>
-              <label className="model-label">Compute <select value={backend} disabled={busy} onChange={e => setBackend(e.target.value)}>
-                <option value="auto">Automatic</option><option value="cpu">CPU</option>
-                {compute?.os === "macos" ? <option value="metal">Apple Metal</option> : <option value="cuda">NVIDIA CUDA</option>}
-              </select></label>
-              <label className="model-label">Model memory (GB) <Input type="number" min="4" value={memory} disabled={busy} placeholder="Automatic" onChange={e => setMemory(e.target.value)} /></label>
+            {target === "local" ? <>
+              <div className="model-fields">
+                <div className="model-field">
+                  <label className="model-label" htmlFor="hf-backend">Compute</label>
+                  <select id="hf-backend" className="model-select" value={backend} disabled={busy} onChange={e => setBackend(e.target.value)}>
+                    <option value="auto">Automatic</option><option value="cpu">CPU</option>
+                    {compute?.os === "macos" ? <option value="metal">Apple Metal</option> : <option value="cuda">NVIDIA CUDA</option>}
+                  </select>
+                </div>
+                <div className="model-field">
+                  <label className="model-label" htmlFor="hf-memory">Model memory (GB)</label>
+                  <Input id="hf-memory" type="number" min="4" value={memory} disabled={busy} placeholder="Automatic" onChange={e => setMemory(e.target.value)} />
+                </div>
+              </div>
               {compute?.os === "macos" ? <p className="model-hint">Choose GGUF weights for native Mac inference. Apple Silicon uses Metal when available.</p> : null}
-            </div> : null}
+            </> : null}
             {target === "neocloud" ? <div className="model-neocloud">
               {pods.length ? <label className="model-pod"><span className="model-label">RunPod GPU pod</span>
                 <select value={pod} disabled={busy} onChange={e => setPod(e.target.value)}>{pods.map(env => <option key={env.id} value={env.id}>{env.name} · {env.status}</option>)}</select>
@@ -191,11 +212,16 @@ export function ModelWorkspace({ environmentId, compact = false }: { environment
             <div className="model-tabs" role="group" aria-label="Neo Grid sharing">
               {([['off', 'Off'], ['paid', 'Paid (--now)'], ['free', 'Free (--nowfree)']] as const).map(([mode, label]) => <button key={mode} type="button" disabled={busy} aria-pressed={sharing === mode} onClick={() => setSharing(mode)}>{label}</button>)}
             </div>
-            {sharing !== "off" ? <><p className="model-hint">Share through the Yougori endpoint. Published models use publisher pricing; Hugging Face models get an automatic price when metadata supports it. Free access needs no deposit.</p><NetworkAccount network={network} />{network.error ? <p role="alert" className="model-error">{network.error}</p> : null}</> : null}
+            {sharing !== "off" ? <>
+              <label className="model-check"><input type="checkbox" checked={closedWeights} disabled={busy} onChange={e => setClosedWeights(e.target.checked)} /><span>Closed weights — publish chat and API only</span></label>
+              <p className="model-hint">Share through the Yougori endpoint. Published models use publisher pricing; Hugging Face models get an automatic price when metadata supports it. Free access needs no deposit.</p>
+              <NetworkAccount network={network} />
+              {network.error ? <p role="alert" className="model-error">{network.error}</p> : null}
+            </> : null}
           </section>
 
           {preflight ? <div aria-label="Model compatibility" className="model-card model-preflight" data-supported={preflight.supported || undefined}><p className="model-preflight-title">{preflight.sourceOnly ? "Source files only" : preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
-          {preflight?.supported === false && preflight.supportAvailable ? <ModelArchitectureSupport key={`${model}:${quant}`} model={model} quant={quant.trim() || undefined} active={open} /> : null}
+          {preflight?.supported === false && preflight.supportAvailable ? <ModelArchitectureSupport key={`${model}:${quant}`} model={model} quant={quant.trim() || undefined} /> : null}
           <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined, target === "local" ? folder || undefined : undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort) || (target === "neocloud" && !pod)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
         </div> : null}
 

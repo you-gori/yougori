@@ -5,6 +5,7 @@ import { remoteAccessApi, type RemoteGrant, type RemotePermission, type RemoteSh
 import { workspaceApi } from "@/api/workspace-api"
 import { usePlatform } from "@/context/platform-context"
 import { CloudflareAccountFields } from "@/components/cloudflare-account-fields"
+import { Address, Outcome, Slot } from "@/components/popup-kit"
 import { accountRequest, emptyCloudflareDraft } from "@/lib/cloudflare-account"
 import { readPublicAccessPresets } from "@/lib/public-access-presets"
 import { rememberPublicAccessPreset } from "@/lib/public-access-preset-actions"
@@ -68,7 +69,9 @@ export function SharingPanel({ environmentId, reconnectEnvironmentId, onConnecte
     const account = preset
       ? { hostPort: preset.hostPort, options: { hostname: preset.hostname, presetId: preset.id, presetSourceEnvironmentId: preset.credentialEnvironmentId, presetPort: preset.port, remember: false, routesReviewed: true } }
       : cloudflare.mode === "account" ? accountRequest(cloudflare) : null
-    await remoteAccessApi.start(account?.options, account?.hostPort)
+    const started = await remoteAccessApi.start(account?.options, account?.hostPort)
+    // The link is on; the token just could not be kept for next time.
+    if (started?.warning) setNotice(`Link is on. ${started.warning}`)
     if (account && !preset && cloudflare.remember) {
       try { await rememberPublicAccessPreset(GATEWAY_ID, GATEWAY_PORT, account.options.hostname, account.hostPort) }
       catch (reason) { setNotice(`Link is on, but the domain could not be added to Saved domains: ${reason instanceof Error ? reason.message : String(reason)}`) }
@@ -82,18 +85,25 @@ export function SharingPanel({ environmentId, reconnectEnvironmentId, onConnecte
   const quick = shares?.url?.includes(".trycloudflare.com") ?? false
   const canAdd = Boolean(username.trim()) && password.length >= 8 && !(pc && (!folder || !pcConfirmed)) && !(permission === "edit" && !folder.trim())
   const permissions = (Object.keys(labels) as RemotePermission[]).filter(key => !pc || key !== "control")
+  // Each person's invite is the link's address, then /share/ and their own id.
+  const chosenPreset = presetId ? presets.find(item => item.id === presetId) : undefined
+  const linkBase = chosenPreset ? <>https://{chosenPreset.hostname}</>
+    : cloudflare.mode === "account" ? <>https://{cloudflare.hostname.trim() || <Slot>your hostname</Slot>}</>
+    : <>https://<Slot>random-words</Slot>.trycloudflare.com</>
+  const invitePreview = <Address>{linkBase}/share/<Slot>their invite</Slot></Address>
 
   return <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (busy || (!value && topic && details.reason === "focus-out") || (details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) return; setOpen(value); if (!value) { setPassword(""); setResetPassword(""); setCloudflare(v => ({ ...v, token: "" })) } }}>
     <DialogTrigger render={<Button className="nodrag" size={compact ? "icon-xs" : "sm"} variant={compact ? "ghost" : "outline"} aria-label={environmentId ? `Share ${targetName} via Tunnel` : "Connect to Shared Environment"} title={environmentId ? "Share via Tunnel" : "Connect to Shared Environment"} />}>
       {environmentId ? <Share2Icon aria-hidden="true" /> : <LinkIcon aria-hidden="true" />}{compact ? null : environmentId ? "Share via Tunnel" : "Connect to Shared Environment"}
     </DialogTrigger>
     <DialogPopup data-instruction="sharing-dialog" className={environmentId ? "share-popup" : "sm:max-w-xl"}>
-      <DialogHeader><DialogTitle>{environmentId ? `Share ${targetName}` : reconnectEnvironmentId ? "Reconnect shared environment" : "Connect to a shared environment"}</DialogTitle><DialogDescription>{environmentId ? "Invite people to work here. Files, workloads and compute stay on this machine." : "Use the link and recipient credentials supplied by the owner."}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{environmentId ? `Share ${targetName}` : reconnectEnvironmentId ? "Reconnect shared environment" : "Connect to a shared environment"}</DialogTitle><DialogDescription>{environmentId ? "Invite people to work here through a Cloudflare link. Each person gets their own invite and password; files, workloads and compute stay on this machine." : "Use the link and recipient credentials supplied by the owner."}</DialogDescription></DialogHeader>
       <DialogPanel className={environmentId ? "share-panel" : "space-y-5"}>
         {!environmentId ? <SharedEnvironmentForm environmentId={reconnectEnvironmentId} onConnected={onConnected} onBusyChange={setBusy} onClose={() => setOpen(false)} /> : <>
           <div className="share-status" data-online={online || undefined} role="status">
             <span className="share-dot" aria-hidden="true" />
-            <div className="share-status-text"><strong>{busy ? "Working…" : online ? "Link is on" : "Link is off"}</strong><span>{online ? `${active.length} ${active.length === 1 ? "person" : "people"} can connect · ${quick ? "Quick link" : "Your domain"}` : "People can't connect until the link is on."}</span></div>
+            <div className="share-status-text"><strong>{busy ? "Working…" : online ? "Link is on" : "Link is off"}</strong><span>{online ? `${active.length} ${active.length === 1 ? "person" : "people"} can connect · ${quick ? "Cloudflare quick link" : "Your domain, through Cloudflare"}` : "People can't connect until the link is on."}</span></div>
+            {online && shares?.url ? <code title={shares.url}>{shares.url}</code> : null}
             {online ? <><Button size="xs" variant="outline" disabled={busy} onClick={() => void perform(() => remoteAccessApi.stop())}>Disconnect Remote Users</Button></> : null}
           </div>
           {error ? <p role="alert" className="share-error">{error}</p> : null}
@@ -168,6 +178,10 @@ export function SharingPanel({ environmentId, reconnectEnvironmentId, onConnecte
               </div>) : <p className="share-hint">Add a person to get their invite link.</p>}
               <p className="share-hint">{quick ? "Quick link. It changes when the link restarts, so re-send invites after turning it back on." : "Your Cloudflare domain. Invites keep working across restarts."}</p>
             </div> : <>
+              <Outcome title="Each person's invite link">
+                <p>{invitePreview}</p>
+                <p>They open it in Yougori with their own username and password. A locked-down sandbox's links answer nothing until it is unlocked.</p>
+              </Outcome>
               <CloudflareAccountFields environmentId={GATEWAY_ID} port={GATEWAY_PORT} value={cloudflare} onChange={setCloudflare} onLoadingChange={setAccountLoading} busy={busy} perform={perform} refreshKey={String(open)} compact presets={presets} selectedPresetId={presetId} onSelectPreset={setPresetId} anyPresetPort />
               <div className="share-actions">
                 {!active.length ? <span className="share-hint">Add a person first.</span> : null}

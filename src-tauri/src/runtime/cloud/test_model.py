@@ -111,6 +111,38 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(result['format'],'vllm');self.assertEqual(result['installVllm'],'1')
         self.assertEqual(json.loads((self.runner.root_dir()/'config.json').read_text())['format'],'vllm')
 
+    def test_agent_tool_parser_is_allow_listed_persisted_and_injected(self):
+        with self.assertRaisesRegex(ValueError, 'Unsupported tool-call parser'):
+            self.runner.request('run', {**self.body, 'format': 'vllm', 'toolParser': 'unreviewed'})
+        with self.assertRaisesRegex(ValueError, 'Unsupported tool-call parser'):
+            self.runner.request('run', {**self.body, 'toolParser': 'hermes'})
+        self.assertFalse(self.runner.running(self.runner.root_dir()))
+        self.body.update(format='vllm', toolParser='hermes')
+        self.body['source'] = SERVER.replace("'status':'ready'", "'status':'ready', 'parser':os.environ.get('YOUGORI_TOOL_PARSER')")
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        self.assertEqual(self.ready()['parser'], 'hermes')
+        self.assertEqual(json.loads((self.runner.root_dir() / 'config.json').read_text())['toolParser'], 'hermes')
+        # Plain chat may reuse a server that also calls tools.
+        plain = {key: value for key, value in self.body.items() if key != 'toolParser'}
+        self.assertTrue(self.runner.request('run', plain)['reused'])
+
+    def test_an_agent_never_reuses_a_server_without_tool_calling(self):
+        self.body['format'] = 'vllm'
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        self.ready()
+        self.assertNotIn('toolParser', json.loads((self.runner.root_dir() / 'config.json').read_text()))
+        with self.assertRaisesRegex(ValueError, 'without agent tool calling. Stop its model, then retry.'):
+            self.runner.request('run', {**self.body, 'toolParser': 'hermes'})
+        self.assertTrue(self.runner.request('status', {})['running'])
+
+    def test_an_agent_never_reuses_a_server_with_another_parser(self):
+        self.body.update(format='vllm', toolParser='hermes')
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        self.ready()
+        with self.assertRaisesRegex(ValueError, 'with a different tool-call parser. Stop its model, then retry.'):
+            self.runner.request('run', {**self.body, 'toolParser': 'qwen3_coder'})
+        self.assertTrue(self.runner.request('status', {})['running'])
+
     def test_arbitrary_runner_is_rejected_before_launch(self):
         with self.assertRaisesRegex(ValueError,'Unsupported model runner'):
             self.runner.request('run',{**self.body,'format':'unreviewed-plugin'})

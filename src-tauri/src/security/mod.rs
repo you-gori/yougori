@@ -45,8 +45,13 @@ const NOTIFY_EVERY: u64 = 600;
 /// before startup reconciliation so the engine's own state changes are recorded too.
 pub(crate) fn init(store: &PlatformStore) -> Result<(), String> {
     let root = store.data_folder("security");
-    let log = audit::AuditLog::open(&root.join("audit"))?;
+    // The containment records come FIRST, and nothing here may return before they are set. The
+    // audit log failing to open is survivable and the engine carries on without it (lib.rs says
+    // so); every lockdown silently lifting is not. Opened the other way round, one locked segment
+    // or one full disk left `is_contained` false for every environment, so links, ports, shares
+    // and downloads all answered again and nothing refused a start.
     let _ = CONTAINMENT.set(containment::Store::load(&root.join("state.json")));
+    let log = audit::AuditLog::open(&root.join("audit"))?;
     let _ = AUDIT.set(log);
     record(Event::new("engine.started").via("engine").text("version", env!("CARGO_PKG_VERSION")));
     Ok(())
@@ -216,26 +221,70 @@ pub(crate) fn ensure_open(store: &PlatformStore, environment_id: &str, action: &
 /// Whether an environment is locked down or kill-switched, without recording a refusal: for
 /// loops that re-check every few seconds.
 pub(crate) fn is_contained(environment_id: &str) -> bool {
-    CONTAINMENT.get().is_some_and(|records| records.get(environment_id).is_some())
+    CONTAINMENT.get().is_some_and(|records| records.contains(environment_id))
+}
+
+/// Resolves once `environment_id` is locked down or cut off, looking twice a second.
+pub(crate) async fn until_contained(environment_id: &str) {
+    while !is_contained(environment_id) {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Runs `work` (one connection through a public link or local-network port, or one download)
+/// only while `environment_id` is open: refused at once while it is locked down or cut off, and
+/// stopped within half a second if that starts meanwhile. Contained, every way in answers
+/// nothing; unlocked, the same links and addresses answer again.
+pub(crate) async fn while_open<F: std::future::Future>(environment_id: &str, work: F) -> Option<F::Output> {
+    if is_contained(environment_id) {
+        return None;
+    }
+    tokio::select! {
+        output = work => Some(output),
+        () = until_contained(environment_id) => None,
+    }
 }
 
 /// Tells the runtimes which guests are locked down, so no shutdown or
 /// maintenance path resumes one that containment paused.
 pub(crate) fn sync_runtime_containment(platform: &PlatformState) {
-    let contained = CONTAINMENT.get().map(containment::Store::all).unwrap_or_default();
+    let Some(records) = CONTAINMENT.get() else { return };
+    // `all()` is the records we could read; `contains` is the question every gate asks, and the
+    // two disagree while the records are unreadable — everything is contained, and the map is
+    // empty. Asking the same question the gates ask keeps the runtimes from resuming a guest a
+    // lockdown had paused, which is half of what a lockdown is.
     crate::runtime::set_contained_runtimes(platform.environments.iter()
-        .filter(|environment| contained.contains_key(&environment.id))
+        .filter(|environment| records.contains(&environment.id))
         .map(|environment| environment.runtime_id.clone().unwrap_or_else(|| environment.id.clone()))
         .collect());
 }
 
 /// Internet is not the only way out of a guest: while it is locked down its
-/// private links are removed and its PC folders answer nothing.
+/// private links are removed and its PC folders answer nothing. Nor is it the only way in: its
+/// public links, local-network ports, LAN and remote shares and download links answer nothing
+/// (each checks at connection time, see [`while_open`]), and remote recipients already
+/// connected are signed out. Unlocking brings the same links back.
 async fn hold_grants(app: &AppHandle, environment: &Environment, held: bool) -> Result<(), String> {
     let store = app.state::<PlatformStore>();
     let runtime = app.state::<RuntimeManager>();
     if let Ok(platform) = store.snapshot() {
         sync_runtime_containment(&platform);
+    }
+    if held {
+        // Recipients first, and fast: remote sessions end at once, so their terminals and private
+        // connections close within a second. Desk screens a person had open close too, apart,
+        // because closing them waits on the guest and the lockdown must not.
+        app.state::<crate::remote_access::RemoteAccess>().end_sessions_for(app, &environment.id).await;
+        let owners = crate::peer_sharing::share_owners(app, &environment.id).await;
+        if !owners.is_empty() {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let remote = app.state::<crate::remote_access::RemoteAccess>();
+                for owner in owners {
+                    let _ = tokio::time::timeout(Duration::from_secs(30), remote.close_desktops(&owner)).await;
+                }
+            });
+        }
     }
     app.state::<crate::workspace::WorkspaceManager>().set_environment_shares_suspended(&environment.id, held).await;
     let runtime_id = environment.runtime_id.as_deref().unwrap_or(&environment.id);
@@ -318,7 +367,8 @@ fn steps_report(outcomes: &[(Step, Result<(), String>)]) -> Value {
     }).collect())
 }
 
-/// Records containment first (so it survives a crash mid-way), then cuts Internet and pauses.
+/// Records containment first (so it survives a crash mid-way), then cuts Internet, closes every
+/// other way in and out, and pauses.
 pub(crate) async fn contain(app: &AppHandle, id: &str, level: Level, reason: &str, via: &'static str, rule: Option<&'static str>) -> Result<Value, String> {
     let lock = operation_lock(id);
     let _serial = lock.lock().await;
@@ -327,12 +377,38 @@ pub(crate) async fn contain(app: &AppHandle, id: &str, level: Level, reason: &st
     let environment = store.environment(id)?;
     controllable(&environment).map_err(|reason| format!("{} cannot be locked down: {reason}", environment.name))?;
     let records = records()?;
-    let existing = records.get(id);
+    // While the records are unreadable, `get` answers with a synthetic Lockdown that exists only
+    // to explain refusals. Planning from it would force every containment to Lockdown and carry
+    // its "could not read" sentence as the reason, so plan from nothing instead: the steps come
+    // from the live environment either way.
+    let unreadable = records.unreadable();
+    let existing = if unreadable { None } else { records.get(id) };
     let (steps, containment) = containment::plan_contain(target(&environment), existing.as_ref(), level, reason, via, rule, &now_text());
-    records.set(id, Some(containment.clone()))?;
-    let held = hold_grants(app, &environment, true).await;
-    let mut outcomes = Vec::new();
-    for step in steps {
+    // Recording first is what makes a containment survive a crash half-way. When the records
+    // cannot be read it goes beside them instead, and the act still happens: refusing to cut a
+    // compromised environment's Internet because a file is locked would fail open on the one
+    // feature that exists for emergencies.
+    let recorded = records.set(id, Some(containment.clone()));
+    let unrecorded = match (&recorded, unreadable) {
+        (Err(error), true) => Some(error.clone()),
+        (Err(_), false) => return Err(recorded.unwrap_err()),
+        (Ok(()), true) => None,
+        (Ok(()), false) => None,
+    };
+    // Cutting the Internet and holding every other grant run side by side, so neither waits on
+    // the other: the cut can queue behind a backup's network lock, and holding the grants waits
+    // on the guest. The pause comes last, while the guest can still answer those calls.
+    let (cut, rest): (Vec<Step>, Vec<Step>) = steps.into_iter().partition(|step| *step == Step::CutInternet);
+    let cutting = async {
+        let mut done = Vec::new();
+        for step in cut {
+            let result = acting_as(via, apply(step, id, &store, &runtime)).await;
+            done.push((step, result));
+        }
+        done
+    };
+    let (mut outcomes, held) = tokio::join!(cutting, hold_grants(app, &environment, true));
+    for step in rest {
         let result = acting_as(via, apply(step, id, &store, &runtime)).await;
         outcomes.push((step, result));
     }
@@ -346,7 +422,19 @@ pub(crate) async fn contain(app: &AppHandle, id: &str, level: Level, reason: &st
         event = event.text("rule", rule);
     }
     record(event);
-    Ok(json!({"id": id, "name": environment.name, "containment": containment, "steps": steps_report(&outcomes), "ok": ok}))
+    let mut answer = json!({"id": id, "name": environment.name, "containment": containment, "steps": steps_report(&outcomes), "ok": ok});
+    // The act happened; the records did not take it, because they could not be read. Say both,
+    // and name the file it went to instead, so this is not something somebody discovers after a
+    // restart has quietly dropped it.
+    if unreadable {
+        let said = match &unrecorded {
+            None => format!("{} is contained now, but Yougori could not read its lockdown records, so this was written to {} instead and will not apply after a restart until that file is settled.", environment.name, records.beside_path(id)),
+            Some(error) => format!("{} is contained now, but Yougori could not record it ({error}), so it will not apply after a restart.", environment.name),
+        };
+        answer["warning"] = json!(said);
+        record(Event::new("containment.unrecorded").env(id).via(via).text("where", &records.beside_path(id)).succeeded(unrecorded.is_none()));
+    }
+    Ok(answer)
 }
 
 /// Clears containment first, then restores exactly what containment changed.
@@ -413,6 +501,11 @@ pub(crate) async fn lockdown(app: &AppHandle, environment_id: Option<String>, al
 }
 
 pub(crate) async fn unlock(app: &AppHandle, environment_id: Option<String>, all: Option<bool>) -> Result<Value, String> {
+    // Nothing can be unlocked while the records cannot be read: we do not know what is locked, and
+    // writing would destroy the file. Say that instead of reporting an unlock that does nothing.
+    if records()?.unreadable() {
+        return Err(records()?.unreadable_message());
+    }
     let all = all.unwrap_or(false);
     let ids: Vec<String> = match (environment_id, all) {
         (Some(_), true) | (None, false) => return Err("Give one environment ID, or --all".into()),
@@ -576,7 +669,11 @@ fn tick(app: &AppHandle, now: u64) -> Vec<(String, monitor::Decision)> {
     if contained.keys().any(|id| !platform.environments.iter().any(|environment| &environment.id == id)) {
         let live: Vec<String> = platform.environments.iter().map(|environment| environment.id.clone()).collect();
         if let Some(records) = CONTAINMENT.get() {
-            let _ = records.retain(&live);
+            // Said out loud rather than dropped: the one reason this refuses is records we could
+            // not read, and that is the state somebody most needs to be told about.
+            if let Err(error) = records.retain(&live) {
+                eprintln!("{error}");
+            }
         }
     }
     let mut decisions = Vec::new();
@@ -683,7 +780,9 @@ pub(crate) fn monitor_snapshot(store: &PlatformStore, environment_id: Option<Str
     let platform = store.snapshot()?;
     let settings = platform.settings.security_monitoring.clone();
     let now = unix_now();
-    let contained = CONTAINMENT.get().map(containment::Store::all).unwrap_or_default();
+    // Through get(), not all(): unreadable records answer every gate with "contained", and a page
+    // that shows nothing locked beside refusals nobody can explain is how this was first missed.
+    let contained = CONTAINMENT.get();
     let state = monitor_state().lock().unwrap_or_else(|error| error.into_inner());
     let mut environments = Vec::new();
     for environment in platform.environments.iter().filter(|environment| environment_id.as_deref().is_none_or(|id| id == environment.id)) {
@@ -692,7 +791,7 @@ pub(crate) fn monitor_snapshot(store: &PlatformStore, environment_id: Option<Str
         let mut entry = json!({
             "id": environment.id, "name": environment.name, "type": yougori_cli::overview::env_type(&value),
             "status": environment.status, "internet": environment.network_access,
-            "containment": contained.get(&environment.id), "coverage": coverage(environment),
+            "containment": contained.and_then(|records| records.get(&environment.id)), "coverage": coverage(environment),
         });
         if let (Some(entry), Value::Object(summary)) = (entry.as_object_mut(), summary) {
             entry.extend(summary);

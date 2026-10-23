@@ -1,5 +1,4 @@
 import { useRef, useState } from "react"
-import { FileDiffIcon, RefreshCwIcon } from "lucide-react"
 import { changesApi, type ChangeReport, type FieldChange } from "@/api/projects-api"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogTrigger, DialogPopup, DialogHeader, DialogTitle, DialogDescription, DialogPanel, DialogFooter } from "@/components/ui/dialog"
@@ -24,9 +23,9 @@ export function EnvironmentChanges({ environmentId }: { environmentId: string })
   }
   const s = report?.summary
   return <Dialog open={open} onOpenChange={value => { setOpen(value); if (value) void refresh() }}>
-    <DialogTrigger render={<Button variant="outline" size="sm" />}><FileDiffIcon aria-hidden="true" />Changes</DialogTrigger>
+    <DialogTrigger render={<Button variant="outline" size="sm" />}>Changes</DialogTrigger>
     <DialogPopup className="max-w-6xl">
-      <DialogHeader><DialogTitle>Changes</DialogTitle><DialogDescription>{report?.baselineAt ? `Since ${new Date(report.baselineAt).toLocaleString()}` : "Files and configuration changed since your shared-folder baseline."}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>Changes</DialogTitle><DialogDescription>{report?.baselineAt ? `What changed in the shared folders since ${new Date(report.baselineAt).toLocaleString()}: files, environment variables, packages and configuration.` : "What changed in the shared folders since the baseline: files, environment variables, packages and configuration."}</DialogDescription></DialogHeader>
       <DialogPanel className="space-y-4">
         {s ? <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-lg bg-muted/50 px-4 py-3 text-sm" aria-label="Change counts">{[[s.modified, "files modified"], [s.created, "files created"], [s.deleted, "files deleted"], [s.renamed, "files renamed"], [s.variables, "environment variables changed"], [s.packagesInstalled, "packages installed"]].map(([value, label]) => <span key={label}><strong className="tabular-nums">{value}</strong> {label}</span>)}</div> : null}
         {report?.baselineCreated ? <p className="text-sm">Baseline saved. Future changes will appear here.</p> : null}
@@ -39,7 +38,7 @@ export function EnvironmentChanges({ environmentId }: { environmentId: string })
         {busy ? <p role="status" className="text-sm text-muted-foreground">Comparing shared folders…</p> : null}
         {reset ? <div className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm"><p className="flex-1">Use the current files as the new baseline? This clears the comparison without changing your files.</p><Button size="sm" variant="ghost" onClick={() => setReset(false)}>Cancel</Button><Button size="sm" disabled={busy} onClick={() => void refresh(true)}>Save new baseline</Button></div> : null}
       </DialogPanel>
-      <DialogFooter><Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>{report?.available ? <Button variant="outline" disabled={busy} onClick={() => setReset(true)}>New baseline</Button> : null}<Button disabled={busy} onClick={() => void refresh()}><RefreshCwIcon aria-hidden="true" />Refresh</Button></DialogFooter>
+      <DialogFooter><Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>{report?.available ? <Button variant="outline" disabled={busy} onClick={() => setReset(true)}>New baseline</Button> : null}<Button disabled={busy} onClick={() => void refresh()}>Refresh</Button></DialogFooter>
     </DialogPopup>
   </Dialog>
 }

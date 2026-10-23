@@ -9,6 +9,117 @@ explicit acceptance of the exact rule version and digest within the bounty terms
 the server stores an immutable acceptance record for publisher and participant.
 The local pilot is not a security certification or a guaranteed USDC payment.
 
+## Project bounties and managed research (October 2026)
+
+The desktop has two separate modes. A public worker uses the website coordinator
+and its accepted publisher terms. A closed bounty runs a private coordinator on
+its owner's computer, with no public account or reward requirement. Choose
+loopback for this computer or a private LAN address on port 7462 for a cluster.
+Invitations pin the host's TLS certificate; joined members receive separate,
+revocable credentials. Every contributing computer runs its own target copy.
+The owner must remain online; this is currently one hosted bounty per computer.
+
+Create closed bounty accepts a folder, a single file or a ZIP. Imports are bounded
+at 4,000 files, 8 MiB per file and 64 MiB total. They exclude common credentials,
+dependency directories and build output, reject unsafe paths and symbolic links,
+and show a file preview. Review this preview: filtering is not a guarantee that a
+project contains no secrets. Source bytes and the complete run recipe are bound
+to the accepted digest. An imported folder is a snapshot, not a live host mount.
+The website accepts project folders or individual files; ZIP import is desktop-only.
+The `yougori bounty host` CLI reads the source folder from disk on the hosting
+computer, so a whole repository is published without an upload size cap; only the
+file path crosses to the engine, which applies the same 64 MiB and secret limits.
+
+Choose source review, a live URL, website or API. Source review is the low-friction
+default: an autonomous white-box code security review with no server to run, no start
+command and no port — publish the source and agents review it directly. A live URL
+target (scopeMode external_target) keeps the source review and adds a running service
+you declare by its base URL: the worker reaches that one self-attested origin over the
+network and boots nothing, which suits your own staging stack. Website and API targets
+instead boot a copy in the sandbox; common Node, Python and static website recipes are
+suggested in the desktop. For those, review setup/start/test commands, port and health
+path. The Linux test sandbox includes Python, Node and npm; custom native build stacks,
+containers, external databases and service orchestration are not provisioned
+automatically. Include test accounts, fixtures and API specifications. A live URL points
+at an already-running instance rather than rebuilding a backend from source; browser
+automation is not implemented by this project-import flow.
+
+Setup can download dependencies only if the owner enabled installNetwork and the
+participant accepted that recipe. Setup access is closed on success, failure or
+cancellation before investigation. A foreground service must pass its local health
+check. A live-URL (external_target) sandbox is the one exception: it stays connected
+to the network for the whole investigation, because the declared service is reached
+over it, so the strong offline isolation applies to source, web and API bounties but
+not to a live-URL target you self-attest. Company startup code and generated
+experiments run as an unprivileged test user in the separate test sandbox; the retired
+host-process live-target runner is removed, and the sandbox runs the current container
+path instead. The target sandbox has no model, coordinator or account credentials.
+
+Hermes Agent is pinned to commit `4d04303818b61bf3aa09278af48356315515965b`; existing workers upgrade their
+managed harness when resumed. Its native supervisor grants only source reading
+and managed bounty tools. The agent can run baseline checks, bounded HTTP probes
+with separate named cookie sessions and no redirect following, and Python/JavaScript
+reproductions in the writable test copy. Investigation turns have up to 32 model
+steps. Tool outputs and source digests are retained outside the agent's control.
+The harness prompts for a baseline, one changed condition, observed impact,
+limitations and a reproducible finding. These prompts improve the workflow; they
+do not prove model accuracy or make an unsupported claim into a vulnerability.
+
+HTTP probes support separate test-account sessions for access-control comparisons.
+For example, log in as one account with session `tenant-a` and another with
+`tenant-b`, then compare each account's own resources and cross-account requests.
+The `anonymous` session never loads or saves cookies; `resetSession: true` clears
+the selected session before a request. Receipts identify the method, path and
+session used. A worker refreshes changed tools and instructions when resumed,
+even when its Hermes revision is unchanged.
+
+Task leases and completed-attempt history reduce repeated work. Agents share
+short attributed observations, blockers and verification requests, and read their
+peers' recent results. Public versions must explicitly include researchTools
+(http, experiment, share) in newly accepted terms. Old versions do not silently
+gain permissions. The private host supports the same managed protocol, persistent
+coordination and idempotent receipts. Shared observations are untrusted input.
+
+Expand a desktop worker for full-width **Conversation** and **Activity** tabs.
+Activity updates model text as Hermes streams it; each response grows in one row.
+Both tabs open at the bottom and follow new content; switching tabs keeps the chat draft.
+Text and reasoning remain subject to the local raw-trace setting. Guidance
+is answered at task checkpoints, not during a long tool call; a paused worker
+answers after resume. Review mode retains drafts until the participant submits
+them. Automatic mode sends supported reports to the owner immediately. The host
+view shows shared activity, submitted findings, members and access revocation.
+Private conversations are excluded from the shared room and publisher view.
+Private model preparation does not consume the accepted work budget. Resume grants
+30 more minutes from the desktop; the protocol accepts explicit 1–1,440-minute budgets.
+
+The model container's system-RAM limit is separate from GPU memory. Private
+setup recommends total RAM from the selected weights plus overhead and 4 GiB
+for the agent/test sandboxes. Requests that omit RAM use the same estimate in
+the engine; an explicit RAM choice is preserved. The minimum 8 GiB total leaves
+only 4 GiB for the model and is unsuitable for many large checkpoints. If Linux
+reports an out-of-memory kill, increase the model environment's RAM in Resources
+before restarting it. The model health error identifies this condition from
+cgroup counters without retaining private prompts or native diagnostic output.
+
+Operational limits: private history and imports are local files protected by the
+user's data-directory permissions, not an encrypted enterprise vault. There is no
+high-availability coordinator, SSO/RBAC tenant administration, distributed database
+or automatic backup/export workflow. Histories, evidence and requests have bounds;
+reaching them stops new writes instead of silently losing evidence. Ten public
+workers per bounty and up to 256 private memberships are protocol limits, not
+validated throughput claims. Dependency downloads need internet even for a LAN
+bounty unless the project is self-contained. Air-gapped package mirrors and offline
+model distribution require separate provisioning.
+
+Validation covers source integrity/path rejection, pinned TLS, lease ownership,
+private chat, report review, restart persistence and revocation. The deterministic
+Hermes fixture uses the actual pinned AIAgent with a synthetic loopback
+provider; it checks all seven managed tools, bounded reads/searches, outside-path
+denial, authentication, interruption and a fresh session after cancellation. This is
+not a real-model vulnerability-discovery benchmark. End-to-end discovery quality,
+false positives, resource contention and multi-machine throughput still need
+measurement on representative authorized projects before an enterprise rollout.
+
 ## Practice bounty
 
 New to Swarm Mining? Once a newly prepared worker is online and waiting for
@@ -30,7 +141,7 @@ ends a running one). Type a line to steer the model — a suggestion that
 cannot change the scope, read at its next attempt; type `/stop` to end it, or press
 **Ctrl+]** to detach and leave it running (opened from the waiting view, it returns
 there). A qualifying report earns a no-value
-practice award. The practice does not run OpenCode or the sandboxes, and uses no
+practice award. The practice does not run Hermes or the sandboxes, and uses no
 server, reward or payment; nothing is uploaded. It runs only while the worker is
 waiting, not while it is paused or working an accepted bounty. It is a
 defensive-research teaching fixture only.
@@ -41,7 +152,7 @@ declared checks, attempts and reports — stream in as they happen (its text and
 output stay private to the shared investigation). Type to message your agent, or
 `/stop` to pause the bounty or leave it.
 
-Swarm Mining connects a participant's private local model and OpenCode agent to
+Swarm Mining connects a participant's private local model and Hermes agent to
 explicitly accepted security bounties. The hosted service opens private submissions when explicitly enabled. The owner
 reviews every source and terms version before it is listed. It is not a promise of
 earnings. New publishers promise USDC and pay qualifying winners directly outside
@@ -54,7 +165,7 @@ yougori start bounty --change
 ```
 
 Once a worker exists, `yougori start bounty` reconnects to the worker set up last
-and reuses its downloaded model and OpenCode sandbox; nothing is downloaded again
+and reuses its downloaded model and Hermes sandbox; nothing is downloaded again
 and the model question is not asked. A worker whose preparation failed asks first:
 **Retry** keeps its files, **Set up again** chooses the model and drive anew, and
 **Open** offers the newest worker that did not fail. `--change`, `--model` or any
@@ -93,11 +204,12 @@ workspace quota and the model loaded only for work. Choose **Prepare**, or
 workspace quota, worker name and model memory. Any of these set on the
 command line skips the one-screen summary. Review preparation before any worker
 is created. The engine verifies
-model compatibility and OpenCode readiness; an ordinary model greeting alone is
+model compatibility and Hermes readiness; an ordinary model greeting alone is
 not sufficient. This initial runtime requires a GGUF repository with compatible
 function calling. CPU and NVIDIA modes use the same supported GGUF runner. The
-worker's total allocation starts at four CPU cores and eight GB RAM, divided
-between the model, OpenCode and a separate test sandbox. Workspace quota is 20 GB
+worker's default allocation uses four CPU cores and RAM estimated from its selected
+weights (at least eight GiB total), divided between the model, Hermes and a
+separate test sandbox. Workspace quota is 20 GB
 by default (minimum four GB) and covers both non-model sandboxes; model storage is
 separate. Each newly accepted bounty gets a fresh test identity: processes and files
 left by an earlier publisher's setup or test commands are removed first.
@@ -107,7 +219,7 @@ tunnel is created. Waiting performs no agent inference.
 Custom GGUF repositories, including models described as uncensored, use the same
 compatibility checks. The checkpoint must actually return valid function calls;
 its label does not guarantee tool quality, sufficient context, or that it will
-complete a finding. OpenCode automatically permits source/context reads and the
+complete a finding. Hermes automatically permits source/context reads and the
 four managed bounty tools. Its permissions use the pinned harness's non-Git
 worktree-relative paths. Accepted scope and participant controls still apply.
 Each investigation has a 15-minute turn limit and 12 model steps; an approved
@@ -132,7 +244,7 @@ workload stays available. Stop and delete stop only an unused managed model;
 deleting a worker retains its model files and cache.
 New workers reuse a retained private Swarm model when its verified revision,
 quantization, CPU/GPU mode, resource allocation and drive match the requested model.
-Retrying a worker's preparation keeps its sandbox and the pinned OpenCode already
+Retrying a worker's preparation keeps its sandbox and the pinned Hermes already
 installed there; a sandbox or model removed outside Swarm is prepared again.
 
 Offers show the named publisher, objective, exact scope and source revision,
@@ -245,7 +357,7 @@ platform/account configuration. It sets up a new worker, like the other creation
 options, and cannot be combined with `--worker`. Remote platforms must use an HTTPS origin.
 CLI/account and worker-channel credentials are never accepted through command
 arguments. An environment named `bounty` remains accessible through
-`yougori env start bounty` or `yougori start --environment bounty`.
+`yougori start --environment bounty`.
 
 Run `yougori bounty --help` or `yougori schema --topic bounty` for discovery.
 
@@ -302,9 +414,9 @@ Native checks run with `cargo test --locked --manifest-path src-tauri/Cargo.toml
 --lib swarm::`. The optional real-runtime test currently uses the Windows desktop
 test build and requires the private website's
 `scripts/swarm-native-fixture.mjs` path in `YOUGORI_SWARM_FIXTURE_PATH`; run
-`swarm_real_local_model_opencode_bounty_journey` with `--ignored --nocapture
+`swarm_real_local_model_hermes_bounty_journey` with `--ignored --nocapture
 --test-threads=1`. It uses disposable storage, a real small HF CPU model and
-pinned OpenCode, with an isolated local bounty service and simulated USDC.
+pinned Hermes, with an isolated local bounty service and simulated USDC.
 It requires a real failing approved-check receipt, a managed model attempt and a
 complete report before testing private chat, pause, publisher review and a
 synthetic external-payment award. Automatic inconclusive records cannot satisfy
@@ -321,13 +433,30 @@ Run it with `--ignored`; its reward commitments and credentials are synthetic.
 Registration uses the production request builder, including negotiated platform
 metadata; servers without `workerCapabilityFields` receive the legacy fields.
 
-For a deterministic harness check, run `scripts/swarm-opencode-smoke.py` with an
-extracted Linux OpenCode 1.18.35 binary and `--unprivileged --installer-umask-077
---repair-readable --receipt-race --journey --boundaries`. It verifies source reading and the
-check/attempt/report tool sequence as the unprivileged agent, including delayed
-receipt ownership, plus rejection of external read/search requests while approved
-work continues. Its model and receipts are synthetic; it does not establish
-real-model research quality or native sandbox/service integration.
+For a deterministic harness check, install the pinned Hermes checkout using
+`uv sync --python 3.14 --frozen --no-dev`, then run `scripts/swarm-hermes-smoke.py`
+with that virtual environment's Python. It uses disposable state and loopback
+services, without user credentials or external targets. It checks actual Hermes
+inference, every managed bounty tool, scoped read/glob/grep, receipt delivery,
+authentication, private-model context compression, prompt handoff of provider
+failures, abort during inference and a fresh turn after cancellation.
+This does not establish real-model research quality or native sandbox integration.
+
+The root-owned guest installer pins Hermes and its dependency lock, plus uv 0.11.21.
+The unprivileged bridge embeds `AIAgent`; it does not launch Hermes' general CLI.
+Hermes' safe worker configuration disables ambient plugins, MCP and user context.
+Only the explicit ten-tool allowlist is offered; a mismatch fails startup. Each
+turn uses a fresh process, a disposable Hermes home and its own native lease binding.
+Large tool outputs remain readable only from that turn's spillover directory.
+Compression uses the same private model; provider failures return to the native
+model-recovery loop without Hermes' hosted-provider recovery sleeps. Abort kills that
+process group; model residency remains controlled by the native worker. Existing
+OpenCode credential references migrate through a serialized-field alias.
+The adapter lowers the general-purpose 64K startup sizing floor to 8K for this
+bounded tool surface, pins the context to the model health response, and rejects
+a mismatch. It never increases the model context or KV-cache allocation.
+Hermes is an MIT-licensed runtime dependency downloaded from
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 
 ## Validation record — 2026-10-11
 
@@ -425,3 +554,20 @@ The publisher separately approves participants before source delivery. The owner
 approval page does not grant access to participant private conversations or the
 raw agent channel. Public service details are operator-supplied, not independently
 verified. Source moderation is disclosed in responsible use rules v2026-10-10.4.
+
+
+## Development API model test
+
+A development build can attach a fixed-provider API relay to an existing paused private worker. This is explicit permission to send the private test's model context to that provider; it does not change research scope, task budgets or stop controls. Public workers and release builds reject the configuration.
+
+Run `scripts/swarm-api-relay.py` in a dedicated local OCI container with `YOUGORI_MODEL`, `YOUGORI_API_BASE_URL` (an HTTPS `/v1` URL), `YOUGORI_SWARM_DEVELOPMENT_API=1`, `YOUGORI_SWARM_MODEL_OWNER=worker-ID` and `YOUGORI_MODEL_AGENT_API=1`. Bind `YOUGORI_API_KEY` to the provider credential and `YOUGORI_MODEL_TOKEN` to a fresh 64-character hexadecimal private relay credential, using `set_deployment_secret` through stdin and `secretEnvironment` references. Never put keys in source, argv or workload metadata. The agent connects only to the relay's private port 8000 and retains its normal network isolation; it receives only the relay credential.
+
+Select it through `yougori call swarm_dispatch --file -`:
+
+```json
+{"request":{"action":"developmentModel","workerId":"worker-ID","modelEnvironmentId":"env-RELAY","confirmed":true}}
+```
+
+Selection preserves the original local model, its files and the accepted private job, and leaves the worker paused. Press **Start** to run that job. Relay health checks do not spend tokens; inference uses the configured provider's quota or credit and is bounded to 8192 output tokens per request. HTTP 402 reports insufficient credit. The development model view is marked `developmentApiModel:true`.
+
+To restore the original model, pause the worker and repeat the request without `modelEnvironmentId`. Stop the unused relay through the normal environment controls.

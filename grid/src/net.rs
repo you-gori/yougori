@@ -1,4 +1,6 @@
 //! The hub's own certificate, pinned by every member, and HTTPS on private addresses only.
+//! Members outside the company network use the same pinned HTTPS inside a tunnel.
+use crate::tunnel::{self, Endpoint};
 use bytes::Bytes;
 use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full};
 use hyper::{body::Incoming, Request, Response};
@@ -19,6 +21,51 @@ use tokio_rustls::{
 };
 
 pub const DEFAULT_PORT: u16 = 7460;
+/// The loopback port `cloudflared` forwards a hub's tunnel to, unless the admin picks another.
+pub const DEFAULT_TUNNEL_PORT: u16 = 7461;
+/// Inside a tunnel the hub has no address of its own to check; the certificate is pinned
+/// exactly, so this name only fills the TLS handshake.
+const TUNNEL_NAME: &str = "hub.grid.invalid";
+
+/// Where a member reaches its hub: the hub's LAN or VPN address, or a tunnel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HubAddress {
+    Direct(SocketAddr),
+    Tunnel(Endpoint),
+}
+
+impl HubAddress {
+    /// `10.0.0.5:7460`, or a tunnel's `https://…` address.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.contains("://") {
+            return Endpoint::parse(text).map(HubAddress::Tunnel);
+        }
+        text.parse::<SocketAddr>().map(HubAddress::Direct).map_err(|_| format!("'{text}' is not a hub address such as 10.0.0.5:{DEFAULT_PORT} or https://grid.example.com"))
+    }
+
+    fn unreachable(&self) -> String {
+        match self {
+            HubAddress::Direct(address) => format!("Cannot reach the grid hub at {address}, or its certificate changed. Check that the hub computer is on and on this network."),
+            HubAddress::Tunnel(endpoint) => format!("Cannot reach the grid hub through {endpoint}, or its certificate changed. Check that the hub computer is on and that its tunnel is connected."),
+        }
+    }
+}
+
+impl From<SocketAddr> for HubAddress {
+    fn from(address: SocketAddr) -> Self {
+        HubAddress::Direct(address)
+    }
+}
+
+impl std::fmt::Display for HubAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HubAddress::Direct(address) => write!(f, "{address}"),
+            HubAddress::Tunnel(endpoint) => write!(f, "{endpoint}"),
+        }
+    }
+}
 
 pub(crate) type Body = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -160,46 +207,101 @@ pub(crate) fn server_config(identity: &Identity) -> Result<Arc<rustls::ServerCon
     Ok(Arc::new(config))
 }
 
-/// Trusts exactly the hub's certificate and nothing else.
+/// Accepts exactly one certificate, byte for byte, whatever name the connection uses. The
+/// handshake's signature is still checked, so the hub must hold that certificate's key.
+#[derive(Debug)]
+struct Pinned {
+    certificate: CertificateDer<'static>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if end_entity.as_ref() == self.certificate.as_ref() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::InvalidCertificate(rustls::CertificateError::ApplicationVerificationFailure))
+        }
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// Trusts exactly the hub's certificate and nothing else, on the LAN and through a tunnel.
 pub fn client_config(certificate: &str) -> Result<Arc<rustls::ClientConfig>, String> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(certificate_der(certificate)?).map_err(|_| "Invalid grid certificate")?;
+    let pinned = Pinned { certificate: certificate_der(certificate)?, provider: provider() };
     let config = rustls::ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .map_err(|error| error.to_string())?
-        .with_root_certificates(roots)
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(pinned))
         .with_no_client_auth();
     Ok(Arc::new(config))
 }
 
 /// One request on a fresh pinned-TLS connection to the hub. `wait` bounds the time until
 /// the response headers arrive; the body is read by the caller.
-pub(crate) async fn send<B>(address: SocketAddr, tls: &Arc<rustls::ClientConfig>, mut request: Request<B>, wait: Duration) -> Result<Response<Incoming>, String>
+pub(crate) async fn send<B>(hub: &HubAddress, tls: &Arc<rustls::ClientConfig>, mut request: Request<B>, wait: Duration) -> Result<Response<Incoming>, String>
 where
     B: hyper::body::Body + Send + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let unreachable = || format!("Cannot reach the grid hub at {address}, or its certificate changed. Check that the hub computer is on and on this network.");
-    let socket = tokio::time::timeout(Duration::from_secs(8), tokio::net::TcpStream::connect(address)).await.map_err(|_| unreachable())?.map_err(|_| unreachable())?;
-    let name = ServerName::IpAddress(address.ip().into());
+    let unreachable = || hub.unreachable();
+    let (socket, name, host): (Box<dyn tunnel::Io>, ServerName<'static>, String) = match hub {
+        HubAddress::Direct(address) => {
+            let socket = tokio::time::timeout(Duration::from_secs(8), tokio::net::TcpStream::connect(address)).await.map_err(|_| unreachable())?.map_err(|_| unreachable())?;
+            (Box::new(socket), ServerName::IpAddress(address.ip().into()), address.to_string())
+        }
+        HubAddress::Tunnel(endpoint) => {
+            let name = ServerName::try_from(TUNNEL_NAME).map_err(|_| unreachable())?;
+            (tunnel::connect(endpoint).await?, name, endpoint.host().to_owned())
+        }
+    };
     let stream = tokio::time::timeout(Duration::from_secs(8), TlsConnector::from(tls.clone()).connect(name, socket)).await.map_err(|_| unreachable())?.map_err(|_| unreachable())?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.map_err(|_| unreachable())?;
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    request.headers_mut().insert(hyper::header::HOST, address.to_string().parse().map_err(|_| unreachable())?);
+    request.headers_mut().insert(hyper::header::HOST, host.parse().map_err(|_| unreachable())?);
     tokio::time::timeout(wait, sender.send_request(request))
         .await
         .map_err(|_| "The grid hub did not answer in time".to_owned())?
         .map_err(|_| unreachable())
 }
 
-/// Reads a bounded JSON body; an empty body is `null`.
+/// How long a client has to finish sending its body once its headers are in.
+pub(crate) const BODY_WAIT: Duration = Duration::from_secs(30);
+
+/// Reads a bounded JSON body within `BODY_WAIT`; an empty body is `null`.
 pub(crate) async fn json_body(body: Incoming, limit: usize) -> Result<Value, String> {
-    let bytes = http_body_util::Limited::new(body, limit)
-        .collect()
+    let bytes = tokio::time::timeout(BODY_WAIT, http_body_util::Limited::new(body, limit).collect())
         .await
+        .map_err(|_| "The request body did not arrive in time".to_owned())?
         .map_err(|_| format!("The request body exceeds {} KiB or was interrupted", limit / 1024))?
         .to_bytes();
     if bytes.is_empty() {
@@ -221,6 +323,15 @@ mod tests {
         }
         assert!(valid_hostname("grid.acme.internal") && valid_hostname("hub"));
         assert!(!valid_hostname("-bad.example") && !valid_hostname("a..b") && !valid_hostname("10.0.0.5") && !valid_hostname("has space"));
+    }
+    #[test]
+    fn hub_addresses_are_lan_sockets_or_https_tunnels() {
+        assert_eq!(HubAddress::parse(" 10.0.0.5:7460 ").unwrap(), HubAddress::Direct("10.0.0.5:7460".parse().unwrap()));
+        assert_eq!(HubAddress::parse("[fd00::1]:7460").unwrap().to_string(), "[fd00::1]:7460");
+        assert_eq!(HubAddress::parse("https://Grid.Acme.com/").unwrap().to_string(), "https://grid.acme.com");
+        for bad in ["10.0.0.5", "grid.acme.com", "ftp://grid.acme.com", "http://grid.acme.com"] {
+            assert!(HubAddress::parse(bad).is_err(), "{bad}");
+        }
     }
     #[test]
     fn identities_load_into_tls_and_have_stable_fingerprints() {

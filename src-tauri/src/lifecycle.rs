@@ -91,7 +91,8 @@ pub(crate) fn safe_diagnostic(error: &str) -> String {
     error.split_whitespace().map(|word| {
         let lower = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '=').to_ascii_lowercase();
         let inline = lower.split_once(['=', ':']).is_some_and(|(_, value)| !value.is_empty());
-        let key = lower.split(['=', ':']).next().unwrap_or_default();
+        // Quoted JSON keys (`"access_token":"…"`) keep their quotes until trimmed here.
+        let key = lower.split(['=', ':']).next().unwrap_or_default().trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
         let sensitive = ["bearer", "password", "secret", "token", "authorization", "api_key", "apikey", "access_token", "refresh_token", "client_secret", "private_key"].contains(&key);
         let replacement = if mask_next || word.contains("://") || (sensitive && inline) { "[credential redacted]" } else { word };
         mask_next = sensitive && !inline;
@@ -129,12 +130,19 @@ pub(crate) fn patched_settings(previous: &AppSettings, patch: &Value) -> Result<
 }
 
 pub(crate) async fn save_settings(settings: AppSettings, expected_revision: u64, store: &PlatformStore) -> Result<crate::models::PlatformState, String> {
+    save_settings_registering(settings, expected_revision, store, false).await
+}
+
+/// `register_again`: the caller asked for sign-in startup explicitly, so a missing or stale
+/// registration is written again even though the setting itself did not change.
+async fn save_settings_registering(settings: AppSettings, expected_revision: u64, store: &PlatformStore, register_again: bool) -> Result<crate::models::PlatformState, String> {
     let _guard = SETTINGS_OPERATIONS.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
     let previous = store.snapshot()?;
     validate_settings_limits(&settings, &previous.settings)?;
     validate(&settings, store)?;
     if previous.settings_revision != expected_revision { return Err(format!("[YOUGORI_SETTINGS_REVISION_CONFLICT] Expected settings revision {expected_revision}, current revision {}. Read settings and retry the intended patch.", previous.settings_revision)); }
-    let startup_changed = settings.launch_at_startup != previous.settings.launch_at_startup || settings.startup_headless != previous.settings.startup_headless;
+    let startup_changed = settings.launch_at_startup != previous.settings.launch_at_startup || settings.startup_headless != previous.settings.startup_headless
+        || (register_again && settings.launch_at_startup);
     if startup_changed { change_startup_registration(settings.launch_at_startup, settings.startup_headless).await?; }
     let committed = store.mutate(|state| {
         if state.settings_revision != expected_revision { return Err("[YOUGORI_SETTINGS_REVISION_CONFLICT] Settings changed before commit; read settings and retry".into()); }
@@ -161,7 +169,9 @@ pub async fn patch_settings(patch: Value, expected_revision: u64, store: State<'
         crate::security::monitor::check_fields(policies)?;
     }
     let (settings, changed) = patched_settings(&previous.settings, &patch)?;
-    let next = save_settings(settings, expected_revision, &store).await?;
+    // Turning sign-in startup on again is the repair the startup report asks for.
+    let register_again = patch.get("launchAtStartup") == Some(&Value::Bool(true));
+    let next = save_settings_registering(settings, expected_revision, &store, register_again).await?;
     crate::security::settings_changed(&previous.settings.security_monitoring, &next.settings.security_monitoring);
     let mut warnings = Vec::new();
     if changed.get("snapshotRetention").is_some() {
@@ -539,6 +549,9 @@ pub async fn finish_app_close(keep_running: bool, app: AppHandle, store: State<'
     }
     cancel_startup(&app);
     let _ = crate::automation::prepare_shutdown(&app, std::time::Duration::from_secs(10)).await;
+    // Rented NeoCloud GPUs, in the grid or under Swarm workers, are billed by the hour: quitting
+    // stops them before anything else.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(30), futures_util::future::join(crate::grid_neocloud::stop_on_quit(&app), crate::swarm::rented::stop_on_quit(&app))).await;
     let environments=store.snapshot()?.environments;
     let stop = async {
         for e in environments.into_iter().filter(|e|!crate::peer_sharing::is_shared(e)&&matches!(e.status,EnvironmentStatus::Running|EnvironmentStatus::Paused)) {
@@ -632,6 +645,20 @@ mod tests {
         assert!(!safe_diagnostic("Authorization: Bearer sensitive-token password=private").contains("sensitive-token"));
         assert!(!safe_diagnostic("Authorization: Bearer sensitive-token password=private").contains("private"));
         assert_eq!(safe_diagnostic("token:private api_key=hidden Authorization:credential"), "[credential redacted] [credential redacted] [credential redacted]");
+        for leaked in [
+            r#"refresh failed {"access_token":"leak-1","expires_in":3600}"#,
+            r#"refresh failed {"access_token": "leak-1", "expires_in": 3600}"#,
+            r#"refresh failed {'client_secret':'leak-1'}"#,
+            r#"refresh failed "password"="leak-1""#,
+            "refresh failed access_token:leak-1",
+            "refresh failed access_token: leak-1",
+            r#"refresh failed {"token":"leak-1"}"#,
+        ] {
+            let value = safe_diagnostic(leaked);
+            assert!(!value.contains("leak-1"), "{leaked} -> {value}");
+            assert!(value.starts_with("refresh failed "), "{value}");
+        }
+        assert_eq!(safe_diagnostic(r#"{"status":"stale"}"#), r#"{"status":"stale"}"#);
     }
 
     #[tokio::test]

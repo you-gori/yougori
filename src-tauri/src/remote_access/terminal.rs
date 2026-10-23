@@ -50,6 +50,10 @@ async fn active_grant(
     if grant.target_id != target_id {
         return Err("Sharing target changed".into());
     }
+    // Rechecked every second, so a lockdown closes an open terminal at once.
+    if crate::security::is_contained(target_id) {
+        return Err("The environment is unavailable right now".into());
+    }
     Ok(grant)
 }
 

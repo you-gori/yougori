@@ -126,6 +126,11 @@ pub(crate) fn plan_release(target: Target, existing: Option<&Containment>) -> Ve
 /// The refusal for an action that would reopen a contained environment. `target` is what
 /// to type in the suggested commands (the name when it is a single word, else the ID).
 pub(crate) fn refusal(name: &str, target: &str, containment: &Containment, action: &str) -> String {
+    // Records we could not read: unlocking is not the way out, so do not send anybody there. The
+    // reason already says what to do, and there is no date to print because nothing was recorded.
+    if containment.since.is_empty() {
+        return format!("{action} stays blocked for {name}: {}.", containment.reason);
+    }
     format!(
         "{name} is {} ({}) since {}. {action} stays blocked until you review `yougori audit {target}` and run `yougori unlock {target} --yes`.",
         containment.level.label(), containment.reason, containment.since
@@ -143,25 +148,107 @@ struct Saved {
 pub(crate) struct Store {
     path: PathBuf,
     records: Mutex<BTreeMap<String, Containment>>,
+    /// The records file is there but could not be read. Everything counts as contained until it
+    /// can be: a kill switch that cannot read its own records has to assume the switch is on.
+    unreadable: bool,
 }
 
 impl Store {
     pub(crate) fn load(path: &Path) -> Self {
-        let records = fs::read(path)
-            .ok()
-            .and_then(|data| serde_json::from_slice::<Saved>(&data).ok())
-            .map(|saved| saved.containment)
-            .unwrap_or_default();
-        Self { path: path.to_owned(), records: Mutex::new(records) }
+        // Antivirus and backup software hold a file open for a moment on Windows, and the engine
+        // starts while both are busy, so one failed read means little. Three tries over a second
+        // separate a passing lock from a file that is genuinely gone wrong.
+        let mut saved = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            saved = match fs::read(path) {
+                // No file is the ordinary first run: nothing has ever been locked down.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Saved::default()),
+                Err(_) => None,
+                Ok(data) => serde_json::from_slice::<Saved>(&data).ok(),
+            };
+            if saved.is_some() {
+                break;
+            }
+        }
+        let unreadable = saved.is_none();
+        if unreadable {
+            // Loud, and not only in the audit log, which may be unavailable for the same reason.
+            eprintln!("Yougori could not read its lockdown records, so every environment stays locked down until it can. Nothing is changed on disk while this lasts. Repair or move aside {}, then start Yougori again.", path.display());
+        }
+        Self { path: path.to_owned(), records: Mutex::new(saved.unwrap_or_default().containment), unreadable }
+    }
+
+    /// Whether the records could not be read at startup. Everything counts as contained while this
+    /// is true, and nothing may be written, so the status pages say so rather than showing an
+    /// empty list beside refusals nobody can explain.
+    pub(crate) fn unreadable(&self) -> bool {
+        self.unreadable
+    }
+
+    /// Records a containment next to the unreadable file rather than over it. Nothing merges
+    /// these back automatically — that is a decision for somebody looking at both files — but the
+    /// act itself has already happened, and this is how it is not forgotten.
+    fn set_beside(&self, id: &str, containment: Option<Containment>) -> Result<(), String> {
+        let Some(containment) = containment else {
+            return Err(self.unreadable_message());
+        };
+        let beside = self.path.with_extension(format!("pending-{id}.json"));
+        let saved = Saved { version: 1, containment: [(id.to_owned(), containment)].into_iter().collect() };
+        let bytes = serde_json::to_vec_pretty(&saved).map_err(|error| error.to_string())?;
+        fs::write(&beside, bytes).map_err(|error| format!("Write {}: {error}", beside.display()))
+    }
+
+    /// Where a containment goes while the records cannot be read, so a message can name it.
+    pub(crate) fn beside_path(&self, id: &str) -> String {
+        self.path.with_extension(format!("pending-{id}.json")).display().to_string()
+    }
+
+    /// What to tell somebody while the records cannot be read. Names the file: the way out of this
+    /// state is to repair or move it, and an instruction that does not say which file is one
+    /// nobody can follow while everything on the computer is refusing them.
+    pub(crate) fn unreadable_message(&self) -> String {
+        format!("Yougori could not read its lockdown records when it started, so nothing can be unlocked yet. Repair or move aside {}, then start Yougori again.", self.path.display())
     }
     pub(crate) fn get(&self, id: &str) -> Option<Containment> {
-        self.records.lock().unwrap_or_else(|error| error.into_inner()).get(id).cloned()
+        let found = self.records.lock().unwrap_or_else(|error| error.into_inner()).get(id).cloned();
+        match found {
+            Some(containment) => Some(containment),
+            // Unreadable records: say so in the person's own terms rather than letting the action
+            // through, and name what has to happen before anything is open again.
+            None if self.unreadable => Some(Containment {
+                level: Level::Lockdown,
+                reason: format!("Yougori could not read its lockdown records when it started, so everything stays locked down. Repair or move aside {}, then start Yougori again", self.path.display()),
+                since: String::new(),
+                via: "engine".into(),
+                rule: None,
+                restore_internet: false,
+                resume: false,
+            }),
+            None => None,
+        }
+    }
+    /// Whether `id` is contained, without copying its record: open connections ask this twice a second.
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.unreadable || self.records.lock().unwrap_or_else(|error| error.into_inner()).contains_key(id)
     }
     pub(crate) fn all(&self) -> BTreeMap<String, Containment> {
         self.records.lock().unwrap_or_else(|error| error.into_inner()).clone()
     }
     /// Saves before returning: callers act only after the record is durable.
     pub(crate) fn set(&self, id: &str, containment: Option<Containment>) -> Result<(), String> {
+        // Never write over records we could not read. The in-memory map is empty in that state, so
+        // saving it would replace a file full of lockdowns with a single entry — losing exactly
+        // what this is here to protect, and from a transient read failure at that.
+        if self.unreadable {
+            // Never over the file we could not read: the in-memory map is empty, so saving it
+            // would replace a file full of lockdowns with one entry. Beside it instead, so a
+            // containment applied now is still evidence an admin can act on, and so the live
+            // records are untouched until somebody repairs them.
+            return self.set_beside(id, containment);
+        }
         let mut records = self.records.lock().unwrap_or_else(|error| error.into_inner());
         let mut next = records.clone();
         match containment {
@@ -181,6 +268,11 @@ impl Store {
     }
     /// Drops records of environments that no longer exist.
     pub(crate) fn retain(&self, live: &[String]) -> Result<(), String> {
+        // Nothing to tidy that we can see, and nothing may be written anyway. Saying so beats
+        // returning Ok from a sweep that looked at an empty map it knows is not the truth.
+        if self.unreadable {
+            return Err(format!("Yougori could not read its lockdown records, so old ones cannot be tidied up yet. Repair or move aside {}, then start Yougori again.", self.path.display()));
+        }
         let stale: Vec<String> = self.all().into_keys().filter(|id| !live.contains(id)).collect();
         for id in stale {
             self.set(&id, None)?;

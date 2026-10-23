@@ -43,9 +43,23 @@ pub enum Request {
     RemoteOff {},
     Revoke { client: String },
     Remove { item: String },
+    /// Deletes every item, client, grant and key, after its own approval in Desktop. Finished,
+    /// it answers `{"destroyed":true}`, with `leftBehind` naming anything small that stayed.
+    /// Its errors begin with [`DESTROY_NOT_STARTED`] when nothing was deleted, and with
+    /// [`DESTROY_UNFINISHED`] when deleting began and stopped part way.
+    Destroy {},
     Deny { request: String },
     Mcp { message: Value },
 }
+
+/// The answer of a request whose broker worker stopped before answering: its outcome is unknown.
+pub const SERVICE_STOPPED: &str = "Protected approval service stopped";
+
+/// How a destroy's error begins when nothing was deleted. The rest says why and what to do.
+pub const DESTROY_NOT_STARTED: &str = "Nothing was deleted.";
+/// How a destroy's error begins when deleting began and stopped part way. The rest names every
+/// secret file left and whether they can still be read.
+pub const DESTROY_UNFINISHED: &str = "Personal Vault was only partly deleted.";
 
 /// Frames can carry credentials; the buffer is wiped when dropped.
 pub async fn read<R: AsyncRead + Unpin>(stream: &mut R) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {

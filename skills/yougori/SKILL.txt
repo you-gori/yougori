@@ -1,6 +1,6 @@
 ---
 name: yougori
-description: Operate Yougori on this computer through the yougori CLI. Run and manage containers, NVIDIA GPU containers, microVMs and VMs; run Hugging Face models with chat, an API and Yougori Network sharing; run a company's Closed Neo Grid on idle office computers; deploy projects with health checks, ports, public HTTPS links and domains; copy files; connect environments and cloud servers; start AI tool sandboxes with teammate sharing; and run Swarm Mining bounty workers. Use when the user mentions Yougori or asks to run, deploy, share, connect, inspect, debug, recover or clean up these workloads.
+description: Operate Yougori on this computer through the yougori CLI. Run and manage containers, NVIDIA GPU containers, microVMs and VMs; run Hugging Face models with chat, an API and Yougori Network sharing; run a company's Closed Neo Grid on idle office computers; deploy projects with health checks, ports, public HTTPS links and domains; run, make and publish Hub templates (whole setups) and tools; copy files; connect environments and cloud servers; start AI tool sandboxes with teammate sharing; and run Swarm Mining bounty workers. Use when the user mentions Yougori or asks to run, deploy, share, connect, inspect, debug, recover or clean up these workloads.
 ---
 
 # Yougori
@@ -19,8 +19,9 @@ The desktop app and the `yougori` CLI drive one local engine and share one state
 | Image, GPU, microVM, VM, disk space | `yougori run -d --name web -p 8080:80 nginx:alpine` | containers |
 | Copy files, volumes, download links | `yougori cp ./site web:/srv` | files |
 | Deploy a project | `yougori up -f yougori.yaml --dry-run` | deployment |
+| Hub template or tool; make a setup a template | `yougori run hub/PUBLISHER/NAME --dry-run` | hub |
 | Hugging Face model, API, sharing | `yougori model preflight hf.co/OWNER/MODEL` | models |
-| Closed Neo Grid (company): join `yougori COMPANY --neogrid --ip HUB_IP`; admin plans, app keys | `yougori grid` | grid |
+| Closed Neo Grid (company): `yougori create grid`, `yougori join grid` (invite + password, LAN or tunnel); admin plans, app keys | `yougori grid` | grid |
 | Ports, domains, links, cloud | `yougori ports list ENV_ID` | connections |
 | Commands, logs, terminals, raw API | `yougori exec ENV -- CMD` | access |
 | Codex/Claude/Ollama sandboxes, teammates | `yougori codex --dry-run` | tools |
@@ -42,4 +43,4 @@ The desktop app and the `yougori` CLI drive one local engine and share one state
 - Running isn't working. Check the app itself: `logs ENV --last-error`, local HTTP, tunnel and public HTTPS separately, `deployment status`, `model status ENV`; use an authenticated probe when the user requires one.
 - Blocked: `yougori doctor`, `app startup-report`, `env recover-report ENV_ID --yes`. Never bypass a live owner.
 
-References (`references/TOPIC.md`): engine, containers, files, deployment, models, grid, connections, access, tools, bounty. Each ends with a troubleshooting table. `references/cli.md` (`skills print --all`) is the full guide.
+References (`references/TOPIC.md`): engine, containers, files, deployment, hub, models, grid, connections, access, tools, bounty. Each ends with a troubleshooting table. `references/cli.md` (`skills print --all`) is the full guide.

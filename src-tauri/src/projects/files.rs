@@ -2,20 +2,28 @@
 use super::*;
 use std::io::Read;
 fn quote(s:&str)->String{format!("'{}'",s.replace('\'',"'\"'\"'"))}
-#[derive(Debug)]struct SourceIdentity{hash:String,entries:tempfile::NamedTempFile,files:u64,directories:u64}
+/// `generated_*` count what Python itself writes beside code (see `generated`), which an active
+/// copy may gain or rewrite without drifting from its source.
+#[derive(Debug)]struct SourceIdentity{hash:String,entries:tempfile::NamedTempFile,files:u64,directories:u64,generated_files:u64,generated_directories:u64}
 #[derive(Default)]struct SourceProgress{entries:std::sync::atomic::AtomicU64,bytes:std::sync::atomic::AtomicU64}
 #[derive(serde::Serialize,serde::Deserialize)]struct SourceFile{relative:PathBuf,sha256:String}
+/// Python's own bytecode caches: `__pycache__` folders and `.pyc` files. The only artifacts a
+/// running app may add to or rewrite in its active code folder without that counting as drift.
+fn generated(relative:&Path,directory:bool)->bool{
+    relative.components().any(|part|part.as_os_str()=="__pycache__")||(!directory&&relative.extension().is_some_and(|extension|extension=="pyc"))
+}
 fn cancelled(token:&tokio_util::sync::CancellationToken)->Result<(),String>{if token.is_cancelled(){Err("YOUGORI_OPERATION_CANCELLED: project source verification cancelled; originals preserved".into())}else{Ok(())}}
 fn identity(path:&Path,token:&tokio_util::sync::CancellationToken,progress:Option<&SourceProgress>)->Result<SourceIdentity,String>{
     use std::io::Write;
     let mut hash=Sha256::new();let mut entries=tempfile::NamedTempFile::new().map_err(|e|e.to_string())?;
     let rules=std::fs::read_to_string(path.join(crate::ignore_rules::FILE_NAME)).ok().map(|text|crate::ignore_rules::Rules::parse(&text));
-    fn walk(path:&Path,relative:&Path,root:&Path,rules:Option<&crate::ignore_rules::Rules>,hash:&mut Sha256,entries:&mut std::fs::File,counts:&mut(u64,u64),token:&tokio_util::sync::CancellationToken,progress:Option<&SourceProgress>,depth:usize)->Result<(),String>{
+    fn walk(path:&Path,relative:&Path,root:&Path,rules:Option<&crate::ignore_rules::Rules>,hash:&mut Sha256,entries:&mut std::fs::File,counts:&mut(u64,u64,u64,u64),token:&tokio_util::sync::CancellationToken,progress:Option<&SourceProgress>,depth:usize)->Result<(),String>{
         cancelled(token)?;if let Some(progress)=progress{progress.entries.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}
         if depth>128{return Err("Project file tree exceeds the copy protocol's 128-folder limit".into())}
         let metadata=std::fs::symlink_metadata(path).map_err(|e|e.to_string())?;
-        if metadata.file_type().is_symlink(){return Ok(())}
-        #[cfg(windows)] {use std::os::windows::fs::MetadataExt;if metadata.file_attributes()&0x400!=0{return Ok(())}}
+        // The same rule the copy uses: links and junctions are skipped, other reparse points
+        // (OneDrive files, compressed files) are code like any other file.
+        if crate::file_import::linked(&metadata){return Ok(())}
         let resolved=path.canonicalize().map_err(|e|e.to_string())?;
         if !resolved.starts_with(root){return Err("Project source escaped its selected folder".into())}
         if rules.is_some_and(|r|r.ignored(&relative.to_string_lossy().replace('\\',"/"),metadata.is_dir())){return Ok(())}
@@ -23,11 +31,11 @@ fn identity(path:&Path,token:&tokio_util::sync::CancellationToken,progress:Optio
         hash.update([u8::from(metadata.permissions().readonly())]);
         #[cfg(unix)] {use std::os::unix::fs::PermissionsExt;hash.update((metadata.permissions().mode()&0o777).to_le_bytes());}
         if metadata.is_dir(){
-            counts.1+=1;hash.update(b"directory");
+            counts.1+=1;if generated(relative,true){counts.3+=1;}hash.update(b"directory");
             let mut children=std::fs::read_dir(path).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;children.sort_by_key(|e|e.file_name());
             for entry in children{walk(&entry.path(),&relative.join(entry.file_name()),root,rules,hash,entries,counts,token,progress,depth+1)?}
         }else if metadata.is_file(){
-            counts.0+=1;hash.update(metadata.len().to_le_bytes());
+            counts.0+=1;if generated(relative,false){counts.2+=1;}hash.update(metadata.len().to_le_bytes());
             let source=crate::file_import::CopyEntry{source:path.into(),resolved,relative:relative.into(),directory:false,bytes:metadata.len(),modified:metadata.modified().ok(),mode:0};
             // The tree walker is recursive. Keep its streaming buffer on the heap so
             // directory depth cannot multiply a large stack allocation.
@@ -39,8 +47,8 @@ fn identity(path:&Path,token:&tokio_util::sync::CancellationToken,progress:Optio
         }else{return Err("Project source contains a special file that cannot be copied".into())}
         Ok(())
     }
-    let mut counts=(0,0);walk(path,Path::new(""),&path.canonicalize().map_err(|e|e.to_string())?,rules.as_ref(),&mut hash,entries.as_file_mut(),&mut counts,token,progress,0)?;
-    Ok(SourceIdentity{hash:format!("{:x}",hash.finalize()),entries,files:counts.0,directories:counts.1})
+    let mut counts=(0,0,0,0);walk(path,Path::new(""),&path.canonicalize().map_err(|e|e.to_string())?,rules.as_ref(),&mut hash,entries.as_file_mut(),&mut counts,token,progress,0)?;
+    Ok(SourceIdentity{hash:format!("{:x}",hash.finalize()),entries,files:counts.0,directories:counts.1,generated_files:counts.2,generated_directories:counts.3})
 }
 #[cfg(test)]fn fingerprint(path:&Path)->Result<String,String>{Ok(identity(path,&Default::default(),None)?.hash)}
 async fn verified_source(path:PathBuf,token:tokio_util::sync::CancellationToken)->Result<SourceIdentity,String>{
@@ -54,22 +62,29 @@ async fn verified_source(path:PathBuf,token:tokio_util::sync::CancellationToken)
         _=tick.tick()=>{let current=(progress.entries.load(std::sync::atomic::Ordering::Relaxed),progress.bytes.load(std::sync::atomic::Ordering::Relaxed));crate::automation::context::progress(json!({"phase":"verifying","stage":"sourceHashing","scannedEntries":current.0,"completedBytes":current.1}));if current!=last_progress{last_progress=current;advanced=std::time::Instant::now();}else if advanced.elapsed()>std::time::Duration::from_secs(120){stop.cancel();task.abort();return Err("YOUGORI_TRANSFER_INACTIVE: project source scanning/hashing made no progress for 120 seconds; original and active code preserved".into())}}
     }}
 }
-async fn verify_guest(app:&AppHandle,id:&str,destination:&str,source:&SourceIdentity)->Result<(),String>{
+/// Checks a guest copy against its source: every file's checksum and the exact set of files and
+/// folders. A fresh copy must match entirely; an active one (`running_app`) may differ only in
+/// Python's own bytecode caches, which the app writes beside its code.
+async fn verify_guest(app:&AppHandle,id:&str,destination:&str,source:&SourceIdentity,running_app:bool)->Result<(),String>{
     use std::io::BufRead;
     let mut command="set -eu; ".to_owned();
     for line in std::io::BufReader::new(source.entries.reopen().map_err(|e|e.to_string())?).lines(){
         let entry:SourceFile=serde_json::from_str(&line.map_err(|e|e.to_string())?).map_err(|_|"Invalid source checksum receipt")?;
+        if running_app&&generated(&entry.relative,false){continue}
         let path=if entry.relative.as_os_str().is_empty(){destination.to_owned()}else{format!("{destination}/{}",entry.relative.to_string_lossy().replace('\\',"/"))};
         let check=format!("digest=$(sha256sum {}); digest=${{digest#\\\\}}; digest=${{digest%% *}}; [ \"$digest\" = {} ] || {{ echo 'Copied source checksum mismatch; staging retained, active code unchanged' >&2; exit 74; }}; ",quote(&path),quote(&entry.sha256));
         if command.len()+check.len()>30000{exec(app,id,command).await?;command="set -eu; ".into();}
         command.push_str(&check);
     }
     if command.len()>9{exec(app,id,command).await?;}
-    exec(app,id,format!("set -eu; [ \"$(find {} -type f -exec printf x \\; | wc -c | tr -d ' ')\" = {} ] && [ \"$(find {} -type d -exec printf x \\; | wc -c | tr -d ' ')\" = {} ] || {{ echo 'Copied source tree differs from its prepared identity; staging retained' >&2; exit 74; }}",quote(destination),source.files,quote(destination),source.directories)).await
+    let (files,directories,skip,file_filter)=if running_app{
+        (source.files-source.generated_files,source.directories-source.generated_directories,"-name __pycache__ -prune -o ","! -name '*.pyc' ")
+    }else{(source.files,source.directories,"","")};
+    exec(app,id,format!("set -eu; [ \"$(find {} {skip}-type f {file_filter}-exec printf x \\; | wc -c | tr -d ' ')\" = {} ] && [ \"$(find {} {skip}-type d -exec printf x \\; | wc -c | tr -d ' ')\" = {} ] || {{ echo 'Copied source tree differs from its prepared identity; staging retained' >&2; exit 74; }}",quote(destination),files,quote(destination),directories)).await
 }
 async fn active_source_matches(app:&AppHandle,id:&str,binding:&FileBinding,source:&SourceIdentity)->Result<(),String>{
     exec(app,id,format!("[ -L {} ] && [ \"$(readlink {})\" = {} ]",quote(&binding.target),quote(&binding.target),quote(&binding.destination))).await?;
-    verify_guest(app,id,&binding.destination,source).await
+    verify_guest(app,id,&binding.destination,source,true).await
 }
 async fn exec(app:&AppHandle,id:&str,command:String)->Result<(),String>{
     let result=crate::automation::context::child_scope(call(app,"execute_guest_job",json!({"request":{"environmentId":id,"command":command,"timeoutSeconds":1900}}))).await?;
@@ -111,12 +126,14 @@ pub(super) async fn reconcile(app:&AppHandle,p:&Project,record:&mut Record,k:&st
         if changed.is_empty()&&!setup_needed&&retired.is_empty(){continue}
         status(app,&id,false).await?;
         let env=node(app,&id)?;
-        let old=runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&id))?;
+        // Options are kept under the runtime ID, which a factory reset changes.
+        let options_id=env.runtime_id.clone().unwrap_or_else(||id.clone());
+        let old=runtime.workload_options(&options_id)?;
         // Stage application code before starting a command that depends on that code.
         if env.kind==EnvironmentKind::Container{
             record.staging.insert(id.clone(),true);save_record(&runtime,k,record)?;
             let mut temporary=old.clone();temporary.args=Some(vec!["sleep".into(),"2147483647".into()]);temporary.entrypoint=Some(vec![]);
-            runtime.save_workload_options(&id,&temporary)?;runtime.update_workload_configuration(&env).await?;
+            runtime.save_workload_options(&options_id,&temporary)?;runtime.update_workload_configuration(&env).await?;
         }
         status(app,&id,true).await?;
         let result=async{
@@ -142,7 +159,7 @@ pub(super) async fn reconcile(app:&AppHandle,p:&Project,record:&mut Record,k:&st
                     (format!("{}/{}",copied.destination,basename),record.files.get(&key).map(|b|b.destination.clone()))
                 };
                 crate::automation::context::progress(json!({"phase":"verifying","stage":"guestChecksums","environmentId":id}));
-                verify_guest(app,&id,&destination,&source_identity).await?;
+                verify_guest(app,&id,&destination,&source_identity,false).await?;
                 if verified_source(PathBuf::from(&source.source),cancellation.clone()).await?.hash!=fingerprint{return Err("Project source changed across the copy; staging retained and active code preserved".into())}
                 // Persist identity before activation; lost output is reconciled without another node or publication.
                 record.files.insert(key.clone(),FileBinding{fingerprint,destination:destination.clone(),target:source.target.clone(),active:false,previous});save_record(&runtime,k,record)?;
@@ -167,7 +184,7 @@ pub(super) async fn reconcile(app:&AppHandle,p:&Project,record:&mut Record,k:&st
             Ok::<(),String>(())
         }.await;
         let _=status(app,&id,false).await;
-        if env.kind==EnvironmentKind::Container{runtime.save_workload_options(&id,&old)?;runtime.update_workload_configuration(&env).await?;configure(app,&id,spec,&p.project).await?;record.staging.remove(&id);save_record(&runtime,k,record)?;}
+        if env.kind==EnvironmentKind::Container{runtime.save_workload_options(&options_id,&old)?;runtime.update_workload_configuration(&env).await?;configure(app,&id,spec,&p.project).await?;record.staging.remove(&id);save_record(&runtime,k,record)?;}
         result?;
     }
     Ok(())
@@ -181,5 +198,29 @@ pub(super) async fn reconcile(app:&AppHandle,p:&Project,record:&mut Record,k:&st
     }
     #[test]fn contents_not_timestamps_drive_managed_code_copies(){let dir=tempfile::tempdir().unwrap();std::fs::write(dir.path().join("app.py"),"before").unwrap();let first=fingerprint(dir.path()).unwrap();std::fs::write(dir.path().join("app.py"),"after!").unwrap();assert_ne!(first,fingerprint(dir.path()).unwrap());assert_eq!(fingerprint(dir.path()).unwrap(),fingerprint(dir.path()).unwrap());}
     #[test]fn ignored_content_does_not_trigger_copy(){let dir=tempfile::tempdir().unwrap();std::fs::write(dir.path().join(".yougoriignore"),"weights/\n").unwrap();std::fs::create_dir(dir.path().join("weights")).unwrap();let first=fingerprint(dir.path()).unwrap();std::fs::write(dir.path().join("weights/model.bin"),"large weights").unwrap();assert_eq!(first,fingerprint(dir.path()).unwrap());}
+    #[test]fn project_sources_skip_exactly_the_links_their_copy_skips(){
+        let dir=tempfile::tempdir().unwrap();let outside=tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.py"),"code").unwrap();std::fs::write(outside.path().join("secret.txt"),"outside").unwrap();
+        #[cfg(windows)] assert!(std::process::Command::new("cmd").args(["/c","mklink","/J"]).arg(dir.path().join("linked")).arg(outside.path()).output().unwrap().status.success());
+        #[cfg(unix)] std::os::unix::fs::symlink(outside.path(),dir.path().join("linked")).unwrap();
+        // The identity and the copy must agree, or verification fails every apply after a full copy.
+        let identity=identity(dir.path(),&Default::default(),None).unwrap();
+        let plan=crate::file_import::plan_copy(&[dir.path().to_string_lossy().into_owned()]).unwrap();
+        assert_eq!((identity.files,identity.directories),(1,1));
+        assert_eq!((plan.files,plan.skipped_links),(1,1));
+    }
+    #[test]fn only_python_bytecode_caches_may_change_in_active_code(){
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::write(root.join("app.py"),"print(1)").unwrap();
+        std::fs::create_dir(root.join("__pycache__")).unwrap();std::fs::write(root.join("__pycache__/app.cpython-312.pyc"),"bytecode").unwrap();
+        std::fs::create_dir(root.join("lib")).unwrap();std::fs::write(root.join("lib/old.pyc"),"bytecode").unwrap();std::fs::write(root.join("lib/sitecustomize.py"),"code").unwrap();
+        let identity=identity(root,&Default::default(),None).unwrap();
+        assert_eq!((identity.files,identity.generated_files),(4,2));
+        assert_eq!((identity.directories,identity.generated_directories),(3,1));
+        assert!(generated(Path::new("__pycache__"),true)&&generated(Path::new("pkg/__pycache__/m.cpython-312.pyc"),false)&&generated(Path::new("m.pyc"),false));
+        // Anything else an app could drop into its code folder still counts as drift.
+        for path in ["sitecustomize.py","lib/extra.pth","node_modules/x/index.js","pyc","a.pyc.py"]{assert!(!generated(Path::new(path),false),"{path}");}
+        assert!(!generated(Path::new("lib"),true));
+    }
     #[tokio::test]async fn cancelled_source_scan_releases_project_work_without_copying(){let dir=tempfile::tempdir().unwrap();std::fs::write(dir.path().join("app.py"),"before").unwrap();let token=tokio_util::sync::CancellationToken::new();token.cancel();assert!(verified_source(dir.path().into(),token).await.unwrap_err().contains("CANCELLED"));assert_eq!(std::fs::read_to_string(dir.path().join("app.py")).unwrap(),"before");}
 }

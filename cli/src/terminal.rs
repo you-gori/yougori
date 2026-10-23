@@ -10,7 +10,8 @@ use serde_json::json;
 use std::{
     io::{self, IsTerminal, Write},
     process::Command,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 mod ui;
 mod tool_setup;
@@ -118,16 +119,17 @@ pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result
     }
 }
 
-pub async fn run(args: &[String]) -> Result<(), String> {
-    let window = args.iter().any(|s| s == "--window");
+/// Binds standard input, output and error to this process's own console window. A process
+/// started with a new console and null inherited streams (as [`open`] starts a terminal, and as
+/// the app starts Hub commands) reads and writes that window from here on, never the starter's
+/// handles. Elsewhere there is nothing to do.
+pub fn attach_console() -> Result<(), String> {
     #[cfg(windows)]
-    if window {
+    {
         use std::{fs::OpenOptions, os::windows::io::IntoRawHandle};
         use windows_sys::Win32::System::Console::{
             SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
         };
-        // NEW_CONSOLE with null inherited streams: attach explicitly to the new
-        // console, never to the launcher's input or output handles.
         for (device, handle) in [
             ("CONIN$", STD_INPUT_HANDLE),
             ("CONOUT$", STD_OUTPUT_HANDLE),
@@ -142,6 +144,16 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 return Err(io::Error::last_os_error().to_string());
             }
         }
+    }
+    Ok(())
+}
+
+pub async fn run(args: &[String]) -> Result<(), String> {
+    let window = args.iter().any(|s| s == "--window");
+    // NEW_CONSOLE with null inherited streams: attach explicitly to the new
+    // console, never to the launcher's input or output handles.
+    if window {
+        attach_console()?;
     }
     let result = run_inner(args).await;
     if window {
@@ -169,19 +181,19 @@ async fn run_inner(args: &[String]) -> Result<(), String> {
             "--project" => project = true,
             "--container" if container.is_none() => {
                 i += 1;
-                let name = args.get(i).ok_or("--container requires a container name")?;
+                let name = args.get(i).ok_or("--container needs a value: the container's name.")?;
                 if name.is_empty() || name.starts_with('-') || name.chars().any(char::is_control) {
-                    return Err("Invalid container name".into());
+                    return Err("--container must be a container name, without a leading dash or control characters.".into());
                 }
                 container = Some(name.as_str());
                 project = true;
             }
-            _ => return Err(USAGE.into()),
+            other => return Err(format!("Unknown option {other} for yougori terminal. {USAGE}")),
         }
         i += 1;
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err("Open terminal requires an interactive terminal".into());
+        return Err("yougori terminal needs an interactive terminal. For scripts use yougori exec or yougori terminal create.".into());
     }
     crate::client::start(None).await?;
     let id = crate::public::resolve(target).await?;
@@ -294,6 +306,27 @@ pub(crate) async fn attach_prepared_tool(id: &str, tool: &str, arguments: &[Stri
     attach_session(id, None, Some((tool, arguments))).await
 }
 
+/// A connection that dropped, said the same way however it dropped, with what to do next. Its
+/// code is attached here: what was typed may or may not have arrived, which a program needs to
+/// know whatever words this uses.
+fn connection_lost(name: &str, why: &str, next: &str) -> String {
+    crate::client::remember_error(
+        format!("The connection to {name} ended ({why}), so anything typed since may not have arrived. {next}"),
+        crate::wire::ErrorDetails::of(crate::wire::Code::OutcomeUnknown),
+    )
+}
+
+/// Where to look and how to try again after a tool's setup in this sandbox did not finish.
+pub(crate) async fn retry_steps(id: &str, tool: &str) -> String {
+    let state = call("get_platform_state", json!({})).await.unwrap_or_default();
+    let environments = state["environments"].as_array().map_or(&[][..], Vec::as_slice);
+    format!(
+        "Look inside with {}, then run {} to try again.",
+        shell_words::join(["yougori", "terminal", &crate::container_tools::handle(environments, id)]),
+        crate::container_tools::reconnect_command(tool, id, environments),
+    )
+}
+
 pub(crate) async fn setup_tool(id: &str, tool: &str) -> Result<SessionExit, String> {
     tool_setup::ensure(id, tool).await
 }
@@ -332,21 +365,152 @@ fn installer_path(installer: &str) -> Result<String, String> {
     Ok(path.clone())
 }
 
+/// A shell that is set up and ready to take over the terminal.
+struct Opened {
+    context: ui::Context,
+    sandbox_controls: bool,
+    launch: Option<String>,
+    offset: u64,
+    /// The shell's first output, its prompt, which arrived while it was set up.
+    early: Vec<u8>,
+    stream: crate::terminal_stream::Channel,
+    open_elapsed: Duration,
+}
+
+/// Stops a wait with [`crate::cli_ui::CANCELLED`] once Ctrl+C was pressed.
+fn stop_if(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(crate::cli_ui::CANCELLED.into());
+    }
+    Ok(())
+}
+
+/// Waits for `work` unless Ctrl+C was pressed meanwhile; then it stops waiting at once.
+async fn unless_cancelled<T>(cancelled: &AtomicBool, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    let mut work = std::pin::pin!(work);
+    loop {
+        stop_if(cancelled)?;
+        tokio::select! {
+            result = &mut work => return result,
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+    }
+}
+
+/// Sets the shell up behind a spinner, before the guest gets the keyboard, so the screen never
+/// sits blank and Ctrl+C stops the wait. A terminal the engine already created is closed again,
+/// so a cancelled open leaves nothing running, says so, and ends as a cancellation.
+async fn open_session(
+    id: &str,
+    session: &str,
+    command: Option<&str>,
+    tool: Option<(&str, &[String])>,
+    status: &str,
+    (cols, rows): (u16, u16),
+) -> Result<Opened, String> {
+    use crate::cli_ui as kit;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _keys = kit::Interrupts::watch(cancelled.clone());
+    let mut task = kit::task(&match tool {
+        Some((tool, _)) => format!("Opening {tool}"),
+        None => "Opening the shell".to_owned(),
+    });
+    let mut created = false;
+    let mut name = "The environment".to_owned();
+    let opened = async {
+        let state = unless_cancelled(&cancelled, call("get_platform_state", json!({}))).await?;
+        let environments = state["environments"].as_array().map_or(&[][..], Vec::as_slice);
+        let environment = environments
+            .iter()
+            .find(|item| item["id"] == id)
+            .ok_or("This environment was not found. See your environments with yougori ps.")?;
+        let context = ui::Context::new(environment, environments);
+        name = context.name.clone();
+        task.set(&match tool {
+            Some((tool, _)) => format!("Opening {tool} in {name}"),
+            None => format!("Opening a shell in {name}"),
+        });
+        // Not raced with Ctrl+C: a terminal the engine is creating is waited for, so it can be
+        // closed again.
+        call(
+            "terminal_action",
+            json!({"environmentId":id,"sessionId":session,"action":"create","cols":cols,"rows":rows}),
+        )
+        .await?;
+        created = true;
+        stop_if(&cancelled)?;
+        let launch = if let Some((tool, arguments)) = tool {
+            // Tool setup completed in its separate quiet PTY. Only the running
+            // tool owns this visible terminal; package output never reaches it.
+            let command = tool_command(tool, arguments, status)?;
+            let script = shell_words::split(&command).map_err(|_| "Invalid tool launcher")?.pop().ok_or("Missing tool launcher")?;
+            let path = format!("{status}.sh");
+            let staged = unless_cancelled(&cancelled, call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("umask 077; printf %s {} > {}",shell_words::quote(&script),shell_words::quote(&path))}}))).await?;
+            if staged["exitCode"] != 0 { return Err("Could not stage the tool launcher inside this sandbox".into()); }
+            Some(format!("exec sh {}", shell_words::quote(&path)))
+        } else { command.map(str::to_owned) };
+        let mut offset = 0;
+        let mut early = Vec::new();
+        if launch.is_none() && context.local_shell {
+            // Set a session-only prompt, and consume the echoed setup command.
+            // The marker is split in the command so its echo cannot match it.
+            let marker = format!("yougori-ready-{session}");
+            let setup = ui::shell_setup(&context.name, &marker);
+            unless_cancelled(&cancelled, call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{setup}\r"))}))).await?;
+            let mut pending = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let read = unless_cancelled(&cancelled, call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"read","offset":offset}))).await?;
+                pending.extend(B64.decode(read["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?);
+                offset = read["offset"].as_u64().unwrap_or(offset);
+                if let Some(position) = pending.windows(marker.len()).position(|bytes| bytes == marker.as_bytes()) {
+                    early = pending.split_off(position + marker.len());
+                    break;
+                }
+                if read["done"] == true || pending.len() > 64 * 1024 || Instant::now() >= deadline {
+                    early = pending;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }
+        let opening = Instant::now();
+        let stream = unless_cancelled(&cancelled, transport::open(id, session, offset)).await?;
+        Ok(Opened {
+            sandbox_controls: crate::sandbox_stop::is_local_sandbox(environment),
+            context,
+            launch,
+            offset,
+            early,
+            stream,
+            open_elapsed: opening.elapsed(),
+        })
+    }
+    .await;
+    task.clear();
+    let error = match opened {
+        Ok(opened) => return Ok(opened),
+        Err(error) => error,
+    };
+    if created {
+        let _ = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"close"})).await;
+    }
+    if error != kit::CANCELLED {
+        return Err(error);
+    }
+    kit::outro(&kit::muted(&match tool {
+        Some((tool, _)) => format!("Cancelled. {tool} was not opened, and {name} keeps running."),
+        None => format!("Cancelled. The shell was not opened, and {name} keeps running."),
+    }));
+    Err(crate::wire::cancelled(""))
+}
+
 async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[String])>) -> Result<SessionExit, String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
             "A shell requires an interactive terminal; the environment is still running".into(),
         );
     }
-    let state = call("get_platform_state", json!({})).await?;
-    let environment = state["environments"].as_array()
-        .and_then(|items| items.iter().find(|item| item["id"] == id))
-        .ok_or("This environment is no longer available")?;
-    let context = ui::Context::new(environment);
-    let sandbox_controls = crate::sandbox_stop::is_local_sandbox(environment);
-    let raw = Raw(terminal::is_raw_mode_enabled().map_err(|e| e.to_string())?);
-    terminal::enable_raw_mode().map_err(|e| e.to_string())?;
-    let _painter = crate::cli_ui::Paused::new();
     let session = format!(
         "term-cli-{}-{}",
         std::process::id(),
@@ -355,55 +519,33 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
             .unwrap_or_default()
             .as_nanos()
     );
-    let (cols, rows) = terminal::size().unwrap_or((100, 30));
-    call(
-        "terminal_action",
-        json!({"environmentId":id,"sessionId":session,"action":"create","cols":cols,"rows":rows}),
-    )
-    .await?;
     let status = format!("/tmp/yougori-tool-{session}.status");
+    let (cols, rows) = terminal::size().unwrap_or((100, 30));
+    let Opened { context, sandbox_controls, launch, mut offset, early, mut stream, open_elapsed } =
+        open_session(id, &session, command, tool, &status, (cols, rows)).await?;
+    // The guest owns the keyboard from here, so raw mode starts only now that it is ready.
+    let raw = terminal::is_raw_mode_enabled().and_then(|enabled| terminal::enable_raw_mode().map(|()| Raw(enabled)));
+    let raw = match raw {
+        Ok(raw) => raw,
+        Err(error) => {
+            let _ = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"close"})).await;
+            return Err(error.to_string());
+        }
+    };
+    let _painter = crate::cli_ui::Paused::new();
+    // However the connection drops, it reads the same, with what to do next. A tool's launch
+    // ends with its own line saying how to open it again.
+    let next = match tool {
+        Some(_) => format!("{} keeps running.", ui::clean(&context.name)),
+        None => format!("Reconnect with {}.", shell_words::join(["yougori", "terminal", &context.handle])),
+    };
+    let lost = |why: &str| connection_lost(&ui::clean(&context.name), why, &next);
     let result = async {
         if tool.is_none() { context.welcome()?; }
-        let launch = if let Some((tool, arguments)) = tool {
-            // Tool setup completed in its separate quiet PTY. Only the running
-            // tool owns this visible terminal; package output never reaches it.
-            let command = tool_command(tool, arguments, &status)?;
-            let script = shell_words::split(&command).map_err(|_| "Invalid tool launcher")?.pop().ok_or("Missing tool launcher")?;
-            let path = format!("{status}.sh");
-            let staged = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("umask 077; printf %s {} > {}",shell_words::quote(&script),shell_words::quote(&path))}})).await?;
-            if staged["exitCode"] != 0 { return Err("Could not stage the tool launcher inside this sandbox".into()); }
-            Some(format!("exec sh {}", shell_words::quote(&path)))
-        } else { command.map(str::to_owned) };
-        let mut offset = 0;
-        if launch.is_none() && context.local_shell {
-            // Set a session-only prompt, and consume the echoed setup command.
-            // The marker is split in the command so its echo cannot match it.
-            let marker = format!("yougori-ready-{session}");
-            let setup = ui::shell_setup(&context.name, &marker);
-            call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode(format!("{setup}\r"))})).await?;
-            let mut pending = Vec::new();
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                let read = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"read","offset":offset})).await?;
-                pending.extend(B64.decode(read["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?);
-                offset = read["offset"].as_u64().unwrap_or(offset);
-                if let Some(position) = pending.windows(marker.len()).position(|bytes| bytes == marker.as_bytes()) {
-                    io::stdout().write_all(&pending[position + marker.len()..]).map_err(|e| e.to_string())?;
-                    break;
-                }
-                if read["done"] == true || pending.len() > 64 * 1024 || std::time::Instant::now() >= deadline {
-                    io::stdout().write_all(&pending).map_err(|e| e.to_string())?;
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(30)).await;
-            }
-        }
+        io::stdout().write_all(&early).map_err(|e| e.to_string())?;
         let mut input_reader = InputReader::default();
         let mut interrupts = ui::Interrupts::default();
         let mut screen = ui::GuestScreen::default();
-        let opening = std::time::Instant::now();
-        let mut stream = transport::open(id, &session, offset).await?;
-        let open_elapsed = opening.elapsed();
         let mut pending = std::collections::VecDeque::new();
         if let Some(command) = launch {
             for chunk in format!("{command}\r").as_bytes().chunks(12*1024) {
@@ -413,15 +555,15 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
         }
         let mut keyboard = tokio::time::interval(Duration::from_millis(4));
         keyboard.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let mut output_bytes = 0_u64;
         let mut input_bytes = 0_u64;
         let exit = loop {
             use crate::terminal_stream::Frame;
             let done = tokio::select! {
-                frame = stream.rx.recv() => match frame.ok_or("Terminal connection ended; input was not resent")?? {
+                frame = stream.rx.recv() => match frame.ok_or_else(|| lost("it closed"))?.map_err(|error| lost(&error))? {
                     Frame::Output { offset: next, bytes } => {
-                        if next.checked_sub(bytes.len() as u64) != Some(offset) { return Err("Terminal output cursor expired; reconnect to restore the screen".into()); }
+                        if next.checked_sub(bytes.len() as u64) != Some(offset) { return Err(lost("the screen fell out of step")); }
                         offset = next;
                         output_bytes += bytes.len() as u64;
                         screen.feed(&bytes);
@@ -430,13 +572,13 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                         continue;
                     },
                     Frame::Done => true,
-                    Frame::Error(error) => return Err(error),
-                    _ => return Err("Invalid server terminal frame".into()),
+                    Frame::Error(error) => return Err(lost(&error)),
+                    _ => return Err(lost("an unexpected reply")),
                 },
                 permit = stream.tx.reserve(), if !pending.is_empty() => {
                     let frame = pending.pop_front().unwrap();
                     if let Frame::Input(bytes) = &frame { input_bytes += bytes.len() as u64; }
-                    permit.map_err(|_| "Terminal input connection ended; input was not resent")?.send(frame);
+                    permit.map_err(|_| lost("input could not be sent"))?.send(frame);
                     continue;
                 },
                 _ = keyboard.tick() => false,
@@ -482,7 +624,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                 pending.push_back(Frame::Resize(cols,rows));
             }
             for chunk in input.bytes.chunks(12 * 1024) {
-                if pending.len() >= 32 { return Err("Terminal input queue is full. The connection is too slow; input was not resent.".into()); }
+                if pending.len() >= 32 { return Err(lost("it fell too far behind")); }
                 pending.push_back(Frame::Input(chunk.to_vec()));
             }
             if actions.exit_hint {
@@ -491,7 +633,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                     else { "Ctrl+C interrupts the guest command. Press Ctrl+D at an empty shell prompt, type exit, or press Ctrl+] to return to your PC terminal." })?;
             }
             if actions.menu {
-                if let Err(error) = context.menu(&mut input_reader).await {
+                if let Err(error) = context.menu().await {
                     ui::line(&format!("Could not complete that action: {}", ui::clean(&error)))?;
                 }
                 // Redraw full-screen programs/readline after the host menu closes.
@@ -520,6 +662,14 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// PROVES that a dropped connection carries its code whatever it is worded: the words name
+    /// the environment between "connection" and "ended", which no reading of the words matched.
+    #[tokio::test]
+    async fn a_dropped_connection_says_the_outcome_is_unknown_in_any_words() {
+        let failed = crate::client::capture_errors(async { Err::<(), _>(connection_lost("web", "it closed", "Reconnect with yougori terminal web.")) }).await.unwrap_err();
+        assert_eq!(failed.error.as_deref(), Some("The connection to web ended (it closed), so anything typed since may not have arrived. Reconnect with yougori terminal web."));
+        assert_eq!(failed.error_details.unwrap().code, "outcome_unknown");
+    }
     #[test]
     fn visible_tool_launcher_preserves_literal_arguments_and_never_runs_installers() {
         let args = vec!["--prompt".into(), "spaces; $(touch /tmp/no) and 'quotes'".into()];

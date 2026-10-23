@@ -8,7 +8,8 @@
   inset: 0;
   margin: auto;
   width: min(1120px, calc(100vw - 32px));
-  height: fit-content;
+  /* One size for every type, so switching types never resizes the popup. */
+  height: min(900px, calc(100dvh - 32px));
   max-width: none;
   max-height: calc(100dvh - 32px);
   border: 1px solid var(--creation-line);
@@ -33,8 +34,6 @@
   --creation-line: var(--border);
   background: var(--popover);
 }
-/* Neocloud's checkout keeps a fixed height so its summary and footer stay in place. */
-.creation-workbench:has([data-neocloud]) { height: min(900px, calc(100dvh - 32px)); }
 .creation-isolation { flex-shrink: 0; display: grid; gap: 12px; padding: 18px 56px 14px 24px; border-bottom: 1px solid var(--creation-line); }
 .creation-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
 .creation-heading h2 { font-family: var(--font-heading); font-size: 18px; font-weight: 600; letter-spacing: -.01em; line-height: 1.25; }
@@ -49,6 +48,9 @@
 .creation-unavailable-label { font-size: 11px; font-weight: 400; }
 .creation-isolation-description { min-width: 0; font-size: 13px; line-height: 1.45; color: var(--creation-secondary); }
 .creation-columns { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+/* Short forms stretch their columns down to the footer instead of leaving a gap under them. */
+.creation-workbench [data-slot="scroll-area-content"]:has(> [data-slot="dialog-panel"] > .creation-columns) { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 100%; }
+.creation-workbench [data-slot="dialog-panel"]:has(> .creation-columns) { display: grid; grid-template-columns: minmax(0, 1fr); }
 .creation-configuration, .creation-resources { display: flex; min-width: 0; flex-direction: column; gap: 14px; padding: 18px 24px 20px; }
 .creation-resources { background: var(--creation-surface); border-left: 1px solid var(--creation-line); gap: 12px; }
 .creation-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -125,11 +127,11 @@
 .creation-actions { flex-shrink: 0; }
 .creation-submit { height: 36px; padding-inline: 18px; border-radius: 999px; box-shadow: 0 3px 10px color-mix(in srgb, var(--primary) 18%, transparent); }
 .creation-error { overflow-wrap: anywhere; color: var(--destructive-foreground); font-size: 13px; }
-.creation-type:focus-within, .creation-priority-option:focus-within, .creation-purpose:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.creation-priority-option:focus-within, .creation-purpose:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .creation-workbench button:disabled, .creation-type:has(input:disabled):not(.is-unavailable), .creation-priority-option:has(input:disabled) { opacity: .5; cursor: not-allowed; }
 
 @media (max-width: 899px) {
-  .creation-columns { grid-template-columns: minmax(0, 1fr); }
+  .creation-columns { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .creation-resources { border-left: 0; border-top: 1px solid var(--creation-line); }
   .creation-summary-resources { display: none; }
 }
@@ -150,3 +152,5 @@
 /* One segmented control for every way to create an environment. */
 .creation-type-tabs { display: flex; min-width: 0; max-width: 100%; overflow-x: auto; padding: 3px; border-radius: 11px; background: color-mix(in srgb, var(--foreground) 5%, transparent); }
 .creation-type-tabs .creation-types { flex: 1 0 auto; overflow: visible; }
+/* The strip scrolls, so it clips anything drawn outside a tab: keep the ring inside, and only for keyboard focus. */
+.creation-type:has(:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }

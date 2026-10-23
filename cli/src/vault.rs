@@ -1,18 +1,19 @@
-use std::io::IsTerminal;
-
 fn success_output(result: serde_json::Value) -> String {
     serde_json::to_string_pretty(&crate::wire::Response::success(result)).unwrap()
 }
 
-fn identity_output(path: &str, fingerprint: &str, terminal: bool) -> String {
-    if terminal {
-        format!("Device identity created: {path}\nSHA-256: {fingerprint}\nCompare this fingerprint with the native connection popup. This key authenticates requests; it cannot approve operations.")
-    } else {
-        success_output(serde_json::json!({
-            "path": path,
-            "fingerprint": fingerprint,
-            "canApprove": false,
-        }))
+/// What a person reads at a terminal; scripts keep the JSON.
+fn sentence(command: &str, result: &serde_json::Value) -> String {
+    match command {
+        "status" if result["running"] != true => "Personal Vault is not running. Open it from Yougori.".into(),
+        "status" => match result["pendingApprovals"].as_u64().unwrap_or(0) {
+            0 => "Personal Vault is running. Nothing is waiting for your approval.".into(),
+            1 => "Personal Vault is running. 1 request is waiting for your approval in Yougori.".into(),
+            n => format!("Personal Vault is running. {n} requests are waiting for your approval in Yougori."),
+        },
+        "approve" => "Yougori is showing the requests waiting for your approval.".into(),
+        "add" => "Yougori is ready for you to add items to Personal Vault.".into(),
+        _ => "Yougori is showing Personal Vault.".into(),
     }
 }
 
@@ -28,28 +29,30 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
                 _ => ("open_personal_vault", serde_json::json!({"view":"add"})),
             };
             let result = crate::public::call(method, params).await?;
-            println!("{}", success_output(result));
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                println!("{}", sentence(arg, &result));
+            } else {
+                println!("{}", success_output(result));
+            }
             Ok(0)
-        }
-        [command, output, path] if command == "identity" && output == "--output" => {
-            let fingerprint=yougori_vault::transport::DeviceKey::create_file(std::path::Path::new(path))?;
-            println!("{}", identity_output(path, &fingerprint, std::io::stdout().is_terminal()));
-            Ok(0)
-        }
-        [command, remote, endpoint, pin_flag, pin, identity_flag, identity] if command == "mcp" && remote == "--remote" && pin_flag == "--pin" && identity_flag == "--identity" => {
-            bridge(yougori_vault::transport::connect(endpoint,pin,std::path::Path::new(identity)).await?).await
         }
         [arg] if matches!(arg.as_str(), "help" | "--help" | "-h") => {
-            println!("yougori vault status             Is the vault running; how many requests wait for approval\nyougori vault open | approve | add  Bring Yougori forward on Personal Vault; you decide there\nyougori vault mcp\nyougori vault identity --output DEVICE.json\nyougori vault mcp --remote HOST:49731 --pin SERVER_SHA256 --identity DEVICE.json\n\nOpen and unlock Personal Vault in Yougori Desktop first. Every connection and protected operation needs approval in Yougori Desktop. This command cannot add, read, or approve vault credentials.");
+            println!("yougori vault status             Is the vault running; how many requests wait for approval\nyougori vault open | approve | add  Bring Yougori forward on Personal Vault; you decide there\nyougori vault mcp\n\nOpen and unlock Personal Vault in Yougori Desktop first. Every connection and protected operation needs approval in Yougori Desktop. This command cannot add, read, or approve vault credentials.");
             Ok(0)
         }
-        _ => Err("Usage: yougori vault status | open | approve | add | mcp | identity --output FILE | mcp --remote HOST:49731 --pin SHA256 --identity FILE".into()),
+        _ => Err("Usage: yougori vault status | open | approve | add | mcp".into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_terminal_reads_the_vault_in_sentences() {
+        assert!(sentence("status", &serde_json::json!({"running":false})).contains("not running"));
+        assert!(sentence("status", &serde_json::json!({"running":true,"pendingApprovals":2})).contains("2 requests are waiting"));
+        assert!(sentence("status", &serde_json::json!({"running":true,"pendingApprovals":0})).contains("Nothing is waiting"));
+    }
 
     #[test]
     fn ordinary_vault_output_uses_the_machine_contract() {
@@ -59,18 +62,6 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["result"], result);
         assert!(value.get("error").is_none());
-    }
-
-    #[test]
-    fn identity_has_structured_piped_output_and_terminal_guidance() {
-        let value: serde_json::Value = serde_json::from_str(&identity_output("device.json", "abc123", false)).unwrap();
-        assert_eq!(value["version"], crate::wire::VERSION);
-        assert_eq!(value["result"]["path"], "device.json");
-        assert_eq!(value["result"]["fingerprint"], "abc123");
-        assert_eq!(value["result"]["canApprove"], false);
-        let terminal = identity_output("device.json", "abc123", true);
-        assert!(terminal.contains("SHA-256: abc123"));
-        assert!(terminal.contains("cannot approve operations"));
     }
 
     #[tokio::test]
@@ -107,19 +98,22 @@ mod tests {
 }
 #[cfg(not(windows))]
 async fn local() -> Result<i32, String> {
-    Err("A local Personal Vault requires Windows. Use vault mcp --remote to connect to a protected Windows vault.".into())
+    Err("Personal Vault requires Windows in this release.".into())
 }
 #[cfg(windows)]
 async fn local() -> Result<i32, String> {
     bridge(yougori_vault::client::connect().await?).await
 }
 
+#[cfg(windows)]
 async fn bridge<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static>(
     stream: S,
 ) -> Result<i32, String> {
     relay(stream, std::io::stdin(), std::io::stdout()).await
 }
 
+// Only the Windows vault is bridged; the tests exercise the relay everywhere.
+#[cfg(any(windows, test))]
 enum Line {
     Message(Vec<u8>),
     TooLarge,
@@ -128,6 +122,7 @@ enum Line {
 
 /// Relays newline-delimited MCP messages between a client and the vault. When the
 /// client closes its input, replies still owed to it are delivered before exiting.
+#[cfg(any(windows, test))]
 async fn relay<S, I, O>(stream: S, input: I, mut output: O) -> Result<i32, String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,

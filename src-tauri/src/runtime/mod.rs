@@ -259,6 +259,8 @@ impl RuntimeManager {
         let data_root = app_data_directory.join("runtime");
         fs::create_dir_all(&data_root)
             .map_err(|error| format!("create Yougori runtime data directory: {error}"))?;
+        // Environment disks live here: no guest may be offered this folder.
+        crate::host_files::protect_folder(&data_root);
         let appliance_base_digest = {
             let _trace = PerfSpan::new("runtime verification");
             layout.verify(&data_root.join("integrity-cache-v1.json"))?

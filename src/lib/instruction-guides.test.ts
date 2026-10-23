@@ -4,7 +4,7 @@ import { instructionTargets } from "./topic-walkthrough"
 
 describe("topic walkthrough catalog", () => {
   it("gives every required topic a target for each step and begins with Settings", () => {
-    expect(instructionGuides).toHaveLength(19)
+    expect(instructionGuides).toHaveLength(17)
     expect(instructionGuides[0]?.id).toBe("settings")
     expect(new Set(instructionGuides.map(guide => guide.id)).size).toBe(instructionGuides.length)
     expect(Object.keys(instructionTargets).sort()).toEqual(instructionGuides.map(guide => guide.id).sort())

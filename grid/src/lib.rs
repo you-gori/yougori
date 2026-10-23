@@ -6,16 +6,41 @@
 //! it is assigned and, while allowed, asks the hub for work over pinned TLS, runs it locally and
 //! streams the reply back. Company apps use the hub's OpenAI-compatible API with keys the admin
 //! creates. Members open no ports, nothing passes through yougori.com and prompts are never
-//! recorded.
+//! recorded. Computers outside the network can join through a Cloudflare Tunnel, which only
+//! ever relays the grid's own encrypted connections.
+pub mod access;
 pub mod activity;
+/// The shared grid backend: realms, identity, work and audit (see docs/grid-core).
+pub mod core;
+pub mod desks;
+pub mod enterprise;
 pub mod hub;
+pub mod bounty;
+pub mod bounty_project;
+#[path = "../../distribution.rs"]
+pub mod distribution;
+pub mod harness;
+pub mod https;
+pub mod invite;
+pub mod jwt;
 pub mod member;
 pub mod net;
 pub mod password;
 pub mod policy;
+pub mod relay;
+pub mod power;
+pub mod provisioning;
+pub mod totp;
 pub mod schedule;
+pub mod tunnel;
 #[cfg(test)]
 mod end_to_end;
+
+/// What every request to a deleted grid is answered with, so its computers know to leave.
+pub const GRID_DELETED: &str = "This grid was deleted by its admin";
+
+/// A sign-in whose password was right but needs the code from the person's authenticator app.
+pub const MFA_REQUIRED: &str = "Enter the code from your authenticator app";
 
 /// Seconds since the Unix epoch.
 pub fn now() -> i64 {
@@ -81,3 +106,6 @@ mod tests {
         assert!(label("", "Name").is_err() && label("a\nb", "Name").is_err() && label(&"x".repeat(65), "Name").is_err());
     }
 }
+
+#[cfg(test)]
+mod enterprise_tests;

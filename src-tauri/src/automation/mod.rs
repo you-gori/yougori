@@ -34,6 +34,17 @@ pub(crate) async fn prepare_shutdown(app: &AppHandle, timeout: Duration) -> Valu
     }
 }
 
+/// What this computer has queued, and stopping one piece of it.
+///
+/// The wire answers these inside the queue itself, before anything is queued. This is the same
+/// three bodies for the one grids door, which only ever calls through `dispatch`.
+pub(crate) async fn work_record(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
+    match app.try_state::<Arc<Control>>() {
+        Some(control) => control.work_record(method, params).await,
+        None => Err("This computer is not keeping a record of queued work right now.".into()),
+    }
+}
+
 /// Housekeeping uses the normal job queue so shutdown drains disk operations
 /// and errors remain inspectable. No workload is stopped to make space.
 pub(crate) fn start_storage_maintenance(app: &AppHandle) {

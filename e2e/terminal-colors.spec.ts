@@ -20,14 +20,6 @@ test.beforeEach(async ({ context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"])
 })
 
-test("host terminal renders ANSI, bright, 256-colour, truecolour, and resets", async ({ page }) => {
-  await page.goto("/")
-  await page.getByRole("button", { name: "CLI", exact: true }).click()
-  const terminal = page.getByRole("region", { name: "Yougori CLI", exact: true })
-  await expect(terminal.locator(".xterm-screen")).toContainText("PS>")
-  await checkColors(page, terminal)
-})
-
 test("container terminal renders the same colours and preserves program output", async ({ page }) => {
   const state = structuredClone(seed) as PlatformState
   state.environments = [{

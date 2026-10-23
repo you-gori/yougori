@@ -234,10 +234,13 @@ fn examples(access: &Value, streaming: bool) -> Result<(), String> {
     };
     let choices: Vec<_> = LANGUAGES
         .iter()
-        .map(|(_, label)| ui::Choice::new(*label, ""))
+        .map(|(kind, label)| ui::Choice::new(*label, note(kind)))
         .collect();
     let model = clean(access["model"].as_str().unwrap_or(""));
-    let mut language = 0;
+    // The one that will run here without being edited first. A curl line quoted for a POSIX
+    // shell is the wrong first answer on Windows: it is copied, pasted, and fails on the
+    // quoting rather than on anything the person did.
+    let mut language = LANGUAGES.iter().position(|(kind, _)| *kind == if cfg!(windows) { "powershell" } else { "curl" }).unwrap_or(0);
     let mut steps = ui::Wizard::new();
     loop {
         let asked = match steps.step() {
@@ -302,12 +305,29 @@ fn examples(access: &Value, streaming: bool) -> Result<(), String> {
     }
 }
 
+/// What each example is for, so the list is a choice rather than five words.
+///
+/// The shells are named because their quoting is not interchangeable: the curl line is written
+/// for a POSIX shell and does not survive being pasted into PowerShell, which is the default
+/// terminal on the platform most of these people are using.
+fn note(kind: &str) -> &'static str {
+    match kind {
+        "python" => "needs the openai package",
+        "javascript" => "Node, needs the openai package",
+        "curl" => "bash, zsh or Git Bash",
+        "powershell" => "Windows PowerShell or pwsh",
+        _ => "a SKILL.md for a coding agent",
+    }
+}
+
 /// The same examples as the app's API panel. Without `key` they read YOUGORI_MODEL_API_KEY.
 fn example(kind: &str, base: &str, model: &str, streaming: bool, public: bool, key: Option<&str>) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
     match kind {
+        // Single-quoted JSON and a trailing backslash are a POSIX shell's, which is why
+        // PowerShell has an example of its own and is offered first on Windows.
         "curl" => format!(
-            "curl {base}/chat/completions \\\n  -H \"Authorization: Bearer {}\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{{\"model\": {}, \"messages\": [{{\"role\": \"user\", \"content\": \"Hello!\"}}], \"max_tokens\": 256}}'",
+            "# bash, zsh or Git Bash\ncurl {base}/chat/completions \\\n  -H \"Authorization: Bearer {}\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{{\"model\": {}, \"messages\": [{{\"role\": \"user\", \"content\": \"Hello!\"}}], \"max_tokens\": 256}}'",
             key.unwrap_or("$YOUGORI_MODEL_API_KEY"),
             q(model)
         ),
@@ -365,7 +385,7 @@ fn skill(model: &str, base: &str, public: bool, streaming: bool, key: Option<&st
 }
 
 /// Puts text on the clipboard. It goes through stdin, so it never appears in a process list.
-fn copy(text: &str) -> Result<(), String> {
+pub(super) fn copy(text: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     #[cfg(windows)]

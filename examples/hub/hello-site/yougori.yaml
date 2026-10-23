@@ -1,0 +1,19 @@
+project: hello-site
+
+environments:
+  web:
+    image: python:3.12-slim
+    cpu: 1
+    memory: 1GB
+    storage: 6GB
+    working_dir: /app
+    files:
+      - {source: ./site, target: /app}
+    environment:
+      SITE_TITLE: "{{inputs.site_title}}"
+    command: [python, server.py]
+    ports: [8080]
+    restart: always
+    health:
+      port: 8080
+      path: /

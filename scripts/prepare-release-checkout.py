@@ -17,6 +17,7 @@ SOURCE_ROOTS = ('src/', 'src-tauri/', 'assets/', 'public/', 'cli/', 'engine/', '
                 'runtime/', 'scripts/', 'skills/', 'docs/', 'compliance/', 'e2e/', '.github/')
 ROOT_ASSET_SUFFIXES = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.otf'}
 ROOT_FILES = {'LICENSE', 'COPYING', 'NOTICE', 'COMMERCIAL_LICENSE.txt', '.gitignore',
+              'distribution.txt', 'distribution.rs',
               '.gitattributes', 'package.json', 'package-lock.json', 'index.html',
               'vite.config.ts', 'eslint.config.js', 'tsconfig.json', 'tsconfig.app.json',
               'tsconfig.node.json', 'tsconfig.e2e.json', 'playwright.config.ts', 'playwright.graph.config.ts',

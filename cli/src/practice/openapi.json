@@ -1,0 +1,21 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Northstar Ledger", "version": "3.0" },
+  "security": [{ "bearerAuth": [] }],
+  "components": { "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer" } } },
+  "paths": {
+    "/demo": { "get": { "security": [], "summary": "Get the disposable analyst credentials", "responses": { "200": { "description": "account: user, password, tenantId, role" } } } },
+    "/api/session": { "post": { "security": [], "summary": "Sign in", "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["user", "password"], "properties": { "user": { "type": "string" }, "password": { "type": "string" } } } } } }, "responses": { "200": { "description": "token, tenantId, role" }, "401": { "description": "Invalid credentials" } } } },
+    "/api/me": { "get": { "responses": { "200": { "description": "Current user and tenant" } } } },
+    "/api/catalog": { "get": { "summary": "Shared report catalog: metadata only", "responses": { "200": { "description": "reports: [{id, tenantId, title}]. Contents remain tenant-private." } } } },
+    "/api/reports/{id}": { "get": { "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Tenant report contents" }, "403": { "description": "Other tenant" } } } },
+    "/api/export-jobs": { "post": { "summary": "Create a draft for one of your tenant's reports", "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["reportId", "format"], "properties": { "reportId": { "type": "string" }, "format": { "const": "json" } } } } } }, "responses": { "201": { "description": "Job: id, state, revision, source, format, links" }, "403": { "description": "Other tenant" } } } },
+    "/api/export-jobs/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "summary": "Read your job; poll queued jobs until complete", "responses": { "200": { "description": "Job; completed jobs include links.download (expires after 120 seconds)." } } },
+      "patch": { "summary": "Edit a draft's source", "parameters": [{ "name": "If-Match", "in": "header", "required": true, "schema": { "type": "string" }, "description": "Current job revision" }], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["source"], "properties": { "source": { "type": "object", "required": ["reportId"], "properties": { "reportId": { "type": "string" } } } } } } } }, "responses": { "200": { "description": "Updated job and new revision" }, "409": { "description": "Job is no longer a draft" }, "412": { "description": "Stale or missing If-Match" } } }
+    },
+    "/api/export-jobs/{id}/run": { "post": { "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "If-Match", "in": "header", "required": true, "schema": { "type": "string" } }], "summary": "Queue a draft export", "responses": { "202": { "description": "Poll links.self for completion" }, "412": { "description": "Stale revision" } } } },
+    "/api/downloads/{ticket}": { "get": { "parameters": [{ "name": "ticket", "in": "path", "required": true, "schema": { "type": "string" } }], "summary": "Read a completed export with your bearer session and signed ticket", "responses": { "200": { "description": "jobId and report contents" }, "403": { "description": "Invalid, expired or unavailable ticket" } } } }
+  }
+}

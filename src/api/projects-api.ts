@@ -1,31 +1,5 @@
 import { run } from "@/api/platform-api"
 const desktop = () => { throw new Error("Open Yougori Desktop to use project files and local workloads") }
-export interface ProjectPreview {
-  path: string
-  project?: string
-  error?: string
-  environments?: { name: string; type: string; image: string; cpu: number; memoryGb: number; gpu: boolean; pcAccess: number; editPc: boolean; variables: string[]; action: string; pcFolders?: { path: string; target: string | null; readOnly: boolean }[]; projectFiles?: { source: string; target: string }[]; secrets?: { variable: string | null; reference: string; use?: string }[]; bootSource?: string | null }[]
-  connections?: number
-  publications?: number
-  notice?: string
-  generated?: boolean
-}
-export interface ReadinessStage { status: string; detail?: string; httpStatus?: number; expectedStatus?: number; checks?: { publicationId: string; url: string; probe: ReadinessStage }[] }
-export interface EnvironmentReadiness { environmentId: string; ready: boolean; level: string; applicationVerified?: boolean; verifiedPublicly?: boolean; stages?: Record<string, ReadinessStage>; error?: string; recoveryAction?: string | null }
-export interface DeploymentReadiness { project: string; status: string; ready: boolean; saved: boolean; environments: Record<string, EnvironmentReadiness> }
-export interface ProjectActionResult { project: string; status: string; ready?: boolean; readiness?: DeploymentReadiness }
-export const projectsApi = {
-  discover: () => run<ProjectPreview[]>("discover_projects", {}, () => []),
-  inspect: (path: string) => run<ProjectPreview>("inspect_project", { path }, desktop),
-  importCompose: (path: string, write: boolean) => run<ProjectPreview>("import_compose", { path, write }, desktop),
-  action: (path: string, action: "up" | "apply" | "down") => run<ProjectActionResult>("project_action", { path, action }, desktop),
-  status: (path: string) => run<DeploymentReadiness>("deployment_status", { path }, desktop),
-  choose: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog")
-    const path = await open({ title: "Open Yougori or Docker Compose project", multiple: false, filters: [{ name: "Project YAML", extensions: ["yaml", "yml"] }] })
-    return typeof path === "string" ? path : null
-  },
-}
 export interface FileChange { folder: string; path: string; kind: "modified" | "created" | "deleted" | "renamed"; from?: string; beforeBytes: number | null; afterBytes: number | null; diff: string | null; beforeHash?: string; afterHash?: string }
 export interface FieldChange { name: string; kind?: string; before: unknown; after: unknown }
 export interface ChangeReport {
@@ -35,12 +9,16 @@ export interface ChangeReport {
 }
 export const changesApi = { inspect: (environmentId: string, baseline = false, offset = 0) => run<ChangeReport>("environment_changes", { environmentId, baseline, offset }, desktop) }
 /** context and stream are reported by models started with streaming support. */
-export interface GpuOptimizer { supported: boolean; enabled: boolean; pinned: boolean; resident: boolean; loading: boolean; active: number; pending: number; idleTimeoutSeconds: number; allocatedBytes: number | null }
+export interface GpuOptimizer {
+  supported: boolean; enabled: boolean; pinned: boolean; resident: boolean; loading: boolean; active: number; pending: number; idleTimeoutSeconds: number; allocatedBytes: number | null
+  /** While this model waits for the GPU: which model holds it, and what to do about that. */
+  waitingFor?: string
+}
 export interface ModelStatus { optimizer?: GpuOptimizer; sourceOnly?: boolean; inferenceAvailable?: boolean; status: "installing" | "downloading" | "verifying" | "loading" | "ready" | "idle" | "queued" | "unloading" | "freeing_memory" | "error"; model: string; error: string | null; gpu?: string; context?: number; stream?: boolean; task?: string; api?: string; precision?: string; chatTemplate?: boolean; chatWarning?: string; chatModelSuggestion?: string; download?: { receivedBytes: number; totalBytes: number; bytesPerSecond: number; transport: string }; verification?: { checkedBytes: number; totalBytes: number } }
 export interface ModelRun { id: string; model: string; sourceOnly?: boolean; apiUrl?: string; apiKey?: string }
 export type ArchitectureAgent = "claude" | "codex" | "kilo" | "opencode" | "gemini"
 export interface ArchitectureTask { path: string; skillPath: string; promptPath: string; agent: ArchitectureAgent; launchCommand: string; resumeCommand: string; model: string; revision: string; agentStarted: false }
-export interface ModelPreflight { sourceOnly?: boolean; localCode?: boolean; inferenceAvailable?: boolean; supportAvailable?: boolean; architectures?: string[]; format?: string; quant?: string; files?: { rfilename: string; size: number; sha256?: string }[]; model: string; task: string; modelType: string; supported: boolean; reason: string; runner: string; revision: string; resources: { storageGbRecommended: number | null; gpuMemoryGbEstimated: number | null; estimateOnly: boolean }; downloads: { location: string; checksumVerification: string; hostWeightImportRequired: boolean } }
+export interface ModelPreflight { sourceOnly?: boolean; localCode?: boolean; inferenceAvailable?: boolean; supportAvailable?: boolean; architectures?: string[]; format?: string; quant?: string; files?: { rfilename: string; size: number; sha256?: string }[]; model: string; task: string; modelType: string; supported: boolean; reason: string; runner: string; revision: string; resources: { workerMemoryGbRecommended?: number; storageGbRecommended: number | null; gpuMemoryGbEstimated: number | null; estimateOnly: boolean }; downloads: { location: string; checksumVerification: string; hostWeightImportRequired: boolean } }
 /** Key plus any localhost and public (Cloudflare) addresses currently serving the model API. */
 export interface ModelApiAccess { id: string; model: string; apiKey: string; apiUrl: string | null; publicUrl: string | null; publicId: string | null; publicAccount: boolean }
 export interface UsageCounters { requests: number; prompt_tokens: number; completion_tokens: number; errors: number; rejected: number; yougori?: number; api?: number }

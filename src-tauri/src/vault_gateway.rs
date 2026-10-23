@@ -17,7 +17,6 @@ use tokio_util::sync::CancellationToken;
 pub const ID: &str = "yougori-private-vault-gateway-v1";
 // Official Python multi-platform OCI manifest, pinned when this gateway was built.
 const IMAGE: &str = "docker.io/library/python@sha256:1a63a53928ce53d2b0baf08092a703f4840ac5dfbd61fd48802dbf48e08c801e";
-pub const PORT: u16 = 49731;
 pub const HTTP_PORT: u16 = 49732;
 #[derive(Default)]
 pub struct GatewayState {
@@ -67,9 +66,6 @@ pub async fn provision(runtime: &RuntimeManager) -> Result<(String, String), Str
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     Err("Vault gateway container did not become ready".into())
-}
-pub async fn start(app: &AppHandle, broker_port: u16) -> Result<Value, String> {
-    start_at(app, broker_port, PORT, None).await
 }
 pub async fn start_http(app: &AppHandle, broker_port: u16, pin: String) -> Result<Value, String> {
     start_at(app, broker_port, HTTP_PORT, Some(pin)).await
@@ -139,7 +135,11 @@ async fn start_at(
     tokio::spawn(async move {
         let slots = Arc::new(tokio::sync::Semaphore::new(16));
         loop {
-            let (mut client, _) = tokio::select! {_=stop.cancelled()=>break, result=listener.accept()=>match result {Ok(v)=>v,Err(_)=>break}};
+            let (mut client, _) = match tokio::select! {_=stop.cancelled()=>break, result=listener.accept()=>result} {
+                Ok(v) => v,
+                // A client reset before accept or descriptor pressure must not end the gateway.
+                Err(_) => { tokio::time::sleep(Duration::from_millis(100)).await; continue }
+            };
             let Ok(permit) = slots.clone().try_acquire_owned() else {
                 continue;
             };

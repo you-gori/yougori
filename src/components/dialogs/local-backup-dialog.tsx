@@ -1,6 +1,6 @@
 import { useState } from "react"
-import { FolderOpenIcon } from "lucide-react"
 import { localBackupApi } from "@/api/local-backup-api"
+import { Outcome } from "@/components/popup-kit"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogPanel, DialogFooter, DialogPopup, DialogTrigger } from "@/components/ui/dialog"
 import { usePlatform } from "@/context/platform-context"
@@ -37,8 +37,11 @@ export function LocalBackupDialog({ environment, triggerClassName, triggerDisabl
   const content = <>
       {embedded ? <p className="px-6 pt-4 text-sm text-muted-foreground">Restore disk/files and settings into a new, stopped environment. Existing nodes are not overwritten.</p> : <DialogHeader><DialogTitle>{importing ? "Load a local backup" : `Back up ${environment.name}`}</DialogTitle><DialogDescription>{importing ? "Restore disk/files and settings into a new, stopped environment. Existing nodes are not overwritten." : "Save the environment’s disk/files and settings in a portable folder on your computer."}</DialogDescription></DialogHeader>}
       <DialogPanel className="flex flex-col gap-4">
-        <p className="text-sm text-muted-foreground">{importing ? "Choose backup.yougori inside the backup folder. Backups from earlier versions also work. Keep disk.data beside it. Only load backups you trust: they contain executable applications." : "Keep the whole backup folder together. Backups are not encrypted and may contain passwords or other sensitive files inside the guest."}</p>
-        <p className="text-xs text-muted-foreground">Shared PC folders, host credentials, public tunnels, terminal sessions, connection permissions, VM firmware settings and snapshot history are not included. Reconnect access after restoring.</p>
+        <p className="text-sm text-muted-foreground">{importing ? "Choose backup.yougori inside the backup folder, with disk.data beside it. Backups from earlier versions also work." : "Choose a folder. The backup is written there as one folder; keep it together."}</p>
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{importing ? "Only load backups you trust: they contain programs that will run." : "Backups are not encrypted. They may hold passwords or other private files from inside the environment."}</p>
+        <Outcome title={importing ? "Not in the backup" : "Not included"}>
+          <p>Shared PC folders, host credentials, public tunnels, terminal sessions, connection permissions, VM firmware settings and snapshot history. Reconnect access after restoring.</p>
+        </Outcome>
         {importing ? <div className="space-y-2"><p className="text-sm font-medium">Restore engine</p><div className="flex gap-2" role="group" aria-label="Restore engine">
           <Button type="button" size="sm" variant={targetProvider ? "outline" : "secondary"} disabled={busy} aria-pressed={!targetProvider} onClick={() => setTargetProvider(undefined)}>Keep original</Button>
           <Button type="button" size="sm" variant={targetProvider ? "secondary" : "outline"} disabled={busy} aria-pressed={Boolean(targetProvider)} onClick={() => setTargetProvider("yougoriCuda")}>NVIDIA CUDA · containers</Button>
@@ -55,7 +58,6 @@ export function LocalBackupDialog({ environment, triggerClassName, triggerDisabl
   if (embedded) return content
   return <Dialog open={open} onOpenChange={value => { if (!busy) { setOpen(value); if (value) { setPath(""); setError(""); setSaved(""); setTargetProvider(undefined) } } }}>
     <DialogTrigger render={<Button data-tour={importing ? "load-backup" : undefined} className={triggerClassName} disabled={triggerDisabled} aria-label={importing ? "Load local backup" : "Back up to this PC"} title={importing ? "Load local backup" : "Back up to this PC"} size="sm" type="button" variant="outline" />}>
-      {importing ? <FolderOpenIcon aria-hidden="true" /> : null}
       <span>{importing ? "Load local backup" : "Back up to this PC"}</span>
     </DialogTrigger>
     <DialogPopup showCloseButton={!busy}>

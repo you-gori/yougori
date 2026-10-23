@@ -1,0 +1,400 @@
+{
+  "version": 1,
+  "id": "grid-fedcba9876543210",
+  "name": "Example Desks",
+  "address": "10.0.0.5",
+  "port": 7460,
+  "hostname": "grid.example.invalid",
+  "tunnelPort": 7461,
+  "certificate": "FIXTURE CERTIFICATE, NOT A REAL ONE",
+  "salt": "00112233445566778899aabbccddeeff",
+  "createdAt": 1700000000,
+  "plans": [
+    {
+      "id": "plan-0000000000000001",
+      "model": "example/one",
+      "quant": "q4_k_m",
+      "percent": 50,
+      "policy": {
+        "idleAfterMinutes": 10,
+        "schedule": "Mon-Fri 18:00-08:00"
+      },
+      "createdAt": 1700000100,
+      "target": {
+        "kind": "all"
+      }
+    },
+    {
+      "id": "plan-0000000000000002",
+      "model": "example/two",
+      "percent": 25,
+      "policy": {
+        "idleAfterMinutes": 0
+      },
+      "createdAt": 1700000200,
+      "target": {
+        "kind": "computers",
+        "members": [
+          "member-0000000000000001"
+        ]
+      }
+    },
+    {
+      "id": "plan-0000000000000003",
+      "model": "example/three",
+      "percent": 10,
+      "policy": {
+        "idleAfterMinutes": 5
+      },
+      "createdAt": 1700000300,
+      "target": {
+        "kind": "remaining"
+      }
+    }
+  ],
+  "members": [
+    {
+      "id": "member-0000000000000001",
+      "name": "Computer one",
+      "platform": "linux",
+      "tokenHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "joinedAt": 1700000400,
+      "capable": true,
+      "plan": "plan-0000000000000001",
+      "assignedAt": 1700000500,
+      "jobs": 12,
+      "excluded": false,
+      "share": {
+        "cpu": 4.0,
+        "memoryGb": 8.0,
+        "diskGb": 100.0,
+        "gpu": true,
+        "idleOnly": true
+      }
+    },
+    {
+      "id": "member-0000000000000002",
+      "name": "Computer two",
+      "platform": "windows",
+      "tokenHash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "joinedAt": 1700000600,
+      "capable": false,
+      "plan": null,
+      "assignedAt": null,
+      "jobs": 0,
+      "excluded": true,
+      "share": {
+        "cpu": 4.0,
+        "memoryGb": 8.0,
+        "diskGb": 100.0,
+        "gpu": true,
+        "idleOnly": true
+      }
+    }
+  ],
+  "keys": [
+    {
+      "id": "key-0000000000000001",
+      "name": "Example app",
+      "prefix": "ygrid_aaaa",
+      "hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "createdAt": 1700000700,
+      "lastUsedAt": 1700000800,
+      "requests": 30,
+      "failures": 1,
+      "tokensIn": 1000,
+      "tokensOut": 2000
+    },
+    {
+      "id": "key-0000000000000002",
+      "name": "Second app",
+      "prefix": "ygrid_bbbb",
+      "hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "createdAt": 1700000900,
+      "lastUsedAt": null,
+      "requests": 0,
+      "failures": 0,
+      "tokensIn": 0,
+      "tokensOut": 0
+    }
+  ],
+  "harnesses": [
+    {
+      "id": "harness-0000000000000001",
+      "name": "research",
+      "strategy": "plan",
+      "lead": "example/one",
+      "workers": [
+        "example/two",
+        "example/three"
+      ],
+      "computers": 2,
+      "tasks": 3,
+      "rounds": 2,
+      "createdAt": 1700001000
+    },
+    {
+      "id": "harness-0000000000000002",
+      "name": "review",
+      "strategy": "mixture",
+      "lead": "example/two",
+      "workers": [
+        "example/one",
+        "example/three"
+      ],
+      "computers": 1,
+      "tasks": 2,
+      "rounds": 1,
+      "createdAt": 1700001100
+    }
+  ],
+  "desks": [
+    {
+      "id": "desk-0000000000000001",
+      "name": "Desk one",
+      "spec": {
+        "kind": "container",
+        "cpu": 2.0,
+        "memoryGb": 4.0,
+        "diskGb": 40.0,
+        "gpu": false,
+        "image": "example/image:1"
+      },
+      "access": "standard",
+      "roleId": "role-0000000000000001",
+      "imageSha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "generation": 2,
+      "movingFrom": "member-0000000000000002",
+      "parcel": {
+        "store": "s3",
+        "key": "desks/desk-0000000000000001",
+        "bytes": 1048576,
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "at": 1700001200
+      },
+      "person": "person-0000000000000001",
+      "state": "moving",
+      "host": "member-0000000000000001",
+      "environmentId": "env-0000000000000001",
+      "note": "Its new computer is taking its data",
+      "trail": [
+        "member-0000000000000001",
+        "member-0000000000000002"
+      ],
+      "attempts": 1,
+      "createdAt": 1700001300,
+      "updatedAt": 1700001400
+    },
+    {
+      "id": "desk-0000000000000002",
+      "name": "Desk two",
+      "spec": {
+        "kind": "microVm",
+        "cpu": 2.0,
+        "memoryGb": 4.0,
+        "diskGb": 40.0,
+        "gpu": false,
+        "image": "builtin:ubuntu"
+      },
+      "access": "restricted",
+      "roleId": null,
+      "imageSha256": null,
+      "generation": 0,
+      "state": "planned",
+      "note": "",
+      "trail": [],
+      "attempts": 0,
+      "createdAt": 1700001500,
+      "updatedAt": 1700001600
+    }
+  ],
+  "people": [
+    {
+      "id": "person-0000000000000001",
+      "username": "one",
+      "adminRole": "administrator",
+      "roleId": "role-0000000000000001",
+      "name": "Person One",
+      "salt": "7777777777777777777777777777777777777777777777777777777777777777",
+      "keyHash": "8888888888888888888888888888888888888888888888888888888888888888",
+      "createdAt": 1700001700,
+      "lastLoginAt": 1700001800,
+      "totp": "FIXTURETOTPAAAAAAAA",
+      "totpPending": "FIXTUREPENDINGAAAAA",
+      "email": "one@example.invalid"
+    },
+    {
+      "id": "person-0000000000000002",
+      "username": "two",
+      "adminRole": "auditor",
+      "roleId": null,
+      "name": "Person Two",
+      "salt": "9999999999999999999999999999999999999999999999999999999999999999",
+      "keyHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "createdAt": 1700001900
+    }
+  ],
+  "enterprise": {
+    "images": [
+      {
+        "id": "image-0000000000000001",
+        "name": "Prepared one",
+        "version": "1",
+        "description": "A prepared image",
+        "applications": [
+          "editor",
+          "browser"
+        ],
+        "spec": {
+          "kind": "microVm",
+          "cpu": 2.0,
+          "memoryGb": 4.0,
+          "diskGb": 40.0,
+          "gpu": false,
+          "image": "prepared-one.qcow2"
+        },
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "createdAt": 1700002000
+      },
+      {
+        "id": "image-0000000000000002",
+        "name": "Prepared two",
+        "version": "2",
+        "description": "Another prepared image",
+        "applications": [],
+        "spec": {
+          "kind": "container",
+          "cpu": 2.0,
+          "memoryGb": 4.0,
+          "diskGb": 40.0,
+          "gpu": false,
+          "image": "example/image:2"
+        },
+        "sha256": null,
+        "createdAt": 1700002100
+      }
+    ],
+    "roles": [
+      {
+        "id": "role-0000000000000001",
+        "name": "Engineering",
+        "description": "Engineers",
+        "imageId": "image-0000000000000001",
+        "access": "restricted",
+        "createdAt": 1700002200
+      },
+      {
+        "id": "role-0000000000000002",
+        "name": "Support",
+        "description": "Support",
+        "imageId": "image-0000000000000002",
+        "access": "standard",
+        "createdAt": 1700002300
+      }
+    ],
+    "connections": [
+      {
+        "id": "connection-0000000000000001",
+        "name": "Example desktops",
+        "provider": "citrix",
+        "url": "https://desktops.example.invalid/launch",
+        "roleIds": [
+          "role-0000000000000001"
+        ],
+        "target": {
+          "clientId": "example-client",
+          "customerId": "example",
+          "deliveryGroup": "Engineering"
+        },
+        "credentialSet": true,
+        "credentialAt": 1700002400
+      },
+      {
+        "id": "connection-0000000000000002",
+        "name": "Second desktops",
+        "provider": "windows365",
+        "url": "https://windows365.example.invalid/launch",
+        "roleIds": [],
+        "credentialSet": false
+      }
+    ],
+    "audit": [
+      {
+        "at": 1700002500,
+        "actor": "person-0000000000000001",
+        "action": "desk.created",
+        "subject": "desk-0000000000000001"
+      },
+      {
+        "at": 1700002600,
+        "actor": "person-0000000000000001",
+        "action": "desk.assigned",
+        "subject": "desk-0000000000000002"
+      }
+    ],
+    "computerLimit": 64,
+    "parking": {
+      "provider": "awsS3",
+      "location": "s3://example-bucket/desks",
+      "setAt": 1700002700
+    },
+    "cloudFallback": {
+      "enabled": true,
+      "provider": "aws",
+      "account": "example",
+      "region": "eu-west-1",
+      "image": "ami-0000000000000001",
+      "imageProject": "example-project",
+      "machineType": "m6i.large",
+      "subnet": "subnet-0000000000000001",
+      "securityGroup": "sg-0000000000000001",
+      "keyPair": "example",
+      "resourceGroup": "example-group",
+      "sshPublicKey": "ssh-ed25519 FIXTUREKEY example",
+      "username": "ubuntu",
+      "identityFile": "example.pem",
+      "maxComputers": 4,
+      "setAt": 1700002800
+    },
+    "sso": {
+      "issuer": "https://login.example.invalid/v2.0",
+      "clientId": "example-client",
+      "usernameClaim": "email",
+      "passwordless": true,
+      "setAt": 1700002900
+    },
+    "provisioning": [
+      {
+        "id": "provisioning-0000000000000001",
+        "connectionId": "connection-0000000000000001",
+        "want": "assign",
+        "personId": "person-0000000000000001",
+        "personName": "Person One",
+        "email": "one@example.invalid",
+        "state": "done",
+        "note": "",
+        "at": 1700003000,
+        "finishedAt": 1700003100,
+        "attempts": 1
+      },
+      {
+        "id": "provisioning-0000000000000002",
+        "connectionId": "connection-0000000000000002",
+        "want": "test",
+        "personName": "",
+        "email": "",
+        "state": "failed",
+        "note": "the provider refused",
+        "at": 1700003200,
+        "attempts": 3
+      }
+    ]
+  },
+  "closing": {
+    "requestedAt": 1700003300,
+    "until": 1700300000,
+    "told": [
+      "member-0000000000000002"
+    ]
+  }
+}

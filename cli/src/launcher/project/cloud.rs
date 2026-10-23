@@ -9,7 +9,7 @@ fn state_key(folder: &Path, id: &str) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(format!("cloud:{}:{id}", directory_key(folder)?))))
 }
 
-fn bootstrap(container: &str, owner: &str, project: &package::Project, setup: &Setup) -> String {
+fn bootstrap(container: &str, owner: &str, project: &package::Project, setup: &Setup, again: &str) -> String {
     let name = shell(container);
     let image = shell(&project.image());
     let label = shell(owner);
@@ -38,7 +38,7 @@ fn bootstrap(container: &str, owner: &str, project: &package::Project, setup: &S
 {{if or (gt (len .HostConfig.Devices) 0) (gt (len .HostConfig.DeviceRequests) 0) (gt (len .HostConfig.DeviceCgroupRules) 0)}}{{ $safe = false }}{{end}}
 {{if and $safe $nnp $drop $core}}safe{{else}}unsafe{{end}}"#.replace("__CAP_CHECK__", &cap_check);
     let security_check = shell(&security_template);
-    let recovery = shell(&format!("This stopped project container does not enforce the current sandbox policy. Its files were kept. Security options cannot be added with docker update. Back up needed files using docker cp {container}:/workspace <backup-folder>, deliberately remove only this stopped container, then run npm run yougori-cloud again."));
+    let recovery = shell(&format!("This stopped project container does not enforce the current sandbox policy. Its files were kept. Security options cannot be added with docker update. Back up needed files using docker cp {container}:/workspace <backup-folder>, deliberately remove only this stopped container, then run {again} again."));
     format!(r#"set -eu
 command -v docker >/dev/null 2>&1 || {{ echo 'This server needs Docker Engine to run project containers. Install Docker and allow this SSH account to use it, then retry.' >&2; exit 1; }}
 docker info >/dev/null
@@ -64,9 +64,82 @@ test "$(docker inspect -f '{{{{.HostConfig.PidsLimit}}}}' {name})" = 4096 || {{ 
 /// never taken for the project: the next launch copies it again.
 const COPYING: &str = "/yougori/launch/copy-incomplete";
 
-/// Prints "existing" when the container has the project: a /workspace whose copy finished.
+/// Prints "existing" when the container has the project (a /workspace whose copy finished),
+/// "copying" when a copy stopped part way, else "empty" or "missing". A listing that fails is a
+/// failure: "empty" means copying the project in again, which first clears /workspace, so a
+/// failed `ls -A` read as empty once cleared the container's copy of the project.
 fn existing_workspace() -> String {
-    format!("if [ -d /workspace ] && [ -n \"$(ls -A /workspace)\" ] && [ ! -e {COPYING} ]; then printf existing; fi")
+    format!(
+        r#"if [ -e {COPYING} ]; then printf copying
+elif [ -d /workspace ]; then
+  listing=$(ls -A /workspace) || exit 1
+  if [ -n "$listing" ]; then printf existing; else printf empty; fi
+else printf missing; fi"#
+    )
+}
+
+/// Marks a project copy uploaded to a server as this project's: the file holds the project key.
+const UPLOAD_MARKER: &str = ".yougori-launch";
+
+/// Removes this project's earlier uploads from the server's home folder: copies a launch that
+/// was quit at once never moved into its container. Only folders named like an upload, holding
+/// this project's marker, are touched; symbolic links never are.
+fn stale_uploads(key: &str) -> String {
+    format!(
+        r#"for dir in "$HOME"/yougori-import-*; do
+  id=${{dir##*/yougori-import-}}
+  case "$id" in ''|*[!0-9a-f]*) continue ;; esac
+  [ ${{#id}} -eq 32 ] || continue
+  [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+  [ "$(cat "$dir/project/{UPLOAD_MARKER}" 2>/dev/null)" = {} ] || continue
+  rm -rf -- "$dir"
+done
+true"#,
+        shell(key)
+    )
+}
+
+/// Separates this project's containers from every container in [`container_name`]'s listing;
+/// container names cannot hold a space.
+const EVERY_CONTAINER: &str = "every container:";
+
+/// The project's container on the server: the one already labelled as this project's, whatever
+/// it is called, or else a new name after the project folder that no other container has.
+async fn container_name(id: &str, key: &str, project: &str) -> Result<String, String> {
+    let listing = exec(id, &format!(
+        "command -v docker >/dev/null 2>&1 || exit 0; docker ps -a --filter {} --format '{{{{.Names}}}}'; echo {}; docker ps -a --format '{{{{.Names}}}}'",
+        shell(&format!("label=com.yougori.project={key}")),
+        shell(EVERY_CONTAINER),
+    )).await?;
+    Ok(container_choice(&listing, project))
+}
+
+fn container_named(name: &str) -> bool {
+    name.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+}
+
+/// The container [`container_name`] settles on, from its listing: this project's own, or
+/// `yougori-FOLDER`, numbered when another container already has that name.
+fn container_choice(listing: &str, project: &str) -> String {
+    let (ours, every) = listing.split_once(EVERY_CONTAINER).unwrap_or(("", listing));
+    if let Some(name) = ours.lines().map(str::trim).find(|name| container_named(name)) {
+        return name.to_owned();
+    }
+    let mut folder = String::new();
+    for c in project.chars().flat_map(char::to_lowercase) {
+        let c = if c.is_ascii_alphanumeric() || c == '_' || c == '.' { c } else { '-' };
+        if !(c == '-' && folder.ends_with('-')) {
+            folder.push(c);
+        }
+    }
+    let folder: String = folder.trim_matches(['-', '.', '_']).chars().take(40).collect();
+    let base = format!("yougori-{}", if folder.is_empty() { "project" } else { folder.trim_end_matches(['-', '.', '_']) });
+    let taken: std::collections::HashSet<&str> = every.lines().map(str::trim).collect();
+    (1..)
+        .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
+        .find(|name| !taken.contains(name.as_str()))
+        .unwrap_or_else(|| base.clone())
 }
 
 fn uploaded_project(destination: &str, container: &str) -> Result<String, String> {
@@ -241,14 +314,14 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
         Err(_) if stop.requested() => {
             engine.clear();
             drop(stop);
-            ui::outro("Cancelled");
+            ui::outro("Cancelled. Nothing was started.");
             return Ok(130);
         }
         state => state?,
     };
     engine.done("Engine ready");
     let nodes: Vec<_> = state["environments"].as_array().ok_or("Missing environment list")?.iter().filter(|node| eligible(node)).collect();
-    if nodes.is_empty() { return Err("No connected cloud environments are ready. Connect your Linux server in Yougori, then run npm run yougori-cloud again.".into()); }
+    if nodes.is_empty() { return Err(format!("No connected cloud environments are ready. Connect your Linux server in Yougori, then run {} again.", project.launch_hint(&folder, "--cloud"))); }
     let choices: Vec<_> = nodes.iter().map(|node| clean(node["name"].as_str().unwrap_or("Cloud server"))).collect();
     // Questions read their own keys. Each one after the first offers Back; choosing another
     // server starts its own settings.
@@ -294,17 +367,18 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     let node = nodes[index];
     let id = node_id.as_str();
     project.custom_command = setup.custom_command.clone();
-    add_project_shortcut(&folder, &project)?;
+    // The answers are kept first, so a project file that cannot be changed never costs them.
     save(&path, &setup)?;
+    shortcut_or_warn(&folder, &project);
     stop.watch();
-    let container = format!("yougori-project-{}", &key[..24]);
+    let container = busy("Finding this project's container on the server", container_name(id, &key, &name)).await?;
     let mut started = false;
     let mut server_port = None;
     let mut publications = Vec::<String>::new();
     let mut uploads = Vec::<String>::new();
     let result = async {
         let preparing = ui::task("Preparing cloud project container");
-        live::remote_task(id, &bootstrap(&container, &key, &project, &setup), &stop.flag).await?;
+        live::remote_task(id, &bootstrap(&container, &key, &project, &setup, &project.launch_hint(&folder, "--cloud")), &stop.flag).await?;
         stop.check()?;
         started = true;
         exec(id, &format!("docker start {} >/dev/null && docker exec {} sh -c 'mkdir -p /workspace /yougori/launch'", shell(&container), shell(&container))).await?;
@@ -315,6 +389,8 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             helper.done("Project helpers ready");
         }
         let remote_port = busy("Checking project access on the server", async {
+            // Best effort: a copy an earlier launch uploaded but never moved into the container.
+            let _ = exec(id, &stale_uploads(&key)).await;
             let ports = exec(id, &format!("docker port {} {}/tcp", shell(&container), live::proxy_port(setup.guest_port))).await?;
             let remote_port = ports.trim().strip_prefix("127.0.0.1:").and_then(|s| s.parse::<u16>().ok()).filter(|p| *p > 0).ok_or("Docker did not return a private project port")?;
             server_port = Some(remote_port);
@@ -336,12 +412,18 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
         let mut saved = sync::Saved::load(&sync_path);
         let remote_token = stop.until(exec(id, &live::container_command(Some(&container), "cat /yougori/launch/sync-token 2>/dev/null || true", false))).await?;
         let reconcile = saved.needs_reconcile(id, &remote_token);
-        let copied = stop.until(exec(id, &live::container_command(Some(&container), &existing_workspace(), false))).await?.trim() != "existing";
+        let probed = stop.until(async { exec(id, &live::container_command(Some(&container), &existing_workspace(), false)).await.map_err(|error| format!("Yougori could not tell whether the server's container already has this project, so it copied nothing and removed nothing. Try again. ({error})")) }).await?;
+        let copied = needs_copy(&probed)?;
+        saved.adopt(id, copied);
         let mut initial_databases = std::collections::BTreeSet::new();
         if copied {
             syncing.detail(&format!("{} files · {}", manifest.len(), ui::bytes(manifest.values().map(|(size, _)| size).sum())));
             syncing.copy_status("Preparing project files");
             let staging = stage_project(&folder, &manifest, &syncing, &stop.flag).await?;
+            // Marks the upload as this project's, so the next launch removes it should this one be
+            // quit at once before the copy reaches the container.
+            fs::write(staging.path().join("project").join(UPLOAD_MARKER), &key)
+                .map_err(|e| format!("Could not prepare the project copy ({e})"))?;
             syncing.detail(&format!("{} files · {}", manifest.len(), ui::bytes(manifest.values().map(|(size, _)| size).sum())));
             syncing.copy_status("Waiting for copy progress");
             let copy = copy_into(id, json!({"environmentId":id,"paths":[staging.path().join("project")]}), &syncing, &stop).await?;
@@ -358,6 +440,9 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             saved.environment = id.into();
             saved.common.clear();
             saved.directories.clear();
+            // A fresh copy leaves both sides the same, so nothing is left to keep apart.
+            saved.unknown.clear();
+            saved.unreadable = false;
             saved.save(&sync_path)?;
         }
         if let Some(text) = plan::describe(&plan::installs(&folder, &project, &manifest)) {
@@ -427,7 +512,11 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     drop(lock);
     if cleanup_errors.is_empty() { stopping.done("Project stopped; cloud environment stays connected"); }
     else { stopping.fail("Could not confirm project cleanup"); return Err(format!("Check container {container} on the server: {}", cleanup_errors.join("; "))); }
-    ui::outro("npm run yougori-cloud starts again · npm run yougori-cloud -- --change edits this server's project settings");
+    ui::outro(&format!(
+        "{} starts again · {} edits this server's project settings",
+        project.launch_hint(&folder, "--cloud"),
+        project.launch_hint(&folder, "--cloud --change"),
+    ));
     ended(result, interrupted)
 }
 
@@ -444,12 +533,97 @@ mod tests {
         assert_ne!(a, directory_key(folder.path()).unwrap());
         assert_eq!(a.len(), 64);
     }
+    /// PROVES that a cloud workspace that cannot be listed is never taken for an empty one.
+    ///
+    /// "Empty" means copying the project in again, and that copy first clears /workspace on the
+    /// server. The probe read a failing `ls -A` as empty, so one failed listing cleared the
+    /// container's copy of the project, with any work in it that had not synced back yet.
+    #[test]
+    fn a_cloud_workspace_that_cannot_be_listed_is_not_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let unix = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let (workspace, marker) = (root.path().join("workspace"), root.path().join("copy-incomplete"));
+        let moved = |script: String| script.replace(COPYING, &unix(&marker)).replace("/workspace", &unix(&workspace));
+        let probe = |script: String| {
+            let output = std::process::Command::new("sh").arg("-c").arg(script).output().ok()?;
+            Some((output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned()))
+        };
+        let Some(missing) = probe(moved(existing_workspace())) else {
+            eprintln!("skipped: this computer has no sh to run the container's scripts with");
+            return;
+        };
+        assert_eq!(missing, (true, "missing".to_owned()));
+        fs::create_dir(&workspace).unwrap();
+        assert_eq!(probe(moved(existing_workspace())), Some((true, "empty".to_owned())));
+        fs::write(workspace.join("app.js"), "work").unwrap();
+        assert_eq!(probe(moved(existing_workspace())), Some((true, "existing".to_owned())));
+        fs::write(&marker, "").unwrap();
+        assert_eq!(probe(moved(existing_workspace())), Some((true, "copying".to_owned())), "a copy that stopped part way is made again");
+        fs::remove_file(&marker).unwrap();
+        let failing = moved(existing_workspace()).replace("ls -A ", "ls -A /no/such/folder ");
+        assert_ne!(failing, moved(existing_workspace()));
+        assert_eq!(probe(failing).map(|(succeeded, _)| succeeded), Some(false), "a workspace that cannot be listed is not called empty");
+        assert_eq!(needs_copy("copying"), Ok(true));
+        assert!(needs_copy("").is_err());
+    }
+
     #[test]
     fn uploaded_files_cleanup_is_limited_to_a_verified_transfer() {
         for path in ["/", "/home/me", "/home/me/yougori-import-bad", "/home/me/../yougori-import-0123456789abcdef0123456789abcdef"] { assert!(uploaded_project(path, "container").is_err()); }
         let script = uploaded_project("/home/me/yougori-import-0123456789abcdef0123456789abcdef", "container").unwrap();
         assert!(script.contains("container:/workspace/"));
         assert!(!script.contains("docker rm"));
+    }
+
+    #[test]
+    fn the_cloud_container_is_named_after_the_project_and_keeps_an_earlier_name() {
+        // This project's own container, found by its label, keeps its name, even an older one.
+        let earlier = "yougori-project-0123456789abcdef01234567";
+        assert_eq!(container_choice(&format!("{earlier}
+every container:
+{earlier}
+postgres
+"), "My Site"), earlier);
+        // A new one is named after the folder, numbered when another container has the name.
+        assert_eq!(container_choice("every container:
+postgres
+", "My Site"), "yougori-my-site");
+        assert_eq!(container_choice("every container:
+yougori-my-site
+yougori-my-site-2
+", "My Site"), "yougori-my-site-3");
+        assert_eq!(container_choice("", "Café & Bar!!"), "yougori-caf-bar");
+        assert_eq!(container_choice("", "---"), "yougori-project");
+        // Output that is not a container name is never taken for one.
+        assert_eq!(container_choice("bad name
+every container:
+", "site"), "yougori-site");
+    }
+
+    #[test]
+    fn only_this_projects_leftover_uploads_are_removed_from_the_server_home() {
+        let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "bash" };
+        let (ours, theirs, unmarked) = ("a".repeat(32), "b".repeat(32), "c".repeat(32));
+        let fixture = format!(r#"
+HOME=$(mktemp -d)
+for id in {ours} {theirs} {unmarked} not-a-transfer; do mkdir -p "$HOME/yougori-import-$id/project/workspace"; done
+printf key-1 > "$HOME/yougori-import-{ours}/project/{UPLOAD_MARKER}"
+printf key-2 > "$HOME/yougori-import-{theirs}/project/{UPLOAD_MARKER}"
+printf key-1 > "$HOME/yougori-import-not-a-transfer/project/{UPLOAD_MARKER}"
+{cleanup}
+echo "status:$?"
+ls "$HOME"
+command rm -rf "$HOME"
+"#, cleanup = stale_uploads("key-1"));
+        let output = std::process::Command::new(bash).args(["--noprofile", "--norc", "-c", &fixture])
+            .output().expect("Bash is required for the cloud cleanup test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("status:0"), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+        let left: Vec<&str> = stdout.lines().filter(|line| line.starts_with("yougori-import-")).collect();
+        assert!(!left.contains(&format!("yougori-import-{ours}").as_str()), "this project's upload is removed: {stdout}");
+        for kept in [format!("yougori-import-{theirs}"), format!("yougori-import-{unmarked}"), "yougori-import-not-a-transfer".into()] {
+            assert!(left.contains(&kept.as_str()), "{kept} is kept: {stdout}");
+        }
     }
 
     #[test]
@@ -496,7 +670,9 @@ command rm -rf "$FAKE"
             assert_eq!(lines.first(), Some(&"before:existing"), "a finished copy is the project: {context}");
             let code = lines.get(1).and_then(|line| line.strip_prefix("copy:")).and_then(|code| code.parse::<i32>().ok());
             assert_eq!(code.map(|code| code == 0), Some(finished), "{context}");
-            assert_eq!(lines.get(2), Some(&if finished { "after:existing" } else { "after:" }), "{context}");
+            // A copy that stopped part way says so, and the next launch copies again.
+            assert_eq!(lines.get(2), Some(&if finished { "after:existing" } else { "after:copying" }), "{context}");
+            assert_eq!(needs_copy(lines.get(2).unwrap().trim_start_matches("after:")), Ok(!finished), "{context}");
             assert_eq!(lines.get(3), Some(&"files:app.js"), "{context}");
         }
     }
@@ -559,7 +735,7 @@ command rm -rf "$FAKE"
         fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
         let project = package::Project::load(folder.path()).unwrap();
         let setup: Setup = serde_json::from_value(json!({"version":1,"directory":folder.path(),"environment":"env-cloud","gpu":false,"allocation":[2,4,0],"guest_port":3000,"local_port":3000,"network":"computer","domain":null})).unwrap();
-        let script = bootstrap("yougori-project-test", "owner", &project, &setup);
+        let script = bootstrap("yougori-project-test", "owner", &project, &setup, "yougori launch --cloud");
         let bash = if cfg!(windows) { "C:/Program Files/Git/bin/bash.exe" } else { "bash" };
         for mode in ["new", "stopped", "running", "foreign", "wrong-image", "legacy-security", "seccomp-disabled", "pids-disabled", "pids-unenforced"] {
             let fixture = format!(r#"
@@ -625,7 +801,7 @@ docker() {{
         fs::write(folder.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
         let project = package::Project::load(folder.path()).unwrap();
         let setup: Setup = serde_json::from_value(json!({"version":1,"directory":folder.path(),"environment":"env-cloud","gpu":false,"allocation":[2,4,0],"guest_port":3000,"local_port":3000,"network":"computer","domain":null})).unwrap();
-        let script = bootstrap("yougori-project-test", "owner", &project, &setup);
+        let script = bootstrap("yougori-project-test", "owner", &project, &setup, "yougori launch --cloud");
         let beginning = script.find("'{{ $safe := true }}").unwrap() + 1;
         let end = beginning + script[beginning..].find('\'').unwrap();
         let template = &script[beginning..end];

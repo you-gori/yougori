@@ -1,0 +1,47 @@
+kind: template
+name: hello-site
+title: Hello site
+summary: A one-page website in a container, online through a quick link or your own domain.
+version: 1.0.0
+license: MIT
+topics: [website, starter]
+changelog: First version.
+
+requires:
+  yougori: 1.1.0
+
+inputs:
+  - id: site_title
+    question: What should the page say?
+    type: text
+    default: Hello from Yougori
+  - id: access
+    question: Where should the website be reachable?
+    type: choice
+    choices:
+      - {value: quick, label: Quick link, hint: Free HTTPS link from Cloudflare. It can change after a restart.}
+      - {value: domain, label: My own domain, hint: A domain you saved with yougori domain add.}
+      - {value: none, label: Only this computer}
+    default: quick
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    when: {access: domain}
+
+tools:
+  web: [tools/httpie]
+
+public:
+  - environment: web
+    port: 8080
+    access: "{{inputs.access}}"
+    domain: "{{inputs.domain}}"
+
+steps:
+  - title: Check the site from inside its sandbox
+    detail: Opens a shell in the website's sandbox. Try http localhost:8080, then type exit.
+    command: yougori terminal {{env.web}}
+
+outputs:
+  - label: Website
+    value: "{{public.web}}"

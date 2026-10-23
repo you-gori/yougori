@@ -8,9 +8,16 @@
 }
 .model-popup::before { border-radius: 19px; }
 
-.model-header { display: flex; align-items: center; gap: 16px; padding: 16px 32px 0; }
-.model-close { min-width: 68px; }
-.model-header > .model-close { margin-left: auto; }
+/* Settings-style header: title and description on the left, Close on the right. */
+.model-dialog-header { display: flex; flex-shrink: 0; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 24px 32px 18px; border-bottom: 1px solid var(--border); }
+.model-dialog-header > div { min-width: 0; }
+.model-dialog-header h2,
+.model-dialog-header [data-slot="dialog-title"] { font-family: var(--font-heading); font-size: 22px; font-weight: 600; letter-spacing: -.015em; line-height: 1.15; }
+.model-dialog-header p,
+.model-dialog-header [data-slot="dialog-description"] { max-width: 64ch; margin-top: 6px; color: var(--muted-foreground); font-size: 13px; line-height: 1.45; }
+.model-close { flex: none; min-width: 68px; }
+/* Switching between running models sits under the header. */
+.model-subbar { flex-shrink: 0; padding: 16px 32px 0; }
 
 .model-popup .model-panel { display: grid; gap: 20px; padding: 16px 32px 28px; }
 
@@ -25,8 +32,6 @@
 .model-tabs button:disabled { cursor: not-allowed; opacity: .6; }
 
 .model-form { display: grid; gap: 14px; }
-.model-intro h2 { font-family: var(--font-heading); font-size: 22px; font-weight: 600; letter-spacing: -.015em; line-height: 1.2; }
-.model-intro p { max-width: 64ch; margin-top: 6px; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; }
 .model-card { display: grid; align-content: start; gap: 10px; padding: 16px 18px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 14px; background: var(--card); }
 .model-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 14px; }
 .model-targets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -223,7 +228,8 @@
 .model-usage-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 
 @media (max-width: 640px) {
-  .model-header { padding: 14px 20px 0; }
+  .model-dialog-header { gap: 16px; padding: 18px 20px 14px; }
+  .model-subbar { padding: 14px 20px 0; }
   .model-popup .model-panel { padding-inline: 20px; }
   .model-api-row { flex-wrap: wrap; }
   .model-chat, .model-popup-chat .model-chat { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
@@ -237,3 +243,41 @@
 
 .model-form textarea { width: 100%; padding: 0.65rem; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: inherit; resize: vertical; font: inherit; }
 .model-decision-result { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Fields: a label above its control, never sharing a line with the next one. */
+.model-field { display: grid; gap: 6px; min-width: 0; }
+.model-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px 14px; }
+.model-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.model-input-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.model-input-row > [data-slot="input-control"] { flex: 1 1 auto; min-width: 0; }
+.model-input-row > button { flex: none; }
+.model-select { width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--input, var(--border)); border-radius: 8px; background: var(--background); color: var(--foreground); font: inherit; font-size: 13px; }
+.model-check { display: flex; align-items: flex-start; gap: 10px; color: var(--foreground); font-size: 13px; line-height: 1.45; cursor: pointer; }
+.model-check > input { flex: none; width: 16px; height: 16px; margin-top: 2px; accent-color: var(--primary); }
+@media (max-width: 560px) {
+  .model-input-row { flex-wrap: wrap; }
+  .model-input-row > button { width: 100%; }
+}
+
+/* Hugging Face access: a quiet disclosure that opens into a normal field. */
+.model-access { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--foreground) 4%, transparent); }
+.model-access > summary { display: flex; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; color: var(--foreground); font-size: 12.5px; font-weight: 500; }
+.model-access > summary::-webkit-details-marker { display: none; }
+.model-access > summary::after { content: "Show"; flex: none; color: var(--muted-foreground); }
+.model-access[open] > summary::after { content: "Hide"; }
+.model-access > :not(summary) { margin-top: 10px; }
+
+/* Model library: each model is a full row, so long names wrap instead of being cut off. */
+.model-library-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.model-library-list button { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--background); text-align: left; transition: border-color .15s, background-color .15s; }
+.model-library-list button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.model-library-list button[aria-pressed="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, transparent); box-shadow: 0 0 0 1px var(--primary); }
+.model-library-list button:disabled { cursor: not-allowed; opacity: .6; }
+.model-library-name { min-width: 0; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.model-library-tag { display: inline-block; flex: none; padding: 2px 8px; border-radius: 99px; background: color-mix(in srgb, var(--foreground) 6%, transparent); color: var(--muted-foreground); font-size: 11px; font-weight: 600; }
+.model-library-tag::first-letter { text-transform: uppercase; }
+.model-library-detail-head { display: grid; gap: 6px; min-width: 0; }
+.model-library-detail-head strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.model-library-detail-head code { width: fit-content; max-width: 100%; padding: 2px 8px; border-radius: 6px; background: color-mix(in srgb, var(--foreground) 6%, transparent); color: var(--muted-foreground); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.model-library-text { color: var(--foreground); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.model-library-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

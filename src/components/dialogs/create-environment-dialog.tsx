@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
-import { ArrowRightIcon, CheckIcon, CloudIcon, FolderOpenIcon, GpuIcon, LinkIcon, SlidersHorizontalIcon, TerminalIcon } from "lucide-react"
 import { SharedEnvironmentForm } from "@/components/shared-environment-form"
 import { ResourceValueControl } from "@/components/resource-value-control"
 import { StorageCapacitySlider } from "@/components/storage-capacity-slider"
@@ -252,8 +251,6 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
     }
   }
 
-  const KindIcon = cudaContainer ? GpuIcon : isolationPresentation[kind].icon
-
   return (
     <>
     <Dialog modal={!guided && !topic} disablePointerDismissal={guided} onOpenChange={(value, details) => {
@@ -271,13 +268,10 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
               </div>
               <div className="creation-type-tabs">
               <RadioGroup aria-label="Environment type" disabled={submitting || workflowBusy} className="creation-types" onValueChange={value => { if (value === "cloud" || value === "neocloud" || value === "backup" || value === "shared") setWorkflow(value); else { setWorkflow(null); setKind(value as EnvironmentKind); if (value !== "container") { setGpuEnabled(false); setCudaStatus(null) } } }} value={workflow ?? kind}>
-                {[...kinds, "neocloud", "shared", "backup"].map(item => {
-                  const Icon = item === "shared" ? LinkIcon : item === "backup" ? FolderOpenIcon : item === "cloud" || item === "neocloud" ? CloudIcon : isolationPresentation[item as EnvironmentKind].icon
-                  return <Label key={item} data-instruction-kind={item} className={cn("creation-type", (workflow ?? kind) === item && "is-selected")}>
-                    <Radio className="sr-only" disabled={submitting || workflowBusy || (guided && item !== "container")} value={item} />
-                    <Icon aria-hidden="true" /><span>{item === "shared" ? "Shared environment" : item === "backup" ? "Load local backup" : item === "cloud" ? "Cloud environment" : item === "neocloud" ? "Neocloud" : environmentKindLabel[item as EnvironmentKind]}</span>{(workflow ?? kind) === item ? <CheckIcon aria-hidden="true" className="creation-type-check" /> : null}
-                  </Label>
-                })}
+                {[...kinds, "neocloud", "shared", "backup"].map(item => <Label key={item} data-instruction-kind={item} className={cn("creation-type", (workflow ?? kind) === item && "is-selected")}>
+                  <Radio className="sr-only" disabled={submitting || workflowBusy || (guided && item !== "container")} value={item} />
+                  <span>{item === "shared" ? "Shared environment" : item === "backup" ? "Load local backup" : item === "cloud" ? "Cloud environment" : item === "neocloud" ? "Neocloud" : environmentKindLabel[item as EnvironmentKind]}</span>
+                </Label>)}
               </RadioGroup>
               </div>
             </section>
@@ -289,14 +283,14 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
           <DialogPanel scrollFade={false} className="p-0!">
             <div className="creation-columns">
               <section aria-label="Environment configuration" className="creation-configuration">
-                <div className="creation-section-heading"><h2><TerminalIcon aria-hidden="true" />Configuration</h2><span>{cudaContainer ? "NVIDIA CUDA" : kind === "container" ? "OCI runtime" : "QEMU runtime"}</span></div>
+                <div className="creation-section-heading"><h2>Configuration</h2><span>{cudaContainer ? "NVIDIA CUDA" : kind === "container" ? "OCI runtime" : "QEMU runtime"}</span></div>
                 <div className="creation-toggles">
                 {kind === "container" ? <div className="creation-gpu-option" data-instruction-kind="gpu">
-                  <div><Label htmlFor="creation-gpu-access"><GpuIcon aria-hidden="true" />GPU access</Label><p>NVIDIA CUDA for AI and GPU workloads</p></div>
+                  <div><Label htmlFor="creation-gpu-access">GPU access</Label><p>NVIDIA CUDA for AI and GPU workloads</p></div>
                   <Switch id="creation-gpu-access" checked={gpuEnabled} disabled={submitting || cudaInstalling || guided} onCheckedChange={checked => { setCudaStatus(null); setGpuEnabled(checked) }} />
                 </div> : null}
                 <div className="creation-gpu-option">
-                  <div><Label htmlFor="creation-internet-access">Internet access</Label><p>Change any time, no restart</p></div>
+                  <div><Label htmlFor="creation-internet-access">Internet access</Label><p>Lets it reach the internet. Change it any time, without a restart.</p></div>
                   <Switch id="creation-internet-access" checked={internetEnabled} disabled={submitting} onCheckedChange={setInternetEnabled} />
                 </div>
                 </div>
@@ -352,7 +346,7 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
                 </div>
               </section>
               <section aria-label="Resource allocation" className="creation-resources">
-                <div className="creation-section-heading"><h2><SlidersHorizontalIcon aria-hidden="true" />Resources</h2><span>Fixed allocation</span></div>
+                <div className="creation-section-heading"><h2>Resources</h2><span>Fixed allocation</span></div>
                 <ResourceValueControl label="CPU" max={limits.cpu.max} min={limits.cpu.min} onChange={setCpu} step={limits.cpu.step} unit="CPUs" disabled={submitting} value={cpu} />
                 <ResourceValueControl label="Memory" max={limits.memory.max} min={limits.memory.min} onChange={setMemory} step={limits.memory.step} unit="GB" disabled={submitting} value={memory} />
                 <label className="flex items-center justify-between gap-3 text-xs"><span>Storage drive</span><select aria-label="Storage drive" className="creation-input h-8 min-w-0 max-w-[75%] rounded-md border bg-background px-2 text-xs" disabled={submitting || cudaInstalling} value={storageDrive} onChange={event => { setStorageInfo(null); setStorageDrive(event.target.value) }}><option value="">{state?.host.storageDrive ? `${driveLabel(state.host.storageDrive)} · Default` : "Default drive"}</option>{drives.filter(drive => drive.path).map(drive => <option key={drive.path} value={drive.path} disabled={drive.readOnly}>{driveLabel(drive.path)} · {drive.freeGb.toFixed(1)} GB free{drive.readOnly ? " · Read-only" : ""}</option>)}{storageDrive && !drives.some(drive => drive.path === storageDrive) ? <option value={storageDrive} disabled>{driveLabel(storageDrive)} · Disconnected</option> : null}</select></label>
@@ -369,8 +363,8 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: { o
             {formError ? <p role="alert" className="creation-error">{formError}</p> : null}
             {submitting ? <p role="status" className="creation-resource-note">{kind === "container" ? "Preparing the runtime and image. The first download can take a few minutes." : "Preparing the boot media and virtual disk."}</p> : null}
             <div className="creation-footer-row">
-              <div aria-label="Startup summary" className="creation-summary"><KindIcon aria-hidden="true" /><span className="creation-summary-name" title={name.trim() || "Untitled environment"}>{name.trim() || "Untitled environment"}</span><span className="creation-summary-resources">{cpu} CPUs<span aria-hidden="true">/</span>{memory} GB</span></div>
-              <div className="creation-actions"><DialogClose render={<Button disabled={submitting} type="button" variant="ghost" />}>Cancel</DialogClose><Button data-tour="create-submit" className="creation-submit" disabled={policyErrors.length > 0 || (cudaContainer && (!cudaStatus?.supported || !cudaStatus.installed || Boolean(cudaStatus.updateAvailable) || Boolean(gpuImageIssue(runtime))))} loading={submitting} type="submit">Create environment<ArrowRightIcon aria-hidden="true" className="size-4" /></Button></div>
+              <div aria-label="Startup summary" className="creation-summary"><span className="creation-summary-resources">{cudaContainer ? "GPU container" : environmentKindLabel[kind]}</span><span className="creation-summary-name" title={name.trim() || "Untitled environment"}>{name.trim() || "Untitled environment"}</span><span className="creation-summary-resources">{cpu} CPUs<span aria-hidden="true">/</span>{memory} GB</span></div>
+              <div className="creation-actions"><DialogClose render={<Button disabled={submitting} type="button" variant="ghost" />}>Cancel</DialogClose><Button data-tour="create-submit" className="creation-submit" disabled={policyErrors.length > 0 || (cudaContainer && (!cudaStatus?.supported || !cudaStatus.installed || Boolean(cudaStatus.updateAvailable) || Boolean(gpuImageIssue(runtime))))} loading={submitting} type="submit">Create environment</Button></div>
             </div>
           </DialogFooter>
         </Form>}

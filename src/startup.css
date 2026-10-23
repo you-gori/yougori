@@ -1,11 +1,11 @@
 /* Available before React loads; shared with the native app's React fallback. */
 body { margin: 0; }
 .startup-screen {
-  --startup-bg: #ece8e0;
-  --startup-fg: #292723;
-  --startup-muted: #68635b;
-  --startup-track: #d2ccc2;
-  --startup-accent: #365e85;
+  --startup-bg: #ffffff;
+  --startup-fg: #190301;
+  --startup-muted: #6c5e5c;
+  --startup-track: #ebe8da;
+  --startup-accent: #190301;
   display: grid;
   min-height: 100vh;
   min-height: 100dvh;
@@ -14,20 +14,20 @@ body { margin: 0; }
   padding: 28px;
   background: var(--startup-bg);
   color: var(--startup-fg);
-  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-family: "Hanken Grotesk Variable", "Helvetica Neue", Arial, sans-serif;
 }
-.dark .startup-screen { --startup-bg: #0e0f10; --startup-fg: #e7e8eb; --startup-muted: #969aa3; --startup-track: #292d33; --startup-accent: #6e90b4; }
+.dark .startup-screen { --startup-bg: #0e0f11; --startup-fg: #eceef0; --startup-muted: #9aa2a9; --startup-track: #282b2f; --startup-accent: #7fb5ff; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-yougori-theme]) .startup-screen { --startup-bg: #0e0f10; --startup-fg: #e7e8eb; --startup-muted: #969aa3; --startup-track: #292d33; --startup-accent: #6e90b4; }
+  :root:not([data-yougori-theme]) .startup-screen { --startup-bg: #0e0f11; --startup-fg: #eceef0; --startup-muted: #9aa2a9; --startup-track: #282b2f; --startup-accent: #7fb5ff; }
 }
 :root[data-yougori-palette] .startup-screen { --startup-bg: var(--background); --startup-fg: var(--foreground); --startup-muted: var(--muted-foreground); --startup-track: var(--border); --startup-accent: var(--primary); }
 .startup-content { width: min(100%, 340px); text-align: center; }
-.startup-brand { margin: 0 0 24px; font-size: 26px; font-weight: 600; letter-spacing: -0.8px; }
+.startup-brand { margin: 0 0 24px; font-size: 28px; font-weight: 400; letter-spacing: -0.04em; }
 .startup-track { width: 152px; height: 3px; margin: 0 auto 20px; overflow: hidden; border-radius: 4px; background: var(--startup-track); }
 .startup-track span { display: block; width: 45%; height: 100%; border-radius: inherit; background: var(--startup-accent); animation: startup-slide 1.5s ease-in-out infinite alternate; }
 .startup-message { margin: 0; color: var(--startup-muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .startup-title { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
-.startup-retry { margin-top: 20px; padding: 9px 18px; border: 1px solid var(--startup-track); border-radius: 7px; background: var(--startup-track); color: var(--startup-fg); font: inherit; font-size: 13px; cursor: pointer; }
+.startup-retry { margin-top: 20px; padding: 9px 20px; border: 1px solid var(--startup-track); border-radius: 75px; background: var(--startup-track); color: var(--startup-fg); font: inherit; font-size: 13px; cursor: pointer; }
 .startup-retry:hover { border-color: var(--startup-accent); }
 .startup-retry:focus-visible { outline: 2px solid var(--startup-accent); outline-offset: 3px; }
 @keyframes startup-slide { from { transform: translateX(-100%); } to { transform: translateX(225%); } }

@@ -98,6 +98,184 @@ pub async fn vault_export_plugin(app: AppHandle, window: WebviewWindow, director
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// A finished destroy's answer, with what this app could not clean up after it added to what
+/// the broker named. The vault is gone either way, so none of it is an error, and the list is
+/// never dropped: an answer that is not an object, which the protocol never sends, becomes
+/// `{"destroyed":true}` (the broker answers a destroy without an error only once the vault is
+/// gone, and this app has cleaned up on that basis).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn with_left_behind(answer: Value, left: Vec<String>) -> Value {
+    if left.is_empty() {
+        return answer;
+    }
+    let mut answer = match answer {
+        Value::Object(answer) => answer,
+        _ => serde_json::Map::from_iter([("destroyed".to_owned(), Value::Bool(true))]),
+    };
+    let mut all = answer.get("leftBehind").and_then(Value::as_array).cloned().unwrap_or_default();
+    all.extend(left.into_iter().map(Value::from));
+    answer.insert("leftBehind".into(), Value::Array(all));
+    Value::Object(answer)
+}
+
+/// What a destroy request's delivery means: done, nothing deleted, stopped part way, or unknown.
+#[cfg(windows)]
+#[derive(Debug, PartialEq)]
+enum Delivered {
+    /// Finished: the broker's answer.
+    Done(Value),
+    /// Nothing was deleted, said in full.
+    Nothing(String),
+    /// Deleting began and stopped, in the broker's words.
+    Partial(String),
+    /// Sent and not answered, or the broker's worker stopped mid-request: only the vault folder
+    /// can say what happened.
+    Unknown(String),
+}
+
+/// The answer an older broker gives to a request it does not know.
+#[cfg(windows)]
+const OLDER_BROKER: &str = "Invalid or unsupported vault request";
+
+/// Reads a destroy's delivery. A request never sent deleted nothing; any refusal the broker
+/// answered with came before a file was touched (an older broker's, which does not know the
+/// request, included); only a request sent and left unanswered is unknown.
+#[cfg(windows)]
+fn delivered(asked: yougori_vault::client::Asked) -> Delivered {
+    use yougori_vault::{client::Asked, protocol::{DESTROY_NOT_STARTED, DESTROY_UNFINISHED, SERVICE_STOPPED}};
+    match asked {
+        Asked::NotSent(error) => Delivered::Nothing(format!("{DESTROY_NOT_STARTED} {error}")),
+        Asked::Answered(Ok(result)) => Delivered::Done(result),
+        Asked::Answered(Err(error)) if error.starts_with(DESTROY_UNFINISHED) => Delivered::Partial(error),
+        Asked::Answered(Err(error)) if error.starts_with(DESTROY_NOT_STARTED) => Delivered::Nothing(error),
+        Asked::Answered(Err(error)) if error == SERVICE_STOPPED => Delivered::Unknown(error),
+        Asked::Answered(Err(error)) if error == OLDER_BROKER => Delivered::Nothing(format!(
+            "{DESTROY_NOT_STARTED} This Personal Vault is older than this Yougori and cannot delete itself. Choose Update vault, then choose Delete my vault again."
+        )),
+        Asked::Answered(Err(error)) => Delivered::Nothing(format!("{DESTROY_NOT_STARTED} {error}")),
+        Asked::Unanswered(error) => Delivered::Unknown(error),
+    }
+}
+
+/// What a destroy whose answer never came turned out to be, read from what the vault folder
+/// holds (`on_disk`, from the broker's status; `None` when that could not be asked either).
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Settled {
+    /// No secret can remain: it finished, and only its answer was lost.
+    Finished,
+    /// The vault is there and no destroy began.
+    NothingDeleted(String),
+    /// A destroy began and secrets may remain.
+    Partial(String),
+    /// Nothing could say.
+    Unknown(String),
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn settled(error: &str, on_disk: Option<&str>) -> Settled {
+    use yougori_vault::protocol::{DESTROY_NOT_STARTED, DESTROY_UNFINISHED};
+    match on_disk {
+        Some("none") => Settled::Finished,
+        Some("vault") => Settled::NothingDeleted(format!("{DESTROY_NOT_STARTED} The vault is still there; its answer was lost ({error}). Run Delete my vault again when you're ready.")),
+        Some("partial") => Settled::Partial(format!("{DESTROY_UNFINISHED} Its answer was lost ({error}), but the vault folder shows deleting began and did not finish. Run Delete my vault again to finish; it names every file left.")),
+        _ => Settled::Unknown(format!("Yougori could not confirm whether Personal Vault was deleted: {error}.")),
+    }
+}
+
+/// A destroy whose outcome nothing could confirm: what reaches the vault is stopped until
+/// somebody looks, and they are told how. `left` names whatever could not be stopped.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn unconfirmed(said: String, left: &[String]) -> String {
+    let access = if left.is_empty() {
+        "The vault's public link and gateway are stopped until you check.".to_owned()
+    } else {
+        left.join(" ")
+    };
+    format!("{said} {access} Open Personal Vault to see whether it is still there; if it is, run Delete my vault again.")
+}
+
+/// A destroy that stopped part way, and what became of the vault's public link and gateway:
+/// `left` names whichever is still running.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn unfinished(error: String, left: &[String]) -> String {
+    if left.is_empty() {
+        format!("{error} The vault's public link and gateway are stopped, so nothing can reach what is left.")
+    } else {
+        format!("{error} {}", left.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod destroy_tests {
+    use super::*;
+
+    #[test]
+    fn a_finished_destroy_names_what_is_left_and_never_reads_as_failed() {
+        let broker = json!({"destroyed": true, "leftBehind": ["The activity record could not note this deletion (disk full); the deletion itself finished."]});
+        let token = "The Cloudflare tunnel token for vault.example.com is still saved in Windows Credential Manager.".to_owned();
+        let answer = with_left_behind(broker, vec![token.clone()]);
+        assert_eq!(answer["destroyed"], true);
+        assert_eq!(answer["leftBehind"].as_array().unwrap().len(), 2, "the broker's and the app's, both named");
+        assert_eq!(answer["leftBehind"][1], json!(token));
+        // Cleanup that only fails on the token still reports a finished destroy.
+        let only_token = with_left_behind(json!({"destroyed": true}), vec![token.clone()]);
+        assert_eq!(only_token, json!({"destroyed": true, "leftBehind": [token]}));
+        assert_eq!(with_left_behind(json!({"destroyed": true}), Vec::new()), json!({"destroyed": true}));
+        // An answer that is not an object never loses the list.
+        assert_eq!(with_left_behind(json!(null), vec![token.clone()]), json!({"destroyed": true, "leftBehind": [token]}));
+    }
+
+    #[test]
+    fn a_destroy_whose_answer_was_lost_is_settled_by_what_the_vault_folder_holds() {
+        use yougori_vault::protocol::{DESTROY_NOT_STARTED, DESTROY_UNFINISHED};
+        let lost = "Vault request timed out; inspect activity before retrying an action";
+        assert_eq!(settled(lost, Some("none")), Settled::Finished);
+        let Settled::NothingDeleted(said) = settled(lost, Some("vault")) else { panic!("the vault is there") };
+        assert!(said.starts_with(DESTROY_NOT_STARTED) && said.contains(lost), "{said}");
+        let Settled::Partial(said) = settled(lost, Some("partial")) else { panic!("a destroy began") };
+        assert!(said.starts_with(DESTROY_UNFINISHED) && said.contains(lost), "{said}");
+        // Nothing to ask, or an answer it cannot read: never claimed either way.
+        for on_disk in [None, Some("unknown"), Some("something new")] {
+            let Settled::Unknown(said) = settled(lost, on_disk) else { panic!("{on_disk:?}") };
+            assert!(!said.starts_with(DESTROY_NOT_STARTED) && !said.starts_with(DESTROY_UNFINISHED) && said.contains("could not confirm"), "{said}");
+            let told = unconfirmed(said, &[]);
+            assert!(told.contains("stopped until you check") && told.contains("run Delete my vault again"), "{told}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_a_destroy_sent_and_left_unanswered_is_an_unknown_outcome() {
+        use yougori_vault::{client::Asked, protocol::{DESTROY_NOT_STARTED, DESTROY_UNFINISHED, SERVICE_STOPPED}};
+        // A vault that was not running was never asked: nothing deleted, nothing stopped for it.
+        let offline = delivered(Asked::NotSent("Personal Vault is not running. Open it from Yougori Desktop.".into()));
+        assert_eq!(offline, Delivered::Nothing(format!("{DESTROY_NOT_STARTED} Personal Vault is not running. Open it from Yougori Desktop.")));
+        // An older broker answered that it does not know the request: nothing deleted.
+        let Delivered::Nothing(older) = delivered(Asked::Answered(Err(OLDER_BROKER.into()))) else { panic!("an answer") };
+        assert!(older.starts_with(DESTROY_NOT_STARTED) && older.contains("Update vault"), "{older}");
+        // Any other answered refusal came before a file was touched.
+        assert_eq!(delivered(Asked::Answered(Err("The approval queue is full".into()))), Delivered::Nothing(format!("{DESTROY_NOT_STARTED} The approval queue is full")));
+        let said = format!("{DESTROY_NOT_STARTED} The deletion was declined or timed out.");
+        assert_eq!(delivered(Asked::Answered(Err(said.clone()))), Delivered::Nothing(said));
+        let partial = format!("{DESTROY_UNFINISHED} Its key is gone.");
+        assert_eq!(delivered(Asked::Answered(Err(partial.clone()))), Delivered::Partial(partial));
+        assert_eq!(delivered(Asked::Answered(Ok(json!({"destroyed": true})))), Delivered::Done(json!({"destroyed": true})));
+        // Only these leave it unknown: no answer, or a worker that stopped mid-request.
+        assert_eq!(delivered(Asked::Unanswered("Vault request timed out".into())), Delivered::Unknown("Vault request timed out".into()));
+        assert_eq!(delivered(Asked::Answered(Err(SERVICE_STOPPED.into()))), Delivered::Unknown(SERVICE_STOPPED.into()));
+    }
+
+    #[test]
+    fn a_destroy_that_stopped_part_way_says_the_public_link_is_stopped_or_names_it() {
+        let error = format!("{} Its key is gone.", yougori_vault::protocol::DESTROY_UNFINISHED);
+        assert!(unfinished(error.clone(), &[]).ends_with("nothing can reach what is left."));
+        let link = "The vault's public link https://vault.example.com is still connected: cloudflared process 4242 could not be stopped.".to_owned();
+        let named = unfinished(error.clone(), &[link.clone()]);
+        assert!(named.starts_with(&error) && named.ends_with(&link), "{named}");
+    }
+}
+
 #[cfg(test)]
 mod plugin_tests {
     use super::*;
@@ -158,10 +336,16 @@ pub async fn vault_status(app: AppHandle, window: WebviewWindow) -> Result<Value
     let _ = app;
     #[cfg(windows)]
     {
+        // Deliberately `exists()`: a broker that cannot be checked reads as needing an update,
+        // which offers Update vault with the person's consent. Nothing is written on this answer.
         let update_required = yougori_vault::platform::update_required(&bundled_broker(&app)?)?
             || !yougori_vault::platform::installed_binary()?.exists();
         match yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await {
             Ok(mut value) => {
+                // The broker's answer, read from the vault folder, is the truth; the note follows it.
+                if let Some(unfinished) = value["destroyIncomplete"].as_bool() {
+                    let _ = crate::vault_setup::note_destroy_unfinished(&app, unfinished);
+                }
                 let unregistered = crate::vault_setup::unregistered(&value);
                 value["updateRequired"] = json!(update_required || unregistered);
                 if unregistered {
@@ -171,8 +355,10 @@ pub async fn vault_status(app: AppHandle, window: WebviewWindow) -> Result<Value
                 value["setup"] = crate::vault_setup::status(&app).await?;
                 Ok(value)
             }
+            // The broker reads the vault folder; without it, the note this app keeps of a destroy
+            // that stopped part way stands in, so the row still says so before anyone tries.
             Err(error) => Ok(
-                json!({"running":false,"locked":true,"supported":true,"updateRequired":update_required,"notice":error,"setup":crate::vault_setup::status(&app).await?,"items":[],"clients":[],"pending":[],"activity":[]}),
+                json!({"running":false,"locked":true,"supported":true,"updateRequired":update_required,"notice":error,"destroyIncomplete":crate::vault_setup::destroy_unfinished_noted(&app),"setup":crate::vault_setup::status(&app).await?,"items":[],"clients":[],"pending":[],"activity":[]}),
             ),
         }
     }
@@ -208,21 +394,6 @@ pub async fn vault_control(
             }
             "browse" => Request::Browse {},
             "credentials" => Request::HttpCredentials {},
-            "remote" => {
-                let result = client::call(&Request::Remote {}).await?;
-                let port = result["brokerPort"]
-                    .as_u64()
-                    .and_then(|p| u16::try_from(p).ok())
-                    .filter(|p| *p > 0)
-                    .ok_or("Protected broker did not return a valid endpoint")?;
-                let mut result = result;
-                result["gateway"] = crate::vault_gateway::start(&app, port).await?;
-                return Ok(result);
-            }
-            "remote_off" => {
-                crate::vault_gateway::stop(&app).await?;
-                return client::call(&Request::RemoteOff {}).await;
-            }
             "lock" => Request::Lock {},
             "revoke" => Request::Revoke {
                 client: id.ok_or("Choose a client")?,
@@ -230,6 +401,40 @@ pub async fn vault_control(
             "remove" => Request::Remove {
                 item: id.ok_or("Choose an item")?,
             },
+            // The broker deletes only after its own approval in this window. Then nothing on
+            // this computer points at the vault: no setup, gateway or public link. Cleanup after
+            // that cannot undo the deletion, so it never fails it: anything it could not remove
+            // is named in `leftBehind`, and asking to delete again is never the answer.
+            "destroy" => {
+                let result = match delivered(client::ask(&Request::Destroy {}).await) {
+                    Delivered::Done(result) => result,
+                    // Never sent, or refused before a file was touched: nothing was deleted, and
+                    // nothing that reaches the vault is stopped for it.
+                    Delivered::Nothing(said) => return Err(said),
+                    // Deleting began and stopped: nothing may reach what is left. The setup
+                    // stays, so the vault row still offers Delete my vault.
+                    Delivered::Partial(error) => {
+                        let _ = crate::vault_setup::note_destroy_unfinished(&app, true);
+                        return Err(unfinished(error, &crate::vault_setup::stop_access(&app).await));
+                    }
+                    // Sent and no answer came: the broker stopped, or did not answer in time.
+                    // What the vault folder holds, as the broker reads it, settles it.
+                    Delivered::Unknown(error) => {
+                        let status = client::call(&Request::Status {}).await;
+                        let on_disk = status.as_ref().ok().and_then(|status| status["onDisk"].as_str()).map(str::to_owned);
+                        return match settled(&error, on_disk.as_deref()) {
+                            Settled::Finished => Ok(with_left_behind(json!({"destroyed": true}), crate::vault_setup::forget(&app).await)),
+                            Settled::NothingDeleted(said) => Err(said),
+                            Settled::Partial(said) => {
+                                let _ = crate::vault_setup::note_destroy_unfinished(&app, true);
+                                Err(unfinished(said, &crate::vault_setup::stop_access(&app).await))
+                            }
+                            Settled::Unknown(said) => Err(unconfirmed(said, &crate::vault_setup::stop_access(&app).await)),
+                        };
+                    }
+                };
+                return Ok(with_left_behind(result, crate::vault_setup::forget(&app).await));
+            }
             "deny" => Request::Deny {
                 request: id.ok_or("Choose a pending request")?,
             },

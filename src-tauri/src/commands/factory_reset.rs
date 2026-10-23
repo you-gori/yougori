@@ -297,6 +297,9 @@ pub async fn factory_reset_environment(
     if confirmation != environment.name {
         return Err("Type the environment name exactly to confirm factory reset".into());
     }
+    if super::uploading_environment(&environment_id) {
+        return Err(super::UPLOADING_REFUSAL.into());
+    }
     let result = reset(&environment_id, &store, &runtime, &backup).await;
     crate::security::record(crate::security::Event::new("environment.reset").env(&environment_id).outcome(&result));
     if let Err(error) = &result {

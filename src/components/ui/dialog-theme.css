@@ -1,0 +1,30 @@
+/* Every popup wears the Settings look: a soft deep shadow, a larger title, a bordered
+   header, and one shared 28px gutter down the header, body and footer.
+   Scoped to >=640px so the mobile bottom-sheet variant keeps its square edges. */
+@media (min-width: 640px) {
+  /* No max-height here: the viewport wrapper already fits the popup, and overriding it
+     lets tall dialogs outgrow their container. Settings sets its own. */
+  [data-slot="dialog-popup"] {
+    border-radius: 20px;
+    box-shadow:
+      0 1px 2px color-mix(in srgb, black 6%, transparent),
+      0 24px 64px -12px color-mix(in srgb, black 28%, transparent);
+  }
+  [data-slot="dialog-popup"]::before { border-radius: 19px; }
+}
+
+/* Settings sets its own larger hero title; this keeps compact forms' headers short. */
+[data-slot="dialog-title"] {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+}
+[data-slot="dialog-description"] { font-size: 13px; line-height: 1.45; }
+
+/* Scoped to DialogHeader: dialogs with a hand-built <header> (Settings among them) already
+   style their own. Kept tighter than Settings so compact forms keep a short header. */
+[data-slot="dialog-popup"] [data-slot="dialog-header"] {
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--border);
+}

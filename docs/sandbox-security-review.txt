@@ -352,6 +352,14 @@ MicroVMs and VMs
   cannot be backed up while locked down (the backup would restart it).
 - Lockdown now also removes the environment's private links, refuses new ones,
   and makes its PC folders answer nothing until it is unlocked.
+- Lockdown and kill switches (2026-10-20) also silence every way in that existed
+  before: public links (Cloudflare and direct), local-network ports, LAN, desk
+  and remote shares, and download links answer nothing, and connections already
+  open close within a second. Remote recipients are signed out, and their next
+  requests are refused. Unlock brings the same links back at the same addresses,
+  except a quick link on an environment the lockdown paused, which gets a new one.
+  Each listener checks at connection time, so a link restored while the
+  environment is contained stays silent too.
 - The Windows native sandbox granted the program's whole folder. A program in a
   shared folder (a drive's top level, the profile or a folder directly in it,
   OneDrive, AppData, Program Files, Windows, temp) gets its own .exe only.

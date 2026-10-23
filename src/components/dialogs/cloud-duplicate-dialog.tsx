@@ -1,13 +1,15 @@
 import { CloudDeploymentWarning, cloudRiskAcknowledgement } from "@/components/cloud-deployment-warning"
 import { useEffect, useRef, useState } from "react"
 import { cloudApi, type CloudDeployRequest } from "@/api/cloud-api"
-import { duplicationApi, type CloudCopyLocation, type DuplicationRequest } from "@/api/duplication-api"
+import { discardable, duplicationApi, type CloudCopyLocation, type DuplicationRequest } from "@/api/duplication-api"
+import { providerName } from "@/lib/environment-copies"
+import { GiveUpCopy } from "@/components/give-up-copy"
+import { useArmed } from "@/components/use-armed"
 import { usePlatform } from "@/context/platform-context"
 import type { Environment } from "@/types/platform"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
-import { ConfigurationHelp } from "@/components/configuration-help"
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogPanel, DialogFooter, DialogPopup } from "@/components/ui/dialog"
 import { driveLabel, storageDrives } from "@/lib/storage-drives"
 
@@ -41,6 +43,9 @@ export function CloudDuplicateDialog({ environment, destination, onClose }: { en
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const job = state?.duplicationJobs?.[operationId]
   const frozen = Boolean(job || saved)
+  const current = job ?? saved
+  const stopped = Boolean(current && current.status !== "complete" && current.status !== "running")
+  const { armed, arm, disarm } = useArmed()
   const cloudSource = environment.kind === "cloud"
   const direct = cloudSource && destination === "cloud" && source.provider === target.provider && source.account === target.account && source.region === target.region && source.resourceGroup === target.resourceGroup
   const supported = cloudSource || environment.kind === "fullVm" && environment.provider === "qemu"
@@ -63,12 +68,20 @@ export function CloudDuplicateDialog({ environment, destination, onClose }: { en
     await duplicateEnvironment(request)
     if (alive.current) onClose()
   })
+  // A copy that stopped part way can be given up on here, the one place its person reopens it.
+  const discard = () => perform(async () => {
+    await duplicationApi.cleanup(operationId)
+    await refreshPlatform().catch(() => undefined)
+    if (alive.current) onClose()
+  })
   const targetFields: [keyof CloudDeployRequest, string, string?][] = [["account", accountLabel(target.provider)], ["region", target.provider === "google" ? "Zone" : "Region"], ["machineType", "Machine size"], ["subnet", "Existing subnet"], ["username", "SSH username", "User already installed in the copied OS"]]
   if (target.provider === "azure") targetFields.push(["resourceGroup", "Resource group"], ["securityGroup", "Network security group"])
   if (target.provider === "aws") targetFields.push(["securityGroup", "Security group ID"], ["keyPair", "SSH key pair name"])
   return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
     <DialogPopup className="w-[min(72rem,calc(100vw-2rem))] max-w-none">
-      <DialogHeader><DialogTitle>Duplicate environment</DialogTitle><DialogDescription>{environment.name} → {destination === "cloud" ? "New cloud VM" : "Local VM"}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>Duplicate environment</DialogTitle><DialogDescription>{destination === "cloud"
+        ? `Copies the complete boot disk of ${environment.name} into a new VM at your cloud provider. The original is not changed.`
+        : `Copies the complete boot disk of ${environment.name} into a new VM on this computer. The original is not changed.`}</DialogDescription></DialogHeader>
       <form className="contents" onSubmit={event => { event.preventDefault(); void submit() }}>
         <DialogPanel className="space-y-4">
           <fieldset disabled={busy || frozen} className="space-y-4">
@@ -77,7 +90,7 @@ export function CloudDuplicateDialog({ environment, destination, onClose }: { en
             </div>
             <div className={`grid gap-5 ${cloudSource && destination === "cloud" ? "md:grid-cols-2" : ""}`}>
               {cloudSource ? <section aria-label="Source cloud VM" className="space-y-3 rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">Source VM</h3><ConfigurationHelp label="Source VM help">Check the source before stopping it to record its provider identity. Then stop the VM at the provider and check again. Disconnecting SSH does not stop it.</ConfigurationHelp></div>
+                <div className="space-y-1"><h3 className="text-sm font-medium">Source VM</h3><p className="text-xs leading-relaxed text-muted-foreground">Check the source while it runs, so Yougori records its provider identity. Then stop the VM at your provider and check again. Disconnecting SSH does not stop it.</p></div>
                 <ProviderChoice label="Source provider" value={source.provider} onChange={value => editSource("provider", value)} />
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field label={`Source ${accountLabel(source.provider)}`} value={source.account} onChange={value => editSource("account", value)} />
@@ -89,7 +102,7 @@ export function CloudDuplicateDialog({ environment, destination, onClose }: { en
                 <div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="ghost" disabled={!source.account} onClick={() => void perform(() => cloudApi.authenticate(source.provider, source.account))}>Sign in</Button><Button type="button" size="sm" variant="outline" onClick={() => void perform(async () => { try { const result = await duplicationApi.inspectSource(environment.id, source); if (destination === "local" && result.bootMode !== "uefi") throw new Error("Prepare a UEFI-bootable source image before copying this BIOS-only VM locally."); setInspected(true) } finally { await refreshPlatform().catch(() => undefined) } })}>{inspected ? "Source verified" : "Check source"}</Button></div>
               </section> : null}
               {destination === "cloud" ? <section aria-label="Destination cloud VM" className="space-y-3 rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">Destination VM</h3><ConfigurationHelp label="Destination VM help">The copied disk supplies the OS and installed software. Existing network rules are preserved. Azure uses a private IP. The cloud provider may adapt boot drivers during image import.</ConfigurationHelp></div>
+                <div className="space-y-1"><h3 className="text-sm font-medium">Destination VM</h3><p className="text-xs leading-relaxed text-muted-foreground">The copied disk brings the operating system and installed software. Existing network rules are kept, Azure uses a private IP, and the provider may adapt boot drivers while importing the image.</p></div>
                 <ProviderChoice label="Destination provider" value={target.provider} onChange={value => editTarget("provider", value)} />
                 <div className="grid gap-3 sm:grid-cols-2">{targetFields.map(([key, label, placeholder]) => <Field key={key} label={label} value={target[key]} onChange={value => editTarget(key, value)} placeholder={placeholder} />)}
                   {!direct && target.provider !== "azure" ? <Field label="Destination transfer bucket" value={targetBucket} onChange={value => { setTargetBucket(value); setReviewed(false) }} placeholder="Existing private bucket" /> : null}
@@ -103,9 +116,15 @@ export function CloudDuplicateDialog({ environment, destination, onClose }: { en
           {!supported ? <p role="status" className="text-sm text-muted-foreground">This is a {environment.kind === "microVm" ? "microVM" : "container"}, not a bootable cloud VM disk. It can be duplicated locally. Cloud conversion would need a separate runtime migration to preserve its behavior.</p> : !cloudSource && environment.status !== "stopped" ? <p role="status" className="text-sm text-muted-foreground">Stop the source environment before duplicating its disk.</p> : null}
           <p className="text-xs text-muted-foreground">Copies the complete boot disk, including installed apps and files. External services, shared folders and attached data disks are not silently substituted. Cloud copies require Linux and a compatible CPU architecture.</p>
           {job ? <div className="space-y-2 text-xs"><p role="status">{job.phase}{busy ? "…" : ""}</p>{job.resources.length ? <details><summary>Copy resources</summary><p className="mt-2 text-muted-foreground">These resources belong to this copy. Images and transfer files can incur charges until removed.</p><ul className="mt-2 space-y-1">{job.resources.map(resource => <li className="break-all" key={resource}>{resource}</li>)}</ul></details> : null}</div> : null}
+          {current && stopped && !discardable(current) ? <div className="space-y-2 text-xs text-muted-foreground">
+            <p>This copy already made resources at {providerName(current)}, listed above, and they are billed until they go. Resume finishes the copy and then removes them.</p>
+            {current.pending
+              ? <p>A step of it was sent and its result never written down, so it cannot be given up yet. Resume it once: before going on, it looks for what that step made.</p>
+              : <><p>If it cannot finish, give it up: that removes them, and the copy cannot be resumed afterwards.</p><GiveUpCopy id={operationId} job={current} onDone={onClose} /></>}
+          </div> : null}
           {error || job?.error ? <p role="alert" className="whitespace-pre-wrap text-sm text-destructive-foreground">{error || job?.error}</p> : null}
         </DialogPanel>
-        <DialogFooter><Button type="button" variant="ghost" onClick={onClose}>{busy ? "Run in background" : "Cancel"}</Button><Button type="submit" loading={busy} disabled={busy || !supported || !sourceReady || !reviewed || !name.trim() || !cloudSource && environment.status !== "stopped"}>{frozen ? "Resume copy" : "Duplicate"}</Button></DialogFooter>
+        <DialogFooter>{current && discardable(current) ? <Button type="button" variant="ghost" disabled={busy} title="Forgets this copy, which made nothing at the provider yet, so its settings can be chosen again." onClick={() => armed === "discard" ? (disarm(), void discard()) : arm("discard")}>{armed === "discard" ? "Confirm discard" : "Discard copy"}</Button> : null}<Button type="button" variant="ghost" onClick={onClose}>{busy ? "Run in background" : "Cancel"}</Button><Button type="submit" loading={busy} disabled={busy || !supported || !sourceReady || !reviewed || !name.trim() || !cloudSource && environment.status !== "stopped"}>{frozen ? "Resume copy" : "Duplicate"}</Button></DialogFooter>
       </form>
     </DialogPopup>
   </Dialog>

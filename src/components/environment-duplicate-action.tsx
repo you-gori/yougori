@@ -1,4 +1,4 @@
-import { CloudIcon, CopyIcon, MonitorIcon } from "lucide-react"
+import { CopyIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "@/components/ui/menu"
 
@@ -14,8 +14,8 @@ export function EnvironmentDuplicateAction({ name, disabled, onSelect }: {
       <CopyIcon aria-hidden="true" />
     </MenuTrigger>
     <MenuPopup align="start">
-      <MenuItem onClick={() => onSelect("local")}><MonitorIcon aria-hidden="true" />Local</MenuItem>
-      <MenuItem onClick={() => onSelect("cloud")}><CloudIcon aria-hidden="true" />Cloud</MenuItem>
+      <MenuItem onClick={() => onSelect("local")}>Local</MenuItem>
+      <MenuItem onClick={() => onSelect("cloud")}>Cloud</MenuItem>
     </MenuPopup>
   </Menu>
 }

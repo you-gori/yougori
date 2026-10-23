@@ -162,6 +162,50 @@ impl RuntimeManager {
             blocked_reason: busy.then(|| "Stop all running or paused containers and GPU-enabled full VMs before changing the shared GPU.".into()) })
     }
 
+    /// Stops this drive's container runtime when nothing runs in it. A busy runtime is
+    /// refused rather than restarted, and a runtime that will not stop cleanly is left alone.
+    async fn stop_idle_appliance(&self) -> Result<(), String> {
+        let mut guard = self.appliance.lock().await;
+        if let Some(process) = guard.as_mut() {
+            if process
+                .child
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                if !process.active_containers.is_empty() {
+                    return Err(
+                        "Stop all running or paused containers before changing the shared GPU."
+                            .into(),
+                    );
+                }
+                let response = self
+                    .client
+                    .post(format!("{}/v1/system/shutdown", process.endpoint.base_url))
+                    .bearer_auth(&process.endpoint.token)
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await
+                    .map_err(|e| format!("Could not stop the idle graphics runtime: {e}"))?;
+                if !response.status().is_success() {
+                    return Err("The idle runtime refused a clean shutdown; GPU selection was not changed.".into());
+                }
+                let status = tokio::time::timeout(Duration::from_secs(15), process.child.wait()).await
+                    .map_err(|_| "The idle runtime is still stopping. Retry shortly; no forced restart was attempted.")?
+                    .map_err(|e| e.to_string())?;
+                if !status.success() {
+                    return Err(
+                        "The idle runtime did not exit cleanly. GPU selection was not changed."
+                            .into(),
+                    );
+                }
+                self.record_appliance_overlay_state()?;
+            }
+            guard.take();
+        }
+        Ok(())
+    }
+
     pub async fn select_shared_gpu(
         &self,
         selected_id: Option<String>,
@@ -195,44 +239,17 @@ impl RuntimeManager {
                     return Err("Stop GPU-enabled full VMs before changing the shared GPU.".into());
                 }
             }
-            let mut guard = self.appliance.lock().await;
-            if let Some(process) = guard.as_mut() {
-                if process
-                    .child
-                    .try_wait()
-                    .map_err(|e| e.to_string())?
-                    .is_none()
-                {
-                    if !process.active_containers.is_empty() {
-                        return Err(
-                            "Stop all running or paused containers before changing the shared GPU."
-                                .into(),
-                        );
-                    }
-                    let response = self
-                        .client
-                        .post(format!("{}/v1/system/shutdown", process.endpoint.base_url))
-                        .bearer_auth(&process.endpoint.token)
-                        .timeout(Duration::from_secs(3))
-                        .send()
-                        .await
-                        .map_err(|e| format!("Could not stop the idle graphics runtime: {e}"))?;
-                    if !response.status().is_success() {
-                        return Err("The idle runtime refused a clean shutdown; GPU selection was not changed.".into());
-                    }
-                    let status = tokio::time::timeout(Duration::from_secs(15), process.child.wait()).await
-                        .map_err(|_| "The idle runtime is still stopping. Retry shortly; no forced restart was attempted.")?
-                        .map_err(|e| e.to_string())?;
-                    if !status.success() {
-                        return Err(
-                            "The idle runtime did not exit cleanly. GPU selection was not changed."
-                                .into(),
-                        );
-                    }
-                    self.record_appliance_overlay_state()?;
-                }
-                guard.take();
+            // An idle container runtime on any drive would keep the old GPU when it is next
+            // used, so each one stops first; the selection changes only when all of them have.
+            for engine in &engines {
+                engine.stop_idle_appliance().await.map_err(|error| {
+                    let drive = engine.storage_root().components().next()
+                        .map(|part| part.as_os_str().to_string_lossy().trim_start_matches(r"\\?\").to_owned())
+                        .unwrap_or_default();
+                    format!("{error} (container runtime on drive {drive})")
+                })?;
             }
+            self.stop_idle_appliance().await?;
             super::vm::write_durable_file(
                 self.settings_root.join("shared-gpu.json"),
                 serde_json::to_vec(&selected_id).map_err(|e| e.to_string())?,

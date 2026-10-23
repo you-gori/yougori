@@ -15,6 +15,8 @@ try {
     }
     localStorage.removeItem(previous)
   }
+  // The in-app CLI and Edit the App are gone: drop their saved view and remembered source folder.
+  for (const key of ["yougori.workspace-view", "yougori.edit-source-checkout"]) localStorage.removeItem(key)
 } catch (error) {
   console.warn("Yougori could not migrate browser preferences", error)
 }

@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "id": "access-0123456789abcdef",
+  "company": "Example Company",
+  "address": "10.0.0.7",
+  "port": 7465,
+  "tunnelPort": 7466,
+  "certificate": "FIXTURE CERTIFICATE, NOT A REAL ONE",
+  "createdAt": 1700000000,
+  "owner": "person-0000000000000001",
+  "people": [
+    {
+      "id": "person-0000000000000001",
+      "username": "one",
+      "name": "Person One",
+      "permission": "admin",
+      "teams": [
+        "engineering",
+        "support"
+      ],
+      "salt": "7777777777777777777777777777777777777777777777777777777777777777",
+      "keyHash": "8888888888888888888888888888888888888888888888888888888888888888",
+      "createdAt": 1700000100,
+      "lastSeenAt": 1700000200,
+      "email": "one@example.invalid",
+      "twoStep": "FIXTURESEALEDTWOSTEP",
+      "generation": 3,
+      "devices": [
+        {
+          "id": "device-0000000000000001",
+          "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "computer": "Computer one",
+          "createdAt": 1700000300,
+          "lastUsedAt": 1700000400,
+          "strong": true,
+          "generation": 3
+        },
+        {
+          "id": "device-0000000000000002",
+          "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "computer": "Computer two",
+          "createdAt": 1700000500,
+          "lastUsedAt": 1700000600,
+          "strong": false,
+          "generation": 2
+        }
+      ]
+    },
+    {
+      "id": "person-0000000000000002",
+      "username": "two",
+      "name": "Person Two",
+      "permission": "approver",
+      "teams": [],
+      "salt": "9999999999999999999999999999999999999999999999999999999999999999",
+      "keyHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "createdAt": 1700000700,
+      "generation": 0
+    }
+  ],
+  "credentials": [
+    {
+      "id": "credential-0000000000000001",
+      "name": "Example API",
+      "kind": "bearer",
+      "field": "",
+      "destinations": [
+        "https://api.example.invalid",
+        "https://second.example.invalid"
+      ],
+      "note": "The example service",
+      "hint": "abcd",
+      "sealed": "FIXTURE-SEALED-NOT-A-REAL-VALUE",
+      "createdAt": 1700000800,
+      "createdBy": "person-0000000000000001",
+      "updatedAt": 1700000900,
+      "config": {
+        "clientId": "example-client",
+        "tokenUrl": "https://token.example.invalid"
+      }
+    },
+    {
+      "id": "credential-0000000000000002",
+      "name": "Second API",
+      "kind": "github-app",
+      "field": "X-Api-Key",
+      "destinations": [
+        "https://third.example.invalid"
+      ],
+      "note": "",
+      "hint": "",
+      "sealed": "FIXTURE-SEALED-NOT-A-REAL-VALUE-TWO",
+      "createdAt": 1700001000,
+      "createdBy": "person-0000000000000001",
+      "updatedAt": 1700001100
+    }
+  ],
+  "rules": [
+    {
+      "id": "rule-0000000000000001",
+      "credential": "credential-0000000000000001",
+      "who": "everyone",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/repos/example",
+      "decision": "ask",
+      "reveal": true,
+      "expiresAt": 1700900000,
+      "limit": 20,
+      "note": "Ask an approver past twenty an hour",
+      "createdAt": 1700001200,
+      "createdBy": "person-0000000000000001"
+    },
+    {
+      "id": "rule-0000000000000002",
+      "credential": "credential-0000000000000002",
+      "who": "person:person-0000000000000002",
+      "methods": [],
+      "path": "",
+      "decision": "never",
+      "reveal": false,
+      "note": "",
+      "createdAt": 1700001300,
+      "createdBy": "person-0000000000000001"
+    }
+  ],
+  "settings": {
+    "requireTwoStep": true
+  },
+  "sso": {
+    "issuer": "https://login.example.invalid/v2.0",
+    "clientId": "example-client",
+    "claim": "email",
+    "passwordless": true,
+    "redirectPort": 53682
+  },
+  "closing": {
+    "requestedAt": 1700001400,
+    "until": 1700300000,
+    "gone": false
+  }
+}

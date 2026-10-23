@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
+import { Address, Slot } from "@/components/popup-kit"
 
 export function EnvironmentDownloadDialog({ environment, onClose }: { environment: Environment; onClose(): void }) {
   const { state, setEnvironmentStatus } = usePlatform()
@@ -68,9 +69,9 @@ export function EnvironmentDownloadDialog({ environment, onClose }: { environmen
   }
   return <Dialog open onOpenChange={open => { if (!open && !guard.current) onClose() }}>
     <DialogPopup closeProps={{ disabled: busy }} className="nodrag nopan" onPointerDown={event => event.stopPropagation()}>
-      <DialogHeader><DialogTitle>Environment download link</DialogTitle><DialogDescription>{environment.name}</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>Environment download link</DialogTitle><DialogDescription>A link anyone can use to download a complete copy of {environment.name} and run it as their own, independent environment.</DialogDescription></DialogHeader>
       <DialogPanel className="space-y-4">
-        <p className="text-sm">Shares a complete copy of the environment’s disk, files, installed apps and settings. The recipient gets an independent environment.</p>
+        <p className="text-sm">The copy holds the environment’s disk, files, installed apps and settings.</p>
         <p className="text-xs text-muted-foreground">Shared PC folders, external disks, connection permissions and backup history stay with their owner. Files stored inside the environment are included, including databases and hidden files.</p>
         <div className="flex items-center justify-between gap-3"><p className="text-sm font-medium">Download link: {loading ? "Checking…" : link?.active ? "On" : "Off"}</p><Switch aria-label="Download link" checked={Boolean(link?.active)} disabled={busy || loading || !link?.active && (!reviewed || Boolean(unavailable) || domainInUse)} onCheckedChange={() => void change()} /></div>
         <p className="text-sm">Downloads (all time): {link?.downloads ?? 0}</p>
@@ -81,9 +82,10 @@ export function EnvironmentDownloadDialog({ environment, onClose }: { environmen
           <p className="text-xs text-muted-foreground">Copy size: {(link.sizeBytes / 1_000_000_000).toFixed(2)} GB. Changes made after creating this copy are included when you create a new link.</p>
         </div> : <>
           <label className="block space-y-2 text-sm">Link address<select aria-label="Link address" className="h-9 w-full rounded-md border bg-background px-2" value={domain} disabled={busy || loading} onChange={event => setDomain(event.target.value)}>
-            <option value="">Quick public link</option>
+            <option value="">Quick link, through Cloudflare</option>
             {(state?.savedDomains ?? []).map(item => <option key={item.id} value={item.hostname} disabled={occupied.has(item.id) || occupied.has(item.hostname)}>{item.hostname}{occupied.has(item.id) || occupied.has(item.hostname) ? " · In use" : ""}</option>)}
           </select></label>
+          <p className="text-xs leading-relaxed text-muted-foreground">People download from <Address>{domain ? <>https://{domain}</> : <>https://<Slot>random-words</Slot>.trycloudflare.com</>}/<Slot>private token</Slot></Address>{domain ? ", your saved domain." : ". Cloudflare picks the words when the link turns on, and the token is new for every link."}</p>
           {!state?.savedDomains?.length && <p className="text-xs text-muted-foreground">Add a custom domain in Public access setups to use it here.</p>}
           <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={reviewed} disabled={busy} onChange={event => setReviewed(event.target.checked)} />Anyone with this link can download every file and credential inside this environment.</label>
           {canStop && <p className="text-sm">Creating the copy stops this environment so databases and files remain consistent.</p>}

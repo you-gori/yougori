@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react"
-import { Palette } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogDescription, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
 import { usePlatform } from "@/context/platform-context"
-import { defaultCustomTheme, themePresets, validCustomTheme, validThemeColor } from "@/lib/appearance"
+import { defaultCustomTheme, presetSwatches, themePresets, validCustomTheme, validThemeColor } from "@/lib/appearance"
 import type { CustomThemeColors, ThemePreference } from "@/types/platform"
 import "./theme-picker.css"
 import { useTopicWalkthroughModal } from "@/lib/topic-walkthrough"
@@ -63,7 +62,7 @@ export function ThemePicker() {
   }
 
   return <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
-    <Button className="dashboard-theme workspace-footer-reclaim" data-tour="theme" size="xs" type="button" variant="ghost" onClick={() => setOpen(true)}><Palette aria-hidden="true" className="size-3.5" /> Theme</Button>
+    <Button className="dashboard-theme workspace-footer-reclaim" data-tour="theme" size="xs" type="button" variant="ghost" onClick={() => setOpen(true)}>Theme</Button>
     <DialogPopup data-instruction="theme-dialog" className="theme-dialog max-w-[600px]" closeProps={{ disabled: busy }}>
       <DialogHeader className="gap-1 pb-2"><DialogTitle>Appearance</DialogTitle><DialogDescription>Choose a palette for Yougori.</DialogDescription></DialogHeader>
       <DialogPanel className="theme-panel">
@@ -72,12 +71,12 @@ export function ThemePicker() {
             <button key={id} type="button" aria-pressed={state.settings.theme === id} disabled={busy} onClick={() => void choose(id)}>{label}</button>)}
         </div>
         <div className="theme-grid" aria-label="Color themes">
-          {themePresets.map((preset, index) => <button key={preset.id} className="theme-choice" type="button" aria-pressed={state.settings.theme === preset.id} disabled={busy} onClick={() => void choose(preset.id)}>
-            <Swatches colors={preset.colors} /><span>Theme {index + 1} <small>{preset.name}</small></span>
+          {themePresets.map(preset => <button key={preset.id} className="theme-choice" type="button" aria-pressed={state.settings.theme === preset.id} disabled={busy} onClick={() => void choose(preset.id)}>
+            <Swatches colors={presetSwatches(preset)} /><span>{preset.name} <small>{preset.dark ? "Dark" : "Light"}</small></span>
           </button>)}
         </div>
         <section className="theme-custom" aria-label="Custom theme" data-selected={state.settings.theme === "custom"}>
-          <div className="theme-custom-heading"><span>Theme 6 <small>Custom</small></span><Swatches colors={draft} /></div>
+          <div className="theme-custom-heading"><span>Custom <small>Your own four colors</small></span><Swatches colors={draft} /></div>
           <div className="theme-fields">
             {colorFields.map(({ key, label }) => <label key={key}><span>{label}</span><input aria-invalid={draft[key].length > 0 && !validThemeColor(draft[key])} autoComplete="off" maxLength={7} spellCheck={false} value={draft[key]} onChange={event => setDraft(current => ({ ...current, [key]: event.target.value }))} /></label>)}
           </div>

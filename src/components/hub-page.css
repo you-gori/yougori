@@ -1,0 +1,103 @@
+/* The Hub page in the app: the grids' flat sheets, with item rows and a readable detail view. */
+.hub-views { margin: 0 0 12px; }
+.hub-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 16px; background: var(--cream, var(--card)); }
+.hub-search { flex: 1 1 260px; min-width: 0; height: 32px; padding: 0 12px; border: 1px solid var(--input); border-radius: 8px; background: var(--popover); color: var(--foreground); font: inherit; font-size: 13px; }
+.hub-search:focus-visible, .hub-sort select:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.hub-check, .hub-sort { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
+.hub-sort select { height: 28px; padding: 0 8px; border: 1px solid var(--input); border-radius: 7px; background: var(--popover); color: var(--foreground); font: inherit; font-size: 12px; }
+.hub-note { margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.5; }
+.hub-board-note { padding: 0 16px; }
+.hub-count { margin: 4px 0 0; color: var(--muted-foreground); font-size: 12px; }
+.hub-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 8px; }
+.hub-row { display: grid; align-content: start; gap: 6px; padding: 16px 18px; border: 0; background: var(--cream, var(--card)); color: var(--foreground); font: inherit; text-align: left; cursor: pointer; transition: background .15s; }
+.hub-row:hover { background: var(--cream-deep, var(--muted)); }
+.hub-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.hub-row-head, .hub-detail-title, .hub-instance-head, .hub-version-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.hub-row-title { font-size: 16px; font-weight: 500; letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.hub-row-ref { margin: 0; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.hub-row-summary { color: var(--ink-soft, var(--muted-foreground)); font-size: 13px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hub-row-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--ink-muted, var(--muted-foreground)); font-size: 11.5px; }
+.hub-tag { padding: 1px 8px; border-radius: 999px; background: var(--beige, var(--secondary)); color: var(--foreground); font-size: 11px; font-weight: 500; }
+.hub-tag[data-state="incomplete"] { background: color-mix(in srgb, var(--warning) 22%, transparent); }
+.hub-tag[data-state="ready"] { background: color-mix(in srgb, var(--success) 18%, transparent); }
+.hub-verified { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 5px; border-radius: 999px; background: var(--lavender, #eaeefb); color: #263f86; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.hub-verified svg { width: 14px; height: 14px; fill: #3b5cc2; }
+.hub-verified svg path + path { stroke: #fff; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.hub-warning { margin: 0; padding: 10px 16px; background: color-mix(in srgb, var(--warning) 14%, var(--cream, var(--card))); color: var(--warning-foreground); font-size: 13px; line-height: 1.5; }
+.hub-pages { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 8px 0; font-size: 12px; }
+
+/* Detail */
+.hub-detail > * { min-width: 0; }
+.hub-detail > button:first-child { justify-self: start; }
+.hub-detail-head { display: grid; gap: 6px; padding: 18px 18px 4px; background: var(--cream, var(--card)); }
+.hub-detail-head h2 { margin: 0; font-size: 26px; font-weight: 350; letter-spacing: -0.04em; overflow-wrap: anywhere; }
+.hub-summary { margin: 0; padding: 0 18px 16px; background: var(--cream, var(--card)); color: var(--ink-soft, var(--muted-foreground)); font-size: 14px; line-height: 1.55; }
+.hub-run { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 18px; background: var(--cream, var(--card)); }
+.hub-command { min-width: 0; padding: 6px 10px; border-radius: 7px; background: var(--popover); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.hub-counters { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 1px; margin: 0; background: var(--border); }
+.hub-counters div { padding: 10px 16px; background: var(--cream, var(--card)); }
+.hub-counters dt { color: var(--muted-foreground); font-size: 11px; }
+.hub-counters dd { margin: 2px 0 0; font-size: 18px; font-weight: 450; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.hub-tabs { justify-self: start; margin: 6px 0 2px; }
+.hub-readme { padding: 16px 20px; background: var(--cream, var(--card)); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.hub-readme > :first-child { margin-top: 0; }
+.hub-readme h2 { margin: 18px 0 8px; font-size: 20px; font-weight: 450; letter-spacing: -0.02em; }
+.hub-readme h3 { margin: 16px 0 6px; font-size: 16px; font-weight: 500; }
+.hub-readme h4 { margin: 14px 0 4px; font-size: 14px; font-weight: 600; }
+.hub-readme p, .hub-readme ul, .hub-readme ol { margin: 10px 0; }
+.hub-readme pre, .hub-code { margin: 10px 0; overflow-x: auto; padding: 12px 14px; border-radius: 8px; background: var(--popover); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; line-height: 1.6; }
+.hub-readme :not(pre) > code, .hub-review code, .hub-steps code, .hub-publish code { padding: 1px 5px; border-radius: 5px; background: var(--beige, var(--muted)); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.hub-readme blockquote { margin: 10px 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--muted-foreground); }
+.hub-readme hr { border: 0; border-top: 1px solid var(--border); }
+.hub-readme-link, .hub-link { padding: 0; border: 0; background: none; color: var(--foreground); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.hub-readme-image { color: var(--ink-muted, var(--muted-foreground)); font-style: italic; }
+.hub-files { margin: 0; padding: 0; list-style: none; background: var(--cream, var(--card)); }
+.hub-files li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 18px; border-top: 1px solid var(--workspace-outline, var(--border)); font-size: 12.5px; }
+.hub-files li:first-child { border-top: 0; }
+.hub-files button { padding: 0; border: 0; background: none; color: var(--foreground); font-family: var(--font-mono); font-size: 12px; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.hub-files button:hover { text-decoration: underline; }
+.hub-files li > span:last-child { flex: none; color: var(--ink-muted, var(--muted-foreground)); font-size: 11px; }
+.hub-file { background: var(--cream, var(--card)); }
+.hub-file-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.hub-file > .hub-note { padding: 14px 18px; }
+.hub-code { margin: 0; border: 0; border-radius: 0; background: transparent; list-style: none; counter-reset: line; max-height: 60vh; }
+.hub-code li { display: flex; counter-increment: line; }
+.hub-code li::before { content: counter(line); flex: none; width: 44px; padding-right: 12px; color: var(--ink-muted, var(--muted-foreground)); text-align: right; user-select: none; }
+.hub-code code { white-space: pre; }
+.hub-review { display: grid; gap: 10px; padding: 16px 18px; background: var(--cream, var(--card)); font-size: 13px; }
+.hub-review h3 { margin: 8px 0 0; font-size: 13px; font-weight: 600; }
+.hub-review ul, .hub-review ol { margin: 0; padding-left: 18px; line-height: 1.7; }
+.hub-callout { margin: 0; padding: 8px 12px; background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning-foreground); font-size: 12.5px; line-height: 1.5; }
+ul.hub-callout { padding-left: 28px; }
+.hub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.hub-table :is(th, td) { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.hub-table thead th { color: var(--muted-foreground); font-weight: 500; }
+.hub-flag { color: var(--warning-foreground); }
+.hub-versions { margin: 0; padding: 0; list-style: none; background: var(--cream, var(--card)); }
+.hub-versions li { padding: 10px 18px; border-top: 1px solid var(--workspace-outline, var(--border)); }
+.hub-versions li:first-child { border-top: 0; }
+.hub-versions p { margin: 6px 0 0; color: var(--ink-soft, var(--muted-foreground)); font-size: 13px; white-space: pre-wrap; }
+
+/* On this computer */
+.hub-instance { display: grid; gap: 10px; padding: 14px 18px; }
+.hub-instance > * { border-top: 0 !important; }
+.hub-instance-head strong { font-size: 15px; font-weight: 500; }
+.hub-links, .hub-steps { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
+.hub-links { list-style: none; padding-left: 0; }
+.hub-links li { display: flex; gap: 10px; }
+.hub-links li > span { min-width: 80px; color: var(--muted-foreground); }
+.hub-outputs { display: grid; gap: 4px; margin: 0; font-size: 12.5px; }
+.hub-outputs div { display: flex; gap: 10px; }
+.hub-outputs dt { min-width: 80px; color: var(--muted-foreground); }
+.hub-outputs dd { margin: 0; overflow-wrap: anywhere; }
+.hub-instance-actions, .hub-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Publish */
+.hub-publish-sheet { display: grid; gap: 12px; padding: 18px; }
+.hub-publish-sheet > * { border-top: 0 !important; }
+.hub-publish-sheet h2 { margin: 0; font-size: 20px; font-weight: 400; letter-spacing: -0.03em; }
+.hub-publish-sheet p { margin: 0; color: var(--ink-soft, var(--muted-foreground)); font-size: 13px; line-height: 1.6; }
+.hub-publish-sheet .hub-run { padding: 0; background: none; }
+.hub-rules { margin: 0; padding: 0; list-style: none; }
+.hub-rules li { padding: 12px 18px; font-size: 13px; line-height: 1.6; color: var(--ink-soft, var(--muted-foreground)); }
+.hub-rules strong { color: var(--foreground); font-weight: 600; }

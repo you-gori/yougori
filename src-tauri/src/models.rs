@@ -525,6 +525,10 @@ pub struct PlatformState {
     /// Last native startup outcome. Credentials and request payloads are never retained.
     #[serde(default)]
     pub startup_report: Option<crate::lifecycle::StartupReport>,
+    /// The CPU and memory WSL can give GPU containers, as the last metrics refresh read it, so
+    /// every later scheduling (a save, a start) keeps them inside it. Memory only, never saved.
+    #[serde(skip)]
+    pub cuda_capacity: Option<(f64, f64)>,
     /// Completed environment-copy downloads across every temporary link.
     #[serde(default)]
     pub environment_downloads: std::collections::BTreeMap<String, u64>,

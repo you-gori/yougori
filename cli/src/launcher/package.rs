@@ -59,15 +59,28 @@ pub struct Project {
     pub workspace_root: Option<PathBuf>,
 }
 
+/// The `yougori` file a Python project's first launch adds to its folder.
+pub const PYTHON_SHORTCUT: &str = include_str!("assets/python-yougori.py");
+
+/// The files that make a folder a project: Node.js's, then Python's.
+const PROJECT_FILES: [&str; 7] = ["package.json", "pyproject.toml", "requirements.txt", "setup.py", "manage.py", "main.py", "app.py"];
+
 pub fn is_project(folder: &Path) -> bool {
-    ["package.json", "pyproject.toml", "requirements.txt", "setup.py", "manage.py", "main.py", "app.py"]
-        .iter().any(|name| folder.join(name).is_file())
+    PROJECT_FILES.iter().any(|name| folder.join(name).is_file())
+}
+
+/// Why a folder cannot be launched, naming the files that would make it a project.
+pub fn not_a_project(folder: &Path) -> String {
+    let name = folder.file_name().map_or_else(|| "This folder".to_owned(), |name| name.to_string_lossy().into_owned());
+    format!(
+        "{name} has no project files to launch. Yougori looks for {} (Node.js), or {}, {}, {}, {}, {} or {} (Python). Run yougori launch inside your project's own folder.",
+        PROJECT_FILES[0], PROJECT_FILES[1], PROJECT_FILES[2], PROJECT_FILES[3], PROJECT_FILES[4], PROJECT_FILES[5], PROJECT_FILES[6]
+    )
 }
 
 fn read(path: &Path) -> Result<Value, String> {
-    let bytes = std::fs::read(path.join("package.json")).map_err(|e| {
-        format!("Run npm run yougori (or yougori launch) inside a project folder with a package.json: {e}")
-    })?;
+    let bytes = std::fs::read(path.join("package.json"))
+        .map_err(|e| format!("Could not read package.json ({e})"))?;
     let package: Value = serde_json::from_slice(bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes))
         .map_err(|e| format!("package.json is not valid JSON: {e}"))?;
     if !package.is_object() || package.get("scripts").is_some_and(|scripts| !scripts.is_object()) {
@@ -78,7 +91,10 @@ fn read(path: &Path) -> Result<Value, String> {
 
 impl Project {
     pub fn load(folder: &Path) -> Result<Self, String> {
-        if !folder.join("package.json").is_file() && is_project(folder) {
+        if !is_project(folder) {
+            return Err(not_a_project(folder));
+        }
+        if !folder.join("package.json").is_file() {
             return Self::python(folder);
         }
         let package = read(folder)?;
@@ -153,6 +169,37 @@ impl Project {
     }
     pub fn shortcut(&self) -> String {
         if self.is_python() { "python yougori".into() } else { format!("{} run yougori", self.manager.name()) }
+    }
+    /// A package script, run with `args` the way this package manager passes them on.
+    pub fn script_command(&self, script: &str, args: &str) -> String {
+        match (self.manager, args.is_empty()) {
+            (manager, true) => format!("{} run {script}", manager.name()),
+            (Manager::Npm, false) => format!("npm run {script} -- {args}"),
+            (manager, false) => format!("{} run {script} {args}", manager.name()),
+        }
+    }
+    /// How to run `yougori launch ARGS` for this project, as people type it in its folder: through
+    /// the shortcut its first launch added (a package script, or Python's `yougori` file) when that
+    /// shortcut is really there, else through yougori launch itself, which always works. Adding a
+    /// shortcut can fail without stopping a launch, so no hint names one that is not there.
+    pub fn launch_hint(&self, folder: &Path, args: &str) -> String {
+        let launch = format!("yougori launch {args}").trim_end().to_owned();
+        if self.is_python() {
+            let ours = std::fs::read_to_string(folder.join("yougori")).is_ok_and(|text| text == PYTHON_SHORTCUT);
+            return if ours { format!("python yougori {args}").trim_end().to_owned() } else { launch };
+        }
+        let (script, extra, wanted) = match args {
+            "" => ("yougori", "", "yougori launch"),
+            "--change" => ("yougori-change", "", "yougori launch --change"),
+            "--cloud" => ("yougori-cloud", "", "yougori launch --cloud"),
+            "--cloud --change" => ("yougori-cloud", "--change", "yougori launch --cloud"),
+            _ => return launch,
+        };
+        if read(folder).is_ok_and(|package| package["scripts"][script] == wanted) {
+            self.script_command(script, extra)
+        } else {
+            launch
+        }
     }
     fn python(folder: &Path) -> Result<Self, String> {
         // Dedicated dependency managers need their lockfile semantics; never silently ignore them.
@@ -643,6 +690,44 @@ mod tests {
         )
         .unwrap();
         assert!(Project::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn a_folder_without_project_files_says_which_files_make_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = Project::load(dir.path()).err().unwrap();
+        for name in PROJECT_FILES {
+            assert!(error.contains(name), "{name}: {error}");
+        }
+        assert!(error.contains("Node.js") && error.contains("Python") && error.contains("yougori launch"), "{error}");
+        assert!(!error.contains("os error") && !error.contains("npm run"), "{error}");
+    }
+
+    #[test]
+    fn launch_hints_use_the_shortcut_that_is_really_there_and_this_package_manager() {
+        let hints = |project: &Project, folder: &Path| ["", "--change", "--cloud", "--cloud --change"].map(|args| project.launch_hint(folder, args));
+        let dir = tempfile::tempdir().unwrap();
+        // Before the shortcuts are added, or when adding them failed: yougori launch itself.
+        std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let npm = Project::load(dir.path()).unwrap();
+        assert_eq!(hints(&npm, dir.path()), ["yougori launch", "yougori launch --change", "yougori launch --cloud", "yougori launch --cloud --change"]);
+        let with_scripts = r#"{"scripts":{"dev":"vite","yougori":"yougori launch","yougori-change":"yougori launch --change","yougori-cloud":"yougori launch --cloud"}}"#;
+        std::fs::write(dir.path().join("package.json"), with_scripts).unwrap();
+        assert_eq!(hints(&npm, dir.path()), ["npm run yougori", "npm run yougori-change", "npm run yougori-cloud", "npm run yougori-cloud -- --change"]);
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let pnpm = Project::load(dir.path()).unwrap();
+        assert_eq!(hints(&pnpm, dir.path()), ["pnpm run yougori", "pnpm run yougori-change", "pnpm run yougori-cloud", "pnpm run yougori-cloud --change"]);
+        // A script of the same name that runs something else is not Yougori's.
+        std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"dev":"vite","yougori-change":"custom settings"}}"#).unwrap();
+        assert_eq!(pnpm.launch_hint(dir.path(), "--change"), "yougori launch --change");
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("main.py"), "print('hello')").unwrap();
+        let python = Project::load(folder.path()).unwrap();
+        assert_eq!(python.launch_hint(folder.path(), "--change"), "yougori launch --change");
+        std::fs::write(folder.path().join("yougori"), PYTHON_SHORTCUT).unwrap();
+        assert_eq!(hints(&python, folder.path()), ["python yougori", "python yougori --change", "python yougori --cloud", "python yougori --cloud --change"]);
+        std::fs::write(folder.path().join("yougori"), "the person's own file").unwrap();
+        assert_eq!(python.launch_hint(folder.path(), ""), "yougori launch");
     }
 
     #[test]

@@ -88,20 +88,17 @@ impl RuntimeManager {
             return Err("Expected a container provider".into());
         }
         let path = self.route_path(scope, id)?;
-        fs::create_dir_all(path.parent().ok_or("Invalid provider directory")?)
-            .map_err(|e| e.to_string())?;
+        let directory = path.parent().ok_or("Invalid provider directory")?;
+        fs::create_dir_all(directory).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(provider).map_err(|e| e.to_string())?;
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(&bytes)
-                    .and_then(|_| file.sync_all())
-                    .map_err(|e| format!("Save container provider: {e}"))?;
-                Ok(())
-            }
+        // Written beside the route and moved in whole: a crash or a full disk cannot leave a
+        // partial route that would refuse this environment on every later start.
+        let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|e| format!("Save container provider: {e}"))?;
+        file.write_all(&bytes)
+            .and_then(|_| file.as_file().sync_all())
+            .map_err(|e| format!("Save container provider: {e}"))?;
+        match file.persist_noclobber(&path).map_err(|e| e.error) {
+            Ok(_) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 if self.read_route(scope, id)? != *provider {
                     return Err("This environment belongs to a different runtime. Moving its data requires an explicit backup/import; no data was moved.".into());
@@ -430,6 +427,11 @@ mod tests {
             directory.path(),
         )?;
         runtime.register_container_provider("cuda-test", &RuntimeProviderKind::YougoriCuda)?;
+        // Registering again with the same provider is accepted, and only the route is left.
+        runtime.register_container_provider("cuda-test", &RuntimeProviderKind::YougoriCuda)?;
+        let routes = directory.path().join("runtime/provider-routes/containers");
+        let names: Vec<_> = fs::read_dir(&routes).map_err(|e| e.to_string())?.map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        assert_eq!(names, ["cuda-test.json"]);
         assert_eq!(
             runtime.container_provider("legacy-test")?,
             RuntimeProviderKind::YougoriOci

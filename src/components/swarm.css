@@ -1,0 +1,141 @@
+/* Swarm Mining: worker rows reuse the Neo Grid sheet; these are the bits unique to bounties. */
+.swarm-source { min-height: 120px; font-family: var(--font-mono); }
+
+.swarm-detail { display: grid; gap: 10px; padding: 14px 18px 16px; background: color-mix(in srgb, var(--foreground) 2.5%, transparent); }
+.swarm-activity { max-height: 280px; overflow: auto; padding: 8px 10px; border: 1px solid var(--workspace-outline, var(--border)); border-radius: 10px; background: var(--background); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.swarm-activity > p { margin: 0; }
+.swarm-activity > p + p { margin-top: 3px; }
+.swarm-activity > p[data-kind="error"] { color: var(--destructive-foreground); }
+.swarm-activity > p strong { color: var(--muted-foreground); font-weight: 600; }
+.swarm-activity-empty { padding: 0 2px; }
+
+/* ===== 2026 refinements: KPI strip, bento gutters, monitoring-stream activity.
+   Grounded in current dashboard patterns (Linear/Stripe/Vercel/Grafana); text-only, no icons. ===== */
+.swarm-label { margin:0 0 2px; color:var(--muted-foreground); font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; }
+
+/* KPI metric strip — at-a-glance worker status, real fields only. */
+.swarm-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:1px; margin:2px 0 6px; border:1px solid var(--workspace-outline,var(--border)); border-radius:14px; overflow:hidden; background:var(--workspace-outline,var(--border)); }
+.swarm-stat { display:grid; gap:4px; padding:11px 14px; background:var(--background); min-width:0; }
+.swarm-stat dt { margin:0; color:var(--muted-foreground); font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.swarm-stat dd { margin:0; overflow:hidden; font-size:16px; font-weight:500; letter-spacing:-.02em; line-height:1.15; text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.swarm-stat dd small { color:var(--muted-foreground); font-size:11px; font-weight:400; letter-spacing:0; }
+.swarm-history { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:28px; margin:-6px 0 0; }
+.swarm-history > button { flex:none; margin-left:auto; }
+.swarm-stat-dot { display:inline-block; width:7px; height:7px; margin-right:7px; border-radius:50%; background:var(--leaf,#5f7d36); vertical-align:middle; animation:swarm-pulse 2s infinite; }
+@keyframes swarm-pulse { 0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--leaf,#5f7d36) 55%,transparent)} 70%{box-shadow:0 0 0 7px transparent} 100%{box-shadow:0 0 0 0 transparent} }
+@media (prefers-reduced-motion:reduce){ .swarm-stat-dot { animation:none } }
+
+/* Full-width tabs keep the conversation draft and live activity mounted. */
+.swarm-workspace { min-width:0; gap:12px; margin-top:2px; }
+.swarm-workspace [role="tabpanel"][hidden] { display:none; }
+.swarm-workspace [role="tabpanel"] { min-width:0; }
+.swarm-workspace .swarm-activity, .swarm-workspace .swarm-chat-log { height:clamp(320px, 55vh, 760px); max-height:none; overscroll-behavior:contain; }
+.swarm-workspace .swarm-conversation { margin:0; }
+.swarm-workspace-empty { align-self:start; }
+.swarm-activity-panel { display:grid; gap:6px; min-width:0; }
+.swarm-activity-head { display:flex; align-items:baseline; gap:8px; margin:0; font-size:13px; font-weight:600; }
+.swarm-activity-head span { font-size:11px; font-weight:500; color:var(--muted-foreground); }
+.swarm-reports .swarm-report { margin-block:0; padding:10px 12px; border:1px solid var(--workspace-outline,var(--border)); border-radius:12px; background:var(--background); }
+
+/* Activity → monitoring stream: category tag · body · timestamp · payload, color-coded by kind. */
+.swarm-activity { max-height:380px; padding:10px; border-radius:14px; }
+.swarm-activity > p { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:baseline; gap:3px 10px; margin:0; padding:5px 7px; border-radius:9px; }
+.swarm-activity > p + p { margin-top:1px; }
+.swarm-activity > p:hover { background:color-mix(in srgb, var(--foreground) 3.5%, transparent); }
+.swarm-evt { justify-self:start; align-self:center; min-width:44px; padding:2px 7px; border-radius:999px; font-size:9px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; text-align:center; color:var(--muted-foreground); background:color-mix(in srgb, var(--foreground) 7%, transparent); }
+.swarm-evt-body { min-width:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.swarm-evt-time { justify-self:end; align-self:center; color:color-mix(in srgb, var(--muted-foreground) 85%, transparent); font-size:9.5px; font-variant-numeric:tabular-nums; }
+.swarm-activity-io { grid-column:1 / -1; margin-top:3px; padding:4px 6px; border-radius:6px; background:color-mix(in srgb, var(--foreground) 4%, transparent); white-space:pre-wrap; overflow-wrap:anywhere; color:var(--muted-foreground); }
+/* think and action keep the neutral tag above. The palettes have no token left for them —
+   foreground, primary, warning and leaf each already mark another kind — and a fixed colour
+   would not follow Catppuccin, Rosé Pine, Nord or Tokyo Night. The tag still names the kind in
+   words, and thinking stays distinct by its italic body. */
+.swarm-activity > p[data-kind="thinking"] .swarm-evt-body { font-style:italic; }
+.swarm-activity > p[data-kind="text"] .swarm-evt { color:var(--foreground); background:color-mix(in srgb, var(--foreground) 11%, transparent); }
+.swarm-activity > p[data-kind="check"] .swarm-evt { color:var(--warning-foreground,#b45309); background:color-mix(in srgb, var(--warning,#b45309) 15%, transparent); }
+.swarm-activity > p[data-kind="attempt"] .swarm-evt, .swarm-activity > p[data-kind="report"] .swarm-evt { color:var(--leaf,#5f7d36); background:color-mix(in srgb, var(--leaf,#5f7d36) 16%, transparent); }
+.swarm-activity > p[data-kind="turn"] .swarm-evt, .swarm-activity > p[data-kind="turnEnd"] .swarm-evt { color:var(--primary); background:color-mix(in srgb, var(--primary) 10%, transparent); }
+
+/* The accept dialog: a list of bounties, then the authorization to tick. */
+.swarm-accept { width: min(680px, calc(100vw - 32px)); }
+.swarm-accept .grid-field > select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.swarm-offers { display: grid; gap: 8px; margin: 0 0 4px; padding: 0; list-style: none; }
+.swarm-offers button { display: grid; gap: 3px; width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--background); text-align: left; transition: border-color .15s, background-color .15s; }
+.swarm-offers button:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.swarm-offers button[aria-pressed="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, transparent); box-shadow: 0 0 0 1px var(--primary); }
+.swarm-offers strong { font-size: 13px; font-weight: 600; }
+.swarm-offers span { color: var(--muted-foreground); font-size: 12px; }
+.swarm-offer-summary { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.swarm-consent { display: grid; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+/* Labels need the full row; .grid-check is sized for a checkbox input only. */
+.swarm-check { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 10px; width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--muted) 45%, transparent); font-size: 13px; line-height: 1.5; cursor: pointer; }
+.swarm-check > input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--primary); cursor: inherit; }
+.swarm-check > span { min-width: 0; overflow-wrap: anywhere; }
+.swarm-check:has(input:disabled) { opacity: .6; cursor: not-allowed; }
+.swarm-prose { font-family: inherit; font-size: 13px; font-weight: 400; }
+
+/* Account chip on the right of the Swarm Mining title row. */
+.swarm-account { gap: 6px; font-weight: 500; }
+.swarm-account .grid-dot { width: 7px; height: 7px; }
+
+/* Suggested models in the worker setup: compact pills that fill the model field. */
+.swarm-suggest { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.swarm-suggest > button { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 10px; border: 1px solid var(--input, var(--border)); border-radius: 999px; background: var(--background); transition: border-color .12s, background-color .12s; }
+.swarm-suggest > button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.swarm-suggest > button[aria-pressed="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, transparent); }
+.swarm-suggest > button:disabled { cursor: not-allowed; opacity: .6; }
+.swarm-suggest > button strong { font-size: 12px; font-weight: 600; }
+.swarm-suggest > button span { color: var(--muted-foreground); font-size: 11px; }
+.swarm-suggest-note { margin-top: 6px; }
+
+.swarm-project-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin:.5rem 0 1rem; }
+.swarm-file-list,.swarm-report pre { max-height:18rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
+.swarm-terms { margin:.25rem 0 0; font-size:.8rem; }
+.swarm-terms > div { display:grid; grid-template-columns:minmax(0,10rem) minmax(0,1fr); gap:.25rem 1rem; }
+.swarm-terms dt { color:var(--muted-foreground); font-weight:500; }
+.swarm-terms dd { margin:0; overflow-wrap:anywhere; }
+.swarm-host { margin-block:1.5rem; }
+/* The worker's private chat, styled as a modern chat thread: your messages right, the worker's left. */
+.swarm-conversation { display:grid; gap:14px; margin-block:1rem 0; }
+.swarm-chat { display:grid; gap:10px; }
+.swarm-chat-log { display:flex; flex-direction:column; gap:12px; max-height:22rem; overflow-y:auto; padding:16px; border:1px solid var(--workspace-outline, var(--border)); border-radius:16px; background:color-mix(in srgb, var(--muted) 28%, var(--background)); }
+.swarm-chat-empty { margin:auto 0; padding:8px 4px; color:var(--muted-foreground); font-size:13px; text-align:center; }
+.swarm-msg { display:grid; gap:4px; max-width:80%; }
+.swarm-msg[data-role="you"] { justify-self:end; justify-items:end; }
+.swarm-msg[data-role="worker"] { justify-self:start; justify-items:start; }
+.swarm-msg-role { padding:0 4px; font-size:11px; font-weight:600; color:var(--muted-foreground); }
+.swarm-msg-bubble { padding:9px 13px; border-radius:14px; font-size:13px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.swarm-msg[data-role="you"] .swarm-msg-bubble { border-bottom-right-radius:4px; background:var(--primary); color:var(--primary-foreground); }
+.swarm-msg[data-role="worker"] .swarm-msg-bubble { border-bottom-left-radius:4px; background:color-mix(in srgb, var(--muted) 60%, transparent); color:var(--foreground); }
+.swarm-chat-form { display:flex; align-items:end; gap:8px; }
+.swarm-chat-form .swarm-chat-input { flex:1; min-height:42px; max-height:160px; resize:none; }
+.swarm-chat-error { margin:0; }
+.swarm-reports { display:grid; gap:6px; }
+.swarm-reports h3 { margin:0; color:var(--muted-foreground); font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; }
+.swarm-report,.swarm-host details { margin-block:.75rem; }
+.grid-form select { padding:.6rem; border:1px solid var(--border); border-radius:.5rem; background:var(--background); color:var(--foreground); }
+
+/* Prompts & guardrails editor (Swarm page) */
+.swarm-prompts-panel { margin-top: 1.25rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+.swarm-prompts-toggle {
+  background: none; border: none; cursor: pointer; padding: 0.25rem 0;
+  color: var(--muted-foreground); font: inherit; font-size: 0.8125rem;
+}
+.swarm-prompts-toggle:hover { color: var(--foreground); }
+.swarm-prompts { display: flex; flex-direction: column; gap: 1.25rem; margin-top: 0.75rem; }
+.swarm-prompts-loading { display: flex; align-items: center; gap: 0.5rem; color: var(--muted-foreground); padding: 1rem 0; }
+.swarm-prompts-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.swarm-prompts-intro p { color: var(--muted-foreground); font-size: 0.8125rem; max-width: 60ch; margin: 0; }
+.swarm-prompt-field { display: flex; flex-direction: column; gap: 0.375rem; }
+.swarm-prompt-head { display: flex; align-items: center; gap: 0.5rem; }
+.swarm-prompt-head label { font-weight: 500; }
+.swarm-prompt-badge {
+  font-size: 0.6875rem; padding: 0.0625rem 0.375rem; border-radius: 0.375rem;
+  border: 1px solid var(--border); color: var(--muted-foreground);
+}
+.swarm-prompt-badge.custom { color: var(--foreground); border-color: var(--foreground); }
+.swarm-prompt-field .grid-hint code {
+  background: var(--muted); padding: 0 0.25rem; border-radius: 0.25rem; margin: 0 0.125rem;
+}
+.swarm-prompt-actions { display: flex; align-items: center; gap: 0.5rem; }
+.swarm-prompt-dirty { color: var(--muted-foreground); font-size: 0.75rem; }

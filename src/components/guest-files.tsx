@@ -11,7 +11,10 @@ import { Input } from "@/components/ui/input"
 // writes go through the environment's own shell, never through the PC.
 export function GuestFiles({ environmentId, active }: { environmentId: string; active: boolean }) {
   const { state } = usePlatform()
+  // `directory` is the folder whose files are listed and acted on; `draft` is what is typed in
+  // the folder box, which only becomes the folder once it has been opened.
   const [directory, setDirectory] = useState(".")
+  const [draft, setDraft] = useState(".")
   const [entries, setEntries] = useState<GuestEntry[]>([])
   const [openFile, setOpenFile] = useState("")
   const [contents, setContents] = useState("")
@@ -32,7 +35,7 @@ export function GuestFiles({ environmentId, active }: { environmentId: string; a
   }, [])
   const browse = useCallback((path: string) => perform(async () => {
     const listing = await guestFilesApi.list(environmentId, path)
-    setDirectory(listing.path); setEntries(listing.entries)
+    setDirectory(listing.path); setDraft(listing.path); setEntries(listing.entries)
   }), [environmentId, perform])
   useEffect(() => { if (active && !entries.length && !error) void browse(directory) }, [active]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -57,7 +60,9 @@ export function GuestFiles({ environmentId, active }: { environmentId: string; a
     setStatus(`Deleted ${entry.name}.`)
   })
   const save = () => void perform(async () => {
-    await guestFilesApi.write(environmentId, openFile, contents)
+    // The text as it was read goes along, so a file changed by an agent, a terminal or another
+    // window since then is not overwritten unseen.
+    await guestFilesApi.write(environmentId, openFile, contents, saved)
     setSaved(contents); setStatus(`Saved ${openFile}.`)
   })
   const copyToPc = (entry: GuestEntry) => void perform(async () => {
@@ -74,7 +79,7 @@ export function GuestFiles({ environmentId, active }: { environmentId: string; a
     const result = await fileImportApi.copy(environmentId, paths, () => undefined)
     setStatus(`Imported ${result.files} files. Open ${result.destination} in this environment.`)
     const listing = await guestFilesApi.list(environmentId, directory)
-    setDirectory(listing.path); setEntries(listing.entries)
+    setDirectory(listing.path); setDraft(listing.path); setEntries(listing.entries)
   })
   const browseSource = (id: string, path: string) => void perform(async () => {
     const listing = await guestFilesApi.list(id, path)
@@ -85,15 +90,15 @@ export function GuestFiles({ environmentId, active }: { environmentId: string; a
     setStatus(`Copied ${result.files} files from ${result.sourceEnvironment}. Open ${result.destination} in this environment.`)
     setShowSource(false)
     const listing = await guestFilesApi.list(environmentId, directory)
-    setDirectory(listing.path); setEntries(listing.entries)
+    setDirectory(listing.path); setDraft(listing.path); setEntries(listing.entries)
   })
   const sources = state?.environments.filter(item => item.id !== environmentId && item.status === "running" && item.kind !== "fullVm" && item.kind !== "computerBranch") ?? []
 
   return <div data-guest-files className="flex h-full min-h-0 flex-col gap-2 p-2 text-sm">
     <div className="flex flex-wrap items-center gap-2">
       <Button size="xs" variant="ghost" aria-label="Parent folder" disabled={busy} onClick={() => void browse(joinPath(directory, ".."))}><ChevronUpIcon aria-hidden="true" /></Button>
-      <Input aria-label="Folder path" className="h-7 min-w-0 flex-1" value={directory} disabled={busy} onChange={event => setDirectory(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browse(directory) }} />
-      <Button size="xs" variant="ghost" aria-label="Refresh files" disabled={busy} onClick={() => void browse(directory)}><RefreshCwIcon aria-hidden="true" /></Button>
+      <Input aria-label="Folder path" className="h-7 min-w-0 flex-1" value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void browse(draft) }} />
+      <Button size="xs" variant="ghost" aria-label="Refresh files" disabled={busy} onClick={() => void browse(draft)}><RefreshCwIcon aria-hidden="true" /></Button>
       <Button size="xs" variant="outline" disabled={busy} onClick={() => importFromPc(false)}><UploadIcon aria-hidden="true" />Import files</Button>
       <Button size="xs" variant="outline" disabled={busy} onClick={() => importFromPc(true)}><UploadIcon aria-hidden="true" />Import folder</Button>
       <Button size="xs" variant="outline" disabled={busy || !sources.length} onClick={() => setShowSource(value => !value)}><UploadIcon aria-hidden="true" />Import from environment</Button>

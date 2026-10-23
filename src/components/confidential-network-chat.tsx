@@ -13,6 +13,8 @@ export function ConfidentialNetworkChat() {
   const [reply, setReply] = useState("")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  // The native client limits prompts to 32 KiB of UTF-8, not 32768 characters.
+  const tooLong = new TextEncoder().encode(prompt).length > 32768
   async function send() {
     if (busy) return
     setBusy(true); setError(""); setReply("")
@@ -40,7 +42,8 @@ export function ConfidentialNetworkChat() {
       <label>Neo Grid API key<Input type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} disabled={busy} /></label>
       </div>
       <label>Prompt<Textarea value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={32768} disabled={busy} /></label>
-      <Button className="confidential-send" size="sm" disabled={busy || !key || !node || !model || !prompt} onClick={() => void send()}>{busy ? "Verifying and sending…" : "Verify and send encrypted"}</Button>
+      <Button className="confidential-send" size="sm" disabled={busy || !key || !node || !model || !prompt || tooLong} onClick={() => void send()}>{busy ? "Verifying and sending…" : "Verify and send encrypted"}</Button>
+      {tooLong ? <p className="network-error">Shorten the prompt to 32 KiB.</p> : null}
       {error ? <p className="network-error" role="alert">{error}</p> : null}
       {reply ? <pre aria-label="Decrypted response">{reply}</pre> : null}
     </div> : null}

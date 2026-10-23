@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from "react"
-import { ArrowRightIcon, GlobeIcon, NetworkIcon, PlusIcon, WaypointsIcon } from "lucide-react"
+import { QuickLinkAddress } from "@/components/cloudflare-account-fields"
+import { Address, Slot } from "@/components/popup-kit"
 import { Button } from "@/components/ui/button"
 import { DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field"
@@ -50,9 +51,8 @@ export function AddServicePortDialog({ environment, onAddPort, onBusyChange }: {
 
   return <DialogPopup closeProps={{ disabled: busy }} data-add-service-port={environment?.id} bottomStickOnMobile={false} className="service-port-workbench max-h-[calc(100dvh-2rem)] max-w-[920px] overflow-hidden sm:max-w-[920px]">
     <DialogHeader className="service-port-header">
-      <WaypointsIcon aria-hidden="true" />
       <DialogTitle className="service-port-title text-base leading-5"><span>Add a service port</span><span className="service-port-environment" title={name}> · {name}</span></DialogTitle>
-      <DialogDescription className="sr-only">Add the port used by an app inside this environment, then choose how to connect to it.</DialogDescription>
+      <DialogDescription className="sr-only">Tell Yougori which port your app listens on inside this environment. Nothing is published until you choose who can open it.</DialogDescription>
     </DialogHeader>
     <Form className="contents" onSubmit={submit}>
       <DialogPanel scrollFade={false} className="p-0!">
@@ -77,19 +77,22 @@ export function AddServicePortDialog({ environment, onAddPort, onBusyChange }: {
           <section aria-label="What happens next" className="service-port-next">
             <h2>What happens next</h2>
             <ol className="service-port-steps">
-              <li><span aria-hidden="true">1</span><div><h3>Add it to the node</h3><p>Your port appears on the environment graph.</p></div></li>
-              <li><span aria-hidden="true">2</span><div><h3>Choose who can connect</h3><p>Open its connections or connect it from the graph.</p></div></li>
+              <li><span aria-hidden="true">1</span><div><h3>It appears on the node</h3><p>The port shows on this environment in the graph, ready to connect.</p></div></li>
+              <li><span aria-hidden="true">2</span><div><h3>You choose who can open it</h3><p>Open the port's settings and pick one, or both:</p></div></li>
             </ol>
-            <div className="service-port-destinations"><span><NetworkIcon aria-hidden="true" />Local network</span><span><GlobeIcon aria-hidden="true" />Public access / Cloudflare</span></div>
-            <p className="service-port-privacy">Adding a port does not publish it or start your app. You choose access separately.</p>
+            <div className="service-port-destinations">
+              <span><span><strong>Local network</strong> · devices on your Wi-Fi or office network open <Address>http://<Slot>this PC's address</Slot>:<Slot>port</Slot></Address></span></span>
+              <span><span><strong>Public access</strong> · anyone with the link opens a Cloudflare address such as <QuickLinkAddress />, or your own domain</span></span>
+            </div>
+            <p className="service-port-privacy">Adding a port does not publish it or start your app. Nothing is reachable until you choose.</p>
           </section>
         </div>
       </DialogPanel>
       <DialogFooter className="service-port-footer">
-        <span className="service-port-footer-note"><ArrowRightIcon aria-hidden="true" />Next: connection options</span>
+        <span className="service-port-footer-note">Next, you choose who can open it.</span>
         <div className="service-port-actions">
           <DialogClose render={<Button disabled={busy} className="rounded-full" type="button" variant="ghost" />}>Cancel</DialogClose>
-          <Button className="service-port-submit" disabled={!environment} loading={busy} type="submit"><PlusIcon aria-hidden="true" />Add port</Button>
+          <Button className="service-port-submit" disabled={!environment} loading={busy} type="submit">Add port</Button>
         </div>
       </DialogFooter>
     </Form>

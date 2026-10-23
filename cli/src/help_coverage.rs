@@ -14,13 +14,15 @@ const ALIASES: &[(&str, &str)] = &[("environment", "env")];
 const MAIN_COMMANDS: &[&str] = &[
     "cli", "launch", "status", "top", "doctor", "update", "uninstall", "login", "logout", "account",
     "connect", "confidential", "vault", "bounty", "schema", "skills", "terminal", "download", "agent",
-    "app", "help", "monitor", "audit", "lockdown", "unlock", "grid",
+    "app", "help", "monitor", "audit", "lockdown", "unlock", "grid", "grids", "desks", "desk", "access",
+    "rollout", "template", "tool",
 ];
 
 /// Subcommands parsed outside `parse` (main.rs, public.rs and their helpers). Add new ones here.
 const PUBLIC_SUBCOMMANDS: &[&[&str]] = &[
     &["start", "bounty"],
-    &["grid", "create"], &["grid", "join"], &["grid", "password"],
+    &["bounty", "host"], &["bounty", "hosted"], &["bounty", "remove-hunter"], &["bounty", "unhost"],
+    &["grid", "create"], &["grid", "join"], &["grid", "password"], &["create", "grid"], &["join", "grid"], &["desks", "create"], &["desks", "join"], &["desks", "add-person"], &["desks", "person-password"], &["desk", "login"],
     &["app", "start"], &["app", "show"], &["app", "autostart"],
     &["agent", "discover"], &["agent", "inventory"],
     &["skills", "print"], &["skills", "status"], &["skills", "install"],
@@ -36,8 +38,26 @@ const PUBLIC_SUBCOMMANDS: &[&[&str]] = &[
     &["model", "auth", "login"], &["model", "auth", "status"], &["model", "auth", "logout"],
     &["model", "library"], &["model", "publish"], &["model", "upload"], &["model", "download"],
     &["model", "connect"], &["model", "permissions"], &["model", "versions"],
-    &["vault", "mcp"], &["vault", "identity"], &["vault", "status"], &["vault", "open"],
+    &["vault", "mcp"], &["vault", "status"], &["vault", "open"],
     &["vault", "approve"], &["vault", "add"], &["vault", "help"],
+    &["access", "status"], &["access", "create"], &["access", "signin"], &["access", "signout"], &["access", "delete"],
+    &["access", "add-person"], &["access", "set-person"], &["access", "person-password"], &["access", "remove-person"],
+    &["access", "add-credential"], &["access", "rotate-credential"], &["access", "remove-credential"],
+    &["access", "allow"], &["access", "remove-rule"], &["access", "requests"], &["access", "approve"], &["access", "deny"],
+    &["access", "log"], &["access", "use"], &["access", "check"], &["access", "mcp"],
+    &["access", "restore"], &["access", "backup"], &["access", "restore-backup"], &["access", "two-step"], &["access", "password"],
+    &["access", "computers"], &["access", "forget-computer"], &["access", "sign-out-others"], &["access", "reset-two-step"],
+    &["access", "sign-out-person"], &["access", "settings"], &["access", "sso"],
+    &["grids", "list"], &["grids", "status"], &["grids", "address"], &["grids", "new"], &["grids", "join"],
+    &["grids", "password"], &["grids", "leave"], &["grids", "delete"], &["grids", "restore"],
+    &["grids", "backup"], &["grids", "restore-backup"], &["grids", "settings"], &["grids", "manage"],
+    &["grids", "people"], &["grids", "computers"], &["grids", "share"], &["grids", "models"],
+    &["grids", "desks"], &["grids", "credentials"], &["grids", "requests"], &["grids", "research"],
+    &["grids", "connectors"], &["grids", "work"], &["grids", "log"],
+    &["rollout", "status"], &["rollout", "survey"], &["rollout", "rehearse"], &["rollout", "backup"],
+    &["rollout", "verify"], &["rollout", "restore"], &["rollout", "observe"], &["rollout", "coverage"],
+    &["rollout", "read"], &["rollout", "advance"], &["rollout", "back"], &["rollout", "retire"],
+    &["rollout", "unretire"], &["rollout", "forget"],
 ];
 
 /// `yougori bounty ACTION`, documented by `yougori bounty --help`. Add new actions here.
@@ -208,6 +228,42 @@ fn every_public_command_is_in_the_help_and_the_guide() {
         BOUNTY_ACTIONS.iter().map(|action| vec!["bounty", *action]),
         &[("yougori bounty --help", &bounty[..]), ("cli.txt", &guide[..])],
     ));
+    assert!(gaps.is_empty(), "Document these commands:\n{}", gaps.join("\n"));
+}
+
+/// Every verb of `yougori grids`, read from the table that parses them, is in the guide: the
+/// namespace's own help is built from that table, so the guide is the one place a verb added to
+/// it (the rented-GPU verbs, say) could be missing from.
+#[test]
+fn every_grids_verb_is_in_the_guide() {
+    let guide = all_commands(&guide_synopses(GUIDE));
+    let paths = crate::grids::VERBS.iter().map(|verb| match verb.noun {
+        "realm" => vec!["grids", verb.verb],
+        noun => vec!["grids", noun, verb.verb],
+    });
+    let gaps = missing(paths, &[("cli.txt", &guide[..])]);
+    assert!(gaps.is_empty(), "Document these commands:
+{}", gaps.join("
+"));
+}
+
+/// Every Hub command (`template …`, `tool …`, `run hub/…`), read from the Hub's own usage text, is
+/// in `yougori help` and in the agent guide's Hub topic.
+#[test]
+fn every_hub_command_is_in_the_help_and_the_guide() {
+    let help = all_commands(&help_synopses(public::HELP));
+    let guide = all_commands(&guide_synopses(GUIDE));
+    let usage = format!("{}\n{}", crate::hub::TEMPLATE_USAGE, crate::hub::TOOL_USAGE);
+    let paths: BTreeSet<Vec<&str>> = all_commands(&help_synopses(&usage))
+        .iter()
+        .flat_map(|command| match command.as_slice() {
+            [first] => first.iter().map(|word| vec![*word]).collect::<Vec<_>>(),
+            [first, second, ..] => first.iter().flat_map(|a| second.iter().map(move |b| vec![*a, *b])).collect(),
+            [] => Vec::new(),
+        })
+        .collect();
+    assert!(paths.contains(&vec!["template", "capture"]) && paths.contains(&vec!["tool", "open"]) && paths.contains(&vec!["run"]), "{paths:?}");
+    let gaps = missing(paths, &[("yougori help", &help[..]), ("cli.txt", &guide[..])]);
     assert!(gaps.is_empty(), "Document these commands:\n{}", gaps.join("\n"));
 }
 

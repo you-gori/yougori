@@ -53,6 +53,37 @@ pub(crate) async fn environment_network_lock(id: &str) -> std::sync::Arc<tokio::
     lock
 }
 
+/// Snapshots whose artifact a cloud backup is uploading, with their environment. A backup lets
+/// go of the environment's lock once its snapshot is taken, so the upload can run for hours
+/// without blocking Stop or Internet changes; until it ends nothing may delete what it reads.
+static UPLOADING: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+const UPLOADING_REFUSAL: &str = "A cloud backup of this environment is still uploading; wait for it to finish";
+
+fn uploads() -> std::sync::MutexGuard<'static, HashMap<String, String>> {
+    UPLOADING.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct Uploading(String);
+impl Uploading {
+    fn begin(snapshot_id: &str, environment_id: &str) -> Self {
+        uploads().insert(snapshot_id.to_owned(), environment_id.to_owned());
+        Self(snapshot_id.to_owned())
+    }
+}
+impl Drop for Uploading {
+    fn drop(&mut self) {
+        uploads().remove(&self.0);
+    }
+}
+
+fn uploading_snapshot(snapshot_id: &str) -> bool {
+    uploads().contains_key(snapshot_id)
+}
+
+fn uploading_environment(environment_id: &str) -> bool {
+    uploads().values().any(|id| id == environment_id)
+}
+
 #[cfg(target_os = "windows")]
 struct GpuSampler {
     query: usize,
@@ -738,6 +769,49 @@ fn connection_runtime_id<'a>(state: &'a PlatformState, id: &'a str) -> &'a str {
     state.environments.iter().find(|e| e.id == id).map(runtime_id).unwrap_or(id)
 }
 
+/// Drops the runtime rules of every connection touching `environment_id`. A restore replaces
+/// those connections in the store, and a rule left behind would keep carrying traffic for a
+/// connection that is no longer listed, with nothing left to remove it.
+async fn drop_connection_rules(state: &PlatformState, runtime: &RuntimeManager, environment_id: &str) {
+    for connection in state.connections.iter().filter(|item| item.source_id == environment_id || item.target_id == environment_id) {
+        let _ = runtime
+            .remove_environment_connection(
+                &connection.id,
+                connection_runtime_id(state, &connection.source_id),
+                connection_runtime_id(state, &connection.target_id),
+                container_connection(state, &connection.source_id, &connection.target_id),
+            )
+            .await;
+    }
+}
+
+/// A restore that dropped the rules of `environment_id`'s connections but could not save its
+/// result: they are still listed, so none may stay marked enforced. Where both ends run they are
+/// applied again; the rest wait as Pending, the way a stopped environment's connections do.
+async fn reenforce_after_failed_restore(store: &PlatformStore, runtime: &RuntimeManager, environment_id: &str) {
+    let unenforce = |state: &mut PlatformState| {
+        for connection in state.connections.iter_mut().filter(|item| item.source_id == environment_id || item.target_id == environment_id) {
+            connection.enforcement_status = Some(EnforcementStatus::Pending);
+            connection.provider_rule_ids.clear();
+        }
+        Ok(())
+    };
+    // The store could not be written a moment ago; if it still cannot, the shown state is corrected.
+    if store.mutate(unenforce).is_err() {
+        let _ = store.mutate_ephemeral(unenforce);
+    }
+    let _ = reconcile_connections(store, runtime, Reported::Nothing).await;
+}
+
+/// Forgets every destination's credentials and returns, for each the vault would not let go, its
+/// name and why. One kept credential stops no other: a reset this far along must finish, or the
+/// state would still list environments whose runtime data is already gone.
+fn forget_destination_credentials(destinations: &[BackupDestination], mut forget: impl FnMut(&str) -> Result<(), String>) -> Vec<String> {
+    destinations.iter()
+        .filter_map(|destination| forget(&destination.id).err().map(|error| format!("{}: {error}", destination.name)))
+        .collect()
+}
+
 fn vm_disk(environment: &Environment) -> Result<PathBuf, String> {
     environment
         .runtime_path
@@ -850,7 +924,8 @@ pub(crate) async fn enforce_snapshot_retention(
     loop {
         let state = store.snapshot()?;
         let retention = state.settings.snapshot_retention.max(1);
-        let Some(snapshot) = state.snapshots.get(retention).cloned() else {
+        // A snapshot a cloud backup is still uploading waits for the next pass.
+        let Some(snapshot) = state.snapshots.iter().skip(retention).find(|item| !uploading_snapshot(&item.id)).cloned() else {
             return Ok(state);
         };
         cleanup_snapshot_resources(&snapshot, &state, runtime, backup).await?;
@@ -1036,7 +1111,7 @@ pub async fn get_platform_state(store: State<'_, PlatformStore>, runtime: State<
         if !connection.active || connection.enforcement_status != Some(EnforcementStatus::Enforced) { continue }
         let shared = state.environments.iter().any(|environment| {
             (environment.id == connection.source_id || environment.id == connection.target_id)
-                && environment.runtime.starts_with("shared://tunnel/")
+                && (environment.runtime.starts_with("shared://tunnel/") || environment.runtime.starts_with("shared://desk/"))
         });
         if shared && !connection.permissions.is_empty() && !runtime.remote_connection_live(&connection.id).await {
             connection.enforcement_status = Some(EnforcementStatus::Error);
@@ -1074,7 +1149,7 @@ pub async fn open_environment_window(
     {
         return Err("This environment does not have a Yougori guest window".into());
     }
-    if environment.status != EnvironmentStatus::Running && !environment.runtime.starts_with("shared://tunnel/") {
+    if environment.status != EnvironmentStatus::Running && !environment.runtime.starts_with("shared://tunnel/") && !environment.runtime.starts_with("shared://desk/") {
         return Err("Start the environment before opening its guest window".into());
     }
     let title = environment.name.replace(['\r', '\n'], " ");
@@ -1118,8 +1193,8 @@ pub async fn reset_platform_state(
     if !state.pending_factory_resets.is_empty() {
         return Err("Finish the pending Factory reset before resetting all local data".into());
     }
-    for destination in &state.destinations {
-        backup.delete_credentials(&destination.id)?;
+    if !uploads().is_empty() {
+        return Err("A cloud backup is still uploading; wait for it to finish before resetting local data".into());
     }
     let mut cleanup_errors = Vec::new();
     for environment in &state.environments {
@@ -1180,6 +1255,13 @@ pub async fn reset_platform_state(
             "Yougori could not finish cleaning local runtime data: {}",
             cleanup_errors.join("; ")
         ));
+    }
+    // Only once the runtime cleanup is done: a reset that fails earlier keeps its backup
+    // destinations, and they must still be usable.
+    for kept in forget_destination_credentials(&state.destinations, |id| backup.delete_credentials(id)) {
+        let kept = crate::lifecycle::safe_diagnostic(&kept);
+        eprintln!("Reset kept backup destination credentials: {kept}");
+        crate::security::record(crate::security::Event::new("backup.credentials.kept").text("detail", &kept));
     }
     let mut empty = PlatformState::empty().map_err(|error| error.to_string())?;
     empty.settings = state.settings;
@@ -1413,6 +1495,31 @@ pub async fn create_environment(
     }), |state| { let _ = app.emit("yougori-platform-state", state); })).await
 }
 
+/// Why `environment` cannot be moved to `status` at all, checked before anything is cancelled or
+/// started. The same rules as the provider steps below, which still refuse anything that slips by.
+fn transition_refusal(environment: &Environment, status: &EnvironmentStatus) -> Option<String> {
+    if crate::peer_sharing::is_shared(environment) {
+        return None; // The owner's computer decides.
+    }
+    let pausing_what_is_not_running = *status == EnvironmentStatus::Paused
+        && !matches!(environment.status, EnvironmentStatus::Running | EnvironmentStatus::Paused);
+    match provider(environment) {
+        RuntimeProviderKind::CloudSsh if !matches!(status, EnvironmentStatus::Running | EnvironmentStatus::Stopped) => {
+            Some("Cloud nodes support Connect and Disconnect only. The server's power is not managed by Yougori.".into())
+        }
+        RuntimeProviderKind::NativeSandbox if *status == EnvironmentStatus::Paused => {
+            Some("Native application branches cannot be paused; stop the branch instead".into())
+        }
+        RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda if pausing_what_is_not_running => {
+            Some("Only a running container can be paused; start it first".into())
+        }
+        RuntimeProviderKind::Qemu if pausing_what_is_not_running => {
+            Some("Only a running virtual machine can be paused; start it first".into())
+        }
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub async fn set_environment_status(
     environment_id: String,
@@ -1429,6 +1536,9 @@ pub async fn set_environment_status(
         return Err("Provisioning and error states are controlled by the runtime".into());
     }
     let requested = store.environment(&environment_id)?;
+    if let Some(refusal) = transition_refusal(&requested, &status) {
+        return Err(refusal);
+    }
     if status == EnvironmentStatus::Running {
         crate::security::ensure_open(&store, &environment_id, "Starting or resuming it")?;
     }
@@ -1506,7 +1616,8 @@ pub async fn set_environment_status(
                 Ok(())
             }),
             EnvironmentStatus::Stopped => { runtime.cloud.disconnect(&environment.id).await; Ok(()) },
-            _ => Err("Cloud nodes support Connect and Disconnect only. The server's power is not managed by Yougori.".into()),
+            // A request that is not a transition at all changes nothing, so it marks no error.
+            _ => return Err("Cloud nodes support Connect and Disconnect only. The server's power is not managed by Yougori.".into()),
         },
         RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => {
             if status == EnvironmentStatus::Running
@@ -1583,7 +1694,7 @@ pub async fn set_environment_status(
             (EnvironmentStatus::Running, EnvironmentStatus::Paused) => {
                 runtime.vm_action(runtime_id(&environment), "pause").await
             }
-            _ => Err("invalid virtual machine lifecycle transition".into()),
+            _ => return Err("invalid virtual machine lifecycle transition".into()),
         },
         RuntimeProviderKind::NativeSandbox => match (&environment.status, &status) {
             (EnvironmentStatus::Running, EnvironmentStatus::Running)
@@ -1602,9 +1713,9 @@ pub async fn set_environment_status(
                 runtime.stop_native_sandbox(runtime_id(&environment)).await
             }
             (_, EnvironmentStatus::Paused) => {
-                Err("Native application branches cannot be paused; stop the branch instead".into())
+                return Err("Native application branches cannot be paused; stop the branch instead".into())
             }
-            _ => Err("invalid native application branch lifecycle transition".into()),
+            _ => return Err("invalid native application branch lifecycle transition".into()),
         },
     };
     if let Err(error) = operation {
@@ -1663,6 +1774,11 @@ pub async fn set_environment_status(
             environment.resource_policy.memory_gb.current = 0.0;
             environment.console_endpoint = None;
             if environment.kind == EnvironmentKind::Cloud { environment.control_endpoint = None; }
+        } else if status == EnvironmentStatus::Paused {
+            // A paused guest uses no CPU or network, and the refresh samples only running ones:
+            // without this its last reading would show for as long as it stays paused.
+            environment.cpu_usage = 0.0;
+            environment.network_rx_mbps = 0.0;
         }
         for connection in &mut state.connections {
             if connection.source_id == environment_id || connection.target_id == environment_id {
@@ -1761,7 +1877,6 @@ pub async fn delete_environment(
     runtime: State<'_, RuntimeManager>,
     backup: State<'_, BackupManager>,
 ) -> Result<EnvironmentDeletionResult, String> {
-    crate::file_import::cancel_transfers(&environment_id, None); crate::guest_execution::cancel_environment_jobs(&environment_id);
     let snapshot_interruption = {
         let state = store.snapshot()?;
         let environment = state.environments.iter().find(|environment| environment.id == environment_id).ok_or("Environment not found")?;
@@ -1774,6 +1889,9 @@ pub async fn delete_environment(
     } else {
         network_lock.try_lock().map_err(|_| "Another lifecycle or network operation is changing this environment; retry after that operation finishes.".to_string())?
     };
+    if uploading_environment(&environment_id) {
+        return Err(UPLOADING_REFUSAL.into());
+    }
     factory_reset::cleanup_pending(&environment_id, &store, &runtime, &backup).await?;
     let state = store.snapshot()?;
     let environment = state
@@ -1785,6 +1903,10 @@ pub async fn delete_environment(
     if environment.status == EnvironmentStatus::Provisioning {
         return Err("Wait for this environment to finish creating before deleting it".into());
     }
+    // Only now, with the lock held and every precondition met, is the environment's work cut
+    // short: a deletion refused above leaves its transfers and jobs running.
+    crate::file_import::cancel_transfers(&environment_id, None);
+    crate::guest_execution::cancel_environment_jobs(&environment_id);
     // Resolved now: removing the runtime can also remove the storage route that locates it.
     let baseline = crate::changes::baseline_path(&runtime, &environment_id).ok();
     let pool = runtime.storage_runtime(runtime_id(&environment)).ok().flatten();
@@ -1961,6 +2083,10 @@ pub async fn rename_environment(
         return Err("Name must contain 2–80 characters and no control characters".into());
     }
     store.mutate(|state| {
+        // Names are looked up without regard to case (the CLI does), so two may not differ only by it.
+        if state.environments.iter().any(|item| item.id != environment_id && item.name.eq_ignore_ascii_case(name)) {
+            return Err("An environment with this name already exists".into());
+        }
         let environment = state.environments.iter_mut()
             .find(|item| item.id == environment_id).ok_or("Environment not found")?;
         // Display metadata only: disk paths, runtime IDs and connections stay unchanged.
@@ -2833,6 +2959,9 @@ pub async fn delete_snapshot(
         .find(|item| item.id == snapshot_id)
         .cloned()
         .ok_or("Snapshot not found")?;
+    if uploading_snapshot(&snapshot_id) {
+        return Err(UPLOADING_REFUSAL.into());
+    }
     cleanup_snapshot_resources(&snapshot, &state, &runtime, &backup).await?;
     store.mutate(|state| {
         state.snapshots.retain(|item| item.id != snapshot_id);
@@ -2915,13 +3044,15 @@ async fn restore_snapshot_now(
                         .unwrap_or(environment.gpu_access),
                 )
                 .await?;
-            runtime
+            // The container is already replaced and stays stopped; its next start applies these
+            // limits (and grows the shared runtime if they need it), so a refusal here is no failure.
+            let _ = runtime
                 .update_container_resources(
                     runtime_id(&environment),
                     restored_policy.cpu.preferred,
                     restored_policy.memory_gb.preferred,
                 )
-                .await?;
+                .await;
         }
         RuntimeProviderKind::Qemu => {
             if snapshot.provider_snapshot_id.is_some() {
@@ -2971,6 +3102,17 @@ async fn restore_snapshot_now(
             return Err("Snapshots for native application sandboxes are not available yet".into());
         }
     }
+    // The snapshot's connections replace this environment's current ones: their rules go first,
+    // and no reconcile may re-apply one in between. Reconcile below enforces the restored set.
+    let connection_serial = if snapshot.connections.is_some() {
+        let serial = connection_operations().lock().await;
+        // The runtime restore is done: a state read that fails now must not skip the rollback
+        // below, so the connections read at the start stand in for it.
+        drop_connection_rules(&store.snapshot().unwrap_or_else(|_| state.clone()), &runtime, &snapshot.environment_id).await;
+        Some(serial)
+    } else {
+        None
+    };
     let persisted = store.mutate(|state| {
         let environment = state
             .environments
@@ -3010,6 +3152,12 @@ async fn restore_snapshot_now(
                 .extend(connections.into_iter().filter(|item| {
                     environment_ids.contains(&item.source_id)
                         && environment_ids.contains(&item.target_id)
+                }).map(|mut item| {
+                    // Snapshot-time enforcement says nothing about now; reconcile decides again.
+                    item.enforcement_status = Some(EnforcementStatus::Pending);
+                    item.provider_rule_ids.clear();
+                    item.last_error = None;
+                    item
                 }));
         }
         if vm_disk_restore_pending {
@@ -3020,7 +3168,26 @@ async fn restore_snapshot_now(
         scheduler::schedule(state);
         Ok(())
     });
+    drop(connection_serial);
     if let Err(error) = persisted {
+        let result = restore_failed(error, vm_disk_restore_pending, &store, &runtime, &environment).await;
+        if snapshot.connections.is_some() {
+            reenforce_after_failed_restore(&store, &runtime, &snapshot.environment_id).await;
+        }
+        return result;
+    }
+    if vm_disk_restore_pending {
+        runtime
+            .finalize_vm_backup_install(runtime_id(&environment))
+            .await?;
+    }
+    reconcile_connections(&store, &runtime, Reported::Environment(&environment.id)).await?;
+    store.snapshot()
+}
+
+/// Puts back the previous VM disk of a restore that could not be saved, and says what failed.
+async fn restore_failed(error: String, vm_disk_restore_pending: bool, store: &PlatformStore, runtime: &RuntimeManager, environment: &Environment) -> Result<PlatformState, String> {
+    {
         if vm_disk_restore_pending {
             let mut errors = vec![error];
             if let Err(rollback) = runtime
@@ -3031,20 +3198,13 @@ async fn restore_snapshot_now(
                     "restoring the previous VM disk also failed: {rollback}"
                 ));
             }
-            if let Err(clear) = clear_vm_restore_intent(&store, runtime_id(&environment)) {
+            if let Err(clear) = clear_vm_restore_intent(store, runtime_id(environment)) {
                 errors.push(format!("clearing the VM restore intent failed: {clear}"));
             }
             return Err(errors.join("; "));
         }
-        return Err(error);
+        Err(error)
     }
-    if vm_disk_restore_pending {
-        runtime
-            .finalize_vm_backup_install(runtime_id(&environment))
-            .await?;
-    }
-    reconcile_connections(&store, &runtime, Reported::Environment(&environment.id)).await?;
-    store.snapshot()
 }
 
 #[tauri::command]
@@ -3208,7 +3368,20 @@ pub async fn run_backup(
             let restart =
                 restart_vm_after_maintenance(&runtime, &environment, &previous_status).await;
             let artifact = match (export, restart) {
-                (Ok(artifact), Ok(())) => artifact,
+                (Ok(artifact), Ok(())) => {
+                    // It runs again as before; a refresh that saw it stopped meanwhile must not
+                    // leave it marked as failed.
+                    if matches!(previous_status, EnvironmentStatus::Running | EnvironmentStatus::Paused) {
+                        let _ = store.mutate(|state| {
+                            if let Some(item) = state.environments.iter_mut().find(|item| item.id == environment_id && item.status == EnvironmentStatus::Error) {
+                                item.status = previous_status.clone();
+                                item.last_error = None;
+                            }
+                            Ok(())
+                        });
+                    }
+                    artifact
+                }
                 (Err(error), Ok(())) => return Err(error),
                 (Ok(artifact), Err(restart_error)) => {
                     let _ = runtime.remove_snapshot_artifact(&artifact.path).await;
@@ -3284,6 +3457,8 @@ pub async fn run_backup(
         connections: Some(connections.clone()),
     };
     let started_at = now();
+    // Marked before the snapshot is listed, so no delete or retention can find it unmarked.
+    let uploading = Uploading::begin(&snapshot.id, &environment_id);
     if let Err(error) = store.mutate(|state| {
         state.snapshots.insert(0, snapshot.clone());
         state.backup_runs.insert(
@@ -3313,6 +3488,10 @@ pub async fn run_backup(
             None => error,
         });
     }
+    // The snapshot is taken and listed. The upload reads only its artifact, which `uploading`
+    // keeps from being deleted, so the environment is free again: Stop, Internet changes and
+    // snapshots need not wait hours for the transfer.
+    drop(_guard);
     let upload = backup
         .upload(
             &destination,
@@ -3363,6 +3542,7 @@ pub async fn run_backup(
             })
         }
     };
+    drop(uploading);
     let retention = enforce_snapshot_retention(&store, &runtime, &backup).await;
     match (upload_result, retention) {
         (Ok(()), Ok(state)) => Ok(state),
@@ -3532,8 +3712,9 @@ pub(crate) async fn install_restored_backup(
     environment.resource_policy.cpu.current = 0.0;
     environment.resource_policy.memory_gb.current = 0.0;
 
+    let previous_status = state.environments.iter().find(|item| item.id == target_id).map(|item| item.status.clone());
     let mut vm_backup_install_pending = false;
-    let (provider_snapshot_id, artifact_path, artifact_size, checksum) = match restored_provider {
+    let installed = async { Ok::<_, String>(match restored_provider {
         RuntimeProviderKind::CloudSsh => return Err("Cloud nodes cannot be restored from a local VM backup".into()),
         RuntimeProviderKind::YougoriOci | RuntimeProviderKind::YougoriCuda => {
             runtime.register_container_provider(&environment.id, &restored_provider)?;
@@ -3551,13 +3732,15 @@ pub(crate) async fn install_restored_backup(
                     environment.gpu_access,
                 )
                 .await?;
-            runtime
+            // The restored container stays stopped; its next start applies these limits (and
+            // grows the shared runtime if they need it), so a refusal here is no failure.
+            let _ = runtime
                 .update_container_resources(
                     &environment.id,
                     environment.resource_policy.cpu.preferred,
                     environment.resource_policy.memory_gb.preferred,
                 )
-                .await?;
+                .await;
             let _ = backup
                 .delete_restore_artifact(&restored.artifact_path)
                 .await;
@@ -3639,10 +3822,34 @@ pub(crate) async fn install_restored_backup(
             }
         }
         RuntimeProviderKind::NativeSandbox => {
-            let _ = backup
-                .delete_restore_artifact(&restored.artifact_path)
-                .await;
             return Err("Restoring native application sandbox backups is not available yet".into());
+        }
+    }) }.await;
+    let (provider_snapshot_id, artifact_path, artifact_size, checksum) = match installed {
+        Ok(installed) => installed,
+        Err(error) => {
+            // The current copy was stopped and its connection rules dropped above: say so in the
+            // store rather than show it running and enforced, and leave no download behind.
+            let _ = backup.delete_restore_artifact(&restored.artifact_path).await;
+            let _ = store.mutate(|state| {
+                if let Some(item) = state.environments.iter_mut().find(|item| item.id == target_id) {
+                    if matches!(previous_status, Some(EnvironmentStatus::Running | EnvironmentStatus::Paused)) {
+                        item.status = EnvironmentStatus::Stopped;
+                        item.cpu_usage = 0.0;
+                        item.memory_usage_gb = 0.0;
+                        item.network_rx_mbps = 0.0;
+                        item.console_endpoint = None;
+                        item.control_endpoint = None;
+                    }
+                    item.last_error = Some(format!("Restoring a backup failed: {error}"));
+                }
+                for connection in state.connections.iter_mut().filter(|item| item.source_id == target_id || item.target_id == target_id) {
+                    connection.enforcement_status = Some(EnforcementStatus::Pending);
+                    connection.provider_rule_ids.clear();
+                }
+                Ok(())
+            });
+            return Err(error);
         }
     };
     environment.storage_delta_gb = artifact_size as f64 / 1_073_741_824.0;
@@ -3739,12 +3946,15 @@ pub(crate) async fn install_restored_backup(
 #[tauri::command]
 pub async fn update_settings(
     settings: AppSettings,
+    expected_revision: Option<u64>,
     store: State<'_, PlatformStore>,
     runtime: State<'_, RuntimeManager>,
     backup: State<'_, BackupManager>,
 ) -> Result<PlatformState, String> {
     let previous = store.snapshot()?;
-    let revision = previous.settings_revision;
+    // A caller that read settings earlier passes that revision so a stale object cannot
+    // silently revert newer changes; without one, the whole object replaces the current one.
+    let revision = expected_revision.unwrap_or(previous.settings_revision);
     let saved = crate::lifecycle::save_settings(settings, revision, &store).await?;
     crate::security::settings_changed(&previous.settings.security_monitoring, &saved.settings.security_monitoring);
     // The settings commit succeeded even if subsequent snapshot cleanup fails.
@@ -3828,12 +4038,45 @@ pub(crate) fn collect_host_metrics(previous: &HostMetrics, runtime_root: &std::p
         storage_drive,
         storage_drives: crate::runtime::storage::host_drives(&sampler.disks),
         storage_saved_gb: previous.storage_saved_gb,
-        pressure: scheduler::pressure(used_cpu, memory_percent),
+        pressure: scheduler::pressure_after(&previous.pressure, &cpu_history, &memory_history),
         cpu_history,
         gpu_history,
         memory_history,
         updated_at: now(),
     }
+}
+
+/// Whether the GPU containers' allocations, read under the pool lock right before a resize, add
+/// up to no more than WSL can give. A budget nobody has read yet does not hold a resize back.
+fn cuda_pool_fits(state: &PlatformState, capacity: Option<(f64, f64)>) -> bool {
+    let Some((cpus, memory)) = capacity else { return true };
+    let (cpu_total, memory_total) = scheduler::cuda_pool_total(state);
+    cpu_total <= cpus + 1e-9 && memory_total <= memory + 1e-9
+}
+
+/// Whether the container engine starts a container again after it exited, under its restart policy.
+fn restarted_after_exit(restart: &str, clean_exit: bool) -> bool {
+    match restart {
+        "" | "no" => false,
+        "on-failure" => !clean_exit,
+        _ => true,
+    }
+}
+
+/// Whether the stored environment still has the resource policy `environment` was read with.
+fn same_resource_policy(store: &PlatformStore, environment: &Environment) -> bool {
+    store.snapshot().ok().and_then(|state| state.environments.into_iter().find(|item| item.id == environment.id))
+        .is_some_and(|current| serde_json::to_value(&current.resource_policy).ok() == serde_json::to_value(&environment.resource_policy).ok())
+}
+
+/// One refresh's scheduling: new host numbers, allocations, and the CUDA pool's cap. A pool over
+/// its budget is returned, not raised: it must not stop the rest of the refresh.
+fn schedule_refresh(state: &mut PlatformState, metrics: HostMetrics, cuda_capacity: Option<(f64, f64)>) -> Option<String> {
+    // Kept for every later scheduling too (saves and starts), which reads no budget of its own.
+    state.cuda_capacity = cuda_capacity;
+    scheduler::update_metrics(state, metrics);
+    let (cpus, memory) = cuda_capacity?;
+    scheduler::limit_cuda_pool(state, cpus, memory).err()
 }
 
 /// Exits and lost connections noticed here are observations, recorded as the engine's.
@@ -3861,12 +4104,23 @@ async fn sample_host_metrics(
     // Compute and apply one container allocation at a time. Otherwise a
     // telemetry request holding an older policy can undo a concurrent Save.
     let cuda_capacity = runtime.cuda_capacity().await.ok();
+    let mut cuda_over_budget = None;
     let state = store.mutate_ephemeral(|state| {
         let metrics = collect_host_metrics(&state.host, runtime.storage_root());
-        scheduler::update_metrics(state, metrics);
-        if let Some((cpus, memory)) = cuda_capacity { scheduler::limit_cuda_pool(state, cpus, memory)?; }
+        cuda_over_budget = schedule_refresh(state, metrics, cuda_capacity);
         Ok(())
     })?;
+    {
+        // Said once when it starts or changes, not on every refresh.
+        static CUDA_BUDGET_NOTICE: Mutex<Option<String>> = Mutex::new(None);
+        let mut notice = CUDA_BUDGET_NOTICE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *notice != cuda_over_budget {
+            if let Some(error) = &cuda_over_budget {
+                eprintln!("CUDA containers keep their current limits: {error}");
+            }
+            notice.clone_from(&cuda_over_budget);
+        }
+    }
     let running_containers = state
         .environments
         .iter()
@@ -3916,7 +4170,8 @@ async fn sample_host_metrics(
         let lock = container_policy_lock(&root, &provider(environment)).await;
         // Background telemetry never queues ahead of lifecycle/configuration.
         let Ok(_pool_guard) = lock.try_lock_owned() else { continue; };
-        let Some(current) = store.snapshot()?.environments.into_iter().find(|current| current.id == environment.id && current.status == EnvironmentStatus::Running && current.last_opened_at == environment.last_opened_at) else { continue; };
+        let fresh = store.snapshot()?;
+        let Some(current) = fresh.environments.iter().find(|current| current.id == environment.id && current.status == EnvironmentStatus::Running && current.last_opened_at == environment.last_opened_at).cloned() else { continue; };
         let environment = &current;
         let mut refresh = ContainerRefresh {
             id: environment.id.clone(),
@@ -3956,6 +4211,13 @@ async fn sample_host_metrics(
                     refresh.exited = true;
                     refresh.clean_exit = success;
                     refresh.last_error = Some(if success{None}else{Some(message)});
+                    // It no longer holds the shared runtime: shared-GPU changes and space reclaims
+                    // need not wait for it. The pool lock held here keeps a new start out meanwhile.
+                    // A restart policy has the engine start it again, so it stays counted.
+                    let restarts = runtime.workload_options(runtime_id(environment)).is_ok_and(|options| restarted_after_exit(&options.restart, success));
+                    if !restarts {
+                        runtime.forget_active_container(runtime_id(environment)).await;
+                    }
                 }
                 Err(error) => refresh.last_error = Some(Some(error)),
             }
@@ -3963,15 +4225,19 @@ async fn sample_host_metrics(
             continue;
         }
         if environment.resource_policy.dynamic
+            && !(provider(environment) == RuntimeProviderKind::YougoriCuda && !cuda_pool_fits(&fresh, cuda_capacity))
             && resource_update_needed(
                 runtime_id(environment),
                 environment.resource_policy.cpu.current,
                 environment.resource_policy.memory_gb.current,
             )
         {
-            let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) else { continue; };
-            let result = apply_scheduled_resource_limits(&runtime, environment).await;
-            refresh.last_error = Some(result.err());
+            // A resize that cannot be reserved now waits for the next refresh; the usage
+            // numbers below are still recorded.
+            if let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) {
+                let result = apply_scheduled_resource_limits(&runtime, environment).await;
+                refresh.last_error = Some(result.err());
+            }
         }
         refresh.stats = Some((
             telemetry.stats.cpu_percent,
@@ -4060,11 +4326,13 @@ async fn sample_host_metrics(
                 environment.resource_policy.cpu.current,
                 environment.resource_policy.memory_gb.current,
             ) {
-            let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) else { continue; };
-            let result = apply_scheduled_resource_limits(&runtime, environment).await;
-            result
+            match resource_admission::reserve_update(&store, environment) {
+                Ok(_resource_claim) => Some(apply_scheduled_resource_limits(&runtime, environment).await),
+                // A resize that cannot be reserved now waits for the next refresh; usage still records.
+                Err(_) => None,
+            }
         } else {
-            Ok(())
+            Some(Ok(()))
         };
         let stats = runtime
             .native_sandbox_process_stats(runtime_id(environment))
@@ -4076,7 +4344,9 @@ async fn sample_host_metrics(
                 .iter_mut()
                 .find(|item| item.id == id && item.status == EnvironmentStatus::Running)
             {
-                item.last_error = resource_result.as_ref().err().cloned();
+                if let Some(result) = &resource_result {
+                    item.last_error = result.as_ref().err().cloned();
+                }
                 if let Ok(stats) = &stats {
                     item.cpu_usage = stats.cpu_percent;
                     item.memory_usage_gb = stats.memory_bytes as f64 / 1_073_741_824.0;
@@ -4089,7 +4359,17 @@ async fn sample_host_metrics(
         environment.status == EnvironmentStatus::Running
             && provider(environment) == RuntimeProviderKind::Qemu
     }) {
-        let power = runtime.vm_power_state(runtime_id(environment)).await;
+        let mut power = runtime.vm_power_state(runtime_id(environment)).await;
+        // A backup, snapshot or storage change stops a VM on purpose while it holds this
+        // environment's lock, and starts it again afterwards: that is not an exit.
+        if !matches!(power, Ok(crate::runtime::VmPowerState::Running)) {
+            if environment_network_lock(&environment.id).await.try_lock().is_err() {
+                continue;
+            }
+            // That step may have just finished and started it again: look once more now that
+            // nothing holds its lock, so a running VM is never recorded as stopped.
+            power = runtime.vm_power_state(runtime_id(environment)).await;
+        }
         let id = environment.id.clone();
         store.mutate_ephemeral(|state| {
             if let Some(item) = state
@@ -4144,6 +4424,11 @@ async fn sample_host_metrics(
             continue;
         }
         let Ok(_resource_claim) = resource_admission::reserve_update(&store, environment) else { continue; };
+        // A save made since this refresh read the state wins: never apply an allocation older
+        // than the policy the user just set.
+        if !same_resource_policy(&store, environment) {
+            continue;
+        }
         let result = apply_scheduled_resource_limits(&runtime, environment).await;
         let id = environment.id.clone();
         store.mutate_ephemeral(|state| {
@@ -4547,6 +4832,190 @@ mod tests {
         assert!(Reported::Connection("conn-old").covers(&connection));
         assert!(!Reported::Connection("conn-new").covers(&connection));
         assert!(!Reported::Nothing.covers(&connection));
+    }
+
+    #[test]
+    fn a_gpu_resize_waits_while_the_pool_adds_up_to_more_than_wsl_gives() {
+        let mut state = PlatformState::seeded().unwrap();
+        let desk = |id: &str, memory: f64| -> Environment {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"kind":"container","provider":"yougoriCuda","status":"running",
+                "runtime":"nvidia/cuda","description":"","createdAt":"test",
+                "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+                "resourcePolicy":{"cpu":{"min":1,"preferred":4,"max":4,"current":4},"memoryGb":{"min":3,"preferred":12,"max":12,"current":memory},"priority":"normal","dynamic":true}
+            })).unwrap()
+        };
+        state.environments = vec![desk("desk-a", 12.0), desk("desk-b", 12.0)];
+        assert!(!cuda_pool_fits(&state, Some((8.0, 15.5))), "12 + 12 GB is more than 15.5 GB");
+        state.environments[1].resource_policy.memory_gb.current = 3.5;
+        assert!(cuda_pool_fits(&state, Some((8.0, 15.5))));
+        assert!(cuda_pool_fits(&state, None));
+    }
+
+    #[test]
+    fn a_container_the_engine_restarts_after_it_exits_stays_counted() {
+        assert!(!restarted_after_exit("", true) && !restarted_after_exit("no", false));
+        assert!(restarted_after_exit("always", true) && restarted_after_exit("unless-stopped", true));
+        assert!(restarted_after_exit("on-failure", false) && !restarted_after_exit("on-failure", true));
+    }
+
+    #[test]
+    fn an_impossible_power_change_is_refused_before_anything_is_cancelled() {
+        let environment = |kind: &str, provider: &str, status: &str, runtime: &str| -> Environment {
+            serde_json::from_value(serde_json::json!({
+                "id":"env-power","name":"Power","kind":kind,"provider":provider,"status":status,
+                "runtime":runtime,"description":"","createdAt":"test",
+                "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+                "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":1,"preferred":1,"max":1,"current":0},"priority":"normal","dynamic":true}
+            })).unwrap()
+        };
+        let cloud = environment("cloud", "cloudSsh", "running", "ssh://server");
+        assert!(transition_refusal(&cloud, &EnvironmentStatus::Paused).unwrap().contains("Connect and Disconnect"));
+        assert!(transition_refusal(&cloud, &EnvironmentStatus::Stopped).is_none());
+        let stopped_vm = environment("microVm", "qemu", "stopped", "builtin:alpine");
+        assert!(transition_refusal(&stopped_vm, &EnvironmentStatus::Paused).is_some());
+        assert!(transition_refusal(&stopped_vm, &EnvironmentStatus::Running).is_none());
+        let running_container = environment("container", "yougoriOci", "running", "alpine:latest");
+        assert!(transition_refusal(&running_container, &EnvironmentStatus::Paused).is_none());
+        let stopped_container = environment("container", "yougoriOci", "stopped", "alpine:latest");
+        assert!(transition_refusal(&stopped_container, &EnvironmentStatus::Paused).is_some());
+        let shared = environment("container", "yougoriOci", "running", "shared://owner/env");
+        assert!(transition_refusal(&shared, &EnvironmentStatus::Paused).is_none(), "the owner's computer decides for a shared node");
+    }
+
+    #[test]
+    fn a_refresh_never_applies_a_policy_older_than_the_saved_one() {
+        let data = tempfile::tempdir().unwrap();
+        let store = PlatformStore::load(data.path().join("state.json")).unwrap();
+        let environment: Environment = serde_json::from_value(serde_json::json!({
+            "id":"env-vm","name":"VM","kind":"microVm","provider":"qemu","status":"running",
+            "runtime":"builtin:alpine","description":"","createdAt":"test",
+            "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+            "resourcePolicy":{"cpu":{"min":1,"preferred":2,"max":2,"current":2},"memoryGb":{"min":1,"preferred":8,"max":8,"current":8},"priority":"normal","dynamic":true}
+        })).unwrap();
+        store.mutate(|state| { state.environments.push(environment.clone()); Ok(()) }).unwrap();
+        assert!(same_resource_policy(&store, &environment));
+        // The user lowers its memory while the refresh holds the older copy.
+        store.mutate(|state| { state.environments[0].resource_policy.memory_gb.max = 4.0; state.environments[0].resource_policy.memory_gb.preferred = 4.0; Ok(()) }).unwrap();
+        assert!(!same_resource_policy(&store, &environment));
+        store.mutate(|state| { state.environments.clear(); Ok(()) }).unwrap();
+        assert!(!same_resource_policy(&store, &environment), "a deleted environment is not resized");
+    }
+
+    #[test]
+    fn an_over_budget_cuda_pool_does_not_stop_the_refresh() {
+        let mut state = PlatformState::seeded().unwrap();
+        // A paused CUDA container whose memory was raised beyond the shared WSL budget.
+        state.environments = vec![serde_json::from_value(serde_json::json!({
+            "id":"env-cuda","name":"CUDA","kind":"container","provider":"yougoriCuda","status":"paused",
+            "runtime":"nvidia/cuda","description":"","createdAt":"test",
+            "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+            "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":1},"memoryGb":{"min":20,"preferred":20,"max":20,"current":20},"priority":"normal","dynamic":true}
+        })).unwrap()];
+        let mut metrics = state.host.clone();
+        metrics.total_memory_gb = 64.0;
+        let over = schedule_refresh(&mut state, metrics, Some((8.0, 15.5)));
+        assert!(over.is_some_and(|error| error.contains("CUDA runtime")));
+        assert_eq!(state.host.total_memory_gb, 64.0, "host numbers still update");
+        let unchanged = state.host.clone();
+        assert_eq!(schedule_refresh(&mut state, unchanged, None), None);
+    }
+
+    #[test]
+    fn an_uploading_snapshot_is_protected_only_while_its_upload_runs() {
+        assert!(!uploading_snapshot("snap-upload-test"));
+        let upload = Uploading::begin("snap-upload-test", "env-upload-test");
+        assert!(uploading_snapshot("snap-upload-test"));
+        assert!(uploading_environment("env-upload-test"));
+        assert!(!uploading_environment("env-other-test"));
+        drop(upload);
+        assert!(!uploading_snapshot("snap-upload-test"));
+        assert!(!uploading_environment("env-upload-test"));
+    }
+
+    #[test]
+    fn a_reset_forgets_every_destination_even_when_the_vault_keeps_one() {
+        let destination = |id: &str, name: &str| -> BackupDestination {
+            serde_json::from_value(serde_json::json!({"id":id,"name":name,"provider":"awsS3","location":"s3://bucket","encrypted":true,"connected":true,"lastVerifiedAt":"2026-10-20T00:00:00Z"})).unwrap()
+        };
+        let destinations = [destination("dest-1", "Office"), destination("dest-2", "Archive"), destination("dest-3", "Cold")];
+        let mut tried = Vec::new();
+        let kept = forget_destination_credentials(&destinations, |id| {
+            tried.push(id.to_owned());
+            if id == "dest-2" { Err("the vault is locked".into()) } else { Ok(()) }
+        });
+        assert_eq!(tried, ["dest-1", "dest-2", "dest-3"], "one kept credential stops no other");
+        assert_eq!(kept, ["Archive: the vault is locked"]);
+    }
+
+    #[tokio::test]
+    async fn a_restore_that_could_not_be_saved_never_shows_its_connections_enforced() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        let store = PlatformStore::load(data.path().join("state.json")).unwrap();
+        let environment = |id: &str| -> Environment {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"kind":"microVm","provider":"qemu","status":"stopped",
+                "runtime":"builtin:alpine","description":"","createdAt":"test",
+                "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+                "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":0.25,"preferred":0.25,"max":0.25,"current":0},"priority":"normal","dynamic":true}
+            })).unwrap()
+        };
+        store.mutate(|state| {
+            state.environments = vec![environment("env-a"), environment("env-b"), environment("env-c")];
+            for (id, source, target) in [("conn-ab", "env-a", "env-b"), ("conn-bc", "env-b", "env-c")] {
+                let mut connection: Connection = serde_json::from_value(serde_json::json!({
+                    "id":id,"sourceId":source,"targetId":target,"direction":"bidirectional",
+                    "permissions":["network"],"ports":[],"active":true,"createdAt":"2026-10-20T00:00:00Z"
+                })).unwrap();
+                connection.enforcement_status = Some(EnforcementStatus::Enforced);
+                connection.provider_rule_ids = vec![format!("private:{id}")];
+                state.connections.push(connection);
+            }
+            Ok(())
+        }).unwrap();
+        reenforce_after_failed_restore(&store, &runtime, "env-a").await;
+        let state = store.snapshot().unwrap();
+        let ab = state.connections.iter().find(|c| c.id == "conn-ab").unwrap();
+        assert_eq!(ab.enforcement_status, Some(EnforcementStatus::Pending), "its rules were dropped");
+        assert!(ab.provider_rule_ids.is_empty());
+        let bc = state.connections.iter().find(|c| c.id == "conn-bc").unwrap();
+        assert_eq!(bc.enforcement_status, Some(EnforcementStatus::Enforced), "another environment's connection is left alone");
+    }
+
+    #[tokio::test]
+    async fn a_restore_drops_the_rules_of_the_connections_it_replaces() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime = RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        let fabric = runtime.fabric_clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut peers = Vec::new();
+        for id in ["env-a", "env-b"] {
+            let (client, accepted) = tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
+            peers.push(client.unwrap());
+            fabric.attach(id, accepted.unwrap().0).unwrap();
+        }
+        fabric.apply("conn-dropped", "env-a", "env-b", &ConnectionDirection::Bidirectional, &[PermissionKind::Network], &[]).unwrap();
+        let target = crate::runtime::fabric::ip_text("env-b");
+        assert!(fabric.allows_tcp("env-a", &target, 80));
+        let environment = |id: &str| -> Environment {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"kind":"microVm","provider":"qemu","status":"running",
+                "runtime":"builtin:alpine","description":"","createdAt":"test",
+                "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+                "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":0.25,"preferred":0.25,"max":0.25,"current":0},"priority":"normal","dynamic":true}
+            })).unwrap()
+        };
+        let mut state = PlatformState::empty().unwrap();
+        state.environments = vec![environment("env-a"), environment("env-b")];
+        state.connections = vec![serde_json::from_value(serde_json::json!({
+            "id":"conn-dropped","sourceId":"env-a","targetId":"env-b","direction":"bidirectional",
+            "permissions":["network"],"ports":[],"active":true,"createdAt":"2026-10-20T00:00:00Z"
+        })).unwrap()];
+        drop_connection_rules(&state, &runtime, "env-a").await;
+        assert!(!fabric.allows_tcp("env-a", &target, 80));
+        drop(peers);
     }
 
     #[test]

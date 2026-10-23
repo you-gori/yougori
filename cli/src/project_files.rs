@@ -69,6 +69,39 @@ fn inside_git(folder: &Path) -> bool {
     folder.ancestors().any(|dir| dir.join(".git").exists())
 }
 
+/// The lines that keep this computer's own Yougori files out of Git.
+const GITIGNORE_LINES: [&str; 2] = [".yougori/local.yaml", ".yougori/state.json"];
+
+/// Adds whichever [`GITIGNORE_LINES`] are missing to the end of `.gitignore`, never rewriting what
+/// is there; `Ok(true)` when it added any. Only a missing file starts empty: one that cannot be
+/// read, or looks like UTF-16, is left exactly as it was, and the error says what to add by hand.
+fn add_to_gitignore(path: &Path) -> Result<bool, String> {
+    let by_hand = format!("To keep this computer's Yougori files out of Git, add these lines to it: {}.", GITIGNORE_LINES.join(" and "));
+    let current = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("Yougori could not read .gitignore ({error}), so it was left as it is. {by_hand}")),
+    };
+    // UTF-8, Latin-1 and the like take ASCII lines as they are; UTF-16 would be broken by them.
+    if current.contains(&0) || current.starts_with(&[0xFF, 0xFE]) || current.starts_with(&[0xFE, 0xFF]) {
+        return Err(format!(".gitignore looks like it is saved as UTF-16, which Git cannot read, so Yougori left it as it is. Save it as UTF-8, then add these lines to it: {}.", GITIGNORE_LINES.join(" and ")));
+    }
+    let missing = GITIGNORE_LINES.into_iter()
+        .filter(|line| !current.split(|byte| *byte == b'\n').any(|have| have.trim_ascii() == line.as_bytes()))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(false);
+    }
+    let newline = if current.windows(2).any(|pair| pair == b"\r\n") { "\r\n" } else { "\n" };
+    let separator = if current.is_empty() || current.ends_with(b"\n") { "" } else { newline };
+    let lines = format!("{separator}# Yougori: machine-specific files{newline}{}{newline}", missing.join(newline));
+    // Appended, never rewritten: what the file already says stays byte for byte.
+    std::fs::OpenOptions::new().append(true).create(true).open(path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, lines.as_bytes()))
+        .map_err(|error| format!("Yougori could not add to .gitignore ({error}). {by_hand}"))?;
+    Ok(true)
+}
+
 /// Creates missing project files; never overwrites anything.
 pub fn init(folder: &Path, name: Option<&str>) -> Result<Value, String> {
     let name = name.map(str::to_owned).unwrap_or_else(|| project_name(folder));
@@ -96,14 +129,12 @@ pub fn init(folder: &Path, name: Option<&str>) -> Result<Value, String> {
     }
     write(".yougoriignore", IGNORE_TEMPLATE)?;
     write(".yougori/PREFERENCES.md", PREFERENCES_TEMPLATE)?;
+    let mut gitignore = None;
     if inside_git(folder) {
-        let path = folder.join(".gitignore");
-        let current = std::fs::read_to_string(&path).unwrap_or_default();
-        let missing = [".yougori/local.yaml", ".yougori/state.json"].into_iter().filter(|line| !current.lines().any(|l| l.trim() == *line)).collect::<Vec<_>>();
-        if !missing.is_empty() {
-            let separator = if current.is_empty() || current.ends_with('\n') { "" } else { "\n" };
-            std::fs::write(&path, format!("{current}{separator}# Yougori: machine-specific files\n{}\n", missing.join("\n"))).map_err(|e| e.to_string())?;
-            created.push(".gitignore (Yougori entries)".into());
+        match add_to_gitignore(&folder.join(".gitignore")) {
+            Ok(true) => created.push(".gitignore (Yougori entries)".into()),
+            Ok(false) => {}
+            Err(said) => gitignore = Some(said),
         }
     }
     let mut next = vec!["Edit yougori.yaml, then run `yougori up`.".to_owned()];
@@ -111,6 +142,7 @@ pub fn init(folder: &Path, name: Option<&str>) -> Result<Value, String> {
         next = vec![format!("Found {compose}: run `yougori import {compose}` to create yougori.yaml from it.")];
     }
     next.push("Review .yougoriignore before copying this folder into an environment.".into());
+    next.extend(gitignore);
     Ok(json!({"folder": folder, "project": name, "created": created, "kept": kept, "next": next}))
 }
 
@@ -242,6 +274,40 @@ mod tests {
         assert!(second["created"].as_array().unwrap().is_empty());
         assert_eq!(std::fs::read_to_string(folder.join("yougori.yaml")).unwrap(), "mine");
         assert_eq!(std::fs::read_to_string(folder.join(".gitignore")).unwrap(), gitignore);
+    }
+    #[test]
+    fn init_adds_to_a_gitignore_that_is_not_utf8_without_replacing_a_line() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        // A Latin-1 comment: Git reads this file fine, and everything it ignores has to stay ignored.
+        let theirs = b"# caf\xe9 secrets\r\n.env\r\nkeys/\r\n".to_vec();
+        std::fs::write(root.path().join(".gitignore"), &theirs).unwrap();
+        let result = init(root.path(), Some("shop")).unwrap();
+        let after = std::fs::read(root.path().join(".gitignore")).unwrap();
+        assert!(after.starts_with(&theirs), "{:?}", String::from_utf8_lossy(&after));
+        assert_eq!(&after[theirs.len()..], b"# Yougori: machine-specific files\r\n.yougori/local.yaml\r\n.yougori/state.json\r\n");
+        assert!(result["created"].as_array().unwrap().iter().any(|c| c == ".gitignore (Yougori entries)"));
+    }
+    #[test]
+    fn init_leaves_a_gitignore_it_cannot_safely_add_to_exactly_as_it_was() {
+        // Saved as UTF-16, as PowerShell 5.1's `>` writes it: added lines would break the file.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain(".env\r\nkeys/\r\n".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        std::fs::write(root.path().join(".gitignore"), &utf16).unwrap();
+        let result = init(root.path(), Some("shop")).unwrap();
+        assert_eq!(std::fs::read(root.path().join(".gitignore")).unwrap(), utf16);
+        assert!(!result["created"].as_array().unwrap().iter().any(|c| c == ".gitignore (Yougori entries)"));
+        let said = result["next"].as_array().unwrap().iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+        assert!(said.contains("UTF-16") && said.contains(".yougori/local.yaml") && said.contains(".yougori/state.json"), "{said}");
+        // One that cannot be read at all is left alone too, and the rest of init still happens.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".git")).unwrap();
+        std::fs::create_dir(root.path().join(".gitignore")).unwrap();
+        let result = init(root.path(), Some("shop")).unwrap();
+        assert!(root.path().join(".gitignore").is_dir() && root.path().join("yougori.yaml").is_file());
+        let said = result["next"].as_array().unwrap().iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+        assert!(said.contains("could not read .gitignore") && said.contains(".yougori/state.json"), "{said}");
     }
     #[test]
     fn compose_projects_are_pointed_to_import() {

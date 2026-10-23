@@ -519,7 +519,7 @@ mod tests {
             let worker = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = [0; 1024];
-                stream.read(&mut request).await.unwrap();
+                let _read = stream.read(&mut request).await.unwrap();
                 let _ = stream.write_all(&reply).await;
             });
             let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();

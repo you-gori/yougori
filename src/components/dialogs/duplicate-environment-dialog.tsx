@@ -1,14 +1,13 @@
 import { CloudFilesDialog } from "@/components/dialogs/cloud-files-dialog"
 import { CloudDuplicateDialog } from "@/components/dialogs/cloud-duplicate-dialog"
 import { useRef, useState } from "react"
-import { CloudIcon, MonitorIcon } from "lucide-react"
 import type { Environment } from "@/types/platform"
+import { Outcome, StillNeeded } from "@/components/popup-kit"
 import type { DuplicateDestination } from "@/components/environment-duplicate-action"
 import { usePlatform } from "@/context/platform-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
-import { ConfigurationHelp } from "@/components/configuration-help"
 import { driveLabel, storageDrives } from "@/lib/storage-drives"
 
 function LocalDuplicateEnvironmentDialog({ environment, destination, onClose }: {
@@ -44,25 +43,25 @@ function LocalDuplicateEnvironmentDialog({ environment, destination, onClose }: 
     <DialogPopup closeProps={{ disabled: busy }}>
       <DialogHeader>
         <DialogTitle>Duplicate environment</DialogTitle>
-        <DialogDescription>{environment.name} → {destination === "local" ? "Local" : "Cloud"}</DialogDescription>
+        <DialogDescription>Makes an independent copy of {environment.name} on this computer. The copy starts stopped, and changes to one never reach the other.</DialogDescription>
       </DialogHeader>
       <form className="contents" onSubmit={event => void submit(event)}>
         <DialogPanel className="space-y-4">
-          <div className="flex items-center gap-2 text-sm font-medium">{destination === "local" ? <MonitorIcon className="size-4" /> : <CloudIcon className="size-4" />} {destination === "local" ? "Independent local copy" : "New cloud VM"}
-            <ConfigurationHelp label="What duplication copies">Copies the disk, installed apps, files, startup command and resource settings. Shared PC folders, external disks, network connections and snapshot history remain with the original. The local copy starts stopped.</ConfigurationHelp>
-          </div>
           <label className="block space-y-2 text-sm">Name<Input autoFocus maxLength={80} value={name} onChange={event => setName(event.target.value)} disabled={busy} required /></label>
           {destination === "local" && state ? <label className="flex items-center justify-between gap-3 text-sm">Storage drive<select aria-label="Storage drive" className="h-9 min-w-0 rounded-md border bg-background px-2 text-sm" disabled={busy} value={drive} onChange={event => setDrive(event.target.value)}>
             <option value="">Default drive</option>
             {storageDrives(state.host).filter(item => item.path).map(item => <option key={item.path} value={item.path} disabled={item.readOnly}>{driveLabel(item.path)} · {item.freeGb.toFixed(1)} GB free</option>)}
             {drive && !storageDrives(state.host).some(item => item.path === drive) ? <option value={drive} disabled>{driveLabel(drive)} · Disconnected</option> : null}
           </select></label> : null}
+          <Outcome title="What the copy holds">
+            <p>The disk, installed apps, files, startup command and resource settings.</p>
+            <p>Shared PC folders, external disks, network connections and snapshot history stay with {environment.name}.</p>
+          </Outcome>
           {issue ? <p role="status" className="text-sm text-muted-foreground">{issue}</p> : null}
-          {nameIssue ? <p className="text-xs text-muted-foreground">{nameIssue}</p> : null}
           {error ? <p role="alert" className="text-sm text-destructive-foreground">{error}</p> : null}
           {busy ? <p role="status" className="text-sm text-muted-foreground">Copying and verifying the disk… Keep Yougori open.</p> : null}
         </DialogPanel>
-        <DialogFooter><Button type="button" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button type="submit" loading={busy} disabled={busy || Boolean(issue || nameIssue)}>Duplicate</Button></DialogFooter>
+        <DialogFooter><StillNeeded>{busy || issue ? "" : nameIssue}</StillNeeded><Button type="button" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button type="submit" loading={busy} disabled={busy || Boolean(issue || nameIssue)}>Duplicate</Button></DialogFooter>
       </form>
     </DialogPopup>
   </Dialog>

@@ -8,7 +8,7 @@ import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogHeader, Dia
 import "@/components/network-panel.css"
 
 type Network = ReturnType<typeof useNetwork>
-const privacyNotice = "Neo Grid prompts and replies are visible to the provider and Yougori gateway during inference. They are not saved in gateway transcripts. Recording is off by default. Free providers can enable --listen to save prompts and replies; current GPUs do not enforce host privacy."
+const privacyNotice = "While a model answers, its provider and the Yougori gateway can see the prompt and the reply. The gateway keeps no transcripts and recording is off by default, though a free provider can turn on --listen to save them. Today's GPUs do not keep a prompt private from the computer's owner."
 const money = (value: number) => `$${(value / 1e6).toFixed(2)}`
 const uptime = (seconds: number) => `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
 
@@ -38,6 +38,12 @@ export function NetworkAccount({ network }: { network: Network }) {
       </div> : null}
     </>}
   </section>
+}
+
+/** The list of shared models could not be read. Models in it may still have public links open, so
+ *  this is on screen as soon as the panel opens rather than found when an action is refused. */
+function SharesNotice({ network }: { network: Network }) {
+  return network.status?.notice ? <p className="network-warning" role="alert">{network.status.notice}</p> : null
 }
 
 function PrivacyNotice({ network }: { network: Network }) {
@@ -82,6 +88,7 @@ export function ModelNetworkPanel({ environmentId }: { environmentId: string }) 
   useEffect(() => setClosedWeights(share?.closedWeights === true), [share?.closedWeights])
   return <section className="network-panel" aria-label="Model Neo Grid sharing">
     {network.error ? <p className="network-error" role="alert">{network.error}</p> : null}
+    <SharesNotice network={network} />
     <NetworkAccount network={network} />
     {share ? <NetworkShareDetails share={share} network={network} /> : null}
     <label><input type="checkbox" checked={closedWeights} disabled={network.busy} onChange={e => setClosedWeights(e.target.checked)} />Closed weights — chat and API only</label>
@@ -98,19 +105,23 @@ export function ModelNetworkPanel({ environmentId }: { environmentId: string }) 
   </section>
 }
 
-export function NetworkPanel() {
-  const [open, setOpen] = useState(false)
+export function NetworkPanel({ open: openProp, onOpenChange, hideTrigger = false }: { open?: boolean; onOpenChange?: (open: boolean) => void; hideTrigger?: boolean } = {}) {
+  // Controlled when a caller supplies its own trigger.
+  const [ownOpen, setOwnOpen] = useState(false)
+  const open = openProp ?? ownOpen
+  const setOpen = onOpenChange ?? setOwnOpen
   const network = useNetwork(open)
   const shares = network.status?.shares ?? []
   return <Dialog open={open} onOpenChange={setOpen}>
-    <DialogTrigger render={<Button size="sm" variant="outline" className="dashboard-action" />}>Neo Grid</DialogTrigger>
+    {hideTrigger ? null : <DialogTrigger render={<Button size="sm" variant="outline" className="dashboard-action" />}>Neo Grid</DialogTrigger>}
     <DialogPopup className="network-popup">
       <DialogHeader className="network-header">
         <DialogTitle>Neo Grid</DialogTitle>
-        <DialogDescription>Share models through the Yougori endpoint and manage your account.</DialogDescription>
+        <DialogDescription>Share the models you run here on the public Neo Grid, through the Yougori endpoint, and manage your account. This is separate from your company's own closed grids.</DialogDescription>
       </DialogHeader>
       <DialogPanel className="network-panel">
         {network.error ? <p className="network-error" role="alert">{network.error}</p> : null}
+        <SharesNotice network={network} />
         <NetworkAccount network={network} />
         <section className="network-section" aria-label="Shared models">
           <h3>Shared models{shares.length ? <span>{shares.length}</span> : null}</h3>

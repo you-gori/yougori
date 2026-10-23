@@ -18,7 +18,6 @@ const BOOT: &str =
 /// Started outside the launcher, the container runs the dev server once a launch has installed
 /// its helpers. A first launch stopped before that leaves it waiting, as [`BOOT`] does.
 const NODE_AUTOSTART: &str = "if [ -f /yougori/launch/dev.sh ]; then exec bash /yougori/launch/dev.sh; fi; trap 'exit 0' TERM INT; mkdir -p /yougori/launch; while :; do sleep 3600 & wait $!; done";
-const HINT: &str = "yougori launch starts this project again · yougori launch --change edits settings · yougori opens the menu";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Setup {
@@ -74,6 +73,7 @@ fn directory_key(path: &Path) -> Result<String, String> {
 fn save(path: &Path, setup: &Setup) -> Result<(), String> {
     let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing state folder")?)
         .map_err(|e| e.to_string())?;
+    let _on_quit = ui::remove_on_quit(file.path());
     serde_json::to_writer_pretty(&mut file, setup).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path)
@@ -132,6 +132,14 @@ fn add_project_shortcut(folder: &Path, project: &package::Project) -> Result<(),
     write_project_shortcut(folder, project, false)
 }
 
+/// Adds the project's shortcuts where it can. They are a convenience: when the project's
+/// files cannot be changed, the launch goes on and says how to start the project instead.
+fn shortcut_or_warn(folder: &Path, project: &package::Project) {
+    if let Err(error) = add_project_shortcut(folder, project) {
+        ui::warn(&format!("{}. Your answers were saved; start this project with yougori launch.", clean(&error)));
+    }
+}
+
 /// Best-effort shortcut registration only: no engine, prompts or project launch.
 pub(super) fn prepare_project_shortcut(folder: &Path) {
     if package::is_project(folder) {
@@ -185,13 +193,22 @@ pub(super) async fn offer_on_entry(folder: &Path) -> Result<(), String> {
     if !package::is_project(folder) {
         return Ok(());
     }
-    let checking = ui::task("Checking project changes");
     let source = folder.to_owned();
-    let offer = tokio::task::spawn_blocking(move || {
-        entry_offer(&source, &yougori_cli::launcher_state::directory()?)
-    }).await.map_err(|e| format!("Cannot check this project: {e}"))?;
-    checking.clear();
-    let Some(offer) = offer? else { return Ok(()) };
+    let offer = ui::busy("Checking project changes", async move {
+        tokio::task::spawn_blocking(move || entry_offer(&source, &yougori_cli::launcher_state::directory()?))
+            .await
+            .map_err(|e| format!("Cannot check this project: {e}"))?
+    })
+    .await;
+    let offer = match offer {
+        // Ctrl+C skips the offer: the menu opens as it would without one.
+        Err(error) if error == ui::CANCELLED => {
+            ui::take_interrupt();
+            return Ok(());
+        }
+        offer => offer?,
+    };
+    let Some(offer) = offer else { return Ok(()) };
     let detail = if offer.changed.is_empty() {
         format!("Project detected: {}", offer.name)
     } else {
@@ -247,6 +264,8 @@ fn write_atomically(path: &Path, original: Option<&str>, contents: &str) -> Resu
     let folder = target.parent().ok_or("Missing project folder")?;
     // The sync filter never transfers .yougori-sync-* files.
     let mut temp = tempfile::Builder::new().prefix(".yougori-sync-").tempfile_in(folder).map_err(|e| e.to_string())?;
+    // Never left half written in the project folder, even by a second Ctrl+C that quits at once.
+    let _on_quit = ui::remove_on_quit(temp.path());
     temp.write_all(contents.as_bytes()).map_err(|e| e.to_string())?;
     if original.is_some() {
         let permissions = fs::metadata(&target).map_err(|e| e.to_string())?.permissions();
@@ -271,7 +290,7 @@ fn write_atomically(path: &Path, original: Option<&str>, contents: &str) -> Resu
 
 fn write_project_shortcut(folder: &Path, project: &package::Project, quiet: bool) -> Result<(), String> {
     if project.is_python() {
-        let content = include_str!("assets/python-yougori.py");
+        let content = package::PYTHON_SHORTCUT;
         let path = folder.join("yougori");
         if path.exists() {
             if !quiet && fs::read_to_string(&path).ok().as_deref() != Some(content) {
@@ -282,26 +301,28 @@ fn write_project_shortcut(folder: &Path, project: &package::Project, quiet: bool
         match write_atomically(&path, None, content) {
             Ok(true) => if !quiet { ui::step("Added python yougori to this project"); },
             Ok(false) => if !quiet { ui::warn("An existing file named yougori was kept. Run this project with yougori launch."); },
-            Err(e) => return Err(format!("Cannot add the Python shortcut: {e}")),
+            Err(e) => return Err(format!("Could not add the python yougori shortcut to this folder ({e})")),
         }
         return Ok(());
     }
     let path = folder.join("package.json");
-    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let text = fs::read_to_string(&path).map_err(|e| format!("Could not read package.json to add the Yougori shortcuts ({e})"))?;
     let local = package::add_launch_script(&text);
     let updated = local.as_deref().unwrap_or(&text);
     let cloud = package::add_cloud_script(updated);
     let updated = cloud.as_deref().unwrap_or(updated);
     let change = package::add_change_script(updated);
     if local.is_some() || cloud.is_some() || change.is_some() {
-        if !write_atomically(&path, Some(&text), change.as_deref().unwrap_or(updated))? {
+        let written = write_atomically(&path, Some(&text), change.as_deref().unwrap_or(updated))
+            .map_err(|e| format!("Could not add the Yougori shortcuts to package.json ({e})"))?;
+        if !written {
             if !quiet { ui::warn("package.json changed while adding the Yougori shortcuts, so it was kept. Run this project with yougori launch."); }
             return Ok(());
         }
         if !quiet {
             if local.is_some() { ui::step(&format!("Added {} to package.json", project.shortcut())); }
-            if cloud.is_some() { ui::step("Added npm run yougori-cloud to package.json"); }
-            if change.is_some() { ui::step("Added npm run yougori-change to package.json"); }
+            if cloud.is_some() { ui::step(&format!("Added {} to package.json", project.script_command("yougori-cloud", ""))); }
+            if change.is_some() { ui::step(&format!("Added {} to package.json", project.script_command("yougori-change", ""))); }
         }
     } else if !quiet && project.package["scripts"]["yougori"].as_str() != Some("yougori launch") {
         ui::warn("The existing package.json was kept. Run this project with yougori launch.");
@@ -369,7 +390,7 @@ fn changed(args: &[String], npm_flag: Option<&str>) -> Result<bool, String> {
     match args {
         [_] => Ok(npm_flag.is_some_and(|s| s == "true" || s == "1")),
         [_, flag] if matches!(flag.as_str(), "--change" | "-change") => Ok(true),
-        _ => Err("Usage: yougori launch [--change]. Run an image with yougori run IMAGE; run models with yougori run hf.co/OWNER/MODEL.".into()),
+        _ => Err("Usage: yougori launch [--cloud] [--change]. Run an image with yougori run IMAGE; run models with yougori run hf.co/OWNER/MODEL.".into()),
     }
 }
 
@@ -846,8 +867,8 @@ impl Questions {
             "Which directions can project changes sync?",
             &["Sync includes code, files, folders and supported SQLite database records. Two-way also brings container changes and deletions back to this computer. Your .env choice still applies.".into()],
             &[
-                ui::Choice::new("One-way (default)", "this computer → environment"),
-                ui::Choice::new("Two-way", "this computer ↔ environment"),
+                ui::Choice::new("One-way (default)", "from this computer to the environment"),
+                ui::Choice::new("Two-way", "both ways, between this computer and the environment"),
             ],
             usize::from(setup.two_way),
         )? == 1;
@@ -1219,6 +1240,16 @@ fn copy_storage_full(error: &str) -> bool {
     .any(|message| error.contains(message))
 }
 
+/// A new storage limit as typed: a whole number above the current limit, up to what is available.
+fn storage_limit(entry: &str, current: u32, maximum: u32) -> Result<u32, String> {
+    entry
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > current && *value <= maximum)
+        .ok_or_else(|| format!("Enter a whole number from {} to {maximum}.", current + 1))
+}
+
 fn growth_limits(allocation: &Value) -> Result<(u32, u32), String> {
     let current = allocation["capacityGb"]
         .as_f64()
@@ -1255,33 +1286,51 @@ async fn offer_copy_storage(
 
 "
     );
-    if stop.ask(|| choose_with_note(
-        "Container storage is full",
-        &note,
-        &[
-            "Increase storage and retry copying".into(),
-            "Cancel launch (keep the container)".into(),
-        ],
-    ))? != 0
-    {
-        return Ok(false);
-    }
     let suggested = current
         .saturating_mul(2)
         .max(current.saturating_add(2))
         .min(maximum);
-    let capacity = stop.ask(|| loop {
-        let input = text(
-            &format!("New storage limit in GB · {}–{maximum}", current + 1),
-            &suggested.to_string(),
-            false,
-        )?;
-        if let Ok(value) = input.parse::<u32>() {
-            if value > current && value <= maximum {
-                break Ok(value);
-            }
+    // One decision in two questions: Back from the new limit asks the first again with its answer
+    // kept, and coming forward again offers the limit typed before.
+    let mut choice = 0;
+    let mut typed = suggested.to_string();
+    let capacity = stop.ask(|| {
+        let mut steps = ui::Wizard::new();
+        loop {
+            let asked = match steps.step() {
+                0 => choose_with_initial(
+                    "Container storage is full",
+                    &note,
+                    &[
+                        "Increase storage and retry copying".into(),
+                        "Cancel launch (keep the container)".into(),
+                    ],
+                    choice,
+                )
+                .map(|picked| {
+                    choice = picked;
+                    true
+                }),
+                1 if choice == 0 => ui::input(
+                    &format!("New storage limit in GB · {}–{maximum}", current + 1),
+                    &typed,
+                    false,
+                    &|entry| storage_limit(entry, current, maximum).map(|value| value.to_string()),
+                )
+                .map(|entry| {
+                    typed = entry;
+                    true
+                }),
+                1 => Ok(false),
+                _ => break,
+            };
+            steps.next(asked)?;
         }
+        Ok(if choice == 0 { Some(storage_limit(&typed, current, maximum)?) } else { None })
     })?;
+    let Some(capacity) = capacity else {
+        return Ok(false);
+    };
     stop.check()?;
     let growing = ui::task(&format!("Increasing storage from {current} GB to {capacity} GB"));
     call(
@@ -1297,11 +1346,44 @@ async fn offer_copy_storage(
 
 // Keep the active project and its dependencies; remove only abandoned launcher imports.
 // rm does not follow symlinks. No paths supplied by the error message are used.
-const CLEAN_IMPORTS: &str = r#"set -eu
-active=$(readlink /workspace 2>/dev/null || true)
-for old in /yougori/launch/imports/yougori-import-*; do
-  [ "$active" = "$old/project" ] || rm -rf -- "$old"
+//
+// The import in use is the one /workspace links into: the link is `<import>/project/workspace`
+// (see `install_script`). The check used to compare it with `<import>/project`, which it never
+// equals, so every import was removed, the one in use included, whenever this ran. A link that
+// cannot be read stops the cleanup (`set -e`) rather than counting as no link.
+const ACTIVE_IMPORT: &str = r#"active=
+if [ -L /workspace ]; then active=$(readlink /workspace); fi"#;
+const REMOVE_ABANDONED: &str = r#"for old in /yougori/launch/imports/yougori-import-*; do
+  [ -e "$old" ] || continue
+  case "$active" in
+    "$old"/*) ;;
+    *) rm -rf -- "$old" ;;
+  esac
 done"#;
+
+fn clean_imports() -> String {
+    format!("set -eu\n{ACTIVE_IMPORT}\n{REMOVE_ABANDONED}")
+}
+
+/// Whether /workspace holds the project already: `existing`, `empty` or `missing`. A listing
+/// that fails is a failure, never an empty workspace, because empty means copying the project in
+/// again and clearing abandoned imports first.
+const WORKSPACE_PROBE: &str = r#"if [ -d /workspace ]; then
+  listing=$(ls -A /workspace) || exit 1
+  if [ -n "$listing" ]; then printf existing; else printf empty; fi
+else
+  printf missing
+fi"#;
+
+/// Whether the project has to be copied in, from the probe's answer (the cloud probe also says
+/// "copying" for a copy that stopped part way). Anything else is refused.
+fn needs_copy(answer: &str) -> Result<bool, String> {
+    match answer.trim() {
+        "existing" => Ok(false),
+        "empty" | "missing" | "copying" => Ok(true),
+        _ => Err("Yougori could not tell whether the environment already has this project, so it copied nothing and removed nothing. Try again.".into()),
+    }
+}
 
 fn port_in_use(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
@@ -1450,7 +1532,7 @@ async fn launch(
     };
     if remembered.is_some() && found.is_none() {
         yougori_cli::launcher_state::clear(state_path)?;
-        return Err("This project's node was deleted during launch. Run the project again to choose fresh settings.".into());
+        return Err("This project's container was deleted while it was launching. Run yougori launch again to set it up afresh.".into());
     }
     if let Some(env) = found {
         if env["description"] != marker || env["kind"] != "container" {
@@ -1584,7 +1666,9 @@ async fn launch(
     let reconcile = saved.needs_reconcile(&id, &remote_token);
     // A missing checkpoint is not a missing workspace. Never replace an existing
     // project (and its runtime data) just to recover interrupted sync metadata.
-    let copied = stop.until(exec(&id, "if [ -d /workspace ] && [ -n \"$(ls -A /workspace)\" ]; then printf existing; fi")).await?.trim() != "existing";
+    let probed = stop.until(async { exec(&id, WORKSPACE_PROBE).await.map_err(|error| format!("Yougori could not tell whether the environment already has this project, so it copied nothing and removed nothing. Try again. ({error})")) }).await?;
+    let copied = needs_copy(&probed)?;
+    saved.adopt(&id, copied);
     let mut initial_databases = std::collections::BTreeSet::new();
     if copied {
         files.set("Copying project into the container");
@@ -1593,7 +1677,7 @@ async fn launch(
         files.detail(&total);
         let copy = loop {
             // Removing an abandoned copy can take a while; the next launch finishes it.
-            stop.until(exec(&id, CLEAN_IMPORTS)).await?;
+            stop.until(exec(&id, &clean_imports())).await?;
             files.copy_status("Waiting for copy progress");
             match copy_into(&id, json!({"environmentId":id,"paths":[staging.path().join("project")],"destination":format!("{ROOT}/imports")}), &files, stop).await {
                 Ok(copy) => break copy,
@@ -1622,6 +1706,9 @@ async fn launch(
         saved.environment = id.clone();
         saved.common.clear();
         saved.directories.clear();
+        // A fresh copy leaves both sides the same, so nothing is left to keep apart.
+        saved.unknown.clear();
+        saved.unreadable = false;
         saved.save(&sync_path)?;
     }
     stop.check()?;
@@ -1823,7 +1910,7 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
         Err(_) if stop.requested() => {
             engine.clear();
             drop(stop);
-            ui::outro("Cancelled");
+            ui::outro("Cancelled. Nothing was started.");
             return Ok(130);
         }
         state => state?,
@@ -1834,13 +1921,14 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
     engine.done("Engine ready");
     let existing = existing?;
     if had_settings && existing.is_none() {
-        ui::step("Previous node no longer exists — setting up this project again");
+        ui::step("This project's earlier container no longer exists, so it is set up again");
     }
     // Questions read their own keys.
     stop.release();
     let mut setup = ask_setup(&folder, &project, &state, existing, change, &stop).await?;
-    add_project_shortcut(&folder, &project)?;
+    // The answers are kept first, so a project file that cannot be changed never costs them.
     save(&path, &setup)?;
+    shortcut_or_warn(&folder, &project);
     stop.watch();
     let result = async {
         let mut live = launch(&mut setup, &path, &folder, &package, &key, change, &mut stop).await?;
@@ -1870,26 +1958,41 @@ pub(super) async fn run_in(folder: &Path, change: bool) -> Result<i32, String> {
             json!({"environmentId":id,"status":"stopped"}),
         )
         .await;
-        let saved = match &stopped {
-            Ok(_) => match call("update_container_startup_command", json!({"environmentId":id,"command":NODE_AUTOSTART})).await {
-                Ok(_) => Ok(()),
-                Err(error) => Err(format!("The node stopped, but its website startup command could not be saved: {error}")),
-            },
-            Err(_) => Ok(()),
-        };
         match &stopped {
-            Ok(_) => stopping.done(&format!("Stopped {name}")),
+            Ok(_) => {
+                stopping.done(&format!("Stopped {name}"));
+                // Saved so that yougori start runs the dev server again later. Missing it changes
+                // only that, so it is said and the launch still ends as it would have.
+                if let Err(error) = call("update_container_startup_command", json!({"environmentId":id,"command":NODE_AUTOSTART})).await {
+                    ui::warn(&format!(
+                        "{name} stopped, but its startup command was not saved ({}), so yougori start will not run the dev server on its own. Launching the project again still does.",
+                        clean(&error)
+                    ));
+                }
+            }
             Err(_) => stopping.fail("Could not confirm the container stopped"),
         }
-        stopped.map(|_| ()).and(saved)
+        stopped.map(|_| ())
     } else {
         Ok(())
     };
     drop(stop);
-    ui::outro(if project.is_python() { HINT } else { "npm run yougori starts this project again · npm run yougori-change edits settings · yougori opens the menu" });
+    ui::outro(&format!(
+        "{} starts this project again · {} edits settings · yougori opens the menu",
+        project.launch_hint(&folder, ""),
+        project.launch_hint(&folder, "--change"),
+    ));
     drop(lock);
     match cleanup {
-        Err(e) => Err(format!("Could not confirm the project container stopped: {e}. Check yougori ps and stop it there.")),
+        Err(e) => {
+            let state = call("get_platform_state", json!({})).await.unwrap_or_default();
+            let environments = state["environments"].as_array().map_or(&[][..], Vec::as_slice);
+            let container = setup.environment.as_deref().map_or_else(|| "NAME".to_owned(), |id| yougori_cli::container_tools::handle(environments, id));
+            Err(format!(
+                "Could not confirm {name}'s container stopped ({e}). Check it with yougori ps, and stop it with {}.",
+                shell_words::join(["yougori", "stop", &container])
+            ))
+        }
         Ok(()) => ended(result, interrupted),
     }
 }
@@ -2511,6 +2614,79 @@ rm -rf "$root"
             growth_limits(&json!({"capacityGb":2,"maximumGb":20000})).unwrap(),
             (2, 16380)
         );
+    }
+
+    #[test]
+    fn a_storage_limit_outside_its_range_is_explained_where_it_was_typed() {
+        assert_eq!(storage_limit(" 12 ", 8, 40), Ok(12));
+        assert_eq!(storage_limit("40", 8, 40), Ok(40));
+        for entry in ["8", "41", "0", "-3", "12.5", "twelve", ""] {
+            assert_eq!(storage_limit(entry, 8, 40), Err("Enter a whole number from 9 to 40.".into()), "{entry}");
+        }
+    }
+
+    #[test]
+    fn a_package_json_that_cannot_be_read_is_named_with_what_was_being_done() {
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#).unwrap();
+        let project = package::Project::load(source.path()).unwrap();
+        // A folder where package.json cannot be read as a file.
+        let folder = tempfile::tempdir().unwrap();
+        fs::create_dir(folder.path().join("package.json")).unwrap();
+        let error = add_project_shortcut(folder.path(), &project).unwrap_err();
+        assert!(error.starts_with("Could not read package.json to add the Yougori shortcuts ("), "{error}");
+        // The launch goes on: this only warns.
+        shortcut_or_warn(folder.path(), &project);
+    }
+
+    /// PROVES that clearing abandoned imports keeps the one /workspace links into, and that a
+    /// workspace that cannot be listed is never taken for an empty one.
+    ///
+    /// /workspace links to `<import>/project/workspace`, and the keep-check compared the link with
+    /// `<import>/project`, so it could never match: every import was removed, the one in use
+    /// included, whenever the cleanup ran. It runs whenever the probe reads the workspace as
+    /// empty, and the probe read a failing `ls -A` as empty. Either half was enough to remove the
+    /// container's copy of the project, with any work in it that had not synced back yet.
+    ///
+    /// The scripts run under `sh`, with the container's paths moved into a temporary folder. The
+    /// link itself is stood in for, because not every computer that runs these tests can make one.
+    #[test]
+    fn clearing_imports_keeps_the_one_in_use_and_an_unlisted_workspace_is_not_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let unix = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let (imports, workspace) = (root.path().join("imports"), root.path().join("workspace"));
+        let moved = |script: &str| script.replace("/yougori/launch/imports", &unix(&imports)).replace("/workspace", &unix(&workspace));
+        let sh = |script: String| std::process::Command::new("sh").arg("-c").arg(script).output();
+        for import in ["yougori-import-live", "yougori-import-old"] {
+            fs::create_dir_all(imports.join(import).join("project/workspace")).unwrap();
+            fs::write(imports.join(import).join("project/workspace/app.js"), "work").unwrap();
+        }
+        let live = format!("{}/yougori-import-live/project/workspace", unix(&imports));
+        let Ok(cleared) = sh(format!("set -eu\nactive='{live}'\n{}", moved(REMOVE_ABANDONED))) else {
+            eprintln!("skipped: this computer has no sh to run the container's scripts with");
+            return;
+        };
+        assert!(cleared.status.success(), "{}", String::from_utf8_lossy(&cleared.stderr));
+        assert!(imports.join("yougori-import-live/project/workspace/app.js").exists(), "the import in use is kept, with the work in it");
+        assert!(!imports.join("yougori-import-old").exists(), "an abandoned import is removed");
+        assert!(ACTIVE_IMPORT.contains("readlink /workspace") && clean_imports().contains(ACTIVE_IMPORT) && clean_imports().contains(REMOVE_ABANDONED));
+
+        let probe = |script: String| {
+            let output = sh(script).unwrap();
+            (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        assert_eq!(probe(moved(WORKSPACE_PROBE)), (true, "missing".to_owned()));
+        fs::create_dir(&workspace).unwrap();
+        assert_eq!(probe(moved(WORKSPACE_PROBE)), (true, "empty".to_owned()));
+        fs::write(workspace.join("app.js"), "work").unwrap();
+        assert_eq!(probe(moved(WORKSPACE_PROBE)), (true, "existing".to_owned()));
+        // A listing that fails is a failure, never an empty workspace.
+        let failing = moved(WORKSPACE_PROBE).replace("ls -A ", "ls -A /no/such/folder ");
+        assert_ne!(failing, moved(WORKSPACE_PROBE));
+        assert!(!probe(failing).0, "a workspace that cannot be listed is not called empty");
+        assert_eq!(needs_copy("existing"), Ok(false));
+        assert_eq!((needs_copy("empty"), needs_copy("missing")), (Ok(true), Ok(true)));
+        assert!(needs_copy("").is_err(), "no answer is not an empty workspace");
     }
 
     #[test]

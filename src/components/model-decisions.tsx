@@ -15,6 +15,8 @@ export function ModelDecisions({ environmentId, status }: { environmentId: strin
   const lock = useRef(false)
   const edited = useRef(false)
   const [history, setHistory] = useState<ChatStore>(() => parseChats(null))
+  // Why the saved requests could not be loaded, so an empty list is never mistaken for none.
+  const [historyError, setHistoryError] = useState("")
   useEffect(() => {
     let alive = true
     void modelsApi.history(environmentId).then(value => {
@@ -32,7 +34,7 @@ export function ModelDecisions({ environmentId, status }: { environmentId: strin
           if (answer) setResult(JSON.parse(answer.content))
         }
       } catch { /* Legacy chat history is still kept, but is not a decision draft. */ }
-    }).catch(() => undefined)
+    }).catch(reason => { if (alive) setHistoryError(reason instanceof Error ? reason.message : String(reason)) })
     return () => { alive = false }
   }, [environmentId])
   const decide = async () => {
@@ -56,7 +58,7 @@ export function ModelDecisions({ environmentId, status }: { environmentId: strin
         active.messages.push({ id: crypto.randomUUID(), role: "user", content }, { id: crypto.randomUUID(), role: "assistant", content: answer,
           stats: { tokens: 0, inputTokens: response.usage?.prompt_tokens, seconds: (performance.now() - started) / 1000, finish: "stop" } })
         active.updatedAt = Date.now()
-        const next = serializeChats(saved); await modelsApi.saveHistory(environmentId, next); setHistory(next)
+        const next = serializeChats(saved); await modelsApi.saveHistory(environmentId, next); setHistory(next); setHistoryError("")
       } catch (reason) { setError(`Decision completed, but history was not saved: ${String(reason)}`) }
     } catch (reason) { setError(String(reason)) }
     finally { setBusy(false); lock.current = false }
@@ -73,6 +75,7 @@ export function ModelDecisions({ environmentId, status }: { environmentId: strin
     <Button disabled={busy || !(status.status === "ready" || status.optimizer?.enabled && ["idle", "queued", "freeing_memory", "loading"].includes(status.status)) || !state.trim() || !questions.trim()} loading={busy} onClick={() => void decide()}>Run decision</Button>
     {error || status.error ? <p role="alert" className="model-error">{error || status.error}</p> : null}
     {result ? <pre aria-label="Decision result" className="model-decision-result">{JSON.stringify(result, null, 2)}</pre> : null}
+    {historyError ? <p role="alert" className="model-error">Saved requests couldn't be loaded ({historyError}), so none are listed here. Nothing already saved was changed.</p> : null}
     {history.conversations.length ? <details><summary>Saved requests · shared with the CLI</summary>{history.conversations.map(c => <details key={c.id}><summary>{c.title} · {c.messages.filter(m => m.role === "user").length} requests</summary>{c.messages.map(m => <pre key={m.id}>{m.content}</pre>)}</details>)}</details> : null}
     <p className="model-hint">CLI: <code>yougori model decide {environmentId} --file request.json</code>. API: <code>POST /v1/systemone</code>, authenticated with this model’s API key.</p>
   </section>

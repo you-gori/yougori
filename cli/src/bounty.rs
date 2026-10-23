@@ -17,7 +17,8 @@ const MODEL_NOTE: &str =
 /// Workers run GGUF models only, through the engine's llama.cpp runner.
 const GGUF_ONLY: &str = "Swarm Mining workers run only GGUF models (the llama.cpp format). Choose a Hugging Face repository with .gguf files; its name usually ends in -GGUF.";
 
-pub const HELP: &str = r#"Swarm Mining — your model, your worker, your choice of bounty.
+pub const HELP: &str = r#"Swarm Mining runs a bounty worker on this computer with your own model. It works only on
+bounties you accept.
 
   yougori start bounty [--change] [--model hf.co/OWNER/MODEL-GGUF[:QUANT]] [OPTIONS]
   yougori bounty workers
@@ -40,9 +41,10 @@ pub const HELP: &str = r#"Swarm Mining — your model, your worker, your choice 
   yougori bounty practice WORKER [--stop]
   yougori bounty memory WORKER release|keep
 
-WORKER is the short name Yougori gives each worker, such as keen-heron. Every hint
-uses it and yougori bounty workers lists it; the worker's own name, its ID or the
-first digits of its ID work too.
+WORKER is the name to type for a worker, such as keen-heron. A new worker gets a name
+no other worker on this computer answers to, with -2 or -3 added when needed. Every
+hint uses it and yougori bounty workers lists it; a worker's short name, the name
+you gave it, its ID or the first digits of its ID work too.
 
 Setup options:
   --change (set up a new worker: choose the model, drive and resources again)
@@ -88,6 +90,7 @@ Yougori prepares a private local model API and
 OpenCode, then waits for offers without agent inference. Once online it offers a
 safe, offline practice bounty you can try while you wait. Review the company,
 objective, exact source authorization and publisher payment promise before accepting.
+Each acceptance question offers Back, and nothing is accepted until Accept and prepare.
 With report policy review, a finished draft shows as report ready: read it with
 bounty reports, then send it with bounty submit. Leaving ends the accepted bounty.
 An engine restart pauses every worker until you resume it. Once the work budget
@@ -106,8 +109,7 @@ Publisher assertions do not grant rights over third parties or live systems.
 The waiting view: O offers, C chat, P pause/resume, T practice, R refresh, Q detach.
 Ctrl+C opens Cancel / Pause / Stop / Stop and delete. Ctrl+] detaches and keeps
 the engine's worker running. Deletion keeps submitted reports and reward records.
-An environment named bounty can still start with: yougori env start bounty
-or: yougori start --environment bounty
+An environment named bounty can still start with: yougori start --environment bounty
 "#;
 
 #[derive(Clone, Debug)]
@@ -129,6 +131,42 @@ fn clean(value: &str, name: &str, max: usize) -> Result<String, String> {
         ));
     }
     Ok(value.into())
+}
+
+/// The usage line of one bounty command, from [`HELP`], naming only that command.
+fn usage(action: &str) -> String {
+    if action == "start" {
+        return "Usage: yougori start bounty [OPTIONS]".into();
+    }
+    HELP.lines()
+        .filter_map(|line| line.trim().strip_prefix("yougori bounty "))
+        .find_map(|rest| {
+            let (verbs, words) = rest.split_once(' ').unwrap_or((rest, ""));
+            verbs.split('|').any(|verb| verb == action).then(|| format!("Usage: yougori bounty {action} {words}").trim_end().to_owned())
+        })
+        .unwrap_or_else(|| format!("Usage: yougori bounty {action}"))
+}
+
+/// What a value-taking option of the bounty commands expects, for the error that asks for it.
+fn flag_value(flag: &str) -> &'static str {
+    match flag {
+        "--model" => "a Hugging Face GGUF model, such as hf.co/OWNER/MODEL-GGUF",
+        "--cpu" => "CPU cores, from 4 to 255",
+        "--memory" => "memory in GB, from 8 to 1024",
+        "--gpu" => "nvidia, metal or cpu",
+        "--storage-drive" => "the drive or folder for the model and sandboxes",
+        "--workspace-quota" => "GB for bounty workspaces, from 4 to 1024",
+        "--name" => "the worker's name",
+        "--quant" => "a GGUF quantization, such as Q4_K_M",
+        "--worker" => "a worker's name or ID from yougori bounty workers",
+        "--platform-url" => "the website's address",
+        "--version" => "the offer's terms version",
+        "--terms-digest" => "the offer's terms digest",
+        "--authorization-digest" => "the offer's authorization digest",
+        "--report-policy" => "automatic or review",
+        "--budget-minutes" => "minutes from 1 to 1440",
+        _ => "a value",
+    }
 }
 
 /// A worker's own name. The engine refuses names shorter than two bytes.
@@ -400,7 +438,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
             continue;
         }
         if !seen.insert(flag.to_string()) {
-            return Err(format!("{flag} supplied twice"));
+            return Err(format!("{flag} is given twice. Give it once."));
         }
         match flag {
             "--dry-run" => dry_run = true,
@@ -423,7 +461,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
                 let value = tail
                     .get(i)
                     .filter(|v| !v.starts_with('-'))
-                    .ok_or_else(|| format!("{flag} requires a value"))?;
+                    .ok_or_else(|| format!("{flag} needs a value: {}.", flag_value(flag)))?;
                 match flag {
                     "--model" => request["model"] = model(value)?.into(),
                     "--cpu" | "--memory" => {
@@ -493,14 +531,14 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
                 i += 1;
                 let value = tail
                     .get(i)
-                    .ok_or_else(|| format!("{flag} requires a value"))?;
+                    .ok_or_else(|| format!("{flag} needs a value: {}.", flag_value(flag)))?;
                 match flag {
                     "--version" => {
                         let n = value
                             .parse::<u64>()
-                            .map_err(|_| "--version requires a positive integer")?;
+                            .map_err(|_| "--version must be a whole number above 0, the offer's terms version.")?;
                         if n == 0 {
-                            return Err("--version requires a positive integer".into());
+                            return Err("--version must be a whole number above 0, the offer's terms version.".into());
                         }
                         request["termsVersion"] = n.into();
                     }
@@ -511,7 +549,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
                         request["authorizationDigest"] =
                             clean(value, "Authorization digest", 64)?.into();
                         if !sha256_hex(&request["authorizationDigest"]) {
-                            return Err("--authorization-digest requires the exact 64-character SHA-256 from the offer".into());
+                            return Err("--authorization-digest must be the exact 64-character SHA-256 from the offer.".into());
                         }
                     }
                     "--report-policy" => {
@@ -523,15 +561,18 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
                     _ => {
                         let n = value
                             .parse::<u64>()
-                            .map_err(|_| "--budget-minutes requires an integer")?;
+                            .map_err(|_| "--budget-minutes must be a whole number from 1 to 1440.")?;
                         if !(1..=1440).contains(&n) {
-                            return Err("--budget-minutes must be between 1 and 1440".into());
+                            return Err("--budget-minutes must be a whole number from 1 to 1440.".into());
                         }
                         request["budgetMinutes"] = n.into();
                     }
                 }
             }
-            _ => return Err(format!("Unknown option {flag} for bounty {action}")),
+            _ => {
+                let command = if action == "start" { "yougori start bounty".to_owned() } else { format!("yougori bounty {action}") };
+                return Err(format!("Unknown option {flag} for {command}. See its options with yougori bounty --help."));
+            }
         }
         i += 1;
     }
@@ -542,9 +583,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
         _ => (1, 1),
     };
     if positional.len() < limits.0 || positional.len() > limits.1 {
-        return Err(format!(
-            "Wrong arguments for bounty {action}. Run yougori bounty --help."
-        ));
+        return Err(format!("{}. See every option with yougori bounty --help.", usage(action)));
     }
     if let Some(worker) = positional.first() {
         request["workerId"] = worker.clone().into();
@@ -587,34 +626,34 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
         if request["directPaymentAccepted"] != true {
             return Err("Review publisher counterparty/non-payment risk and explicitly supply --accept-direct-payment. Yougori does not prefund or guarantee the promised USDC.".into());
         }
-        for key in [
-            "termsVersion",
-            "termsDigest",
-            "authorizationDigest",
-            "reportPolicy",
-            "budgetMinutes",
+        for (key, flag) in [
+            ("termsVersion", "--version N"),
+            ("termsDigest", "--terms-digest DIGEST"),
+            ("authorizationDigest", "--authorization-digest DIGEST"),
+            ("reportPolicy", "--report-policy automatic|review"),
+            ("budgetMinutes", "--budget-minutes N"),
         ] {
             if request[key].is_null() {
                 return Err(format!(
-                    "Explicit bounty acceptance requires {key}; view the offer first"
+                    "Accepting a bounty needs {flag}. The offer's values are in yougori bounty details WORKER OFFER."
                 ));
             }
         }
         if !yes && !dry_run {
             return Err(
-                "Explicit bounty acceptance requires --yes after reviewing the offer".into(),
+                "Accepting binds your worker to this offer's terms and starts its work. Repeat with --yes after reviewing the offer.".into(),
             );
         }
         request["confirmed"] = true.into();
     }
     if action == "delete" && !yes && !dry_run {
-        return Err("Deletion requires --yes. Submitted reports remain; local workspace and unsent drafts are removed.".into());
+        return Err("Deleting removes the worker's local workspace and unsent drafts; submitted reports stay. Repeat with --yes to go ahead.".into());
     }
     if action == "submit" && !yes && !dry_run {
-        return Err("Submitting requires --yes after you have read the draft in yougori bounty reports WORKER. It sends the report privately to the publisher for review.".into());
+        return Err("Submitting sends the report privately to the publisher for review. Read the draft with yougori bounty reports WORKER, then repeat with --yes.".into());
     }
     if action == "leave" && !yes && !dry_run {
-        return Err("Leaving requires --yes. The worker stops work on its accepted bounty and stops its sandboxes; reports, drafts and reward records remain.".into());
+        return Err("Leaving stops work on the accepted bounty and stops its sandboxes; reports, drafts and reward records stay. Repeat with --yes to go ahead.".into());
     }
     if action == "apply" {
         if request["termsVersion"].is_null()
@@ -626,7 +665,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, String> {
             );
         }
         if !yes && !dry_run {
-            return Err("An access application requires --yes; it grants no source access or research authorization".into());
+            return Err("Applying asks the publisher for access; it grants no source access or research authorization by itself. Repeat with --yes to go ahead.".into());
         }
         request["confirmed"] = true.into();
     }
@@ -752,51 +791,134 @@ pub fn worker_handle(id: &str) -> String {
     format!("{}-{}", HANDLE_ADJECTIVES[n % 100], HANDLE_NOUNS[n / 100 % 100])
 }
 
-/// What to type for each of these workers: its short name, or its full ID when another of
-/// them has the same short name.
-pub fn worker_names(workers: &[&Value]) -> Vec<String> {
-    let handles: Vec<String> = workers
-        .iter()
-        .map(|worker| worker_handle(worker["id"].as_str().unwrap_or_default()))
-        .collect();
-    workers
-        .iter()
-        .zip(&handles)
-        .map(|(worker, handle)| {
-            if handles.iter().filter(|other| *other == handle).count() > 1 {
-                field(worker, "id", "worker")
-            } else {
-                handle.clone()
-            }
-        })
-        .collect()
+/// How a command compares what people type with workers' names: in any case, with spaces for
+/// hyphens, so " Keen Heron " is keen-heron.
+fn name_key(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join("-").to_lowercase()
 }
 
-/// Whether another worker in a `workers` listing has the short name of the worker `id`.
+/// Whether `name` is a memorable worker name, as new workers are given: two words from the
+/// short-name lists, such as keen-heron, with -2, -3 and so on after a collision.
+pub fn memorable_name(name: &str) -> bool {
+    let key = name_key(name);
+    let mut words = key.split('-');
+    let (Some(adjective), Some(noun), number, None) = (words.next(), words.next(), words.next(), words.next()) else {
+        return false;
+    };
+    HANDLE_ADJECTIVES.contains(&adjective)
+        && HANDLE_NOUNS.contains(&noun)
+        && number.is_none_or(|n| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2))
+}
+
+/// Whether a command reads `text` as the first digits of a worker ID rather than as a name.
+fn id_digits(text: &str) -> bool {
+    let wanted = text.trim().to_lowercase();
+    let digits = wanted.strip_prefix("worker-").unwrap_or(&wanted);
+    digits.len() >= 4 && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The workers of a `workers` listing.
+fn listed_workers(listed: &Value) -> impl Iterator<Item = &Value> {
+    listed["workers"].as_array().into_iter().flatten().filter(|worker| worker["id"].is_string())
+}
+
+/// Every name a worker answers to in a command, as [`name_key`] compares them: its ID, its
+/// short name and its own name.
+fn answers_to(worker: &Value) -> Vec<String> {
+    let id = worker["id"].as_str().unwrap_or_default();
+    let mut names = vec![id.to_lowercase(), worker_handle(id)];
+    names.extend(worker["name"].as_str().map(name_key));
+    names
+}
+
+/// The name for a new worker: `base`, such as keen-heron, or keen-heron-2, keen-heron-3 and so
+/// on when a worker in the `workers` listing already answers to it by its ID, short name or own
+/// name. A name a command would read as ID digits is never given. So in a command the new
+/// name always means the new worker; existing workers keep their names.
+pub fn new_worker_name(base: &str, listed: &Value) -> String {
+    let taken: BTreeSet<String> = listed_workers(listed).flat_map(answers_to).collect();
+    let base = name_key(base);
+    let mut name = base.clone();
+    let mut number = 1;
+    while taken.contains(&name) || id_digits(&name) {
+        number += 1;
+        name = format!("{base}-{number}");
+    }
+    name
+}
+
+/// A memorable two-word name picked at random, such as keen-heron.
+fn fresh_worker_name() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    hasher.write_u128(now.map_or(0, |since| since.as_nanos()));
+    let n = hasher.finish() as usize;
+    format!("{}-{}", HANDLE_ADJECTIVES[n % HANDLE_ADJECTIVES.len()], HANDLE_NOUNS[n / HANDLE_ADJECTIVES.len() % HANDLE_NOUNS.len()])
+}
+
+/// What to type for `worker` in a command, among `workers`: its memorable name when no other of
+/// them answers to it, else its short name when no other answers to that, else its full ID.
+fn typed_among(worker: &Value, workers: &[&Value]) -> String {
+    let id = worker["id"].as_str().unwrap_or_default();
+    let others: BTreeSet<String> = workers
+        .iter()
+        .filter(|other| other["id"].as_str() != Some(id))
+        .flat_map(|other| answers_to(other))
+        .collect();
+    let name = worker["name"].as_str().map(name_key).unwrap_or_default();
+    if memorable_name(&name) && !others.contains(&name) {
+        return name;
+    }
+    let handle = worker_handle(id);
+    if others.contains(&handle) {
+        field(worker, "id", "worker")
+    } else {
+        handle
+    }
+}
+
+/// What to type for each of these workers in a command, as [`typed_among`] picks it.
+pub fn worker_names(workers: &[&Value]) -> Vec<String> {
+    workers.iter().map(|worker| typed_among(worker, workers)).collect()
+}
+
+/// Whether another worker in a `workers` listing answers to the short name of the worker `id`.
 fn handle_shared(id: &str, listed: &Value) -> bool {
     let handle = worker_handle(id);
-    listed["workers"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|worker| worker["id"].as_str())
-        .any(|other| other != id && worker_handle(other) == handle)
+    listed_workers(listed)
+        .filter(|worker| worker["id"].as_str() != Some(id))
+        .any(|worker| answers_to(worker).contains(&handle))
 }
 
-/// What to type for the worker `id` in a command, as [`worker_names`] picks it: its short
-/// name, or its full ID when another worker in the `workers` listing has the same one.
+/// What to type for the worker `id` in a command, as [`worker_names`] picks it from the
+/// `workers` listing; its short name, or its ID when that is shared, if it is not listed.
 pub fn typed_name(id: &str, listed: &Value) -> String {
-    if handle_shared(id, listed) {
-        safe(id)
+    let workers: Vec<&Value> = listed_workers(listed).collect();
+    match workers.iter().find(|worker| worker["id"].as_str() == Some(id)) {
+        Some(worker) => typed_among(worker, &workers),
+        None if handle_shared(id, listed) => safe(id),
+        None => worker_handle(id),
+    }
+}
+
+/// What to type for the worker in an engine result that [`with_handles`] marked: its memorable
+/// name, else its short name, or its ID when another worker shares that.
+pub fn typed_in_result(worker: &Value) -> String {
+    let name = worker["name"].as_str().map(name_key).unwrap_or_default();
+    if memorable_name(&name) {
+        name
+    } else if worker["handleShared"] == true {
+        field(worker, "id", "worker")
     } else {
-        worker_handle(id)
+        worker["id"].as_str().map(worker_handle).unwrap_or_else(|| "—".into())
     }
 }
 
 /// [`typed_name`] from the engine's current listing, for a command printed as a hint. The
 /// short name when the listing does not come at once, such as after Ctrl+C stopped a slow
 /// request.
-async fn typed(id: &str) -> String {
+pub(crate) async fn typed(id: &str) -> String {
     match tokio::time::timeout(Duration::from_secs(2), dispatch(json!({"action":"workers"}))).await {
         Ok(Ok(listed)) => typed_name(id, &listed),
         _ => worker_handle(id),
@@ -808,12 +930,14 @@ fn worker_choices(workers: &[&Value]) -> String {
     workers
         .iter()
         .zip(worker_names(workers))
-        .map(|(worker, name)| {
-            format!(
-                "{name} ({}, {})",
-                field(worker, "name", "Bounty worker"),
-                state_label(worker["state"].as_str().unwrap_or(""))
-            )
+        .map(|(worker, typed)| {
+            let state = state_label(worker["state"].as_str().unwrap_or(""));
+            let name = field(worker, "name", "Bounty worker");
+            if name_key(&name) == typed {
+                format!("{typed} ({state})")
+            } else {
+                format!("{typed} ({name}, {state})")
+            }
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -835,17 +959,20 @@ pub fn resolve_worker(input: &str, listed: &Value) -> Result<String, String> {
     }
     let wanted = input.to_lowercase();
     let digits = wanted.strip_prefix("worker-").unwrap_or(&wanted);
-    let prefix = digits.len() >= 4 && digits.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let prefix = id_digits(input);
     let shown = ui::clip(&safe(input), 80);
     // "keen heron" names keen-heron too.
-    let hyphenated = wanted.split_whitespace().collect::<Vec<_>>().join("-");
-    let by_handle = |worker: &Value| worker_handle(&id(worker)) == hyphenated;
-    let by_name = |worker: &Value| worker["name"].as_str().is_some_and(|name| name.trim().to_lowercase() == wanted);
+    let typed = name_key(input);
+    // A short name and a worker's own name count alike, so a name one worker has as its short
+    // name and another as its own is never taken as either of them.
+    let by_name = |worker: &Value| {
+        worker_handle(&id(worker)) == typed || worker["name"].as_str().is_some_and(|name| name_key(name) == typed)
+    };
     let by_prefix = |worker: &Value| {
         let full = id(worker).to_lowercase();
         prefix && full.strip_prefix("worker-").unwrap_or(&full).starts_with(digits)
     };
-    let tiers: [&dyn Fn(&Value) -> bool; 3] = [&by_handle, &by_name, &by_prefix];
+    let tiers: [&dyn Fn(&Value) -> bool; 2] = [&by_name, &by_prefix];
     for matches in tiers {
         let found: Vec<&Value> = workers.iter().copied().filter(|worker| matches(worker)).collect();
         match found.len() {
@@ -1068,7 +1195,6 @@ async fn preparation_interrupt(worker: &str, bounty: bool) -> Result<bool, Strin
 /// Mutations return a stable owned worker promptly. Preparation runs in the
 /// engine and remains inspectable/cancellable if this terminal disconnects.
 async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
-    let handle = worker_handle(worker);
     let mut task = ui::loading_task(if bounty {
         "Preparing the accepted bounty"
     } else {
@@ -1088,7 +1214,7 @@ async fn wait_prepared(worker: &str, bounty: bool) -> Result<bool, String> {
             task.done(&if bounty {
                 "Your agent is ready to work.".to_owned()
             } else {
-                format!("Your worker {handle} is ready.")
+                format!("Your worker {} is ready.", typed(worker).await)
             });
             return Ok(true);
         }
@@ -1241,7 +1367,10 @@ where
     if request["gpu"].is_null() {
         request["gpu"] = gpu_choice(&cuda_checks(rpc).await).into();
     }
+    let automatic_memory = request["resources"]["memoryGb"].is_null() && request["rentedGpu"].is_null();
     defaults(request);
+    // The engine resolves omitted RAM after preflight, using the selected weights.
+    if automatic_memory { request["resources"].as_object_mut().unwrap().remove("memoryGb"); }
 }
 
 /// Settings for the one-screen setup, or none when the command line already chose some.
@@ -1411,12 +1540,14 @@ fn model_entry(base: &Value, value: &str) -> Result<String, String> {
     Ok(chosen)
 }
 
-/// The saved worker as `start bounty` introduces it before reconnecting.
-fn saved_line(saved: &Value) -> String {
+/// The saved worker as `start bounty` introduces it before reconnecting, with what to type for
+/// it among the `listed` workers.
+fn saved_line(saved: &Value, listed: &Value) -> String {
+    let name = field(saved, "name", "Bounty worker");
+    let typed = typed_name(saved["id"].as_str().unwrap_or_default(), listed);
     format!(
-        "Your worker: {} ({}) · {} · files on {}",
-        field(saved, "name", "Bounty worker"),
-        worker_handle(saved["id"].as_str().unwrap_or_default()),
+        "Your worker: {} · {} · files on {}",
+        if name_key(&name) == typed { typed } else { format!("{name} ({typed})") },
         saved_model(saved).unwrap_or_else(|| field(saved, "model", "")),
         field(&saved["resources"], "storageDrive", "the default drive")
     )
@@ -1435,9 +1566,9 @@ fn other_worker(listed: &Value, saved: &Value, environments: &[Value]) -> Value 
     saved_worker(&json!({"workers":others}), environments).cloned().unwrap_or(Value::Null)
 }
 
-fn model_memory_recommendation(preflight: &Value) -> u32 {
+pub fn model_memory_recommendation(preflight: &Value) -> u32 {
     let weights = preflight["resources"]["weightsBytes"].as_u64().unwrap_or(0) as f64 / 1_073_741_824.;
-    // Keep four GB for OpenCode/test sandboxes, plus weight/context overhead.
+    // Keep four GiB for Hermes/test sandboxes, plus weight/context overhead.
     (((weights * 1.15 + 1.5 + 4.) / 4.).ceil() * 4.).clamp(8., 1024.) as u32
 }
 
@@ -1497,9 +1628,6 @@ fn defaults(request: &mut Value) {
     if request["keepResident"].is_null() {
         request["keepResident"] = false.into();
     }
-    if request["name"].is_null() {
-        request["name"] = "Bounty worker".into();
-    }
 }
 
 fn resource_sliders(request: &Value, host: &Value) -> Result<Vec<ui::Slider>, String> {
@@ -1546,10 +1674,11 @@ fn started(result: &Value) -> Result<Value, String> {
     if let Some(shown) = worker.as_object_mut() {
         shown.insert("handle".into(), worker_handle(&id).into());
     }
+    let name = typed_in_result(&worker);
     let next = match worker["state"].as_str() {
-        Some("preparing") => format!("Preparation continues in the engine. Follow it with `yougori bounty status {id}`; the worker is ready when its state is ready_waiting."),
-        Some("paused") => format!("The worker stays paused. Resume it with `yougori bounty resume {id}`."),
-        _ => format!("Follow it with `yougori bounty status {id}`."),
+        Some("preparing") => format!("Preparation continues in the engine. Follow it with `yougori bounty status {name}`; the worker is ready when its state is ready_waiting."),
+        Some("paused") => format!("The worker stays paused. Resume it with `yougori bounty resume {name}`."),
+        _ => format!("Follow it with `yougori bounty status {name}`."),
     };
     let mut shown = json!({"worker":worker,"next":next});
     if result["background"] == true {
@@ -1733,6 +1862,11 @@ struct Setup {
     checks: bool,
     /// The worker to open instead of setting up a new one.
     reopen: Option<String>,
+    /// The engine's `workers` listing, for the names commands use.
+    listed: Value,
+    /// The name a new worker gets when none is given or entered: memorable, and one no other
+    /// worker on this computer answers to.
+    fresh_name: String,
     /// The model question is asked: no model was given, or a model needed attention.
     enter_model: bool,
     model: Option<String>,
@@ -1843,14 +1977,23 @@ impl Setup {
     }
 
     fn recommended(&self) -> Result<Option<Value>, String> {
-        recommended_model_settings(&self.chosen()?, self.host(), self.cuda(), self.memory())
+        let settings = recommended_model_settings(&self.chosen()?, self.host(), self.cuda(), self.memory())?;
+        Ok(settings.map(|settings| self.named(settings)))
+    }
+
+    /// `request` with the new worker's fresh name when none was given or entered.
+    fn named(&self, mut request: Value) -> Value {
+        if request["name"].is_null() && !self.fresh_name.is_empty() {
+            request["name"] = self.fresh_name.as_str().into();
+        }
+        request
     }
 
     /// The request to prepare: the recommended settings, or the command line's choices with
     /// the customized answers. Without checks (--yes), the scripted defaults follow later.
     fn request(&self) -> Result<Value, String> {
         if !self.checks {
-            return self.chosen();
+            return self.chosen().map(|request| self.named(request));
         }
         if self.quick == Some(true) {
             if let Some(recommended) = self.recommended()? {
@@ -1878,6 +2021,7 @@ impl Setup {
         if let Some(keep) = self.keep {
             request["keepResident"] = keep.into();
         }
+        let mut request = self.named(request);
         defaults(&mut request);
         Ok(request)
     }
@@ -1892,7 +2036,7 @@ impl Setup {
         ];
         if let Some(id) = &other {
             choices.push(ui::Choice::new(
-                format!("Open {}", worker_handle(id)),
+                format!("Open {}", typed_name(id, &self.listed)),
                 format!("your other worker · {}", state_label(self.other["state"].as_str().unwrap_or(""))),
             ));
         }
@@ -2176,7 +2320,7 @@ impl Setup {
     }
 
     fn ask_name(&mut self) -> Result<bool, String> {
-        let default = self.name.clone().unwrap_or_else(|| "Bounty worker".into());
+        let default = self.name.clone().unwrap_or_else(|| self.fresh_name.clone());
         self.name = Some(ui::input("Name this worker", &default, false, &worker_name)?);
         Ok(true)
     }
@@ -2300,6 +2444,8 @@ async fn setup(invocation: &mut Invocation) -> Result<Option<Value>, String> {
         && failed_state(saved["state"].as_str().unwrap_or(""));
     let mut setup = Setup {
         given: invocation.request.clone(),
+        fresh_name: new_worker_name(&fresh_worker_name(), &listed),
+        listed: listed.clone(),
         saved: saved.clone(),
         other: if attention { other_worker(&listed, &saved, &environments) } else { Value::Null },
         attention,
@@ -2309,7 +2455,7 @@ async fn setup(invocation: &mut Invocation) -> Result<Option<Value>, String> {
     };
     if reconnecting {
         if interactive {
-            ui::info(&saved_line(&saved));
+            ui::info(&saved_line(&saved, &listed));
         }
         if !attention {
             if interactive {
@@ -2586,6 +2732,39 @@ fn offer_id(offer: &Value) -> Result<String, String> {
         .ok_or_else(|| "Offer has no identifier".into())
 }
 
+/// How the agent submits a finding, from the answer to the first acceptance question.
+fn submission(policy: usize) -> &'static str {
+    if policy == 0 { "review" } else { "automatic" }
+}
+
+/// The offer's three acceptance questions: how findings are submitted, the work budget, and the
+/// final confirmation. Each question is asked with the earlier answer selected. Back returns to
+/// the question before, and from the first one leaves with [`ui::BACK`]; it never counts as
+/// acceptance. Nothing is accepted unless the last answer is Accept, and Ctrl+C leaves with
+/// nothing accepted. Returns the submission choice and budget only when accepted.
+fn acceptance_questions(
+    mut ask_policy: impl FnMut(usize) -> Result<usize, String>,
+    mut ask_budget: impl FnMut(u64) -> Result<u64, String>,
+    mut confirm: impl FnMut(usize, u64) -> Result<bool, String>,
+) -> Result<Option<(usize, u64)>, String> {
+    let (mut policy, mut budget, mut step) = (0usize, 60u64, 0);
+    loop {
+        let answered = match step {
+            0 => ask_policy(policy).map(|picked| policy = picked),
+            1 => ask_budget(budget).map(|minutes| budget = minutes),
+            _ => match confirm(policy, budget) {
+                Ok(accepted) => return Ok(accepted.then_some((policy, budget))),
+                Err(error) => Err(error),
+            },
+        };
+        match answered {
+            Ok(()) => step += 1,
+            Err(error) if error == ui::BACK && step > 0 => step -= 1,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 pub fn acceptance(
     worker: &str,
     offer: &Value,
@@ -2680,30 +2859,42 @@ async fn browse_bounties(worker: &str) -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     choices.push(ui::Choice::new("Back", "keep waiting without applying"));
-    let selected=ui::select("Choose published metadata to review",&["Applying grants no source access or research permission. A publisher must approve this exact version, followed by your separate offer acceptance.".into()],&choices,0)?;
-    if selected >= bounties.len() {
+    let mut selected = 0;
+    loop {
+        selected=ui::select("Choose published metadata to review",&["Applying grants no source access or research permission. A publisher must approve this exact version, followed by your separate offer acceptance.".into()],&choices,selected)?;
+        if selected >= bounties.len() {
+            return Ok(());
+        }
+        let bounty = &bounties[selected];
+        let offer = json!({"id":bounty["id"],"bounty":bounty,"reward":bounty["reward"],"termsVersion":bounty["termsVersion"],"termsDigest":bounty["termsDigest"],"authorizationDigest":bounty["authorizationDigest"],"sourceRevision":bounty["terms"]["sourceRevision"]});
+        offer_authorization(&offer)?;
+        // Back returns to the list; nothing is sent unless the answer is Request access.
+        let confirmed = ui::with_back(|| {
+            ui::select(
+                "Request publisher approval for this exact version?",
+                &offer_lines(&offer, true),
+                &[
+                    ui::Choice::new("Cancel", "no application or source download"),
+                    ui::Choice::new(
+                        "Request access",
+                        "wait for approval; no investigation starts",
+                    ),
+                ],
+                0,
+            )
+        });
+        match confirmed {
+            Err(e) if e == ui::BACK => continue,
+            Ok(1) => {
+                change("Requesting exact-version source access",json!({"action":"apply","workerId":worker,"bountyId":bounty["id"],"termsVersion":bounty["termsVersion"],"termsDigest":bounty["termsDigest"],"confirmed":true})).await?;
+                ui::info("Access application sent. Keep waiting for an approved offer; review and accept it separately before any source is downloaded.");
+            }
+            other => {
+                other?;
+            }
+        }
         return Ok(());
     }
-    let bounty = &bounties[selected];
-    let offer = json!({"id":bounty["id"],"bounty":bounty,"reward":bounty["reward"],"termsVersion":bounty["termsVersion"],"termsDigest":bounty["termsDigest"],"authorizationDigest":bounty["authorizationDigest"],"sourceRevision":bounty["terms"]["sourceRevision"]});
-    offer_authorization(&offer)?;
-    let confirmed = ui::select(
-        "Request publisher approval for this exact version?",
-        &offer_lines(&offer, true),
-        &[
-            ui::Choice::new("Cancel", "no application or source download"),
-            ui::Choice::new(
-                "Request access",
-                "wait for approval; no investigation starts",
-            ),
-        ],
-        0,
-    )?;
-    if confirmed == 1 {
-        change("Requesting exact-version source access",json!({"action":"apply","workerId":worker,"bountyId":bounty["id"],"termsVersion":bounty["termsVersion"],"termsDigest":bounty["termsDigest"],"confirmed":true})).await?;
-        ui::info("Access application sent. Keep waiting for an approved offer; review and accept it separately before any source is downloaded.");
-    }
-    Ok(())
 }
 
 async fn offers(worker: &str) -> Result<(), String> {
@@ -2793,53 +2984,61 @@ async fn offers(worker: &str) -> Result<(), String> {
         for line in offer_lines(offer, true) {
             ui::info(&line);
         }
-        let policy=ui::select("How should your agent submit a supported finding?",&["Priority uses server receipt of a complete report. Waiting for review can affect priority.".into()],&[ui::Choice::new("Ask me to review first","keep a private draft until you submit"),ui::Choice::new("Submit privately when ready","submit evidence automatically")],0)?;
-        let budget = ui::input(
-            "How long may your agent work before checking in?",
-            "60",
-            false,
-            &|s| {
-                let n = s
-                    .parse::<u64>()
-                    .map_err(|_| "Enter minutes between 1 and 1440")?;
-                if !(1..=1440).contains(&n) {
-                    return Err("Enter minutes between 1 and 1440".into());
-                }
-                Ok(n.to_string())
+        // Every question offers Back; from the first it returns to the offer list.
+        let answers = ui::with_back(|| acceptance_questions(
+            |current| ui::select("How should your agent submit a supported finding?",&["Priority uses server receipt of a complete report. Waiting for review can affect priority.".into()],&[ui::Choice::new("Ask me to review first","keep a private draft until you submit"),ui::Choice::new("Submit privately when ready","submit evidence automatically")],current),
+            |current| {
+                ui::input(
+                    "How long may your agent work before checking in?",
+                    &current.to_string(),
+                    false,
+                    &|s| {
+                        let n = s
+                            .parse::<u64>()
+                            .map_err(|_| "Enter minutes between 1 and 1440")?;
+                        if !(1..=1440).contains(&n) {
+                            return Err("Enter minutes between 1 and 1440".into());
+                        }
+                        Ok(n.to_string())
+                    },
+                )?
+                .parse::<u64>()
+                .map_err(|_| "Invalid work budget".to_string())
             },
-        )?
-        .parse::<u64>()
-        .map_err(|_| "Invalid work budget")?;
-        let request = acceptance(
-            worker,
-            offer,
-            if policy == 0 { "review" } else { "automatic" },
-            budget,
-        )?;
-        let mut notes = offer_lines(offer, true);
-        notes.push(format!(
-            "Work budget: {budget} minutes · Submission: {}",
-            if policy == 0 {
-                "review first"
-            } else {
-                "automatic private submission"
-            }
+            |policy, budget| {
+                // The offer is checked before the person is asked to accept it.
+                acceptance(worker, offer, submission(policy), budget)?;
+                let mut notes = offer_lines(offer, true);
+                notes.push(format!(
+                    "Work budget: {budget} minutes · Submission: {}",
+                    if policy == 0 {
+                        "review first"
+                    } else {
+                        "automatic private submission"
+                    }
+                ));
+                ui::select(
+                    "Accept exact source authorization, rules and direct-payment risk?",
+                    &notes,
+                    &[
+                        ui::Choice::new("Cancel", "keep waiting; no source download"),
+                        ui::Choice::new(
+                            "Accept and prepare",
+                            "accept publisher's unguaranteed payment promise and exact offline source scope",
+                        ),
+                    ],
+                    0,
+                )
+                .map(|picked| picked == 1)
+            },
         ));
-        let confirmed = ui::select(
-            "Accept exact source authorization, rules and direct-payment risk?",
-            &notes,
-            &[
-                ui::Choice::new("Cancel", "keep waiting; no source download"),
-                ui::Choice::new(
-                    "Accept and prepare",
-                    "accept publisher's unguaranteed payment promise and exact offline source scope",
-                ),
-            ],
-            0,
-        )?;
-        if confirmed != 1 {
-            return Ok(());
-        }
+        let (policy, budget) = match answers {
+            Ok(Some(answers)) => answers,
+            Ok(None) => return Ok(()),
+            Err(e) if e == ui::BACK => continue,
+            Err(e) => return Err(e),
+        };
+        let request = acceptance(worker, offer, submission(policy), budget)?;
         change("Preparing the accepted bounty", request).await?;
         wait_prepared(worker, true).await?;
         return Ok(());
@@ -2887,7 +3086,7 @@ async fn chat(worker: &str) -> Result<(), String> {
     loop {
         show_messages(worker, &mut seen).await?;
         let content = match ui::input(
-            "Ask your agent about progress or suggest a direction…",
+            "Ask your agent about progress, or suggest a direction",
             "",
             false,
             &|v| clean(v, "Message", 8192),
@@ -2990,10 +3189,10 @@ fn interrupt_choice(index: usize) -> &'static str {
 /// `/stop` or Ctrl+C while watching work: pause or leave the accepted bounty. True when left.
 pub(crate) async fn console_stop(worker: &str) -> Result<bool, String> {
     ui::take_interrupt();
-    let handle = worker_handle(worker);
+    let name = typed(worker).await;
     let choice = ui::select_required(
         "Stop working on this bounty?",
-        &[format!("Worker {handle}")],
+        &[format!("Worker {name}")],
         &[
             ui::Choice::new("Keep working", "return to the live view"),
             ui::Choice::new("Pause", "checkpoint and stop new tasks; resume later"),
@@ -3003,7 +3202,7 @@ pub(crate) async fn console_stop(worker: &str) -> Result<bool, String> {
     match choice {
         1 => {
             change("Pausing worker", json!({"action":"pause","workerId":worker})).await?;
-            ui::info(&format!("Paused. Resume with: yougori bounty resume {}", typed(worker).await));
+            ui::info(&format!("Paused. Resume with: yougori bounty resume {name}"));
             Ok(false)
         }
         2 => {
@@ -3024,7 +3223,7 @@ async fn interrupt(worker: &str) -> Result<bool, String> {
     ];
     let action = interrupt_choice(ui::select_required(
         "What would you like to do?",
-        &[format!("Worker {}", worker_handle(worker))],
+        &[format!("Worker {}", typed(worker).await)],
         &choices,
     )?);
     if action == "cancel" {
@@ -3101,14 +3300,13 @@ where
 }
 
 async fn dashboard(worker: &str) -> Result<(), String> {
-    let handle = worker_handle(worker);
-    // Hints name the worker as commands must: by its ID when another worker shares its name.
+    // The screen and hints name the worker as commands must.
     let name = typed(worker).await;
     // The live map lists the keys; this stays in the log above it.
     ui::info(
         "Ctrl+C opens lifecycle choices. Ctrl+] detaches; the engine keeps your worker running.",
     );
-    let screen = crate::bounty_map::Screen::start(&handle, &handle);
+    let screen = crate::bounty_map::Screen::start(&name, &name);
     let mut last_snapshot = String::new();
     let mut offer_count = usize::MAX;
     // The worker state the practice hint was last shown for; repeated presses add nothing.
@@ -3126,7 +3324,7 @@ async fn dashboard(worker: &str) -> Result<(), String> {
         let paused = state["state"] == "paused";
         // The map shows the details; the log keeps one plain line per change, and the exact
         // command when the worker waits for the participant.
-        let sentence = state_sentence(&field(state, "name", &handle), state["state"].as_str().unwrap_or(""));
+        let sentence = state_sentence(&field(state, "name", &name), state["state"].as_str().unwrap_or(""));
         let hint = state_hint(state, &name);
         let snapshot = format!("{sentence}\n{}", hint.as_deref().unwrap_or_default());
         if last_snapshot != snapshot {
@@ -3311,7 +3509,7 @@ pub async fn run(args: &[String]) -> Result<Option<Value>, String> {
     let _session = if ui::can_prompt() && guided {
         Some(ui::Session::start(
             "Swarm Mining",
-            "your model, your worker, your choice of bounty",
+            "your own model, on bounties you accept",
         ))
     } else {
         None
@@ -3561,6 +3759,69 @@ mod tests {
         assert_eq!(r["sourceDigest"], "b".repeat(64));
         offer["termsDigest"] = Value::Null;
         assert!(acceptance("worker", &offer, "review", 60).is_err());
+    }
+    #[test]
+    fn option_errors_name_the_flag_what_it_needs_and_the_usage() {
+        let error = |args: &str| parse(&words(args)).unwrap_err();
+        assert_eq!(error("start bounty --cpu"), "--cpu needs a value: CPU cores, from 4 to 255.");
+        assert_eq!(error("start bounty --name ab --name cd"), "--name is given twice. Give it once.");
+        let unknown = error("bounty status worker-1 --colour");
+        assert!(unknown.starts_with("Unknown option --colour for yougori bounty status.") && unknown.ends_with("yougori bounty --help."), "{unknown}");
+        assert!(error("start bounty --colour").contains("for yougori start bounty."));
+        assert_eq!(error("bounty status"), "Usage: yougori bounty status WORKER. See every option with yougori bounty --help.");
+        assert_eq!(error("bounty memory worker-1"), "Usage: yougori bounty memory WORKER release|keep. See every option with yougori bounty --help.");
+        assert!(error("bounty workers extra").starts_with("Usage: yougori bounty workers."));
+        let missing = error("bounty accept worker offer --accept-rules --accept-authorization --accept-direct-payment --yes");
+        assert!(missing.contains("--version N") && missing.contains("yougori bounty details WORKER OFFER"), "{missing}");
+        assert!(error("bounty resume worker-1 --budget-minutes 0").contains("from 1 to 1440"));
+    }
+    #[test]
+    fn acceptance_questions_accept_only_on_the_final_answer() {
+        // Back from the budget returns to the submission question with its answer selected;
+        // Back from the confirmation returns to the budget. Neither counts as acceptance.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let mut policies = [Ok(1), Ok(0)].into_iter();
+        let mut budgets = [Err(ui::BACK.to_string()), Ok(30), Ok(45)].into_iter();
+        let mut confirms = [Err(ui::BACK.to_string()), Ok(true)].into_iter();
+        let answers = acceptance_questions(
+            |current| {
+                asked.borrow_mut().push(format!("policy {current}"));
+                policies.next().unwrap()
+            },
+            |current| {
+                asked.borrow_mut().push(format!("budget {current}"));
+                budgets.next().unwrap()
+            },
+            |policy, budget| {
+                asked.borrow_mut().push(format!("confirm {policy} {budget}"));
+                confirms.next().unwrap()
+            },
+        );
+        assert_eq!(answers, Ok(Some((0, 45))));
+        assert_eq!(
+            asked.into_inner(),
+            ["policy 0", "budget 60", "policy 1", "budget 60", "confirm 0 30", "budget 30", "confirm 0 45"]
+        );
+    }
+    #[test]
+    fn acceptance_questions_never_accept_on_cancel_back_or_ctrl_c() {
+        fn back<T>() -> Result<T, String> {
+            Err(ui::BACK.into())
+        }
+        fn ctrl_c<T>() -> Result<T, String> {
+            Err(ui::CANCELLED.into())
+        }
+        // Cancel on the confirmation accepts nothing.
+        assert_eq!(acceptance_questions(|_| Ok(1), |_| Ok(30), |_, _| Ok(false)), Ok(None));
+        // Back from the first question leaves for the offer list.
+        assert_eq!(acceptance_questions(|_| back(), |_| unreachable!(), |_, _| unreachable!()), back());
+        // Ctrl+C on any question leaves at once, without asking the rest.
+        assert_eq!(acceptance_questions(|_| ctrl_c(), |_| unreachable!(), |_, _| unreachable!()), ctrl_c());
+        assert_eq!(acceptance_questions(|_| Ok(1), |_| ctrl_c(), |_, _| unreachable!()), ctrl_c());
+        assert_eq!(acceptance_questions(|_| Ok(1), |_| Ok(30), |_, _| ctrl_c()), ctrl_c());
+        // An offer that fails its check before the confirmation stops with its reason.
+        let stale = "Offer has no terms digest; refresh offers before accepting";
+        assert_eq!(acceptance_questions(|_| Ok(0), |_| Ok(30), |_, _| Err(stale.into())), Err(stale.into()));
     }
     #[test]
     fn human_chat_never_requests_agent_channels_and_keeps_complete_text() {
@@ -3980,6 +4241,7 @@ mod tests {
             })
             .await;
             assert_eq!(request["gpu"], expected);
+            assert!(request["resources"]["memoryGb"].is_null(), "engine sizes RAM after preflight");
             assert_eq!(calls, [COMPUTE_STATUS_METHOD]);
             assert_eq!((request["resources"]["cpu"].as_u64(), request["workspaceQuotaGb"].as_u64()), (Some(4), Some(20)));
         }
@@ -3995,6 +4257,17 @@ mod tests {
         let mut bare = json!({});
         defaults(&mut bare);
         assert_eq!(bare["gpu"], "cpu", "defaults never assume NVIDIA");
+    }
+
+    #[tokio::test]
+    async fn scripted_setup_keeps_explicit_ram_and_rented_local_budget() {
+        for (mut request, expected) in [
+            (json!({"gpu":"cpu","resources":{"memoryGb":36}}), 36),
+            (json!({"gpu":"cpu","rentedGpu":"pod-fixture"}), 8),
+        ] {
+            scripted_settings(&mut request, &mut |_, _| std::future::ready(Ok(Value::Null))).await;
+            assert_eq!(request["resources"]["memoryGb"], expected);
+        }
     }
 
     #[tokio::test]
@@ -4014,7 +4287,9 @@ mod tests {
         assert_eq!(calls, [(COMPUTE_STATUS_METHOD, Value::Null, Value::Null), ("swarm_dispatch", json!("prepare"), json!("cpu"))]);
         let shown = started(&result).unwrap();
         assert_eq!((shown["worker"]["id"].as_str(), shown["worker"]["state"].as_str(), shown["background"].as_bool()), (Some("worker-new"), Some("preparing"), Some(true)));
-        assert!(shown["next"].as_str().unwrap().contains("yougori bounty status worker-new"), "{shown}");
+        assert!(shown["next"].as_str().unwrap().contains(&format!("yougori bounty status {}", worker_handle("worker-new"))), "{shown}");
+        let named = started(&json!({"worker":{"id":"worker-new","name":"keen-heron-2","state":"preparing"}})).unwrap();
+        assert!(named["next"].as_str().unwrap().contains("yougori bounty status keen-heron-2"), "{named}");
         // --worker resumes a worker that is not running: its status first, then one resume.
         for state in ["stopped", "paused", "failed"] {
             let script = parse(&words("start bounty --worker worker-old --yes --no-wait")).unwrap().unwrap();
@@ -4027,7 +4302,7 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(actions, [json!("status"), json!("resume")], "{state}");
-            assert!(started(&result).unwrap()["next"].as_str().unwrap().contains("bounty status worker-old"));
+            assert!(started(&result).unwrap()["next"].as_str().unwrap().contains(&format!("bounty status {}", worker_handle("worker-old"))));
         }
         // One the engine already prepares or runs is returned as it is: a resume would restart it.
         for state in ["preparing", "preparing_bounty", "ready_waiting", "running", "awaiting_review"] {
@@ -4053,7 +4328,7 @@ mod tests {
         .unwrap();
         assert_eq!(result, json!({"worker":saved}));
         let paused = started(&json!({"worker":{"id":"worker-old","state":"paused"}})).unwrap();
-        assert!(paused["next"].as_str().unwrap().contains("yougori bounty resume worker-old") && paused["background"].is_null());
+        assert!(paused["next"].as_str().unwrap().contains(&format!("yougori bounty resume {}", worker_handle("worker-old"))) && paused["background"].is_null());
         assert!(started(&json!({"background":true})).is_err(), "a result without a worker ID is an error");
     }
 
@@ -4140,6 +4415,84 @@ mod tests {
         assert!(handles.iter().collect::<BTreeSet<_>>().len() >= 190, "different IDs mostly get different names");
     }
 
+    #[test]
+    fn a_new_worker_gets_a_memorable_name_no_other_worker_answers_to() {
+        let (a, b) = ("worker-aaaa1111aaaa1111aaaa1111aaaa1111", "worker-bbbb2222bbbb2222bbbb2222bbbb2222");
+        // Taken names compare as commands compare them: in any case, a space for the hyphen.
+        let listed = json!({"workers":[{"id":a,"name":"keen-heron"},{"id":b,"name":"Keen Heron 2"}]});
+        assert_eq!(new_worker_name("keen-heron", &listed), "keen-heron-3");
+        assert_eq!(new_worker_name(" Calm  Otter ", &listed), "calm-otter");
+        assert_eq!(new_worker_name("calm-otter", &Value::Null), "calm-otter", "nothing listed, nothing taken");
+        // A worker's short name and its ID are taken too.
+        let handle = worker_handle(a);
+        assert_eq!(new_worker_name(&handle.to_uppercase(), &listed), format!("{handle}-2"));
+        let odd = json!({"workers":[{"id":"keen-heron","name":"Laptop"}]});
+        assert_eq!(new_worker_name("keen-heron", &odd), "keen-heron-2");
+        // Nothing a command reads as the first digits of an ID is ever given.
+        for (base, given) in [("cafe", "cafe-2"), ("worker-beef", "worker-beef-2"), ("C0FFEE", "c0ffee-2")] {
+            assert!(id_digits(base) && !id_digits(given), "{base}");
+            assert_eq!(new_worker_name(base, &Value::Null), given);
+        }
+        let mut names = BTreeSet::new();
+        for adjective in HANDLE_ADJECTIVES {
+            for noun in HANDLE_NOUNS {
+                let name = format!("{adjective}-{noun}");
+                assert!(memorable_name(&name) && !id_digits(&name) && !id_digits(&format!("{name}-2")), "{name}");
+                names.insert(name);
+            }
+        }
+        for _ in 0..20 {
+            assert!(names.contains(&fresh_worker_name()));
+        }
+        for (name, memorable) in [("keen-heron-2", true), ("Keen Heron 12", true), ("keen-heron-1", false), ("keen-heron-02", false), ("keen-heron-x", false), ("keen", false), ("heron-keen", false), ("Bounty worker", false), ("keen-heron-2-3", false)] {
+            assert_eq!(memorable_name(name), memorable, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_new_name_always_finds_the_new_worker_and_nobody_is_renamed() {
+        let mut listed = fleet();
+        let before: Vec<String> = listed_workers(&listed).map(|worker| typed_name(worker["id"].as_str().unwrap(), &listed)).collect();
+        // Each new worker is told apart from every worker before it, including earlier new ones.
+        for (n, digits) in ["dddd4444", "eeee5555", "ffff6666"].into_iter().enumerate() {
+            let name = new_worker_name("keen-heron", &listed);
+            assert_eq!(name, if n == 0 { "keen-heron".to_owned() } else { format!("keen-heron-{}", n + 1) });
+            let id = format!("worker-{}", digits.repeat(4));
+            listed["workers"].as_array_mut().unwrap().push(json!({"id":id,"name":name,"state":"ready_waiting"}));
+            assert_eq!(resolve_worker(&name, &listed).unwrap(), id, "{name}");
+            assert_eq!(resolve_worker(&name.replace('-', " ").to_uppercase(), &listed).unwrap(), id);
+            assert_eq!(typed_name(&id, &listed), name, "hints use the new name");
+        }
+        let after: Vec<String> = listed_workers(&listed).take(before.len()).map(|worker| typed_name(worker["id"].as_str().unwrap(), &listed)).collect();
+        assert_eq!(before, after, "existing workers keep what to type for them");
+        assert_eq!(worker_names(&listed_workers(&listed).collect::<Vec<_>>())[3..], ["keen-heron", "keen-heron-2", "keen-heron-3"]);
+        let choices = worker_choices(&listed_workers(&listed).collect::<Vec<_>>());
+        assert!(choices.contains("keen-heron (ready for offers)") || choices.contains("keen-heron ("), "{choices}");
+        assert!(!choices.contains("keen-heron (keen-heron"), "a name that is what to type is said once: {choices}");
+    }
+
+    #[test]
+    fn a_name_two_workers_answer_to_is_never_taken_as_either() {
+        // A worker made later can get a short name an earlier worker already has as its own.
+        let (earlier, later) = ("worker-aaaa1111aaaa1111aaaa1111aaaa1111", "worker-cccc3333cccc3333cccc3333cccc3333");
+        let shared = worker_handle(later);
+        let listed = json!({"workers":[{"id":earlier,"name":shared,"state":"ready_waiting"},{"id":later,"name":"Bounty worker","state":"paused"}]});
+        let error = resolve_worker(&shared, &listed).unwrap_err();
+        assert!(error.contains("more than one worker"), "{error}");
+        // Each is then named by something only it answers to.
+        assert_eq!(typed_name(earlier, &listed), worker_handle(earlier));
+        assert_eq!(typed_name(later, &listed), later);
+        for id in [earlier, later] {
+            assert_eq!(resolve_worker(&typed_name(id, &listed), &listed).unwrap(), id);
+        }
+        // A result names the worker the same way.
+        let mut status = json!({"worker":{"id":later,"name":"Bounty worker"}});
+        with_handles(&mut status, &listed);
+        assert_eq!(typed_in_result(&status["worker"]), later);
+        assert_eq!(typed_in_result(&json!({"id":earlier,"name":"Keen Heron"})), "keen-heron");
+        assert_eq!(typed_in_result(&json!({"id":earlier,"name":"Laptop"})), worker_handle(earlier));
+    }
+
     fn fleet() -> Value {
         json!({"workers":[
             {"id":"worker-aaaa1111aaaa1111aaaa1111aaaa1111","name":"Bounty worker","state":"ready_waiting","createdAt":100},
@@ -4187,7 +4540,8 @@ mod tests {
         assert_eq!(shown["request"]["workerId"], "apt-whale");
         let shown = run(&words("start bounty --worker apt-whale --dry-run")).await.unwrap().unwrap();
         assert_eq!((shown["request"]["action"].as_str(), shown["request"]["workerId"].as_str()), (Some("resume"), Some("apt-whale")));
-        assert!(HELP.contains("WORKER is the short name") && HELP.contains("keen-heron"));
+        assert!(HELP.contains("WORKER is the name to type for a worker") && HELP.contains("keen-heron"));
+        assert!(!HELP.contains("env start bounty") && HELP.contains("yougori start --environment bounty"), "env commands take IDs");
     }
 
     #[test]
@@ -4211,8 +4565,11 @@ mod tests {
         assert_eq!(older, format!("yougori start bounty --worker {}", worker_handle("worker-aaaa1111aaaa1111aaaa1111aaaa1111")));
         assert!(reconnect_command("worker-1", &Value::Null, &[]).ends_with("--worker happy-turtle"));
         let saved = &listed["workers"][1];
-        let line = saved_line(saved);
+        let line = saved_line(saved, &listed);
         assert!(line.contains(&format!("Bounty worker ({})", worker_handle("worker-bbbb2222bbbb2222bbbb2222bbbb2222"))), "{line}");
+        let named = json!({"id":"worker-dddd4444dddd4444dddd4444dddd4444","name":"keen-heron","model":"hf.co/owner/model"});
+        let line = saved_line(&named, &json!({"workers":[named]}));
+        assert!(line.starts_with("Your worker: keen-heron · "), "a name that is what to type is said once: {line}");
         // A failed saved worker can open the newest worker that did not fail instead.
         assert_eq!(other_worker(&listed, saved, &[])["id"], "worker-aaaa1111aaaa1111aaaa1111aaaa1111");
         assert!(other_worker(&json!({"workers":[saved]}), saved, &[]).is_null());
@@ -4292,9 +4649,11 @@ mod tests {
         answers.model = Some("hf.co/owner/model".into());
         answers.preflight = preflight.clone();
         answers.drive = Some("D:\\".into());
+        answers.fresh_name = "keen-heron".into();
         // Prepare: the recommended settings for the checked model.
         answers.quick = Some(true);
         let request = answers.request().unwrap();
+        assert_eq!(request["name"], "keen-heron", "a new worker gets its fresh name");
         assert_eq!((request["model"].as_str(), request["quant"].as_str()), (Some("hf.co/owner/model"), Some("Q4_K_M")));
         assert_eq!((request["gpu"].as_str(), request["resources"]["memoryGb"].as_u64()), (Some("nvidia"), Some(16)));
         assert_eq!(request["resources"]["storageDrive"], "D:\\");
@@ -4310,7 +4669,7 @@ mod tests {
         assert_eq!((request["workspaceQuotaGb"].as_f64(), request["name"].as_str(), request["keepResident"].as_bool()), (Some(30.0), Some("Laptop"), Some(true)));
         // Back to the summary and Prepare: the customized answers no longer apply.
         answers.quick = Some(true);
-        assert_eq!(answers.request().unwrap()["name"], "Bounty worker");
+        assert_eq!(answers.request().unwrap()["name"], "keen-heron");
         // An entered :QUANT wins; a model given with its own variant does not pass it to another one.
         answers.model = Some("hf.co/owner/other:IQ4_XS".into());
         answers.preflight = Value::Null;

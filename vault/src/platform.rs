@@ -344,11 +344,17 @@ const DESKTOPS: &str = "desktops.json";
 /// Registered Desktop paths, or `None` for a broker installed before
 /// registration existed (accepted by name until its next update).
 fn registered_desktops() -> Option<Vec<String>> {
-    let path = data_directory().ok()?.join(DESKTOPS);
-    if !path.exists() {
-        return None;
+    registered_desktops_at(&data_directory().ok()?.join(DESKTOPS))
+}
+fn registered_desktops_at(path: &Path) -> Option<Vec<String>> {
+    // Only a list certainly absent means a broker from before registration. One that could
+    // not be checked or read recognises no Desktop, never every Desktop by name.
+    match crate::storage::present(path) {
+        Ok(false) => return None,
+        Ok(true) => {}
+        Err(_) => return Some(Vec::new()),
     }
-    let bytes = crate::storage::bounded_read(&path, 64 * 1024).ok()?;
+    let Ok(bytes) = crate::storage::bounded_read(path, 64 * 1024) else { return Some(Vec::new()) };
     Some(serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_default())
 }
 fn record_desktop(desktop: &str) -> Result<(), String> {
@@ -367,10 +373,13 @@ fn record_desktop(desktop: &str) -> Result<(), String> {
     // A few development and installed copies; the oldest registration expires.
     let keep = paths.len().saturating_sub(8);
     paths.drain(..keep);
-    crate::storage::atomic_write(
-        &data_directory()?.join(DESKTOPS),
-        &serde_json::to_vec(&paths).map_err(|e| e.to_string())?,
-    )
+    // The list names trusted Desktops and holds no vault data, so one that could not be read or
+    // checked is replaced rather than refused: refusing it would leave no way back but deleting
+    // it by hand.
+    let path = data_directory()?.join(DESKTOPS);
+    crate::storage::atomic_replace(&path, &serde_json::to_vec(&paths).map_err(|e| e.to_string())?).map_err(|error| {
+        format!("Personal Vault could not record this Yougori in {} ({error}). Delete that file as an administrator; it holds no vault data. Then choose Update vault again.", path.display())
+    })
 }
 
 pub(crate) fn no_reparse(path: &Path) -> Result<(), String> {
@@ -500,6 +509,8 @@ pub(crate) fn require_broker() -> Result<(), String> {
 }
 pub fn launch(bundled: &Path, allow_elevation: bool) -> Result<(), String> {
     let installed = installed_binary()?;
+    // Deliberately `exists()`: a broker that cannot be checked is installed again, with the
+    // person's consent, and is never run unchecked. Keep that direction.
     if installed.exists() && !update_required(bundled)? {
         verify_protected(installed.parent().unwrap(), true)?;
         verify_protected(&installed, true)?;
@@ -648,6 +659,8 @@ fn install_arguments(digest: Option<&str>) -> Result<String, String> {
 pub fn update_required(bundled: &Path) -> Result<bool, String> {
     use sha2::{Digest, Sha256};
     let installed = installed_binary()?;
+    // Deliberately `exists()`: with no broker to compare, there is nothing to update here, and
+    // `launch` installs one instead (with consent). Nothing is written on this answer.
     if !installed.exists() || !bundled.is_file() {
         return Ok(false);
     }
@@ -738,7 +751,7 @@ pub fn install(desktop: Option<&str>, digest: Option<&str>) -> Result<(), String
                 return Err("The vault component changed after verification. Nothing was installed.".into());
             }
         }
-        if destination.exists() {
+        if crate::storage::present(&destination)? {
             verify_protected(&destination, true)?;
             stop_installed_broker(&destination)?;
         }

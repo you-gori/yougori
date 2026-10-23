@@ -212,7 +212,6 @@ struct Live {
     hardware: String,
     mood: Mood,
     detail: String,
-    bounty: Option<String>,
     attempts: u64,
     offers: usize,
     /// Paused by an engine restart, not by the participant.
@@ -237,7 +236,6 @@ impl Live {
             hardware: String::new(),
             mood: Mood::Waiting,
             detail: String::new(),
-            bounty: None,
             attempts: 0,
             offers: 0,
             restored: false,
@@ -269,7 +267,6 @@ impl Live {
             self.mood_since = now;
         }
         self.detail = plain(&worker["error"]).or_else(|| plain(&worker["stage"])).unwrap_or_default();
-        self.bounty = plain(&worker["bountyId"]);
         self.attempts = worker["completedAttempts"].as_u64().unwrap_or(0);
         self.restored = worker["restored"] == true;
         self.drafts = worker["reviewReports"].as_array().map_or(0, Vec::len);
@@ -424,10 +421,8 @@ impl Live {
         let (tone, title, note) = match self.mood {
             Mood::Waiting => (mix(SWARM, ACTIVE, glow), "Live", "waiting for bounty offers".to_owned()),
             Mood::Preparing => (ACTIVE, "Preparing", if self.detail.is_empty() { "getting the accepted bounty ready".to_owned() } else { self.detail.clone() }),
-            Mood::Working => (ACTIVE, "Working", match &self.bounty {
-                Some(bounty) => format!("investigating bounty {bounty}"),
-                None => "investigating the accepted bounty".to_owned(),
-            }),
+            // The engine knows the bounty only by its ID, which means nothing to a person.
+            Mood::Working => (ACTIVE, "Working", "investigating the accepted bounty".to_owned()),
             Mood::Review => (ACTIVE, "Report ready", "waiting for your review".to_owned()),
             Mood::Paused if self.restored => (MUTED, "Paused", "the engine restarted · progress is saved".to_owned()),
             Mood::Paused => (MUTED, "Paused", "progress is saved".to_owned()),
@@ -721,7 +716,8 @@ mod tests {
         assert!(text(&live).contains("Paused") && text(&live).contains("P resume"));
         live.update(&json!({"state":"running","bountyId":"b\u{1b}[31m1","completedAttempts":1}), start);
         let shown = text(&live);
-        assert!(shown.contains("investigating bounty b [31m1") && shown.contains("1 attempt recorded"), "{shown}");
+        assert!(shown.contains("investigating the accepted bounty") && shown.contains("1 attempt recorded"), "{shown}");
+        assert!(!shown.contains("b [31m1") && !shown.contains('\u{1b}'), "no bounty ID: {shown}");
         live.update(&json!({"state":"awaiting_review","reviewReports":["report_1","report_2"]}), start);
         let shown = text(&live);
         assert!(shown.contains("Report ready") && shown.contains("2 draft reports to review"), "{shown}");

@@ -116,7 +116,8 @@ export function PodWorkbench(props: PodProps) {
     void runpodApi.template(template.id).then(d => { if (alive) setDetails(d) }).catch(() => undefined)
     return () => { alive = false }
   }, [compute, template])
-  useEffect(() => { if (storage === "network" && volume) setLocation(volume.location) }, [storage, volume])
+  // Picking a GPU or cloud clears the location; a network volume pins it back to its data centre.
+  useEffect(() => { if (storage === "network" && volume) setLocation(volume.location) }, [storage, volume, gpu, cloud])
   useEffect(() => {
     if (nameTouched) return
     const source = template ? templateName(template.name) : customImage.split(/[/:]/).slice(-2, -1)[0] || customImage

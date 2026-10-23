@@ -128,3 +128,75 @@ fn denial_windows_are_aggregated_without_link_chatter() {
     accumulate(&mut denials, "env-b", &network::Window::default(), 100);
     assert!(!denials.contains_key("env-b"));
 }
+
+/// The engine's containment records, opened on a scratch file if no other test opened them.
+/// A temporary folder of its own, removed when the test process ends rather than left in the
+/// system temp folder for every run to add to.
+fn containment_folder() -> &'static tempfile::TempDir {
+    static FOLDER: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    FOLDER.get_or_init(|| tempfile::tempdir().expect("a temporary folder for the containment tests"))
+}
+
+fn containment_records() -> &'static containment::Store {
+    CONTAINMENT.get_or_init(|| containment::Store::load(&containment_folder().path().join("state.json")))
+}
+
+#[test]
+fn records_that_cannot_be_read_lock_everything_down_rather_than_opening_it() {
+    let folder = tempfile::tempdir().unwrap();
+    // No file at all is the ordinary first run: nothing has ever been locked down.
+    let fresh = containment::Store::load(&folder.path().join("state.json"));
+    assert!(!fresh.contains("env-1"), "a first run must not lock anything down");
+    // A file that is there but cannot be read is the dangerous case. Answering "not contained"
+    // would silently lift every lockdown on this computer, so it answers the other way.
+    let broken = folder.path().join("broken.json");
+    std::fs::write(&broken, b"{ this is not the file we wrote").unwrap();
+    let store = containment::Store::load(&broken);
+    assert!(store.contains("env-1"), "unreadable records must count as contained");
+    assert!(store.contains("any-environment-at-all"));
+    let said = store.get("env-1").expect("a reason to show the person");
+    assert!(said.reason.contains("could not read"), "{}", said.reason);
+    assert!(store.unreadable());
+    // Nothing may be written over records we could not read. The in-memory map is empty, so
+    // saving it would replace a file full of lockdowns with one entry — losing the very thing
+    // this is protecting, and from a read that may only have failed for a moment. A containment
+    // applied now goes BESIDE the file instead, so the act is not forgotten and the file is safe.
+    let record = containment::Containment { level: Level::Lockdown, since: "2026-10-20T00:00:00Z".into(), reason: "test".into(), via: "policy".into(), rule: None, restore_internet: false, resume: false };
+    store.set("env-1", Some(record)).expect("a containment is recorded beside the unreadable file");
+    assert_eq!(std::fs::read(&broken).unwrap(), b"{ this is not the file we wrote", "the file on disk is untouched");
+    assert!(std::path::Path::new(&store.beside_path("env-1")).is_file(), "it went to {}", store.beside_path("env-1"));
+    // Clearing one is still refused: we do not know what is locked, so we cannot say it is not.
+    assert!(store.set("env-1", None).is_err());
+    // The refusal a person sees must not send them to unlock, which cannot work here, and must
+    // not print an empty date.
+    let shown = containment::refusal("Alpha", "env-1", &said, "Starting it");
+    assert!(!shown.contains("yougori unlock"), "{shown}");
+    assert!(!shown.contains("since ."), "{shown}");
+    assert!(shown.contains("broken.json"), "the way out must name the file: {shown}");
+    // A sweep must not report that it tidied up records it cannot see.
+    assert!(store.retain(&[]).is_err());
+}
+
+fn cut_off(id: &str) {
+    let record = containment::Containment { level: Level::InternetCut, since: "2026-10-20T00:00:00Z".into(), reason: "test".into(), via: "policy".into(), rule: None, restore_internet: true, resume: false };
+    containment_records().set(id, Some(record)).unwrap();
+}
+
+#[tokio::test]
+async fn a_contained_environment_answers_no_new_connection_and_closes_open_ones() {
+    containment_records();
+    let id = "env-containment-links";
+    // Open: a connection runs to the end.
+    assert_eq!(while_open(id, async { 7 }).await, Some(7));
+    // A connection still open when the kill switch fires is closed within a second.
+    let open = tokio::spawn(async move { while_open(id, std::future::pending::<()>()).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    cut_off(id);
+    let closed = tokio::time::timeout(Duration::from_secs(2), open).await.expect("the open connection closes").unwrap();
+    assert_eq!(closed, None);
+    // While it is contained a new one is refused at once.
+    assert_eq!(while_open(id, async { 7 }).await, None);
+    // Unlocked, the same link answers again.
+    containment_records().set(id, None).unwrap();
+    assert_eq!(while_open(id, async { 7 }).await, Some(7));
+}

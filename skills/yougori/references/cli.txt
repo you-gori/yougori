@@ -15,7 +15,7 @@ Contents: How Yougori is organised · Agent conventions · Output, errors and ex
 |---|---|---|
 | Examples | run, create, ps, start, stop, rm, exec, logs, cp, ls, terminal, model, up, apply, deployment, volume, download on, bounty | env, connection, share, ports, domain, remote, lan, cloud, neocloud, storage, snapshot, backup, gpu, drives, settings, jobs, window, microvm, call |
 | Engine | started automatically when needed | must already run: `yougori app start` first |
-| Targets | ID or unique case-insensitive name | exact IDs only (`yougori ps` lists them) |
+| Targets | ID or unique case-insensitive name | an environment by ID or unique case-insensitive name; other targets (snapshots, jobs, shares and so on) by exact ID |
 | Options | the command's documented flags | kebab-case forms of the method's parameters (`yougori schema METHOD`); unknown options are rejected |
 
 - **Interactive or scripted.** Interactive flows start only when stdin and stdout are both terminals, and a pseudo-terminal counts as one: menus, `launch`, model setup and chat, tool shortcuts and pickers will prompt and wait. Pipe or capture stdout to get scripted behaviour and JSON. Terminal-only commands: bare `yougori`/`yougori cli`, `launch`, bare `run`, tool shortcuts (except `--dry-run`), `connect`, `terminal ENV` and `model run` without a repository. Scripted equivalents: `run -d`, `up`/`apply`, `exec`, `logs`, `model run REPO --api`, `terminal create/write/read`, `remote connect --file -`.
@@ -28,9 +28,9 @@ Contents: How Yougori is organised · Agent conventions · Output, errors and ex
 
 ## Output, errors and exit codes
 
-- Piped output is one JSON envelope: `{"version":2,"ok":true,"result":…}` (except `skills print` and `env skills`, which print Markdown, and `logs --follow`, which prints one envelope per window). In a terminal several commands print tables or text instead (status, ps, ports list --all, volume ls, doctor, top, login, account, bounty views); `--format json|table` overrides where offered. `NO_COLOR`, `TERM=dumb` or `TERM=xterm-mono` disable colour.
+- Piped output is one JSON envelope: `{"version":2,"ok":true,"result":…}` (except `skills print` and `env skills`, which print Markdown, and `logs --follow`, which prints one envelope per window). In a terminal several commands print tables or text instead (status, ps, inspect, logs without --follow, ls, images, ports list, share list, snapshot list, backup list|destinations, connection list, env list|show, gpu status, jobs list, neocloud list, remote list, domain list, model status|access|usage, vault status, volume ls, doctor, top, login, account, bounty views); `--format json|table|text` overrides where offered (`text` is the same as `table`). Scripts that read a terminal run should pass `--format json`: views print text at a terminal and JSON when piped or with `--format json`. `NO_COLOR`, `TERM=dumb` or `TERM=xterm-mono` disable colour.
 - Failures exit 1. Piped: `{"version":2,"ok":false,"error":"…","errorDetails":{"code","affectedResource","retryable","outcome"}}` on stdout. In a terminal: readable text on stderr.
-- `exec` exits with the guest's exit code, so a guest exit 1 looks like a CLI failure: check `ok`. `doctor` exits 1 when something must be fixed. Cancelling an interactive flow or picker exits 130.
+- `exec` exits with the guest's exit code, so a guest exit 1 looks like a CLI failure: check `ok`. `doctor` exits 1 when something must be fixed. Cancelling (Ctrl+C, or leaving a question or picker) exits 130 and is not a failure: a terminal shows one muted line saying what was left as it was, and piped output carries errorDetails.code `operation_cancelled`. Choosing to end, such as leaving a tool sandbox running from its stop menu, exits 0.
 
 | errorDetails.code | outcome | What to do |
 |---|---|---|
@@ -67,7 +67,7 @@ yougori app autostart on [--dashboard] | off | status
 ```
 
 - The install scripts install the engine and CLI by default; `YOUGORI_ENGINE_ONLY=0` installs the desktop app instead (on Linux a .deb through `sudo apt-get`, Debian and Ubuntu only). Other installer variables: `YOUGORI_AUTOSTART=1` (start the engine at sign-in), `YOUGORI_START_ENGINE=0` (do not start it now), `YOUGORI_RELEASES_URL`, `YOUGORI_ALLOW_UNSIGNED=1` (test builds only). Windows needs build 19041 or newer. The installer finishes with `skills install`, `app start` and `doctor --format table`.
-- `doctor [--format json|table]` checks the CLI, PATH, engine, each runtime, disk space, start at sign-in and the GPU, and prints a fix for anything wrong: `{ready, errors, warnings, checks:[{name, status, detail, fix}]}`. It never starts the engine, stops checking once it finds the engine down, and exits 1 when not ready.
+- `doctor [--format json|table|text]` checks the CLI, PATH, engine, each runtime, disk space, start at sign-in and the GPU, and prints a fix for anything wrong: `{ready, errors, warnings, checks:[{name, status, detail, fix}]}`. It never starts the engine, stops checking once it finds the engine down, and exits 1 when not ready.
 - `status` is the one-screen overview: engine, environments by type, published links, sharing, saved domains, connections and active jobs. It never starts the engine; when the engine is down it returns `{"engine":{"running":false},"hint":…}`.
 - `top [--once]` shows live CPU, memory, storage and network per environment (redraws every 2 s in a terminal; one snapshot with `--once` or when piped).
 - `app autostart on` starts the engine in the background at sign-in (not before sign-in); `--dashboard` opens the app instead (not on engine-only installs). It returns `{autostart, mode, startupTrigger:"signIn", startsBeforeSignIn:false, reportCommand}`.
@@ -81,9 +81,9 @@ yougori update --yes
 yougori uninstall --yes
 ```
 
-- `update` and `update --check` only report (falling back to the preview channel when production has no package). `update --yes` installs only a release whose SHA-256 matches the published manifest and never installs a preview. Windows desktop installs also check the publisher signature, quit the app (stopping workloads) and run the installer, so update only when the user asks. macOS and Linux desktop installs only download the installer for the user. Engine-only installs replace their files from the release's `-engine` archive (Linux engine packages are unsigned and need the user's `YOUGORI_ALLOW_UNSIGNED=1`); then run `yougori app start`.
+- `update` and `update --check` only report (falling back to the preview channel when production has no package). `update --yes` installs only a release whose SHA-256 matches the published manifest and never installs a preview. Windows desktop installs also check the publisher signature, quit the app (stopping workloads) and run the installer, so update only when the user asks. macOS and Linux desktop installs only download the installer for the user. Engine-only installs replace their files from the release's `-engine` archive (Linux engine packages are unsigned and need the user's `YOUGORI_ALLOW_UNSIGNED=1`); then run `yougori app start`. Ctrl+C stops `update --yes` while it downloads and checks, and leaves nothing behind; once it starts replacing Yougori it finishes, says that stopping would leave Yougori broken, and exits 130. `uninstall --yes` finishes the same way once started.
 - `uninstall --yes` first turns off start at sign-in and quits the engine (stopping workloads) on every platform. A Windows desktop install then runs the uninstaller and keeps environments and their data (it reports where they are); Windows engine-only installs have no uninstaller; macOS and Linux only stop the engine, turn off start at sign-in and print the manual steps.
-- Interactive entry points (menu, launch, model setup and chat) check for a newer release at most every 12 hours: **Get update** opens yougori.com's installer page, **Later** (the default) reminds after 24 hours; neither stops or updates workloads. Offline checks stay quiet and retry after 15 minutes. The app and CLI share reminders in ~/.yougori/updates. Desktop **Settings → Updates** and the menu's **Yougori settings and tools → Check for updates** force a fresh check, including a dismissed release. `YOUGORI_NO_UPDATE_CHECK=1` or any non-empty `CI` disables automatic checks; scripted commands never prompt. Production packages take priority; preview packages are labelled and unsigned installation still needs consent.
+- Interactive entry points (menu, launch, model setup and chat) check for a newer release at most every 12 hours: **Get update** opens yougori.com's installer page, **Later** (the default) reminds after 24 hours; neither stops or updates workloads. Offline checks stay quiet and retry after 15 minutes. The app and CLI share reminders in ~/.yougori/updates. **Updates** in the desktop's **Settings**, and **Check for updates** under the menu's **Yougori settings and tools**, force a fresh check, including a dismissed release. `YOUGORI_NO_UPDATE_CHECK=1` or any non-empty `CI` disables automatic checks; scripted commands never prompt. Production packages take priority; preview packages are labelled and unsigned installation still needs consent.
 
 ## Discovery, skills and preferences
 
@@ -101,7 +101,7 @@ yougori prefs path | show | remember KEY VALUE [--project] | forget KEY [--proje
 - `agent inventory` (starts the engine) is a read-only JSON map of all compute (local, shared, cloud and Neocloud nodes) without secrets, including each node's current exec, file-transfer and log readiness. A full VM needs verified guest SSH for commands and cannot have files copied out through the file service; a shared environment needs the owner's grant; a serverless API has no guest shell. The map never authorizes an action.
 - `skills print` returns the compact core; `--topic` one reference; `--all` the core plus the full guide. Topics: engine, containers, files, deployment, models, connections, access, tools, bounty. Schema task names work too: lifecycle and storage open containers; settings and jobs open engine; gpu and network open models; cloud opens connections; terminal and vault open access; launch opens deployment; remote opens tools; swarm opens bounty.
 - `schema` (offline) returns a compact index in the same envelope. `--topic` narrows it (schema topics: lifecycle, files, gpu, deployment, models, connections, cloud, vault, terminal, settings, jobs, bounty); `schema METHOD` gives exact parameters, a parser-tested `cliExample` and `exampleRequiresYes`; `--all` opts into complete definitions.
-- `skills install` (also run by the installers and by the app and engine at startup) writes the canonical skill to `Yougori/Workspace/skills/yougori` in the user's profile and forwarding files to `~/.codex/skills/yougori`, `~/.agents/skills/yougori` and `~/.claude/skills/yougori`. Repeating it updates only unchanged Yougori-managed files. Edited forwarding copies are preserved and reported; an edited canonical skill is left untouched and `skills install` fails (exit 1) until it is moved or restored. `skills status` reports the install state. The dashboard has **CLI → Skills → Install skill** and **Copy agent guide** (works without installing anything).
+- `skills install` (also run by the installers and by the app and engine at startup) writes the canonical skill to `Yougori/Workspace/skills/yougori` in the user's profile and forwarding files to `~/.codex/skills/yougori`, `~/.agents/skills/yougori` and `~/.claude/skills/yougori`. Repeating it updates only unchanged Yougori-managed files. Edited forwarding copies are preserved and reported; an edited canonical skill is left untouched and `skills install` fails (exit 1) until it is moved or restored. `skills status` reports the install state. The dashboard's **CLI** page has **Install skill** and **Copy agent guide** under **Skills** (the guide copies without installing anything).
 - Preferences: `prefs show` prints the user and project preference files; `prefs remember KEY VALUE [--project]` records a confirmed choice with a count and date; `prefs forget` removes one. Values that look like secrets are refused. Preferences suggest choices; they never grant permission or override the current task's authorization, and work the user already authorized needs no new question.
 
 ## Jobs and long operations
@@ -138,8 +138,8 @@ yougori app quit --yes
 
 - `yougori` (or `yougori cli`) opens the menu: Overview, Run a project, Create an environment, Manage an environment, Models, Neocloud/RunPod, MCP Vault, Snapshots and backups, Connections and sharing, Set up my domains, Yougori settings and tools, Command reference, Exit (workloads keep running). It needs an ANSI terminal (`TERM=dumb` is refused).
 - In a project folder it may first offer to run the project, and it quietly adds project shortcuts (package.json scripts `yougori`, `yougori-change`, `yougori-cloud`, or a `yougori` file for Python projects). Do not run bare `yougori` in a user's repository unless they want that.
-- Manage an environment → Open terminal here uses the current terminal; creation offers the same for containers, GPU containers and built-in microVMs. Full VMs use Open environment window for their console.
-- Keys: lists use Up/Down (also Tab, j/k, Home/End), Enter selects, Esc or Ctrl+C cancels; text inputs take Enter (empty keeps the default) and Ctrl+U clears; sliders use Left/Right (Shift for steps of 10), PgUp/PgDn, typed digits, and d resets. In setup questions (launch, model run, `start bounty`, tool sandboxes) every question after the first adds a Back row, and Esc goes back to the previous question with its answer kept; Ctrl+C still cancels. Keys typed while a step is working are discarded, so they never answer the next question. Every wait shows a spinner; Ctrl+C stops waiting.
+- **Open terminal here**, under Manage an environment, uses the current terminal; creation offers the same for containers, GPU containers and built-in microVMs. Full VMs use Open environment window for their console.
+- Keys: lists use Up/Down (also Tab, j/k, Home/End) and Enter selects. In the menu, Esc goes back to the previous menu or question, as the Back row does, and on the main menu it closes the menu; elsewhere Esc or Ctrl+C cancels; text inputs take Enter (empty keeps the default) and Ctrl+U clears; sliders use Left/Right (Shift for steps of 10), PgUp/PgDn, typed digits, and d resets. In setup questions (launch, model run, `start bounty`, tool sandboxes) every question after the first adds a Back row, and Esc goes back to the previous question with its answer kept; Ctrl+C still cancels. Keys typed while a step is working are discarded, so they never answer the next question. Every wait shows a spinner; Ctrl+C stops waiting.
 
 ## Environment variables
 
@@ -168,8 +168,8 @@ yougori app quit --yes
 | … Explicit --yes confirmation is required / Repeat with --yes only if this is intended | Nothing ran. Add `--yes` only within the user's authorization. |
 | YOUGORI_BUSY (`operation_lane_busy`) | The engine is busy; nothing started. Retry shortly. |
 | YOUGORI_QUIESCING (`engine_shutting_down`) | The engine is shutting down; start it again after it exits. |
-| Yougori control request timed out. The outcome may be unknown / Yougori connection ended | Inspect `jobs list` and the real state before any retry. |
-| Still running: … NOT cancelled | Only the CLI stopped waiting: `yougori jobs wait JOB_ID`. |
+| Yougori did not answer in time, so the outcome may be unknown / Yougori's connection ended …, so the outcome may be unknown | Check the real state with `yougori ps` and `jobs list` before any retry. |
+| Still running after the wait limit; Yougori keeps working on it | Only the CLI stopped waiting: follow it with `yougori jobs wait JOB_ID`; `jobs get JOB_ID` shows its details. |
 | Another lifecycle or network operation is changing this environment | Wait for that operation (`jobs list`), then retry. |
 | Linux engine packages have no publisher signature | `YOUGORI_ALLOW_UNSIGNED=1` is the user's decision. |
 | The download does not match the published SHA-256; nothing was installed | Retry later; never bypass the check. |
@@ -209,8 +209,8 @@ yougori pull IMAGE | images | image rm IMAGE --yes | image prune [--yes]
 yougori version | --version | help
 ```
 
-- `run` starts the engine if needed, pulls the OCI image when needed, then creates and starts the workload; `create` only creates. In a terminal without `-d`, `run` prints `Environment: ID` to stderr and follows logs (Ctrl+C detaches and leaves it running). `-d` returns after startup with one JSON result that holds the new ID; piped `run` also returns JSON. `-it` opens a guest shell (Ctrl+] detaches); without a COMMAND it replaces the image's startup with a keep-alive process. Piped `-it` is an error.
-- Public commands accept an ID or a unique case-insensitive name; advanced `env` commands need IDs. `yougori-cli` is a compatibility name for `yougori`.
+- `run` starts the engine if needed, pulls the OCI image when needed, then creates and starts the workload; `create` only creates. Without `--name`, the environment is named after its image (`nginx`, then `nginx-2`; an ISO or disk is named after its file). In a terminal without `-d`, `run` prints `Environment: NAME` to stderr and follows logs (Ctrl+C detaches and leaves it running). `-d` returns after startup with one JSON result that holds the new ID; piped `run` also returns JSON. `-it` opens a guest shell (Ctrl+] detaches); without a COMMAND it replaces the image's startup with a keep-alive process. Piped `-it` is an error.
+- Commands accept an environment's ID or its unique case-insensitive name; when two environments share the name, they refuse and ask for the ID from `yougori ps`. `yougori-cli` is a compatibility name for `yougori`.
 - `ps` lists every environment of every type (`-a` changes nothing). Long startup commands are shortened there; `inspect` shows them in full. `info` returns the whole platform state. `version` returns JSON; `--version` prints `yougori VERSION (protocol 2)`.
 - `logs` returns a bounded window (cursors in the access topic). `exec` returns the guest's exit code.
 
@@ -347,7 +347,7 @@ yougori image rm IMAGE --yes
 | This snapshot is not stored in the virtual machine disk | Delete that snapshot and take a new one. |
 | Backup files must be regular files | Pass the `backup.yougori` file, not its folder. |
 | decrypt backup data | The backup was made with another device's vault key; Yougori cannot restore it here. |
-| Expected one environment named X | The name is missing or ambiguous: use the ID from `yougori ps`. |
+| Environment X was not found / More than one environment matches X | The name is missing or ambiguous: use the ID from `yougori ps`. |
 | The microVM guest agent is still booting | Retry in a few seconds. |
 
 # Files, volumes and changes
@@ -374,7 +374,7 @@ yougori ls web /app
 
 ```text
 yougori run -d -v data:/data postgres:17
-yougori volume ls [--scan] [--size] [--format json|table]
+yougori volume ls [--scan] [--size] [--format json|table|text]
 yougori volume inspect NAME
 yougori volume cp data:/exports ./out
 yougori volume cp ./seed data:/import
@@ -419,13 +419,13 @@ yougori download off ENV_ID
 
 - `download on` shares a complete copy of a **stopped** environment as a `.yougori` file. Anyone with the link can download every file and stored credential in it: there is no password, so create links only with the user's explicit authorization and give the link only to the intended people. At most 8 downloads run at once and there is no resume.
 - The link lives only while this command runs (the engine drops it as soon as the CLI process exits, or 120 s after a running CLI stops renewing) and ends with Ctrl+C, `download off ENV_ID` or engine exit. Only containers, full VMs and the built-in Alpine microVM can be downloaded. When piped it prints one JSON line and keeps running, so run it in the background. `--dry-run` works offline without `--yes`. `--domain HOST` serves it on a saved domain.
-- `download list` shows live links and download counts (the URLs are live credentials). `download off` needs the environment ID; it returns `stopped:false` with a note when no link was active for that ID (for example when given a name).
+- `download list` shows live links and download counts (the URLs are live credentials). `download off` takes the environment's ID or unique name; it returns `stopped:false` with a note when no link was active for that environment.
 
 ## Troubleshooting
 
 | Message | Cause and fix |
 |---|---|
-| Expected one environment named DEST; run yougori ps. To copy to this PC, give an existing folder. | `cp ENV:/path DEST` needs an existing PC folder: create it first. |
+| Environment DEST was not found. … To copy to this PC, give a folder that exists. | `cp ENV:/path DEST` needs an existing PC folder: create it first. |
 | Drop files onto a local environment or a connected SSH cloud server | Remote shared environments accept no imports. |
 | Full VMs have no Yougori file agent… | Copy out of a full VM through its own SSH. |
 | Not enough free space | Free space for the copy (see Transfers) or use another drive. |
@@ -455,20 +455,20 @@ yougori launch --cloud
 npm run yougori
 npm run yougori-change
 npm run yougori-cloud
-python yougori [--change]
+python yougori [--cloud] [--change]
 ```
 
 `yougori launch` (also bare `yougori run`) runs the project in the current folder inside a container and needs an interactive terminal; there is no `--dry-run`. Agents deploy with `yougori.yaml` instead.
 
-- Projects: Node with a `dev`, `start` or `serve` script (npm, pnpm, yarn or bun; Node 18, 20, 22 or 24 from `.nvmrc`, `.node-version` or `engines.node`, default 24) and pip-based Python (`pyproject.toml`, `requirements.txt`, `setup.py`, `manage.py`, `main.py` or `app.py`; Python 3.10–3.14 from `.python-version`, default 3.12, port 8000; uv, Poetry and Pipenv are refused). Launch a monorepo from its workspace root.
+- Projects: Node with a `dev`, `start` or `serve` script (npm, pnpm, yarn or bun; Node 18, 20, 22 or 24 from `.nvmrc`, `.node-version` or `engines.node`, default 24) and pip-based Python (`pyproject.toml`, `requirements.txt`, `setup.py`, `manage.py`, `main.py` or `app.py`; Python 3.10–3.14 from `.python-version`, default 3.12, port 8000; uv, Poetry and Pipenv are refused). Launch a monorepo from its workspace root. A folder without any of these files is refused with the list of files Yougori looks for.
 - First run (and `--change`): drive (first run only), resources (**Recommended**: 2 CPU, 4 GB, storage twice the folder size; or **Customize**: container or GPU container, sliders, dev-server port), access (This computer, Local network, Quick public link, Your own domain with a tunnel token, or a saved domain), the run command, whether to copy `.env` files into the container (default: keep them on this computer), sync timing and direction. Settings and the environment ID live in `~/.yougori/launch`, keyed by the folder.
 - Code is copied into `/workspace`, never mounted: databases, uploads, snapshots, host dependencies, `.git` and build output included; `.gitignore` and `.yougoriignore` are ignored here; only `.env` files kept on the PC and sync protocol files are left out; links are not followed. Dependencies install for Linux. New containers mount only `~/.yougori/cache/packages` (shared by all launch projects at `/yougori/cache`; never keep private files there).
 - Sync: **Continuously** (recommended below 2.5 GB) or **On demand** (press `y`: Sync to container, or with two-way enabled Sync to this computer / Sync both ways). Both sync once at launch. Two-way sync never exchanges `.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv` or `__pycache__`; names this computer cannot store and unresolved letter-case clashes are skipped with a warning. The conflict choice (This computer wins, Container wins, Keep both) covers files, folders, deletions and SQLite records; SQLite databases sync record by record (Node.js 22.16 or newer on the PC). Dependency or lockfile changes reinstall dependencies and restart the dev server.
-- Ctrl+C before the dev server runs (engine start, container start, copying or syncing files, installing, publishing) stops the launch: an in-progress copy is cancelled in the engine, then the container is stopped. A second Ctrl+C quits at once and leaves running work to the engine (`yougori ps`).
+- Ctrl+C before the dev server runs (engine start, container start, copying or syncing files, installing, publishing) stops the launch: an in-progress copy is cancelled in the engine, then the container is stopped. A second Ctrl+C quits at once and leaves running work to the engine (`yougori ps`). Temporary project copies on this computer are removed even then, and a copy a quit `--cloud` launch left in the server's home folder is removed by the next `--cloud` launch.
 - While it runs, logs scroll normally and keys act when the footer is visible: `t` terminal window, `o` open in browser, `p` open the public link, `u` list URLs, `r` restart the dev server, `y` sync, `s` usage details, `c` clear, `q` or Ctrl+C stop. Quitting stops the container and keeps its disk (a later `yougori start` runs the dev server again).
-- The first launch adds `yougori`, `yougori-change` and `yougori-cloud` scripts to package.json (or a `yougori` file for Python), keeping existing scripts. `npm run yougori -- --change` also works. One launcher per folder can run at a time. If the required runtime image changes, launch stops with an error instead of replacing the disk.
+- The first launch adds `yougori`, `yougori-change` and `yougori-cloud` scripts to package.json (or a `yougori` file for Python), keeping existing scripts. `npm run yougori -- --change` also works. One launcher per folder can run at a time. If the required runtime image changes, launch stops with an error instead of replacing the disk. Settings are saved before package.json is changed; if package.json cannot be changed, the launch still starts and says so.
 - Access: "This computer" stays on 127.0.0.1. "Local network" also accepts devices on your Wi-Fi or LAN, and so does the local address of a public link or domain (except with `--cloud`). Switching to This computer or Local network turns off the project's earlier public link or domain. Public links and domains go through a proxy in the container (port 43119) that handles host checks and hot reload. Public URLs expose a development app: choose them deliberately.
-- `--cloud` runs the project on a connected cloud server whose user can run Docker, in a hardened container, with the same sync choices.
+- `--cloud` runs the project on a connected cloud server whose user can run Docker, in a hardened container, with the same sync choices. Its container is named after the project folder (`yougori-FOLDER`, numbered when the name is taken); a container from an earlier launch keeps its name.
 
 ## Declarative projects
 
@@ -579,6 +579,111 @@ Health checks support GET, HEAD and POST; JSON bodies need POST.
 | The runtime image changed | Launch refuses to replace the disk: remove and recreate the container deliberately (with the user's authorization). |
 | `deployment status` shows runtime ready but no application | Read `yougori logs ENV --last-error`; check the command, port and `health` settings. |
 | Public HTTPS fails while local HTTP works | Check the tunnel stage, the saved domain's Cloudflare route and `ports preflight`. |
+
+# Hub templates and tools
+
+Contents: What the Hub is · Run a template · After a run · Make and publish · Tools · Troubleshooting
+
+## What the Hub is
+
+The Hub (https://yougori.com/hub) shares whole Yougori setups (templates) and tools for sandboxes. Anyone signed in can publish; everything on it is public, open source and free. Nothing is checked by Yougori unless it shows **Verified** (only the Yougori owner account's uploads). Every other item, and every run of one, says: "Not checked by Yougori. Community templates can contain harmful code, including viruses. Read the files first and run only what you trust." A Verified template that installs a community tool from the Hub shows the same warning for that tool. Run only what the user asked for, and show them the review.
+
+- A template is a folder: `yougori-template.yaml` (name, summary, version, licence, questions, tools, public access, steps, outputs) beside a normal `yougori.yaml` project and the app's files. A tool is a folder with `yougori-tool.yaml` (install lines, check, command, sign-in).
+- Addresses: `hub/PUBLISHER/NAME`, optionally `@VERSION` (`hub/acme/my-api@1.2.0`); the page address `https://yougori.com/hub/PUBLISHER/NAME` works too. `yougori run hub/library/nginx:1.27` (anything with `:`) is an image, not a Hub item.
+
+## Run a template
+
+```text
+yougori run hub/PUBLISHER/NAME[@VERSION] [--name INSTANCE] [--input ID=VALUE]... [--inputs FILE] [--secrets -] [--yes] [--allow-pc-access] [--dry-run]
+yougori template run hub/PUBLISHER/NAME[@VERSION] | ./FOLDER   # same options; a folder runs locally and is not counted
+yougori template info REF          # the item, its counts and its review, built from the files
+yougori template search [WORDS] [--sort popular|trending|stars|new|updated] [--kind template|tool] [--page N]
+yougori template download REF [FOLDER]
+```
+
+A run goes in this order: download, verify, requirements, review, questions, create, tools, public access, then steps and outputs.
+
+- Download and verify: every file's SHA-256 and the version digest are checked before anything runs; a checked copy is kept in `~/.yougori/hub/cache`. A mismatch refuses the run, creates nothing and removes the copy. Only when yougori.com cannot be reached at all does a saved copy run, with a notice, and it then counts as a community item; an error answer from the website or a removed item never falls back to a saved copy. If the copy cannot be saved, the run goes on with the checked download.
+- Requirements: Yougori version ("This template needs Yougori 1.3.0 or newer. Update with yougori update."), platform and NVIDIA GPU. A template whose GPU is optional offers to run without it (scripts do so and say it); a required GPU stops the run. Memory and disk totals above this computer's are shown as notes.
+- Review: built on this computer from the files, never from the Hub page: sandboxes (type, image, CPU, memory, disk, GPU, internet, ports), totals, public links, connections, tools with the addresses their installers download from, PC folders, questions and warnings. If the Hub page's summary differs from the files, the run says so. Read it to the user before saying yes.
+- Agents: `--dry-run` first (JSON: `review`, `questions`, `instance`; nothing created), then `--yes`. PC access needs `--allow-pc-access` as well. Answers: `--input ID=VALUE` (repeatable), `--inputs FILE` (JSON object) and `--secrets -` (JSON object on stdin, such as `{"openai_key":"…"}`). Secrets are refused anywhere else; a missing answer names the flag that supplies it. Defaults are used when an answer is left out. Never invent answers the user did not give.
+- In a terminal: the review, then Run it / Cancel, then one question at a time; every question after the first offers Back (Esc or the Back row) and Ctrl+C stops. Secrets use a hidden prompt.
+- Create: the instance folder `~/.yougori/hub/instances/INSTANCE` gets the files and a generated `yougori.yaml` (project name = instance), then the same reconciliation as `yougori up`. Sandboxes are named `INSTANCE-NAME`. Every port opens inside its sandbox only, never as a fixed port on this computer, so two copies never clash; public access works as usual. Instance names: the template's name, or `--name`; a second copy is `NAME-2`. If an instance of the same template exists, a person chooses Open/Continue the existing one or Create another; scripts get its name and `yougori template continue INSTANCE`, or pass a new `--name`.
+- Secret answers go to the OS credential vault as deployment secrets named `hub-INSTANCE-ID`; they are never written to disk, logs or the Hub. The project is checked (paths stay inside the instance's own files) before any secret is stored.
+- Tools: built-in tools install in a terminal with their usual installer; in scripts they become steps (`yougori codex --environment INSTANCE-NAME`). Other tools run their install lines inside the sandbox and must pass their check.
+- Public access: quick links and saved domains are set up as `yougori ports publish` does; a working link that already serves the port that way is reused. Quick mode reuses only a quick-tunnel address, never a custom domain. Quick links can change after a restart and are not for production. Missing or stopped public routes make the instance incomplete; `continue` restores them. Stale URLs are removed from status outputs and commands.
+- If a part fails, everything created stays, the instance is incomplete, and the error names the part, the fix and the two commands: `yougori template continue INSTANCE` (carries on with the same files and answers; only what did not finish runs again) and `yougori template rm INSTANCE --yes`. Ctrl+C prints the same two commands. Exit codes: 0 ready, 1 incomplete or failed, 130 cancelled.
+
+## After a run
+
+```text
+yougori template continue INSTANCE [--yes] [--input ID=VALUE]... [--inputs FILE] [--secrets -] [--allow-pc-access]
+yougori template status [INSTANCE]   # sandboxes, current public addresses, steps, newer version, removal notice
+yougori template list
+yougori template update INSTANCE [--yes] [--allow-pc-access] [--input ID=VALUE]... [--secrets -]
+yougori template down INSTANCE       # stop; files and data kept
+yougori template rm INSTANCE --yes [--delete-data]
+```
+
+- `continue` uses the instance's own version and files: a Hub instance its checked copy (it works even after the item left the Hub), a folder instance its folder, which must be unchanged (otherwise use `update`). It asks only for answers it does not have; scripts pass `--yes`. It also starts a stopped instance, makes again sandboxes deleted elsewhere, and finishes an update that stopped. A ready instance just shows its status.
+- `status` and `list` show ready, incomplete, creating or stopped. A run that stopped without saying so (the window was closed) reads as incomplete.
+- `update` moves to the newest version (a folder instance: to the folder as it is now). It shows what changes: new sandboxes, a new image, type or GPU (which replaces the sandbox; the old one is kept, stopped, with its data), public links, tools, questions, PC access and download addresses. Files you changed in the instance folder are backed up to `~/.yougori/hub/backups/INSTANCE/` first. New PC access needs its own yes. The instance keeps its own version until the update finished; `continue` finishes one that stopped. A stopped instance is updated, then stopped again. Its own tools are installed again; parts the new version no longer lists are dropped.
+- Updates close old Cloudflare routes when public access is removed, disabled, moved to another port, or changed between quick links and domains. Local bridges and other ports are kept. If closing a route fails, its record stays so `continue` can retry before applying the new project.
+- Update answers are validated as a complete project before marking the update or removing old files. Invalid resource sizes or paths leave the previous version intact.
+- Only one command changes an instance at a time; a second one says so and changes nothing.
+- `rm` lists what it removes (sandboxes, including ones an update replaced or a newer version no longer lists, the instance's secrets, its folder). Named volumes keep their data unless `--delete-data`. It works by name even when the instance's record is missing or cannot be read. An item removed from the Hub keeps running here; `status` shows the notice and how to remove it.
+- If any removal fails, including deleting a stored secret, `rm` reports the failure and keeps the folder and record for retry. It reports success only after all requested cleanup finishes.
+- The desktop app reads `~/.yougori/hub/instances/INSTANCE/instance.json` (state, addresses, steps, outputs and `next`, the command that continues it; never answers or secrets).
+
+## Make and publish
+
+```text
+yougori template new [NAME]                        # a valid starting folder
+yougori template check [FOLDER]                    # every rule, the credential scan and the review
+yougori template capture ENV... [--output FOLDER]  # running sandboxes become a template
+yougori template publish [FOLDER] [--yes] [--publisher NAME]
+yougori template fork REF [--name NAME] | star REF | unstar REF
+yougori template report REF --reason harmful|stolen|abuse|other [--details TEXT]
+yougori template delete REF --yes
+```
+
+- Placeholders in string values: `{{inputs.ID}}`, `{{secrets.ID}}` (only as a whole value under an environment's `secrets:`), `{{instance}}`, `{{env.NAME}}` (the sandbox's real name), `{{public.NAME}}` (outputs only). They are filled in after the YAML is parsed, so an answer cannot change the file's structure. No placeholder may choose a path on this computer (files, PC folders, a VM's source). A template cannot use `publish:`, `storage_drive`, cloud or shared environments, or folders outside its own; PC folders inside it need the runner's separate yes.
+- `check` and `publish` also refuse fixed host ports (`ports: ["8080:3000"]`; list the container port only, `ports: [3000]`) and Hub tools without a version (`hub/acme/aider@1.0.0`). Title and summary: plain text (title at most 80 characters, summary 200), no invisible characters or stacked accents, and never the word verified, check marks, or (in the title) official; only Yougori shows the Verified badge.
+- The credential scan refuses `.env` files (only `.env.example`, `.env.sample`, `.env.template` and `.env.defaults` may exist; there, variables named like KEY, TOKEN, SECRET or PASSWORD must be empty or a placeholder such as your-key-here), private keys (a key header followed by key material; a header alone in code or docs is fine), credential files (`.credentials.json`, `.codex/auth.json`, `.git-credentials`, `.netrc`, `.npmrc` with a token, `.pypirc`, `id_rsa`, `id_ed25519`) and text that looks like an API key or token, naming the file and line (UTF-8 and UTF-16 text; other files are searched byte by byte). Wallet addresses are allowed and noted on the review.
+- Collected: everything except `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `target`, `dist`, `.DS_Store`, `Thumbs.db` and `.yougoriignore` matches; links are not followed. Limits: 1000 files, 5 MiB per file, 25 MiB per version. Paths: relative, at most 512 characters and 255 per name, none of `\ : * ? " < > |`, control or invisible characters, no name ending in a dot or space, no Windows device name (CON, NUL, COM1, LPT1 and the like), and no two names that one computer stores as the same file (letter case or accents) or a file named like a folder.
+- `capture` copies settings only (image, type, CPU, memory, disk, ports, internet, volume names, variable names). Variable values become secret questions and are never read out of the sandbox; sign-ins, PC folders, disks and data are left out and listed in the README it writes.
+- `publish` needs `yougori login`. It shows the name, version, licence, file count and size and says the upload is public and open source; scripts pass `--yes`. The first upload claims the account's publisher name (`--publisher NAME`, or asked in a terminal). Versions never change: publish a higher one. An upload that stopped carries on when the same files are published again within 24 hours (each new upload counts toward 20 a day). Sizes are checked first: the manifest at most 64 KB, the review at most 128 KB.
+
+## Tools
+
+```text
+yougori tool new [NAME] | check [FOLDER]
+yougori tool add FOLDER | hub/PUBLISHER/NAME[@VERSION] [--yes]
+yougori tool list | remove NAME --yes
+yougori tool install NAME --environment ENV [--secrets -]
+yougori tool open NAME --environment ENV
+yougori tool publish [FOLDER] [--yes] [--publisher NAME]
+```
+
+- Added tools live in `~/.yougori/tools/NAME`. Names of built-in tools and Yougori commands are refused. Built-in tools keep their shortcuts: `tool open codex --environment ENV` is `yougori codex --environment ENV`.
+- `tool add hub/…` shows the tool's review (with the community warning when it is not Verified) and asks before saving; scripts pass `--yes` once the user has read it (`yougori template info hub/PUBLISHER/NAME`). `install` of a community tool says once more that its install lines are not checked.
+- `install` runs the install lines in the running sandbox (one shell per line, in order, stopping at the first failure; `$HOME/.local/bin` on `PATH`), then the check. A sandbox remembers which version it installed, so a new version installs again. A failure names the tool, the sandbox and `yougori terminal ENV`; running again retries only that tool. `open` needs a terminal.
+- A tool that signs in with an API key asks for it with a hidden prompt, or reads `{"key":"…"}` from `--secrets -` on stdin, and stores it as the deployment secret `tool-NAME` (in a template run, `hub-INSTANCE-key-NAME`, given to the tool's sandbox as its variable). Keys never go in files or on the command line.
+
+## Troubleshooting
+
+| Problem | Cause and fix |
+|---|---|
+| failed its integrity check | The download did not match its digest; nothing was created and the copy was removed. Try again later; report the item if it repeats. |
+| has a file name Yougori cannot store on this computer | That version has a file this computer cannot hold; update Yougori or run another version. |
+| needs answers to: … | Pass each named flag; secrets only through `--secrets -`. |
+| An instance named X already runs this template | Carry it on with `yougori template continue X`, or pass `--name NEW-NAME` for a new copy. |
+| is being changed by another yougori command | Wait for that command to finish, then try again. |
+| Another Yougori project is already called X | Choose another instance name with `--name`. |
+| … did not install in INSTANCE-NAME | Look inside with `yougori terminal INSTANCE-NAME`, then run `yougori template continue INSTANCE`. |
+| The folder … changed since X was made | A folder instance continues only with the same files; apply the changes with `yougori template update X`. |
+| Version … is not higher than the latest | Versions never change: raise `version:` and publish again. |
+| run the same publish command again to carry on | The upload stopped; the Hub keeps the files sent so far for 24 hours. |
 
 # Models and the Yougori Network
 
@@ -732,43 +837,75 @@ yougori model versions yg/PUBLISHER/MODEL
 
 # Closed Neo Grid (company computers)
 
+## Private project bounties
+
+Distribution: public/open-source builds offer only imported source and sandboxed web/API targets. They reject live URL targets, --url/--health, external-target policies and attempts to resume external work saved by a private build. The private development edition retains those features. This is compiled from distribution.txt; preferences, environment variables and debug builds cannot override it. See docs/source-distributions.md for preparing the public source separately.
+
+Desktop Create closed bounty imports folders/files/ZIPs and reviews source/web/API/live-URL recipes (setup/start/test commands, port, health path, optional setup networking; or a live service base URL for a self-attested external_target). It hosts on loopback or LAN port 7462; each member runs an offline sandbox copy. Keep the host online. Private chat and report review are under each worker.
+
+Automation: `yougori call bounty_dispatch --file -`, body `{"request":{"action":...}}`. Actions: inspectProject(path) returns importId; hostProject(importId,title,instructions,authorization,target,visibility local|lan,address,password,confirmed:true) returns preview (desktop; also starts a host worker); hostSource(importId,title,instructions,authorization,name,address,password,confirmed:true,target?) hosts a headless bounty with no host worker (the CLI `bounty host` path); an optional target with kind url + baseUrl makes it scopeMode external_target (live service probed over the network) instead of source review; connect(invite,password,name) or localConnect returns ticket/policy; startWorker(ticket,termsDigest,worker:{name,model},budgetMinutes,reportPolicy review|automatic,confirmed:true); status. A target has kind source|web|api|url, setupCommand,startCommand,testCommand,port,healthPath,installNetwork,baseUrl. kind url (scopeMode external_target) needs baseUrl (http/https origin) and boots nothing; web/api need startCommand+port. Secrets use stdin. Review the exact snapshot and commands before starting. Pinned Hermes supports scoped HTTP, reproduction scripts and shared observations; public versions need newly accepted researchTools permissions.
+
+
 A company's private model grid on its own network, separate from the public Yougori Network (models topic). Three roles: the **admin** runs the hub and decides everything; **company computers** join and lend their GPU while idle; **company apps** call the hub's OpenAI-compatible API. Nothing passes through yougori.com and prompts are never recorded.
 
 ```text
-yougori grid create COMPANY --ip THIS_PC_IP [--password -] [--port 7460] [--hostname NAME] --yes   # admin, once
-yougori COMPANY --neogrid --ip HUB_IP [--password -] [--port 7460] [--name NAME] [--fingerprint SHA256]   # each computer
+yougori create grid                                                                          # admin, once: asks a few questions
+yougori join grid                                                                            # each computer: paste the invite, type the password
+yougori grid join --invite INVITE [--password -] [--name NAME]                               # the same, for scripts
+yougori grid create COMPANY --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] [--port 7460] [--hostname NAME] --yes
+yougori COMPANY --neogrid --ip HUB_IP|https://TUNNEL [--password -] [--port 7460] [--name NAME] [--fingerprint SHA256]
 yougori grid join COMPANY --ip HUB_IP [--password -]                                         # same as the line above
-yougori grid                                                                                 # status, any computer
+yougori grid                                                                                 # status and the invite, any computer
 yougori grid status
 yougori grid add-plan --model hf.co/OWNER/MODEL --percent 50 [--schedule TEXT] [--idle-after MINUTES] [--quant Q]
 yougori grid change-plan PLAN_ID [--percent P] [--schedule TEXT] [--idle-after MINUTES] [--model M] [--quant Q]
 yougori grid remove-plan PLAN_ID --yes
+yougori grid add-swarm --name research --lead hf.co/OWNER/LEAD --workers '["hf.co/OWNER/WORKER"]' --computers 5 [--strategy plan|mixture] [--tasks N] [--rounds N]
+yougori grid run-swarm research --prompt TEXT                                              # try it; shows which computer did each task
+yougori grid remove-swarm research --yes
 yougori grid add-key --name APP
 yougori grid revoke-key KEY_ID --yes
 yougori grid remove MEMBER_ID --yes
+yougori bounty host COMPANY --title TITLE --ip THIS_PC_IP [--source DIR] [--url URL [--health PATH]] [--instructions TEXT] [--authorization TEXT] [--password -] --yes   # --source, --url or both. --source: source review (no server); reads DIR from disk so a whole repo hosts (no upload cap). --url: scopeMode external_target against a self-attested live service (staging, not production); source still reviewed
+yougori bounty hosted                                                                       # closed bounty hosted here: source, computers, findings
+yougori bounty remove-hunter MEMBER_ID --yes
+yougori bounty unhost --yes                                                                 # stop hosting the closed bounty
+yougori grid exclude MEMBER_ID --yes                                                       # leave it out: no model, no work; it stays a member
+yougori grid include MEMBER_ID                                                             # bring it back
 yougori grid password [--password -] --yes
 yougori grid leave --yes
-yougori grid delete --yes
+yougori grid delete [--when later|now|forget] --yes
+yougori grid restore
 ```
 
 ## Step by step
 
-1. **Admin creates the grid** on a computer that stays on, with a fixed LAN or VPN address: `yougori grid create Acme --ip 10.0.0.5 --yes`. It asks for the company password twice (10–256 characters). `yougori grid` then shows the hub URL and its certificate **fingerprint**; tell both, and the password, to the company.
-2. **Each company computer joins**: `yougori Acme --neogrid --ip 10.0.0.5` and type the password when asked. Add `--fingerprint AB:CD:…` when the admin shared it. That is all a computer needs to do; from now on the admin's plans decide which model it downloads and runs, and when it serves. The admin's own computer joined automatically.
+1. **Admin creates the grid** on a computer that stays on, with a fixed LAN or VPN address: `yougori create grid` asks the company name, which computers can join (this network, a Quick public link or a Cloudflare domain), and the company password twice (10–256 characters). It ends with an **invite** (`grid-invite:…`), copied to the clipboard; send it to the company, and the password separately. `yougori grid` shows the invite again. Scripts: `yougori grid create Acme --ip 10.0.0.5 [--tunnel quick] --yes`.
+
+2. **Each company computer joins**: `yougori join grid`, paste the invite and type the password. The invite names the company, the hub's address and its certificate fingerprint, so the computer can only join the real hub. That is all a computer needs to do; from now on the admin's plans decide which model it downloads and runs, and when it serves. The admin's own computer joined automatically. Without an invite: `yougori Acme --neogrid --ip 10.0.0.5 [--fingerprint AB:CD:…]`.
 3. **Admin adds a plan**: `yougori grid add-plan --model hf.co/Qwen/Qwen3-8B --percent 50 --schedule "Mon-Fri 18:00-08:00; Sat,Sun" --idle-after 15`. Half of the computers that can run models download and start Qwen3-8B and serve it on weeknights and weekends, once nobody has touched the keyboard or mouse for 15 minutes. Add more plans for more models.
 4. **Admin creates an API key** for each company app: `yougori grid add-key --name Analytics`. The answer shows the key once, the base URL (`https://10.0.0.5:7460/v1`) and the hub's certificate.
 5. **Apps call the hub** like any OpenAI-compatible API, trusting that certificate: `curl --cacert grid.pem https://10.0.0.5:7460/v1/chat/completions -H "Authorization: Bearer ygrid_…" -d '{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"Hi"}]}'` (`stream: true` works; `GET /v1/models` lists the models and how many computers are ready).
-6. **Check**: `yougori grid` on the hub lists computers (online, plan, model state, requests served), plans (computers assigned / target / ready) and keys (usage). On a member it shows the assignment and state.
+6. **Optional: a swarm** — `yougori grid add-swarm --name research --lead hf.co/Qwen/Qwen3-32B --workers '["hf.co/Qwen/Qwen3-8B"]' --computers 5`. Apps then call the model `swarm/research` and one call runs a team on up to five computers (see Swarm harnesses below).
+7. **Check**: `yougori grid` on the hub lists computers (online, plan, model state with download progress, requests served), plans (computers assigned / target / ready) and keys (usage). On a member it shows the assignment and state.
 
 ## Password and scripts
 
-- The password is never accepted as an argument. People are asked for it; scripts send one line on stdin with `--password -` (`yougori Acme --neogrid --ip 10.0.0.5 --password - < password.txt`).
+- The password is never accepted as an argument. People are asked for it; scripts send one line on stdin with `--password -` (`yougori grid join --invite grid-invite:… --password - < password.txt`).
 - The password is proven with scrypt and HMAC, never sent. The computer pins the hub's certificate only after the hub proves that it knows the password too, so a wrong company name, password or fingerprint stops before anything is saved. Ten wrong passwords from one address lock it out for 10 minutes. `grid password --yes` changes it; computers that already joined stay members.
 - Engine methods take `password` only through `--file -` or a private JSON file: `grid_create`, `grid_join`, `grid_password`.
 
+## Tunnels: computers outside the network
+
+- A grid can also be reached through a Cloudflare Tunnel, so computers at home or in another office can join: `--tunnel quick` (a temporary trycloudflare.com address that changes when the hub computer or Yougori restarts; computers then paste the new invite with `yougori join grid`, which moves them without the password) or `--tunnel DOMAIN`, a saved domain whose Cloudflare tunnel routes to `http://127.0.0.1:7461` (a fixed address). The hub keeps its LAN address too; company apps keep using it.
+- The tunnel only relays WebSocket frames that carry the grid's own TLS, pinned to the hub's certificate, so Cloudflare never sees prompts or replies, and the password proofs stay bound to the hub. Cloudflare names each caller, so ten wrong passwords lock out only the address they came from.
+- The hub reconnects the tunnel by itself after a restart or a dropped connection; `yougori grid` shows `Anywhere` with the address, or why it is not connected.
+
 ## Plans: what runs where and when
 
-- `--percent` is the share of the computers that can run models (an NVIDIA GPU with WSL 2, or Apple silicon), rounded up; other computers may join but are never picked. Plans fill in creation order; if plans ask for more than 100% the later ones get fewer, and `yougori grid` warns. Assignments are sticky: computers keep their model and its files when others join or leave.
+- `--percent` is the share of the computers that can run models (an NVIDIA GPU with WSL 2, or Apple silicon), rounded up; other computers may join but are never picked. `--scope remaining` counts only the computers nobody picked by hand; `all` (the default) counts every computer, though picked ones keep their pick.
+- `grid exclude MEMBER_ID --yes` leaves a computer out: it gets no model and no work, so it drops the model the grid gave it (a download in progress stops and its files are deleted), but it stays a member. `grid include MEMBER_ID` brings it back and the plans may pick it again. Shares are counted over the computers taking part.
+- `--computers '["MEMBER_ID"]'` runs the model on exactly those computers (IDs from `yougori grid`) instead of a share. A pick always wins over a share, and picking a computer again for another model moves it there; a picked plan left with no computers is removed. Plans fill in creation order; if plans ask for more than 100% the later ones get fewer, and `yougori grid` warns. Assignments are sticky: computers keep their model and its files when others join or leave.
 - `--schedule` takes weekly windows in each computer's local time: `Mon-Fri 18:00-08:00; Sat,Sun`, `weekdays 20:00-06:00`, `daily`, `weekends`. A window that ends before it starts runs past midnight. Without one, any time.
 - `--idle-after` is minutes without keyboard or mouse input before serving (default 10). `0` ignores activity: the grid may then use the model while the person works, and their own chat waits for a grid reply in progress. On Linux the idle time comes from logind; remote SSH sessions do not count as a person at the computer; a computer that cannot read activity never serves unless `--idle-after 0`.
 - The model is preflighted before the plan is saved; an unsupported model is refused with the reason.
@@ -777,13 +914,22 @@ yougori grid delete --yes
 
 - It downloads and starts the assigned model (`model run` with no API port), or reuses an environment that already runs that model. It serves only while the plan allows and the model is ready; otherwise it reports why (`person_active`, `outside_schedule`, `loading`, …).
 - When the person comes back it finishes the reply in progress, takes no new work, and unloads the model from the GPU only when the grid was the last to use it. A model the person used last stays loaded.
-- An environment the grid started is stopped after 10 minutes outside the plan's hours, and only once nobody has used the model for 10 minutes; it starts again inside the hours. If the person stops it themselves it stays stopped until Yougori restarts. An environment the person already had running is never stopped by the grid. Changing a plan's model, removing the plan, `grid leave` or `grid delete` stop only grid-started environments, and leave one alone that handled a request in the last minute; files always stay.
+- An environment the grid started is stopped after 10 minutes outside the plan's hours, and only once nobody has used the model for 10 minutes; it starts again inside the hours. If the person stops it themselves it stays stopped until Yougori restarts. An environment the person already had running is never stopped by the grid. When a computer no longer runs a model (its plan changes model or is removed, it is picked for another model, `grid leave` or `grid delete`), an environment the grid created for that model is deleted with the weights it downloaded, once no request is in flight on it, so it stops taking disk space. One the grid only started from what the person already had is stopped, never deleted, and left alone if it handled a request in the last minute.
+- **Deleting the grid.** `yougori grid delete --yes` (or `--when later`) pauses it for three days: no API key works, nobody joins, computers stop serving and stop the model environment the grid started, but keep it and its weights. `yougori grid restore` within those days brings everything back as it was. `--when now`, or the end of the three days, deletes it: each computer is told at its next check-in, leaves the grid and deletes the model environment the grid created (one its person already had is only stopped), and `yougori grid` on it says so. A computer that is switched off hears it when it comes back; the hub keeps answering for up to 30 days, then removes itself. `--when forget` stops waiting and removes the hub at once; computers that have not heard keep retrying until their person leaves with `yougori grid leave --yes`.
 - Members only ask the hub for work (no open ports), over TLS pinned to the hub's certificate, and run every request on the local model's own `/v1/chat/completions` with its own API key. A busy model (HTTP 429) hands the request back for another computer. Locked-down environments never serve.
 - A request waits up to 60 s for an idle computer; with none the hub answers HTTP 503 with the counts (`2 in use by their person, 1 outside the plan's hours`) and Retry-After. Limits: 64 KiB requests, 16 MiB replies, 32 requests per key waiting or running.
 
+## Swarm harnesses: one call, several computers
+
+- A harness is a team of models that apps call as the model `swarm/NAME`, like any other model (`GET /v1/models` lists it, `stream: true` works). The reply is an ordinary chat completion plus `yougori_swarm`, a trace of the plan, which computer did each task and how long it took.
+- `--strategy plan` (default), a lead and its workers: the lead model splits the request into independent tasks, each with a brief that says what to produce and where to stop; workers solve them at the same time, each in its own context, and the lead combines the results. With `--rounds 2` or 3 the lead may send another round for gaps it finds. A request that does not split stays one task.
+- `--strategy mixture`, Mixture-of-Agents: workers each answer the whole request at different temperatures and the lead writes one answer from all of them. `--rounds 2` adds a layer where the workers first improve on each other's answers; a third layer tends to over-correct, so the limit is 2.
+- `--computers N` is how many requests run at once. Every computer serves one request at a time, so that is how many computers work on one call; more tasks wait for the next free computer. `--tasks` caps tasks per round (plan) or answers per layer (mixture), and defaults to `--computers`. `--workers` may list several models; tasks take them in turn.
+- The lead and worker models must run on the grid through plans; `add-swarm` lists in `missing` those that no plan runs yet, and a call answers HTTP 503 at once if a model has no computer. The team's work counts against the calling app's key and its 32-request limit. Use a strong model as the lead: it plans and writes the answer.
+
 ## Stored and audited
 
-Private key of the hub, the password's derived key and member tokens live in the OS credential vault; `grid/hub.json` and `grid/member.json` hold settings, with API keys and member tokens as hashes only. Prompts pass through memory only. Joins, refused joins, plans, keys, assignments and grid model starts and stops are in `yougori audit`. Engine methods: `grid_status`, `grid_create`, `grid_join`, `grid_password`, `grid_plan_add`, `grid_plan_update`, `grid_plan_remove`, `grid_key_create`, `grid_key_revoke`, `grid_member_remove`, `grid_leave`, `grid_delete`. Full guide: `docs/closed-neo-grid.md`.
+Private key of the hub, the password's derived key and member tokens live in the OS credential vault; `grid/hub.json`, `grid/member.json` and `grid/tunnel.json` hold settings, with API keys and member tokens as hashes only. Prompts pass through memory only. Joins, refused joins, plans, keys, assignments and grid model starts and stops are in `yougori audit`. Engine methods: `grid_status`, `grid_suggested_address`, `grid_member_exclude`, `grid_member_include`, `grid_create`, `grid_join`, `grid_password`, `grid_plan_add`, `grid_plan_update`, `grid_plan_remove`, `grid_swarm_add`, `grid_swarm_remove`, `grid_swarm_run`, `grid_key_create`, `grid_key_revoke`, `grid_member_remove`, `grid_leave`, `grid_delete`, `bounty_status`, `bounty_host`, `bounty_member_remove`, `bounty_delete`. Full guide: `docs/closed-neo-grid.md`.
 
 ## Troubleshooting
 
@@ -791,12 +937,368 @@ Private key of the hub, the password's derived key and member tokens live in the
 |---|---|
 | The company name or password is wrong | Check both with the admin; ten wrong passwords lock an address out for 10 minutes. |
 | The hub's certificate fingerprint is …, not the one you gave | Do not join: the address may not be the company's hub. Ask the admin to read out `yougori grid` on the hub. |
-| Cannot open the grid hub on ADDRESS:PORT | The hub computer's address changed or the port is taken: give it a fixed LAN address, or `grid delete --yes` and create the grid again. |
+| Cannot open the grid hub on ADDRESS:PORT | The hub computer's address changed or the port is taken: give it a fixed LAN address, or `grid delete --when now --yes` and create the grid again. |
 | None of the N computer(s) running this model can serve right now | Every assigned computer is in use, outside the plan's hours, offline or still loading; the reason counts say which. Raise `--percent` or widen `--schedule`. |
 | This computer is already in COMPANY's grid | One grid per computer: `yougori grid leave --yes` first. |
 | This computer does not run a grid hub | Admin commands (plans, keys, remove, password, delete) run on the hub computer only. |
 | Not in a terminal: supply the password on stdin with --password - | Scripts pipe one line: `--password - < password.txt`. |
 | Stopped by its person; the grid starts it again after Yougori restarts | The person stopped a grid-started model; the grid respects that. `yougori start ENV` or a Yougori restart resumes serving. |
+
+# Sandbox Grid (desks on company computers)
+
+## A desk for each person, on the company's computers
+
+A company's own grid of **desks**: sandboxes the admin orders for named people, built on the company's computers within the share of each that the admin allows, like an outsourced team's virtual machines but on computers the company already has. It is separate from the Closed Neo Grid (models): its own hub on port 7463, its own password, its own invite (`desk-invite:…`) and its own membership, so joining one never makes a computer part of the other. Engine methods: `desks_status`, `desks_suggested_address`, `desks_create`, `desks_join`, `desks_leave`, `desks_delete`, `desks_member_remove`, `desks_member_share`, `desks_person_add`, `desks_person_password`, `desks_person_remove`, `desks_add`, `desks_assign`, `desks_retry`, `desks_remove`, `desk_login`, `desk_logout`.
+
+```text
+yougori desks create COMPANY --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] --yes  # admin, once: hosts the grid; this computer joins it too
+yougori desks join --invite INVITE [--password -] [--name NAME]                             # each company computer joins and reports what it has
+yougori desks                                                                               # status and the invite, any computer
+yougori desks status
+yougori desks share MEMBER_ID [--cpu 2] [--memory-gb 4] [--disk-gb 50] [--gpu true] [--idle-only true]  # admin: what the grid may take from a computer
+yougori desks share MEMBER_ID --suggested true                                              # admin: back to the automatic share
+yougori desks add-person --username USER [--name NAME] [--password -] [--cpu 2] [--memory-gb 4] [--disk-gb 20] [--gpu true] [--kind container|microvm|vm]
+                                                                                            # admin: a person who signs in to their desk; with any size given, their desk is ordered with them
+yougori desks person-password USER [--password -] --yes
+yougori desks remove-person USER --yes
+yougori desks add-desk --name NAME --person USER [--kind container|microvm|vm] [--cpu 2] [--memory-gb 4] [--disk-gb 20] [--gpu true] [--image IMG]
+yougori desks assign-desk DESK_ID [--person USER]
+yougori desks retry-desk DESK_ID
+yougori desks remove-desk DESK_ID --yes                                                     # deletes the desk's sandbox and its data
+yougori desks remove MEMBER_ID --yes
+yougori desks leave --yes
+yougori desks delete [--when later|now|forget] --yes
+yougori desks restore
+yougori desks adopt --file - --yes                                                          # a computer the hub created: take up its ready-made membership (JSON with the token on stdin)
+yougori desk login --invite INVITE --username USER [--password -] [--code 123456]           # person: open your desk on this computer; --code with two-step sign-in
+yougori desk login --invite INVITE --sso                                                    # person: sign in through the company's identity provider (browser)
+yougori desk                                                                                # person: your desks, and what this computer hosts
+yougori desk logout --yes
+```
+
+## Step by step
+
+1. **Admin hosts the grid** on a computer that stays on: `yougori desks create Acme --ip 10.0.0.5 --yes` asks for the password twice (10–256 characters) and prints the **invite** (`desk-invite:…`); `yougori desks` shows it again. Share it with the company, and the password separately. The admin's own computer joins at once. With `--tunnel quick` (a temporary trycloudflare.com address, new when the computer or Yougori restarts; joined computers paste the new invite with `desks join`, which moves them without the password) or `--tunnel DOMAIN` (a saved Cloudflare domain routed to `http://127.0.0.1:7464`), computers at home or in another office join through the tunnel, which only relays the grid's own TLS pinned to the hub's certificate; the hub keeps its LAN address too.
+2. **Each company computer joins**: `yougori desks join --invite INVITE`, then the password. With every check-in it reports what it has and is using: cores and how busy they are, memory used of total, free disk, whether it has a usable GPU and how busy that is, and whether someone used its keyboard or mouse in the last 10 minutes. `yougori desks` shows all of it per computer.
+3. **Admin sets each computer's share**: `yougori desks share MEMBER_ID --cpu 2 --memory-gb 4 --disk-gb 50 [--gpu true]` is what the grid may take from it for desks, **whether or not its person is using it** — a computer in use still hosts desks within its share. Until the admin decides, a suggested share applies: half the cores, half the memory with 2 GB kept back, half the free disk, the GPU if there is one (`--suggested true` goes back to it). `--idle-only true` limits a share to the time nobody is using the computer. A share is capped by what the computer actually has; shrinking it never evicts desks already there, since their data is there. A computer left out by the admin, offline or on battery takes no new desk.
+4. **Admin adds people with their desks**: `yougori desks add-person --username ada.lovelace --name "Ada Lovelace" --cpu 2 --memory-gb 4 --disk-gb 20 [--gpu true]` (password asked twice) adds the person and orders "Ada Lovelace's desk" with that size in one step; the desktop form does the same. A further or differently named desk: `yougori desks add-desk --name "Design desk" --person ada.lovelace --kind container --cpu 2 --memory-gb 4 --disk-gb 20`. The hub places the desk on the computer with the most memory left in its share that fits all of it; that computer creates the sandbox with exactly that allocation, starts it, shares it with full control over pinned TLS on its LAN or VPN address and reports the invitation. `--gpu true` needs a computer whose share includes its GPU. A desk that cannot be built says why; `retry-desk` tries again.
+5. **People sign in** from their own computer: `yougori desk login --invite INVITE --username ada.lovelace` (the invite is the grid's; the password is never an argument). Every ready desk becomes a shared environment in their sandbox list, used like any remote sandbox. Run `yougori desk refresh` after a desk moves or its invitation is renewed; the desktop portal refreshes automatically. `yougori desk` shows the desks.
+6. **A desk is sticky**: it stays its person's, on the computer that holds its data, until the admin removes it (`remove-desk`, which deletes the sandbox) or reassigns it (`assign-desk`). Removing a person keeps their desks, unassigned. A computer that leaves the grid or loses the sandbox puts the desk back in waiting; the hub remembers which computers held its data and goes back there first.
+7. **Deleting the grid**: `yougori desks delete --yes` (or `--when later`) pauses it for three days: every desk stops and is no longer shared, but keeps its data; nobody signs in. `yougori desks restore` within those days starts and shares the desks again. `--when now`, or the end of the three days, deletes it: each computer is told at its next check-in, leaves and deletes the desks it hosted, with their data; a person's desk entries go when their app next refreshes. Computers that are switched off hear it when they come back; the hub keeps answering for up to 30 days, then removes itself. `--when forget` stops waiting and removes the hub at once.
+
+8. **A desk moves with its data**: a computer tells the hub it is giving its desks up when Yougori closes on it, when its battery drops below 30%, when it has less than 5 GB of disk left, or when its person comes back and the admin lent the grid only its idle time. The hub then hands each desk to another computer: the one giving it up stops the desk, packs its disk into one file, checksums it and sends it to the hub; the one taking it over fetches it, checks the checksum and unpacks it as its own sandbox. Nothing is deleted on the old computer until the hub holds the whole copy, and nothing is unpacked unless the checksum matches, so a copy that fails loses nothing. While it moves, its person sees "Moving your desk to another computer". With no computer free, the data waits, packed and safe, and goes to the next computer that has room — including a cloud computer the admin attaches; after a day of waiting the admin is told. When Yougori closes on a computer that hosts desks, it waits up to 15 minutes for the copies to finish before it goes. A desk whose disk is larger than 64 GB is not moved (the copy passes through the hub); it stays put and says so.
+
+## Enterprise management
+
+`yougori desks manage --file - --yes` (equivalently `yougori call desks_manage --file - --yes`) takes `{"request":{"action":"status"}}` on stdin, as the local grid owner or a named administrator signed in with `yougori desk login`. Administrative permissions: user, auditor (read only), operator (desk assignments and retries, computers' shares), administrator (accounts, the immutable image catalog, workspace roles, company workspace connections). Actions: personAdd/personUpdate/personPassword/personRemove, imageAdd/imageImport/imageRemove, roleAdd/roleRemove, deskOrder/deskAssign/deskRetry/deskRemove, computerShare/computerRemove/computerLimit, connectionAdd/connectionRemove; passwords only on stdin. It is the one management core: `desks add-person`, `add-desk`, `share`, `remove` and the desktop page go through the same rules and audit. `personAdd` and `deskOrder` take a workspace `roleId` or a plain `spec` (`{kind,cpu,memoryGb,diskGb,gpu,image}`) for a standard desk of that size with no catalog; `computerRemove` puts the computer's desks back into waiting, their data still on it. A restricted role needs a prepared full VM image: no guest network, no command or file-read channels, outbound clipboard filtered, inbound uploads accepted. The local grid owner publishes a prepared disk with `imageImport` (path, name, version, applications, spec); the hub hashes it, keeps a private copy and hands it in raw 8 MiB pieces only to the computers assigned a desk from it. Remote administrators publish HTTPS URLs with a SHA-256, or digest-pinned OCI references. Citrix, Azure Virtual Desktop, Windows 365 and Omnissa Horizon entries open the company's existing portals; they provision nothing and enforce no provider policy. Computers are not counted against a limit unless the admin sets one.
+
+## Security
+
+- The hub's certificate is pinned from the invite before anything is sent. Joining computers prove the password with scrypt and HMAC; people's sign-ins send the password's scrypt-derived key over that pinned connection and the hub keeps only its hash. A wrong username or password is refused without saying which, unknown names get a decoy salt, and ten wrong tries from one address lock it out for 10 minutes.
+- Share invitations live in the hub's memory only, never on disk; a host that restarts mints a new share. On a host, only which desk is which sandbox is saved (`grid/desks.json`); the person's sign-in is saved without the password (`grid/desk-login.json`), with the invite in the OS vault.
+- People added, removed and signed in, refused sign-ins, computers' shares set, desks added, built, shared, dropped and removed are in `yougori audit`.
+- Desks move with their data (see above). With parking set, the packed disk goes to the company's own bucket instead of through the hub, and the bucket's keys are handed only to the two computers moving that desk, never written in the grid's record or shown in status.
+- Two-step sign-in (`mfaEnroll`/`mfaConfirm`) stores only the person's authenticator secret on the hub; an administrator can reset it (`mfaReset`), never read it. Single sign-on checks the company's identity provider's signed token on the hub against keys the hub fetched itself from the issuer; the provider's client secret is never needed.
+- Connectors' credentials (Azure, Windows 365, Citrix, Horizon) live in the hub computer's OS vault; status shows only that they are set and when, and `connectionRemove` deletes them.
+- A hub that is simply switched off never says so. After a week of silence a member computer's page and `yougori grid` / `yougori desks` ask whether to leave; leaving removes nothing from the computer.
+- A desk is shared on its host's private LAN or VPN address, which a person on the company network reaches directly. From anywhere else the session goes through the hub: each host keeps a couple of connections waiting there, and the hub joins one to the person's computer. The desk's own TLS, pinned to the certificate in its invitation, runs inside that connection, so the hub copies bytes it cannot read, and the person's computer tries the direct address first and falls back to the hub by itself. Opening a desk from outside the company network therefore needs the grid to be reachable from there (`desks create --tunnel quick|DOMAIN`), and the host to be online.
+
+## Parking, cloud fallback and sign-in providers
+
+Every credential is the admin's own, typed once into the Sandbox Grid page's Settings fold or sent on stdin to `desks manage`; Yougori stores it in the hub's vault and shows only that it is set. Nothing is provisioned or billed without the admin putting a credential in.
+
+```text
+{"request":{"action":"parkingSet","provider":"awsS3","location":"s3://acme-desks/parked?region=eu-west-1","accessKey":"…","secretKey":"…"}}
+{"request":{"action":"parkingSet","provider":"s3Compatible","location":"https://ACCOUNT.r2.cloudflarestorage.com/acme-desks/parked","accessKey":"…","secretKey":"…"}}
+{"request":{"action":"parkingClear"}}
+{"request":{"action":"cloudFallbackSet","provider":"aws","account":"work","region":"eu-west-1","image":"ami-…","machineType":"t3.large","subnet":"subnet-…","securityGroup":"sg-…","keyPair":"desks","identityFile":"C:/keys/desks.pem","username":"ubuntu","maxComputers":2}}
+{"request":{"action":"cloudFallbackSet","provider":"google","account":"my-project","region":"europe-west1-b","image":"ubuntu-2404-lts-amd64","imageProject":"ubuntu-os-cloud","machineType":"e2-standard-2","subnet":"default","sshPublicKey":"C:/keys/desks.pub","identityFile":"C:/keys/desks","username":"ubuntu","maxComputers":1}}
+{"request":{"action":"cloudFallbackSet","provider":"azure","account":"SUBSCRIPTION","resourceGroup":"desks","region":"westeurope","image":"Canonical:ubuntu-24_04-lts:server:latest","machineType":"Standard_D2s_v5","subnet":"desks-subnet","securityGroup":"desks-nsg","sshPublicKey":"C:/keys/desks.pub","identityFile":"C:/keys/desks","username":"azureuser","maxComputers":1}}
+{"request":{"action":"cloudFallbackClear"}}
+{"request":{"action":"ssoSet","issuer":"https://login.microsoftonline.com/TENANT/v2.0","clientId":"…","usernameClaim":"email","passwordless":false}}
+{"request":{"action":"personUpdate","id":"PERSON_ID","email":"ada@acme.example"}}
+{"request":{"action":"ssoClear"}}
+{"request":{"action":"connectionAdd","provider":"azureVirtualDesktop","name":"Finance AVD","url":"https://client.wvd.microsoft.com/arm/webclient","credential":{"tenantId":"…","clientId":"…","clientSecret":"…","subscriptionId":"…","resourceGroup":"avd","applicationGroup":"finance-dag"}}}
+{"request":{"action":"connectionAdd","provider":"windows365","name":"Windows 365","url":"https://windows365.microsoft.com","credential":{"tenantId":"…","clientId":"…","clientSecret":"…","groupId":"GROUP_OBJECT_ID"}}}
+{"request":{"action":"connectionAdd","provider":"citrix","name":"Citrix","url":"https://acme.cloud.com","credential":{"customerId":"…","clientId":"…","clientSecret":"…","deliveryGroup":"Desks"}}}
+{"request":{"action":"connectionAdd","provider":"horizon","name":"Horizon","url":"https://horizon.acme.example","credential":{"username":"admin","password":"…","domain":"ACME","pool":"POOL_ID"}}}
+{"request":{"action":"connectionCredential","id":"CONNECTION_ID","credential":{…}}}                  # replace it; {"set":false} deletes it
+{"request":{"action":"connectionTest","id":"CONNECTION_ID"}}
+{"request":{"action":"connectionProvision","id":"CONNECTION_ID","personId":"PERSON_ID"}}
+{"request":{"action":"connectionRevoke","id":"CONNECTION_ID","personId":"PERSON_ID"}}
+```
+
+- **Parking** (`parkingSet`): `awsS3` with `s3://bucket/prefix?region=…`, or `s3Compatible` with `https://endpoint/bucket/prefix` (Cloudflare R2, MinIO, Backblaze, Wasabi, …). With it set, a desk that moves is packed straight into the bucket by the computer giving it up and fetched from there by the one taking over, so the 64 GB limit no longer applies and the hub never holds the data. The hub keeps the keys in its vault and hands them, over pinned TLS, only to the two computers moving a desk, for that move. The hub deletes the parked copy once the new computer reports the desk running.
+- **Cloud fallback** (`cloudFallbackSet`, provider `aws`, `google` or `azure`): when a desk has waited for a computer for an hour and no computer in the grid has room, the hub's computer creates one virtual machine with the admin's own `aws`, `gcloud` or `az` command line (already signed in on that computer, under `account`), installs Yougori on it over SSH (`identityFile` is the private key; AWS needs `keyPair` and `securityGroup`, Azure `resourceGroup`, `securityGroup` and `sshPublicKey`, Google `sshPublicKey`) and gives it a ready-made membership (the token goes to the VM, never printed); the desk is placed there like on any computer. The grid must be reachable from the cloud (`--tunnel`). `maxComputers` caps how many at once; a cloud computer that hosts nothing for an hour is deleted. Each computer created or deleted is in `yougori audit` with its provider id.
+- **Single sign-on** (`ssoSet`): any OpenID Connect provider (Entra ID, Okta, Google Workspace, Keycloak). The admin pastes the issuer and the client ID of a public native app (PKCE, no secret) whose allowed redirect is `http://127.0.0.1/callback` (any port; Entra ID: "Mobile and desktop applications" platform). Each person needs their email on the grid (`personUpdate` with `email`, or the desktop's Permissions tab). People then sign in with `yougori desk login --invite INVITE --sso` or the desktop's "Sign in with my company account": the browser opens on the provider, comes back to this computer with a code, the code becomes an ID token with the PKCE verifier only this process knows, and the hub checks the token's signature against the keys it fetched itself from the issuer, its issuer, audience, expiry and nonce, then matches the `email` claim (or `usernameClaim`) to a person. The provider's own second factor counts; the grid's two-step is not asked. Password sign-in stays available unless `passwordless` is true.
+- **Provisioning connections**: `connectionAdd` with a `credential` turns a portal link into a connector; the identifiers stay on record, the secret goes to the hub computer's vault only (so credentials are entered on the hub computer). `connectionTest` signs in once with the stored credential and reports what it reaches (the application group and its host pool, the group, the delivery group, the pool). `connectionProvision` assigns the person by their email: Azure Virtual Desktop (the Desktop Virtualization User role on the application group, through Entra ID, Microsoft Graph and Azure Resource Manager), Windows 365 (membership of the group the provisioning policy is assigned to, through Microsoft Graph), Citrix Cloud (the delivery group's users, through the Citrix DaaS "edit delivery group" API), Omnissa Horizon (an entitlement to the desktop pool, through the Horizon REST API). Tasks are queued and run on the hub computer; `status` shows each with its outcome under `enterprise.provisioning`. Removing a person takes back what Yougori assigned them, never anything assigned elsewhere; removing a connection forgets its credential and leaves the provider as it is. The providers' own policies (session limits, MFA, device posture) stay theirs.
+
+## Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| Someone already uses that username | Pick another username, or remove the old person first. |
+| Nothing fits this desk | No computer's share has that many cores, memory, disk or the GPU: raise a share (`desks share`), add a computer, or set cloud fallback. |
+| Waiting for a computer | No computer has room right now; the desk is placed as soon as one does. After an hour with cloud fallback set, a cloud computer is created. |
+| Moving your desk to another computer | Its data is being copied; open it again in a few minutes. |
+| Enter the code from your authenticator app | Two-step is on: `desk login … --code 123456`. |
+| Code wrong | The authenticator's clock or the code: wait for the next code; an admin can `mfaReset` a lost authenticator. |
+| This grid is being deleted | Someone ran `desks delete`; an admin can `desks restore` within three days. |
+| The hub has not answered for a week | The hub's computer is off or gone: start it again, or answer the prompt to leave. |
+| parking: … / cloud: … | The provider refused the credential: check the keys, region and bucket or the command line's sign-in (`aws sts get-caller-identity`, `gcloud auth list`, `az account show`). |
+| Sign-in provider refused the token | The issuer or client id differ from the provider's app, the redirect is not `http://127.0.0.1/callback`, or the person's email on the hub differs from the token's. |
+| Provisioning: … | The provider's API refused: `connectionTest` shows what the stored credential may do; replace it with `connectionAdd` again. |
+
+# Access Grid (company credentials for agents)
+
+## Credentials agents use without holding them
+
+A company's own hub for the API keys and tokens its people's agents need. One trusted computer runs it and keeps every credential sealed with a key in its OS vault. People sign in from their own computers with the admin's invite (`access-invite:…`): with their own password (and a two-step code when they turned it on), or through the company's identity provider. Their agents connect with `yougori access mcp` and ask the hub to send a request with a credential. The hub checks the rules, adds the credential itself, sends the request only to that credential's destinations and returns the answer with the value hidden, so the value never reaches the agent or its model provider. OAuth, GitHub App and AWS credentials go further: the hub turns them into short-lived tokens or signatures, and hands out only those. It is separate from the Neo Grid and the Sandbox Grid: its own hub on port 7465 (tunnel entry 7466), its own invite and its own accounts. Engine methods: `access_status`, `access_create`, `access_delete`, `access_restore`, `access_signin`, `access_signout`, `access_manage`, `access_account`, `access_use`, `access_check`, `access_reveal`, `access_backup`, `access_restore_backup`.
+
+```text
+yougori access create COMPANY --ip THIS_PC_IP --username NAME [--name FULL_NAME] [--tunnel quick|DOMAIN] [--password -] --yes  # admin, once
+yougori access status                                                         # hub, invite, your sign-in and what you may use
+yougori access signin --invite INVITE --username NAME [--code 123456] [--password -]   # each person, on their own computer
+yougori access signin --invite INVITE --sso                                   # through the company's identity provider, in the browser
+yougori access signout --yes
+yougori access two-step on | confirm --code 123456 | off --code 123456        # your own two-step sign-in
+yougori access password [--code 123456] [--password -]                        # change your own password
+yougori access computers | forget-computer DEVICE_ID --yes | sign-out-others --yes
+yougori access delete [--when later|now|forget] --yes                         # admin: later pauses it for three days first
+yougori access restore                                                        # admin: take back a paused deletion
+yougori access backup --output FILE [--passphrase -]                          # admin, on the hub's computer
+yougori access restore-backup FILE --ip THIS_PC_IP [--passphrase -] --yes     # admin: run it here from a backup
+yougori access add-person USERNAME [--name NAME] [--email EMAIL] [--permission member|approver|auditor|admin] [--team TEAM] [--password -]
+yougori access set-person USERNAME [--name NAME] [--email EMAIL] [--permission P] [--team TEAM]
+yougori access person-password USERNAME [--password -]
+yougori access reset-two-step USERNAME --yes | sign-out-person USERNAME --yes | remove-person USERNAME --yes
+yougori access add-credential NAME --kind bearer|header|basic|query|oauth|github-app|aws --destination URL [--field NAME] [--note TEXT] [--value - | --value-file FILE]
+yougori access add-credential NAME --kind oauth --destination URL --token-url URL --client-id ID [--scope S] [--audience A] [--auth basic|body]
+yougori access add-credential NAME --kind github-app --destination https://api.github.com --app-id CLIENT_ID --installation-id N [--api-url URL] --value-file app.pem
+yougori access add-credential NAME --kind aws --destination URL --region R [--service S] [--role-arn ARN] [--external-id ID] [--session-seconds N]
+yougori access rotate-credential NAME [--value - | --value-file FILE]
+yougori access remove-credential NAME --yes
+yougori access allow CREDENTIAL [--who everyone|team:NAME|USERNAME] [--methods GET,POST] [--path /PREFIX] [--ask|--never] [--reveal] [--limit N] [--hours N]
+yougori access remove-rule RULE_ID --yes
+yougori access settings --require-two-step true|false
+yougori access sso --issuer URL --client-id ID [--claim email] [--redirect-port N] [--passwordless] | sso --off --yes
+yougori access requests                                                       # what waits for an approver, and your own requests
+yougori access approve REQUEST_ID [--hours N]
+yougori access deny REQUEST_ID [--reason TEXT]
+yougori access log [--export FILE] [--verify]                                 # activity; export keeps each entry's MAC
+yougori access use CREDENTIAL URL [--method GET] [--header 'Name: value'] [--body TEXT | --body-file FILE]
+yougori access check REQUEST_ID
+yougori access mcp                                                            # MCP server for agents, on stdin/stdout
+```
+
+`--team`, `--destination` and `--header` may be repeated. Passwords, passphrases and values come from a hidden prompt or stdin (`--password -`, `--passphrase -`, `--value -`) or a file (`--value-file`), never from an argument; `yougori call access_manage --file -` takes the same in JSON.
+
+## Permissions and sign-in
+
+| Permission | Uses what rules allow | Approves others' requests | Reads people, credentials, rules, activity | Changes people, credentials, rules, settings |
+|---|---|---|---|---|
+| member | Yes | No | No | No |
+| approver | Yes | Yes | Yes | No |
+| auditor | Yes | No | Yes | No |
+| admin | Yes | Yes | Yes | Yes |
+
+The person who created the grid on its computer stays an admin, cannot be removed, and keeps their password when sign-in is passwordless. Nobody approves their own request while someone else in the grid can approve; with a single approver, they may.
+
+- **Computers stay signed in.** A sign-in gives the computer a device token kept in its OS vault; it signs itself in again until it goes unused for 30 days, the person's password changes, two-step is reset, they sign out everywhere, or the computer is signed out (`forget-computer`, or an admin in the page). The password itself is never kept.
+- **Two-step sign-in**: `yougori access two-step on` shows a secret and an `otpauth://` link for an authenticator app and asks for its first code; sign-ins then ask for `--code`. With `settings --require-two-step true`, people without a second factor can sign in and turn it on, but they and their agents use, see and manage nothing until they do. Admins reset a lost authenticator with `reset-two-step`.
+- **Single sign-on**: `yougori access sso --issuer URL --client-id ID` with a public (native) app registered at the identity provider (Microsoft Entra, Okta, or any OpenID Connect provider that lets a desktop app sign in without a client secret) and PKCE. People's computers receive the sign-in at `http://127.0.0.1:PORT/callback`. Entra ignores the port for this address: register `http://127.0.0.1/callback` under "Mobile and desktop applications" (the portal refuses `http`, so add it in the app's manifest under `replyUrlsWithType` with type `InstalledClient`) and allow public client flows; the issuer is `https://login.microsoftonline.com/TENANT/v2.0`, with the tenant's ID or domain name. Okta matches the port too: create a Native app with PKCE and client authentication None, pick a free port, register `http://127.0.0.1:PORT/callback` and give `--redirect-port PORT`; the issuer is `https://COMPANY.okta.com` or an authorization server such as `https://COMPANY.okta.com/oauth2/default`. People are matched by the `email` claim (or `--claim`) against the email set on them, else their username; when `email` is missing, as Entra sends it by default, `preferred_username` or `upn` stands in. An email the provider marks unverified is refused. The first company sign-in ties the person to that provider account (its `sub`): from then on only that account signs them in, whatever email another account carries. A new email (`set-person USERNAME --email EMAIL`) or `sign-out-person USERNAME --yes` unties them, and a new issuer or client ID unties everyone. The provider's own second factor counts as two-step. `--passwordless` stops passwords, except the owner's.
+
+## Credentials and rules
+
+- **A credential** has a name, how it is sent, one or more **destinations** and a value. A destination is `https://host[:port]` with an optional path prefix (`https://api.github.com`, `https://api.example.com/v2`); plain `http://` is accepted only for private addresses such as `http://10.0.0.8:8080`. Requests outside every destination are refused, and the hub follows no redirects. Values are never shown again; a hint shows the last four characters of a long one. `rotate-credential` replaces the value in place.
+- **How it is sent**: `bearer` (`Authorization: Bearer VALUE`), `header` (`FIELD: VALUE`), `basic` (username FIELD with the value as password), `query` (`?FIELD=VALUE`), and three that make short-lived credentials on the hub: `oauth` (the value is a client secret; the hub fetches access tokens from `--token-url` with client credentials and sends those), `github-app` (the value is the App's private key; one-hour installation tokens) and `aws` (the value is `ACCESS_KEY_ID:SECRET_ACCESS_KEY`; the hub signs each request with SigV4, with temporary keys from `--role-arn` when set, the session named after the person so AWS's own logs say who).
+- **A rule** covers `everyone`, `team:NAME` or one person, optionally only some methods (`--methods GET,POST`) and a path prefix (`--path /repos/acme`, matched on whole segments, also across case and encoded letters), and decides: allow at once (default), `--ask` (an approver decides) or `--never`. A matching never wins; otherwise allow wins over ask; with no matching rule the request is refused. `--limit N` lets N uses an hour per person through at once; past it, an approver decides. `--hours N` makes a rule lapse by itself. `--reveal` also lets those people ask to have the credential; an approver decides every time, and the minting kinds hand out a short-lived token or temporary keys only.
+- Removing a credential removes its rules. Removing a person ends their sign-ins, their waiting requests and their personal rules at once.
+
+## Step by step
+
+1. **Admin hosts the grid** on a computer that stays on: `yougori access create Acme --ip 10.0.0.5 --username ada --yes` asks for Ada's password twice (10–256 characters), starts the hub and signs this computer in as Ada, the first admin. `yougori access status` prints the invite. With `--tunnel quick` or `--tunnel DOMAIN` (a saved Cloudflare domain routed to `http://127.0.0.1:7466`), people outside the network sign in through a tunnel that only relays the grid's own TLS pinned to the hub's certificate.
+2. **Admin adds credentials and people**: `yougori access add-credential GitHub --kind bearer --destination https://api.github.com` (value asked hidden), `yougori access add-person grace --team Research --email grace@acme.example` (password asked twice; give it to Grace privately). The page offers presets for common services.
+3. **Admin writes rules**: `yougori access allow GitHub --who team:Research --methods GET --limit 100` lets the research team read at once, a hundred times an hour; `yougori access allow GitHub --methods POST,PATCH --ask` makes every write wait for an approver.
+4. **People sign in** on their own computers: `yougori access signin --invite access-invite:… --username grace`, or `--sso`.
+5. **Agents connect**: an MCP client that runs local stdio servers uses `{"mcpServers":{"yougori-access":{"command":"yougori","args":["access","mcp"]}}}`.
+6. **Approvers decide**: `yougori access requests`, then `yougori access approve REQUEST_ID` (once) or `--hours N` (that person may repeat that method on that credential without asking until it lapses), or `yougori access deny REQUEST_ID --reason TEXT`. The desktop page shows the same with what will be sent, and Yougori notifies approvers when a request starts waiting.
+7. **Back it up**: `yougori access backup --output D:/backups/acme.backup` writes one encrypted file (people, credentials, rules, activity and both keys) sealed with a passphrase. `yougori access restore-backup FILE --ip NEW_IP --yes` runs it on another computer; people paste the new invite and their computers move without a password.
+8. **Deleting**: `yougori access delete --yes` pauses the grid for three days (nobody signs in or uses it; `restore` takes it back), then deletes it. `--when now` wipes its credentials, people and rules at once; it keeps telling people's computers for 30 days, which then sign out. `--when forget` removes it at once.
+
+## For agents
+
+The MCP server offers four tools:
+
+- `list_company_access`: the credentials the person may use, each with destinations, whether it is sent as short-lived tokens, and whether a use runs at once or waits for an approver. No values.
+- `company_request` `{credential, url, method?, headers?, body?}`: the hub sends it with the credential and returns `{state:"done", answer:{status, headers, body|bodyBase64, truncated}}`. Authorization headers the agent sets are dropped (and `X-Amz-Date`-style signing headers for AWS); answers hide the value and any token made from it wherever a service echoes it; `Set-Cookie` never comes back; bodies over 256 KiB are cut (`truncated: true`). When an approver decides, the call waits about 25 seconds and otherwise returns `{state:"waiting", id}`: tell the person, then use `check_company_request`.
+- `check_company_request` `{id}`: the answer once done (handed over once), a denial with its reason, or still waiting. A request waits at most 15 minutes for a decision.
+- `reveal_company_credential` `{credential, reason}`: only where a rule has `--reveal`, and an approver decides each time; minting kinds hand out a short-lived token or temporary AWS keys with `expiresAt`. Prefer `company_request`.
+
+Never ask the person for a key the Access Grid holds, and never put one in a header yourself. `yougori access use` does the same from a terminal and waits for an approver.
+
+## Activity and limits
+
+Every use (person, agent, computer, credential, method and URL without its query, and the answer's status), refusal, decision, sign-in and change goes to the activity log on the hub (`yougori access log`; the page's Activity). Each entry carries a MAC chained to the one before, keyed from the hub's sealing key: `yougori access log --verify` finds an edited, removed or inserted entry, and `--export FILE` writes the entries with their MACs for safekeeping elsewhere. Someone who controls the hub computer's account holds the key too, so keep exports where they cannot write. Limits: 1,024 people, 512 credentials, 4,096 rules, 16 destinations per credential, 20 computers per person, 16 open requests per person, 2 MB request bodies, 60 seconds per request. The hub is a single computer: keep it on and keep backups.
+
+## Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| This computer is not signed in to an Access Grid | Sign in with the invite: `yougori access signin --invite INVITE --username NAME`. |
+| Enter the six-digit code from your authenticator app | Two-step sign-in is on: add `--code` with the code your app shows. |
+| Your company requires two-step sign-in | Turn it on: `yougori access two-step on`, or sign in with `--sso`. |
+| … ended this computer's sign-in | The password changed, two-step was reset, the computer was signed out, or it went unused for 30 days: sign in again. |
+| No rule lets … use … | Nothing allows that method and path for this person: an admin adds a rule (`yougori access allow …`). |
+| A rule forbids … | A `never` rule matches; only an admin can change it. |
+| … may only be sent to … | The URL is outside the credential's destinations; use one of them, or an admin adds the destination. |
+| waiting / past the hourly limit | An approver decides; check back with `yougori access check REQUEST_ID` or `check_company_request`. |
+| The token endpoint refused / GitHub refused / AWS STS refused | The hub could not make a short-lived credential: check the credential's settings and value (`rotate-credential`). |
+| This Access Grid is paused | Its admin scheduled it for deletion; it comes back only if they restore it. |
+| … deleted its Access Grid | The admin deleted it; this computer signed out of it. |
+| Cannot reach the grid hub … or its certificate changed | The hub computer is off, not on this network, or its tunnel is down. A different certificate means a different hub: do not sign in; ask the admin. |
+| The Access Grid's keys are missing from the OS credential vault | The hub cannot read its credentials: restore from a backup, or delete it and create it again. |
+| Too many wrong passwords from this address | Ten failed sign-ins in ten minutes; wait 10 minutes. |
+| Too many wrong sign-ins for this username | Ten failed sign-ins for that username in ten minutes, from any address; wait 10 minutes. |
+| The token was for another account at the identity provider | The person is tied to the provider account they first signed in with. If that account was replaced, an admin runs `yougori access sign-out-person USERNAME --yes` to untie them; their next `--sso` sign-in ties the new one. |
+
+# One name for the four grids
+
+## One way of asking all four the same questions
+
+`yougori grids ...` is one namespace over the Closed Neo Grid (models), the Sandbox Grid (desks), the Access Grid (credentials) and Swarm Mining (research). It does not replace anything: every word the four products ship keeps working exactly as it does today, reaching exactly the handler it reached before, with no deprecation warning anywhere. This is a second door onto the same code.
+
+Twelve nouns, one wire method each: `grids_realm`, `grids_people`, `grids_computers`, `grids_share`, `grids_models`, `grids_desks`, `grids_credentials`, `grids_requests`, `grids_research`, `grids_connectors`, `grids_work`, `grids_log`. The noun is the method and the verb is `request.do`, which is the shape `desks_manage`, `access_manage`, `swarm_dispatch` and `bounty_dispatch` already use. `grid` names the grid by the company name its admin typed, by its short handle or by its id, and may be left out when exactly one grid on this computer can answer.
+
+```text
+yougori grids list                                                 # every grid on this computer, by name
+yougori grids status [--grid NAME] [--full]
+yougori grids health [--full]                                      # whether this computer's grids are healthy; --full adds a reading
+yougori grids observe [--port 7467] [--off]                        # serve /healthz and /metrics on 127.0.0.1 only, with a token shown once
+yougori grids address
+yougori grids new COMPANY --serve models|desks|credentials --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] --yes
+yougori grids join [COMPANY] --serve models|desks [--invite INVITE] [--password -]
+yougori grids password --grid NAME [--password -] --yes
+yougori grids leave --grid NAME --yes
+yougori grids delete [--grid NAME] [--when later|now|forget] --yes
+yougori grids restore [--grid NAME]
+yougori grids backup --output FILE [--passphrase -]
+yougori grids restore-backup FILE --ip THIS_PC_IP [--passphrase -] --yes
+yougori grids settings --require-two-step true|false
+yougori grids manage --file request.json --yes                     # the administrator's raw door, from a private file
+yougori grids people list | show USER | add USER [--password -] [--permission member|approver|auditor|admin]
+yougori grids people set USER [--email E] | password USER [--password -] --yes | remove USER --yes
+yougori grids people sign-in --invite INVITE --person USER [--code 123456] | sign-out --yes | sign-out-others --yes
+yougori grids people reset-two-step USER --yes | my-password [--password -] | two-step on|confirm|off [--code 123456]
+yougori grids people sso --issuer URL --client-id ID [--passwordless] --yes | sso --off --yes
+yougori grids computers list | show COMPUTER_ID | remove COMPUTER_ID --yes | forget DEVICE --yes
+yougori grids computers cloud-fallback set|clear --file - --yes
+yougori grids share show COMPUTER_ID | set COMPUTER_ID [--cpu 2] [--memory-gb 4] [--disk-gb 50] [--gpu true] [--idle-only true]
+yougori grids share drain COMPUTER_ID --yes | bring-back COMPUTER_ID
+yougori grids models list | show PLAN_ID | add --model hf.co/OWNER/MODEL [--percent 50] [--schedule TEXT] [--idle-after 10] [--quant Q]
+yougori grids models set PLAN_ID [--percent 75] | remove PLAN_ID --yes | add-key --app APP | revoke-key KEY_ID --yes
+yougori grids models gpus | add-gpu ENV_ID | remove-gpu ENV_ID --yes | stop-gpus --yes   # GPUs rented in NeoCloud
+yougori grids models add-team --team research --lead hf.co/OWNER/LEAD --workers hf.co/OWNER/WORKER --computers 5
+yougori grids models run-team TEAM --prompt TEXT | remove-team TEAM --yes
+yougori grids desks list | show DESK_ID | mine | add NAME [--person USER] [--cpu 2] [--memory-gb 4] [--size ROLE]
+yougori grids desks assign DESK_ID [--person USER] | retry DESK_ID | remove DESK_ID --yes | portal
+yougori grids desks sign-in --invite INVITE --person USER [--password -] [--code 123456] | refresh | sign-out --yes
+yougori grids desks add-image --image NAME --from URL --sha256 DIGEST | import-image --path P | remove-image IMAGE --yes
+yougori grids desks add-size NAME [--cpu 2] [--memory-gb 4] | remove-size NAME --yes | parking set|clear --file - --yes
+yougori grids credentials list | show NAME | add NAME --kind bearer|header|basic|query|oauth|github-app|aws --destination URL --value -
+yougori grids credentials set NAME [--note T] | rotate NAME [--value -] --yes | remove NAME --yes
+yougori grids credentials allow NAME [--who everyone] [--methods GET,POST] [--path /PREFIX] [--ask] [--limit 10] [--hours 24]
+yougori grids credentials remove-rule RULE --yes | use NAME URL [--request-method GET] [--header HEADER]
+yougori grids credentials reveal NAME --reason TEXT --yes
+yougori grids requests list | show ID | approve ID [--hours 4] | deny ID [--reason TEXT] | check ID
+yougori grids research list | show WORKER | check WORKER | activity WORKER | offers WORKER | details WORKER OFFER
+yougori grids research bounties WORKER | rewards WORKER | reports WORKER | messages WORKER | chat WORKER --message TEXT
+yougori grids research pause WORKER | resume WORKER [--budget-minutes 60] | stop WORKER --yes | skip WORKER OFFER
+yougori grids research leave WORKER --yes | remove WORKER --yes | memory WORKER release|keep
+yougori grids connectors list | show ID | add --file - | credential ID --file - | test ID
+yougori grids connectors provision ID --person USER | revoke ID --person USER --yes | remove ID --yes
+yougori grids work list | show WORK | cancel WORK --yes
+yougori grids log show [--since 7d] [--limit 100] | export --output FILE | verify
+```
+
+`yougori grids NOUN --help` lists that noun's verbs, built from the same table that parses them, so the help cannot drift from what works. `yougori schema grids_NOUN` is built from it too: `request.do` is the verb as typed, such as `add-key` or `bring-back`, and the request's fields are the options as typed, such as `memory-gb`.
+
+A grid's hub finds computers, model plans, API keys, desks and rented GPUs by ID, so the commands that change one take its ID (a team takes its name or ID). In words, `computers list`, `share show`, `models list`, `models gpus` and `desks list` show each one's ID beside its name, aligned. `models gpus` reads as money and work: each pod's price (or "price unknown"), what it is doing ("being stopped" until NeoCloud confirms a stop, never "stopped" before), then the latest stop outcomes newest first, with "Warning:" before a pod that may still be billing. On a computer that no longer hosts a grid, its pods are listed as stopped and kept for `remove-gpu`, and no other is offered to add. A key, a two-step secret, a token or a credential's value that a command hands over is shown in full, labelled; anything else the words cannot show ends with "Add --format json to see the whole answer."
+
+## What this door adds
+
+- **One answer.** Every command, read or write, answers with the same shape: the grid it was about, the command's own name, one sentence for a person, what changed, what it found and what to do next.
+- **Refused in words, before it runs.** A command a grid does not do is refused after the grid is found and before one argument of the command is read, so a credential sent to a models-only grid is never deserialised: "This grid does not broker credentials."
+- **A code beside the sentence, never instead of it.** The sentence is the error; errorDetails.code carries the machine's name for it, and a terminal prints the sentence alone. `--explain` adds one line with the code under it.
+- **Dry run on every change.** `--dry-run` finds the real grid on this computer, reads what it is allowed to do, builds the call the product would receive and checks it against the engine's own contract, then writes nothing. It never needs `--yes`, because nothing is written; what it would have asked you to confirm is in the answer.
+- **One command, both outputs.** `--format json` or `--format text` wins, then YOUGORI_FORMAT, then words in a terminal and JSON when piped.
+- **A name per command.** Every command gets a name a person can read aloud, such as keen-heron-3f1a. Grid Core writes that name against every event the command causes, from version seven of its database, and `Core::history_for` reads everything one command did. The four product hubs still keep their own records and none of them writes a command's name yet, so an answer from this door reports no events and says `correlated: false`, and `yougori grids log show --command NAME` refuses in words rather than answering with everything.
+
+## What is deliberately not here
+
+Starting a Swarm Mining worker keeps its own guided setup, `yougori start bounty`, with every word it has today: a worker is started in one place. Publishing a Closed Bounty keeps `yougori bounty host`, because it carries the source files with it and no option on this door can hold them. Both say so where somebody would look for them.
+
+## Stored and audited
+
+Nothing new is stored. Each grid keeps its own hub, its own record and its own keys exactly as before; this door reads and calls them. Secrets never travel in an argument: `--password -`, `--value -` and `--passphrase -` read one line from stdin, and leaving the option out asks for it without showing it. Escape or Ctrl+C at that prompt cancels and changes nothing.
+
+## Moving the four products onto Grid Core
+
+`yougori rollout ...` is how a company moves its own grids onto Grid Core, one stage at a time. It is a separate word from `yougori grids ...` because it is about this computer's deployment rather than about one grid: no grid is looked up, nothing a grid holds is changed, and every file it writes is in the operations folder beside the products' own records. One wire method carries it, `grids_rollout`, with the verb in `request.do`.
+
+Nothing here reaches a network and nothing is uploaded. This software runs on customers' own computers, so there is no fleet-wide view of anything and no switch anybody can throw from outside; every stage is local, started by the administrator at the hub, and reversible. A survey is a file on this computer, and sending it to anybody is the administrator's own act over whatever channel they already use.
+
+```text
+yougori rollout status                                             # where each of the four profiles stands
+yougori rollout survey                                             # an inventory of this computer, written to a file and sent nowhere
+yougori rollout rehearse                                           # copy every record, run the whole move on the copies, undo it again
+yougori rollout backup [--keep-for-days 90] [--stage NAME]         # copy each product's records and read every one back
+yougori rollout verify --stamp STAMP                               # check a backup taken earlier
+yougori rollout restore --product neo|sandbox|swarm|access --stamp STAMP
+yougori rollout observe                                            # both paths asked the same questions; every difference written down
+yougori rollout coverage --profile models|workspaces|research|credentials
+yougori rollout read --product neo|sandbox|swarm|access [--stamp STAMP]
+yougori rollout advance --profile PROFILE --yes                    # one stage forward
+yougori rollout back --profile PROFILE --yes                       # one stage back, with what else has to be undone by hand
+yougori rollout retire --profile PROFILE [--keep-for-days 90] --yes
+yougori rollout unretire --stamp STAMP --yes
+yougori rollout forget --stamp STAMP [--force] --yes               # the only verb that deletes anything
+```
+
+Eight stages, in order: freeze, survey, backup, rehearsal, import, observation, cutover, retire. A profile moves one stage at a time and only after the profile before it has reached its cutover, so the order is enforced rather than recommended. The order is models, then workspaces, then research, then credentials, and `docs/grid-core/rollout.md` says why.
+
+All four products have a bridge onto the core, and each rehearses, imports, rolls back and compares. Two of them carry less than the product holds, and say so rather than hiding it: a bounty host becomes a research grid of its own whose scope arrives a draft, because freezing one needs a second person to agree and a bounty host has one administrator, and no Access Grid credential value is carried at all, so every credential arrives naming a vault entry somebody has to fill in before it can be used. What each cannot carry is in `docs/grid-core/rollout.md` and in the modules themselves.
+
+No command in this build performs an import or takes one back out, for any of the four. The Closed Neo Grid and the Sandbox Grid have bridges, and the only thing that runs them is `yougori rollout rehearse`, against copies. `yougori rollout advance --profile models --yes` records that an administrator considers themselves at the import stage; it builds no realm and moves nothing, and it says so in what it prints.
+
+`yougori rollout retire` moves a product's live record aside, and it is judged by the stage machine: a profile whose turn it is not, and one whose old record is still inside its retention, are refused in the same words `advance` uses. `yougori rollout unretire` puts the record back and the stage with it.
+
+`yougori rollout read` opens only records under this computer's own Yougori folder, named by product and optionally by a retired stamp. A record found anywhere else is copied in first, which is one step and keeps this door from being a way to read any file on the computer.
+
+## Troubleshooting the rollout
+
+| Message | Cause and fix |
+|---|---|
+| models moves before workspaces | The four products move in a fixed order and the one before this has not reached its cutover yet. `yougori rollout status` shows where each stands. |
+| models moves before research | The four products move in order, and an earlier one has not reached its cutover yet. Finish that one, or take it back a stage, before this one leaves the rehearsal. |
+| This is not a backup | A file did not read back with the loader that wrote it after being copied. Nothing was recorded as a backup; look at what the message names before going further. |
+| This record is kept until NUMBER | The retention has not run out. `--force` overrides it, and whoever uses it should record why. |
+| There is already a record at that path | Putting a record back never writes over one that is there. Move the one in the way first, with the product stopped. |
+| A stamp is the folder's own name | `--stamp` takes the name of one folder under the operations folder, never a path. |
+
+## Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| More than one grid could answer | Two or more grids on this computer can do what you asked. Name one with --grid, by its company name or its short handle; `yougori grids list` shows both. |
+| There is no grid called NAME on this computer | The name, the handle and the id are all accepted; `yougori grids list` shows what there is. |
+| This grid does not broker credentials | That grid serves models, hosts desks or runs research instead. Ask the grid that holds credentials, or leave --grid out and let the one that can answer. |
+| This computer is not in a grid yet | Start one with `yougori grids new COMPANY --serve models --ip THIS_PC_IP --yes`, or join one with `yougori grids join --serve models --invite INVITE`. |
+| Say what this grid is for with --serve | A grid that does not exist yet cannot be looked up, so the words say what it is for: `--serve models`, `--serve desks`, `--serve credentials` or `--serve research`. |
+| Never type the password into the command | Leave the option out to be asked for it, or use --password - to read one line from stdin. Process listings and shell history keep arguments. |
+| This grid is being deleted | A deletion is waiting. `yougori grids restore --grid NAME` undoes it; after that the grid takes changes again. |
+| A research worker is started in one place | `yougori grids research` reads and steers workers; `yougori start bounty` starts one. |
+| There is no such thing as grids NOUN VERB | `yougori grids NOUN --help` lists what that noun takes. |
 
 # Ports, domains, connections and cloud
 
@@ -972,7 +1474,7 @@ yougori logs ENV --last-error
 yougori logs ENV --follow
 ```
 
-- `logs` returns a bounded recent window as JSON with `logs`, `nextCursor` and `truncated`. Pass the returned `nextCursor` as `--cursor` on the next read; rotation is explicit. `--tail` (0–262144 bytes) and `--limit` (1–65536) bound the window; each option may appear once.
+- `logs` returns a bounded recent window as JSON with `logs`, `nextCursor` and `truncated`. Pass the returned `nextCursor` as `--cursor` on the next read; rotation is explicit. `--tail` (0–262144 bytes) and `--limit` (1–65536) bound the window; each option may appear once. The window starts `--tail` bytes from the end, so `truncated` means newer output did not fit; in a terminal the view says so and prints the `--cursor` command that reads on.
 - `--last-error` returns only the last line of the window that mentions error, failed, panic or exception. `--follow` streams new output (raw text in a terminal, one JSON envelope per window when piped) until Ctrl+C, which detaches without stopping the environment.
 - Logs redact protected deployment secrets.
 
@@ -988,7 +1490,7 @@ yougori terminal close ENV_ID --session-id term-build1
 yougori terminal install ENV_ID --session-id term-build1 --tool codex --yes
 ```
 
-- `terminal ENV` (a person's terminal) opens a clean screen with the environment name and resources and attaches a shell; it does not start a stopped environment. `--project` starts in `/workspace` with `/yougori/venv` active; `--container NAME` enters a Docker container on a connected cloud server. Ctrl+], `exit` or Ctrl+D at an empty prompt return without stopping the environment ("NAME keeps running").
+- `terminal ENV` (a person's terminal) opens a clean screen with the environment name and resources and attaches a shell; it does not start a stopped environment. `--project` starts in `/workspace` with `/yougori/venv` active; `--container NAME` enters a Docker container on a connected cloud server. Ctrl+], `exit` or Ctrl+D at an empty prompt return without stopping the environment ("NAME keeps running"). While the shell is set up a spinner shows; Ctrl+C there cancels (exit 130), closes the half-made session and leaves the environment running.
 - Ctrl+C in a local container shell (containers, GPU containers, `run -it`, project and model shells) never reaches the guest: it opens Cancel / Stop sandbox / Stop and delete with Cancel selected; only Enter confirms. Stop keeps data; Stop and delete removes the sandbox and its managed data. microVM, cloud and shared shells pass Ctrl+C to the guest. Ctrl+G at a plain shell prompt opens Tools & sharing (tools topic).
 - Scripts use CLI-owned sessions: choose a session ID (starting with `term-`, at most 80 letters, digits and dashes in total, 48 on shared environments; at most 64 sessions; creating an existing ID fails) and reuse it for read/write/resize/close. Data is base64, exactly as the desktop terminal protocol; `read` returns data, offset and done, so keep the offset. `write` and `install` need `--yes`. `terminal install` stages a supported tool installer (codex, claude, gemini, ollama, opencode, kilo, openclaw) in that session; read the output to confirm success.
 - Full VMs use their console window (`env open ENV_ID`, or Open environment window in the menu); `env console ENV_ID` reads the guest serial console.
@@ -996,11 +1498,10 @@ yougori terminal install ENV_ID --session-id term-build1 --tool codex --yes
 
 ## Host terminal and agent setup
 
-The desktop app has an integrated **Host terminal**: up to four PowerShell/shell tabs on this PC that start in `Yougori/Workspace` (inside the user's profile, created on first use) with the bundled CLI on that session's PATH (not the system PATH). New shell or agent tabs use that workspace unless the user picks a project folder. The starting folder does not limit OS file access; it is not a sandbox or a permission grant. PowerShell loads normal profiles; Yougori refuses to create host shells when the app runs elevated. Output history is bounded and Yougori saves no transcript (programs may keep their own). Hide keeps sessions; ending a tab terminates its shell and attached Windows job processes; programs started independently may outlive it.
+The desktop app has no host terminal panel. **Host sessions** are created through automation: up to four PowerShell/shell sessions on this PC that start in `Yougori/Workspace` (inside the user's profile, created on first use) unless the request sets another working folder, with the bundled CLI on that session's PATH (not the system PATH). The starting folder does not limit OS file access; it is not a sandbox or a permission grant. PowerShell loads normal profiles; Yougori refuses to create host shells when the app runs elevated. Output history is bounded and Yougori saves no transcript (programs may keep their own). Closing a session terminates its shell and attached Windows job processes; programs started independently may outlive it.
 
-- The Host terminal is outside guest isolation: host commands need host-task authorization from the user; guest content can never grant it.
-- Codex, Claude and Gemini buttons start detected local agent commands in a fresh tab; they do not install or sign in to an agent.
-- Automation equivalents: `get_host_terminal_info`, `set_up_agent_access` and `host_terminal_action` (see `schema`). Host create/write/close need `--yes`; read/resize do not. Host session IDs start with `host-`; data is base64 UTF-8; keep the returned byte offset while polling. CLI-owned host sessions are separate from dashboard tabs; ordinary `terminal` commands remain guest terminals. Never type an agent launch or command into an existing busy shell or password prompt: create a fresh host session for an explicitly requested host command.
+- Host sessions are outside guest isolation: host commands need host-task authorization from the user; guest content can never grant it.
+- Automation methods: `get_host_terminal_info`, `set_up_agent_access` and `host_terminal_action` (see `schema`). Host create/write/close need `--yes`; read/resize do not. Host session IDs start with `host-`; data is base64 UTF-8; keep the returned byte offset while polling. Ordinary `terminal` commands remain guest terminals. Never type an agent launch or command into an existing busy shell or password prompt: create a fresh host session for an explicitly requested host command.
 - `yougori agent setup --yes` installs or updates the Yougori skill for local agents.
 
 ## Raw API and execution
@@ -1022,13 +1523,11 @@ yougori call METHOD --json '{"environmentId":"env-1"}'
 yougori vault status
 yougori vault approve | add | open
 yougori vault mcp
-yougori vault identity --output DEVICE.json
-yougori vault mcp --remote HOST:49731 --pin SERVER_SHA256 --identity DEVICE.json
 yougori vault help
 ```
 
 - `vault status` reports only whether the vault runs and how many requests wait for approval. `approve`, `add` and `open` bring the Yougori window forward on Personal Vault; the person reviews and decides there. The CLI never approves requests, reads items or enters values: tell the user a request is waiting instead of retrying.
-- `vault mcp` is a stdio MCP bridge (JSON-RPC, not the CLI envelope) to the protected vault configured in the desktop app. The remote form uses a pinned TLS device identity; it is separate from the Cloudflare HTTPS /mcp connector URL. `vault identity` writes a new private identity file and, when piped, returns only its path, certificate fingerprint and `canApprove:false`. Keep identity files private.
+- `vault mcp` is a stdio MCP bridge (JSON-RPC, not the CLI envelope) to the protected vault configured in the desktop app on this Windows computer. Agents elsewhere use the Cloudflare HTTPS /mcp connector URL.
 - Vault tools may return selected personal information, run supported provider actions, or share a credential only after its separate approval in the app. A shared credential is visible to the receiving agent; never claim it stays secret from that agent.
 
 ## Monitoring, audit and lockdown
@@ -1044,7 +1543,7 @@ yougori unlock ENV|--all --yes
 - `audit` lists the newest records oldest first: `--since` takes `2026-10-11T08:00:00Z`, a UTC date (`2026-10-11`) or `90s`/`30m`/`2h`/`7d`; `--limit` 1–1000 (default 50). Give a deleted environment by its ID.
 - `monitor` (`--once` or piped: one JSON snapshot) shows per environment: blocked attempts in the last 10 minutes to reach PC ports, link-local/metadata addresses (169.254.169.254) or the Internet while it is off; new outbound connections per minute; data sent to the Internet in the last hour; CPU and memory against the allocation; alerts and containment. MicroVMs (including tool sandboxes) and VMs are measured exactly by the host network filter; standard and GPU containers show CPU and memory (container network counters and process-limit hits need a guest agent update, shown as `—`). `status` and `top` add a SECURITY column.
 - Kill switches act only on clear policy violations. Scanning PC ports (24 distinct ports within 60 s) or link-local/metadata addresses (12 addresses or 120 attempts within 60 s) cuts that environment's Internet; smaller bursts only alert (Windows notification, `monitor`, `status`). Connection floods, upload volume and sustained CPU/memory saturation only alert. Nothing automatic ever stops, deletes, resets or restarts an environment; shells, file writes, builds, downloads and package installs never trigger.
-- `lockdown ENV --yes` cuts Internet and pauses; stopped environments stay offline. `--all` covers every local container, GPU container, microVM and VM. While locked down or cut off by a kill switch, starting, resuming, turning Internet on, publishing ports, sharing PC folders and creating remote, LAN or download links are refused. `unlock ENV --yes` restores exactly what containment changed and holds automatic kill switches for that environment for 30 minutes. Both are safe to repeat; review `yougori audit ENV` first and never unlock to finish a task without the user.
+- `lockdown ENV --yes` cuts Internet and pauses; stopped environments stay offline. `--all` covers every local container, GPU container, microVM and VM. While locked down or cut off by a kill switch, starting, resuming, turning Internet on, publishing ports, sharing PC folders and creating remote, LAN or download links are refused. Links it already has keep their addresses but answer nothing: public links, local-network ports, LAN, desk and remote shares and download links. Open connections close within a second and remote recipients are signed out. After unlock they answer again at the same addresses, except a quick link on an environment the lockdown paused, which gets a new address. `unlock ENV --yes` restores exactly what containment changed and holds automatic kill switches for that environment for 30 minutes. Both are safe to repeat; review `yougori audit ENV` first and never unlock to finish a task without the user.
 - Policies are `securityMonitoring` in `yougori settings get`; change them with `settings patch` and `{"patch":{"securityMonitoring":{...}},"expectedRevision":N}`. Fields: `enabled`, `notifications`, `hostPortProbe` and `metadataProbe` (default `cutInternet`), `pidsLimit`, `connectionRate`, `egressVolume`, `cpuSaturation` (default `alert`) and `memorySaturation` (`off` or `alert`). Values are `off`, `alert`, `cutInternet` or `pause`; `pause` (after a cut, if the violation continues) is opt-in. Omitted fields take their defaults; policy changes are audited.
 
 ## Troubleshooting
@@ -1060,7 +1559,7 @@ yougori unlock ENV|--all --yes
 | YOUGORI_UNSUPPORTED_EXECUTION_CAPABILITY: --guest-timeout requires … | That provider (SSH, shared, full VM) has no asynchronous guest jobs: drop the flag. |
 | A local Personal Vault requires Windows / Personal Vault needs the Yougori app | The vault broker runs in the Windows desktop app; engine-only installs cannot approve requests (they expire after 120 s). |
 | Yougori is running as administrator… | Host shells are refused while the app runs elevated: restart it normally. |
-| Close a host terminal first (maximum four sessions) | Four host shells exist (dashboard and CLI together): close one. |
+| Close a host terminal first (maximum four sessions) | Four host shells exist: close one. |
 | ENV is locked down / internet cut (…) since … | A lockdown or kill switch contains it: review `yougori audit ENV` and `yougori monitor ENV` with the user, then `yougori unlock ENV --yes`. |
 | `audit --verify` reports problems | Records were edited, removed or truncated outside Yougori: keep a copy of the log folder it names; new records still chain on. |
 
@@ -1092,7 +1591,7 @@ yougori claude -- --continue
 - New sandboxes first show CPU and RAM sliders (defaults 2 CPU and 4 GB, capped by the host); `--cpu` and `--memory` skip them. Cancelling creates nothing.
 - Every launch, microVM or container, new or reused, with or without `--share`, asks whether to copy this PC's sign-in for the tool ("Use your Claude Code sign-in from this computer?"; default No; OpenClaw offers only No; it copies only the tool's own credential file, such as `~/.codex/auth.json` or `~/.claude/.credentials.json`) and whether to put a project on the internet now (default Not yet). `--no-credentials` skips the sign-in question (nothing is copied) and `--no-public` the internet one (access stays as it is). No host folders or credentials are copied otherwise. The tool itself runs attached to the terminal, so a person must be there.
 - Installation runs in a separate quiet terminal with a progress bar; typing during setup is discarded; failures show a short error summary. The CLI then prints `Reconnect: yougori TOOL` when the plain shortcut reuses that sandbox, otherwise `Reconnect: yougori TOOL --environment NAME` (the ID when the name is ambiguous or needs quoting), and opens the tool. A non-zero tool exit is reported as an error.
-- Ctrl+] closes only this terminal session; the sandbox and its files stay (the attached program may stop). Ctrl+C opens the sandbox stop menu (Cancel / Stop sandbox / Stop and delete) for container and microVM sandboxes; Cancel returns to the tool. Questions come in two groups, before the sandbox exists (GPU, CPU and memory) and after installation (sign-in, public access, sharing); within a group every question after the first offers Back (Esc or the Back row), and Esc on a group's first question leaves without opening the tool. Engine start, loading state and starting or creating the sandbox show spinners, and Ctrl+C there ends the command. Ctrl+C during a sign-in copy cancels the copy first, then opens the stop menu.
+- Ctrl+] closes only this terminal session; the sandbox and its files stay (the attached program may stop). Ctrl+C opens the sandbox stop menu (Cancel / Stop sandbox / Stop and delete) for container and microVM sandboxes; Cancel returns to the tool. Questions come in two groups, before the sandbox exists (GPU, CPU and memory) and after installation (sign-in, public access, sharing); within a group every question after the first offers Back (Esc or the Back row), and Esc on a group's first question leaves without opening the tool. Engine start, loading state and starting or creating the sandbox show spinners, and Ctrl+C there ends the command (exit 130); a sandbox still being created is removed again once the engine finishes (after a second Ctrl+C, which quits at once, `yougori rm NAME --yes` removes it). If the public link or teammate access cannot be set up, the tool still opens: what did not happen, and how to do it later, is shown first and stays until Enter, and the command ends with an error when `--share` was given. Ctrl+C during a sign-in copy cancels the copy first, then opens the stop menu.
 - `--dry-run` needs no terminal or engine and changes nothing. It reports `{dryRun, tool, isolation, request, environment, reuse, arguments, share, gpuChoiceRequired, resourceChoicesRequired, publicAccessPrompt, credentialImportPrompt}`; `isolation` is `microvm`, `container`, or null with `--environment`, and `credentialImportPrompt` is false only with `--no-credentials`.
 - OpenClaw starts its interactive `onboard`. Tool sandboxes are ordinary environments: `yougori ps` (`--type microvm` lists microVM sandboxes), `exec`, `stop` and `rm` work on them.
 
@@ -1115,8 +1614,8 @@ yougori codex --share --dry-run
 
 - Sharing gives teammates full control of the sandbox: files, installed tools, sign-ins and its connected access. Create it only with the user's explicit authorization for those people and that expiry.
 - Printed invitations contain passwords and stay in scrollback. Send each person only their own command.
-- At most 128 active recipients across all shares. Existing active recipients also become reachable when the gateway starts. A partial failure lists the grants already created: inspect (`yougori remote list`) before retrying.
-- Inside a plain shell, Ctrl+G opens Tools & sharing: install a tool, share a folder (view or edit) or the whole environment (full control) for 1 hour, 24 hours or 7 days, and manage or revoke recipients.
+- At most 128 active recipients across all shares. Existing active recipients also become reachable when the gateway starts. If any step fails, the access that attempt created is taken back, so nothing is shared; anyone whose access could not be taken back is named with the `yougori remote revoke SHARE_ID --yes` command that removes it.
+- Inside a plain shell, Ctrl+G opens Tools & sharing: install a tool, share a folder (view or edit) or the whole environment (full control) for 24 hours (the default), 7 days or 1 hour, and manage or revoke recipients. A share prints its link, the username and the `yougori connect` command to send; Yougori asks them for the password, so send it separately. Its questions work like the rest of the CLI: arrows and Enter, Back (Esc or the Back row) on every question, and Ctrl+C returns to the shell.
 
 ## Join a shared sandbox
 
@@ -1124,7 +1623,7 @@ yougori codex --share --dry-run
 yougori connect 'https://HOST/share/share-ID' 'USERNAME'
 ```
 
-`yougori connect LINK USERNAME [PASSWORD]` opens a shell in the owner's sandbox in the recipient's terminal (`/workspace`); leave out PASSWORD to type it privately. It needs a terminal even with a password. The link must be the complete HTTPS share link. The connection is saved as a shared environment (`yougori ps --type shared`); Ctrl+C is sent to the remote shell. The owner must keep Yougori, the sandbox and the gateway running; a quick link may change when the gateway restarts. Scripts use `yougori remote connect --file -` instead.
+`yougori connect LINK USERNAME [PASSWORD]` opens a shell in the owner's sandbox in the recipient's terminal (`/workspace`); leave out PASSWORD to type it privately. It needs a terminal even with a password. The link must be the complete HTTPS share link. The connection is saved as a shared environment (`yougori ps --type shared`); Ctrl+C is sent to the remote shell. Ctrl+C while connecting lets the connection finish and closes it again (exit 130); a shared sandbox already in the list stays. The owner must keep Yougori, the sandbox and the gateway running; a quick link may change when the gateway restarts. Scripts use `yougori remote connect --file -` instead.
 
 ## Remote sharing commands
 
@@ -1170,13 +1669,13 @@ Current engines and guest agents stream terminal bytes over persistent connectio
 
 # Swarm Mining bounty workers
 
-Contents: What it is · Rules · Set up a worker · Scripted setup · States and the live screen · Offers · Manage workers · Practice bounty · Troubleshooting
+Public builds allow source, sandbox and practice targets. Live URLs require the private edition, including through CLI/API.
 
 ## What Swarm Mining is
 
-Swarm Mining turns this PC into a bug-bounty hunter for companies that publish authorized research bounties on yougori.com. `yougori start bounty` prepares a **worker**: a private local model (a GGUF checkpoint run by llama.cpp) plus an OpenCode agent in an isolated sandbox. The worker waits for offers. After the user accepts one, it investigates the company's source in an offline test sandbox and reports evidence. Publishers promise USDC rewards and pay winners directly.
+`yougori start bounty` prepares a **worker**: a private local GGUF model running in llama.cpp and a sandboxed Hermes agent. It waits for authorized research offers on yougori.com. After the user accepts one, it investigates the company's source offline and reports evidence. Publishers promise USDC rewards and pay winners directly.
 
-Custom or uncensored GGUF checkpoints must pass the same tool-calling check; labels guarantee neither research quality nor a report. Approved reads and managed bounty tools need no OpenCode approval. A turn allows 12 model steps and 15 minutes; an approved check five minutes, with lease renewal and authorization checks. The accepted budget can end work earlier.
+Custom or uncensored GGUF checkpoints must pass the same tool-calling check; labels guarantee neither research quality nor a report. Approved reads and managed bounty tools need no Hermes approval. A turn allows 32 model steps and 15 minutes; an approved check five minutes, with lease renewal and authorization checks. The accepted budget can end work earlier.
 
 - Waiting generates no agent tokens and accepts nothing. Work starts only after the user's explicit acceptance.
 - The worker's model API stays private: never add Network sharing flags (`--now`, `--nowfree`) or a tunnel to it.
@@ -1201,14 +1700,14 @@ yougori start bounty --model hf.co/OWNER/MODEL-GGUF --quant Q4_K_M
 
 1. Sign in once (`yougori login`; a person approves the device code in the browser).
 2. Pick a Hugging Face **GGUF** repository (llama.cpp format) whose model supports agent tool calling. `model preflight` must report the `yougori-llama-cpp` runner; interactive setup refuses anything else before downloading.
-3. Once a worker exists, plain `start bounty` reconnects to the worker set up last (newest `createdAt`), reusing its downloaded model and OpenCode sandbox without setup questions. A preparing, waiting or working one is only opened, never restarted. A failed one asks **Retry** (keeps its files), **Set up again**, **Open NAME** (the newest worker that did not fail) or **Cancel**. `--change`, `--model` or any other creation option (`--cpu --memory --gpu --storage-drive --workspace-quota --name --quant --release-memory --keep-loaded --platform-url`) sets up a new worker; `--change` suggests the current worker's model and drive, and the current worker keeps running until `bounty stop`. `--change` cannot be combined with `--worker`.
+3. Once a worker exists, plain `start bounty` reconnects to the worker set up last (newest `createdAt`), reusing its downloaded model and Hermes sandbox without setup questions. A preparing, waiting or working one is only opened, never restarted. A failed one asks **Retry** (keeps its files), **Set up again**, **Open NAME** (the newest worker that did not fail) or **Cancel**. `--change`, `--model` or any other creation option (`--cpu --memory --gpu --storage-drive --workspace-quota --name --quant --release-memory --keep-loaded --platform-url`) sets up a new worker; `--change` suggests the current worker's model and drive, and the current worker keeps running until `bounty stop`. `--change` cannot be combined with `--worker`.
 4. A new setup asks for a GGUF model (`hf.co/OWNER/MODEL`, a huggingface.co URL or `OWNER/MODEL`; not `yg/`), suggesting `hf.co/thesamgodson/Gemma-4-12B-Hephaestus-GGUF:Q4_K_M`. A `:QUANT` suffix selects the GGUF variant, including `:IQ4_XS`; conflicting `--quant` values are rejected. It checks the model and hardware: a repository without GGUF files, without access (**Sign in to Hugging Face**) or too large for this PC's memory shows **This model needs attention**.
 5. Then it asks which drive stores the model, its runtime and the worker's sandboxes, with free space and the approximate need (a model volume of at least 20 GB plus the workspace quota); read-only drives are disabled, the fixed drive with the most free space is recommended, and `--change` preselects the current worker's drive. One drive needs no question; `--storage-drive PATH` answers it. A model already downloaded on that drive with the same settings is reused; another drive downloads it again.
-6. Quick setup is one screen: **Prepare** (default), **Customize** or **Cancel**. Recommended: 4 CPU, memory estimated from weights plus overhead and 4 GB for agent/test sandboxes (minimum 8 GB; about 16 GB for the default Gemma Q4_K_M), the chosen drive, the NVIDIA GPU only when this PC passes the CUDA checks of `yougori gpu status` (otherwise CPU), a 20 GB workspace, the model loaded only for work, name "Bounty worker". Any of `--gpu --cpu --memory --workspace-quota --name --release-memory --keep-loaded` skips this screen. Customize preselects the same GPU or CPU choice and ends on a confirm screen with Cancel preselected. Explicit resource values stay; scripts should pass enough `--memory` for their checkpoint.
+6. Quick setup is one screen: **Prepare** (default), **Customize** or **Cancel**. Recommended: 4 CPU, memory estimated from weights plus overhead and 4 GB for agent/test sandboxes (minimum 8 GB; about 16 GB for the default Gemma Q4_K_M), the chosen drive, the NVIDIA GPU only when this PC passes the CUDA checks of `yougori gpu status` (otherwise CPU), a 20 GB workspace, the model loaded only for work, and a memorable name such as keen-heron that no other worker on this computer answers to (keen-heron-2, -3 when needed). Any of `--gpu --cpu --memory --workspace-quota --name --release-memory --keep-loaded` skips this screen. Customize preselects the same GPU or CPU choice and ends on a confirm screen with Cancel preselected. Explicit resource values stay; scripts should pass enough `--memory` for their checkpoint.
 7. Esc returns to the previous question, keeping its answer; Ctrl+C stops any wait. During preparation Ctrl+C offers Cancel / Stop preparation / Back to terminal; Q, Esc or Ctrl+] detach while it continues in the engine and print the reconnect command. From the live screen, an accepted bounty's preparation offers Back to the waiting view instead.
 8. When the worker is live, Yougori offers a practice bounty, then opens the live screen.
 
-Each worker gets a short name from its ID, such as `keen-heron`, used by hints, tables and the live screen. WORKER and `--worker` accept it, the worker's own name (any case), its ID or 4+ leading hex digits of the ID; unknown or ambiguous names fail with the list of workers. JSON keeps `id` and adds `handle`.
+New workers get unique names like `keen-heron` (adding -2, -3 when needed); older workers keep their ID-derived names. WORKER and `--worker` accept the name (case-insensitive; spaces match hyphens), short handle, ID or 4+ leading ID hex digits. Unknown or ambiguous names fail with the worker list. JSON keeps `id` and `handle`.
 
 Limits and resources: `--cpu` 4–255, `--memory` 8–1024 GB, `--workspace-quota` 4–1024 GB, `--name` 2–64 characters, `--gpu nvidia|metal|cpu`. The model gets the worker's CPU minus 2 and memory minus 4 GB; the agent sandbox 1 CPU, 2 GB memory and 2 GB disk; the offline test sandbox 1 CPU, 2 GB memory and the workspace quota minus 2 GB (at least 2 GB). The model loads only for work (an accepted bounty, the user's chat or the practice) and is unloaded while the worker waits, freeing GPU and model memory; the next job reloads it from disk. `--keep-loaded` keeps it loaded, as does another worker sharing that model that keeps it loaded, a pin or another use; `--release-memory` states the default. `--platform-url` must equal the engine's configured website (`YOUGORI_NETWORK_URL`, default https://yougori.com).
 
@@ -1221,7 +1720,7 @@ yougori start bounty --model hf.co/OWNER/MODEL-GGUF --dry-run
 ```
 
 - When stdout is not a terminal, `start bounty` needs `--yes` and `--no-wait`; without `--model` or `--worker` it reconnects to the saved worker ("No saved worker on this computer. Supply --model hf.co/OWNER/MODEL-GGUF to prepare one." when there is none) and returns a worker the engine already runs without sending a request; a new worker also needs a signed-in account, otherwise "Connect your account first with yougori login. No worker was created."
-- Script defaults: 4 CPU, 8 GB, 20 GB workspace, model loaded only for work, the engine's default drive, and the GPU from the CUDA checks of `yougori gpu status`: `nvidia` only when all of them pass, otherwise `cpu` (also when the engine cannot run them). `--gpu nvidia|metal|cpu` skips the check and is kept. The engine makes the same choice for a raw `swarm_dispatch` `prepare` without `gpu`; Native Mac builds use `model compute` to select `metal` when verified, otherwise native `cpu`. Native Mac acceptance remains pending.
+- Script defaults: 4 CPU, RAM estimated by the engine from the selected model weights plus overhead and 4 GB for agent/test sandboxes (minimum 8 GB), 20 GB workspace, model loaded only for work, the engine's default drive, and the GPU from the CUDA checks of `yougori gpu status`: `nvidia` only when all of them pass, otherwise `cpu` (also when the engine cannot run them). `--gpu nvidia|metal|cpu` skips the check and is kept. The engine makes the same choice for a raw `swarm_dispatch` `prepare` without `gpu`; Native Mac builds use `model compute` to select `metal` when verified, otherwise native `cpu`. Native Mac acceptance remains pending.
 - `--no-wait` returns as soon as preparation starts, with nothing but the JSON on stdout: `{"version":2,"ok":true,"result":{"worker":{…,"handle":…,"state":"preparing"},"background":true,"next":"…"}}`. It never waits for readiness: poll `yougori bounty status ID` until `state` is `ready_waiting` (or `failed` with `error`); downloads can take up to an hour and continue after the CLI exits. With `--worker ID` it sends one resume request and returns that worker (`background` only when preparation restarts). In a terminal without `--yes`, `--no-wait` shows the setup screens, then returns the same way.
 - `--dry-run` prints the request without contacting the engine (WORKER stays as typed). Setup never accepts an offer.
 - Runs with `--model`, `--change` or other creation options create a new worker (ID `worker-` plus 32 hex digits; at most 32 per PC, failed ones included). Plain runs reuse the saved worker; retry a specific one with `--worker WORKER`; remove failed extras with `yougori bounty delete WORKER --yes`.
@@ -1230,10 +1729,10 @@ yougori start bounty --model hf.co/OWNER/MODEL-GGUF --dry-run
 
 | Engine state | Shown as | Meaning |
 |---|---|---|
-| preparing | preparing | checking the model, downloading and loading it, testing tool calling, building the OpenCode sandbox (its network is then turned off), registering |
+| preparing | preparing | checking the model, downloading and loading it, testing tool calling, building the Hermes sandbox (its network is then turned off), registering |
 | ready_waiting | live | waiting for offers; refreshes credentials and answers chat about every 15 s; investigates nothing |
 | preparing_bounty | preparing bounty | an offer was accepted here or on the website: verifying the source (at most 4000 files, 8 MiB each, 64 MiB total) and building the offline test sandbox |
-| running | working | investigating in bounded turns (15 minutes, 12 steps); company setup/test commands run offline for up to 5 minutes with authorization checks and task lease renewal; the accepted work budget can stop either earlier |
+| running | working | investigating in bounded turns (15 minutes, 32 steps); company setup/test commands run offline for up to 5 minutes with authorization checks and task lease renewal; the accepted work budget can stop either earlier |
 | awaiting_review | report ready | report policy `review` only: a finished draft waits for the user (its ID is in `reviewReports`) while the agent keeps investigating; `bounty submit` returns the worker to running |
 | paused | paused | by the user, by lapsed authorization, deadline or budget, by changed terms ("accept a new version"), by a runtime error (`error` is set), or by an engine restart (`restored: true`) |
 | stopped | stopped | both sandboxes stopped and kept |
@@ -1242,7 +1741,7 @@ yougori start bounty --model hf.co/OWNER/MODEL-GGUF --dry-run
 - A paused worker with an error still shows as paused: always read `error`.
 - Every engine restart pauses all workers that were preparing, waiting or working, with `"restored": true` and the stage "Paused when the Yougori engine restarted…". Nothing runs until the user resumes each one: `yougori bounty resume ID` (or P in the live screen). `bounty workers` and `bounty status` print that command. Workers paused before the restart keep their own reason.
 - With report policy `review`, a finished draft sets the state to `awaiting_review` and adds its report ID to `reviewReports`. Read it with `bounty reports WORKER` (its state there is `draft`) and send it only on the user's decision with `bounty submit WORKER REPORT_ID --yes`. A paused worker keeps listing the draft; accepting a new bounty or leaving clears the list, while the drafts stay in `bounty reports`.
-- The live screen appears only in an interactive `start bounty`, after setup. It draws a pulsing map, titled with the worker's name and short name, with its state and offer count, polling every 5 s. Keys: **O** offers, **C** chat, **P** pause/resume, **T** practice (while waiting), **L** or **Enter** watch work live (while working), **R** refresh, **Q**/Esc/Ctrl+] detach (the worker keeps running), Ctrl+C for Cancel / Pause / Stop / Stop and delete (Enter confirms; delete asks again). It is a still frame with `CI` or `YOUGORI_NO_ANIMATION`, ASCII over SSH, in non-UTF-8 locales or with `YOUGORI_ASCII=1`, and drops the map below 27 columns or 14 rows. If polling fails (site unreachable, signed out) the screen closes with the error while the worker keeps running.
+- The live screen appears only in an interactive `start bounty`, after setup. It draws a pulsing map, titled with the worker's name, and the name to type for it when that differs, with its state and offer count, polling every 5 s. Keys: **O** offers, **C** chat, **P** pause/resume, **T** practice (while waiting), **L** or **Enter** watch work live (while working), **R** refresh, **Q**/Esc/Ctrl+] detach (the worker keeps running), Ctrl+C for Cancel / Pause / Stop / Stop and delete (Enter confirms; delete asks again). It is a still frame with `CI` or `YOUGORI_NO_ANIMATION`, ASCII over SSH, in non-UTF-8 locales or with `YOUGORI_ASCII=1`, and drops the map below 27 columns or 14 rows. If polling fails (site unreachable, signed out) the screen closes with the error while the worker keeps running.
 
 ## Offers
 
@@ -1259,10 +1758,13 @@ yougori bounty accept WORKER OFFER --version N --terms-digest DIGEST --authoriza
 2. After approval the offer appears in `offers`. `details` returns the whole offer (OFFER may be the offer ID or the bounty ID). Take `termsVersion`, `termsDigest` and `authorizationDigest` from it and show the user `bounty.terms.serviceRules` and `bounty.terms.authorization`.
 3. `accept` runs only on the user's explicit decision. The CLI re-reads the offer and refuses if anything changed ("The offer changed…"), then fills the rules version and digest, source revision and digest and bounty ID itself. It returns at once with state `preparing_bounty` and `"background":true`; follow progress with `bounty status WORKER`.
 4. `skip` hides an offer for this worker until its terms digest changes. A worker handles one bounty at a time ("already working on a bounty. Pause and leave it before accepting another": with the user's decision, `bounty leave WORKER --yes`).
+5. In the live screen (**O**), accepting asks how findings are submitted, the work budget and then a final confirmation, each with Back; nothing is accepted, recorded or sent until **Accept and prepare**, and Ctrl+C leaves without accepting. Requesting access to a published bounty there works the same way: nothing is sent until **Request access**.
 
 Raw automation uses `yougori call swarm_dispatch --file -` with `{"request":{"action":"accept","workerId":…,"offerId":…,…}}` and must send `confirmed:true`, `rulesAccepted:true`, `rulesVersion`, `rulesDigest`, `authorizationAccepted:true`, `authorizationDigest`, `directPaymentAccepted:true`, `termsVersion`, `termsDigest`, `sourceRevision`, `sourceDigest`, `bountyId`, `reportPolicy` and `budgetMinutes`, all from that offer.
 
 ## Manage workers
+
+Dev-only API test: `call swarm_dispatch --file -` with `request:{action:"developmentModel",workerId,modelEnvironmentId,confirmed:true}` attaches a protected relay to a paused private worker. Omit `modelEnvironmentId` to restore. Keys use vault bindings; see `docs/swarm-mining.md`.
 
 ```text
 yougori bounty workers
@@ -1288,16 +1790,13 @@ yougori start bounty --worker WORKER
 - `chat` talks only to your own agent, from a private model context with short replies, and only while the worker loop runs. Interactive chat has `/pause`, `/resume`, `/status`, `/back`; `--message` takes one line of at most 8192 bytes. `messages` lists the conversation.
 - `pause` ends the agent's turn and stops the test sandbox (model memory may be released); `resume` continues after rechecking authorization. Once the accepted work budget is spent, the website refuses a plain resume; on the user's decision, `resume WORKER --budget-minutes N` (1–1440) makes the budget end N minutes from now, never after the bounty's deadline (it replaces any time still left). Raw form: `{"request":{"action":"resume","workerId":…,"budgetMinutes":N}}`. `stop` stops both sandboxes, and the model when nothing else uses it; nothing is deleted. `delete --yes` removes the sandboxes, the local record, journals and credentials; model files and server-side reports and rewards stay, and the local deletion happens even if the website call fails.
 - `memory WORKER release` unloads an idle model now and from then on loads it only for work; `memory WORKER keep` keeps it loaded after its next job. Older workers keep their choice. Returns `{"worker":…}`.
+- Active Swarm work holds GPU residency between requests. Failed model/API turns have no retry-count cutoff: the worker checks readiness, restarts a crashed model from its saved files, and restores the agent before another task. Recovery is shown separately from investigation. Pause/Stop and accepted authorization or budget limits still apply; retries do not count as completed investigations.
 - `reports` and `rewards` read the account's records (`rewards` is account-wide and adds `paymentStatusLabels`).
 - `start bounty --worker WORKER` opens a saved worker with its model and resources: a preparing, waiting or working one is only watched; a stopped or failed one resumes (one that never registered restarts preparation, reusing downloads); a paused one asks Stay paused / Resume (`--yes` resumes).
 - To cancel preparation use `bounty pause WORKER` or `bounty stop WORKER` (or Ctrl+C, Stop preparation).
 - `submit WORKER REPORT_ID --yes` sends a reviewed draft privately to the publisher; run it only after the user read that draft and approved sending it. Report IDs come from `reviewReports` or `bounty reports WORKER`. It returns `{"report":{…,"state":"complete_received","receiptId":…},"worker":…}`; submission priority counts from that receipt, so a draft that waits can lose priority. The worker leaves `awaiting_review` when no draft is left. Raw form: `{"request":{"action":"submitReport","workerId":…,"reportId":…}}`.
 - `leave WORKER --yes` ends the worker's accepted bounty on the user's decision: it stops the agent and both sandboxes, tells the website and clears the bounty from the worker (state `stopped`). Reports, drafts and reward records stay. `start bounty --worker WORKER` then waits for new offers.
 - `start --environment bounty` starts an ordinary environment named bounty.
-
-## Practice bounty
-
-`bounty practice WORKER`, or **T** in the live screen, opens a live console while the worker waits; a newly prepared worker is offered it too. The runtime starts a flawed login service (acme-login) with Node on a loopback port and plants a random per-run flag only a break-in reveals. The model attacks it **black-box** (no source, only responses) through three tools in a loop: `http_request` (the runtime sends it and returns the status and body), `record_attempt` (note a try) and `report_finding` (title, technique, flag). Requests, responses and tries stream in. A finding qualifies only when its flag matches the planted one; a rejected one returns the reason and a hint, never the flag. Typing or Esc stops the model until Enter sends your message (a suggestion; it cannot widen scope); after the end a message starts another; `/endpractice` leaves; **Ctrl+]** detaches, leaving it running. Success earns 0 PRACTICE. Piped, it follows a running practice, stops it after 5 rejected findings, 30 min or Ctrl+C, and returns `{status, reportQualifies, attempts:[{qualifies, reason, finding, seconds}], message, workerId, handle}`; `--stop` ends it. Node must be on PATH.
 
 ## Troubleshooting
 
@@ -1315,14 +1814,14 @@ yougori start bounty --worker WORKER
 | This model needs about N GB of memory, llama.cpp stopped while loading the model, Not enough GPU memory, Model setup exceeded one hour | Too big for this PC: a smaller `--quant` or model, more `--memory`, or `--gpu cpu`. |
 | NVIDIA CUDA is unavailable on this computer | No supported NVIDIA GPU/WSL 2 runtime for a worker created with `--gpu nvidia`: create it again with `--gpu cpu`, or leave `--gpu` out so the CUDA checks choose (`yougori gpu status` shows which check failed). |
 | Paused when the Yougori engine restarted. Resume to recheck authorization and continue. | The engine restarted; nothing runs until the user resumes: `yougori bounty resume ID` (or P in the live screen). |
-| Submitting requires --yes … / Leaving requires --yes … | Add `--yes` only after the user approved sending that draft or leaving the bounty. |
+| Submitting sends the report privately … / Leaving stops work on the accepted bounty … Repeat with --yes | Add `--yes` only after the user approved sending that draft or leaving the bounty. |
 | REPORT_ID is the id of a draft listed by yougori bounty reports WORKER / Report not found | Copy the report `id` (letters, digits, - and _) from `bounty reports WORKER` or `reviewReports`. |
 | Submission deadline has passed / This bounty no longer accepts new complete submissions | The draft can no longer be submitted; it stays in `bounty reports`. |
 | Model storage exceeds available capacity / at least 12 GB | Free space (`yougori storage reclaim --yes`) or choose another `--storage-drive`. |
-| OpenCode installation did not complete / Worker staging prerequisites could not be installed / test sandbox prerequisites | Setup needs internet: check connectivity, then `start bounty --worker ID`. |
+| Hermes installation did not complete / Worker staging prerequisites could not be installed / test sandbox prerequisites | Setup needs internet: check connectivity, then `start bounty --worker ID`. |
 | copy container backing image: … , Agent sandbox is stopped | Runtime problem: `yougori bounty doctor ID`, `yougori doctor`, then `start bounty --worker ID`. |
 | Start the environment before attaching a host service | Older engines failed so for workers on a non-default drive: update Yougori, then `start bounty` and Retry. |
-| No bounty worker matches … / … matches more than one worker | Use a short name or ID listed by `bounty workers`. |
+| No bounty worker matches … / … matches more than one worker | Use a name or ID listed by `bounty workers`. |
 | This computer already has 32 workers | Delete unused workers with `bounty delete ID --yes`. |
 | The offer changed / This offer is no longer available | Re-read `bounty details` and let the user decide again, or skip it. |
 | Agent turn exceeded its fifteen-minute limit; progress is preserved | The worker resumes its investigation in the next turn; check `bounty status ID`. |
@@ -1330,3 +1829,22 @@ yougori start bounty --worker WORKER
 | Explicitly extend the work budget before resuming | The accepted work budget is spent. With the user's decision: `yougori bounty resume ID --budget-minutes N` (1–1440). |
 
 Stored worker errors are shortened to 1000 characters and URLs or words after "token"/"password" show as "[credential redacted]".
+
+# Swarm Mining practice
+
+## A disposable target to practise on
+
+The work console displays Hermes text as it arrives when local raw traces are enabled. Activity events with `streamId` carry full text snapshots: replace that message, rather than appending its entire text again. Ordinary events without `streamId` keep their existing meaning.
+
+`bounty practice WORKER`, or **T** in the live screen, opens a live console while the worker waits; a newly prepared worker is offered it too. The runtime starts Northstar Ledger, a tenant reporting and export service, with Node on a loopback port, and plants one flaw: an export job's source can be edited to another tenant's report, and the exporter trusts it. The model investigates it **black-box** (no source, only responses) through tools in a loop: `http_request` (the runtime sends it, returns the status and body, and keeps a numbered receipt), `record_attempt` (note a try) and `report_finding` (title, technique, reproduction, impact, remediation, the proof it read, and the receipt IDs that show it). Requests, responses and tries stream in. A finding qualifies only when its proof matches this run and its cited receipts really show the baseline, the refusal and the disclosure; a rejected one returns the reason, never the answer. At most 192 requests: when they run out the model gets one closing turn to write up what it already proved. Typing or Esc stops the model until Enter sends your message (a suggestion; it cannot widen scope); after the end a message starts another; `/endpractice` leaves; **Ctrl+]** detaches, leaving it running. Success earns 0 PRACTICE. The whole run is bounded by 30 minutes of wall clock, waiting for your message included. Piped, it follows a running practice, stops it after 5 rejected findings, the time limit or Ctrl+C, and returns `{status, reportQualifies, attempts:[{qualifies, reason, finding, seconds}], metrics, message, workerId, handle}`; `--stop` ends it. Node must be on PATH. While the console is open, a copy of the target's source sits in a temporary folder of its own for the user to read; it is removed when they leave the practice, and on a second Ctrl+C.
+
+## Troubleshooting
+
+| Message | Cause and fix |
+|---|---|
+| This worker has no model yet; practice once it is live | Finish the worker's setup first; practice runs on its own model. |
+| This worker is already practising; stop that run first | One practice at a time: `yougori bounty practice WORKER --stop`, or /endpractice in the console. |
+| Practice needs Node on PATH | The target is a small Node service; install Node, then start the practice again. |
+| Reached the practice budget without a verified finding | The run used its 192 requests, its 30 minutes or its turns. Start another; the target is new each time. |
+| The flag does not match this run | Each run plants its own proof; cite what the target actually returned, never a guessed value. |
+| Cite 3–12 requestIds | A finding needs its own receipts: the normal case, the refusal and the disclosure. |

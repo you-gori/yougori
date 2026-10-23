@@ -19,6 +19,7 @@ mod api;
 mod chat;
 mod diagnose;
 mod domains;
+pub(crate) mod grid_setup;
 mod live;
 mod menu;
 mod neocloud;
@@ -584,7 +585,10 @@ fn model_review(
             (None, None) => String::new(),
         },
         drive.map_or_else(|| "Keeping its existing storage location".into(), |drive| format!("Storage drive: {drive}")),
-        format!("Local port {local} → model port {guest}"),
+        // Said in words rather than with an arrow: the summary is read once, before anybody
+        // has agreed to anything, and "→" is both a glyph some terminals will not draw and a
+        // direction the reader has to work out. Which end is theirs is the whole point.
+        format!("Port {local} on this computer reaches the model's port {guest}"),
         destination(network),
     ]
 }
@@ -898,7 +902,7 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
         )
         .await?;
     }
-    let id = match (&existing, allocation) {
+    let (id, called) = match (&existing, allocation) {
         (Some(env), _) => {
             let name = existing_name.clone().unwrap_or_default();
             let result = stage(
@@ -907,10 +911,9 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
                 public::reuse_model(env, &changes.clone().unwrap_or_default(), Some(local)),
             )
             .await?;
-            result["id"]
-                .as_str()
-                .ok_or("Model environment missing")?
-                .to_owned()
+            let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
+            let called = result["name"].as_str().filter(|name| !name.is_empty()).map(str::to_owned).unwrap_or(name);
+            (id, called)
         }
         (None, allocation) => {
             let allocation = allocation.unwrap_or_default();
@@ -923,23 +926,27 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
                 call("run_model",json!({"model":target,"port":local,"resources":resources})),
             )
             .await?;
-            result["id"]
-                .as_str()
-                .ok_or("Created environment did not return an ID")?
-                .to_owned()
+            let id = result["id"].as_str().ok_or("Created environment did not return an ID")?.to_owned();
+            let called = result["name"].as_str().filter(|name| !name.is_empty()).unwrap_or(&id).to_owned();
+            (id, called)
         }
     };
     let id = id.as_str();
+    // What a person types to reach this again. Every command that takes an environment resolves
+    // a name as readily as an identifier (`public::resolve`), and a name is the thing they chose
+    // and can remember; `env-7f3a9c2d-...` is neither. The identifier stands in only when the
+    // environment somehow has no name at all.
+    let called = clean(if called.is_empty() { id } else { &called }).to_string();
     if let Some(params) = publish_params(&network, id, guest) {
         stage("Publishing", |_| "Published".into(), domains::publish(params))
             .await
             .map_err(|e| if left(&e) { e } else {
-                format!("Environment {id} exists and localhost access is enabled, but publishing failed: {e}. Retry publishing on this environment; do not recreate it.")
+                format!("{called} exists and localhost access is enabled, but publishing failed: {e}. Retry publishing on it; do not create it again.")
             })?;
     }
     let local_url = format!("http://127.0.0.1:{local}/v1");
-    let script = write_chat(id)?;
-    ui::info(&format!("API credentials: yougori model access {id}"));
+    let script = write_chat(id, &called)?;
+    ui::info(&format!("API credentials: yougori model access {called}"));
     ui::info(&format!("Python chat: {}", script.display()));
     ui::gap();
     if finish == 0 {
@@ -954,10 +961,10 @@ async fn run_model(args: &[String]) -> Result<i32, String> {
         drop(session);
         drop(_raw);
         run_python(&script)?;
-        println!("Environment {id} is managed by Yougori. Use yougori ps to check its state.");
+        println!("{called} is managed by Yougori. Use yougori ps to check its state.");
     } else {
         ui::outro(&format!(
-            "Environment {id} is managed by Yougori. Use yougori ps to check its state."
+            "{called} is managed by Yougori. Use yougori ps to check its state."
         ));
     }
     Ok(0)
@@ -985,25 +992,50 @@ async fn dashboard(id: &str, local: &str, chat: bool) -> Result<bool, String> {
     let mut services_at = Instant::now();
     let mut shown: Vec<String> = Vec::new();
     let mut ready = false;
+    // When the engine first stopped answering, and whether the person has been told.
+    let mut out_of_touch: Option<Instant> = None;
+    let mut said_so = false;
     loop {
         let now = Instant::now();
         if now >= state_at {
             state_at = now + Duration::from_secs(1);
-            let state = tokio::time::timeout(
+            // A slow answer is this computer being busy, which is the most ordinary thing in the
+            // world on a machine that has just been told to load a model. It used to end the
+            // dashboard: one ten-second refresh and the whole view went, with "Usage refresh
+            // timed out" standing in for a model that was loading perfectly well. The figures go
+            // stale instead, which is said once, and the view only gives up after a full minute
+            // of silence — by then something really is wrong and saying so is the honest answer.
+            let refreshed = tokio::time::timeout(
                 Duration::from_secs(10),
                 call("refresh_host_metrics", json!({})),
             )
             .await
-            .map_err(|_| "Usage refresh timed out. The environment keeps running.")??;
+            .ok()
+            .and_then(Result::ok);
+            let Some(state) = refreshed else {
+                let since = *out_of_touch.get_or_insert(now);
+                if now.duration_since(since) >= GIVE_UP {
+                    return Err("Yougori has not answered for a minute. The model keeps running; yougori ps shows it.".into());
+                }
+                if !said_so {
+                    said_so = true;
+                    ui::warn("Yougori is busy, so these figures are a moment old. The model keeps running.");
+                }
+                if let Some(done) = answer_keys(id).await? {
+                    return Ok(done);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            };
+            out_of_touch = None;
+            said_so = false;
             let env = state["environments"]
                 .as_array()
                 .and_then(|a| a.iter().find(|e| e["id"] == id))
                 .ok_or("Environment no longer exists")?;
             if env["status"] == "error" {
-                return Err(env["lastError"]
-                    .as_str()
-                    .unwrap_or("Environment failed")
-                    .into());
+                let name = clean(env["name"].as_str().unwrap_or(id));
+                return Err(model_failure(env["lastError"].as_str().unwrap_or(""), &name));
             }
             if env["status"] != "running" {
                 ui::warn("The environment is no longer running.");
@@ -1029,7 +1061,7 @@ async fn dashboard(id: &str, local: &str, chat: bool) -> Result<bool, String> {
                 .and_then(|h| h["error"].as_str())
                 .filter(|s| !s.is_empty())
             {
-                return Err(error.into());
+                return Err(model_failure(error, &clean(env["name"].as_str().unwrap_or(id))));
             }
             if health.as_ref().is_some_and(|h| h["status"] == "ready") && !ready {
                 ready = true;
@@ -1043,6 +1075,9 @@ async fn dashboard(id: &str, local: &str, chat: bool) -> Result<bool, String> {
                     return Ok(true);
                 }
             }
+        }
+        if let Some(done) = answer_keys(id).await? {
+            return Ok(done);
         }
         if now >= services_at {
             services_at = now + Duration::from_secs(5);
@@ -1068,6 +1103,9 @@ async fn dashboard(id: &str, local: &str, chat: bool) -> Result<bool, String> {
                 }
             }
             ui::dash(|d| d.links(links));
+        }
+        if let Some(done) = answer_keys(id).await? {
+            return Ok(done);
         }
         if now >= logs_at {
             logs_at = now + Duration::from_secs(2);
@@ -1096,41 +1134,97 @@ async fn dashboard(id: &str, local: &str, chat: bool) -> Result<bool, String> {
             }
             shown = lines;
         }
-        let mut stop = false;
-        while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
-            match event::read().map_err(|e| e.to_string())? {
-                Event::Key(k) if k.kind != KeyEventKind::Release => match k.code {
-                    KeyCode::Char('t' | 'T') => open_terminal(id, false, None),
-                    KeyCode::Char('q' | 'Q') => return Ok(false),
-                    KeyCode::Char('s' | 'S') => stop = true,
-                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                        stop = true
-                    }
-                    KeyCode::Char('a' | 'A') => {
-                        ui::take_interrupt();
-                        // Ctrl+C while loading opens the stop options, as it does here.
-                        match busy("Loading API access", call("model_api_status", json!({"environmentId":id}))).await {
-                            Ok(access) => private_view("Model API · private credentials",&format!("  Base URL       {}\n  Public URL     {}\n  Authorization  Bearer {}\n\n  POST /chat/completions\n  Content-Type: application/json\n  {{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":\"Hello\"}}]}}",access["apiUrl"],access["publicUrl"],clean(access["apiKey"].as_str().unwrap_or("")),access["model"]))?,
-                            Err(error) if error == ui::CANCELLED => {}
-                            Err(error) => return Err(error),
-                        }
-                        if ui::take_interrupt() { stop = true; }
-                    }
-                    _ => {}
-                },
-                Event::Resize(..) => ui::refresh(),
-                _ => {}
-            }
-        }
-        if stop && chat::stop_choice(id).await? {
-            drop(_close);
-            return Ok(false);
+        if let Some(done) = answer_keys(id).await? {
+            return Ok(done);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-fn write_chat(id: &str) -> Result<std::path::PathBuf, String> {
+/// How long the dashboard waits for the engine before it stops believing in it.
+const GIVE_UP: Duration = Duration::from_secs(60);
+
+/// A model that would not load, said in a way there is something to do about.
+///
+/// What comes back from a runner is one process telling another process why it stopped:
+/// `CUDA error: out of memory`, `404 Client Error`, a path and a line number. Handing that
+/// straight to somebody who typed a model name and waited ten minutes tells them that it broke
+/// and nothing else — not whether their files are still there, not whether it is worth trying
+/// again, not what to try instead.
+///
+/// So the runner's own sentence is kept, because it is the most specific thing anybody has, and
+/// one line is put under it. Where the words are recognisable the line says what to do; where
+/// they are not it says the one thing that is always true and always wanted, which is that
+/// nothing was thrown away. Both end with where to read the rest.
+pub(super) fn model_failure(raw: &str, called: &str) -> String {
+    let said = clean(raw.trim());
+    let said = if said.is_empty() { "The model could not load.".to_owned() } else { said };
+    let lower = said.to_lowercase();
+    // Phrases are looked for anywhere; short tokens have to be whole words. `oom` inside
+    // `bloom`, `403` inside a byte count and `vram` inside a field name are all the wrong answer
+    // given confidently, which is worse than the general one.
+    let said_anywhere = |phrases: &[&str]| phrases.iter().any(|phrase| lower.contains(phrase));
+    let whole_word = |words: &[&str]| {
+        lower
+            .split(|letter: char| !letter.is_ascii_alphanumeric())
+            .any(|part| words.contains(&part))
+    };
+    let next = if said_anywhere(&["out of memory", "outofmemory", "not enough memory", "cannot allocate"]) || whole_word(&["oom", "vram"]) {
+        "This computer did not have room for it. A smaller quantization needs less; closing other work frees some."
+    } else if said_anywhere(&["no space", "disk full", "not enough space"]) || whole_word(&["enospc"]) {
+        "There was not enough disk space. Free some, or give it a larger disk, and start it again."
+    } else if said_anywhere(&["unauthorized", "forbidden", "access to model", "awaiting a review"]) || whole_word(&["401", "403", "gated"]) {
+        "This model asks permission first. Accept its licence on its Hugging Face page, then run yougori model auth."
+    } else if said_anywhere(&["not found", "does not exist", "repository not found"]) || whole_word(&["404"]) {
+        "Check the repository name. A private one needs yougori model auth as well."
+    } else if said_anywhere(&["unsupported", "no runner", "unknown model"]) || whole_word(&["architecture"]) {
+        "Yougori cannot run this one. yougori model support REPOSITORY says what it would need."
+    } else {
+        "Nothing was deleted: whatever it downloaded is kept, so trying again does not start over."
+    };
+    let stop = if said.ends_with('.') || said.ends_with('!') || said.ends_with('?') { "" } else { "." };
+    format!("{said}{stop}\n{next}\nyougori logs {called} shows what the model runner printed.")
+}
+
+/// Whatever has been typed, answered. `Some` means the dashboard is finished and what to return.
+///
+/// This is read between every step of a round rather than once at the end of one, because a
+/// round can spend twenty seconds inside the engine — ten on the figures, three on the model's
+/// health, five on the services, three on the logs — and a key answered twenty seconds after it
+/// was pressed is a key the person has already pressed three more times.
+async fn answer_keys(id: &str) -> Result<Option<bool>, String> {
+    let mut stop = false;
+    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Key(k) if k.kind != KeyEventKind::Release => match k.code {
+                KeyCode::Char('t' | 'T') => open_terminal(id, false, None),
+                KeyCode::Char('q' | 'Q') => return Ok(Some(false)),
+                KeyCode::Char('s' | 'S') => stop = true,
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => stop = true,
+                KeyCode::Char('a' | 'A') => {
+                    ui::take_interrupt();
+                    // Ctrl+C while loading opens the stop options, as it does here.
+                    match busy("Loading API access", call("model_api_status", json!({"environmentId":id}))).await {
+                        Ok(access) => private_view("Model API · private credentials",&format!("  Base URL       {}\n  Public URL     {}\n  Authorization  Bearer {}\n\n  POST /chat/completions\n  Content-Type: application/json\n  {{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":\"Hello\"}}]}}",access["apiUrl"],access["publicUrl"],clean(access["apiKey"].as_str().unwrap_or("")),access["model"]))?,
+                        Err(error) if error == ui::CANCELLED => {}
+                        Err(error) => return Err(error),
+                    }
+                    if ui::take_interrupt() { stop = true; }
+                }
+                _ => {}
+            },
+            Event::Resize(..) => ui::refresh(),
+            _ => {}
+        }
+    }
+    if stop && chat::stop_choice(id).await? {
+        return Ok(Some(false));
+    }
+    Ok(None)
+}
+
+
+fn write_chat(id: &str, called: &str) -> Result<std::path::PathBuf, String> {
     let profile = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .ok_or("Cannot locate your user profile")?;
@@ -1163,7 +1257,7 @@ fn write_chat(id: &str) -> Result<std::path::PathBuf, String> {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
-                    "Model {id} is running, but cannot create Python chat file: {e}"
+                    "{called} is running, but its Python chat file could not be written: {e}"
                 ))
             }
         }
@@ -1276,6 +1370,47 @@ mod tests {
         assert_eq!(sample.gpu_percent, None);
         assert!(usage(&plain, "missing", false).is_none());
     }
+    /// PROVES that a model which would not load says what to do next, and never only what broke.
+    ///
+    /// A runner's own words are one process explaining itself to another: `CUDA error: out of
+    /// memory`, `404 Client Error`, a path and a line number. Given straight to somebody who
+    /// typed a model name and then waited ten minutes, it says that it broke and nothing else —
+    /// not whether their download survived, not whether trying again is worth it, not what to
+    /// try instead. The runner's sentence is kept because it is the most specific thing anybody
+    /// has, and a line is put under it that is about them rather than about the runner.
+    #[test]
+    fn a_model_that_would_not_load_says_what_to_do_about_it() {
+        let room = model_failure("CUDA error: out of memory", "Chat");
+        assert!(room.starts_with("CUDA error: out of memory."), "the runner still gets the first word: {room}");
+        assert!(room.contains("smaller quantization"), "{room}");
+        assert!(room.contains("yougori logs Chat"), "{room}");
+
+        assert!(model_failure("401 Client Error: Unauthorized", "Chat").contains("yougori model auth"));
+        assert!(model_failure("404 Client Error", "Chat").contains("Check the repository name"));
+        assert!(model_failure("No space left on device", "Chat").contains("disk space"));
+        assert!(model_failure("unsupported architecture bloom", "Chat").contains("model support"));
+
+        // Words nobody can place still get the thing that is always true and always wanted.
+        let strange = model_failure("thread 'main' panicked at ggml.c:214", "Chat");
+        assert!(strange.contains("Nothing was deleted"), "{strange}");
+
+        // A short token inside an ordinary word is not a match. `bloom` is not out of memory,
+        // and a confident wrong answer is worse than the general one.
+        for innocent in ["bigscience/bloom failed to start", "read 403000 bytes then stopped", "vramble is not a word"] {
+            let said = model_failure(innocent, "Chat");
+            assert!(said.contains("Nothing was deleted"), "{innocent} was read as something it is not: {said}");
+        }
+        // But the same tokens standing alone are read as what they are.
+        assert!(model_failure("llama_init: OOM", "Chat").contains("smaller quantization"));
+        assert!(model_failure("HTTP 403 while fetching", "Chat").contains("yougori model auth"));
+
+        // Nothing at all from the runner is still a sentence, never an empty line.
+        let silent = model_failure("   ", "Chat");
+        assert!(silent.starts_with("The model could not load."), "{silent}");
+        // And a sentence that already ends is not given a second full stop.
+        assert!(!model_failure("It failed.", "Chat").contains(".."));
+    }
+
     #[test]
     fn local_api_ports_are_read_from_addresses() {
         assert_eq!(url_port("http://127.0.0.1:8000/v1"), Some(8000));
@@ -1331,7 +1466,7 @@ mod tests {
         assert_eq!(review, [
             "2 CPU · 4 GB memory · 30 GB storage",
             "Storage drive: D:\\",
-            "Local port 8001 → model port 8000",
+            "Port 8001 on this computer reaches the model's port 8000",
             "This computer and a public quick link (anyone with the URL)",
         ]);
         let changes = Map::from_iter([("cpu".to_owned(), json!(4))]);

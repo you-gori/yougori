@@ -129,8 +129,20 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
         "model_registry_connect" | "model_registry_request" | "model_registry_upload" | "model_registry_download" | "model_registry_pause" | "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
         "security_monitor" | "security_audit" | "security_lockdown" | "security_unlock" => dispatch_group_14(app,method,p,progress),
-        "grid_status" | "grid_create" | "grid_password" | "grid_delete" | "grid_join" | "grid_leave" | "grid_plan_add" | "grid_plan_update" | "grid_plan_remove" | "grid_member_remove" | "grid_key_create" | "grid_key_revoke" => dispatch_group_15(app,method,p,progress),
+        "access_status" | "access_create" | "access_delete" | "access_restore" | "access_signin" | "access_signout" | "access_manage" | "access_account" | "access_use" | "access_check" | "access_reveal" | "access_backup" | "access_restore_backup" => dispatch_group_16(app,method,p,progress),
+        "grid_status" | "grid_suggested_address" | "grid_create" | "grid_password" | "grid_delete" | "grid_restore" | "grid_join" | "grid_leave" | "grid_plan_add" | "grid_plan_update" | "grid_plan_remove" | "grid_member_remove" | "grid_member_exclude" | "grid_member_include" | "grid_neocloud_status" | "grid_neocloud_add" | "grid_neocloud_remove" | "grid_neocloud_stop_all" | "grid_swarm_add" | "grid_swarm_remove" | "grid_swarm_run" | "grid_key_create" | "grid_key_revoke" | "desks_manage" | "desks_status" | "desks_suggested_address" | "desks_create" | "desks_join" | "desks_leave" | "desks_delete" | "desks_restore" | "desks_adopt_membership" | "desks_member_remove" | "desks_member_share" | "desks_person_add" | "desks_person_password" | "desks_person_remove" | "desks_add" | "desks_assign" | "desks_retry" | "desks_remove" | "desk_refresh" | "desk_login" | "desk_logout" | "bounty_dispatch" | "bounty_status" | "bounty_suggested_address" | "bounty_host" | "bounty_member_remove" | "bounty_delete" => dispatch_group_15(app,method,p,progress),
         "swarm_dispatch" => Box::pin(async move {crate::swarm::swarm_dispatch(arg(p,"request")?,app.clone()).await}),
+        // One door onto all four grids. Every one of these finds the grid the command is about,
+        // refuses in words what that grid does not do, and then calls the product handler above.
+        // The old methods keep their own arms and their own words, untouched.
+        "grids_realm" | "grids_people" | "grids_computers" | "grids_share" | "grids_models" | "grids_desks" | "grids_credentials" | "grids_requests" | "grids_research" | "grids_connectors" | "grids_work" | "grids_log" => Box::pin(async move { crate::grids::answer(app, method, p, false).await }),
+        // Moving the four products onto Grid Core, one stage at a time. It is about this
+        // computer's own deployment rather than about one grid, so it is a door of its own: no
+        // grid is looked up, no product handler is called, and nothing it writes is in a grid.
+        "grids_rollout" => Box::pin(async move { crate::rollout::rollout(app.clone(), p).await }),
+        // What this computer has queued. The wire answers these inside the queue itself, before
+        // anything reaches here; this arm is how `yougori grids work …` reaches the same record.
+        "jobs_list" | "jobs_get" | "jobs_cancel" => Box::pin(async move { crate::automation::work_record(app, method, p).await }),
         _ => Box::pin(async move { Err(format!("No backend handler for {method}")) }),
     }
 }
@@ -257,7 +269,8 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         "duplicate_local_environment" => encoded(local_backup::duplicate_local_environment(arg(p, "environmentId")?,arg(p, "name")?,arg(p, "storageDrive")?,store,runtime,backup).await?),
         "duplicate_environment" => encoded(crate::duplication::duplicate_environment(arg(p, "request")?,store,runtime).await?),
         "inspect_duplication_source" => crate::duplication::inspect_duplication_source(arg(p, "environmentId")?,arg(p, "source")?,store,runtime).await,
-        "cleanup_environment_duplication" => encoded(crate::duplication::cleanup_environment_duplication(arg(p, "operationId")?,store,runtime).await?),
+        // Never gives a copy up: that is only Yougori's own window, after its confirmation.
+        "cleanup_environment_duplication" => encoded(crate::duplication::clean_up_copy(arg(p, "operationId")?,&store,&runtime).await?),
         "model_api" => crate::model_runner::model_api(arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
         "model_optimizer" => crate::model_runner::optimizer::model_optimizer(arg(p,"environmentId")?,arg(p,"enabled")?,arg(p,"pinned")?,arg(p,"idleTimeoutSeconds")?,app.clone()).await,
         "model_status" => crate::model_runner::model_status(arg(p, "environmentId")?,app.clone()).await,
@@ -647,7 +660,7 @@ dispatch_group! { dispatch_group_10(app, method, p, progress, store, runtime, ba
             encoded(commands::restore_backup(arg(p, "backupId")?, store, runtime, backup).await?)
         }
         "update_settings" => {
-            encoded(commands::update_settings(arg(p, "settings")?, store, runtime, backup).await?)
+            encoded(commands::update_settings(arg(p, "settings")?, arg(p, "expectedRevision")?, store, runtime, backup).await?)
         }
         "reset_platform_state" => {
             encoded(commands::reset_platform_state(store, runtime, backup).await?)
@@ -823,6 +836,7 @@ dispatch_group! { dispatch_group_12(app, method, p, progress, store, runtime, ba
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                crate::shutdown::hand_over();
                 crate::exit_engine(&app, 0);
             });
             Ok(json!({"visible": false, "handover": true}))
@@ -891,22 +905,84 @@ dispatch_group! { dispatch_group_14(app, method, p, progress, store, runtime, ba
     }
 }
 
+// Access Grid: the company's credential hub on this computer and this person's sign-in to it.
+// Passwords and credential values arrive only through stdin or private request files (see parse.rs).
+dispatch_group! { dispatch_group_16(app, method, p, progress, store, runtime, backup, manager, window) =>
+    match method {
+        "access_status" => crate::accessgrid::access_status(app.clone()).await,
+        "access_create" => crate::accessgrid::access_create(arg(p, "company")?, arg(p, "address")?, arg(p, "username")?, arg(p, "name")?, arg(p, "password")?, arg(p, "tunnel")?, app.clone()).await,
+        "access_delete" => crate::accessgrid::access_delete(arg(p, "when")?, app.clone()).await,
+        "access_restore" => crate::accessgrid::access_restore(app.clone()).await,
+        "access_signin" => crate::accessgrid::access_signin(arg(p, "invite")?, arg(p, "username")?, arg(p, "password")?, arg(p, "code")?, arg(p, "sso")?, app.clone()).await,
+        "access_account" => crate::accessgrid::access_account(arg(p, "request")?, app.clone()).await,
+        "access_backup" => crate::accessgrid::access_backup(arg(p, "output")?, arg(p, "passphrase")?, app.clone()).await,
+        "access_restore_backup" => crate::accessgrid::access_restore_backup(arg(p, "file")?, arg(p, "passphrase")?, arg(p, "address")?, app.clone()).await,
+        "access_signout" => crate::accessgrid::access_signout(app.clone()).await,
+        "access_manage" => crate::accessgrid::access_manage(arg(p, "request")?, app.clone()).await,
+        "access_use" => crate::accessgrid::access_use(arg(p, "credential")?, arg(p, "method")?, arg(p, "url")?, arg(p, "headers")?, arg(p, "body")?, arg(p, "bodyBase64")?, arg(p, "agent")?, app.clone()).await,
+        "access_check" => crate::accessgrid::access_check(arg(p, "id")?, app.clone()).await,
+        "access_reveal" => crate::accessgrid::access_reveal(arg(p, "credential")?, arg(p, "reason")?, arg(p, "agent")?, app.clone()).await,
+        _ => Err(format!("No backend handler for {method}")),
+    }
+}
+
 // Closed Neo Grid: the company hub on this computer and this computer's membership.
 // Passwords arrive only through stdin or private request files (see parse.rs).
 dispatch_group! { dispatch_group_15(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
         "grid_status" => crate::grid::grid_status(app.clone()).await,
-        "grid_create" => crate::grid::grid_create(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "hostname")?, app.clone()).await,
+        "grid_suggested_address" => Ok(json!(crate::grid::suggested_address())),
+        "grid_create" => crate::grid::grid_create(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "hostname")?, arg(p, "tunnel")?, app.clone()).await,
         "grid_password" => crate::grid::grid_password(arg(p, "password")?, app.clone()).await,
-        "grid_delete" => crate::grid::grid_delete(app.clone()).await,
-        "grid_join" => crate::grid::grid_join(arg(p, "company")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "name")?, arg(p, "fingerprint")?, app.clone()).await,
+        "grid_delete" => crate::grid::grid_delete(arg(p, "when")?, app.clone()).await,
+        "grid_restore" => crate::grid::grid_restore(app.clone()).await,
+        "grid_join" => crate::grid::grid_join(arg(p, "company")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "name")?, arg(p, "fingerprint")?, arg(p, "invite")?, app.clone()).await,
         "grid_leave" => crate::grid::grid_leave(app.clone()).await,
-        "grid_plan_add" => crate::grid::grid_plan_add(arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, app.clone()).await,
+        "grid_plan_add" => crate::grid::grid_plan_add(arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, arg(p, "scope")?, arg(p, "computers")?, app.clone()).await,
         "grid_plan_update" => crate::grid::grid_plan_update(arg(p, "planId")?, arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, app.clone()).await,
         "grid_plan_remove" => crate::grid::grid_plan_remove(arg(p, "planId")?, app.clone()).await,
         "grid_member_remove" => crate::grid::grid_member_remove(arg(p, "memberId")?, app.clone()).await,
+        "bounty_dispatch" => crate::bounty::bounty_dispatch(arg(p,"request")?,app.clone()).await,
+        "bounty_status" => crate::bounty::bounty_status(app.clone()).await,
+        "bounty_suggested_address" => Ok(json!(crate::bounty::suggested_address())),
+        "bounty_host" => crate::bounty::bounty_host(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "title")?, arg(p, "instructions")?, arg(p, "authorization")?, arg(p, "files")?, app.clone()).await,
+        "bounty_member_remove" => crate::bounty::bounty_member_remove(arg(p, "memberId")?, app.clone()).await,
+        "bounty_delete" => crate::bounty::bounty_delete(app.clone()).await,
+        "grid_member_exclude" => crate::grid::grid_member_exclude(arg(p, "memberId")?, app.clone()).await,
+        // The rented GPUs. These call the module's own functions rather than its `commands`,
+        // because those take a `WebviewWindow` to keep other webviews out and this door is the
+        // CLI, which is authenticated in its own right and has no window to hand them.
+        "grid_neocloud_status" => crate::grid_neocloud::status_value(app).await,
+        "grid_neocloud_add" => crate::grid_neocloud::add(app, &arg::<String>(p, "environmentId")?).await,
+        "grid_neocloud_remove" => crate::grid_neocloud::remove(app, &arg::<String>(p, "environmentId")?).await,
+        "grid_neocloud_stop_all" => crate::grid_neocloud::stop_all_value(app).await,
+        "grid_member_include" => crate::grid::grid_member_include(arg(p, "memberId")?, app.clone()).await,
+        "grid_swarm_add" => crate::grid::grid_swarm_add(arg(p, "name")?, arg(p, "strategy")?, arg(p, "lead")?, arg(p, "workers")?, arg(p, "computers")?, arg(p, "tasks")?, arg(p, "rounds")?, app.clone()).await,
+        "grid_swarm_remove" => crate::grid::grid_swarm_remove(arg(p, "harnessId")?, app.clone()).await,
+        "grid_swarm_run" => crate::grid::grid_swarm_run(arg(p, "harness")?, arg(p, "prompt")?, app.clone()).await,
         "grid_key_create" => crate::grid::grid_key_create(arg(p, "name")?, app.clone()).await,
         "grid_key_revoke" => crate::grid::grid_key_revoke(arg(p, "keyId")?, app.clone()).await,
+        "desks_manage" => crate::deskgrid::desks_manage(arg(p, "request")?, app.clone()).await,
+        "desks_status" => crate::deskgrid::desks_status(app.clone()).await,
+        "desks_suggested_address" => Ok(json!(crate::bounty::suggested_address())),
+        "desks_create" => crate::deskgrid::desks_create(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "tunnel")?, app.clone()).await,
+        "desks_join" => crate::deskgrid::desks_join(arg(p, "invite")?, arg(p, "password")?, arg(p, "name")?, app.clone()).await,
+        "desks_leave" => crate::deskgrid::desks_leave(app.clone()).await,
+        "desks_delete" => crate::deskgrid::desks_delete(arg(p, "when")?, app.clone()).await,
+        "desks_restore" => crate::deskgrid::desks_restore(app.clone()).await,
+        "desks_adopt_membership" => crate::deskgrid::desks_adopt_membership(arg(p, "membership")?, app.clone()).await,
+        "desks_member_remove" => crate::deskgrid::desks_member_remove(arg(p, "memberId")?, app.clone()).await,
+        "desks_member_share" => crate::deskgrid::desks_member_share(arg(p, "memberId")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?, arg(p, "idleOnly")?, arg(p, "suggested")?, app.clone()).await,
+        "desks_person_add" => { let username: String = arg(p, "username")?; let name: Option<String> = arg(p, "name")?; let desk = crate::desks::person_desk(arg(p, "kind")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?)?; crate::desks::person_add(username.clone(), name.unwrap_or(username), arg(p, "password")?, desk, app.clone()).await }
+        "desks_person_password" => crate::desks::person_password(arg(p, "person")?, arg(p, "password")?, app.clone()).await,
+        "desks_person_remove" => crate::desks::person_remove(arg(p, "person")?, app.clone()).await,
+        "desks_add" => crate::desks::desk_add(arg(p, "name")?, arg(p, "kind")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?, arg(p, "image")?, arg(p, "person")?, app.clone()).await,
+        "desks_assign" => crate::desks::desk_assign(arg(p, "desk")?, arg(p, "person")?, app.clone()).await,
+        "desks_retry" => crate::desks::desk_retry(arg(p, "desk")?, app.clone()).await,
+        "desks_remove" => crate::desks::desk_remove(arg(p, "desk")?, app.clone()).await,
+        "desk_refresh" => crate::desks::desk_refresh(app.clone()).await,
+        "desk_login" => crate::desks::desk_login(arg(p, "invite")?, arg(p, "username")?, arg(p, "password")?, arg(p, "code")?, arg::<Option<bool>>(p, "sso")?.unwrap_or(false), app.clone()).await,
+        "desk_logout" => crate::desks::desk_logout(app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }
 }
@@ -947,7 +1023,7 @@ mod tests {
             }
             // Vault management is restricted to the focused desktop UI and broker.
             // Never expose its desktop facade through ordinary agent automation.
-            if matches!(name, "vault_status" | "vault_control" | "vault_add_items" | "vault_export_plugin" | "vault_bootstrap" | "vault_create" | "vault_connection" | "validate_edit_app_folder" | "save_cloudflare_preset" | "copy_saved_cloudflare_to_preset" | "forget_cloudflare_preset") {
+            if matches!(name, "vault_status" | "vault_control" | "vault_add_items" | "vault_export_plugin" | "vault_bootstrap" | "vault_create" | "vault_connection" | "save_cloudflare_preset" | "copy_saved_cloudflare_to_preset" | "forget_cloudflare_preset") {
                 assert!(yougori_cli::catalog::find(name).is_err());
                 continue;
             }

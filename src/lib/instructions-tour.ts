@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react"
 
-export const overviewSteps = ["welcome", "stats", "graph", "node-controls", "configuration", "service-ports", "connections", "my-pc", "internet-overview", "local-network", "public-access", "backups", "host-terminal", "cloud", "theme", "settings", "environment-types", "windows-overview"] as const
+export const overviewSteps = ["welcome", "stats", "graph", "node-controls", "configuration", "service-ports", "connections", "my-pc", "internet-overview", "local-network", "public-access", "backups", "cloud", "theme", "settings", "environment-types", "windows-overview"] as const
 export const practiceSteps = ["create-open", "create-type", "create-name", "create-image", "create-resources", "create-submit", "created", "internet-connect", "start", "first-window", "terminal", "tabs", "install", "install-running", "new-terminal", "run-codex", "new-window", "second-window", "window-switcher", "environment-switcher", "demo-start", "demo-return", "demo-port-open", "demo-port-add", "demo-publish", "demo-link", "demo-visit", "done"] as const
 export const tourSteps = [...overviewSteps, ...practiceSteps] as const
 export type TourStep = typeof tourSteps[number]

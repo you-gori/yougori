@@ -186,6 +186,22 @@ mod tests {
         assert_eq!(job.value(false)["outcome"], "unknown");
         assert_eq!(job.value(false)["errorDetails"]["retryable"], false);
     }
+    #[test]
+    fn a_grids_refusal_keeps_its_sentence_and_its_own_code_through_the_work_journal() {
+        use yougori_cli::grids::fault::{Code, Fault};
+        let mut job = Job::default();
+        job.failed(Fault::new(Code::CapabilityOff, "This grid does not broker credentials.").about("Acme").wire());
+        assert_eq!(job.status, "failed");
+        // The sentence is what a person is shown, and the code never reaches it.
+        assert_eq!(job.error.as_deref(), Some("This grid does not broker credentials."));
+        assert_eq!(job.value(false)["errorDetails"]["code"], "capability_off");
+        assert_eq!(job.value(false)["errorDetails"]["affectedResource"], "Acme");
+        assert_eq!(job.value(false)["outcome"], "not_started");
+        // Everything else still has its code guessed from its wording, exactly as before.
+        job.failed("Copy target could not be written".into());
+        assert_eq!(job.value(false)["errorDetails"]["code"], "operation_failed");
+    }
+
     #[tokio::test]
     async fn saturated_work_has_reserved_control_capacity_and_bounded_shutdown() {
         let directory = tempfile::tempdir().unwrap();
@@ -308,6 +324,15 @@ impl Job {
         }
     }
     fn failed(&mut self, error: String) {
+        // A refusal from the one grids door already carries its own code and its own sentence.
+        // The code comes off here as it does on the direct reply, so what is recorded against
+        // the work, and what a person is later shown, is the sentence and nothing else.
+        if let Some((said, details)) = yougori_cli::grids::fault::Fault::read(&error) {
+            self.status = "failed";
+            self.error = Some(said);
+            self.error_details = Some(details);
+            return;
+        }
         let mut details = ErrorDetails::from_message(&error);
         let cancelled = error.starts_with("YOUGORI_OPERATION_CANCELLED");
         let interrupted = error.starts_with("YOUGORI_OPERATION_INTERRUPTED");
@@ -597,6 +622,54 @@ impl Control {
             eprintln!("Operation journal was not flushed before its deadline; live outcomes remain available.");
         }
     }
+    /// This computer's record of queued work, answered in one place.
+    ///
+    /// The wire reaches it through `submit`, which still intercepts these three methods before
+    /// anything is queued, so neither the words nor the behaviour of `yougori jobs …` change. The
+    /// one grids door reaches the same bodies through `dispatch`, which is the only door it has.
+    pub(crate) async fn work_record(self: &Arc<Self>, method: &str, params: &Value) -> Result<Value, String> {
+        match method {
+            "jobs_list" => {
+                let mut jobs = self.jobs.lock().await;
+                Self::prune(&mut jobs);
+                Ok(json!(jobs.iter().map(|job| job.value(false)).collect::<Vec<_>>()))
+            }
+            "jobs_cancel" => {
+                let mut jobs = self.jobs.lock().await;
+                let job = jobs
+                    .iter_mut()
+                    .find(|job| Some(job.id.as_str()) == params["jobId"].as_str())
+                    .ok_or("YOUGORI_JOB_NOT_FOUND: operation not found in retained history")?;
+                if job.completed.is_none() {
+                    if job.status == "running" && !job.can_cancel() {
+                        return Err("YOUGORI_NOT_CANCELLABLE: this operation must finish or be reconciled; cancelling its client does not undo its effects".into());
+                    }
+                    job.cancellation.cancel();
+                }
+                Ok(job.value(false))
+            }
+            "jobs_get" => {
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(params["wait"].as_u64().unwrap_or(0).min(30000));
+                loop {
+                    let changed = self.finished.notified();
+                    tokio::pin!(changed);
+                    changed.as_mut().enable();
+                    {
+                        let jobs = self.jobs.lock().await;
+                        let job = jobs
+                            .iter()
+                            .find(|job| Some(job.id.as_str()) == params["jobId"].as_str())
+                            .ok_or("YOUGORI_JOB_NOT_FOUND: operation not found in retained history")?;
+                        if job.completed.is_some() || tokio::time::Instant::now() >= deadline {
+                            return Ok(job.value(true));
+                        }
+                    }
+                    let _ = tokio::time::timeout_at(deadline, changed).await;
+                }
+            }
+            _ => Err("That is not something the record of queued work answers.".into()),
+        }
+    }
     pub(super) async fn handle(self: &Arc<Self>, app: AppHandle, request: Request) -> Response {
         if request.version == 1 && wire::VERSION != 1 {
             // Shipped v1 clients reject unknown fields, so this mismatch reply
@@ -607,6 +680,11 @@ impl Control {
         match self.submit(app, request).await {
             Ok(result) => Response::success(result),
             Err(error) => {
+                // A refusal from the one grids door brings its own code and its own sentence.
+                // Everything else keeps the guess from its wording, exactly as before.
+                if let Some((said, details)) = yougori_cli::grids::fault::Fault::read(&error) {
+                    return Response::failure_with_details(said, details);
+                }
                 let mut details = ErrorDetails::from_message(&error);
                 details.affected_resource = resource;
                 if error.starts_with("YOUGORI_QUIESCING") {
@@ -639,6 +717,14 @@ impl Control {
         dispatch::validate(&request.method, &request.params)?;
         let confirmation = method.confirmation_for(&request.params);
         if request.dry_run {
+            // A `grids_*` rehearsal meets the grid as it really is: it finds the grid on this
+            // computer, reads what that grid is allowed to do and builds the call the product
+            // would receive, then writes nothing. It is not asked to confirm first, because
+            // there is nothing to confirm when nothing is written; what it would have asked is
+            // in the answer instead.
+            if crate::grids::handles(&request.method) {
+                return crate::grids::answer(&app, &request.method, &request.params, true).await;
+            }
             return Ok(
                 json!({"dryRun":true,"method":method.name,"validSyntax":true,"confirmationRequired":confirmation,"runtimeChecked":false}),
             );
@@ -654,28 +740,7 @@ impl Control {
                     json!({"running":true,"version":env!("CARGO_PKG_VERSION"),"protocolVersion":wire::VERSION,"headless":self.headless,"engineOnly":crate::ENGINE_ONLY,"endpoint":self.endpoint,"pid":std::process::id(),"acceptingWork":!self.quiescing.load(Ordering::Acquire),"lastShutdown":crate::shutdown::latest(&app.state::<PlatformStore>())}),
                 )
             }
-            "jobs_list" => {
-                let mut jobs = self.jobs.lock().await;
-                Self::prune(&mut jobs);
-                return Ok(json!(jobs
-                    .iter()
-                    .map(|job| job.value(false))
-                    .collect::<Vec<_>>()));
-            }
-            "jobs_cancel" => {
-                let mut jobs = self.jobs.lock().await;
-                let job = jobs
-                    .iter_mut()
-                    .find(|job| Some(job.id.as_str()) == request.params["jobId"].as_str())
-                    .ok_or("YOUGORI_JOB_NOT_FOUND: operation not found in retained history")?;
-                if job.completed.is_none() {
-                    if job.status == "running" && !job.can_cancel() {
-                        return Err("YOUGORI_NOT_CANCELLABLE: this operation must finish or be reconciled; cancelling its client does not undo its effects".into());
-                    }
-                    job.cancellation.cancel();
-                }
-                return Ok(job.value(false));
-            }
+            "jobs_list" | "jobs_cancel" => return self.work_record(method.name, &request.params).await,
             "jobs_result" => {
                 let jobs = self.jobs.lock().await;
                 let job = jobs
@@ -699,30 +764,7 @@ impl Control {
                     json!({"jobId":job.id,"outcome":job.value(false)["outcome"],"outputAvailable":false,"reason":"Output bodies are bounded and are not retained across engine restarts. Inspect current resource state; do not repeat a completed operation."}),
                 );
             }
-            "jobs_get" => {
-                let deadline = tokio::time::Instant::now()
-                    + Duration::from_millis(
-                        request.params["wait"].as_u64().unwrap_or(0).min(30000),
-                    );
-                loop {
-                    let changed = self.finished.notified();
-                    tokio::pin!(changed);
-                    changed.as_mut().enable();
-                    {
-                        let jobs = self.jobs.lock().await;
-                        let job = jobs
-                            .iter()
-                            .find(|job| Some(job.id.as_str()) == request.params["jobId"].as_str())
-                            .ok_or(
-                                "YOUGORI_JOB_NOT_FOUND: operation not found in retained history",
-                            )?;
-                        if job.completed.is_some() || tokio::time::Instant::now() >= deadline {
-                            return Ok(job.value(true));
-                        }
-                    }
-                    let _ = tokio::time::timeout_at(deadline, changed).await;
-                }
-            }
+            "jobs_get" => return self.work_record(method.name, &request.params).await,
             "app_quit" => {
                 self.quiescing.store(true, Ordering::Release);
                 self.shutdown.cancel();
@@ -778,6 +820,11 @@ impl Control {
                 | "market_status"
                 | "grid_status"
                 | "swarm_dispatch"
+                // An agent's credential request waits on the company hub, never on local jobs.
+                | "access_status"
+                | "access_use"
+                | "access_check"
+                | "access_reveal"
                 // A kill switch must not wait behind an environment's long-running
                 // job lease; lockdown serializes per environment on its own.
                 | "security_monitor"

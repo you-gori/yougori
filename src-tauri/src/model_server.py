@@ -44,6 +44,25 @@ ADMIN_TOKEN = os.environ.get("YOUGORI_MODEL_ADMIN_TOKEN", "")
 PRIVATE_ENVIRONMENT = ("YOUGORI_MODEL_TOKEN", "YOUGORI_MODEL_ADMIN_TOKEN", "YOUGORI_GPU_CONTROL_TOKEN", "YOUGORI_NATIVE_TOKEN")
 # GGUF uses llama.cpp, vLLM uses its pinned native/plugin implementation; other weights use Transformers.
 FORMAT = os.environ.get("YOUGORI_MODEL_FORMAT", "safetensors")
+# vLLM calls tools only with a parser for the model's family. The pod launcher sets one for a Swarm
+# worker on a rented GPU and for nothing else, so every other model is served exactly as before.
+TOOL_PARSERS = ("hermes", "qwen3_coder", "llama3_json", "openai", "gemma4")
+
+
+def allowed_tool_parser(value):
+    return value if value in TOOL_PARSERS else ""
+
+
+TOOL_PARSER = allowed_tool_parser(os.environ.get("YOUGORI_TOOL_PARSER", ""))
+
+
+def tools_enabled():
+    return FORMAT == "gguf" or (FORMAT == "vllm" and bool(TOOL_PARSER))
+
+
+def agent_arguments():
+    """vLLM's own switches for agent tool calling, or none."""
+    return ["--enable-auto-tool-choice", "--tool-call-parser", TOOL_PARSER] if FORMAT == "vllm" and TOOL_PARSER else []
 STATE = {"status": "installing", "model": MODEL, "error": None}
 GENERATION = threading.Lock()
 REQUESTS = threading.BoundedSemaphore(8)
@@ -454,7 +473,7 @@ def validate_chat(body):
         raise ValueError("Provide 1–128 chat messages")
     tools = body.get("tools")
     if tools is not None:
-        if FORMAT != "gguf" or not isinstance(tools, list) or not 1 <= len(tools) <= 32:
+        if not tools_enabled() or not isinstance(tools, list) or not 1 <= len(tools) <= 32:
             raise ValueError("Agent tools require the GGUF runner and 1–32 function definitions")
         names = set()
         for tool in tools:
@@ -495,14 +514,14 @@ def validate_chat(body):
             raise ValueError("Invalid message role/content")
         if role == "tool":
             call_id = message.get("tool_call_id")
-            if FORMAT != "gguf" or call_id not in pending_calls:
+            if not tools_enabled() or call_id not in pending_calls:
                 raise ValueError("Tool result must match a preceding assistant call")
             pending_calls.remove(call_id)
         elif "tool_call_id" in message:
             raise ValueError("Only tool results have tool_call_id")
         if "tool_calls" in message:
             calls = message["tool_calls"]
-            if FORMAT != "gguf" or role != "assistant" or not isinstance(calls, list) or not 1 <= len(calls) <= 32:
+            if not tools_enabled() or role != "assistant" or not isinstance(calls, list) or not 1 <= len(calls) <= 32:
                 raise ValueError("Invalid assistant tool calls")
             for call in calls:
                 if not isinstance(call, dict) or not isinstance(call.get("id"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", call["id"]) or call["id"] in pending_calls or call.get("type") != "function":
@@ -891,6 +910,28 @@ def llama_cpu_options():
     return (["-ngl", "0"] if os.environ.get("YOUGORI_MODEL_CPU") == "1" else []) + options
 
 
+def model_memory_events():
+    """Numeric cgroup counters only; never retain prompts or native stderr."""
+    try:
+        with open("/sys/fs/cgroup/memory.events") as handle:
+            return {key: int(value) for key, value in (line.split() for line in handle)}
+    except (OSError, ValueError):
+        return {}
+
+
+def llama_exit_error(returncode, before):
+    after = model_memory_events()
+    if after.get("oom_kill", 0) > before.get("oom_kill", 0):
+        limit = ""
+        try:
+            with open("/sys/fs/cgroup/memory.max") as handle:
+                limit = " (" + format(int(handle.read().strip()) / 1073741824, ".1f") + " GiB limit)"
+        except (OSError, ValueError):
+            pass
+        return "Linux killed llama.cpp because the model container ran out of system RAM" + limit + ". Increase this model's RAM allocation in Resources, then restart it. GPU memory is a separate limit."
+    return "llama.cpp stopped unexpectedly (exit code " + str(returncode) + "). Restart this model."
+
+
 def load_gguf():
     if os.environ.get("YOUGORI_NATIVE_BACKEND"):
         return load_native_gguf()
@@ -911,6 +952,7 @@ def load_gguf():
     environment["LD_LIBRARY_PATH"] = os.path.dirname(binary) + (":" + environment["LD_LIBRARY_PATH"] if environment.get("LD_LIBRARY_PATH") else "")
     devices = {} if cpu_only else llama_cuda_devices(binary, environment)
     global ENGINE_PROCESS
+    memory_before = model_memory_events()
     process = ENGINE_PROCESS = subprocess.Popen(
         [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
          "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none", "--device", ",".join(devices) if devices else "none", *llama_cpu_options()],
@@ -925,7 +967,7 @@ def load_gguf():
     deadline = time.monotonic() + 3600
     while True:
         if process.poll() is not None:
-            raise RuntimeError("llama.cpp stopped while loading the model. Check the model format and GPU memory.")
+            raise RuntimeError(llama_exit_error(process.returncode, memory_before))
         try:
             connection, response = llama("/health", timeout=5)
             response.read()
@@ -941,9 +983,9 @@ def load_gguf():
     LLAMA["context"] = int(settings.get("n_ctx") or 4096)
 
     def watch():
-        process.wait()
+        returncode = process.wait()
         if ENGINE_PROCESS is process:
-            STATE.update(status="error", error="llama.cpp stopped unexpectedly. Restart this model.")
+            STATE.update(status="error", error=llama_exit_error(returncode, memory_before))
     threading.Thread(target=watch, daemon=True).start()
     first_device = next(iter(devices.values()), "CPU")
     gpu = (str(len(devices)) + " × " + first_device) if len(devices) > 1 else first_device
@@ -1090,6 +1132,7 @@ def load_vllm():
         "--tensor-parallel-size", str(count), "--distributed-executor-backend", "mp", "--gpu-memory-utilization", "0.90",
         "--max-num-seqs", "1", "--enforce-eager", "--generation-config", "vllm", "--disable-log-stats"]
     if kolibri: args += ["--reasoning-parser", "kolibri1"]
+    args += agent_arguments()
     if kolibri and (config.get("quantization_config") or {}).get("quant_method") == "fp8": args += ["--kv-cache-dtype", "fp8"]
     environment = {k:v for k,v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
     environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", VLLM_NO_USAGE_STATS="1",
@@ -1120,7 +1163,7 @@ def load_vllm():
     gpu = torch.cuda.get_device_name(0)
     quant = (config.get("quantization_config") or {}).get("quant_method")
     STATE.update(status="ready", gpu=(str(count) + " × " + gpu) if count > 1 else gpu, gpuCount=count,
-        context=LLAMA["context"], stream=True, weightsVerified=True, revision=revision, runner="vllm",
+        context=LLAMA["context"], stream=True, weightsVerified=True, revision=revision, runner="vllm", **({"toolCalling": True} if TOOL_PARSER else {}),
         quant=str(quant).upper() if quant else None, precision=str(config.get("dtype") or config.get("torch_dtype") or "auto"))
 
 
@@ -1186,6 +1229,7 @@ def prepare_gguf(messages, count, truncate, tools=None):
     def measure(messages):
         if FORMAT == "vllm":
             request = {"model":MODEL, "messages":messages, "add_generation_prompt":True, "add_special_tokens":False, "chat_template_kwargs":{"enable_thinking":False}}
+            if tools: request["tools"] = tools
             if STATE.get("chatTemplate") is False: request["chat_template"] = BASE_TEMPLATE
             tokens = llama_json("/tokenize", request)["count"]
             if type(tokens) is not int or tokens <= 0: raise ValueError("vLLM returned invalid prompt usage")

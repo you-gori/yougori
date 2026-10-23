@@ -19,6 +19,19 @@ import model_server as model
 
 
 class CudaDevicesTests(unittest.TestCase):
+    def test_model_oom_is_distinguished_from_other_process_failures(self):
+        with patch.object(model, "model_memory_events", return_value={"oom_kill": 2}), \
+                patch("builtins.open", return_value=io.StringIO("4294967296")):
+            message = model.llama_exit_error(-9, {"oom_kill": 1})
+        self.assertIn("system RAM", message)
+        self.assertIn("4.0 GiB limit", message)
+        with patch.object(model, "model_memory_events", return_value={"oom_kill": 2}):
+            message = model.llama_exit_error(-6, {"oom_kill": 2})
+        self.assertNotIn("out of system RAM", message, "a historic OOM must not misclassify this exit")
+        self.assertIn("exit code -6", message)
+        with patch.object(model, "model_memory_events", return_value={}):
+            self.assertIn("exit code 1", model.llama_exit_error(1, {}))
+
     def test_llama_threads_fit_the_sandbox_quota_on_gpu_and_cpu(self):
         quota = tempfile.NamedTemporaryFile("w", delete=False)
         quota.write("200000 100000\n")
@@ -328,6 +341,49 @@ sys.exit(1)
                 file.write(b"tampered weights")
             self.assertFalse(model.verified_weight(path, digest, 16))
             self.assertFalse(model.verified_weight(path, digest, 17))
+
+
+class AgentToolCallingTests(unittest.TestCase):
+    """Tools on vLLM only for a server the pod launcher started for a Swarm worker."""
+    BODY = {"messages": [{"role": "user", "content": "Check"}],
+            "tools": [{"type": "function", "function": {"name": "worker_ready", "parameters": {"type": "object", "properties": {"ready": {"type": "boolean"}}}}}],
+            "tool_choice": {"type": "function", "function": {"name": "worker_ready"}}}
+
+    def test_vllm_takes_tools_only_when_started_with_a_parser(self):
+        with patch.object(model, "FORMAT", "vllm"), patch.object(model, "TOOL_PARSER", ""):
+            with self.assertRaisesRegex(ValueError, "Agent tools require"):
+                model.validate_chat(self.BODY)
+            self.assertEqual(model.agent_arguments(), [])
+        with patch.object(model, "FORMAT", "vllm"), patch.object(model, "TOOL_PARSER", "hermes"):
+            model.validate_chat(self.BODY)
+            self.assertEqual(model.agent_arguments(), ["--enable-auto-tool-choice", "--tool-call-parser", "hermes"])
+        # Transformers has no tool calling, whatever the environment says.
+        with patch.object(model, "FORMAT", "safetensors"), patch.object(model, "TOOL_PARSER", "hermes"):
+            with self.assertRaisesRegex(ValueError, "Agent tools require"):
+                model.validate_chat(self.BODY)
+            self.assertEqual(model.agent_arguments(), [])
+
+    def test_gguf_tools_are_unchanged(self):
+        with patch.object(model, "FORMAT", "gguf"), patch.object(model, "TOOL_PARSER", ""):
+            model.validate_chat(self.BODY)
+
+    def test_only_reviewed_parsers_are_used(self):
+        self.assertEqual(model.allowed_tool_parser("hermes"), "hermes")
+        self.assertEqual(model.allowed_tool_parser("qwen3_coder"), "qwen3_coder")
+        for value in ("", "pythonic", "hermes --trust-remote-code", "../hermes"):
+            self.assertEqual(model.allowed_tool_parser(value), "")
+
+    def test_tool_results_follow_their_call_on_an_agent_server(self):
+        history = {"messages": [
+            {"role": "user", "content": "Check"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "chatcmpl-tool-1a2b", "type": "function", "function": {"name": "worker_ready", "arguments": "{\"ready\": true}"}}]},
+            {"role": "tool", "tool_call_id": "chatcmpl-tool-1a2b", "content": "ok"},
+        ], "tools": self.BODY["tools"]}
+        with patch.object(model, "FORMAT", "vllm"), patch.object(model, "TOOL_PARSER", "hermes"):
+            model.validate_chat(history)
+        with patch.object(model, "FORMAT", "vllm"), patch.object(model, "TOOL_PARSER", ""):
+            with self.assertRaises(ValueError):
+                model.validate_chat({**history, "tools": None})
 
 
 if __name__ == "__main__":

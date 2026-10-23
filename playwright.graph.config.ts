@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test"
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: ["environment-graph.spec.ts", "host-terminal.spec.ts", "instructions.spec.ts", "startup.spec.ts", "neocloud.spec.ts"],
+  testMatch: ["environment-graph.spec.ts", "instructions.spec.ts", "startup.spec.ts", "neocloud.spec.ts"],
   fullyParallel: true,
   workers: 2,
   globalSetup: "./e2e/global-setup.ts",

@@ -139,6 +139,8 @@ fn duration_from_nanoseconds(nanoseconds: u128) -> Duration {
 
 pub struct BackupManager {
     pub(crate) restore_root: PathBuf,
+    /// Credentials too long for the operating system vault, sealed with the device key.
+    credentials_root: PathBuf,
 }
 
 impl BackupManager {
@@ -146,7 +148,7 @@ impl BackupManager {
         let restore_root = app_data_directory.join("backup-restore");
         std::fs::create_dir_all(&restore_root)
             .map_err(|error| format!("create backup restore directory: {error}"))?;
-        Ok(Self { restore_root })
+        Ok(Self { restore_root, credentials_root: app_data_directory.join("backup-credentials") })
     }
 
     pub async fn verify_and_store(
@@ -179,7 +181,7 @@ impl BackupManager {
         let cleanup = remote.store.delete(&probe_path).await;
         metadata?;
         cleanup.map_err(|error| format!("remove storage verification object: {error}"))?;
-        store_credentials(id, &credentials)
+        self.store_credentials(id, &credentials)
     }
 
     pub fn delete_credentials(&self, id: &str) -> Result<(), String> {
@@ -193,7 +195,52 @@ impl BackupManager {
                 )),
             }
         }
-        Ok(())
+        // Destination IDs are generated as `dest-UUID`; no other name can reach a sealed file.
+        if validate_identifier("destination", id).is_err() {
+            return Ok(());
+        }
+        match std::fs::remove_file(self.credentials_root.join(sealed_name(id))) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("remove sealed destination credentials: {error}")),
+        }
+    }
+
+    fn store_credentials(&self, id: &str, credentials: &StoredCredentials) -> Result<(), String> {
+        validate_identifier("destination", id)?;
+        let serialized = serde_json::to_string(credentials)
+            .map_err(|error| format!("serialize destination credentials: {error}"))?;
+        let entry = credential_entry(id)?;
+        match entry.set_password(&serialized) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(self.credentials_root.join(sealed_name(id)));
+                Ok(())
+            }
+            // Windows keeps a credential blob to 2560 bytes of UTF-16, and a Google
+            // service-account key is longer. The device key the vault holds seals it instead.
+            Err(keyring::Error::TooLong(..)) => {
+                let marker = seal_credentials(&device_identity()?, &self.credentials_root, id, &serialized)?;
+                entry.set_password(&marker).map_err(|error| {
+                    // A sealed file the vault does not point at must not stay behind.
+                    let _ = std::fs::remove_file(self.credentials_root.join(sealed_name(id)));
+                    format!("save credentials in the operating system vault: {error}")
+                })
+            }
+            Err(error) => Err(format!("save credentials in the operating system vault: {error}")),
+        }
+    }
+
+    fn load_credentials(&self, id: &str) -> Result<StoredCredentials, String> {
+        let stored = migrated_password(&format!("destination:{id}"))?;
+        let serialized = match serde_json::from_str::<serde_json::Value>(&stored) {
+            Ok(marker) if marker.get("sealed").is_some() => {
+                validate_identifier("destination", id)?;
+                unseal_credentials(&device_identity()?, &self.credentials_root, id, &marker)?
+            }
+            _ => stored,
+        };
+        serde_json::from_str(&serialized)
+            .map_err(|error| format!("decode stored destination credentials: {error}"))
     }
 
     pub async fn delete_restore_artifact(&self, path: &FilePath) -> Result<(), String> {
@@ -224,7 +271,7 @@ impl BackupManager {
                 artifact_path.display()
             ));
         }
-        let credentials = load_credentials(&destination.id)?;
+        let credentials = self.load_credentials(&destination.id)?;
         if credentials.provider != destination.provider
             || credentials.location != destination.location
         {
@@ -338,7 +385,7 @@ impl BackupManager {
         manifest_checksum: &str,
     ) -> Result<BackupRestore, String> {
         validate_identifier("backup", backup_id)?;
-        let credentials = load_credentials(&destination.id)?;
+        let credentials = self.load_credentials(&destination.id)?;
         if credentials.provider != destination.provider
             || credentials.location != destination.location
         {
@@ -521,18 +568,34 @@ fn migrated_password(account: &str) -> Result<String, String> {
     }
 }
 
-fn store_credentials(id: &str, credentials: &StoredCredentials) -> Result<(), String> {
-    let serialized = serde_json::to_string(credentials)
-        .map_err(|error| format!("serialize destination credentials: {error}"))?;
-    credential_entry(id)?
-        .set_password(&serialized)
-        .map_err(|error| format!("save credentials in the operating system vault: {error}"))
+fn sealed_name(id: &str) -> String {
+    format!("destination-{id}.age")
 }
 
-fn load_credentials(id: &str) -> Result<StoredCredentials, String> {
-    let serialized = migrated_password(&format!("destination:{id}"))?;
-    serde_json::from_str(&serialized)
-        .map_err(|error| format!("decode stored destination credentials: {error}"))
+/// Seals credentials with the device key into their own file and returns what the operating
+/// system vault keeps instead: the file's checksum, so a replaced file is refused.
+fn seal_credentials(identity: &age::x25519::Identity, root: &FilePath, id: &str, serialized: &str) -> Result<String, String> {
+    use std::io::Write as _;
+    let sealed = encrypt(identity, serialized.as_bytes())?;
+    std::fs::create_dir_all(root).map_err(|error| format!("create sealed credentials directory: {error}"))?;
+    let mut file = tempfile::NamedTempFile::new_in(root).map_err(|error| format!("seal destination credentials: {error}"))?;
+    file.write_all(&sealed)
+        .and_then(|_| file.as_file().sync_all())
+        .map_err(|error| format!("seal destination credentials: {error}"))?;
+    file.persist(root.join(sealed_name(id)))
+        .map_err(|error| format!("seal destination credentials: {}", error.error))?;
+    Ok(serde_json::json!({ "sealed": hex::encode(Sha256::digest(&sealed)) }).to_string())
+}
+
+fn unseal_credentials(identity: &age::x25519::Identity, root: &FilePath, id: &str, marker: &serde_json::Value) -> Result<String, String> {
+    let expected = marker["sealed"].as_str().ok_or("stored destination credentials are damaged")?;
+    let sealed = std::fs::read(root.join(sealed_name(id)))
+        .map_err(|error| format!("read sealed destination credentials: {error}"))?;
+    if hex::encode(Sha256::digest(&sealed)) != expected {
+        return Err("sealed destination credentials do not match the vault record".into());
+    }
+    String::from_utf8(decrypt(identity, &sealed)?)
+        .map_err(|_| "sealed destination credentials are damaged".to_string())
 }
 
 fn device_identity() -> Result<age::x25519::Identity, String> {
@@ -700,6 +763,33 @@ fn decompress_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_credentials_are_sealed_with_the_device_key_and_refused_if_replaced() {
+        let identity = age::x25519::Identity::generate();
+        let root = tempfile::tempdir().unwrap();
+        // About the size of a Google service-account key, too long for a Windows vault entry.
+        let serialized = serde_json::to_string(&StoredCredentials {
+            provider: BackupProvider::GoogleCloud,
+            location: "gs://bucket/prefix".into(),
+            access_key: String::new(),
+            secret_key: "k".repeat(2400),
+        })
+        .unwrap();
+        let marker = seal_credentials(&identity, root.path(), "dest-1", &serialized).unwrap();
+        assert!(marker.len() < 128, "the vault keeps only a checksum");
+        let sealed = std::fs::read(root.path().join("destination-dest-1.age")).unwrap();
+        assert!(!sealed.windows(16).any(|window| window == "k".repeat(16).as_bytes()), "the key never sits in the file in clear");
+        let marker: serde_json::Value = serde_json::from_str(&marker).unwrap();
+        assert_eq!(unseal_credentials(&identity, root.path(), "dest-1", &marker).unwrap(), serialized);
+        // Another device key cannot open it, and a replaced or missing file is refused.
+        let other = age::x25519::Identity::generate();
+        assert!(unseal_credentials(&other, root.path(), "dest-1", &marker).is_err());
+        let replacement = seal_credentials(&identity, root.path(), "dest-2", &serialized).unwrap();
+        std::fs::copy(root.path().join("destination-dest-2.age"), root.path().join("destination-dest-1.age")).unwrap();
+        assert!(unseal_credentials(&identity, root.path(), "dest-1", &marker).unwrap_err().contains("do not match"));
+        assert!(unseal_credentials(&identity, root.path(), "dest-3", &serde_json::from_str(&replacement).unwrap()).is_err());
+    }
 
     #[test]
     fn encrypted_chunks_round_trip() {

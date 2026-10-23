@@ -36,7 +36,8 @@ fn priority_weight(priority: &Priority) -> f64 {
 
 fn allocate(range: &ResourceRange, weight: f64, pressure: &HostPressure) -> f64 {
     let target = match pressure {
-        HostPressure::Low => range.preferred * weight.min(1.25),
+        // The same floor as under moderate pressure: an idle host never gives less than a busier one.
+        HostPressure::Low => range.preferred * weight.clamp(0.8, 1.25),
         HostPressure::Moderate => range.preferred * (0.85 * weight).clamp(0.8, 1.1),
         HostPressure::High => range.min + (range.preferred - range.min) * 0.25 * weight.min(1.0),
     };
@@ -83,7 +84,35 @@ pub fn limit_cuda_pool(state: &mut PlatformState, cpu: f64, memory: f64) -> Resu
 }
 
 pub fn schedule(state: &mut PlatformState) {
+    let running_cuda: Vec<(usize, f64, f64)> = state.environments.iter().enumerate()
+        .filter(|(_, e)| e.provider == Some(RuntimeProviderKind::YougoriCuda) && e.status == EnvironmentStatus::Running)
+        .map(|(index, e)| (index, e.resource_policy.cpu.current, e.resource_policy.memory_gb.current))
+        .collect();
     schedule_for_host(state, cfg!(target_os = "macos"));
+    // GPU containers share what WSL can give, which plain scheduling does not know. Every
+    // scheduling caps them to the budget the last refresh read, so a save or a start never
+    // writes limits WSL cannot honour (it would kill processes inside them).
+    if let Some((cpus, memory)) = state.cuda_capacity {
+        if limit_cuda_pool(state, cpus, memory).is_err() {
+            // Not even their minimums fit: keep what they had rather than ask for more.
+            for (index, cpu, memory) in running_cuda {
+                if cpu > 0.0 && memory > 0.0 {
+                    state.environments[index].resource_policy.cpu.current = cpu;
+                    state.environments[index].resource_policy.memory_gb.current = memory;
+                }
+            }
+        }
+    }
+}
+
+/// The CPU and memory the GPU containers' allocations add up to, counted as `limit_cuda_pool`
+/// counts them: running ones by their allocation, paused ones by the memory they keep.
+pub fn cuda_pool_total(state: &PlatformState) -> (f64, f64) {
+    state.environments.iter().filter(|e| e.provider == Some(RuntimeProviderKind::YougoriCuda)).fold((0.0, 0.0), |(cpu, memory), e| match e.status {
+        EnvironmentStatus::Running => (cpu + e.resource_policy.cpu.current, memory + e.resource_policy.memory_gb.current),
+        EnvironmentStatus::Paused => (cpu, memory + e.resource_policy.memory_gb.current.max(e.resource_policy.memory_gb.preferred)),
+        _ => (cpu, memory),
+    })
 }
 
 fn schedule_for_host(state: &mut PlatformState, macos: bool) {
@@ -133,8 +162,12 @@ fn schedule_for_host(state: &mut PlatformState, macos: bool) {
         } else {
             environment.resource_policy.cpu.current = environment.resource_policy.cpu.min;
             if environment.kind != EnvironmentKind::MicroVm {
+                // Never below what it uses now plus a margin: a lower limit makes a container's
+                // kernel kill its processes, or a VM's balloon take back pages it is using.
+                let used = environment.memory_usage_gb;
+                let in_use = if used > 0.0 { (used * 1.1).max(used + 0.125) } else { 0.0 }.min(environment.resource_policy.memory_gb.max);
                 environment.resource_policy.memory_gb.current =
-                    environment.resource_policy.memory_gb.min;
+                    environment.resource_policy.memory_gb.min.max(in_use);
             } else if environment.resource_policy.memory_gb.current <= 0.0 {
                 environment.resource_policy.memory_gb.current =
                     environment.resource_policy.memory_gb.preferred;
@@ -236,6 +269,31 @@ pub fn pressure(cpu_percent: f64, memory_percent: f64) -> HostPressure {
     }
 }
 
+/// The pressure class after the newest readings (the last of each history). A class changes only
+/// when the last two readings agree, so one busy moment resizes nothing; and it leaves a higher
+/// class only well below where it entered it (CPU: High from 85 % until under 70 %, Moderate from
+/// 68 % until under 55 %), so a load hovering at a threshold does not flip every environment's
+/// limits each refresh.
+pub fn pressure_after(previous: &HostPressure, cpu_history: &[f64], memory_history: &[f64]) -> HostPressure {
+    let (cpu, memory) = (&cpu_history[cpu_history.len().saturating_sub(2)..], &memory_history[memory_history.len().saturating_sub(2)..]);
+    if cpu.len() < 2 || memory.len() < 2 {
+        return pressure(cpu.last().copied().unwrap_or(0.0), memory.last().copied().unwrap_or(0.0));
+    }
+    let both = |values: &[f64], test: fn(f64) -> bool| values.iter().all(|value| test(*value));
+    let into_high = both(cpu, |v| v >= 85.0) || both(memory, |v| v > 88.0);
+    let into_moderate = both(cpu, |v| v > 68.0) || both(memory, |v| v > 76.0);
+    let out_of_high = both(cpu, |v| v < 70.0) && both(memory, |v| v < 80.0);
+    let out_of_moderate = both(cpu, |v| v < 55.0) && both(memory, |v| v < 68.0);
+    match previous {
+        HostPressure::High if !out_of_high => HostPressure::High,
+        HostPressure::High | HostPressure::Moderate if into_high => HostPressure::High,
+        HostPressure::High | HostPressure::Moderate => if out_of_moderate { HostPressure::Low } else { HostPressure::Moderate },
+        HostPressure::Low if into_high => HostPressure::High,
+        HostPressure::Low if into_moderate => HostPressure::Moderate,
+        HostPressure::Low => HostPressure::Low,
+    }
+}
+
 pub fn update_metrics(state: &mut PlatformState, metrics: HostMetrics) {
     state.host = metrics;
     schedule(state);
@@ -292,6 +350,91 @@ mod tests {
         }
     }
 
+    fn gpu_desk(id: &str) -> Environment {
+        let mut env = lightweight_environment();
+        env.id = id.into();
+        env.kind = EnvironmentKind::Container;
+        env.provider = Some(RuntimeProviderKind::YougoriCuda);
+        env.resource_policy.cpu = ResourceRange { min: 1.0, preferred: 4.0, max: 4.0, current: 0.0 };
+        env.resource_policy.memory_gb = ResourceRange { min: 3.0, preferred: 12.0, max: 12.0, current: 0.0 };
+        env
+    }
+
+    #[test]
+    fn two_gpu_desks_never_get_more_than_wsl_can_give_together() {
+        let mut state = PlatformState::seeded().unwrap();
+        state.host.total_cpu = 16;
+        state.host.total_memory_gb = 64.0;
+        state.host.pressure = HostPressure::Low;
+        state.environments = vec![gpu_desk("desk-a"), gpu_desk("desk-b")];
+        // Without the cached budget (as before), plain scheduling asks for 12 + 12 GB.
+        schedule(&mut state);
+        assert_eq!(cuda_pool_total(&state).1, 24.0);
+        // With the budget the refresh read, any later save or start keeps both inside 15.5 GB.
+        state.cuda_capacity = Some((8.0, 15.5));
+        schedule(&mut state);
+        let (cpu, memory) = cuda_pool_total(&state);
+        assert!(cpu <= 8.0 && memory <= 15.5, "{cpu} CPUs, {memory} GB");
+        assert!(state.environments.iter().all(|e| e.resource_policy.memory_gb.current >= 3.0), "minimums kept");
+    }
+
+    #[test]
+    fn gpu_containers_over_their_budget_keep_what_they_had() {
+        let mut state = PlatformState::seeded().unwrap();
+        state.host.total_cpu = 16;
+        state.host.total_memory_gb = 64.0;
+        let mut desk = gpu_desk("desk-a");
+        desk.resource_policy.cpu.current = 2.0;
+        desk.resource_policy.memory_gb.current = 6.0;
+        state.environments = vec![desk];
+        // Not even the 3 GB minimum fits in 1 GB: nothing larger is written.
+        state.cuda_capacity = Some((1.0, 1.0));
+        schedule(&mut state);
+        assert_eq!((state.environments[0].resource_policy.cpu.current, state.environments[0].resource_policy.memory_gb.current), (2.0, 6.0));
+    }
+
+    #[test]
+    fn a_short_spike_keeps_the_pressure_class_and_a_sustained_one_changes_it() {
+        let class = |pressure: HostPressure| match pressure { HostPressure::Low => "low", HostPressure::Moderate => "moderate", HostPressure::High => "high" };
+        let calm = [30.0, 30.0];
+        assert_eq!(class(pressure_after(&HostPressure::Low, &[40.0, 95.0], &calm)), "low", "one busy reading");
+        assert_eq!(class(pressure_after(&HostPressure::Low, &[90.0, 95.0], &calm)), "high", "two in a row");
+        assert_eq!(class(pressure_after(&HostPressure::High, &[75.0, 72.0], &calm)), "high", "not yet under 70 %");
+        assert_eq!(class(pressure_after(&HostPressure::High, &[65.0, 60.0], &calm)), "moderate");
+        assert_eq!(class(pressure_after(&HostPressure::Moderate, &[60.0, 58.0], &calm)), "moderate", "not yet under 55 %");
+        assert_eq!(class(pressure_after(&HostPressure::Moderate, &[50.0, 40.0], &calm)), "low");
+        assert_eq!(class(pressure_after(&HostPressure::Low, &[30.0], &[90.0])), "high", "the first reading is taken as it is");
+    }
+
+    #[test]
+    fn a_busy_host_never_takes_memory_an_environment_is_using() {
+        let mut state = PlatformState::seeded().unwrap();
+        state.host.total_cpu = 8;
+        state.host.total_memory_gb = 16.0;
+        state.host.pressure = HostPressure::High;
+        let mut env = lightweight_environment();
+        env.status = EnvironmentStatus::Running;
+        env.kind = EnvironmentKind::Container;
+        env.provider = Some(RuntimeProviderKind::YougoriOci);
+        env.resource_policy.memory_gb = ResourceRange { min: 1.0, preferred: 2.0, max: 8.0, current: 0.0 };
+        env.memory_usage_gb = 5.0;
+        state.environments = vec![env];
+        schedule(&mut state);
+        assert!(state.environments[0].resource_policy.memory_gb.current >= 5.5, "{}", state.environments[0].resource_policy.memory_gb.current);
+    }
+
+    #[test]
+    fn no_priority_gets_more_when_the_host_is_busier() {
+        let range = ResourceRange { min: 1.0, preferred: 4.0, max: 4.0, current: 0.0 };
+        for priority in [Priority::Low, Priority::Normal, Priority::High, Priority::Critical] {
+            let weight = priority_weight(&priority);
+            let low = allocate(&range, weight, &HostPressure::Low);
+            let moderate = allocate(&range, weight, &HostPressure::Moderate);
+            let high = allocate(&range, weight, &HostPressure::High);
+            assert!(low >= moderate && moderate >= high, "{priority:?}: {low} {moderate} {high}");
+        }
+    }
+
     #[test]
     fn fixed_allocations_survive_host_pressure_and_cuda_pool_limits() {
         for kind in [EnvironmentKind::Container, EnvironmentKind::FullVm, EnvironmentKind::MicroVm] {
@@ -313,6 +456,12 @@ mod tests {
                         limit_cuda_pool(&mut state, 4.0, 4.0).unwrap();
                         assert_eq!(state.environments[0].resource_policy.cpu.current, 2.0);
                         assert_eq!(state.environments[0].resource_policy.memory_gb.current, 1.5);
+                        // The same through the path every save and start takes, with the budget cached.
+                        state.cuda_capacity = Some((4.0, 4.0));
+                        schedule(&mut state);
+                        assert_eq!(state.environments[0].resource_policy.cpu.current, 2.0);
+                        assert_eq!(state.environments[0].resource_policy.memory_gb.current, 1.5);
+                        state.cuda_capacity = None;
                     }
                     if kind == EnvironmentKind::Container {
                         assert!(limit_cuda_pool(&mut state, 1.0, 1.0).is_err(), "Insufficient capacity must reject the request, not shrink fixed limits");

@@ -160,11 +160,35 @@ impl Stream {
             .min(self.base + stable as u64)
             .max(start);
         let left = (start - self.base) as usize;
-        let right = (end - self.base) as usize;
+        let mut right = (end - self.base) as usize;
+        // A window can end inside a multi-byte character; leave it whole for the next read.
+        if !(finished && end == self.total) {
+            let tail = incomplete_utf8_tail(masked.get(left..right).unwrap_or_default());
+            if right - tail > left {
+                right -= tail;
+            }
+        }
         let text =
             String::from_utf8_lossy(masked.get(left..right).unwrap_or_default()).into_owned();
-        (text, end, self.base > self.requested)
+        (text, self.base + right as u64, self.base > self.requested)
     }
+}
+
+/// Bytes of a character that starts in `bytes` but continues past its end.
+fn incomplete_utf8_tail(bytes: &[u8]) -> usize {
+    for back in 1..=bytes.len().min(3) {
+        let byte = bytes[bytes.len() - back];
+        if byte & 0xC0 != 0x80 {
+            let width = match byte {
+                0xF0.. => 4,
+                0xE0.. => 3,
+                0xC0.. => 2,
+                _ => 1,
+            };
+            return if width > back { back } else { 0 };
+        }
+    }
+    0
 }
 
 pub(super) async fn read_with<F, Fut>(
@@ -266,5 +290,30 @@ mod tests {
             assert_eq!(result["stdout"], if done { "ready ***" } else { "ready " });
             assert_eq!(result["stdoutCursor"], if done { 9 } else { 6 });
         }
+    }
+    #[tokio::test]
+    async fn characters_split_across_pages_arrive_whole() {
+        let mut data = vec![b'a'; 65535];
+        data.extend_from_slice("é🦉 done".as_bytes());
+        let total = data.len() as u64;
+        let data = &data;
+        let mut cursor = 0;
+        let mut text = String::new();
+        while cursor < total {
+            let result=read_with(cursor,0,65536,&[],|out,_|async move{let end=(out+65536).min(total);Ok(json!({"stdoutBase64":STANDARD.encode(&data[out as usize..end as usize]),"stdoutCursor":end,"stdoutBytes":total,"stderrBase64":"","stderrCursor":0,"stderrBytes":0,"done":true}))}).await.unwrap();
+            let next = result["stdoutCursor"].as_u64().unwrap();
+            assert!(next > cursor);
+            text.push_str(result["stdout"].as_str().unwrap());
+            cursor = next;
+        }
+        assert!(!text.contains('\u{FFFD}'));
+        assert!(text.ends_with("aé🦉 done"));
+        // A window smaller than one character still makes progress.
+        let owl = "🦉".as_bytes();
+        let result=read_with(0,0,1,&[],|out,_|async move{Ok(json!({"stdoutBase64":STANDARD.encode(&owl[out as usize..]),"stdoutCursor":owl.len(),"stdoutBytes":owl.len(),"stderrBase64":"","stderrCursor":0,"stderrBytes":0,"done":false}))}).await.unwrap();
+        assert!(result["stdoutCursor"].as_u64().unwrap() > 0);
+        assert_eq!(incomplete_utf8_tail("a🦉".as_bytes()), 0);
+        assert_eq!(incomplete_utf8_tail(&"a🦉".as_bytes()[..3]), 2);
+        assert_eq!(incomplete_utf8_tail(&"é".as_bytes()[..1]), 1);
     }
 }

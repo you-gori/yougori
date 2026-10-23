@@ -272,10 +272,10 @@ Declarative projects
   yougori up --dry-run
 
 Without -f, search the current directory and its parents for yougori.yaml/yml.
-See examples/yougori.yaml for a working web/cache project. Desktop's Projects
-button discovers registered projects, the Desktop working directory, and the
-default CLI workspace (including its immediate subfolders). Open YAML selects
-projects elsewhere. Discovery does not execute a project without Apply & start.
+See examples/yougori.yaml for a working web/cache project. `yougori project list`
+discovers registered projects, the Desktop working directory, and the default
+CLI workspace (including its immediate subfolders); `yougori project inspect
+PATH` reads one elsewhere. Discovery never executes a project; only up/apply does.
 
 Top-level fields: project, environments, connections, publish.
 Each environment supports:
@@ -293,7 +293,7 @@ Each environment supports:
   health also accepts method: POST, body: {...}, bearer_secret: REF, wait_seconds: 120
   working_dir, user, restart: no/always/unless-stopped/on-failure
   ports: guest port, "HOST:GUEST", or {target: 80, published: 8080}
-  internet: boolean (default false for YAML)
+  internet: boolean (default true; set false to keep a node offline)
   volumes: [{source: data, target: /data, read_only: false}]
   permissions: {pc: true, edit: true}
   pc_access: [{path: ./project, read_only: false, target: /workspace}]
@@ -376,7 +376,6 @@ Docker Compose import
   yougori import compose.yaml --dry-run
   yougori import compose.yaml
   yougori up
-Desktop: Projects > Import Docker Project > review > Create yougori.yaml > Apply.
 Import never overwrites an existing yougori.yaml. Supported image-based services
 translate commands, entrypoints, environment/env_file/.env interpolation,
 dependencies (service_started), CPU/RAM/NVIDIA requests, TCP ports, named volumes,

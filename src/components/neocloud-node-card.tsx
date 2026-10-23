@@ -96,8 +96,12 @@ export function NeocloudNodeCard({ environmentId }: { environmentId: string }) {
     </div>
 
     {!deployment.resourceId && !deleted ? <div className="neo-panel">
-      <p className="neo-note">Creation was not confirmed in time. Yougori can look for it by name: if it exists it is attached here, and if not, nothing was created and you can remove this node.</p>
-      <span><Button size="sm" loading={busy === "inspect"} disabled={Boolean(busy)} onClick={() => void perform("inspect")}>Check again</Button></span>
+      <p className="neo-note">Neocloud did not confirm this {endpoint ? "endpoint" : "pod"} was created, so Yougori has no ID for it and cannot stop or delete it from here. Choose Check again to look for it by name: if it is in your Neocloud account, it is attached here. If your account has no such {endpoint ? "endpoint" : "pod"}, type {deployment.name} to confirm, and this node can then be removed.</p>
+      <span className="neo-row">
+        <Button size="sm" loading={busy === "inspect"} disabled={Boolean(busy)} onClick={() => void perform("inspect")}>Check again</Button>
+        <Input className="neo-input" aria-label={`Name to confirm there is no such ${endpoint ? "endpoint" : "pod"}`} value={confirmation} onChange={e => setConfirmation(e.target.value)} />
+        <Button size="sm" variant="destructive" disabled={Boolean(busy) || confirmation !== deployment.name} loading={busy === "delete"} onClick={() => void perform("delete")}>Mark as not created</Button>
+      </span>
     </div> : null}
 
     {!endpoint && !deleted && deployment.resourceId ? <>

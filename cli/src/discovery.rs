@@ -2,11 +2,16 @@
 use crate::{catalog, skills, wire};
 use serde_json::{json, Value};
 
-pub const TOPICS: &[&str] = &["lifecycle", "files", "gpu", "deployment", "models", "grid", "connections", "cloud", "vault", "terminal", "settings", "jobs", "bounty"];
+pub const TOPICS: &[&str] = &["lifecycle", "files", "gpu", "deployment", "models", "grid", "grids", "connections", "cloud", "vault", "access-grid", "terminal", "settings", "jobs", "bounty"];
 
 pub fn topic(method: &str) -> &'static str {
-    if method == "swarm_dispatch" { "bounty" }
+    // The one namespace is filed first, because the chain below matches on substrings and would
+    // otherwise scatter it: `grids_models` under models, `grids_log` under terminal and
+    // `grids_share` under connections.
+    if method.starts_with("grids_") { "grids" }
+    else if method == "swarm_dispatch" { "bounty" }
     else if method.starts_with("grid_") { "grid" }
+    else if method.starts_with("access_") { "access-grid" }
     else if method.starts_with("jobs_") { "jobs" }
     else if method.contains("model") || method.starts_with("market_") || method == "confidential_network_chat" { "models" }
     else if method.contains("cuda") || method.contains("gpu") { "gpu" }

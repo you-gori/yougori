@@ -1,0 +1,27 @@
+/* The enterprise fold of the Sandbox Grid page: the same sheet, hairlines and rows as the rest,
+   with a small tab strip instead of its own look. */
+.grid-fold > summary { cursor: pointer; list-style: none; }
+.grid-fold > summary::-webkit-details-marker { display: none; }
+.grid-fold > summary::before { content: "+"; display: inline-block; width: 14px; margin-right: 2px; color: var(--muted-foreground); font-weight: 400; }
+.grid-fold[open] > summary::before { content: "−"; }
+.desk-admin { min-width: 0; }
+.desk-admin-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 20px 10px; }
+.desk-admin-tabs > button { padding: 5px 12px; border-radius: 75px; color: var(--muted-foreground); font: inherit; font-size: 12.5px; letter-spacing: -0.01em; transition: background-color .15s, color .15s; }
+.desk-admin-tabs > button:hover { color: var(--foreground); }
+.desk-admin-tabs > button[aria-selected="true"] { background: var(--primary); color: var(--primary-foreground); }
+.desk-admin-tabs > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.desk-admin-actor { margin-left: auto; font-size: 12px; }
+.desk-admin-panel { border-top: 1px solid var(--workspace-outline, var(--border)); }
+.desk-admin-panel > * + * { border-top: 1px solid var(--workspace-outline, var(--border)); }
+.desk-admin-intro { margin: 0; padding: 12px 20px; color: var(--muted-foreground); font-size: 12.5px; line-height: 1.5; max-width: 78ch; }
+.desk-admin-row > strong { flex: none; max-width: 30%; overflow: hidden; font-size: 13px; font-weight: 500; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.desk-admin-row .grid-select-field { width: auto; }
+.desk-admin-code { display: block; overflow: hidden; font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.desk-admin-field { display: grid; gap: 6px; min-width: 0; }
+.desk-admin-field > span { color: var(--muted-foreground); font-size: 10.5px; font-weight: 600; letter-spacing: .07em; line-height: 1.2; text-transform: uppercase; }
+.desk-admin-field > small { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.4; }
+.desk-admin-field > p[role="alert"] { margin: 0; color: var(--destructive-foreground); font-size: 12px; }
+.desk-admin-inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.desk-admin-inline [data-slot="input-control"] { width: 220px; }
+.desk-portal-enrol { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.desk-portal-enrol [data-slot="input-control"] { width: 110px; }

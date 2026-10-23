@@ -320,12 +320,12 @@ pub async fn remote_share_request(
         .snapshot()?
         .environments
         .into_iter()
-        .find(|e| e.id == environment_id && e.runtime.starts_with("shared://tunnel/"))
+        .find(|e| e.id == environment_id && crate::peer_sharing::is_shared(e))
         .ok_or("Remote environment not found")?;
-    if !matches!(method.as_str(), "inspect" | "files" | "desktop" | "logout") {
+    if !matches!(method.as_str(), "inspect" | "files" | "desktop" | "logout" | "upload") {
         return Err("Use the environment's terminal, logs or power controls".into());
     }
-    request_saved(&env, &method, params).await
+    crate::peer_sharing::remote(&env, &method, params).await
 }
 
 /// Download a folder into a fresh local directory, in bounded chunks. The

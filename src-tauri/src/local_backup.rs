@@ -156,6 +156,11 @@ fn retag_container(
                     .append(&header, bytes.as_slice())
                     .map_err(|e| e.to_string())?;
             } else {
+                // The raw header can hold 0 where a PAX record carries the real size: Go's
+                // tar writer does that for layers of 8 GiB or more. The PAX record is not
+                // copied, so the size goes into the header itself (binary when that large).
+                header.set_size(entry.size());
+                header.set_cksum();
                 output
                     .append(&header, &mut entry)
                     .map_err(|e| e.to_string())?;
@@ -302,7 +307,7 @@ pub(crate) fn pack_download(manifest: &Path, destination: &Path) -> Result<u64, 
     let payload_size = regular_file(&manifest.parent().ok_or("Missing backup folder")?.join(PAYLOAD))?.metadata().map_err(|e| e.to_string())?.len();
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let disk = crate::runtime::storage::runtime_disk(&disks, destination.parent().ok_or("Missing download folder")?).ok_or("Cannot determine available download storage")?;
-    if disk.available_space() < payload_size.saturating_add(2 * 1024 * 1024 * 1024) { return Err("Not enough free space to prepare this download. Yougori keeps 2 GB available for your computer.".into()); }
+    if disk.available_space() < payload_size.saturating_add(2 * 1024 * 1024 * 1024) { return Err("Not enough free space to pack this up. Yougori keeps 2 GB available for your computer.".into()); }
     let output = OpenOptions::new().write(true).create_new(true).open(destination).map_err(|e| e.to_string())?;
     let result = (|| {
         let mut archive = tar::Builder::new(output);
@@ -528,22 +533,31 @@ pub(crate) async fn export_backup(
     portable.control_endpoint = None;
     portable.console_endpoint = None;
     portable.sandbox_policy = None;
-    let manifest = Manifest {
-        // Older Yougori versions must reject secure backups rather than
-        // quietly dropping TPM state while converting their disk payload.
-        version: if environment.provider == Some(RuntimeProviderKind::Qemu)
-            && crate::runtime::backup_has_vm_security(&path)? { 2 } else { 1 },
-        environment: portable,
-        snapshot,
-        size,
-        sha256: checksum,
+    // Older Yougori versions must reject secure backups rather than
+    // quietly dropping TPM state while converting their disk payload.
+    // A failed check still falls through to the snapshot cleanup below.
+    let secure = if environment.provider == Some(RuntimeProviderKind::Qemu) {
+        crate::runtime::backup_has_vm_security(&path)
+    } else {
+        Ok(false)
     };
-    let source = path.clone();
-    let result =
-        tokio::task::spawn_blocking(move || write_backup(Path::new(&folder), &manifest, &source))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r);
+    let result = match secure {
+        Ok(secure) => {
+            let manifest = Manifest {
+                version: if secure { 2 } else { 1 },
+                environment: portable,
+                snapshot,
+                size,
+                sha256: checksum,
+            };
+            let source = path.clone();
+            tokio::task::spawn_blocking(move || write_backup(Path::new(&folder), &manifest, &source))
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r)
+        }
+        Err(error) => Err(error),
+    };
     let cleanup = if environment.provider.as_ref().is_some_and(RuntimeProviderKind::is_container) {
         runtime.delete_container_snapshot(runtime_id, &id).await
     } else {
@@ -806,6 +820,65 @@ mod tests {
             sha256: hex::encode(Sha256::digest(b"disk")),
         }
     }
+    /// PROVES that what a desk move carries holds the disk, which is what a move did not do for
+    /// as long as moves have existed.
+    ///
+    /// `write_backup` returns the path of the manifest *inside* the folder it wrote, and the
+    /// disk is the file beside it. A park sent that path, so about a kilobyte of JSON travelled
+    /// and the disk never left the computer. The checksum was taken over what was sent, so it
+    /// matched; the park reported "parked"; the hub handed the desk on; and the computer giving
+    /// it up then deleted the sandbox. The desk's data survived only as the folder nobody
+    /// cleaned up.
+    ///
+    /// What is pinned here is the property at the layer it can be checked without an engine:
+    /// the thing a park hands to the upload carries the disk, and the thing it used to hand over
+    /// plainly does not. A park-then-adopt test over a real export needs an AppHandle and a
+    /// runtime, and is worth having as well.
+    #[test]
+    fn what_a_desk_move_carries_holds_the_disk() {
+        let home = tempfile::tempdir().unwrap();
+        let disk = home.path().join("source.bin");
+        fs::write(&disk, b"disk").unwrap();
+        let exported = tempfile::tempdir_in(home.path()).unwrap();
+        let manifest = write_backup(exported.path(), &fixture(), &disk).unwrap();
+
+        // The shape that made the bug: an export hands back the manifest, and the disk is a
+        // separate file beside it that nothing in that path mentions.
+        assert_eq!(manifest.file_name().unwrap(), MANIFEST);
+        let payload = manifest.parent().unwrap().join(PAYLOAD);
+        assert_eq!(fs::read(&payload).unwrap(), b"disk");
+        assert!(fs::metadata(&manifest).unwrap().len() < 4096, "the manifest is metadata; carrying it alone carries no disk at all");
+
+        // What a park hands to the upload now: one file holding both, which is the same archive
+        // an environment download is, so the adopting side needed no change.
+        let carried = home.path().join("desk-1.yougori-move");
+        pack_download(&manifest, &carried).unwrap();
+
+        // Unpacked somewhere the original folder cannot be reached from, as the adopting
+        // computer does: both entries arrive and the disk is the disk that went in.
+        let arrived = tempfile::tempdir_in(home.path()).unwrap();
+        unpack_download(regular_file(&carried).unwrap(), arrived.path()).unwrap();
+        assert_eq!(fs::read(arrived.path().join(PAYLOAD)).unwrap(), b"disk", "the disk did not travel with the move");
+        let delivered: Manifest = serde_json::from_slice(&fs::read(arrived.path().join(MANIFEST)).unwrap()).unwrap();
+        assert_eq!(delivered.sha256, hex::encode(Sha256::digest(b"disk")));
+        assert_eq!(delivered.size, 4);
+
+        // And an archive with no disk in it is refused rather than being taken for a whole desk.
+        let hollow = home.path().join("hollow.yougori-move");
+        {
+            let mut only = tar::Builder::new(fs::File::create(&hollow).unwrap());
+            let mut header = tar::Header::new_ustar();
+            let bytes = fs::read(&manifest).unwrap();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o600);
+            header.set_cksum();
+            only.append_data(&mut header, MANIFEST, &bytes[..]).unwrap();
+            only.into_inner().unwrap().sync_all().unwrap();
+        }
+        let empty = tempfile::tempdir_in(home.path()).unwrap();
+        assert!(unpack_download(regular_file(&hollow).unwrap(), empty.path()).is_err(), "a move carrying only its manifest was accepted as a whole desk");
+    }
+
     #[test]
     fn opened_backups_grant_no_network_gpu_or_remote_media() {
         let mut container = fixture().environment;
@@ -1010,6 +1083,51 @@ mod tests {
         assert!(!target.exists());
         assert!(source.exists());
     }
+    #[test]
+    fn container_archive_keeps_layer_sizes_that_only_a_pax_record_carries() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.tar");
+        let target = temp.path().join("retagged.tar");
+        let mut archive = tar::Builder::new(File::create(&source).unwrap());
+        let index = format!(r#"{{"manifests":[{{"annotations":{{"io.containerd.image.name":"{}old"}}}}]}}"#, yougori_cli::legacy_names::SNAPSHOT_TAG_PREFIX);
+        let mut header = tar::Header::new_ustar();
+        header.set_size(index.len() as u64);
+        header.set_cksum();
+        archive.append_data(&mut header, "index.json", index.as_bytes()).unwrap();
+        // What Go writes for a large layer: a PAX size record, and 0 in the header itself.
+        let mut pax = tar::Header::new_ustar();
+        pax.set_path("PaxHeaders.0/layer").unwrap();
+        pax.set_entry_type(tar::EntryType::XHeader);
+        pax.set_size(10);
+        pax.set_cksum();
+        archive.append(&pax, b"10 size=5\n".as_slice()).unwrap();
+        let mut layer = tar::Header::new_ustar();
+        layer.set_path("blobs/sha256/layer").unwrap();
+        layer.set_entry_type(tar::EntryType::Regular);
+        layer.set_mode(0o644);
+        layer.set_size(0);
+        layer.set_cksum();
+        archive.append(&layer, b"layer".as_slice()).unwrap();
+        let mut tail = tar::Header::new_ustar();
+        tail.set_size(4);
+        tail.set_cksum();
+        archive.append_data(&mut tail, "oci-layout", b"next".as_slice()).unwrap();
+        archive.finish().unwrap();
+        drop(archive);
+        retag_container(&source, &target, "old", "new").unwrap();
+        let mut copied = std::collections::BTreeMap::new();
+        for entry in tar::Archive::new(File::open(&target).unwrap()).entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut body = String::new();
+            entry.read_to_string(&mut body).unwrap();
+            copied.insert(path, body);
+        }
+        assert_eq!(copied["blobs/sha256/layer"], "layer");
+        assert_eq!(copied["oci-layout"], "next");
+        assert!(copied["index.json"].contains("snapshots:new"));
+    }
+
     #[test]
     fn failed_export_leaves_existing_files_untouched() {
         let temp = tempfile::tempdir().unwrap();

@@ -3,13 +3,13 @@ import { expect, test } from "@playwright/test"
 test.beforeEach(async ({ page }) => {
   await page.goto("/")
   // Navigation first loads the startup document; wait for the actual app.
-  await expect(page.getByRole("group", { name: "Dashboard actions" })).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByRole("region", { name: "Environments workspace", exact: true })).toBeVisible({ timeout: 30_000 })
 })
 
 test("first launch is empty and does not invent running environments or GPU availability", async ({ page }) => {
   await expect(page.getByText("Your workspace starts here", { exact: true })).toBeVisible()
   await expect(page.locator("[data-environment-id]")).toHaveCount(0)
-  for (const name of ["Instructions", "Personal Vault MCP", "Huggingface", "Settings", "New environment"]) {
+  for (const name of ["Instructions", "Create my personal vault MCP", "Run a local model", "Settings", "Add sandbox"]) {
     await expect(page.getByRole("button", { name, exact: true })).toBeVisible()
   }
   await expect(page.getByText("Unavailable", { exact: true })).toBeVisible()
@@ -26,7 +26,7 @@ test("storage reclamation is reachable and browser preview does not invent freed
 })
 
 test("unimplemented computer branches cannot be selected or created", async ({ page }) => {
-  await page.getByRole("button", { name: "New environment", exact: true }).click()
+  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole("radio", { name: /Computer branch/ })).toHaveCount(0)
@@ -58,7 +58,7 @@ test("theme changes persist after reloading the application", async ({ page }) =
 })
 
 test("cloud connection remains opt-in and cancellation creates no node", async ({ page }) => {
-  await page.getByRole("button", { name: "New environment", exact: true }).click()
+  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
   await page.locator(".creation-type").filter({ hasText: /^Cloud environment$/ }).click()
   const dialog = page.getByRole("dialog")
   await expect(dialog).toBeVisible()
@@ -69,7 +69,7 @@ test("cloud connection remains opt-in and cancellation creates no node", async (
 
 test("dashboard actions remain reachable without horizontal overflow at compact width", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  for (const name of ["Instructions", "Personal Vault MCP", "Huggingface", "Settings", "New environment"]) {
+  for (const name of ["Instructions", "Create my personal vault MCP", "Run a local model", "Settings", "Add sandbox"]) {
     await expect(page.getByRole("button", { name, exact: true })).toBeVisible()
   }
   const width = await page.evaluate(() => ({ viewport: window.innerWidth, document: document.documentElement.scrollWidth }))

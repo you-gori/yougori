@@ -20,7 +20,7 @@ fn swarm_help_and_schema_are_discoverable_without_an_engine() {
         let help = String::from_utf8_lossy(&output.stdout);
         assert!(help.contains("model"));
         assert!(help.contains("Ctrl+]"));
-        assert!(help.contains("env start bounty"));
+        assert!(help.contains("start --environment bounty"));
     }
     let output = cli(&["schema", "--topic", "bounty"]);
     assert!(output.status.success());

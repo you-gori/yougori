@@ -75,22 +75,41 @@ pub(crate) fn remove_orphans(runtime: &RuntimeManager, live: &BTreeSet<String>) 
     (freed, warnings)
 }
 
+/// The largest baseline kept: saving refuses what loading would refuse.
+const MAX_BASELINE_BYTES: usize = 96 * 1024 * 1024;
+
+/// Baselines key folders by their canonical path, as ensure_folder_baseline records them, so a
+/// folder given as a relative path or in another spelling finds its baseline.
+fn folder_keys(folders: BTreeSet<String>) -> BTreeSet<String> {
+    folders
+        .into_iter()
+        .map(|folder| std::fs::canonicalize(&folder).map(|path| path.to_string_lossy().into_owned()).unwrap_or(folder))
+        .collect()
+}
+
 fn load(path: &Path) -> Result<Option<Baseline>, String> {
     if !path.try_exists().map_err(|e| e.to_string())? {
         return Ok(None);
     }
-    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 96 * 1024 * 1024 {
-        return Err("Change baseline is too large".into());
+    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > MAX_BASELINE_BYTES as u64 {
+        return Err("Change baseline is too large. Start a new baseline after disconnecting a large My PC folder.".into());
     }
     serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
         .map(Some)
         .map_err(|e| e.to_string())
 }
 fn save(path: &Path, b: &Baseline) -> Result<(), String> {
+    save_within(path, b, MAX_BASELINE_BYTES)
+}
+fn save_within(path: &Path, b: &Baseline, limit: usize) -> Result<(), String> {
     let root = path.parent().ok_or("Invalid baseline path")?;
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(b).map_err(|e| e.to_string())?;
+    if bytes.len() > limit {
+        return Err("This change baseline would be larger than 96 MB. Disconnect a large My PC folder, then start a new baseline.".into());
+    }
     let mut file = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut file, b).map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path).map_err(|e| e.to_string())?;
     Ok(())
@@ -367,9 +386,11 @@ pub async fn environment_changes(
     {
         folders.insert(bind.source);
     }
+    let folders = folder_keys(folders);
     let location = path(&runtime, &environment_id)?;
     let _guard = LOCK.get_or_init(Default::default).lock().await;
-    let existing = load(&location)?;
+    // Starting a new baseline must work even when the old one can no longer be read.
+    let existing = if baseline { load(&location).ok().flatten() } else { load(&location)? };
     if folders.is_empty() && existing.is_none() {
         return Ok(json!({"available":false,"notice":"Connect a My PC folder to track changes."}));
     }
@@ -515,6 +536,30 @@ mod tests {
         let b = BTreeMap::from([("TOKEN".into(), "new-secret".into())]);
         let diff = map_changes(&a, &b, true);
         assert!(!serde_json::to_string(&diff).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn a_folder_finds_its_baseline_whatever_spelling_names_it() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("data");
+        std::fs::create_dir(&folder).unwrap();
+        let canonical = folder.canonicalize().unwrap().to_string_lossy().into_owned();
+        let spelled = root.path().join("data").join("..").join("data").to_string_lossy().into_owned();
+        assert_eq!(folder_keys(BTreeSet::from([spelled])), BTreeSet::from([canonical]));
+        let gone = root.path().join("gone").to_string_lossy().into_owned();
+        assert_eq!(folder_keys(BTreeSet::from([gone.clone()])), BTreeSet::from([gone]), "a disconnected folder keeps its recorded name");
+    }
+
+    #[test]
+    fn a_baseline_too_large_to_load_again_is_never_saved() {
+        let root = tempfile::tempdir().unwrap();
+        let location = root.path().join("env.json");
+        let small = Baseline { at: "now".into(), ..Default::default() };
+        save_within(&location, &small, 4096).unwrap();
+        let mut large = small.clone();
+        large.config = json!({"padding": "x".repeat(8192)});
+        assert!(save_within(&location, &large, 4096).unwrap_err().contains("larger than"));
+        assert_eq!(load(&location).unwrap().unwrap().at, "now", "the old baseline is kept");
     }
 
     #[test]

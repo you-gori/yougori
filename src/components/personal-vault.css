@@ -142,3 +142,11 @@
   .vault-footer { padding-inline: 20px; }
   .vault-banner, .vault-busy, .vault-requests { margin-inline: 20px; }
 }
+
+/* The typed confirmation shown before a Personal Vault is destroyed. */
+.vault-delete-confirm { width: min(460px, calc(100vw - 32px)); }
+.vault-delete-field { display: grid; gap: 6px; margin: 4px 0 2px; font-size: 13px; }
+.vault-delete-field > span { color: var(--muted-foreground); }
+.vault-delete-field strong { color: var(--foreground); font-weight: 600; }
+.vault-delete-approval { display: grid; gap: 8px; margin: 4px 0 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.vault-delete-left { display: grid; gap: 8px; margin: 4px 0 2px; padding-left: 18px; font-size: 13px; list-style: disc; overflow-wrap: anywhere; }

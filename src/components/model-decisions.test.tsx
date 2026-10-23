@@ -44,3 +44,10 @@ it("restores CLI JSON history and appends decisions to the same session", async 
   expect(JSON.parse(saved.conversations[0].messages[2].content).state).toBe('New app state')
   expect(saved.conversations[0].messages[3].stats.inputTokens).toBe(42)
 })
+
+it("says when saved requests could not be loaded, rather than showing an empty list", async () => {
+  history.mockRejectedValue(new Error("Saved chat history is unreadable"))
+  render(<ModelDecisions environmentId="model-1" status={status} />)
+  expect(await screen.findByRole("alert")).toHaveTextContent("Saved requests couldn't be loaded (Saved chat history is unreadable)")
+  expect(saveHistory).not.toHaveBeenCalled()
+})

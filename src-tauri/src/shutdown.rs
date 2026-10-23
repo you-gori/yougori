@@ -1,8 +1,21 @@
 //! Shutdown has its own bounded path, outside ordinary operation coordination.
 use crate::{store::PlatformStore, AppHandle};
 use serde_json::{json, Value};
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use tauri::Manager;
+
+/// Set when the standalone engine steps aside for the desktop app, which takes over at once.
+static HANDING_OVER: AtomicBool = AtomicBool::new(false);
+
+/// The standalone engine is stepping aside for the desktop app: its rented GPUs keep running for
+/// the engine that takes over, rather than being stopped as on a quit.
+pub(crate) fn hand_over() {
+    HANDING_OVER.store(true, Ordering::Release);
+}
 
 async fn stage(
     name: &str,
@@ -16,6 +29,16 @@ async fn stage(
     let finished = tokio::time::timeout(available, work).await.is_ok();
     json!({"stage":name,"status":if finished{"complete"}else{"deadline_exceeded"},"requiresReconciliation":!finished})
 }
+/// Rented NeoCloud GPUs bill by the hour, so they are stopped before any other cleanup, on every
+/// way out: the close button with nothing else running, `yougori app quit` and a forced exit come
+/// here without the quit dialog, whose own stop is only a first pass. A stop that does not finish
+/// stays written down and is finished at the next start.
+async fn rented_gpus(handing_over: bool, deadline: tokio::time::Instant, stop: impl Future<Output = ()>) -> Value {
+    if handing_over {
+        return json!({"stage":"rented_gpus","status":"skipped","reason":"The desktop app took over and keeps them running","requiresReconciliation":false});
+    }
+    stage("rented_gpus", 30, deadline, stop).await
+}
 pub(crate) async fn run(app: &AppHandle) -> Value {
     crate::security::record(crate::security::Event::new("engine.stopping").via("engine"));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(50);
@@ -26,6 +49,14 @@ pub(crate) async fn run(app: &AppHandle) -> Value {
     let mut stages = vec![
         json!({"stage":"cancel_and_drain_operations","status":if control["drained"]==true{"complete"}else{"deadline_exceeded"},"requiresReconciliation":control["drained"]!=true}),
     ];
+    let rented = async {
+        futures_util::future::join(
+            crate::grid_neocloud::stop_on_quit(app),
+            crate::swarm::rented::stop_on_quit(app),
+        )
+        .await;
+    };
+    stages.push(rented_gpus(HANDING_OVER.load(Ordering::Acquire), deadline, rented).await);
     let terminals = app.clone();
     stages.push(
         stage("host_terminals", 3, deadline, async move {
@@ -142,5 +173,22 @@ mod tests {
         )
         .await;
         assert_eq!(next["status"], "complete");
+    }
+
+    #[tokio::test]
+    async fn every_quit_stops_rented_gpus_and_only_a_hand_over_keeps_them() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(50);
+        let stopped = AtomicBool::new(false);
+        let stop = || async { stopped.store(true, Ordering::SeqCst) };
+        let quit = rented_gpus(false, deadline, stop()).await;
+        assert!(stopped.swap(false, Ordering::SeqCst), "a quit sends the stops");
+        assert_eq!((quit["stage"].as_str(), quit["status"].as_str(), quit["requiresReconciliation"].as_bool()), (Some("rented_gpus"), Some("complete"), Some(false)));
+        let handed = rented_gpus(true, deadline, stop()).await;
+        assert!(!stopped.load(Ordering::SeqCst), "the engine taking over keeps them running");
+        assert_eq!((handed["status"].as_str(), handed["requiresReconciliation"].as_bool()), (Some("skipped"), Some(false)));
+        // NeoCloud not answering cannot hold the quit past the stage's share; the start after finishes it.
+        let soon = tokio::time::Instant::now() + Duration::from_millis(30);
+        let hung = rented_gpus(false, soon, std::future::pending()).await;
+        assert_eq!((hung["status"].as_str(), hung["requiresReconciliation"].as_bool()), (Some("deadline_exceeded"), Some(true)));
     }
 }

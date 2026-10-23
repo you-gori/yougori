@@ -1,0 +1,14 @@
+kind: tool
+name: httpie
+title: HTTPie
+summary: A friendly command-line HTTP client, handy for checking a site from inside its sandbox.
+version: 1.0.0
+license: BSD-3-Clause
+topics: [http, cli]
+command: http
+install:
+  - python3 -m pip install --user --disable-pip-version-check httpie==3.2.4
+check: http --version
+needs:
+  gpu: none
+  internet: true

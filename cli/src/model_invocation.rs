@@ -2,6 +2,18 @@
 pub struct Invocation { pub args: Vec<String>, pub needs_model: bool }
 fn alias(flag: &str) -> &str {match flag {"--freenow"|"--free"|"-free"|"-nowfree"=>"--nowfree","--neocoud"=>"--neocloud","--publish"=>"--closed-weights",_=>flag}}
 fn model_flag(flag: &str) -> bool {matches!(alias(flag),"--now"|"--nowfree"|"--neocloud")}
+fn takes_value(flag: &str) -> bool {matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant"|"--folder"|"--backend")}
+/// Only options before the image can make `run` a model run; after the first word or `--`
+/// they belong to the container's own command, as in `run -d alpine -- echo --now`.
+fn leading_model_flag(options: &[String]) -> bool {
+    let mut i=0;
+    while let Some(arg)=options.get(i) {
+        if arg=="--"||!arg.starts_with('-') {return false;}
+        if model_flag(arg) {return true;}
+        i+=if takes_value(alias(arg)) {2} else {1};
+    }
+    false
+}
 pub fn model_id(value: &str) -> Result<String,String> {
     let value=crate::public::model_name(value);
     if value.starts_with("yg/") {
@@ -18,7 +30,7 @@ pub fn model_id(value: &str) -> Result<String,String> {
 pub fn normalize(args: Vec<String>) -> Result<Invocation,String> {
     let canonical=args.len()>=2&&args[0]=="model"&&args[1]=="run";
     let reversed=args.len()>=2&&args[0]=="run"&&(args[1]=="model"||(args[1]=="mode"&&args[2..].iter().any(|a|model_flag(a))));
-    let flag_only=args.first().is_some_and(|a|a=="run")&&args.get(1).is_some_and(|a|a.starts_with('-'))&&args[1..].iter().any(|a|model_flag(a));
+    let flag_only=args.first().is_some_and(|a|a=="run")&&args.get(1).is_some_and(|a|a.starts_with('-'))&&leading_model_flag(&args[1..]);
     if !canonical&&!reversed&&!flag_only {return Ok(Invocation{args,needs_model:false});}
     let tail=&args[if flag_only {1}else{2}..];
     if tail.iter().any(|a|matches!(a.as_str(),"--help"|"-h")) {
@@ -31,7 +43,7 @@ pub fn normalize(args: Vec<String>) -> Result<Invocation,String> {
         if raw=="--" {i+=1;continue;}
         if raw.starts_with('-') {
             flags.push(flag.to_owned());
-            if matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant" | "--folder" | "--backend") {
+            if takes_value(flag) {
                 i+=1;
                 let value=tail.get(i).filter(|v|!v.starts_with("--")).ok_or_else(||format!("{flag} requires a value"))?;
                 flags.push(value.clone());
@@ -60,6 +72,10 @@ pub fn normalize(args: Vec<String>) -> Result<Invocation,String> {
         for input in ["run model --freenow","run mode -free","run --free","model run --neocoud"] {assert!(normalize(words(input)).unwrap().needs_model);}
         assert_eq!(normalize(words("run mode --freenow")).unwrap().args,vec!["model","run","","--nowfree"]);
         for input in ["run --gpu nvidia ubuntu","run -d model","run mode","model chat env","model support owner/model --agent codex"] {let result=normalize(words(input)).unwrap();assert_eq!(result.args,words(input));assert!(!result.needs_model);}
+    }
+    #[test]fn a_containers_own_command_never_turns_run_into_a_model_run(){
+        for input in ["run -d alpine -- echo --now","run -d alpine echo --nowfree","run --name web nginx --neocloud","run --cpu 2 alpine --now"] {let result=normalize(words(input)).unwrap();assert_eq!(result.args,words(input),"{input}");assert!(!result.needs_model);}
+        assert_eq!(normalize(words("run --cpu 2 --now")).unwrap().args,vec!["model","run","","--cpu","2","--now"]);
     }
     #[test]fn legacy_publish_only_normalizes_for_model_run_and_keeps_missing_model_options(){
         let result=normalize(words("model run owner/model --nowfree --publish --listen")).unwrap();

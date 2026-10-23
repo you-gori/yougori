@@ -81,17 +81,22 @@ pub fn core_instructions(cli: &Path) -> String { generated(cli)["SKILL.md"].clon
 
 /// Each `# ` heading of the guide starts one task reference, in this order;
 /// its `## ` sections stay with it.
-const REFERENCES: [(&str, &str); 10] = [
+const REFERENCES: [(&str, &str); 15] = [
     ("engine", "Engine, setup and agent conventions"),
     ("containers", "Containers, GPU containers, microVMs and VMs"),
     ("files", "Files, volumes and changes"),
     ("deployment", "Projects and deployments"),
+    ("hub", "Hub templates and tools"),
     ("models", "Models and the Yougori Network"),
     ("grid", "Closed Neo Grid (company computers)"),
+    ("desks", "Sandbox Grid (desks on company computers)"),
+    ("access-grid", "Access Grid (company credentials for agents)"),
+    ("grids", "One name for the four grids"),
     ("connections", "Ports, domains, connections and cloud"),
     ("access", "Commands, logs, terminals and automation"),
     ("tools", "AI tool sandboxes and teammate sharing"),
     ("bounty", "Swarm Mining bounty workers"),
+    ("practice", "Swarm Mining practice"),
 ];
 /// Schema task names and common task words resolve to the installed
 /// references, so an agent can use one topic across schema discovery and
@@ -102,9 +107,13 @@ pub fn reference_topic_mapping() -> BTreeMap<&'static str, &'static str> {
         ("lifecycle", "containers"), ("storage", "containers"),
         ("settings", "engine"), ("jobs", "engine"),
         ("gpu", "models"), ("network", "models"), ("neogrid", "grid"),
+        ("sandbox-grid", "desks"), ("desk", "desks"), ("people", "desks"),
         ("cloud", "connections"),
         ("terminal", "access"), ("vault", "access"),
-        ("launch", "deployment"), ("remote", "tools"), ("swarm", "bounty"),
+        ("credentials", "access-grid"), ("company-credentials", "access-grid"),
+        ("one-grid", "grids"), ("namespace", "grids"),
+        ("launch", "deployment"), ("remote", "tools"), ("swarm", "bounty"), ("target", "practice"),
+        ("template", "hub"), ("templates", "hub"),
     ]);
     mapping
 }
@@ -439,7 +448,11 @@ mod tests {
             ("files",vec!["env cancel-transfer","download on"]),
             ("lifecycle",vec!["storage reclaim","image rm"]),
             ("bounty",vec!["start bounty --worker","bounty accept","Swarm Mining is not enabled"]),
+            ("practice",vec!["bounty practice WORKER","Northstar Ledger","report_finding"]),
             ("tools",vec!["--share","yougori connect","remote revoke"]),
+            ("desks",vec!["desks create","add-person","parkingSet","cloudFallbackSet","ssoSet","desk login"]),
+            ("grids",vec!["grids models gpus","COMPUTER_ID","request.do","Add --format json to see the whole answer."]),
+            ("engine",vec!["exits 130","operation_cancelled"]),
         ] {
             let guide=reference(topic).unwrap();
             for feature in features { assert!(guide.contains(feature),"{topic} is missing {feature}"); }
@@ -485,7 +498,7 @@ mod tests {
         for text in [SKILL,GUIDE] {
             for broken in ["\u{e2}\u{2020}\u{2019}","\u{c3}\u{a2}\u{e2}\u{20ac}\u{a0}\u{e2}\u{20ac}\u{2122}"] { assert!(!text.contains(broken)); }
         }
-        assert_eq!(GUIDE.chars().filter(|c|*c=='\u{2192}').count(),5);
+        assert!(!GUIDE.contains('\u{2192}'), "menu paths are written in words, not arrows");
     }
     #[cfg(unix)]
     #[test]

@@ -1211,7 +1211,13 @@ fn running(state: &str) -> bool {
 async fn inspect(deployment: &mut Deployment) -> Result<(), String> {
     let value = run(&deployment.provider, &action_args(deployment, "inspect")?).await?;
     let value = provider_commands::resource(&deployment.provider, &deployment.resource_id, value)?;
-    deployment.state = provider_state(&deployment.provider, &value);
+    inspected(deployment, &value);
+    Ok(())
+}
+
+/// Writes what the provider shows for the resource onto its node.
+fn inspected(deployment: &mut Deployment, value: &Value) {
+    deployment.state = provider_state(&deployment.provider, value);
     if matches!(
         deployment.provider.as_str(),
         "prime" | "thunder" | "latitude" | "e2e"
@@ -1228,8 +1234,9 @@ async fn inspect(deployment: &mut Deployment) -> Result<(), String> {
         deployment.address = format!("https://api.runpod.ai/v2/{}/run", deployment.resource_id);
         deployment.ssh_hint.clear();
     } else if deployment.provider == "runpod" {
-        deployment.address = value["ssh"]["ip"].as_str().unwrap_or("").into();
-        deployment.ssh_hint = value["ssh"]["ssh_command"].as_str().unwrap_or("").into();
+        // In the one spelling RunPod's own actions write, "Running" or "Stopped", which every stop,
+        // Stop all and the rented-GPU totals read. RunPod's raw "RUNNING" read as not billing.
+        runpod::describe_pod(deployment, value);
     } else if deployment.provider == "vast" {
         deployment.address = value["ssh_host"].as_str().unwrap_or("").into();
         if let (Some(host), Some(port)) = (value["ssh_host"].as_str(), value["ssh_port"].as_u64()) {
@@ -1267,7 +1274,6 @@ async fn inspect(deployment: &mut Deployment) -> Result<(), String> {
             format!("ssh ubuntu@{}", deployment.address)
         };
     }
-    Ok(())
 }
 
 /// Reconcile an ambiguous create with an ID copied from the provider account.
@@ -1310,8 +1316,10 @@ pub async fn neocloud_recover_id(
     if let Some(name) = provider_resource_name(&deployment.provider, &details)
         .filter(|_| deployment.provider != "thunder")
     {
-        if name != deployment.name {
-            return Err(format!("This provider resource is named {name}, not {}. Attach the resource created for this node.", deployment.name));
+        // RunPod pods carry a unique provider name rather than the node name.
+        let expected = deployment.extra["providerName"].as_str().unwrap_or(&deployment.name);
+        if name != expected {
+            return Err(format!("This provider resource is named {name}, not {expected}. Attach the resource created for this node."));
         }
     }
     inspect(&mut deployment).await?;
@@ -1826,6 +1834,33 @@ pub async fn neocloud_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runpod_pod_read_by_recover_or_the_cli_has_the_spelling_every_stop_reads() {
+        let mut pod = Deployment {
+            provider: "runpod".into(),
+            product: "pod".into(),
+            name: "neo-a".into(),
+            resource_id: "pod-1".into(),
+            state: "Needs inspection".into(),
+            image: String::new(),
+            offer: "NVIDIA RTX A6000".into(),
+            disk_gb: 0,
+            location: String::new(),
+            address: String::new(),
+            ssh_hint: String::new(),
+            request_id: String::new(),
+            last_error: None,
+            extra: json!({}),
+        };
+        inspected(&mut pod, &json!({"id":"pod-1","desiredStatus":"RUNNING","runtimeStatus":"RUNNING","costPerHr":0.49,"ssh":{"ip":"1.2.3.4","ssh_command":"ssh root@1.2.3.4 -p 22101"}}));
+        assert_eq!((pod.state.as_str(), pod.address.as_str()), ("Running", "1.2.3.4"));
+        assert!(crate::rented_gpu::billing(&pod.state) && !crate::rented_gpu::off(&pod.state), "a running pod is billing, so Stop all and quitting stop it");
+        assert_eq!(pod.extra["hourlyUsd"], 0.49);
+        inspected(&mut pod, &json!({"id":"pod-1","desiredStatus":"EXITED"}));
+        assert_eq!(pod.state, "Stopped");
+        assert!(crate::rented_gpu::off(&pod.state));
+    }
 
     pub(super) fn test_ssh_key() -> String {
         let mut blob = Vec::new();

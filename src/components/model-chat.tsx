@@ -30,6 +30,10 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
   const [store, setStore] = useState<ChatStore>(() => ({ conversations: [], activeId: null, settings: defaultSettings }))
   // Saving waits until the saved history loaded, so an unreadable engine never gets overwritten with an empty chat.
   const [historyLoad, setHistoryLoad] = useState<"loading" | "saved" | "unsaved">("loading")
+  // Why the saved history could not be loaded, said for as long as this chat goes unsaved.
+  const [unsavedReason, setUnsavedReason] = useState("")
+  // Set with "unsaved", so a later load never replaces the conversation that is not being saved.
+  const unsaved = useRef(false)
   const loaded = historyLoad === "saved"
   // Edits wait for the saved history so loading it can't overwrite them.
   const settled = historyLoad !== "loading"
@@ -95,11 +99,14 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
         if (legacy) { value = serializeChats(legacy); await modelsApi.saveHistory(environmentId, value); localStorage.removeItem(legacyChatKey(environmentId)) }
         const next = parseChats(value)
         const json = JSON.stringify(serializeChats(next))
-        if (!alive || (!initial && (json === savedJson.current || streamingRef.current || pendingSave.current !== null))) return
+        if (!alive || (!initial && (unsaved.current || json === savedJson.current || streamingRef.current || pendingSave.current !== null))) return
         savedJson.current = json
         setStore(next)
         if (initial) setHistoryLoad("saved")
-      } catch { if (alive && initial) setHistoryLoad("unsaved") /* Chatting still works; this session just isn't saved. */ }
+      } catch (reason) {
+        // Chatting still works; this session just isn't saved, and the chat says so while it lasts.
+        if (alive && initial) { unsaved.current = true; setUnsavedReason(reason instanceof Error ? reason.message : String(reason)); setHistoryLoad("unsaved") }
+      }
     }
     void load(true)
     // Conversations continued from the CLI appear here without reopening the chat.
@@ -295,6 +302,7 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
       {environment?.lastError ? <p role="alert" className="model-error">{environment.lastError}</p> : null}
       {environmentStatus === "stopped" || environmentStatus === "error" ? <Button disabled={Boolean(environmentActions[environmentId])} onClick={() => void setEnvironmentStatus(environmentId, "running").catch(() => undefined)}>Start model</Button> : null}
       {error ? <p role="alert" className="model-error">{error}</p> : null}
+      {historyLoad === "unsaved" ? <p role="alert" className="model-error">Your saved conversations couldn't be loaded{unsavedReason ? ` (${unsavedReason})` : ""}, so this chat isn't being saved: closing it loses it. Nothing already saved was changed. Close and reopen the chat to try again.</p> : null}
       {saveError ? <div role="alert" className="model-error"><p>{saveError}</p><Button size="xs" variant="outline" onClick={() => { setSaveError(""); setSaveRetry(value => value + 1) }}>Retry saving</Button></div> : null}
 
       <form className="model-composer" onSubmit={event => { event.preventDefault(); send() }}>

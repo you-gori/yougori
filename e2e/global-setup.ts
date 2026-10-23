@@ -12,8 +12,7 @@ export default async function setup(config: FullConfig) {
     await page.goto(use.baseURL!, { timeout: 90_000 })
     // Navigation now completes at the lightweight loading document, before
     // Vite finishes compiling the dynamically loaded application on a cold run.
-    await expect(page.getByRole("group", { name: "Dashboard actions" })).toBeVisible({ timeout: 90_000 })
-    await expect(page.getByRole("region", { name: "Environments workspace", exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByRole("region", { name: "Environments workspace", exact: true })).toBeVisible({ timeout: 90_000 })
   } finally {
     await browser.close()
   }

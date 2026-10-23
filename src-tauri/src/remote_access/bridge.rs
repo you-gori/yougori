@@ -179,6 +179,10 @@ pub(super) async fn serve_authenticated(websocket: &mut WebSocketStream<TcpStrea
             if !current.active() || current.permission != Permission::Control || current.target_id != grant.target_id {
                 break;
             }
+            // A lockdown closes an open private connection within a second.
+            if crate::security::is_contained(&current.target_id) {
+                break;
+            }
             if check_control_scope(&app, &current.target_id, current.acknowledge_existing_access).await.is_err() {
                 break;
             }

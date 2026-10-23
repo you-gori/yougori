@@ -24,13 +24,16 @@ impl Drop for Display {
         self.task.abort();
     }
 }
-pub(super) async fn action(
+pub(crate) async fn action(
     app: &AppHandle,
     env: &Environment,
     owner: &str,
     cancel: CancellationToken,
     p: &Value,
 ) -> Result<Value, String> {
+    action_policy(app, env, owner, cancel, p, false).await
+}
+pub(crate) async fn action_policy(app:&AppHandle, env:&Environment, owner:&str, cancel:CancellationToken, p:&Value, restricted:bool)->Result<Value,String>{
     let manager = app.state::<RemoteAccess>();
     let mut displays = manager.displays.lock().await;
     displays.retain(|_, d| !d.task.is_finished() && d.seen > now() - 60);
@@ -65,7 +68,7 @@ pub(super) async fn action(
         .map_err(|_| "Desktop connection timed out")?
         .map_err(|_| "Could not connect to this environment's display")?;
         let id = format!("display-{}", uuid::Uuid::new_v4().simple());
-        displays.insert(id.clone(), bridge(socket, owner, cancel));
+        displays.insert(id.clone(), bridge_policy(socket, owner, cancel, restricted));
         return Ok(json!({"displayId":id,"password":password}));
     }
     let id = p["displayId"].as_str().ok_or("Missing display ID")?;
@@ -114,6 +117,7 @@ pub(super) async fn action(
         _ => Err("Unsupported desktop action".into()),
     }
 }
+#[cfg(test)]
 fn bridge(
     socket: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -121,6 +125,9 @@ fn bridge(
     owner: &str,
     cancel: CancellationToken,
 ) -> Display {
+    bridge_policy(socket, owner, cancel, false)
+}
+fn bridge_policy(socket:tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, owner:&str,cancel:CancellationToken,restricted:bool)->Display{
     let (input, mut rx) = mpsc::channel::<Vec<u8>>(32);
     let output = Arc::new(Mutex::new(Output {
         bytes: VecDeque::new(),
@@ -132,12 +139,21 @@ fn bridge(
     let changed = notify.clone();
     let task = tokio::spawn(async move {
         let (mut writer, mut reader) = socket.split();
+        let mut guard = super::rfb_guard::Guard::default();
         loop {
             tokio::select! { biased;
                 _=cancel.cancelled()=>break,
-                data=rx.recv()=>{match data {Some(data)=>if writer.send(Message::Binary(data.into())).await.is_err(){break},None=>break}},
+                data=rx.recv()=>{match data {Some(data)=>{
+                    let (up,down)=if restricted {match guard.feed(true,&data){Ok(v)=>v,Err(_)=>break}}else{(data,Vec::new())};
+                    if !down.is_empty(){let mut output=buffer.lock().await;if output.bytes.len()+down.len()>64*1024*1024{break}output.bytes.extend(down);drop(output);changed.notify_one();}
+                    if !up.is_empty()&&writer.send(Message::Binary(up.into())).await.is_err(){break}
+                },None=>break}},
                 message=reader.next()=>{match message {
-                    Some(Ok(Message::Binary(data)))=>{let mut output=buffer.lock().await;if output.bytes.len()+data.len()>4*1024*1024{break}output.bytes.extend(data);drop(output);changed.notify_one();},
+                    Some(Ok(Message::Binary(data)))=>{
+                        let (up,down)=if restricted {match guard.feed(false,&data){Ok(v)=>v,Err(_)=>break}}else{(Vec::new(),data.to_vec())};
+                        if !up.is_empty()&&writer.send(Message::Binary(up.into())).await.is_err(){break}
+                        let mut output=buffer.lock().await;if output.bytes.len()+down.len()>64*1024*1024{break}output.bytes.extend(down);drop(output);changed.notify_one();
+                    },
                     Some(Ok(Message::Ping(data)))=>{if writer.send(Message::Pong(data)).await.is_err(){break}},
                     Some(Ok(Message::Close(_)))|Some(Err(_))|None=>break,
                     _=>{},

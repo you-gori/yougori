@@ -1,7 +1,6 @@
 import { RemoteEnvironmentDetails } from "@/components/remote-environment-details"
 import { EnvironmentChanges } from "@/components/environment-changes"
 import { ModelWorkspace } from "@/components/model-workspace"
-import { ArrowDownLeftIcon, ArrowLeftRightIcon, ArrowUpRightIcon, ArchiveIcon, BoxIcon, CircleAlertIcon, ExternalLinkIcon, HistoryIcon, Link2Icon, MoreHorizontalIcon, PlayIcon, PlusIcon, SlidersHorizontalIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertDialog,
@@ -30,7 +29,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { ConfigurationHelp } from "@/components/configuration-help"
 import { usePlatform } from "@/context/platform-context"
 import { formatBytesFromGb, formatDateTime, permissionLabel } from "@/lib/domain"
 import { environmentLabel } from "@/lib/environment-category"
@@ -44,7 +42,6 @@ import { FactoryResetDialog } from "@/components/dialogs/factory-reset-dialog"
 import { CudaVerification } from "@/components/cuda-verification"
 import { CudaUpdateAction } from "@/components/cuda-update-action"
 import "./environment-detail-sheet.css"
-import { PauseIcon, XIcon } from "lucide-react"
 import { CloudEnvironmentDetails } from "@/components/cloud-environment-details"
 import { ImportedFilesDrives } from "@/components/imported-files-drives"
 import { ContainerStartupCommand } from "@/components/container-startup-command"
@@ -113,14 +110,14 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
     <Dialog onOpenChange={open => { if (!open) setStartupDraft(null); onOpenChange(open) }} open={Boolean(environmentId)}>
       <DialogPopup className="environment-inspector" bottomStickOnMobile={false}>
         <DialogHeader className="inspector-header">
-          <div className="inspector-eyebrow"><span><SlidersHorizontalIcon aria-hidden="true" />Configuration</span><Status compact status={environment.status} /></div>
+          <div className="inspector-eyebrow"><span>Configuration</span><Status compact status={environment.status} /></div>
           <DialogTitle className="inspector-title text-base leading-6" title={environment.name}>{environment.name}</DialogTitle>
           <DialogDescription className="sr-only">Settings, resource allocation and restore points for this {environmentLabel(environment).toLowerCase()}.</DialogDescription>
         </DialogHeader>
         <DialogPanel scrollFade={false} className="inspector-page">
           <div className="inspector-column inspector-overview" key={`overview:${environment.id}`}>
               {environment.status === "error" ? <section className="inspector-attention" aria-label="Environment needs attention">
-                <p className="inspector-section-title"><CircleAlertIcon aria-hidden="true" />This environment needs attention</p>
+                <p className="inspector-section-title">This environment needs attention</p>
                 <p tabIndex={0} aria-label="Environment error details" className="max-h-32 min-w-0 max-w-full overflow-y-auto overscroll-contain whitespace-pre-wrap [overflow-wrap:anywhere] text-xs text-muted-foreground">{environment.lastError || "The last operation failed. Retry Start, or use Stop to check for a leftover runtime."}</p>
                 <div className="flex flex-wrap gap-2">
                   <Button disabled={busy} loading={action === "starting"} onClick={() => void perform(() => setEnvironmentStatus(environment.id, "running"))} size="sm" type="button">Retry Start</Button>
@@ -130,7 +127,7 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
               </section> : null}
               <section aria-label="Environment information" className="inspector-section">
                 <div className="flex flex-wrap gap-2"><EnvironmentChanges environmentId={environment.id} />{environment.description.startsWith("Hugging Face · ") ? <ModelWorkspace environmentId={environment.id} /> : null}</div>
-                <h3 className="inspector-section-title"><BoxIcon aria-hidden="true" />Environment</h3>
+                <h3 className="inspector-section-title">Environment</h3>
                 {environment.description ? <p className="inspector-description">{environment.description}</p> : null}
                 <dl className="inspector-properties"><div><dt>Environment</dt><dd>{environmentLabel(environment)}</dd></div><div><dt>Isolation</dt><dd>{environment.provider === "yougoriCuda" ? "Container · shared WSL kernel" : environmentLabel(environment)}</dd></div>{environment.storageDrive ? <div><dt>Storage drive</dt><dd>{environment.storageDrive}</dd></div> : null}<div><dt>Image / runtime</dt><dd className="inspector-runtime" title={environment.runtime}>{environment.runtime}</dd></div></dl>
               </section>
@@ -144,11 +141,12 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
           </section>
           <div className="inspector-column inspector-access">
               <section className="inspector-section" aria-label="Local backups">
-                <div className="inspector-section-heading"><h3 className="inspector-section-title"><ArchiveIcon aria-hidden="true" />Local backups</h3><ConfigurationHelp label="Local backup help">Save a portable copy to your PC, or load a backup as a new environment.</ConfigurationHelp></div>
+                <div className="inspector-section-heading"><h3 className="inspector-section-title">Local backups</h3></div>
+                <p className="inspector-description">Save a portable copy to your PC, or load a backup as a new environment.</p>
                 <div className="inspector-backup-actions"><LocalBackupDialog environment={environment} /><LocalBackupDialog /></div>
               </section>
               <section className="inspector-section" aria-label="Environment connections">
-                <div className="inspector-section-heading"><h3 className="inspector-section-title"><Link2Icon aria-hidden="true" />{environment.provider === "nativeSandbox" ? "Allowed access" : "Connections"}</h3><span>{environment.provider === "nativeSandbox" ? `${environment.sandboxPolicy?.shares.length ?? 0} shared folders` : `${activeConnections} active · ${connections.length} total`}</span></div>
+                <div className="inspector-section-heading"><h3 className="inspector-section-title">{environment.provider === "nativeSandbox" ? "Allowed access" : "Connections"}</h3><span>{environment.provider === "nativeSandbox" ? `${environment.sandboxPolicy?.shares.length ?? 0} shared folders` : `${activeConnections} active · ${connections.length} total`}</span></div>
                 {environment.provider === "nativeSandbox" ? (
                   <div className="divide-y border-y">
                     <div className="flex items-center justify-between gap-4 py-3 text-sm"><span>Network</span><span className="text-xs text-muted-foreground">{environment.sandboxPolicy?.networkAccess ? "Allowed" : "Blocked"}</span></div>
@@ -161,7 +159,7 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
                   const other = state.environments.find((item) => item.id === otherId)
                   return (
                     <div className="inspector-connection" key={connection.id}>
-                      {connection.direction === "bidirectional" ? <ArrowLeftRightIcon aria-hidden="true" /> : outgoing ? <ArrowUpRightIcon aria-hidden="true" /> : <ArrowDownLeftIcon aria-hidden="true" />}
+                      <span aria-hidden="true" className="w-4 shrink-0 text-center text-muted-foreground">{connection.direction === "bidirectional" ? "↔" : outgoing ? "→" : "←"}</span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm" title={other?.name}>{connection.direction === "bidirectional" ? "With" : outgoing ? "To" : "From"} {other?.name ?? "Unknown environment"}</p>
                         <p className="inspector-description">{connection.permissions.map((permission) => permissionLabel[permission]).join(" · ")}</p>
@@ -174,17 +172,18 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
                       </div>
                       <span className="text-xs text-muted-foreground">{!connection.active ? "Disconnected" : connection.enforcementStatus === "error" ? "Needs attention" : connection.enforcementStatus === "pending" ? "Pending" : "Active"}</span>
                       {connection.active && connection.enforcementStatus === "error" ? <Button size="xs" variant="ghost" disabled={busy} onClick={() => void perform(() => setConnectionActive(connection.id, true), "Retrying connection…")}>Retry</Button> : null}
-                      <Button size="icon-xs" variant="ghost" disabled={busy} loading={localAction === `${connection.active ? "Disconnecting from" : "Reconnecting to"} ${other?.name ?? "environment"}…`} aria-label={`${connection.active ? "Disconnect from" : "Reconnect to"} ${other?.name ?? "environment"}`} title={connection.active ? "Disconnect" : "Reconnect"} onClick={() => void perform(() => setConnectionActive(connection.id, !connection.active), `${connection.active ? "Disconnecting from" : "Reconnecting to"} ${other?.name ?? "environment"}…`)}>{connection.active ? <PauseIcon aria-hidden="true" /> : <PlayIcon aria-hidden="true" />}</Button>
-                      <Button size="icon-xs" variant="ghost" disabled={busy} aria-label={`Remove connection with ${other?.name ?? "environment"}`} title="Remove connection (keeps environment data)" onClick={() => void perform(() => deleteConnection(connection.id), "Removing connection…")}><XIcon aria-hidden="true" /></Button>
+                      <Button size="xs" variant="ghost" disabled={busy} loading={localAction === `${connection.active ? "Disconnecting from" : "Reconnecting to"} ${other?.name ?? "environment"}…`} aria-label={`${connection.active ? "Disconnect from" : "Reconnect to"} ${other?.name ?? "environment"}`} onClick={() => void perform(() => setConnectionActive(connection.id, !connection.active), `${connection.active ? "Disconnecting from" : "Reconnecting to"} ${other?.name ?? "environment"}…`)}>{connection.active ? "Disconnect" : "Reconnect"}</Button>
+                      <Button size="xs" variant="ghost" disabled={busy} aria-label={`Remove connection with ${other?.name ?? "environment"}`} title="Removes the connection; both environments keep their data" onClick={() => void perform(() => deleteConnection(connection.id), "Removing connection…")}>Remove</Button>
                     </div>
                   )
                 }) : <p className="inspector-empty">No environment connections yet. Connect nodes on the graph to share access.</p>}
               </section>
             {environment.provider !== "nativeSandbox" ? <section className="inspector-section" aria-label="Restore points">
               <div className="inspector-section-heading inspector-snapshot-heading">
-                <h3 className="inspector-section-title"><HistoryIcon aria-hidden="true" />Restore points<ConfigurationHelp label="Restore point help">Local copy-on-write snapshots. Create a restore point before making changes you may want to undo.</ConfigurationHelp></h3>
-                <SnapshotDialog environmentId={environment.id} environmentName={environment.name} trigger={<Button disabled={busy} size="sm" type="button" variant="outline"><PlusIcon aria-hidden="true" />New snapshot</Button>} />
+                <h3 className="inspector-section-title">Restore points</h3>
+                <SnapshotDialog environmentId={environment.id} environmentName={environment.name} trigger={<Button disabled={busy} size="sm" type="button" variant="outline">New snapshot</Button>} />
               </div>
+              <p className="inspector-description">Snapshots kept on this computer. Make one before a change you may want to undo.</p>
               <div className="divide-y border-y">
                 {snapshots.map((snapshot) => (
                   <div className="inspector-snapshot" key={snapshot.id}>
@@ -217,7 +216,7 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
           {!deleting && (action || localAction) ? <p className="inspector-description" role="status">{action ? environmentActionLabel[action] : localAction}</p> : null}
           <div className="inspector-footer-row">
           <Menu>
-            <MenuTrigger render={<Button disabled={busy} loading={action === "pausing" || action === "stopping"} aria-label="More environment actions" type="button" variant="ghost" />}><MoreHorizontalIcon aria-hidden="true" />Actions</MenuTrigger>
+            <MenuTrigger render={<Button disabled={busy} loading={action === "pausing" || action === "stopping"} aria-label="More environment actions" type="button" variant="ghost" />}>Actions</MenuTrigger>
             <MenuPopup>
               {environment.status === "running" && environment.provider !== "nativeSandbox" ? <MenuItem closeOnClick onClick={() => void perform(() => setEnvironmentStatus(environment.id, "paused"))}>Pause environment</MenuItem> : null}
               {environment.status !== "stopped" || environment.provider === "qemu" ? <MenuItem closeOnClick onClick={() => void perform(() => setEnvironmentStatus(environment.id, "stopped"))}>Shut down</MenuItem> : null}
@@ -226,9 +225,9 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
             </MenuPopup>
           </Menu>
           <div className="flex items-center gap-2">
-            {!isComputerBranch && environment.status !== "running" ? <Button disabled={busy} loading={action === "starting" && !openingFromHere} onClick={() => void perform(() => setEnvironmentStatus(environment.id, "running"))} type="button" variant="outline"><PlayIcon aria-hidden="true" />Start</Button> : null}
+            {!isComputerBranch && environment.status !== "running" ? <Button disabled={busy} loading={action === "starting" && !openingFromHere} onClick={() => void perform(() => setEnvironmentStatus(environment.id, "running"))} type="button" variant="outline">Start</Button> : null}
             <div className="empty:hidden" ref={setPolicySaveTarget} />
-            <Button disabled={isComputerBranch || busy} loading={action === "opening" || (action === "starting" && openingFromHere)} onClick={() => { setOpeningFromHere(true); onOpenEnvironment(environment.id) }} type="button"><ExternalLinkIcon aria-hidden="true" />{isComputerBranch ? "Unavailable" : "Open"}</Button>
+            <Button disabled={isComputerBranch || busy} loading={action === "opening" || (action === "starting" && openingFromHere)} onClick={() => { setOpeningFromHere(true); onOpenEnvironment(environment.id) }} type="button">{isComputerBranch ? "Unavailable" : "Open"}</Button>
           </div>
           </div>
         </DialogFooter>

@@ -1,5 +1,4 @@
 import type RFB from "@novnc/novnc"
-import { CameraIcon, Maximize2Icon, Minimize2Icon, PowerIcon, XIcon } from "lucide-react"
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { platformApi } from "@/api/platform-api"
 import { Button } from "@/components/ui/button"
@@ -11,7 +10,6 @@ import { TerminalLinkCards } from "@/components/terminal-link-cards"
 import { extractTerminalLinks } from "@/lib/terminal-links"
 import { bindGuestKeyboard } from "@/lib/guest-keyboard"
 import { bindGuestDisplaySizing } from "@/lib/guest-display-sizing"
-import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip"
 import { usePlatform } from "@/context/platform-context"
 import { cn } from "@/lib/utils"
 import type { Environment, GuestSession } from "@/types/platform"
@@ -242,22 +240,11 @@ export function GuestDesktop({ environment, onClose, standalone = false }: { env
         <GuestScene environment={environment} />
         <div className={cn("absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-white/10 bg-black/70 p-1 text-white shadow-lg backdrop-blur-md transition-all duration-200", controlsVisible || stopping ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-2 opacity-0", "focus-within:pointer-events-auto focus-within:translate-y-0 focus-within:opacity-100")}>
           <span className="max-w-48 truncate px-2 text-xs text-white/70">{environment.name}</span>
-          <Tooltip>
-            <TooltipTrigger render={<Button aria-label="Create restore point" className="text-white hover:bg-white/10 hover:text-white" size="icon-sm" type="button" variant="ghost" />} onClick={openSnapshot}><CameraIcon aria-hidden="true" /></TooltipTrigger>
-            <TooltipPopup>Create restore point</TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger render={<Button aria-label={fullscreen ? "Exit full screen" : "Enter full screen"} className="text-white hover:bg-white/10 hover:text-white" size="icon-sm" type="button" variant="ghost" />} onClick={toggleFullscreen}>
-              {fullscreen ? <Minimize2Icon aria-hidden="true" /> : <Maximize2Icon aria-hidden="true" />}
-            </TooltipTrigger>
-            <TooltipPopup>{fullscreen ? "Exit full screen" : "Enter full screen"}</TooltipPopup>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger render={<Button aria-label="Shut down environment" disabled={Boolean(environmentActions[environment.id])} loading={stopping} className="text-white hover:bg-white/10 hover:text-white *:data-[slot=button-loading-indicator]:text-white" size="icon-sm" type="button" variant="ghost" />} onClick={shutDown}><PowerIcon aria-hidden="true" /></TooltipTrigger>
-            <TooltipPopup>Shut down</TooltipPopup>
-          </Tooltip>
+          <Button aria-label="Create restore point" className="text-white hover:bg-white/10 hover:text-white" onClick={openSnapshot} size="sm" type="button" variant="ghost">Restore point</Button>
+          <Button aria-label={fullscreen ? "Exit full screen" : "Enter full screen"} className="text-white hover:bg-white/10 hover:text-white" onClick={toggleFullscreen} size="sm" type="button" variant="ghost">{fullscreen ? "Exit full screen" : "Full screen"}</Button>
+          <Button aria-label="Shut down environment" disabled={Boolean(environmentActions[environment.id])} loading={stopping} className="text-white hover:bg-white/10 hover:text-white *:data-[slot=button-loading-indicator]:text-white" onClick={shutDown} size="sm" type="button" variant="ghost">Shut down</Button>
           <span className="mx-0.5 h-4 w-px bg-white/15" />
-          <Button aria-label="Close guest view" className="text-white hover:bg-white/10 hover:text-white" onClick={closeGuest} size="icon-sm" type="button" variant="ghost"><XIcon aria-hidden="true" /></Button>
+          <Button aria-label="Close guest view" className="text-white hover:bg-white/10 hover:text-white" onClick={closeGuest} size="sm" type="button" variant="ghost">Close</Button>
         </div>
         {snapshotMounted ? (
           <Suspense fallback={null}>

@@ -11,7 +11,13 @@ use tokio_rustls::{rustls::{self, pki_types::PrivatePkcs8KeyDer}, TlsAcceptor};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-pub struct Invitation { pub version:u8, pub address:String, pub certificate:String, pub token:String, pub expires_at:i64 }
+pub struct Invitation {
+    pub version:u8, pub address:String, pub certificate:String, pub token:String, pub expires_at:i64,
+    /// The desk this invitation opens, when it is one. A person away from the company network
+    /// cannot reach the host's private address, so the session goes through the grid's hub.
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub desk: Option<String>,
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct SharedGrant { pub id:String, pub environment_id:String, pub permission:String, pub address:String, pub expires_at:i64 }
@@ -20,6 +26,11 @@ impl Drop for Server { fn drop(&mut self){self.task.abort();} }
 #[derive(Default)]
 pub struct Sharing { servers:Mutex<HashMap<String,Server>> }
 pub fn is_shared(environment:&Environment)->bool{environment.runtime.starts_with("shared://")}
+/// The owners (share IDs) of every LAN, desk or isolated-CLI share of `environment_id`, for a
+/// lockdown to close the desktops they opened.
+pub(crate) async fn share_owners(app:&AppHandle,environment_id:&str)->Vec<String>{
+    app.state::<Sharing>().servers.lock().await.values().filter(|server|server.info.environment_id==environment_id).map(|server|server.info.id.clone()).collect()
+}
 
 fn private(address:IpAddr)->bool { match address { IpAddr::V4(a)=>a.is_private()||a.is_loopback()||a.is_link_local(),IpAddr::V6(a)=>a.is_loopback()||a.is_unique_local() } }
 fn token_equal(a:&str,b:&str)->bool{use sha2::Digest;let a=sha2::Sha256::digest(a.as_bytes());let b=sha2::Sha256::digest(b.as_bytes());a.iter().zip(b.iter()).fold(0u8,|v,(a,b)|v|(a^b))==0}
@@ -33,6 +44,16 @@ fn invitation_client(invite:&Invitation)->Result<reqwest::Client,String>{
     reqwest::Client::builder().tls_certs_only([certificate]).no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(8)).timeout(Duration::from_secs(125)).build().map_err(|e|e.to_string())
 }
 pub async fn request(invite:&Invitation,method:&str,params:Value)->Result<Value,String>{
+    let direct=request_direct(invite,method,params.clone()).await;
+    // A desk is shared on its host's private address. From another network that address cannot
+    // be reached, so the session goes through the grid's hub instead, carrying the desk's own
+    // pinned TLS inside; the hub copies bytes and cannot read them.
+    match (direct,invite.desk.clone()) {
+        (Err(error),Some(desk)) if error.starts_with("Cannot reach the sharing host") => request_relayed(invite,&desk,method,params).await.map_err(|relayed|format!("{error}\nThrough the grid: {relayed}")),
+        (result,_)=>result,
+    }
+}
+async fn request_direct(invite:&Invitation,method:&str,params:Value)->Result<Value,String>{
     let mut response=invitation_client(invite)?.post(format!("https://{}/rpc",invite.address)).timeout(Duration::from_secs(if method=="inspect"{8}else{125})).bearer_auth(&invite.token).json(&json!({"method":method,"params":params})).send().await.map_err(|_|"Cannot reach the sharing host or its pinned certificate changed. Check that the owner is running Yougori and has not revoked access.".to_string())?;
     let success=response.status().is_success();let mut bytes=Vec::new();
     while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())?{if bytes.len()+chunk.len()>8*1024*1024{return Err("Shared response exceeds 8 MiB".into())}bytes.extend_from_slice(&chunk);}
@@ -40,19 +61,30 @@ pub async fn request(invite:&Invitation,method:&str,params:Value)->Result<Value,
     if success {Ok(value)} else {Err(value["error"].as_str().unwrap_or("Remote access was refused").into())}
 }
 
+/// The same request, carried to the desk's host by the grid's hub. The desk's own TLS is
+/// negotiated inside the relayed connection, so nothing in between reads it.
+async fn request_relayed(invite:&Invitation,desk:&str,method:&str,params:Value)->Result<Value,String>{
+    let session=crate::desks::person_session().map_err(|_|"Sign in to this grid again to open your desk from here".to_string())?;
+    let wait=Duration::from_secs(if method=="inspect"{20}else{125});
+    let (status,value)=session.desk_request(desk,&invite.address,&invite.certificate,&invite.token,&json!({"method":method,"params":params}),wait).await?;
+    if (200..300).contains(&status) {Ok(value)} else {Err(value["error"].as_str().unwrap_or("The desk refused this request").into())}
+}
+
 async fn serve<F,Fut>(listener:TcpListener,acceptor:TlsAcceptor,secret:String,expires:i64,handler:F)
 where F:Fn(Value)->Fut+Send+Sync+'static,Fut:std::future::Future<Output=Result<Value,String>>+Send+'static {
     let handler=Arc::new(handler);let mut clients=tokio::task::JoinSet::new();
+    let expiry=tokio::time::sleep(Duration::from_secs((expires-chrono::Utc::now().timestamp()).max(0) as u64));tokio::pin!(expiry);
     loop {tokio::select!{
-        accepted=listener.accept()=>{let Ok((socket,peer))=accepted else{break};if !private(peer.ip())||clients.len()>=32{continue}let acceptor=acceptor.clone();let secret=secret.clone();let handler=handler.clone();clients.spawn(async move{
+        _=&mut expiry=>break,
+        accepted=listener.accept()=>{let Ok((socket,peer))=accepted else{tokio::time::sleep(Duration::from_millis(100)).await;continue};if !private(peer.ip())||clients.len()>=32{continue}let acceptor=acceptor.clone();let secret=secret.clone();let handler=handler.clone();clients.spawn(async move{
             let Ok(Ok(mut tls))=tokio::time::timeout(Duration::from_secs(5),acceptor.accept(socket)).await else{return};
             let Ok(Ok((header,body)))=tokio::time::timeout(Duration::from_secs(15),crate::host_files::read_http(&mut tls)).await else{return};
             let authorized=header.lines().next()==Some("POST /rpc HTTP/1.1") && header.lines().filter_map(|l|l.split_once(':')).find(|(k,_)|k.eq_ignore_ascii_case("authorization")).and_then(|(_,v)|v.trim().strip_prefix("Bearer ")).is_some_and(|v|token_equal(v,&secret));
-            let (status,result)=if !authorized||chrono::Utc::now().timestamp()>=expires {(403,json!({"error":"Sharing has expired or access is not authorized"}))} else {
+            let (mut status,result)=if !authorized||chrono::Utc::now().timestamp()>=expires {(403,json!({"error":"Sharing has expired or access is not authorized"}))} else {
                 let result=match serde_json::from_slice(&body){Ok(request)=>match tokio::time::timeout(Duration::from_secs(120),handler(request)).await{Ok(result)=>result,Err(_)=>Err("Operation timed out. Inspect the guest before retrying.".into())},Err(_)=>Err("Invalid request".into())};
                 match result{Ok(value)=>(200,value),Err(error)=>(403,json!({"error":error}))}
             };
-            let mut body=serde_json::to_vec(&result).unwrap_or_default();if body.len()>8*1024*1024{body=b"{\"error\":\"Result exceeds 8 MiB\"}".to_vec()}
+            let mut body=serde_json::to_vec(&result).unwrap_or_default();if body.len()>8*1024*1024{status=413;body=b"{\"error\":\"Result exceeds 8 MiB\"}".to_vec()}
             let header=format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",body.len());
             let _=tokio::time::timeout(Duration::from_secs(10),async{tls.write_all(header.as_bytes()).await?;tls.write_all(&body).await?;tls.shutdown().await}).await;
         });},
@@ -88,7 +120,11 @@ pub(crate) fn scoped_terminal_id(owner: &str, session: &str) -> Result<String, S
 
 /// A request from a LAN or isolated-CLI recipient; its effects are audited as `lan`.
 pub(crate) async fn dispatch(app:AppHandle,id:String,owner:String,permission:String,request:Value)->Result<Value,String>{
-    crate::security::acting_as("lan",dispatch_now(app,id,owner,permission,request)).await
+    // A request still running when a lockdown starts (an exec, a file read) is stopped within half a second.
+    // Boxed: the request future is large, and a debug build would otherwise copy it onto the stack once per wrapper.
+    let watched=id.clone();
+    crate::security::while_open(&watched,Box::pin(crate::security::acting_as("lan",Box::pin(dispatch_now(app,id,owner,permission,request))))).await
+        .unwrap_or_else(||Err("This environment is unavailable right now".into()))
 }
 async fn dispatch_now(app:AppHandle,id:String,owner:String,permission:String,request:Value)->Result<Value,String>{
     let method=request["method"].as_str().ok_or("Missing sharing method")?;
@@ -96,6 +132,9 @@ async fn dispatch_now(app:AppHandle,id:String,owner:String,permission:String,req
     let p=&request["params"];let store=app.state::<PlatformStore>();let runtime=app.state::<RuntimeManager>();
     let env=store.snapshot()?.environments.into_iter().find(|e|e.id==id).ok_or("Shared environment was removed")?;
     if is_shared(&env){return Err("Resharing a remote environment is not allowed".into());}
+    // A locked-down or cut-off environment answers no share (LAN, desk or isolated CLI) until it is
+    // unlocked. Recipients are not told why.
+    if crate::security::is_contained(&id){return Err(format!("{} is unavailable right now",env.name));}
     match method {
         "inspect"=>Ok(summary(env,&permission)),
         "console"=>serde_json::to_value(commands::workloads::get_environment_logs(id,store,runtime).await?).map_err(|e|e.to_string()),
@@ -130,10 +169,63 @@ pub async fn create_environment_share(environment_id:String,address:String,permi
     let task=tokio::spawn(async move{serve(listener,acceptor,serving_token,expires_at,move|request|dispatch(app.clone(),environment_id.clone(),owner.clone(),permission.clone(),request)).await;cleanup.state::<WorkspaceManager>().close_window(&cleanup_owner,&cleanup.state::<PlatformStore>(),&cleanup.state::<RuntimeManager>()).await;});
     servers.insert(info.id.clone(),Server{info:info.clone(),task});
     crate::security::record(crate::security::Event::new("share.lan.created").env(&info.environment_id).text("share",&info.id).text("address",&info.address).text("permission",&info.permission).signed("expiresAt",info.expires_at));
-    Ok(json!({"share":info,"invitation":Invitation{version:1,address:endpoint,certificate,token,expires_at}}))
+    Ok(json!({"share":info,"invitation":Invitation{version:1,address:endpoint,certificate,token,expires_at,desk:None}}))
 }
 #[tauri::command]
 pub async fn list_environment_shares(sharing:State<'_,Sharing>)->Result<Vec<SharedGrant>,String>{let mut servers=sharing.servers.lock().await;servers.retain(|_,s|!s.task.is_finished());Ok(servers.values().map(|s|s.info.clone()).collect())}
+
+/// Grid grants validate their assignment with the hub on every operation. Knowing an old
+/// invitation is insufficient after reassignment, account removal, or password reset.
+pub(crate) async fn create_desk_share(environment_id:String,address:String,order:yougori_grid::desks::DeskOrder,membership:yougori_grid::member::Membership,app:AppHandle)->Result<Value,String>{
+    use yougori_grid::enterprise::DeskAccess;
+    crate::security::ensure_open(&app.state::<PlatformStore>(),&environment_id,"Sharing it as a desk")?;
+    let order_id=order.id.clone();
+    let person=order.person_id.clone().ok_or("Assign this desk to a person before sharing it")?;
+    let restricted=order.access==DeskAccess::Restricted;
+    let environment=app.state::<PlatformStore>().environment(&environment_id)?;
+    if restricted&&(environment.kind!=EnvironmentKind::FullVm||environment.network_access){return Err("Restricted desks require an isolated VM with outbound networking disabled".into())}
+    let address:IpAddr=address.parse().map_err(|_|"Choose this computer's LAN or VPN address")?;
+    if !private(address){return Err("Desk sessions require a private LAN or VPN address".into())}
+    let sharing=app.state::<Sharing>();let mut servers=sharing.servers.lock().await;servers.retain(|_,s|!s.task.is_finished());
+    if servers.len()>=512{return Err("This host has reached its simultaneous desk/share capacity".into())}
+    let listener=TcpListener::bind((address,0)).await.map_err(|e|e.to_string())?;let endpoint=listener.local_addr().map_err(|e|e.to_string())?.to_string();
+    let(acceptor,certificate)=tls(address)?;let token=format!("{}{}",uuid::Uuid::new_v4().simple(),uuid::Uuid::new_v4().simple());let expires_at=chrono::Utc::now().timestamp()+24*60*60;
+    let permission=if restricted{"restricted"}else{"control"}.to_owned();
+    let info=SharedGrant{id:format!("share-{}",uuid::Uuid::new_v4().simple()),environment_id:environment_id.clone(),permission:permission.clone(),address:endpoint.clone(),expires_at};
+    let owner=info.id.clone();let serving_token=token.clone();let cleanup=app.clone();let cleanup_owner=owner.clone();
+    let task_app=app.clone();
+    let task=tokio::spawn(async move{
+        let app=task_app;
+        serve(listener,acceptor,serving_token,expires_at,move|request|{
+            let(app,id,owner,membership,person,order)=(app.clone(),environment_id.clone(),owner.clone(),membership.clone(),person.clone(),order.clone());
+            async move{
+                membership.desk_lease(&order.id,&person,order.generation).await?;
+                let method=request["method"].as_str().ok_or("Missing desk method")?;let p=&request["params"];
+                let env=app.state::<PlatformStore>().environment(&id)?;
+                // Locked down or cut off, a desk answers nothing: no screen, no keyboard, no uploads.
+                if crate::security::is_contained(&id){return Err(format!("{} is unavailable right now",env.name))}
+                if restricted&&(env.kind!=EnvironmentKind::FullVm||env.network_access){return Err("This desk no longer meets its isolation policy; access is suspended".into())}
+                match method{
+                    "inspect"=>{
+                        let mut shown=summary(env.clone(),if restricted{"restricted"}else{"control"});
+                        shown["environment"]["runtime"]=json!("");
+                        for(key,value)in [("managedDesk",json!(true)),("restricted",json!(restricted)),("name",json!(env.name)),("files",json!(false)),("uploads",json!(env.kind==EnvironmentKind::FullVm)),("desktop",json!(env.kind==EnvironmentKind::FullVm)),("commands",json!(!restricted)),("power",json!(false)),("apps",json!(false)),("internet",json!(env.network_access))]{shown[key]=value;}
+                        Ok(shown)
+                    },
+                    // Stopped within half a second if a lockdown starts while they run.
+                    "desktop"=>crate::security::while_open(&id,Box::pin(crate::remote_access::desktop::action_policy(&app,&env,&owner,tokio_util::sync::CancellationToken::new(),p,restricted))).await.unwrap_or_else(||Err(format!("{} is unavailable right now",env.name))),
+                    "upload"=>crate::security::while_open(&id,Box::pin(crate::desks::uploads::action(&app,&id,&owner,p))).await.unwrap_or_else(||Err(format!("{} is unavailable right now",env.name))),
+                    "logout"=>Ok(json!({"signedOut":true})),
+                    _ if !restricted=>dispatch(app,id,owner,"control".into(),request).await,
+                    _=>Err("This workspace allows desktop interaction and uploads only. File reads, downloads, terminals, logs, image export and other data channels are disabled.".into())
+                }
+            }
+        }).await;
+        cleanup.state::<WorkspaceManager>().close_window(&cleanup_owner,&cleanup.state::<PlatformStore>(),&cleanup.state::<RuntimeManager>()).await;
+    });
+    servers.insert(info.id.clone(),Server{info:info.clone(),task});
+    Ok(json!({"share":info,"invitation":Invitation{version:1,address:endpoint,certificate,token,expires_at,desk:Some(order_id)}}))
+}
 
 pub(crate) async fn cli_grant(environment_id:String,permission:String,app:AppHandle)->Result<(SharedGrant,Invitation),String>{
     let environment=app.state::<PlatformStore>().snapshot()?.environments.into_iter().find(|e|e.id==environment_id).ok_or("Environment not found")?;
@@ -150,7 +242,7 @@ pub(crate) async fn cli_grant(environment_id:String,permission:String,app:AppHan
     let task=tokio::spawn(async move{serve(listener,acceptor,serving_token,expires_at,move|request|dispatch(task_app.clone(),environment_id.clone(),owner.clone(),permission.clone(),request)).await;cleanup.state::<WorkspaceManager>().close_window(&cleanup_owner,&cleanup.state::<PlatformStore>(),&cleanup.state::<RuntimeManager>()).await;});
     servers.insert(info.id.clone(),Server{info:info.clone(),task});
     crate::security::record(crate::security::Event::new("share.isolatedCli.granted").env(&info.environment_id).text("share",&info.id).text("permission",&info.permission).signed("expiresAt",info.expires_at));
-    Ok((info,Invitation{version:1,address,certificate,token,expires_at}))
+    Ok((info,Invitation{version:1,address,certificate,token,expires_at,desk:None}))
 }
 #[tauri::command]
 pub async fn revoke_environment_share(share_id:String,app:AppHandle,sharing:State<'_,Sharing>)->Result<(),String>{
@@ -179,7 +271,7 @@ pub async fn import_environment_share(invitation:Invitation,store:State<'_,Platf
     let original_kind=format!("{:?}",env.kind);
     if env.name.len()>160||env.name.chars().any(char::is_control){return Err("The shared environment has an invalid name".into())}
     let remote_status=env.status.clone();
-    env.id=format!("env-{}",uuid::Uuid::new_v4());env.name=format!("{} (shared)",env.name);env.kind=EnvironmentKind::Cloud;env.provider=Some(RuntimeProviderKind::CloudSsh);env.runtime=format!("shared://{}",invitation.address);env.runtime_id=None;env.runtime_path=None;env.console_endpoint=None;env.control_endpoint=None;env.container_command=None;env.sandbox_policy=None;env.last_error=None;env.network_access=false;env.gpu_access=false;env.status=EnvironmentStatus::Stopped;env.resource_policy.dynamic=false;
+    env.id=format!("env-{}",uuid::Uuid::new_v4());env.name=format!("{} (shared)",env.name);env.kind=EnvironmentKind::Cloud;env.provider=Some(RuntimeProviderKind::CloudSsh);env.runtime=if result["managedDesk"]==true {format!("shared://desk/{}",invitation.address)}else{format!("shared://{}",invitation.address)};env.runtime_id=None;env.runtime_path=None;env.console_endpoint=None;env.control_endpoint=None;env.container_command=None;env.sandbox_policy=None;env.last_error=None;env.network_access=false;env.gpu_access=false;env.status=EnvironmentStatus::Stopped;env.resource_policy.dynamic=false;
     env.description=format!("Shared {original_kind} · {} · expires {} · power actions affect the owner's environment; removing this entry only removes your access",result["permission"].as_str().unwrap_or("view"),invitation.expires_at);
     env.status=remote_status;
     let entry=vault(&env.id)?;entry.set_password(&serde_json::to_string(&invitation).map_err(|e|e.to_string())?).map_err(|_|"Could not store invitation securely")?;
@@ -189,14 +281,21 @@ pub async fn import_environment_share(invitation:Invitation,store:State<'_,Platf
     result
 }
 
+/// How many shared sandboxes are asked how they are at once: an unreachable one costs its own
+/// timeout, not every later one's.
+const REFRESH_AT_ONCE: usize = 8;
+
 pub fn start_refresh(app:&AppHandle){let app=app.clone();tauri::async_runtime::spawn(async move{loop{
-    let store=app.state::<PlatformStore>();let environments=store.snapshot().map(|s|s.environments).unwrap_or_default();
-    for env in environments.into_iter().filter(is_shared){
-        let result=remote(&env,"inspect",json!({})).await;
-        let _=store.mutate_ephemeral(|state|{if let Some(current)=state.environments.iter_mut().find(|e|e.id==env.id){match &result{
-            Ok(value)=>{if let Ok(source)=serde_json::from_value::<Environment>(value["environment"].clone()){current.status=source.status;current.cpu_usage=source.cpu_usage;current.memory_usage_gb=source.memory_usage_gb;current.storage_delta_gb=source.storage_delta_gb;current.last_error=None;}else if let Ok(status)=serde_json::from_value::<EnvironmentStatus>(value["status"].clone()){current.status=status;current.last_error=None;}},
-            Err(error)=>{current.status=EnvironmentStatus::Error;current.last_error=Some(error.clone());}
-        }}Ok(())});
+    let store=app.state::<PlatformStore>();let environments:Vec<Environment>=store.snapshot().map(|s|s.environments).unwrap_or_default().into_iter().filter(is_shared).collect();
+    for batch in environments.chunks(REFRESH_AT_ONCE){
+        let mut set=tokio::task::JoinSet::new();
+        for env in batch.iter().cloned(){set.spawn(async move{let result=remote(&env,"inspect",json!({})).await;(env.id,result)});}
+        while let Some(Ok((id,result)))=set.join_next().await{
+            let _=store.mutate_ephemeral(|state|{if let Some(current)=state.environments.iter_mut().find(|e|e.id==id){match &result{
+                Ok(value)=>{if let Ok(source)=serde_json::from_value::<Environment>(value["environment"].clone()){current.status=source.status;current.cpu_usage=source.cpu_usage;current.memory_usage_gb=source.memory_usage_gb;current.storage_delta_gb=source.storage_delta_gb;current.last_error=None;}else if let Ok(status)=serde_json::from_value::<EnvironmentStatus>(value["status"].clone()){current.status=status;current.last_error=None;}},
+                Err(error)=>{current.status=EnvironmentStatus::Error;current.last_error=Some(error.clone());}
+            }}Ok(())});
+        }
     }
     tokio::time::sleep(Duration::from_secs(10)).await;
 }});}
@@ -221,6 +320,6 @@ mod tests{
     #[tokio::test]async fn tls_sharing_pins_identity_checks_tokens_and_revokes(){
         let ip="127.0.0.1".parse().unwrap();let listener=TcpListener::bind(("127.0.0.1",0)).await.unwrap();let address=listener.local_addr().unwrap().to_string();let(acceptor,certificate)=tls(ip).unwrap();let token="a".repeat(64);let expires_at=chrono::Utc::now().timestamp()+60;
         let task=tokio::spawn(serve(listener,acceptor,token.clone(),expires_at,|p|async move{authorize("view",p["method"].as_str().unwrap_or(""))?;Ok(json!({"name":"only-selected-environment"}))}));
-        let mut invite=Invitation{version:1,address,certificate,token,expires_at};assert_eq!(request(&invite,"inspect",json!({})).await.unwrap()["name"],"only-selected-environment");assert!(request(&invite,"exec",json!({})).await.is_err());invite.token="b".repeat(64);assert!(request(&invite,"inspect",json!({})).await.is_err());invite.token="a".repeat(64);let correct=invite.certificate.clone();invite.certificate=tls(ip).unwrap().1;assert!(request(&invite,"inspect",json!({})).await.is_err());invite.certificate=correct;task.abort();let _=task.await;assert!(request(&invite,"inspect",json!({})).await.is_err());
+        let mut invite=Invitation{version:1,address,certificate,token,expires_at,desk:None};assert_eq!(request(&invite,"inspect",json!({})).await.unwrap()["name"],"only-selected-environment");assert!(request(&invite,"exec",json!({})).await.is_err());invite.token="b".repeat(64);assert!(request(&invite,"inspect",json!({})).await.is_err());invite.token="a".repeat(64);let correct=invite.certificate.clone();invite.certificate=tls(ip).unwrap().1;assert!(request(&invite,"inspect",json!({})).await.is_err());invite.certificate=correct;task.abort();let _=task.await;assert!(request(&invite,"inspect",json!({})).await.is_err());
     }
 }

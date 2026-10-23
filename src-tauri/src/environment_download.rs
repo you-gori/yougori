@@ -246,22 +246,28 @@ fn serve(listener: TcpListener, artifact: PathBuf, size: u64, name: String, toke
                 _ = cancel.cancelled() => break,
                 Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
                 accepted = listener.accept() => {
-                    let Ok((mut stream, _)) = accepted else { break };
+                    let Ok((mut stream, _)) = accepted else { tokio::time::sleep(Duration::from_millis(100)).await; continue };
+                    // Locked down or cut off, the link answers nothing and a download under way
+                    // stops; unlocked, the same link works again.
+                    if crate::security::is_contained(&environment_id) { continue }
                     let Ok(slot) = slots.clone().try_acquire_owned() else { continue };
                     let artifact = artifact.clone(); let name = name.clone(); let token = token.clone();
                     let app = app.clone(); let environment_id = environment_id.clone(); let cancel = cancel.clone();
+                    let watched = environment_id.clone();
                     tasks.spawn(async move {
                         let _slot = slot;
-                        tokio::select! {
-                            biased;
-                            _ = cancel.cancelled() => {},
-                            result = serve_request(&mut stream, &artifact, size, &name, &token) => {
-                                if matches!(result, Ok(true)) {
-                                    let persisted = tokio::task::spawn_blocking(move || record_download(&app.state::<PlatformStore>(), &environment_id)).await;
-                                    if !matches!(persisted, Ok(Ok(_))) { eprintln!("Could not save environment download count; link revoked"); cancel.cancel(); }
+                        crate::security::while_open(&watched, async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {},
+                                result = serve_request(&mut stream, &artifact, size, &name, &token) => {
+                                    if matches!(result, Ok(true)) {
+                                        let persisted = tokio::task::spawn_blocking(move || record_download(&app.state::<PlatformStore>(), &environment_id)).await;
+                                        if !matches!(persisted, Ok(Ok(_))) { eprintln!("Could not save environment download count; link revoked"); cancel.cancel(); }
+                                    }
                                 }
                             }
-                        }
+                        }).await;
                     });
                 }
             }

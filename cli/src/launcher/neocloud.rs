@@ -423,12 +423,43 @@ async fn choose_offer(count: &mut u32, disk: u32, unavailable: &mut HashSet<(Str
     }
 }
 
+/// The environments under this name, by ID, or nothing when the list cannot be read.
+async fn named(name: &str) -> Option<HashSet<String>> {
+    let state = call("get_platform_state", json!({})).await.ok()?;
+    let environments = state["environments"].as_array()?;
+    Some(environments.iter()
+        .filter(|e| e["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+        .filter_map(|e| e["id"].as_str().map(str::to_owned))
+        .collect())
+}
+
+/// Whether a failed create left a record of its own: an environment under its name that was not
+/// there before. The engine records the pod before it asks RunPod, so such a record means RunPod
+/// may have made it. A list that cannot be read counts as "it may have".
+fn new_record(before: Option<&HashSet<String>>, after: Option<&HashSet<String>>) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => after.iter().any(|id| !before.contains(id)),
+        _ => true,
+    }
+}
+
+/// What a create that did not come back with its pod says. Nothing bills only when RunPod
+/// refused outright (no free machine) or the engine never recorded the pod; otherwise RunPod may
+/// have made it, and the person is told so, Ctrl+C or not.
+fn failed_create(error: String, name: &str, interrupted: bool, recorded: bool) -> String {
+    if stock_changed(&error) || !recorded {
+        return if interrupted { ui::CANCELLED.into() } else { error };
+    }
+    format!("{error}\nRunPod may have created {name}, and it may be billing. Yougori lists it under that name as needing a check: look in your NeoCloud pods, and stop or delete it there, before trying again.")
+}
+
 /// Rents the pod. Creation always finishes: walking away from it could leave a pod billing
 /// unseen. A Ctrl+C pressed meanwhile opens the stop options once the pod exists, in the
 /// wait for SSH that follows or, without one, right after the pod check in [`target`].
 async fn create_pod(name: &str, offer: &Offer, disk: u32) -> Result<Value, String> {
     let creating = ui::task("Creating RunPod GPU pod");
     creating.detail("Ctrl+C offers to stop it once RunPod has created it");
+    let before = named(name).await;
     let result = call("runpod_create_pod", json!({"request":request(name, offer, disk)})).await;
     while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
         if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
@@ -449,18 +480,19 @@ async fn create_pod(name: &str, offer: &Offer, disk: u32) -> Result<Value, Strin
             creating.done(&format!("Created {name}"));
             Ok(env)
         }
-        // Nothing bills: a Ctrl+C pressed meanwhile simply ends here.
-        Err(_) if ui::take_interrupt() => {
-            creating.clear();
-            Err(ui::CANCELLED.into())
-        }
-        Err(error) if stock_changed(&error) => {
-            creating.clear();
-            Err(error)
-        }
+        // A Ctrl+C pressed meanwhile ends here as a cancellation only when nothing can be
+        // billing: RunPod refused outright, or the engine never recorded the pod.
         Err(error) => {
-            creating.fail("Creating RunPod GPU pod");
-            Err(error)
+            let interrupted = ui::take_interrupt();
+            let refused = stock_changed(&error);
+            let recorded = !refused && new_record(before.as_ref(), named(name).await.as_ref());
+            let said = failed_create(error, name, interrupted, recorded);
+            if refused || said == ui::CANCELLED {
+                creating.clear();
+            } else {
+                creating.fail("Creating RunPod GPU pod");
+            }
+            Err(said)
         }
     }
 }
@@ -545,6 +577,33 @@ async fn ssh_ready(id: &str, started: Instant) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PROVES that a pod creation which failed after RunPod was asked is never reported as
+    /// cancelled with nothing billing, Ctrl+C or not.
+    ///
+    /// A Ctrl+C pressed while the pod was being created turned every error into "Cancelled", whose
+    /// arm says nothing bills. But the engine records the pod before it asks RunPod, keeps that
+    /// record when RunPod's answer fails, and looks for the pod itself, because a failed or
+    /// garbled answer can still leave one billing. Only RunPod's own "no machine" refusal, or a
+    /// create the engine never recorded, bills nothing.
+    #[test]
+    fn a_create_that_reached_runpod_is_never_called_cancelled() {
+        let before: HashSet<String> = HashSet::from(["env-old".to_owned()]);
+        let after: HashSet<String> = HashSet::from(["env-old".to_owned(), "env-new".to_owned()]);
+        assert!(new_record(Some(&before), Some(&after)), "a record under this name that was not there before is this create's");
+        assert!(!new_record(Some(&before), Some(&before)), "a name already taken is refused before RunPod is asked");
+        assert!(new_record(None, Some(&after)) && new_record(Some(&before), None), "a list that cannot be read counts as \"it may exist\"");
+
+        let failed = || "runpod_create_pod: Neocloud did not answer in time".to_owned();
+        let said = failed_create(failed(), "gpu-pod", true, true);
+        assert!(said != ui::CANCELLED && said.contains("may have created gpu-pod") && said.contains("may be billing"), "{said}");
+        assert!(failed_create(failed(), "gpu-pod", false, true).contains("may be billing"));
+        assert_eq!(failed_create(failed(), "gpu-pod", true, false), ui::CANCELLED, "never recorded, so nothing bills");
+        assert_eq!(failed_create(failed(), "gpu-pod", false, false), failed());
+        let refused = "runpod_create_pod: Neocloud has no free machine with this GPU right now. Choose another GPU or location, or try again in a few minutes.".to_owned();
+        assert_eq!(failed_create(refused.clone(), "gpu-pod", true, true), ui::CANCELLED, "RunPod's own refusal made nothing");
+        assert_eq!(failed_create(refused.clone(), "gpu-pod", false, true), refused);
+    }
 
     #[test]
     fn gpu_choices_use_cloud_stock_and_recommend_available_secure_offers() {

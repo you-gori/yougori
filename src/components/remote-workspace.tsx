@@ -1,3 +1,5 @@
+import { desksApi } from "@/api/desks-api"
+import { DeskUpload } from "@/components/desk-upload"
 import { RemoteWorkspaceToolbar } from "@/components/remote-workspace-toolbar"
 import { terminalInstallers, type TerminalInstallerId } from "@/lib/terminal-installers"
 import { RemoteDisplay } from "@/components/remote-display"
@@ -25,7 +27,7 @@ export function RemoteWorkspace({ environment, initialAppSessionId, onClose }: {
   const reconnect = async () => {
     if (reconnecting) return
     setReconnecting(true); setError("")
-    try { await remoteAccessApi.reconnect(environment.id); await refreshPlatform(); onConnected() }
+    try { if (environment.runtime?.startsWith("shared://desk/")) await desksApi.refreshDesk(); else await remoteAccessApi.reconnect(environment.id); await refreshPlatform(); onConnected() }
     catch (e) { setError(String(e)) }
     finally { setReconnecting(false) }
   }
@@ -45,8 +47,10 @@ export function RemoteWorkspace({ environment, initialAppSessionId, onClose }: {
   return <section aria-label={`${environment.name} remote workspace`} className="flex h-full min-h-0 flex-col overflow-auto bg-background text-foreground">
     <header className="flex flex-wrap items-center gap-2 border-b p-3"><div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{environment.name}</h1><p className="text-xs text-muted-foreground">Remote · {environment.status} · {capabilities?.permission ?? "Connecting"}</p></div>
       {capabilities?.power ? <><Button size="xs" variant="outline" disabled={Boolean(environmentActions[environment.id])} onClick={() => void setEnvironmentStatus(environment.id, environment.status === "running" ? "stopped" : "running").catch(e => setError(String(e)))}>{environment.status === "running" ? "Stop" : "Start"}</Button><Button size="xs" variant="outline" disabled={Boolean(environmentActions[environment.id])} onClick={() => void (async () => { try { await setEnvironmentStatus(environment.id, "stopped"); await setEnvironmentStatus(environment.id, "running") } catch (e) { setError(String(e)) } })()}>Restart</Button></> : null}
-      <Button size="xs" variant="outline" loading={reconnecting} disabled={reconnecting} onClick={() => void reconnect()}>Reconnect</Button><SharingPanel compact reconnectEnvironmentId={environment.id} onConnected={onConnected} /><Button aria-label="Close remote workspace" size="icon-xs" variant="ghost" onClick={onClose}><XIcon /></Button>
+      <Button size="xs" variant="outline" loading={reconnecting} disabled={reconnecting} onClick={() => void reconnect()}>Reconnect</Button>{!environment.runtime?.startsWith("shared://desk/") ? <SharingPanel compact reconnectEnvironmentId={environment.id} onConnected={onConnected} /> : null}<Button aria-label="Close remote workspace" size="icon-xs" variant="ghost" onClick={onClose}><XIcon /></Button>
     </header>
+    {capabilities?.restricted ? <p className="mx-3 pt-2 text-xs text-muted-foreground">Restricted workspace · downloads, outbound clipboard, terminal output and outbound networking are blocked. Desktop content remains visible.</p> : null}
+    {capabilities?.uploads ? <DeskUpload environmentId={environment.id} /> : null}
     <div className="border-b px-3 py-1"><RemoteWorkspaceToolbar environment={environment} capabilities={capabilities} onInstall={startInstall} onView={setView} onClose={onClose} onError={setError} /></div>
     <div className="flex flex-wrap gap-1 border-b p-2" role="tablist" aria-label="Remote workspace views">{[["desktop", "Desktop", capabilities?.desktop], ["files", "Files", capabilities?.files], ["terminal", "Terminal", capabilities?.commands], ["logs", "Logs", !capabilities?.name]].filter(([, , enabled]) => enabled).map(([id, label]) => <Button key={String(id)} role="tab" aria-selected={selected === id} size="sm" variant={selected === id ? "secondary" : "ghost"} onClick={() => setView(String(id))}>{label}</Button>)}{initialAppSessionId && capabilities?.apps ? <Button role="tab" aria-selected={selected === "app"} size="sm" variant={selected === "app" ? "secondary" : "ghost"} onClick={() => setView("app")}>App</Button> : null}{installTabs.map(tab => <div className="flex items-center" key={tab.id}><Button role="tab" aria-selected={selected === tab.id} size="sm" variant={selected === tab.id ? "secondary" : "ghost"} onClick={() => setView(tab.id)}>Install {terminalInstallers.find(tool => tool.id === tab.tool)?.name}</Button><Button aria-label={`Close ${tab.tool} installer`} size="icon-xs" variant="ghost" onClick={() => { setInstallTabs(tabs => tabs.filter(item => item.id !== tab.id)); if (activeInstaller.current === tab.id) activeInstaller.current = null; if (view === tab.id) setView("terminal") }}><XIcon /></Button></div>)}</div>
     {error ? <p role="alert" className="m-3 rounded border p-3 text-sm">{error} If the link or credentials changed, use Connect to update them.</p> : null}
@@ -85,7 +89,18 @@ export function RemoteFiles({ environmentId, writable }: { environmentId: string
     if (file.size > 100 * 1024 * 1024) throw new Error("Desktop upload is limited to 100 MB per file")
     const name = file.webkitRelativePath || file.name; const parts = name.split("/")
     for (let i = 1; i < parts.length; i++) { const path = pathIn(folder, parts.slice(0, i).join("/")); try { await remoteAccessApi.files(environmentId, { operation: "stat", path }) } catch { await remoteAccessApi.files(environmentId, { operation: "mkdir", path }) } }
-    const path = pathIn(folder, name); await remoteAccessApi.files(environmentId, { operation: "create", path }); await write(path, new Uint8Array(await file.arrayBuffer()))
+    const path = pathIn(folder, name)
+    // A file of that name is already there, perhaps the rest of an upload that was cut short:
+    // the person decides whether to replace it, since a retry under the same name is otherwise impossible.
+    try { await remoteAccessApi.files(environmentId, { operation: "create", path }) }
+    catch (reason) {
+      const text = reason instanceof Error ? reason.message : String(reason)
+      if (!/exist/i.test(text)) throw reason
+      if (!window.confirm(`${name} already exists in this folder (it may be an upload that was interrupted). Replace it?`)) throw new Error(`${name} was left as it is.`)
+      await remoteAccessApi.files(environmentId, { operation: "remove", path })
+      await remoteAccessApi.files(environmentId, { operation: "create", path })
+    }
+    await write(path, new Uint8Array(await file.arrayBuffer()))
   } setProgress("Upload complete"); await list(folder) }) }
   return <section className="flex h-full min-h-96 flex-col gap-3" aria-label="Shared folder">
     <div className="flex flex-wrap items-center gap-2"><Button variant="outline" size="xs" disabled={busy || !folder} onClick={() => void perform(() => list(folder.split("/").slice(0, -1).join("/")))}>Up</Button><span className="flex-1 truncate font-mono text-xs">/{folder}</span><Button aria-label="Refresh files" size="icon-xs" variant="ghost" disabled={busy} onClick={() => void perform(() => list(folder))}><RefreshCwIcon /></Button>

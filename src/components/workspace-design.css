@@ -1,17 +1,17 @@
 /* Main workspace only. Guest desktops and runtime controls keep their behaviour. */
 .workspace-app {
-  --workspace-surface: #f5f2ec;
-  --workspace-canvas: #e8e5df;
-  --graph-dot: #b6b0a5;
-  --workspace-outline: #d7d2c9;
-  --workspace-shadow: 0 3px 12px #30291d08;
+  --workspace-surface: #fbf9f4;
+  --workspace-canvas: #ffffff;
+  --graph-dot: #d8d1c3;
+  --workspace-outline: #e5e1d6;
+  --workspace-shadow: none;
 }
 .dark .workspace-app {
-  --workspace-surface: #191c21;
-  --workspace-canvas: #111419;
-  --graph-dot: #3b414b;
-  --workspace-outline: #2d323a;
-  --workspace-shadow: 0 4px 16px #00000020;
+  --workspace-surface: #16181b;
+  --workspace-canvas: #0e0f11;
+  --graph-dot: #363a3f;
+  --workspace-outline: #282b2f;
+  --workspace-shadow: none;
 }
 :root[data-yougori-palette] .workspace-app {
   --workspace-surface: var(--card);
@@ -22,7 +22,7 @@
 }
 
 .workspace-header { border-color: var(--workspace-outline); }
-.workspace-brand-text { margin: 0; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+.workspace-brand-text { margin: 0; font-family: inherit; font-size: 23px; font-weight: 400; letter-spacing: -0.04em; }
 .workspace-app { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
 .workspace-header { flex-shrink: 0; }
 .workspace-main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
@@ -261,7 +261,7 @@
   .workspace-footer-resources { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
 }
 
-.workspace-view-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; padding: 9px 14px; border-bottom: 1px solid var(--workspace-outline); background: var(--workspace-surface); font-size: 12px; font-weight: 500; }
+.workspace-view-toolbar { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 9px 14px; border-bottom: 1px solid var(--workspace-outline); background: var(--workspace-surface); font-size: 12px; font-weight: 500; }
 .workspace-domains { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin-left: 6px; padding-left: 12px; border-left: 1px solid var(--workspace-outline); }
 .workspace-domains-label { color: var(--muted-foreground); }
 .workspace-domains-empty { color: var(--muted-foreground); font-weight: 400; }
@@ -275,10 +275,34 @@
 .workspace-graph[data-view="list"] [data-environment-canvas] { overflow: hidden; background: var(--workspace-surface); }
 .environment-needs-attention { color: var(--destructive); font-size: 11px; font-weight: 500; }
 
-.workspace-cli-view > #host-terminal-panel { border: 0; border-radius: 0; }
+/* The two inner pages share a simple heading + body column. */
+.workspace-page { display: flex; flex-direction: column; gap: 16px; }
+.workspace-page-head h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.workspace-page-head p { margin: 2px 0 0; font-size: 13px; color: var(--muted-foreground); max-width: 60ch; }
+.workspace-page-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.workspace-page-tab { appearance: none; border: 0; background: transparent; cursor: pointer; padding: 8px 12px; margin-bottom: -1px; font: inherit; font-size: 13px; font-weight: 500; color: var(--muted-foreground); border-bottom: 2px solid transparent; }
+.workspace-page-tab[aria-current="page"] { color: var(--foreground); border-bottom-color: var(--foreground); }
 
-/* The CLI uses a single tab strip above the terminal. */
-.isolated-cli [data-workspace-tabs] { height: 42px; padding-inline: 12px; background: var(--background); gap: 4px; }
-.isolated-cli [data-workspace-tabs] [role="tab"] { font-weight: 500; }
-.isolated-cli [data-tour="guest-terminal"] > .relative { padding: 18px 20px; }
-.host-cli .host-terminal-xterm { inset: 18px 20px; }
+/* The ghost "add sandbox" row renders as the final full-width row of the list table. */
+.environment-list-footer td { padding: 8px; border: 0; background: transparent; }
+
+/* Personal Vault MCP, Huggingface and Settings share the footer "More" look. */
+.workspace-footer-actions .dashboard-action {
+  height: 24px; min-height: 0; padding: 2px 7px; border-radius: 5px;
+  font: inherit; font-weight: 400; color: var(--muted-foreground);
+  background: transparent; border: 0; box-shadow: none;
+}
+.workspace-footer-actions .dashboard-action:hover { color: var(--foreground); background: var(--accent); }
+.workspace-footer-actions .dashboard-action[aria-expanded="true"] { color: var(--foreground); background: var(--accent); }
+@media (max-width: 640px) { .workspace-footer-actions .dashboard-action { height: 28px; } }
+
+
+/* Personal Vault MCP wears the sandbox row chrome; only its detail panel is bespoke. */
+.vault-detail-add { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.vault-detail-add > :not(button) { flex: 1 1 160px; min-width: 0; }
+.vault-detail-note { font-size: 12px; color: var(--muted-foreground); margin: 0; }
+.vault-detail-pending { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.vault-detail-pending li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--workspace-outline); border-radius: 8px; padding: 6px 8px; }
+.vault-detail-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.vault-detail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow: auto; }
+.vault-detail-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 2px; font-size: 12px; border-top: 1px solid color-mix(in srgb, var(--foreground) 6%, transparent); }

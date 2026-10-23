@@ -38,6 +38,10 @@ pub(super) fn activity_label(args: &[String]) -> &'static str {
         ("neocloud", "install") => "Installing provider CLI",
         ("neocloud", "prices") => "Checking GPU stock and prices",
         ("neocloud", _) => "Loading Neocloud information",
+        ("grids", "list") => "Looking for the grids on this computer",
+        ("grids", "status") => "Asking the grid how it is",
+        ("grids", "log") => "Reading what the grid recorded",
+        ("grids", _) => "Asking the grid",
         _ => "Working",
     }
 }
@@ -47,26 +51,35 @@ fn menu(title: &str, items: &[&str]) -> Result<usize, String> {
 }
 
 /// [`menu`] with `initial` preselected, such as an earlier answer asked again.
+///
+/// Every list here is reached from another menu or an earlier question, so Escape goes Back to
+/// it, exactly as a Back row does. Without this, Escape returned [`ui::CANCELLED`] and dropped
+/// the person on the home menu from three levels down. A list with its own Back row gets no
+/// second one. The home menu, which has nowhere to go back to, does not come through here.
 fn menu_at(title: &str, items: &[&str], initial: usize) -> Result<usize, String> {
-    choose_with_initial(
-        title,
-        "",
-        &items.iter().map(|s| (*s).into()).collect::<Vec<_>>(),
-        initial,
-    )
+    ui::with_back(|| choose_with_initial(title, "", &items.iter().map(|s| (*s).into()).collect::<Vec<_>>(), initial))
 }
 
+/// A yes-or-no question before an action. Asked straight from a menu as often as inside a
+/// wizard, so Escape goes Back to where it was asked; Cancel still leaves.
 fn confirm(title: &str, detail: &str) -> Result<(), String> {
-    if choose_with_note(title, detail, &["Cancel".into(), "Continue".into()])? == 1 {
+    if ui::with_back(|| choose_with_note(title, detail, &["Cancel".into(), "Continue".into()]))? == 1 {
         Ok(())
     } else {
         Err(ui::CANCELLED.into())
     }
 }
 
-/// Asks questions in turn, each after the first with Back. `ask(step)` asks one and says whether
-/// it asked anything, or gives `None` once every question is answered.
+/// Asks questions in turn, every one of them with Back. `ask(step)` asks one and says whether it
+/// asked anything, or gives `None` once every question is answered.
+///
+/// Back from the first question leaves with [`ui::BACK`], which is the menu that asked showing
+/// again. That is why the first one offers Back too: these are only ever reached from a menu, so
+/// there is always somewhere to go back to, and without it Escape at the first question returned
+/// [`ui::CANCELLED`] — which means leave — and dropped the person out of the launcher from the
+/// first question of a wizard they had just opened.
 fn in_turn(mut ask: impl FnMut(usize) -> Option<Result<bool, String>>) -> Result<(), String> {
+    ui::with_back(|| {
     let mut steps = ui::Wizard::new();
     loop {
         let Some(asked) = ask(steps.step()) else {
@@ -74,6 +87,7 @@ fn in_turn(mut ask: impl FnMut(usize) -> Option<Result<bool, String>>) -> Result
         };
         steps.next(asked)?;
     }
+    })
 }
 
 /// Whether an action went Back, so its menu shows again. Other errors pass through.
@@ -92,6 +106,41 @@ async fn engine_action<T>(label: &str, work: impl Future<Output = Result<T, Stri
         ui::info("Stopped waiting. Yougori finishes this in the background.");
     }
     result
+}
+
+/// Carries out an action and says, in one sentence, what it did.
+///
+/// The menu used to run these the way a typed command runs, which ends by printing the engine's
+/// whole reply: a screen of pretty JSON with identifiers in it, after somebody chose "Delete
+/// environment" from a list and confirmed it. The reply is the engine answering the CLI, not the
+/// product answering the person, and nothing in it tells them anything they did not already know
+/// except that it worked.
+///
+/// `receipt` is written by the caller because the caller is the only one that knows what the
+/// person called the thing. It is a finished sentence in the past tense: what happened, to what.
+async fn action(args: &[&str], receipt: &str) -> Result<(), String> {
+    let args: Vec<String> = args.iter().map(|part| (*part).to_string()).collect();
+    engine_action(activity_label(&args), carry_out(&args)).await?;
+    ui::info(&clean(receipt));
+    Ok(())
+}
+
+/// One engine request for an action, through whichever door the CLI itself would have used.
+///
+/// The two doors are not interchangeable. `public::handle` owns the short verbs — `rm`, `cp`,
+/// `rename` and the rest of [`public::COMMANDS`] — and does work around the request that the
+/// parser knows nothing about; everything else is parsed into one request and sent. Picking the
+/// wrong one does not fail loudly, it quietly does less, so this asks the same question the CLI
+/// asks: is this verb one of `public`'s.
+async fn carry_out(args: &[String]) -> Result<Value, String> {
+    // A typed command expects the engine to be running already; the menu starts it, as it always
+    // has, rather than ending a chosen action in "start it with yougori app start".
+    client::start(None).await?;
+    if args.first().is_some_and(|first| public::COMMANDS.contains(&first.as_str())) {
+        return public::handle(args).await?.ok_or_else(|| "This action was not recognized".to_owned());
+    }
+    let invocation = yougori_cli::parse::parse(args, |_| Err("This action takes no JSON input".into()))?;
+    call(&invocation.request.method, invocation.request.params).await
 }
 
 async fn execute(args: &[&str]) -> Result<(), String> {
@@ -135,21 +184,53 @@ async fn execute(args: &[&str]) -> Result<(), String> {
         ui::info(&format!("{action} environment."));
         return Ok(());
     }
-    let interactive = super::requested(&args);
-    if !interactive {
-        ui::pause(true);
+    // A command that asks its own questions owns the keyboard, and answers Ctrl+C itself.
+    if super::requested(&args) {
+        return outcome(Some(Box::pin(crate::run(args)).await));
     }
-    let result = Box::pin(crate::run(args)).await;
-    if !interactive {
-        ui::pause(false);
+    let label = activity_label(&args);
+    ui::pause(true);
+    // Ctrl+C is waited on rather than left to the operating system. Without this it arrived as a
+    // signal and ended the process where it stood, in the middle of a delete, an export, a copy,
+    // a driver install or a restore: the painter never put back the cursor it had hidden, the
+    // last spinner stayed on the screen with nothing turning it, and the shell prompt came back
+    // underneath both. Waiting on it here ends the wait instead, and the menu carries on.
+    //
+    // Deliberately not an `Interrupts` watch, which is how the rest of the launcher reads
+    // Ctrl+C: that one turns raw mode on, and these commands print their own lines, which in raw
+    // mode walk away down the screen a column at a time.
+    let ran = tokio::select! {
+        ran = Box::pin(crate::run(args)) => Some(ran),
+        _ = tokio::signal::ctrl_c() => None,
+    };
+    ui::pause(false);
+    if ran.is_none() {
+        ui::info(&stopped_waiting(label));
     }
-    match result? {
-        0 => Ok(()),
-        130 => Err(ui::CANCELLED.into()),
-        code => Err(format!(
-            "The action finished with status {code}. See the result above."
-        )),
+    outcome(ran)
+}
+
+/// What the menu makes of a command it ran: `None` when Ctrl+C ended the wait before the command
+/// finished, otherwise what the command returned.
+///
+/// 130 is the exit code a command uses for its own Ctrl+C, so the two ways of stopping arrive at
+/// the same place and are told to the person in the same words.
+fn outcome(ran: Option<Result<i32, String>>) -> Result<(), String> {
+    match ran {
+        None | Some(Ok(130)) => Err(ui::CANCELLED.into()),
+        Some(Err(error)) => Err(error),
+        Some(Ok(0)) => Ok(()),
+        Some(Ok(code)) => Err(format!("The action finished with status {code}. See the result above.")),
     }
+}
+
+/// What a person is told when they stop waiting for an action.
+///
+/// It does not say the action was undone, because nothing here knows that: the engine may have
+/// had the request for a while, or may never have received it. What it can do is name what was
+/// being waited for and where to look, which is the useful half of the answer.
+fn stopped_waiting(label: &str) -> String {
+    format!("{} — stopped waiting. Anything Yougori had already begun finishes on its own; yougori ps shows what is running.", label.trim_end_matches('.'))
 }
 
 async fn state() -> Result<Value, String> {
@@ -160,25 +241,52 @@ async fn state() -> Result<Value, String> {
     .await
 }
 
+/// What to call each of `records` in a list somebody is choosing from.
+///
+/// The name and what it is doing, and nothing else. The identifier used to be on every line —
+/// `Work · running · env-7f3a9c2d-...` — which is the longest and least memorable part of a line
+/// whose whole job is to be recognised at a glance, and it pushed the two words that matter off
+/// the side of a narrow terminal.
+///
+/// It comes back only where it has to: when two of them are called the same thing, those lines,
+/// and only those, get enough of the identifier to tell them apart. Somebody who named two
+/// environments `api` has asked for the last six characters; nobody else has.
+fn record_labels(records: &[Value]) -> Vec<String> {
+    let name_of = |value: &Value| value["name"].as_str().unwrap_or("Unnamed").to_owned();
+    let names: Vec<String> = records.iter().map(name_of).collect();
+    records
+        .iter()
+        .zip(&names)
+        .map(|(value, name)| {
+            let label = format!("{name} — {}", value["status"].as_str().unwrap_or("saved"));
+            if names.iter().filter(|other| *other == name).count() > 1 {
+                return format!("{label} · {}", tail(value["id"].as_str().unwrap_or("")));
+            }
+            label
+        })
+        .collect()
+}
+
+/// The last few characters of an identifier: enough to tell two things with one name apart, and
+/// short enough that nobody is reading a UUID.
+fn tail(id: &str) -> &str {
+    match id.char_indices().nth_back(5) {
+        Some((at, _)) => &id[at..],
+        None => id,
+    }
+}
+
 /// One of `records`. Back, and an empty list, return [`ui::BACK`] to the menu that asked.
 fn select_record(title: &str, records: &[Value]) -> Result<Value, String> {
     if records.is_empty() {
         ui::info("Nothing here yet.");
         return Err(ui::BACK.into());
     }
-    let mut labels: Vec<String> = records
-        .iter()
-        .map(|v| {
-            format!(
-                "{} — {} · {}",
-                v["name"].as_str().unwrap_or("Unnamed"),
-                v["status"].as_str().unwrap_or("saved"),
-                v["id"].as_str().unwrap_or("")
-            )
-        })
-        .collect();
+    let mut labels = record_labels(records);
     labels.push("Back".into());
-    let index = choose(title, &labels)?;
+    // The list has a Back of its own, and Escape means the same thing: every one of these is
+    // opened from a menu, so leaving the list is returning to it rather than leaving Yougori.
+    let index = ui::with_back(|| choose(title, &labels))?;
     records
         .get(index)
         .cloned()
@@ -484,10 +592,10 @@ async fn create() -> Result<(), String> {
         .cloned()
         .ok_or("The created environment was not found. Open Manage an environment to refresh.")?;
     if kind == "vm" {
-        if menu(
-            "Open this environment now?",
-            &["Open environment window", "Return to menu"],
-        )? == 0 {
+        // The end of creating it: "Return to menu" is the way back, so no second Back row.
+        if ui::without_back(|| {
+            choose_with_initial("Open this environment now?", "", &["Open environment window".into(), "Return to menu".into()], 0)
+        })? == 0 {
             execute(&["env", "open", id(&created)?]).await?;
         }
     } else if choose_with_note(
@@ -516,11 +624,13 @@ async fn open_terminal_here(env: &Value, start_authorized: bool) -> Result<(), S
     let env_id = id(env)?;
     if terminal_needs_start(env)? {
         if !start_authorized
-            && choose_with_note(
-                "Start and open this environment?",
-                "Its shell will use this terminal. Exiting the shell leaves the environment running.",
-                &["Start and open terminal here".into(), "Back".into()],
-            )? != 0
+            && ui::with_back(|| {
+                choose_with_note(
+                    "Start and open this environment?",
+                    "Its shell will use this terminal. Exiting the shell leaves the environment running.",
+                    &["Start and open terminal here".into(), "Back".into()],
+                )
+            })? != 0
         {
             return Err(ui::BACK.into());
         }
@@ -544,6 +654,9 @@ async fn manage() -> Result<(), String> {
 /// One environment's actions until Back, which returns [`ui::BACK`].
 async fn environment_actions(env: &Value) -> Result<(), String> {
     let env_id = id(env)?;
+    // What the person calls it, for the sentence an action leaves behind. The title carries the
+    // status too, which belongs over a menu and not in "Deleted Work · running."
+    let name = env["name"].as_str().unwrap_or("this environment");
     let title = format!(
         "{} · {}",
         env["name"].as_str().unwrap_or("Environment"),
@@ -586,20 +699,20 @@ async fn environment_actions(env: &Value) -> Result<(), String> {
             5 => execute(&["env", "open", env_id]).await,
             6 => execute(&["logs", env_id]).await,
             7 => {
-                let name = text("New name", env["name"].as_str().unwrap_or(""), false)?;
-                execute(&["rename", env_id, &name]).await
+                let renamed = ui::with_back(|| text("New name", name, false))?;
+                action(&["rename", env_id, &renamed], &format!("Renamed to {}.", clean(&renamed))).await
             }
             8 => async {
-                let mut name = String::new();
+                let mut snapshot = String::new();
                 in_turn(|step| Some(match step {
-                    0 => text("Snapshot name", if name.is_empty() { "before-change" } else { &name }, false).map(|entry| {
-                        name = entry;
+                    0 => text("Snapshot name", if snapshot.is_empty() { "before-change" } else { &snapshot }, false).map(|entry| {
+                        snapshot = entry;
                         true
                     }),
                     1 => confirm("Create snapshot?", &clean(&title)).map(|()| true),
                     _ => return None,
                 }))?;
-                execute(&["snapshot", "create", env_id, "--name", &name, "--yes"]).await
+                action(&["snapshot", "create", env_id, "--name", &snapshot, "--yes"], &format!("Snapshot {} taken of {}.", clean(&snapshot), clean(name))).await
             }
             .await,
             9 => async {
@@ -615,18 +728,15 @@ async fn environment_actions(env: &Value) -> Result<(), String> {
                     )).map(|()| true),
                     _ => return None,
                 }))?;
-                execute(&[
-                    "backup",
-                    "export",
-                    env_id,
-                    "--folder",
-                    path_text(&folder)?,
-                    "--yes",
-                ])
+                let into = path_text(&folder)?.to_owned();
+                action(
+                    &["backup", "export", env_id, "--folder", &into, "--yes"],
+                    &format!("{} backed up to {}.", clean(name), clean(&into)),
+                )
                 .await
             }
             .await,
-            10 => files(env_id).await,
+            10 => files(env_id, name).await,
             11 => execute(&["ports", "list", env_id]).await,
             12 => {
                 confirm(
@@ -636,7 +746,7 @@ async fn environment_actions(env: &Value) -> Result<(), String> {
                         clean(&title)
                     ),
                 )?;
-                execute(&["rm", env_id, "--yes"]).await
+                action(&["rm", env_id, "--yes"], &format!("Deleted {}, and the data it managed.", clean(name))).await
             }
             13 => async {
                 let host = state().await?;
@@ -688,20 +798,10 @@ async fn environment_actions(env: &Value) -> Result<(), String> {
                 }))?;
                 let cpu = sliders[0].value.to_string();
                 let memory = sliders[1].value.to_string();
-                execute(&[
-                    "env",
-                    "resources",
-                    env_id,
-                    "--cpu",
-                    &cpu,
-                    "--cpu-max",
-                    &cpu,
-                    "--memory",
-                    &memory,
-                    "--memory-max",
-                    &memory,
-                    "--yes",
-                ])
+                action(
+                    &["env", "resources", env_id, "--cpu", &cpu, "--cpu-max", &cpu, "--memory", &memory, "--memory-max", &memory, "--yes"],
+                    &format!("{} now has {cpu} CPU and {memory} GB of memory.", clean(name)),
+                )
                 .await
             }
             .await,
@@ -724,7 +824,8 @@ async fn publish_service(env_id: &str, title: &str) -> Result<(), String> {
     let mut steps = ui::Wizard::new();
     loop {
         let asked = match steps.step() {
-            0 => port("Service port inside this environment", guest_port).map(|chosen| {
+            // The first question goes Back to the environment's menu; the wizard offers Back on the rest.
+            0 => ui::with_back(|| port("Service port inside this environment", guest_port)).map(|chosen| {
                 guest_port = chosen;
                 true
             }),
@@ -769,7 +870,7 @@ async fn download_link(env: &Value) -> Result<(), String> {
         if menu("Environment download link", &["Turn off download link", "Back"])? != 0 {
             return Err(ui::BACK.into());
         }
-        return execute(&["download", "off", env_id]).await;
+        return action(&["download", "off", env_id], &format!("Download link for {} turned off.", clean(env["name"].as_str().unwrap_or("this environment")))).await;
     }
     let domains = super::domains::available(None, None).await?;
     let mut choices = vec![ui::Choice::new("Quick public link", "Temporary address")];
@@ -797,16 +898,66 @@ async fn download_link(env: &Value) -> Result<(), String> {
         2 => Ok(false),
         _ => return None,
     }))?;
+    // Everything that can be refused is settled before anything is stopped.
+    let mut args = vec![env_id.to_owned(), "--yes".to_owned()];
+    if choice > 0 {
+        let host = domains[choice - 1].domain["hostname"].as_str().ok_or("That saved domain has no address. Choose another, or the quick public link.")?;
+        args.extend(["--domain".to_owned(), host.to_owned()]);
+    }
+    let name = clean(env["name"].as_str().unwrap_or("this environment"));
     if needs_stop {
         execute(&["stop", env_id]).await?;
     }
-    let mut args = vec!["download", "on", env_id, "--yes"];
-    if choice > 0 { args.extend(["--domain", domains[choice - 1].domain["hostname"].as_str().ok_or("Invalid saved domain")?]); }
-    execute(&args).await
+    // The link lives only while this waits: it shows the address, counts downloads and turns the
+    // link off at Ctrl+C, then comes back here. It answers Ctrl+C itself, so nothing races it for
+    // the key and leaves the link answering until its lease runs out.
+    ui::pause(true);
+    let held = yougori_cli::downloads::run(&args).await;
+    ui::pause(false);
+    match held {
+        Ok(()) => Ok(()),
+        // Stopped only for this copy: the person decides whether it runs again.
+        Err(error) if needs_stop => after_failed_download(&name, env_id, &error).await,
+        Err(error) => Err(error),
+    }
+}
+
+/// The environment was stopped to make a download link that did not work. It was running a moment
+/// ago and the person never meant to leave it stopped, so they are asked, with starting it again
+/// first.
+async fn after_failed_download(name: &str, env_id: &str, error: &str) -> Result<(), String> {
+    let picked = ui::without_back(|| {
+        ui::select(
+            &format!("{name} is stopped"),
+            &[format!("The download link did not work: {}", clean(error))],
+            &[ui::Choice::new(format!("Start {name} again"), "as it was before"), ui::Choice::new("Leave it stopped", "")],
+            0,
+        )
+    });
+    if matches!(picked, Ok(0)) {
+        return execute(&["start", env_id]).await;
+    }
+    ui::info(&format!("{name} stays stopped. Start it again from its menu, or with yougori start {}.", shell_words::quote(env_id)));
+    Ok(())
+}
+
+/// Starting at sign-in, changed (or only read, with `None`) and said in one sentence.
+async fn sign_in_startup(enable: Option<bool>, dashboard: bool) -> Result<(), String> {
+    let label = if enable.is_some() { "Updating sign-in startup" } else { "Loading startup settings" };
+    let setting = engine_action(label, crate::autostart(enable, dashboard)).await?;
+    ui::info(match (enable, setting["mode"].as_str()) {
+        (Some(false), _) => "Yougori will no longer start when you sign in.",
+        (Some(true), Some("dashboard")) => "Yougori will start when you sign in, and open its dashboard.",
+        (Some(true), _) => "Yougori will start its background engine when you sign in.",
+        (None, Some("dashboard")) => "Yougori starts when you sign in, and opens its dashboard.",
+        (None, Some("background engine")) => "Yougori starts its background engine when you sign in.",
+        (None, _) => "Yougori does not start when you sign in.",
+    });
+    Ok(())
 }
 
 /// The environment's files and shared folders until Back, which returns [`ui::BACK`].
-async fn files(env: &str) -> Result<(), String> {
+async fn files(env: &str, name: &str) -> Result<(), String> {
     loop {
         let result = match menu(
             "Files and shared folders",
@@ -829,15 +980,18 @@ async fn files(env: &str) -> Result<(), String> {
                     }),
                     1 => path_text(&path).and_then(|text| confirm(
                         "Copy into environment?",
-                        &format!("{}\nDestination: {env}", clean(text)),
+                        &format!("{}\nInto {}", clean(text), clean(name)),
                     )).map(|()| true),
                     _ => return None,
                 })) {
-                    Ok(()) => execute(&["cp", path_text(&path)?, env]).await,
+                    Ok(()) => {
+                        let from = path_text(&path)?.to_owned();
+                        action(&["cp", &from, env], &format!("Copied {} into {}.", clean(&from), clean(name))).await
+                    }
                     Err(error) => Err(error),
                 }
             }
-            2 => copy_to_pc(env).await,
+            2 => copy_to_pc(env, name).await,
             3 => execute(&["share", "list", env]).await,
             4 => {
                 let mut folder = PathBuf::new();
@@ -854,8 +1008,9 @@ async fn files(env: &str) -> Result<(), String> {
                     2 => path_text(&folder).and_then(|text| confirm(
                         "Share this folder?",
                         &format!(
-                            "{}\nEnvironment: {env}\n{}",
+                            "{}\nWith {}\n{}",
                             clean(text),
+                            clean(name),
                             if writable {
                                 "The environment can change files in this folder."
                             } else {
@@ -865,17 +1020,14 @@ async fn files(env: &str) -> Result<(), String> {
                     )).map(|()| true),
                     _ => return None,
                 })) {
-                    Ok(()) => execute(&[
-                        "share",
-                        "add",
-                        env,
-                        "--path",
-                        path_text(&folder)?,
-                        "--read-only",
-                        if writable { "false" } else { "true" },
-                        "--yes",
-                    ])
-                    .await,
+                    Ok(()) => {
+                        let shared = path_text(&folder)?.to_owned();
+                        action(
+                            &["share", "add", env, "--path", &shared, "--read-only", if writable { "false" } else { "true" }, "--yes"],
+                            &format!("{} shared with {}, {}.", clean(&shared), clean(name), if writable { "read and write" } else { "read only" }),
+                        )
+                        .await
+                    }
                     Err(error) => Err(error),
                 }
             }
@@ -890,7 +1042,7 @@ async fn files(env: &str) -> Result<(), String> {
 
 /// Asks for the environment file, the folder on this PC and a confirmation in turn, each after
 /// the first with Back, then copies the file.
-async fn copy_to_pc(env: &str) -> Result<(), String> {
+async fn copy_to_pc(env: &str, name: &str) -> Result<(), String> {
     let mut source = String::new();
     let mut folder = PathBuf::new();
     let mut steps = ui::Wizard::new();
@@ -905,14 +1057,19 @@ async fn copy_to_pc(env: &str) -> Result<(), String> {
                 true
             }),
             2 => path_text(&folder)
-                .and_then(|text| confirm("Copy to this PC?", &format!("{}\n{}", clean(&source), clean(text))))
+                .and_then(|text| confirm("Copy to this PC?", &format!("{} from {}\nTo {}", clean(&source), clean(name), clean(text))))
                 .map(|()| true),
             _ => break,
         };
         steps.next(asked)?;
     }
     drop(steps);
-    execute(&["cp", &format!("{env}:{source}"), path_text(&folder)?]).await
+    let into = path_text(&folder)?.to_owned();
+    action(
+        &["cp", &format!("{env}:{source}"), &into],
+        &format!("Copied {} from {} to {}.", clean(&source), clean(name), clean(&into)),
+    )
+    .await
 }
 
 fn guest_child(parent: &str, name: &str) -> Result<String, String> {
@@ -958,7 +1115,7 @@ async fn browse_guest(env: &str) -> Result<String, String> {
                 }
             )
         }));
-        match choose_with_note("Environment files", &path, &choices)? {
+        match ui::with_back(|| choose_with_note("Environment files", &path, &choices))? {
             0 => return Ok(path),
             1 => {
                 path = path
@@ -1001,7 +1158,9 @@ async fn models() -> Result<(), String> {
             return Ok(());
         }
         let result = if action == 0 {
-            match text("Hugging Face model (OWNER/MODEL or link)", "", false) {
+            // Asked straight from the menu and then handed to the model launcher, which does
+            // not come back here. Escape has to return to the menu rather than leave.
+            match ui::with_back(|| text("Hugging Face model (OWNER/MODEL or link)", "", false)) {
                 Ok(model) => execute(&["run", &format!("hf.co/{}", public::model_name(&model))]).await,
                 Err(error) => Err(error),
             }
@@ -1064,7 +1223,7 @@ async fn backups() -> Result<(), String> {
             ],
         )? {
             0 => execute(&["snapshot", "list"]).await,
-            action @ (1 | 2 | 4) => saved_item(action).await,
+            picked @ (1 | 2 | 4) => saved_item(picked).await,
             3 => execute(&["backup", "list"]).await,
             5 => {
                 let mut file = PathBuf::new();
@@ -1078,7 +1237,10 @@ async fn backups() -> Result<(), String> {
                         .map(|()| true),
                     _ => return None,
                 })) {
-                    Ok(()) => execute(&["backup", "import", path_text(&file)?, "--yes"]).await,
+                    Ok(()) => {
+                        let from = path_text(&file)?.to_owned();
+                        action(&["backup", "import", &from, "--yes"], &format!("{} imported as a new environment.", clean(&from))).await
+                    }
                     Err(error) => Err(error),
                 }
             }
@@ -1092,15 +1254,15 @@ async fn backups() -> Result<(), String> {
 }
 
 /// Restores or deletes a snapshot, or restores a cloud backup: the item, then a confirmation.
-async fn saved_item(action: usize) -> Result<(), String> {
+async fn saved_item(picked: usize) -> Result<(), String> {
     let state = state().await?;
-    let (key, group, verb) = if action == 4 {
+    let (key, group, verb) = if picked == 4 {
         ("backupRuns", "backup", "restore")
     } else {
         (
             "snapshots",
             "snapshot",
-            if action == 1 { "restore" } else { "delete" },
+            if picked == 1 { "restore" } else { "delete" },
         )
     };
     let records = state[key].as_array().ok_or("Invalid saved item list")?;
@@ -1123,7 +1285,13 @@ async fn saved_item(action: usize) -> Result<(), String> {
         )).map(|()| true),
         _ => return None,
     }))?;
-    execute(&[group, verb, id(&record)?, "--yes"]).await
+    let called = clean(record["name"].as_str().unwrap_or("it")).to_string();
+    let done = match (group, verb) {
+        ("backup", _) => format!("Restored from the cloud backup {called}."),
+        (_, "restore") => format!("Restored from the snapshot {called}."),
+        _ => format!("Deleted the snapshot {called}."),
+    };
+    action(&[group, verb, id(&record)?, "--yes"], &done).await
 }
 
 async fn neocloud() -> Result<(), String> {
@@ -1159,7 +1327,7 @@ async fn runpod() -> Result<(), String> {
                 "Install RunPod CLI?",
                 "Downloads and installs the provider CLI for your user.",
             )?;
-            execute(&["neocloud", "install", "--provider", "runpod", "--yes"]).await
+            action(&["neocloud", "install", "--provider", "runpod", "--yes"], "RunPod CLI installed.").await
         }
         2 => {
             let mut key = String::new();
@@ -1239,7 +1407,10 @@ async fn system() -> Result<(), String> {
                         .map(|()| true),
                     _ => return None,
                 })) {
-                    Ok(()) => execute(&["storage", "location", "--set", path_text(&folder)?, "--yes"]).await,
+                    Ok(()) => {
+                        let into = path_text(&folder)?.to_owned();
+                        action(&["storage", "location", "--set", &into, "--yes"], &format!("Yougori now keeps its storage in {}.", clean(&into))).await
+                    }
                     Err(error) => Err(error),
                 }
             }
@@ -1249,7 +1420,7 @@ async fn system() -> Result<(), String> {
                     "Install GPU runtime?",
                     "Installs or updates Yougori's dedicated NVIDIA CUDA runtime.",
                 )?;
-                execute(&["gpu", "setup", "--yes"]).await
+                action(&["gpu", "setup", "--yes"], "GPU runtime installed. Environments that ask for a GPU can use it now.").await
             }
             6 => match menu(
                 "Startup at login",
@@ -1261,10 +1432,10 @@ async fn system() -> Result<(), String> {
                     "Back",
                 ],
             )? {
-                0 => execute(&["app", "autostart", "status"]).await,
-                1 => execute(&["app", "autostart", "on"]).await,
-                2 => execute(&["app", "autostart", "on", "--dashboard"]).await,
-                3 => execute(&["app", "autostart", "off"]).await,
+                0 => sign_in_startup(None, false).await,
+                1 => sign_in_startup(Some(true), false).await,
+                2 => sign_in_startup(Some(true), true).await,
+                3 => sign_in_startup(Some(false), false).await,
                 _ => Err(ui::BACK.into()),
             },
             7 => super::releases::offer(true).await,
@@ -1295,6 +1466,7 @@ async fn vault() -> Result<(), String> {
                 "Review approval requests — open approvals in the app",
                 "Add a vault item — open the app's entry form",
                 "MCP connection setup — how to connect your client",
+                "Company Access Grid — sign-in, approvals and agent setup",
                 "Back",
             ],
         )? {
@@ -1322,9 +1494,107 @@ async fn vault() -> Result<(), String> {
                     Err(ui::BACK.into())
                 }
             }
+            5 => access_grid().await,
             _ => return Ok(()),
         };
         // Back from an action returns to this menu.
+        if !went_back(result)? {
+            return Ok(());
+        }
+    }
+}
+
+/// One grid's status. With more than one grid on this computer the status cannot guess which,
+/// and a menu has no `--grid` to type, so the grid is chosen here first, with Back.
+async fn one_grid_status() -> Result<(), String> {
+    let listed = busy("Looking for the grids on this computer", async {
+        client::start(None).await?;
+        call("grids_realm", json!({"request": {"do": "list"}})).await
+    })
+    .await?;
+    let grids = listed["found"].as_array().cloned().unwrap_or_default();
+    if grids.len() < 2 {
+        return execute(&["grids", "status"]).await;
+    }
+    let mut choices: Vec<String> = grids.iter().map(|grid| clean(grid["name"].as_str().unwrap_or("Unnamed grid"))).collect();
+    choices.push("Back".into());
+    let picked = ui::with_back(|| choose_with_initial("Which grid?", "", &choices, 0))?;
+    let Some(grid) = grids.get(picked) else { return Err(ui::BACK.into()) };
+    let which = grid["handle"].as_str().or_else(|| grid["name"].as_str()).ok_or("That grid has no name to ask it by.")?;
+    execute(&["grids", "status", "--grid", which]).await
+}
+
+/// The four grids in one place: the Closed Neo Grid, the Sandbox Grid, the Access Grid and
+/// Swarm Mining. This is the first entry that names all four together. Nothing here starts a
+/// research worker; `yougori start bounty` keeps that, with its own questions.
+async fn grids() -> Result<(), String> {
+    loop {
+        let result = match menu(
+            "Grids",
+            &[
+                "Every grid on this computer",
+                "One grid's status",
+                "What each grid is allowed to do",
+                "Command reference for grids",
+                "Back",
+            ],
+        )? {
+            0 => execute(&["grids", "list"]).await,
+            1 => one_grid_status().await,
+            2 => {
+                ui::info("A grid is asked only what it does: models, desks, credentials or research.");
+                for noun in yougori_cli::grids::NOUNS.iter().filter(|noun| **noun != "realm") {
+                    let doing: Vec<&str> = yougori_cli::grids::verbs_of(noun)
+                        .first()
+                        .map(|verb| verb.needs.iter().map(|capability| capability.doing()).collect())
+                        .unwrap_or_default();
+                    let allowed = if doing.is_empty() { "any grid".to_owned() } else { format!("a grid that can {}", yougori_cli::grids::join_words(&doing)) };
+                    ui::line(&format!("{noun}: {allowed}"));
+                }
+                execute(&["grids", "list"]).await
+            }
+            3 => execute(&["grids", "--help"]).await,
+            _ => return Ok(()),
+        };
+        // Back from an action returns to this menu.
+        if !went_back(result)? {
+            return Ok(());
+        }
+    }
+}
+
+/// The company's Access Grid: credentials agents use without seeing them. Hosting, people,
+/// credentials and rules are managed in the app or with `yougori access …`.
+async fn access_grid() -> Result<(), String> {
+    loop {
+        let result = match menu(
+            "Access Grid",
+            &[
+                "Status — your sign-in and what your agents may use",
+                "Requests — what waits for an approver",
+                "Activity — uses, decisions and changes",
+                "Agent setup — connect an MCP client",
+                "Back",
+            ],
+        )? {
+            0 => execute(&["access", "status"]).await,
+            1 => execute(&["access", "requests"]).await,
+            2 => execute(&["access", "log"]).await,
+            3 => {
+                ui::info("Sign in first, in the app's Access Grid section or with yougori access signin --invite INVITE --username NAME.");
+                ui::info("For a local stdio MCP client, use this server configuration:");
+                let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+                let config = json!({"mcpServers":{"yougori-access":{"command":executable,"args":["access","mcp"]}}});
+                for line in serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?.lines() {
+                    ui::line(line);
+                }
+                ui::info("Agents then use company credentials through Access Grid and never see their values.");
+                menu("Agent setup", &["Back"])?;
+                Err(ui::BACK.into())
+            }
+            // Opened from MCP Vault: Back returns there, not to the home menu.
+            _ => return Err(ui::BACK.into()),
+        };
         if !went_back(result)? {
             return Ok(());
         }
@@ -1414,14 +1684,16 @@ pub(super) async fn run(args: &[String]) -> Result<i32, String> {
     }
     loop {
         // The home menu has nothing to go back to; Esc and Exit close it.
-        let selected = match ui::without_back(|| menu(
+        let selected = match ui::without_back(|| choose_with_initial(
             "Yougori",
+            "",
             &[
                 "Overview — environments, services and jobs",
                 "Run a project — choose a Node.js or Python folder",
                 "Create an environment — container, GPU, microVM or VM",
                 "Manage an environment — terminal, start, stop, files and backups",
                 "Models — run, chat and API access",
+                "Grids — models, desks, credentials and research in one place",
                 "Neocloud — RunPod account, prices and deployments",
                 "MCP Vault — vault, approvals and MCP connections",
                 "Snapshots and backups — browse, restore and import saved data",
@@ -1430,19 +1702,28 @@ pub(super) async fn run(args: &[String]) -> Result<i32, String> {
                 "Yougori settings and tools — storage, startup, updates and diagnostics",
                 "Command reference — available commands and usage examples",
                 "Exit — keep workloads running",
-            ],
+            ]
+            .map(String::from),
+            0,
         )) {
             Ok(index) => index,
             Err(e) if left(&e) => break,
             Err(e) => return Err(e),
         };
-        if selected == 12 {
+        // The list above is dispatched by position, so an entry inserted into it moves every
+        // one below it: this guard and the arms underneath are renumbered with it, together.
+        if selected == 13 {
             break;
         }
         let result: Result<(), String> = async {
             match selected {
                 0 => execute(&["status"]).await,
                 1 => {
+                    // Held across the await: the folder question and the run that follows both
+                    // sit inside this menu, so Escape returns here instead of dropping the person
+                    // out of the launcher. The guard puts the flag back even if either step
+                    // returns early, which a plain restore after the call would not.
+                    let _offering = ui::Offering::new();
                     let (folder, change) = project_folder()?;
                     project::run_in(&folder, change).await?;
                     Ok(())
@@ -1450,13 +1731,14 @@ pub(super) async fn run(args: &[String]) -> Result<i32, String> {
                 2 => create().await,
                 3 => manage().await,
                 4 => models().await,
-                5 => neocloud().await,
-                6 => vault().await,
-                7 => backups().await,
-                8 => connections().await,
-                9 => domains::run().await,
-                10 => system().await,
-                11 => execute(&["help"]).await,
+                5 => grids().await,
+                6 => neocloud().await,
+                7 => vault().await,
+                8 => backups().await,
+                9 => connections().await,
+                10 => domains::run().await,
+                11 => system().await,
+                12 => execute(&["help"]).await,
                 _ => Ok(()),
             }
         }
@@ -1464,6 +1746,13 @@ pub(super) async fn run(args: &[String]) -> Result<i32, String> {
         match result {
             // Leaving a question or going Back from a menu returns here.
             Err(e) if left(&e) => {}
+            // A cancellation that says what it left behind is a note, not a failure.
+            Err(e) if yougori_cli::wire::cancellation(&e).is_some() => {
+                let said = yougori_cli::wire::cancellation(&e).unwrap_or_default();
+                if !said.is_empty() {
+                    ui::info(&ui::muted(&clean(&said)));
+                }
+            }
             Err(e) => ui::warn(&clean(&e)),
             Ok(()) => {}
         }
@@ -1503,6 +1792,112 @@ mod tests {
         assert_eq!(went_back(Ok(())), Ok(false));
         assert_eq!(went_back(Err(ui::CANCELLED.into())), Err(ui::CANCELLED.into()));
         assert_eq!(went_back(Err("Engine stopped".into())), Err("Engine stopped".into()));
+    }
+
+    /// PROVES that Ctrl+C during a menu action is answered rather than ending the process, and
+    /// that both ways of stopping are told to the person in the same words.
+    ///
+    /// The press used to reach this process as a signal and end it where it stood. What that
+    /// left behind was the state the painter was in at that instant: a hidden cursor nothing put
+    /// back, and the last spinner frozen on the screen under a shell prompt. The menu now waits
+    /// on the press itself, so there is an outcome to decide rather than a process to bury, and
+    /// this is that decision.
+    ///
+    /// DOES NOT PROVE that the action was undone. Nothing here knows whether the engine had the
+    /// request, which is exactly why the sentence below does not claim it either.
+    #[test]
+    fn stopping_a_menu_action_is_answered_rather_than_ending_the_process() {
+        // Ctrl+C before the command finished, and a command that stopped itself, are one answer.
+        assert_eq!(outcome(None), Err(ui::CANCELLED.into()));
+        assert_eq!(outcome(Some(Ok(130))), Err(ui::CANCELLED.into()));
+        // And that answer is one the menu treats as leaving a question, not as a failure.
+        assert!(left(&outcome(None).unwrap_err()));
+
+        assert_eq!(outcome(Some(Ok(0))), Ok(()));
+        assert_eq!(outcome(Some(Err("The engine stopped".into()))), Err("The engine stopped".into()));
+        let other = outcome(Some(Ok(2))).unwrap_err();
+        assert!(other.contains("status 2") && !left(&other), "{other}");
+
+        // The note names what was being waited for and where to look, and claims nothing about
+        // whether it happened.
+        let said = stopped_waiting(activity_label(&["rm".into(), "env-1".into()]));
+        assert!(said.starts_with("Deleting environment"), "{said}");
+        assert!(said.contains("yougori ps"), "{said}");
+        for claim in ["undone", "cancelled", "nothing was"] {
+            assert!(!said.to_lowercase().contains(claim), "it does not claim what it cannot know: {said}");
+        }
+    }
+
+    /// PROVES that a list somebody chooses from shows names, and shows an identifier only where
+    /// a name does not tell two things apart.
+    ///
+    /// Every line used to end in the identifier — the longest and least memorable part of a line
+    /// whose whole job is to be recognised at a glance, and on a narrow terminal it pushed the
+    /// name and the status off the side. The identifier is useful in exactly one case, which is
+    /// the one it now appears in.
+    #[test]
+    fn a_list_shows_names_and_falls_back_to_an_identifier_only_to_tell_two_apart() {
+        let records = vec![
+            json!({"name": "Work", "status": "running", "id": "env-7f3a9c2d1b4e"}),
+            json!({"name": "Notes", "status": "stopped", "id": "env-aa11bb22cc33"}),
+        ];
+        assert_eq!(record_labels(&records), ["Work — running", "Notes — stopped"]);
+
+        // Two called the same thing: those two carry enough to tell them apart, and the one
+        // with a name of its own is left alone.
+        let records = vec![
+            json!({"name": "api", "status": "running", "id": "env-7f3a9c2d1b4e"}),
+            json!({"name": "api", "status": "stopped", "id": "env-aa11bb22cc33"}),
+            json!({"name": "Notes", "status": "stopped", "id": "env-dd44ee55ff66"}),
+        ];
+        assert_eq!(record_labels(&records), ["api — running · 2d1b4e", "api — stopped · 22cc33", "Notes — stopped"]);
+
+        // Nothing named, nothing known: still a line, never an empty one.
+        assert_eq!(record_labels(&[json!({})]), ["Unnamed — saved"]);
+        // A short or missing identifier is shown whole rather than panicking on a byte index,
+        // and a multi-byte name is cut on characters.
+        assert_eq!(tail("env-1"), "env-1");
+        assert_eq!(tail(""), "");
+        assert_eq!(tail("ααααααααα"), "αααααα");
+    }
+
+    /// PROVES that an action is carried out through the same door the CLI itself would use.
+    ///
+    /// There are two, and they are not interchangeable. `public::handle` owns the short verbs and
+    /// does work around the request that the parser knows nothing about; everything else is
+    /// parsed into one request and sent. Choosing the wrong one does not fail loudly — it
+    /// quietly does less than the typed command would — so the one thing worth pinning is that
+    /// the question asked here is the same question the CLI asks.
+    #[test]
+    fn an_action_goes_through_the_same_door_a_typed_command_would() {
+        for verb in ["rm", "cp", "rename", "logs", "inspect"] {
+            assert!(public::COMMANDS.contains(&verb), "{verb} is one of public's, and must stay one");
+        }
+        for verb in ["snapshot", "backup", "share", "download", "env", "gpu", "storage", "neocloud", "app"] {
+            assert!(!public::COMMANDS.contains(&verb), "{verb} is parsed into one request; if it moves, carry_out has to move with it");
+        }
+        // And every action the menu runs has an activity label, so the spinner and the note
+        // after a stopped wait both name what was happening rather than saying "working".
+        for args in [
+            vec!["rm", "env-1", "--yes"],
+            vec!["rename", "env-1", "new"],
+            vec!["cp", "a", "env-1"],
+            vec!["snapshot", "create", "env-1"],
+            vec!["snapshot", "restore", "snap-1"],
+            vec!["snapshot", "delete", "snap-1"],
+            vec!["backup", "export", "env-1"],
+            vec!["backup", "import", "file"],
+            vec!["backup", "restore", "run-1"],
+            vec!["share", "add", "env-1"],
+            vec!["env", "resources", "env-1"],
+            vec!["gpu", "setup", "--yes"],
+            vec!["storage", "location", "--set", "D:\\"],
+            vec!["neocloud", "install", "--provider", "runpod"],
+        ] {
+            let args: Vec<String> = args.into_iter().map(String::from).collect();
+            let label = activity_label(&args);
+            assert!(!label.is_empty() && label != "Working", "{args:?} has no label of its own");
+        }
     }
 
     #[test]

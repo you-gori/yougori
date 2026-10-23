@@ -21,6 +21,32 @@ fn supported(
     }
     Ok(())
 }
+/// A volume's `read_only` as Docker Compose takes it: a boolean, or the text "true" or "false",
+/// which is what a quoted or an interpolated value (`${RO:-true}`) is by the time it is read.
+/// Anything else is refused rather than read as writable; only a missing key means read-write.
+fn read_only(value: &Value, key: &str) -> Result<bool, String> {
+    match value {
+        Value::Null => Ok(false),
+        Value::Bool(flag) => Ok(*flag),
+        Value::String(text) if text.trim().eq_ignore_ascii_case("true") => Ok(true),
+        Value::String(text) if text.trim().eq_ignore_ascii_case("false") => Ok(false),
+        _ => Err(format!("{key}: a volume's read_only must be true or false")),
+    }
+}
+
+fn home_folder() -> Option<PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+}
+/// Compose reads `~` at the start of a folder bind as the user's home folder; kept as typed,
+/// it would name a folder called `~` beside the project file.
+fn home_source(source: &str, home: Option<&Path>) -> Result<String, String> {
+    let Some(rest) = source.strip_prefix('~') else { return Ok(source.to_owned()) };
+    if !(rest.is_empty() || rest.starts_with(['/', '\\'])) {
+        return Err(format!("Use ~/ or a full path for the folder {source}"));
+    }
+    let home = home.ok_or("Cannot find this user's home folder for ~")?;
+    Ok(format!("{}{rest}", home.display()))
+}
 fn env_file(path: &Path) -> Result<BTreeMap<String, String>, String> {
     let text = read(path)?;
     let mut result = BTreeMap::new();
@@ -33,19 +59,50 @@ fn env_file(path: &Path) -> Result<BTreeMap<String, String>, String> {
         let (k, v) = line
             .split_once('=')
             .ok_or_else(|| format!("{}:{}: expected KEY=value", path.display(), i + 1))?;
-        let v = v.trim();
-        let value = if v.starts_with('\'') && v.ends_with('\'') {
-            v[1..v.len() - 1].to_owned()
-        } else if v.starts_with('"') && v.ends_with('"') {
-            serde_json::from_str::<String>(v).map_err(|_| "Invalid quoted environment value")?
-        } else {
-            v.split(" #").next().unwrap_or(v).trim_end().to_owned()
-        };
+        let value = env_value(v.trim())
+            .map_err(|error| format!("{}:{}: {error}", path.display(), i + 1))?;
         result.insert(k.trim().into(), value);
     }
     Ok(result)
 }
+/// One `.env` value: a quoted value ends at its closing quote and may carry a ` # comment`
+/// after it; an unquoted value ends at ` #`.
+fn env_value(v: &str) -> Result<String, String> {
+    let after = |close: usize| {
+        let rest = v[close + 1..].trim_start();
+        if rest.is_empty() || rest.starts_with('#') { Ok(()) } else { Err("Unexpected text after a quoted environment value".to_owned()) }
+    };
+    if let Some(inner) = v.strip_prefix('\'') {
+        let close = inner.find('\'').ok_or("Unclosed quoted environment value")? + 1;
+        after(close)?;
+        return Ok(v[1..close].to_owned());
+    }
+    if v.starts_with('"') {
+        let mut escaped = false;
+        let close = v
+            .char_indices()
+            .skip(1)
+            .find_map(|(index, c)| {
+                let end = !escaped && c == '"';
+                escaped = !escaped && c == '\\';
+                end.then_some(index)
+            })
+            .ok_or("Unclosed quoted environment value")?;
+        after(close)?;
+        return serde_json::from_str::<String>(&v[..=close]).map_err(|_| "Invalid quoted environment value".to_owned());
+    }
+    Ok(v.split(" #").next().unwrap_or(v).trim_end().to_owned())
+}
 pub fn interpolate(text: &str, env: &HashMap<String, String>) -> Result<String, String> {
+    interpolate_nested(text, env, 0)
+}
+/// Defaults may hold variables of their own, as in `${TAG:-${DEFAULT_TAG}}`; a few levels
+/// are plenty, and anything deeper is refused rather than copied as text.
+const NESTING: usize = 8;
+fn interpolate_nested(text: &str, env: &HashMap<String, String>, depth: usize) -> Result<String, String> {
+    if depth > NESTING {
+        return Err("Compose variables are nested too deeply".into());
+    }
     let mut out = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -61,10 +118,18 @@ pub fn interpolate(text: &str, env: &HashMap<String, String>) -> Result<String, 
         let expr = if chars.peek() == Some(&'{') {
             chars.next();
             let mut e = String::new();
+            let mut open = 0usize;
             loop {
                 match chars.next() {
-                    Some('}') => break,
-                    Some(c) => e.push(c),
+                    Some('}') if open == 0 => break,
+                    Some(c) => {
+                        match c {
+                            '{' => open += 1,
+                            '}' => open -= 1,
+                            _ => {}
+                        }
+                        e.push(c)
+                    }
                     None => return Err("Unclosed Compose variable".into()),
                 }
             }
@@ -83,9 +148,14 @@ pub fn interpolate(text: &str, env: &HashMap<String, String>) -> Result<String, 
             }
             e
         };
+        // The operator follows the variable name; a `-`, `?` or `+` further on belongs to the
+        // default or the message, as in `${DEBUG+--verbose}` or `${TAG?e.g. 1-alpine}`.
+        let name = expr.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(expr.len());
+        let (key, rest) = expr.split_at(name);
         let mut matched = false;
         for op in [":-", ":?", ":+", "-", "?", "+"] {
-            if let Some((key, fallback)) = expr.split_once(op) {
+            if let Some(fallback) = rest.strip_prefix(op).filter(|_| !key.is_empty()) {
+                let fallback = &interpolate_nested(fallback, env, depth + 1)?;
                 let value = env.get(key);
                 let present = value.is_some_and(|v| !op.starts_with(':') || !v.is_empty());
                 match op.trim_start_matches(':') {
@@ -252,6 +322,12 @@ pub fn convert_text(
                 "{key}: init:true needs an init process in the image"
             ));
         }
+        // Other services reach each one by its service name, never by container_name.
+        if let Some(name) = s.get("container_name").map(scalar).transpose()?.filter(|name| name != key) {
+            return Err(format!(
+                "{key}: container_name '{name}' is not the service name, and other services reach it only by its service name. Rename the service to {name}, or remove container_name; nothing was imported."
+            ));
+        }
         let mut e=Environment{image:s["image"].as_str().ok_or_else(||format!("{key}: an image is required; build-only projects need a built OCI image first"))?.into(),internet:true,..Default::default()};
         e.command = command(&s["command"])?;
         e.entrypoint = command(&s["entrypoint"])?;
@@ -393,10 +469,11 @@ pub fn convert_text(
                             "Only named volumes and folder bind mounts can be imported".into()
                         );
                     }
+                    let source = v["source"].as_str().ok_or("Volume source required")?;
                     Mount {
-                        source: v["source"].as_str().ok_or("Volume source required")?.into(),
+                        source: if kind == "bind" { home_source(source, home_folder().as_deref())? } else { source.into() },
                         target: v["target"].as_str().ok_or("Volume target required")?.into(),
-                        read_only: v["read_only"].as_bool().unwrap_or(false),
+                        read_only: read_only(&v["read_only"], key)?,
                         bind: kind == "bind",
                     }
                 } else {
@@ -413,12 +490,12 @@ pub fn convert_text(
                             )
                         }
                     };
+                    let bind = source.starts_with(['.', '/', '~']) || Path::new(source).is_absolute();
                     Mount {
-                        source: source.into(),
+                        source: if bind { home_source(source, home_folder().as_deref())? } else { source.into() },
                         target: target.into(),
                         read_only: ro,
-                        bind: source.starts_with(['.', '/', '~'])
-                            || Path::new(source).is_absolute(),
+                        bind,
                     }
                 };
                 if !mount.bind && !declared_volumes.contains(&mount.source) {
@@ -493,6 +570,24 @@ mod tests {
             "do-not-log"
         );
     }
+    /// PROVES that `read_only` written as text, which is what a quoted or an interpolated value is
+    /// by the time it is read, is honoured, and that anything other than true or false is refused.
+    ///
+    /// `read_only` was read only as a YAML boolean, so `"true"` and `${RO:-true}` both mounted the
+    /// folder read-write where Docker Compose mounts it read-only: a folder meant to be out of the
+    /// container's reach could be written to, and nothing said so.
+    #[test]
+    fn read_only_written_as_text_is_honoured_and_anything_else_is_refused() {
+        let compose = |read_only: &str| format!("name: test\nservices:\n  app:\n    image: alpine\n    volumes:\n      - {{type: volume, source: data, target: /data{read_only}}}\nvolumes: {{data: {{}}}}\n");
+        let mounted = |read_only: &str| convert_text(&compose(read_only), Path::new("."), &HashMap::new()).map(|p| p.environments["app"].volumes[0].read_only);
+        assert_eq!(mounted(""), Ok(false), "absent is read-write, as in Compose");
+        assert_eq!(mounted(", read_only: true"), Ok(true));
+        assert_eq!(mounted(", read_only: 'true'"), Ok(true), "quoted");
+        assert_eq!(mounted(", read_only: '${RO:-true}'"), Ok(true), "interpolated");
+        assert_eq!(mounted(", read_only: 'False'"), Ok(false));
+        assert!(mounted(", read_only: 'yes'").is_err(), "anything but true or false is refused, never read as writable");
+        assert!(mounted(", read_only: 1").is_err());
+    }
     #[test]
     fn never_silently_drops_unsafe_or_unsupported_compose_behavior() {
         for extra in [
@@ -517,5 +612,59 @@ mod tests {
             "$HOME fallback default"
         );
         assert!(interpolate("${MISSING}", &e).is_err())
+    }
+    #[test]
+    fn defaults_can_hold_variables_of_their_own() {
+        let set = HashMap::from([("TAG".into(), "1.2".into()), ("DEFAULT_TAG".into(), "1.0".into())]);
+        let fallback = HashMap::from([("DEFAULT_TAG".into(), "1.0".into())]);
+        assert_eq!(interpolate("app:${TAG:-${DEFAULT_TAG}}", &set).unwrap(), "app:1.2");
+        assert_eq!(interpolate("app:${TAG:-${DEFAULT_TAG}}", &fallback).unwrap(), "app:1.0");
+        assert_eq!(interpolate("${A:-${B:-${C:-deep}}}", &HashMap::new()).unwrap(), "deep");
+        assert!(interpolate("${TAG:-${DEFAULT_TAG}", &set).is_err(), "an unclosed variable is refused");
+        let too_deep = format!("{}x{}", "${A:-".repeat(12), "}".repeat(12));
+        assert!(interpolate(&too_deep, &HashMap::new()).unwrap_err().contains("nested too deeply"));
+    }
+    #[test]
+    fn a_container_name_other_services_cannot_use_is_refused() {
+        let compose = |name: &str| format!("name: shop\nservices:\n  db:\n    image: postgres:17\n    container_name: {name}\n");
+        let error = convert_text(&compose("shop-db"), Path::new("."), &HashMap::new()).unwrap_err();
+        assert!(error.contains("Rename the service to shop-db"), "{error}");
+        assert!(convert_text(&compose("db"), Path::new("."), &HashMap::new()).is_ok());
+    }
+    #[test]
+    fn operators_follow_the_name_and_defaults_keep_their_dashes() {
+        let set = HashMap::from([("DEBUG".into(), "1".into()), ("TAG".into(), "2-alpine".into())]);
+        let none = HashMap::new();
+        assert_eq!(interpolate("${DEBUG+--verbose}", &set).unwrap(), "--verbose");
+        assert_eq!(interpolate("${DEBUG+--verbose}", &none).unwrap(), "");
+        assert_eq!(interpolate("${TAG?set TAG, e.g. 1-alpine}", &set).unwrap(), "2-alpine");
+        let error = interpolate("${TAG?set TAG, e.g. 1-alpine}", &none).unwrap_err();
+        assert!(error.contains("TAG") && error.contains("e.g. 1-alpine"), "{error}");
+        assert_eq!(interpolate("${MISSING:-a-b}", &none).unwrap(), "a-b");
+        assert_eq!(interpolate("${MISSING-x:-y}", &none).unwrap(), "x:-y");
+        assert_eq!(interpolate("${TAG:+on-tag}", &set).unwrap(), "on-tag");
+    }
+    #[test]
+    fn env_values_end_at_their_closing_quote() {
+        assert_eq!(env_value("'it''s'").unwrap_err(), "Unexpected text after a quoted environment value");
+        assert!(env_value("'").is_err(), "a lone quote is an error, never a panic");
+        assert!(env_value("\"").is_err());
+        assert_eq!(env_value("''").unwrap(), "");
+        assert_eq!(env_value("'a # b'").unwrap(), "a # b");
+        assert_eq!(env_value("\"secret\" # rotate monthly").unwrap(), "secret");
+        assert_eq!(env_value("'secret'   #note").unwrap(), "secret");
+        assert_eq!(env_value(r#""say \"hi\"""#).unwrap(), "say \"hi\"");
+        assert_eq!(env_value(r#""line\nnext""#).unwrap(), "line\nnext");
+        assert_eq!(env_value("plain value # comment").unwrap(), "plain value");
+        assert!(env_value("\"open").is_err());
+    }
+    #[test]
+    fn a_home_folder_bind_points_at_the_home_folder() {
+        let home = Path::new("/home/ada");
+        assert_eq!(home_source("~/data", Some(home)).unwrap(), "/home/ada/data");
+        assert_eq!(home_source("~", Some(home)).unwrap(), "/home/ada");
+        assert_eq!(home_source("./data", Some(home)).unwrap(), "./data");
+        assert!(home_source("~bob/data", Some(home)).is_err());
+        assert!(home_source("~/data", None).is_err());
     }
 }

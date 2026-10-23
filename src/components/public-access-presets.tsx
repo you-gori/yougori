@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
-import { PlugZapIcon, PlusIcon, Trash2Icon } from "lucide-react"
 import { workspaceApi, type SetupTunnelConnection } from "@/api/workspace-api"
+import { Address, Outcome, Slot } from "@/components/popup-kit"
 import type { GraphEnvironment } from "@/components/graph-capabilities"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
@@ -110,7 +110,7 @@ export function PublicAccessPresets({ environments, refresh }: { environments: G
   return <>
     <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!busy && !(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
       <DialogPopup data-instruction="public-presets-dialog" className="max-w-3xl" closeProps={{ disabled: busy }}>
-        <DialogHeader><DialogTitle>Public access setups</DialogTitle><DialogDescription>Save a domain and app port once, then use it with any environment running an app on that port. Each domain needs its own dedicated Cloudflare tunnel and local bridge port.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Public access setups</DialogTitle><DialogDescription>Save your own domain once, then publish any environment's app on it. Each domain uses its own dedicated Cloudflare tunnel on your account, and people open the app at https:// and that domain.</DialogDescription></DialogHeader>
         <DialogPanel className="space-y-5">
           {error ? <p role="alert" className="text-sm text-destructive-foreground">{error}</p> : null}
           {message ? <p role="status" className="text-sm text-muted-foreground">{message}</p> : null}
@@ -130,8 +130,8 @@ export function PublicAccessPresets({ environments, refresh }: { environments: G
             </div>
           </section> : null}
           <section className="space-y-2" aria-label="Saved setups">
-            <h3 className="text-sm font-medium">Domain and port</h3>
-            <p className="text-xs text-muted-foreground">Choose Connect for tunnel setup to bring a tunnel online while you create its route in Cloudflare. No environment needs to be running.</p>
+            <h3 className="text-sm font-medium">Saved domains</h3>
+            <p className="text-xs text-muted-foreground">Choose Connect for tunnel setup to bring a tunnel online while you create its route in Cloudflare. No environment needs to be running. A locked-down sandbox's links answer nothing until it is unlocked.</p>
             {target ? <p className="text-xs text-muted-foreground">Connecting {targets.find(env => env.id === target.environmentId)?.name ?? "environment"} · app port :{target.port}</p> : <p className="text-xs text-muted-foreground">After routing is ready, connect an environment's matching app port to Public access to serve your app.</p>}
             {visiblePresets.length ? visiblePresets.map(preset => {
               const environment = targets.find(env => env.id === target?.environmentId)
@@ -149,25 +149,35 @@ export function PublicAccessPresets({ environments, refresh }: { environments: G
                 </div>
               </form>
               return <div key={preset.id} className="flex flex-wrap items-center gap-2 rounded-lg border p-2 text-sm">
-                <span className="min-w-0 flex-1"><strong className="block truncate">{preset.hostname} · :{preset.port}</strong><span className="text-xs text-muted-foreground">Any environment · local bridge :{preset.hostPort}</span></span>
+                <span className="min-w-0 flex-1 space-y-1"><strong className="block truncate">{preset.hostname} · :{preset.port}</strong><span className="block text-xs text-muted-foreground">Opens at <Address>https://{preset.hostname}</Address> · app port :{preset.port} · local bridge :{preset.hostPort}</span></span>
                 {target ? <Button size="xs" variant="outline" disabled={busy || !environment || environment.status !== "running" || connected} onClick={() => connect(preset)}>{connected ? "App connected" : "Connect app"}</Button> : null}
-                <Button size="sm" className="shrink-0" aria-label={`Connect for tunnel setup: ${preset.hostname}`} loading={connectingTunnel === preset.id} disabled={busy} onClick={() => void perform(() => startSetupTunnel(preset))}><PlugZapIcon aria-hidden="true" />Connect for tunnel setup</Button>
+                <Button size="sm" className="shrink-0" aria-label={`Connect for tunnel setup: ${preset.hostname}`} loading={connectingTunnel === preset.id} disabled={busy} onClick={() => void perform(() => startSetupTunnel(preset))}>Connect for tunnel setup</Button>
                 <Button aria-label={`Edit ports for ${preset.hostname}`} size="xs" variant="ghost" disabled={busy} onClick={() => { setError(""); setMessage(""); setEditing({ id: preset.id, port: String(preset.port), hostPort: String(preset.hostPort) }) }}>Edit</Button>
-                <Button aria-label={`Remove ${preset.hostname}`} title={`Remove ${preset.hostname}`} size="icon-xs" variant="ghost" disabled={busy} onClick={() => remove(preset)}><Trash2Icon aria-hidden="true" /></Button>
+                <Button aria-label={`Remove ${preset.hostname}`} size="xs" variant="ghost" disabled={busy} onClick={() => remove(preset)}>Remove</Button>
               </div>
             }) : <p className="text-xs text-muted-foreground">{target ? "No saved setups for this app port yet." : "No saved domain setups yet."}</p>}
           </section>
           <form className="space-y-3 border-t pt-4" onSubmit={event => { event.preventDefault(); save() }}>
-            <h3 className="flex items-center gap-2 text-sm font-medium"><PlusIcon aria-hidden="true" className="size-4" />Add a setup</h3>
+            <h3 className="text-sm font-medium">Add a domain</h3>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 text-xs">App port<Input aria-label="App port" required inputMode="numeric" placeholder="3000" value={port} disabled={busy} onChange={event => setPort(event.target.value)} /></label>
               <label className="space-y-1 text-xs">Domain<Input aria-label="Domain" required autoComplete="off" spellCheck={false} placeholder="crm.example.com" value={hostname} disabled={busy} onChange={event => setHostname(event.target.value)} /></label>
               <label className="space-y-1 text-xs">Local tunnel port<Input aria-label="Local tunnel port" required inputMode="numeric" placeholder="45000" value={hostPort} disabled={busy} onChange={event => setHostPort(event.target.value)} /></label>
             </div>
             <label className="block space-y-1 text-xs">Cloudflare tunnel token<Input aria-label="Cloudflare tunnel token" required type="password" autoComplete="new-password" maxLength={4096} placeholder="Paste token or Cloudflare command" value={token} disabled={busy} onChange={event => setToken(cloudflareTokenInput(event.target.value))} /></label>
-            <p className="text-xs text-muted-foreground">In Cloudflare, create a dedicated tunnel with no routes yet, or only this domain pointing to <code>http://localhost:{hostPort || "45000"}</code>. Paste the token or full installation command. Yougori connects the tunnel and keeps the connection on while you set up its route. The app port is inside the environment. Anyone who knows the public URL can visit unless you configure visitor protection. Your token is saved in the OS credential vault.</p>
-            <Button type="button" size="xs" variant="link" onClick={() => void perform(() => workspaceApi.openUrl("https://dash.cloudflare.com/"))}>Open Cloudflare dashboard</Button>
-            <Button type="submit" size="sm" loading={busy} disabled={busy}>Save and connect tunnel</Button>
+            <ol className="list-decimal space-y-1 ps-5 text-xs leading-relaxed text-muted-foreground">
+              <li>In Cloudflare, create a dedicated tunnel with no routes yet, or with only this domain pointing to <code>http://localhost:{hostPort || "45000"}</code>.</li>
+              <li>Paste its token, or the whole install command, above. Yougori connects the tunnel and keeps it on while you add the route, and keeps the token in this PC's credential vault.</li>
+              <li>The app port is the one your app listens on inside the environment.</li>
+            </ol>
+            <Outcome title="People will open">
+              <p>{hostname.trim() ? <Address>https://{hostname.trim()}</Address> : <Address>https://<Slot>your domain</Slot></Address>}</p>
+              <p>Anyone who knows the address can visit unless you set up visitor protection in Cloudflare.</p>
+            </Outcome>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" size="xs" variant="link" onClick={() => void perform(() => workspaceApi.openUrl("https://dash.cloudflare.com/"))}>Open Cloudflare dashboard</Button>
+              <Button type="submit" size="sm" loading={busy} disabled={busy}>Save and connect tunnel</Button>
+            </div>
           </form>
         </DialogPanel>
         <DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setOpen(false)}>Done</Button></DialogFooter>

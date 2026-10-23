@@ -69,9 +69,11 @@ pub(super) async fn available(current: Option<&str>, port: Option<u16>) -> Resul
                     let id = env["id"].as_str().ok_or("Environment has no ID")?.to_owned();
                     let name = env["name"].as_str().unwrap_or(&id).to_owned();
                     checks.spawn(async move {
-                        let services = call("list_environment_services", json!({"environmentId":id})).await
-                            .map_err(|e| format!("Cannot check domain assignments for {id}: {e}"))?;
-                        let mut publications = services["publications"].as_array().cloned().ok_or_else(|| format!("Invalid domain assignments for {id}"))?;
+                        // Named, not numbered: the identifier is in scope and so is the name, and
+                        // only one of the two means anything to whoever reads the refusal.
+                        let services = call("list_environment_services", json!({"environmentId":&id})).await
+                            .map_err(|e| format!("Cannot check which domains {name} uses: {e}"))?;
+                        let mut publications = services["publications"].as_array().cloned().ok_or_else(|| format!("Cannot read which domains {name} uses."))?;
                         for publication in &mut publications { publication["_nodeName"] = json!(name); }
                         Ok::<_, String>(publications)
                     });
@@ -185,7 +187,8 @@ pub(super) fn hostname(entry: &str, saved: &[Value]) -> Result<String, String> {
 /// connects it.
 async fn add(saved: &[Value]) -> Result<(), String> {
     if saved.len() >= 200 {
-        return Err("Remove an unused setup before adding another.".into());
+        // The number, because "remove one" without it reads as a suggestion rather than a limit.
+        return Err(format!("This computer keeps up to 200 saved domain setups and already has {}. Remove one you no longer use, then add this.", saved.len()));
     }
     let suggested = (45000..=65535u16)
         .find(|port| !saved.iter().any(|d| d["hostPort"] == *port))
@@ -194,7 +197,8 @@ async fn add(saved: &[Value]) -> Result<(), String> {
     let mut steps = ui::Wizard::new();
     loop {
         let asked = match steps.step() {
-            0 => ui::input("Domain (for example app.example.com)", &name, false, &|entry| hostname(entry, saved))
+            // The first question goes Back to the menu that asked; the wizard offers Back on the rest.
+            0 => ui::with_back(|| ui::input("Domain (for example app.example.com)", &name, false, &|entry| hostname(entry, saved)))
                 .map(|entry| name = entry),
             1 => port("App port inside the environment", app_port).map(|entry| app_port = entry),
             2 => ui::input("Local tunnel port", &bridge.to_string(), false, &|entry| {
@@ -355,15 +359,9 @@ async fn connect(domain: &Value) -> Result<(), String> {
     let mut steps = ui::Wizard::new();
     loop {
         let asked = match steps.step() {
-            0 => match choose_with_initial(
-                &format!(
-                    "Choose an environment running an app on port {}",
-                    domain["port"]
-                ),
-                "",
-                &choices,
-                index,
-            ) {
+            0 => match ui::with_back(|| {
+                choose_with_initial(&format!("Choose an environment running an app on port {}", domain["port"]), "", &choices, index)
+            }) {
                 Ok(picked) if picked < environments.len() => {
                     index = picked;
                     Ok(true)

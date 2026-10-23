@@ -163,6 +163,64 @@ fn file_import_skips_linked_folders_without_reading_their_contents() {
     );
 }
 
+/// A file symbolic link, or `None` where making one needs developer mode or administrator
+/// rights (Windows ERROR_PRIVILEGE_NOT_HELD), so the test runs on every machine.
+fn file_symlink(target: &Path, link: &Path) -> Option<()> {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    match made {
+        Ok(()) => Some(()),
+        Err(error) if cfg!(windows) && error.raw_os_error() == Some(1314) => None,
+        Err(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn junctions_and_symbolic_links_are_still_refused_while_ordinary_files_copy() {
+    let (_root, folder, _) = fixture();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("private.txt"), b"outside selection").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), folder.join("linked")).unwrap();
+    #[cfg(windows)]
+    assert!(std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(folder.join("linked"))
+        .arg(outside.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(linked(&fs::symlink_metadata(folder.join("linked")).unwrap()));
+    let symlinked = file_symlink(&outside.path().join("private.txt"), &folder.join("private-link.txt"));
+    if symlinked.is_some() {
+        assert!(linked(&fs::symlink_metadata(folder.join("private-link.txt")).unwrap()));
+    }
+    assert!(!linked(&fs::symlink_metadata(folder.join("nested/data.bin")).unwrap()));
+    assert!(!linked(&fs::symlink_metadata(folder.join("nested")).unwrap()));
+    let plan = plan_copy(&[folder.to_string_lossy().into_owned()]).unwrap();
+    assert_eq!(plan.skipped_links, 1 + usize::from(symlinked.is_some()));
+    assert_eq!(plan.files, 3);
+    assert!(!plan.entries().unwrap().any(|e| e.unwrap().source.to_string_lossy().contains("private")));
+}
+
+#[test]
+fn file_import_rejects_a_file_replaced_by_a_symbolic_link_after_selection() {
+    let (_root, folder, _) = fixture();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("data.bin"), b"outside selection").unwrap();
+    let plan = plan_copy(&[folder.to_string_lossy().into_owned()]).unwrap();
+    let entry = plan.entries().unwrap().map(Result::unwrap).find(|e| e.source.ends_with("data.bin")).unwrap();
+    fs::rename(folder.join("nested/data.bin"), folder.join("nested/original.bin")).unwrap();
+    if file_symlink(&outside.path().join("data.bin"), &folder.join("nested/data.bin")).is_none() {
+        return;
+    }
+    assert!(open_source(&entry).is_err());
+    assert_eq!(fs::read(outside.path().join("data.bin")).unwrap(), b"outside selection");
+}
+
 #[test]
 fn file_import_rejects_a_parent_replaced_by_a_link_after_selection() {
     let (_root, folder, _) = fixture();

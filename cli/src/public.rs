@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::{
     io::{IsTerminal, Read, Write},
     path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 pub const HELP: &str = r#"
@@ -31,7 +31,7 @@ Public commands:
   yougori terminal ENV [--project] [--container NAME]  Interactive shell; exit leaves the workload running
                                   --project starts in /workspace; --container enters a cloud server's Docker container
   yougori download on ENV [--domain HOST] --yes  Share a complete copy while this CLI stays open
-  yougori download list | off ID   Lifetime download counts / turn off a download link
+  yougori download list | off ENV_ID  Lifetime download counts / turn off a download link
   yougori cp PC_PATH... ENV        Copy PC files into a local or connected cloud environment
   yougori cp ENV:/path PC_FOLDER   Copy out of a supported environment (never overwrites)
   yougori cp ENV:/path OTHER_ENV   Copy between environments (OTHER_ENV:/folder picks the folder)
@@ -52,17 +52,26 @@ Public commands:
   yougori audit [ENV] [--since TIME] [--limit N] [--verify]  Tamper-evident activity log (--verify checks it)
   yougori lockdown ENV|--all --yes  Kill switch: cut Internet and pause until unlock (never deletes)
   yougori unlock ENV|--all --yes   Undo a lockdown or automatic kill switch
-  Add --format json|table to status/ps/ports (table in a terminal, JSON when piped)
+  Add --format json|table|text to a view (table or text in a terminal, JSON when piped):
+                                  status, ps, inspect, logs (without --follow), ls, images,
+                                  env list|show, ports list, share list, snapshot list,
+                                  backup list|destinations, connection list, jobs list, gpu status,
+                                  neocloud list|prices|quote, remote list, domain list,
+                                  model status|access|usage, volume ls and doctor
   yougori start|stop|restart ENV   Accepts an ID or a unique name in any letter case
   yougori start bounty            Prepare a private local Swarm Mining worker; model first
   yougori bounty --help           Offers, own-agent chat, reports, rewards and lifecycle
   yougori start --environment ENV Explicit selector, including an environment named bounty
   yougori rm ENV --yes             Permanently delete an environment and its managed data
   yougori pull IMAGE | images | image rm IMAGE --yes | image prune [--yes]
-  yougori up|apply|down [-f yougori.yaml]
-  yougori deployment status [-f yougori.yaml]  Application, tunnel and public HTTPS readiness
+  yougori up|apply|down [-f PATH]  PATH defaults to yougori.yaml here or in a parent folder
+  yougori deployment status [-f PATH]  Application, tunnel and public HTTPS readiness
   yougori deployment secret set NAME --yes    Reads {"value":"..."} from private stdin
   yougori deployment secret delete NAME --yes  Remove a stored application secret
+  yougori run hub/PUBLISHER/NAME[@VERSION] [--name INSTANCE] [--yes]  Run a template from yougori.com/hub
+  yougori template run|continue|status|list|update|down|rm|new|check|capture|publish|download|info|search|fork|star|unstar|report|delete
+                                  Hub templates: whole setups as a folder; yougori template --help
+  yougori tool new|check|add|list|remove|install|open|publish  Tools for sandboxes; yougori tool --help
   yougori import compose.yaml [--dry-run]
   yougori run --gpu nvidia IMAGE
   yougori run --isolation microvm IMAGE
@@ -71,15 +80,22 @@ Public commands:
   yougori microvm run IMAGE        Alias for run --isolation microvm
   yougori model run [hf.co/OWNER/MODEL] [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
                                   Omit the model in a terminal to fill in hf.co/; Esc cancels
+                                  Resources: --cpu N --memory GB --storage GB; --backend auto|cuda|metal|cpu
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
   yougori COMPANY --neogrid --ip HUB_IP [--password -] [--port 7460] [--name NAME] [--fingerprint SHA256]
                                    Join a company's Closed Neo Grid; asks for the company password
-  yougori grid create COMPANY --ip THIS_PC_IP [--password -] [--port 7460] [--hostname NAME] --yes
+  yougori create grid              Admin: set up the company's grid; asks a few questions
+  yougori join grid                Join the company's grid; asks for the invite and the password
+  yougori grid create COMPANY --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] [--port 7460] [--hostname NAME] --yes
                                    Admin: run the company's grid hub on this computer and join it
   yougori grid join COMPANY --ip HUB_IP [--password -] | password [--password -] --yes
   yougori grid                     This computer's grid: computers, plans and keys, or its assignment
+  yougori grids list               Every grid on this computer: models, desks, credentials and research
+  yougori grids status [--grid NAME] | address | new COMPANY --serve models|desks|credentials --ip THIS_PC_IP
+  yougori grids people|computers|share|models|desks|credentials|requests|research|connectors|work|log VERB [--grid NAME]
+                                   One name for the four grids; every old command keeps working
   yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--closed-weights] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
                                    Share paid or free; --closed-weights offers chat/API without weight downloads
@@ -96,8 +112,8 @@ Public commands:
   yougori model auth login | status | logout  Protected Hugging Face token shared with the App
   yougori model decide ENV --file REQUEST.json|-  Typed decision probabilities
   yougori model stop ENV           Stop the model; a Neocloud pod stays billable
-  yougori model preflight hf.co/OWNER/MODEL   Compatibility and requirements before weights
-  yougori model support hf.co/OWNER/MODEL --agent claude|codex|kilo|opencode|gemini [--launch]
+  yougori model preflight hf.co/OWNER/MODEL [--quant Q4_K_M]  Compatibility and requirements before weights
+  yougori model support hf.co/OWNER/MODEL --agent claude|codex|kilo|opencode|gemini [--quant Q4_K_M] [--launch]
                                    Reuses this model's environment when one exists
   yougori model chat ENV | model status ENV | model api ENV [--port 8000]
   yougori model chat ENV [--new]   Continues the conversation shared with the app
@@ -108,9 +124,28 @@ Public commands:
   yougori vault status             Is Personal Vault running; how many requests await approval
   yougori vault open | approve | add  Bring Personal Vault forward; the person decides in the app
   yougori vault mcp                Connect an MCP client to Personal Vault
-  yougori vault identity --output DEVICE.json
-  yougori vault mcp --remote HOST:49731 --pin SHA256 --identity DEVICE.json
   yougori vault help
+  yougori rollout status           Moving this computer's grids onto Grid Core, one stage at a time
+  yougori rollout survey | rehearse | observe | coverage --profile models  An inventory, a move run on copies, both paths compared
+  yougori rollout backup [--keep-for-days 90] | verify --stamp STAMP | restore --product neo --stamp STAMP
+  yougori rollout read --product neo|sandbox|swarm|access [--stamp STAMP]  Read a record without the product that wrote it
+  yougori rollout advance|back --profile PROFILE --yes  One stage at a time, forwards or back
+  yougori rollout retire --profile PROFILE [--keep-for-days 90] --yes | unretire --stamp STAMP --yes | forget --stamp STAMP [--force] --yes
+                                   The old record is moved aside, never deleted on a timer
+  yougori access status            Access Grid: company credentials agents use without seeing them
+  yougori access signin --invite INVITE --username NAME [--code 123456] | signin --invite INVITE --sso | signout --yes
+  yougori access mcp               Connect an MCP client to your company's Access Grid
+  yougori access use CREDENTIAL URL [--method GET] | check REQUEST_ID
+  yougori access requests | approve REQUEST_ID [--hours N] | deny REQUEST_ID | log [--export FILE] [--verify]
+  yougori access password | computers | forget-computer DEVICE_ID --yes | sign-out-others --yes
+  yougori access two-step on|confirm|off  Your own two-step sign-in
+  yougori access create COMPANY --ip THIS_PC_IP --username NAME --yes | delete [--when later|now|forget] --yes | restore
+  yougori access backup --output FILE | restore-backup FILE --ip THIS_PC_IP --yes
+  yougori access add-person|set-person|person-password|reset-two-step|sign-out-person|remove-person USERNAME
+  yougori access add-credential NAME --kind bearer|header|basic|query|oauth|github-app|aws --destination URL
+  yougori access rotate-credential|remove-credential NAME
+  yougori access allow CREDENTIAL [--who team:NAME] [--ask|--never] [--limit N] | remove-rule RULE_ID --yes
+  yougori access settings --require-two-step true|false | sso --issuer URL --client-id ID [--passwordless]
   yougori remote create|connect|list|update|revoke|disconnect|remove|start|stop|files|inspect|download
                                   Remote tunnel sharing; use --file - for credentials
   yougori remote start --domain app.example.com   Share on a saved domain
@@ -150,7 +185,7 @@ pub async fn send(method: &str, params: Value, confirmed: bool) -> Result<Value,
     req.confirmed = confirmed;
     let result = client::call(&req).await?;
     if result["accepted"] == true {
-        client::wait_job(result["jobId"].as_str().ok_or("Missing job ID")?, 86400).await
+        client::wait_job_labelled(result["jobId"].as_str().ok_or("Missing job ID")?, 86400, client::job_label(method)).await
     } else {
         Ok(result)
     }
@@ -359,13 +394,46 @@ pub async fn resolve(name: &str) -> Result<String, String> {
                     .is_some_and(|v| v.eq_ignore_ascii_case(name))
         })
         .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return Err(format!(
-            "Expected one environment named {name}; run yougori ps"
-        ));
+    match matches.len() {
+        1 => Ok(matches[0]["id"].as_str().unwrap().into()),
+        0 => Err(format!("Environment {name} was not found. See your environments with yougori ps.")),
+        _ => Err(format!("More than one environment matches {name}. Use its ID from yougori ps.")),
     }
-    Ok(matches[0]["id"].as_str().unwrap().into())
 }
+/// Turns a word somebody typed into the environment ID the engine matches on, for the commands
+/// that take one. The help has always said "ID or unique name", and the engine has always matched
+/// IDs only, so `yougori env show web` and `yougori download off web` failed — the second of those
+/// while telling the person their public link was closed when it was still open.
+///
+/// Deliberately lenient. One match becomes its ID; no match is left exactly as typed, so the
+/// engine still gives its own answer for a word that was never meant to be a name; and more than
+/// one match asks rather than guessing.
+///
+/// An engine that cannot be reached changes nothing here on purpose: every command this runs for
+/// needs the engine for its real call anyway, so a cold engine fails the command the same way it
+/// always did. Do not "fix" that by starting the engine from here — it would start one for a
+/// command that was about to fail for its own reasons.
+///
+/// This includes the remote-share commands, which need it most: connecting to somebody else's
+/// computer mints a local environment here named "{name} (remote)", so its name is the only
+/// convenient way to say which one.
+pub async fn resolve_named(word: &str) -> Result<String, String> {
+    if word.is_empty() {
+        return Ok(word.to_owned());
+    }
+    let Ok(state) = call("get_platform_state", json!({})).await else { return Ok(word.to_owned()) };
+    let Some(envs) = state["environments"].as_array() else { return Ok(word.to_owned()) };
+    if envs.iter().any(|environment| environment["id"] == word) {
+        return Ok(word.to_owned());
+    }
+    let named: Vec<&Value> = envs.iter().filter(|environment| environment["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(word))).collect();
+    match named.len() {
+        1 => Ok(named[0]["id"].as_str().unwrap_or(word).to_owned()),
+        0 => Ok(word.to_owned()),
+        _ => Err(format!("More than one environment is called {word}. Use its ID from yougori ps.")),
+    }
+}
+
 fn absolute(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     if p.is_absolute() {
@@ -390,6 +458,41 @@ pub struct Run {
     pub detached: bool,
     pub interactive: bool,
     pub dry: bool,
+    /// Whether `--name` chose the name; otherwise it is named after its image, numbered on use.
+    pub named: bool,
+}
+/// The name a workload gets from what it runs: `docker.io/library/nginx:1.27` is `nginx`,
+/// `ghcr.io/acme/api@sha256:…` is `api`, and `C:/isos/ubuntu-24.04.iso` is `ubuntu-24.04`.
+pub fn workload_base_name(source: &str) -> String {
+    let last = source.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(source);
+    let last = last.split('@').next().unwrap_or(last);
+    let last = last.split(':').next().unwrap_or(last);
+    let stem = [".iso", ".qcow2", ".img", ".vhdx", ".vhd", ".vmdk", ".raw"]
+        .iter()
+        .find_map(|extension| {
+            last.len().checked_sub(extension.len())
+                .filter(|&at| last.is_char_boundary(at) && last[at..].eq_ignore_ascii_case(extension))
+                .map(|at| &last[..at])
+        })
+        .unwrap_or(last);
+    let cleaned: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' })
+        .collect();
+    let cleaned = cleaned.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if cleaned.len() < 2 {
+        "workload".into()
+    } else {
+        cleaned.chars().take(76).collect()
+    }
+}
+/// `base`, or `base-2`, `base-3` … when an environment already has that name; names are
+/// unique regardless of case.
+pub fn numbered_name<'a>(base: &str, taken: impl Iterator<Item = &'a str> + Clone) -> String {
+    (1..)
+        .map(|n| if n == 1 { base.to_owned() } else { format!("{base}-{n}") })
+        .find(|name| !taken.clone().any(|t| t.eq_ignore_ascii_case(name)))
+        .unwrap_or_else(|| base.to_owned())
 }
 fn attach_run_output(run: &Run, terminal_output: bool) -> Result<bool, String> {
     if run.interactive && !run.detached && !terminal_output {
@@ -541,14 +644,8 @@ pub fn parse_run(args: &[String], machine: bool) -> Result<Run, String> {
             *v = json!(n)
         }
     }
-    let fallback = format!(
-        "workload-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_millis()
-    );
-    let name = name.unwrap_or(fallback);
+    let named = name.is_some();
+    let name = name.unwrap_or_else(|| workload_base_name(&image));
     if !crate::workload::identifier(&name) || name.len() < 2 {
         return Err("Use a name of 2–80 letters, digits, dots, dashes or underscores".into());
     }
@@ -586,6 +683,7 @@ pub fn parse_run(args: &[String], machine: bool) -> Result<Run, String> {
         detached,
         interactive,
         dry,
+        named,
     })
 }
 
@@ -680,7 +778,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
                 let path = match &args[2..] {
                     [] => manifest::locate(&std::env::current_dir().map_err(|e| e.to_string())?)?,
                     [flag, path] if matches!(flag.as_str(), "-f" | "--file") => absolute(path)?,
-                    _ => return Err("Usage: yougori deployment status [-f yougori.yaml]".into()),
+                    _ => return Err("Usage: yougori deployment status [-f PATH]".into()),
                 };
                 client::start(None).await?;
                 return send("deployment_status", json!({"path":path}), false).await.map(Some);
@@ -691,7 +789,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
                 let (method, name) = match &args[2..] {
                     [action, name, yes] if action == "set" && yes == "--yes" => ("set_deployment_secret", name),
                     [action, name, yes] if action == "delete" && yes == "--yes" => ("delete_deployment_secret", name),
-                    _ => return Err("Usage: deployment secret set NAME --yes < private-secret.json | delete NAME --yes. Set reads {\"value\":\"...\"} from stdin.".into()),
+                    _ => return Err("Usage: yougori deployment secret set NAME --yes < private-secret.json | delete NAME --yes. Set reads {\"value\":\"...\"} from stdin.".into()),
                 };
                 let mut params = json!({"name":name});
                 if method == "set_deployment_secret" {
@@ -731,6 +829,13 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
         let terminal_output = std::io::stdout().is_terminal();
         let attach_output = attach_run_output(&run, terminal_output)?;
         client::start(None).await?;
+        let mut run = run;
+        if !run.named {
+            let state = call("get_platform_state", json!({})).await?;
+            let taken: Vec<&str> = state["environments"].as_array().into_iter().flatten().filter_map(|e| e["name"].as_str()).collect();
+            let base = run.request["name"].as_str().unwrap_or("workload").to_owned();
+            run.request["name"] = json!(numbered_name(&base, taken.iter().copied()));
+        }
         let result = send(
             "run_workload",
             json!({"request":run.request,"start":command=="run"}),
@@ -739,11 +844,12 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
         .await?;
         if command == "run" && attach_output {
             let id = result["id"].as_str().ok_or("Missing created ID")?;
-            eprintln!("Environment: {id}");
+            let name = result["name"].as_str().or(run.request["name"].as_str()).unwrap_or(id).to_owned();
+            eprintln!("Environment: {name}");
             if run.interactive {
                 terminal(id).await?
             } else {
-                follow_logs(id).await?
+                follow_logs(id, &name).await?
             }
         }
         return Ok(Some(result));
@@ -820,7 +926,7 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
         return Err("Usage: yougori volume rm NAME... --yes. This permanently deletes the volume and its data.".into());
     }
     let image_prune = command == "image" && args.get(1).is_some_and(|action| action == "prune");
-    if image_prune && !matches!(args.len(), 2 | 3) || image_prune && args.get(2).is_some_and(|arg| arg != "--yes") {
+    if image_prune && (!matches!(args.len(), 2 | 3) || args.get(2).is_some_and(|arg| arg != "--yes")) {
         return Err("Usage: yougori image prune [--yes]. Without --yes it only lists images that no environment uses.".into());
     }
     if command == "image" && !image_prune && !matches!(args, [_, rm, _, yes] if rm == "rm" && yes == "--yes") {
@@ -988,7 +1094,19 @@ pub async fn handle(args: &[String]) -> Result<Option<Value>, String> {
     };
     Ok(Some(result))
 }
-async fn follow_logs(id: &str) -> Result<(), String> {
+async fn follow_logs(id: &str, name: &str) -> Result<(), String> {
+    // One Ctrl+C listener for the whole follow, so a press during a request counts too.
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
+    tokio::select! {
+        result = follow_logs_until_stopped(id) => result,
+        _ = &mut interrupted => {
+            eprintln!("Detached. {name} keeps running; stop it with yougori stop {name}.");
+            Ok(())
+        }
+    }
+}
+async fn follow_logs_until_stopped(id: &str) -> Result<(), String> {
     let mut cursor = None;
     let mut terminal=crate::logs::TerminalText::default();
     loop {
@@ -1014,7 +1132,7 @@ async fn follow_logs(id: &str) -> Result<(), String> {
             }
             return Ok(());
         }
-        tokio::select! {_=tokio::signal::ctrl_c()=>{eprintln!("Detached. Workload remains running; use yougori stop {id}.");return Ok(())},_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 async fn terminal(id: &str) -> Result<(), String> {
@@ -1160,7 +1278,9 @@ async fn model(args: &[String]) -> Result<Value, String> {
                     .parse()
                     .map_err(|_| "Invalid model API port")?
             }
-            _ => return Err("Unknown model option".into()),
+            // The resource chooser only runs in a terminal (and not with --api); say what works here.
+            "--change" if action == "run" => return Err("--change picks a model's resources in a terminal. With --api or in a script, give --cpu, --memory or --storage instead.".into()),
+            other => return Err(format!("Unknown option {other} for yougori model {action}. Run yougori help to see its options.")),
         }
         i += 1;
     }
@@ -1319,8 +1439,7 @@ fn transcript_error(stage: &str, turn: usize, mut response: crate::wire::Respons
 /// request that never ran, and never retry a failed or unsaved turn here.
 async fn scripted_chat<F, Fut>(id: &str, fresh: bool, prompts: Vec<String>, mut invoke: F) -> Result<Value, String>
 where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Result<Value, String>> {
-    let mut store = invoke("model_chat_history", json!({"environmentId":id})).await?;
-    store = chat_history_or_default(store);
+    let mut store = saved_chat_history(invoke("model_chat_history", json!({"environmentId":id})).await)?;
     let status = invoke("model_status", json!({"environmentId":id})).await?;
     let decision = status["task"] == "structured-decision";
     if decision { for prompt in &prompts { crate::decisions::parse(prompt)?; } }
@@ -1388,15 +1507,16 @@ async fn copy(args: &[String]) -> Result<Value, String> {
             let from = resolve(name).await?;
             let target_is_folder = std::path::Path::new(&local(target)).is_dir();
             if target_is_folder && environment_path(target).is_none() {
-                return call("copy_files_from_environment", json!({"environmentId":from,"path":path,"destination":local(target)})).await;
+                return copy_call("copy_files_from_environment", json!({"environmentId":from,"path":path,"destination":local(target)})).await;
             }
             // Between environments: out to a private temporary folder, then in, then clean up.
             let (to_name, folder) = into(target);
-            let to = resolve(&to_name).await.map_err(|e| format!("{e}. To copy to this PC, give an existing folder."))?;
+            let to = resolve(&to_name).await.map_err(|e| format!("{e} To copy to this PC, give a folder that exists."))?;
             let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
-            let out = call("copy_files_from_environment", json!({"environmentId":from,"path":path,"destination":staging.path()})).await?;
+            let _quit = crate::cli_ui::remove_on_quit(staging.path());
+            let out = copy_call("copy_files_from_environment", json!({"environmentId":from,"path":path,"destination":staging.path()})).await?;
             let staged = out["folder"].as_str().or(out["file"].as_str()).ok_or("Nothing was copied")?.to_owned();
-            let copied = call("copy_files_to_environment", json!({"environmentId":to,"paths":[staged],"destination":folder})).await?;
+            let copied = copy_call("copy_files_to_environment", json!({"environmentId":to,"paths":[staged],"destination":folder})).await?;
             Ok(json!({"from":from,"to":to,"entries":out["entries"],"bytes":out["bytes"],"result":copied}))
         }
         (_, Some(_)) => Err("Copy one environment path at a time".into()),
@@ -1404,9 +1524,32 @@ async fn copy(args: &[String]) -> Result<Value, String> {
         _ => {
             let (to_name, folder) = into(target);
             let to = resolve(&to_name).await?;
-            call("copy_files_to_environment", json!({"environmentId":to,"paths":sources.iter().map(|s| local(s)).collect::<Vec<_>>(),"destination":folder})).await
+            copy_call("copy_files_to_environment", json!({"environmentId":to,"paths":sources.iter().map(|s| local(s)).collect::<Vec<_>>(),"destination":folder})).await
         }
     }
+}
+/// A copy typed at a prompt shows its progress, and Ctrl+C asks Yougori to stop the transfer
+/// and waits until it has, so nothing keeps writing into a folder that is then removed.
+async fn copy_call(method: &str, params: Value) -> Result<Value, String> {
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    if client::QUIET.load(Ordering::Relaxed) || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return call(method, params).await;
+    }
+    /// The progress notes come back when the copy ends, however it ends.
+    struct Speak;
+    impl Drop for Speak {
+        fn drop(&mut self) {
+            client::QUIET.store(false, Ordering::Relaxed);
+        }
+    }
+    client::QUIET.store(true, Ordering::Relaxed);
+    let _speak = Speak;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let _keys = crate::cli_ui::Interrupts::watch(cancel.clone());
+    let task = crate::cli_ui::task("Copying files");
+    let result = call_with_progress_cancellable(method, params, |measurement| task.copy_progress(measurement), &cancel).await;
+    task.clear();
+    result
 }
 const VOLUME_USAGE: &str = "Usage: yougori volume ls [--scan] [--size] | inspect NAME | rm NAME... --yes | prune [--yes]\n  yougori volume cp VOLUME[:/path] PC_FOLDER | cp PC_PATH... VOLUME[:/path]\n  Volumes are created when an environment mounts one (yougori run -v NAME:/data IMAGE); copies go through a running environment that mounts it.\n  ls asks running container runtimes; --scan starts stopped ones to find volumes left by deleted environments.";
 /// A volume's mount in a running environment, preferring writable ones when `write` is set.
@@ -1559,10 +1702,19 @@ pub fn fit_messages(system: &str, messages: &[Value]) -> Vec<Value> {
     fitted.extend(turns[start..].iter().map(|(role, content)| json!({"role":role,"content":content})));
     fitted
 }
-/// Start missing histories with the same defaults in scripted and interactive chats.
-pub fn chat_history_or_default(history: Value) -> Value {
-    if history["conversations"].is_array() { history }
-    else { json!({"conversations":[],"activeId":null,"settings":{"system":"","temperature":0.7,"maxTokens":1024}}) }
+/// A model's saved chat history, from reading `model_chat_history`, for scripted and interactive
+/// chats alike. Only null, which the engine sends when nothing is saved yet, starts an empty one
+/// with the default settings. Anything else that is not a history refuses: a chat opened on it
+/// would save over every conversation and setting with its first reply. A cancellation stays one.
+pub fn saved_chat_history(read: Result<Value, String>) -> Result<Value, String> {
+    let reason = match read {
+        Ok(Value::Null) => return Ok(json!({"conversations":[],"activeId":null,"settings":{"system":"","temperature":0.7,"maxTokens":1024}})),
+        Ok(history) if history["conversations"].is_array() => return Ok(history),
+        Ok(_) => "they are not in a form this version of Yougori reads".to_owned(),
+        Err(error) if crate::wire::cancellation(&error).is_some() => return Err(error),
+        Err(error) => error,
+    };
+    Err(format!("Could not load this model's saved conversations: {reason}. The chat did not open, so nothing was saved over them. Try again in a moment; if it keeps failing, the model's chat in the Yougori app still works, without saving."))
 }
 
 /// Saved settings with the reply length bounded by the server's current context and protocol.
@@ -1586,8 +1738,7 @@ pub fn start_conversation(store: &mut Value) {
 }
 /// Interactive chat that continues the conversation shared with the desktop app and saves after each reply.
 async fn chat_session(id: &str, fresh: bool) -> Result<(), String> {
-    let mut store = call("model_chat_history", json!({"environmentId":id})).await.unwrap_or(Value::Null);
-    store = chat_history_or_default(store);
+    let mut store = saved_chat_history(call("model_chat_history", json!({"environmentId":id})).await)?;
     let status = call("model_status", json!({"environmentId":id})).await.unwrap_or(Value::Null);
     let (max_tokens, temperature, system) = chat_settings(&store, &status);
     let active = store["conversations"].as_array().and_then(|list| list.iter().position(|c| c["id"] == store["activeId"]));
@@ -1601,7 +1752,7 @@ async fn chat_session(id: &str, fresh: bool) -> Result<(), String> {
         }
         _ => {
             start_conversation(&mut store);
-            eprintln!("Model: {id}. Downloading/loading may take several minutes. Type /new for a new conversation, /exit to leave it running.");
+            eprintln!("Model: {}. Downloading or loading can take several minutes. Type /new for a new conversation, /exit to leave it running.", status["model"].as_str().unwrap_or("this environment's model"));
         }
     }
     loop {
@@ -1660,6 +1811,40 @@ mod scripted_chat_tests {
     fn pretty_printed_decision_json_is_one_scripted_request() {
         let text = serde_json::to_string_pretty(&crate::decisions::parse(crate::decisions::EXAMPLE).unwrap()).unwrap();
         assert_eq!(scripted_prompts(&mut std::io::Cursor::new(text.as_bytes())).unwrap(), vec![text]);
+    }
+
+    #[test]
+    fn only_a_model_with_nothing_saved_starts_an_empty_chat_history() {
+        let saved = json!({"conversations":[{"id":"c1","title":"Plans","messages":[]}],"activeId":"c1","settings":{"system":"Be brief","temperature":0.2,"maxTokens":512}});
+        assert_eq!(saved_chat_history(Ok(saved.clone())).unwrap(), saved);
+        assert_eq!(saved_chat_history(Ok(Value::Null)).unwrap()["conversations"], json!([]));
+        // A history the engine could not read (damaged, too large, locked by another program)
+        // is never treated as none: the first save would write over every conversation.
+        let refused = saved_chat_history(Err("The process cannot access the file because it is being used by another process.".into())).unwrap_err();
+        assert!(refused.contains("being used by another process") && refused.contains("nothing was saved over them"), "{refused}");
+        // Nor is one in a shape this Yougori does not read.
+        assert!(saved_chat_history(Ok(json!({"settings":{"system":"Be brief"}}))).is_err());
+        // Ctrl+C on the way stays a cancellation, said as one.
+        assert_eq!(saved_chat_history(Err(crate::cli_ui::CANCELLED.into())).unwrap_err(), crate::cli_ui::CANCELLED);
+    }
+
+    #[tokio::test]
+    async fn a_chat_history_that_could_not_be_read_is_never_saved_over() {
+        for read in [Err("Saved chat history is unreadable".to_owned()), Ok(json!({"settings":{"system":"Be brief"}}))] {
+            let requests = std::cell::RefCell::new(Vec::new());
+            let result = scripted_chat("private-fixture", true, vec!["hello".into()], |method, _| {
+                requests.borrow_mut().push(method);
+                std::future::ready(match method {
+                    "model_chat_history" => read.clone(),
+                    "model_status" => Ok(json!({"context":4096})),
+                    "model_chat" => Ok(json!({"choices":[{"message":{"content":"reply"}}]})),
+                    "save_model_chat_history" => Ok(json!({})),
+                    _ => panic!("Unexpected mock request: {method}"),
+                })
+            }).await;
+            assert!(result.is_err(), "{read:?} opened a chat");
+            assert!(!requests.borrow().contains(&"save_model_chat_history"), "{read:?} was saved over: {:?}", requests.borrow());
+        }
     }
 
     #[tokio::test]
@@ -1841,6 +2026,49 @@ fn usage_summary(id: &str, usage: &Value, days: u32, now_hour: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The matching `resolve_named` does, without the engine call that fetches the environments.
+    fn resolved<'a>(envs: &'a [Value], word: &'a str) -> Result<&'a str, String> {
+        if envs.iter().any(|environment| environment["id"] == word) {
+            return Ok(word);
+        }
+        let named: Vec<&Value> = envs.iter().filter(|environment| environment["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(word))).collect();
+        match named.len() {
+            1 => Ok(named[0]["id"].as_str().unwrap_or(word)),
+            0 => Ok(word),
+            _ => Err(format!("More than one environment is called {word}. Use its ID from yougori ps.")),
+        }
+    }
+
+    #[test]
+    fn a_typed_name_becomes_the_id_the_engine_matches_on() {
+        let envs = vec![
+            json!({"id": "env-1", "name": "web"}),
+            json!({"id": "env-2", "name": "Notes"}),
+        ];
+        // The name people actually type, in the case they actually type it.
+        assert_eq!(resolved(&envs, "web").unwrap(), "env-1");
+        assert_eq!(resolved(&envs, "NOTES").unwrap(), "env-2");
+        // An ID is already what the engine wants, and is preferred over any name.
+        assert_eq!(resolved(&envs, "env-2").unwrap(), "env-2");
+        // A word that matches nothing is left exactly as typed, so the engine still answers for
+        // the commands whose word was never an environment name.
+        assert_eq!(resolved(&envs, "something-else").unwrap(), "something-else");
+    }
+
+    #[test]
+    fn two_environments_of_the_same_name_ask_rather_than_guess() {
+        let envs = vec![
+            json!({"id": "env-1", "name": "web"}),
+            json!({"id": "env-2", "name": "WEB"}),
+        ];
+        let said = resolved(&envs, "web").unwrap_err();
+        assert!(said.contains("More than one environment is called web"), "{said}");
+        assert!(said.contains("yougori ps"), "{said}");
+        // Either of them by ID still works, which is the way out the message names.
+        assert_eq!(resolved(&envs, "env-2").unwrap(), "env-2");
+    }
+
     #[test]
     fn image_prune_keeps_every_image_an_environment_names_and_internal_images() {
         for (short, full) in [("nginx", "docker.io/library/nginx:latest"), ("node:24", "docker.io/library/node:24"), ("ghcr.io/owner/app", "ghcr.io/owner/app:latest"), ("localhost:5000/app:1", "localhost:5000/app:1"), ("user/app@sha256:abc", "docker.io/user/app@sha256:abc")] {
@@ -1895,8 +2123,34 @@ mod tests {
         assert!(validate_model_neocloud(false, Some("pod"), false).is_err());
     }
     #[test]
+    fn workloads_are_named_after_what_they_run() {
+        for (source, name) in [
+            ("nginx", "nginx"),
+            ("docker.io/library/nginx:1.27", "nginx"),
+            ("localhost:5000/team/api:v2", "api"),
+            ("ghcr.io/acme/api@sha256:0123abcd", "api"),
+            (r"C:\isos\Ubuntu-24.04.ISO", "Ubuntu-24.04"),
+            ("C:/images/windows 11.qcow2", "windows-11"),
+            ("x", "workload"),
+            ("ghcr.io/acme/_tool", "tool"),
+        ] {
+            assert_eq!(workload_base_name(source), name, "{source}");
+            assert!(crate::workload::identifier(&workload_base_name(source)));
+        }
+        assert!(workload_base_name(&"a".repeat(200)).len() <= 76);
+        let taken = ["nginx", "NGINX-2", "api"];
+        assert_eq!(numbered_name("nginx", taken.iter().copied()), "nginx-3");
+        assert_eq!(numbered_name("redis", taken.iter().copied()), "redis");
+        let run = parse_run(&args(&["-d", "docker.io/library/nginx:1.27"]), false).unwrap();
+        assert!(!run.named);
+        assert_eq!(run.request["name"], "nginx");
+        let named = parse_run(&args(&["-d", "--name", "web", "nginx"]), false).unwrap();
+        assert!(named.named);
+        assert_eq!(named.request["name"], "web");
+    }
+    #[test]
     fn scripted_run_finishes_with_one_result_and_rejects_interactive_without_creating() {
-        let mut run = Run { request: json!({}), detached: false, interactive: false, dry: false };
+        let mut run = Run { request: json!({}), detached: false, interactive: false, dry: false, named: false };
         assert_eq!(attach_run_output(&run, false).unwrap(), false);
         assert_eq!(attach_run_output(&run, true).unwrap(), true);
         run.interactive = true;
@@ -2064,6 +2318,8 @@ mod tests {
         assert_eq!(plan["storageDrive"],"D:/");
         assert_eq!(plan["shareMode"],"free");
         assert!(model(&args(&["model","run","hf.co/test/model","--neocloud","--storage-drive","D:/","--dry-run"])).await.is_err());
+        let change=model(&args(&["model","run","hf.co/test/model","--change","--api","--dry-run"])).await.unwrap_err();
+        assert!(change.contains("--cpu, --memory or --storage"),"{change}");
     }
     #[test]
     fn validates_before_engine_start() {

@@ -1,9 +1,19 @@
 @import "tailwindcss";
+@import "@fontsource-variable/hanken-grotesk";
 
 @custom-variant dark (&:is(.dark *));
 
+/* Tailwind 4 draws an uncoloured `border` in the text colour, which put a white outline (dark
+   themes) or an ink outline (light themes) round every popup, card and panel. Default to the
+   theme's hairline instead; a border colour utility or a component stylesheet still wins. */
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button { border-color: var(--border, currentColor); }
+}
+
 :root {
-  font-family: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  /* The PrompX look: Hanken Grotesk, warm ink on white and cream, hairline rules. */
+  font-family: "Hanken Grotesk Variable", "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: -0.01em;
   color: var(--foreground);
   background: var(--background);
   font-synthesis: none;
@@ -15,29 +25,39 @@
   --success-foreground: var(--color-emerald-700);
   --warning: var(--color-amber-500);
   --warning-foreground: var(--color-amber-700);
-  --accent: #ded9d0;
-  --accent-foreground: #292723;
-  --background: #ece8e0;
-  --border: #d2ccc2;
-  --card: #f2eee7;
-  --card-foreground: #292723;
+  --accent: #f5f1e8;
+  --accent-foreground: #190301;
+  --background: #ffffff;
+  --border: #e5e1d6;
+  --card: #fbf9f4;
+  --card-foreground: #190301;
   --destructive: var(--color-red-500);
-  --foreground: #292723;
-  --input: #c8c1b6;
-  --muted: #e4dfd6;
-  --muted-foreground: #68635b;
-  --popover: #f4f0e9;
-  --popover-foreground: #292723;
-  --primary: #286eea;
+  --foreground: #190301;
+  --input: #dcd6c8;
+  --muted: #f5f1e8;
+  --muted-foreground: #6c5e5c;
+  --popover: #ffffff;
+  --popover-foreground: #190301;
+  --primary: #190301;
   --primary-foreground: #ffffff;
-  --ring: #4d84e8;
-  --secondary: #dfd9cf;
-  --secondary-foreground: #35312c;
-  --graph-line: #a59d91;
-  --graph-dot: #cfc8bc;
-  --dashboard-primary: #234b94;
-  --dashboard-primary-hover: #1c3d7c;
+  --ring: #d9764b;
+  --secondary: #ebe8da;
+  --secondary-foreground: #190301;
+  --graph-line: #b9ae9e;
+  --graph-dot: #e5e1d6;
+  --dashboard-primary: #190301;
+  --dashboard-primary-hover: #3b1d14;
   --dashboard-primary-foreground: #ffffff;
+  /* PrompX accents. */
+  --peach: #ffb57f;
+  --brown: #693916;
+  --cream: #fbf9f4;
+  --cream-deep: #f5f1e8;
+  --beige: #ebe8da;
+  --lavender: #eaeefb;
+  --leaf: #5f7d36;
+  --ink-soft: #6c5e5c;
+  --ink-muted: #958c8b;
 }
 
 * { box-sizing: border-box; }
@@ -58,8 +78,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .react-flow__selection { background: color-mix(in srgb, var(--primary) 8%, transparent); border-color: color-mix(in srgb, var(--primary) 50%, transparent); }
 
 @theme inline {
-  --font-sans: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --font-heading: "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Hanken Grotesk Variable", "Helvetica Neue", Arial, sans-serif;
+  --font-heading: "Hanken Grotesk Variable", "Helvetica Neue", Arial, sans-serif;
   --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
   --animate-toast-success-odd: toast-success-odd 0.32s cubic-bezier(0.5, 1, 0.89, 1);
   --animate-toast-success-even: toast-success-even 0.32s cubic-bezier(0.5, 1, 0.89, 1);
@@ -162,26 +182,38 @@ button { -webkit-tap-highlight-color: transparent; }
   --success-foreground: var(--color-emerald-400);
   --warning: var(--color-amber-500);
   --warning-foreground: var(--color-amber-400);
-  --accent: #1e2023;
-  --accent-foreground: #f2f3f4;
-  --background: #0e0f10;
-  --border: --alpha(var(--color-white) / 8%);
-  --card: #131416;
-  --card-foreground: #f2f3f4;
+  --accent: #24282c;
+  --accent-foreground: #eceef0;
+  --background: #0e0f11;
+  --border: #2b2e33;
+  --card: #16181b;
+  --card-foreground: #eceef0;
   --destructive: color-mix(in srgb, var(--color-red-500) 90%, var(--color-white));
-  --foreground: #f2f3f4;
-  --input: --alpha(var(--color-white) / 10%);
-  --muted: #18191b;
-  --muted-foreground: #92949a;
-  --popover: #17181a;
-  --popover-foreground: #f2f3f4;
-  --primary: #4c89f4;
-  --primary-foreground: #ffffff;
-  --ring: #5a8eea;
-  --secondary: #1b1c1f;
-  --secondary-foreground: #f2f3f4;
-  --graph-line: #5c5f65;
-  --graph-dot: #2a2c30;
+  --foreground: #eceef0;
+  --input: #363a3f;
+  --muted: #1b1e21;
+  --muted-foreground: #9aa2a9;
+  --popover: #1c1f23;
+  --popover-foreground: #eceef0;
+  --primary: #7fb5ff;
+  --primary-foreground: #0b0f14;
+  --ring: #7fb5ff;
+  --secondary: #24282c;
+  --secondary-foreground: #eceef0;
+  --graph-line: #4c545b;
+  --graph-dot: #282b2f;
+  --dashboard-primary: #7fb5ff;
+  --dashboard-primary-hover: #9fc8ff;
+  --dashboard-primary-foreground: #0b0f14;
+  --peach: #7fb5ff;
+  --brown: #a8c4e2;
+  --cream: #16181b;
+  --cream-deep: #1b1e21;
+  --beige: #24282c;
+  --lavender: #1a1f2b;
+  --leaf: #9cbc6a;
+  --ink-soft: #b9c0c7;
+  --ink-muted: #7b848c;
 }
 
 :root[data-yougori-palette] { color-scheme: light; }
@@ -189,4 +221,26 @@ button { -webkit-tap-highlight-color: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* A radio marked sr-only keeps its base `relative`/size utilities, which can outrank
+   sr-only and leave the control in flow — shifting the label's icon and text off centre.
+   Raise specificity so a visually hidden control really is out of the layout. */
+/* Anchor the hidden control to its own option, so going out of flow cannot widen an
+   ancestor's scrollable area. */
+:where(label, [role="radio"], .creation-type):has(> [data-slot="radio"].sr-only),
+:where(label):has(> [data-slot="checkbox"].sr-only) { position: relative; }
+
+[data-slot="radio"].sr-only,
+[data-slot="checkbox"].sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+  box-shadow: none;
 }

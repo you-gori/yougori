@@ -11,7 +11,7 @@ and put your apps online from your local project. Use the CLI or App, with acces
 
 [![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-1f2937?style=for-the-badge)](LICENSE)
 [![Platforms](https://img.shields.io/badge/Windows%20·%20Ubuntu%20·%20macOS-1f2937?style=for-the-badge)](#run-from-source)
-[![Version](https://img.shields.io/badge/version-1.0.21-1f2937?style=for-the-badge)](package.json)
+[![Version](https://img.shields.io/badge/version-1.1.0-1f2937?style=for-the-badge)](package.json)
 
 **[Website](https://yougori.com/)** &nbsp;·&nbsp; **[Discord](https://discord.gg/Eqhf4Hq3AG)** &nbsp;·&nbsp; **[X](https://x.com/withYougori)** &nbsp;·&nbsp; **[Run from source](#run-from-source)**
 
@@ -64,7 +64,7 @@ Set up your project once, then run `npm run yougori` to start its development co
 
 ### Closed Neo Grid — Your company's idle GPUs
 
-Run a private grid on your company network. The admin creates it with `yougori grid create ACME --ip 10.0.0.5 --yes`, and each company computer joins with `yougori ACME --neogrid --ip 10.0.0.5` and the company password. The admin then decides which models run, on what share of the computers, in which hours and after how long without keyboard or mouse input; computers serve only while their person is away and hand the GPU back when they return. Company apps call an OpenAI-compatible API on the hub with keys the admin creates. Prompts stay on the company network: nothing passes through yougori.com and nothing is recorded.
+Run a private grid on your company network. The admin runs `yougori create grid` and answers a few questions; each company computer runs `yougori join grid` and pastes the invite with the company password. Computers outside the office can join through a Cloudflare Tunnel that relays only the grid's own encrypted traffic. The admin then decides which models run, on what share of the computers, in which hours and after how long without keyboard or mouse input; computers serve only while their person is away and hand the GPU back when they return. Company apps call an OpenAI-compatible API on the hub with keys the admin creates. Prompts stay on the company network: nothing passes through yougori.com and nothing is recorded.
 
 [Admin guide](docs/closed-neo-grid.md)
 
@@ -170,6 +170,12 @@ For an MCP client that supports local stdio servers, use:
 ```
 
 The client must be able to find `yougori` on its PATH. The MCP Vault menu can generate settings with the full executable path. For connection options and approval behavior, see [Personal Vault](docs/personal-vault.txt).
+
+### Company credentials: Access Grid
+
+Access Grid keeps a company's API keys and tokens on one trusted computer. People sign in from their own computers with their own passwords, two-step codes or the company's identity provider, and rules decide who may use which credential, for which requests, how often, and when an approver must agree first. Agents connect with `yougori access mcp` and ask the grid to send a request; the grid adds the credential itself and returns the answer with the value hidden, so the key never reaches the agent or its model provider. OAuth, GitHub App and AWS credentials only ever go out as short-lived tokens or signatures. Every use and decision goes into a tamper-evident log.
+
+Open **Access Grid** in the app's sidebar to host one or sign in, or see `yougori access --help` and [Access Grid](docs/access-grid.md).
 
 ## Keep the rest within reach
 

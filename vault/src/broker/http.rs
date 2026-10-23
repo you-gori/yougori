@@ -50,8 +50,11 @@ pub(super) fn read_key() -> Result<zeroize::Zeroizing<String>, String> {
     Ok(zeroize::Zeroizing::new(value))
 }
 pub(super) fn create_key() -> Result<(), String> {
-    let path = platform::data_directory()?.join("http-key.dpapi");
-    if path.exists() {
+    create_key_at(&platform::data_directory()?.join("http-key.dpapi"))
+}
+pub(super) fn create_key_at(path: &std::path::Path) -> Result<(), String> {
+    // A key that could not be checked is never replaced: connected apps would lose it.
+    if crate::storage::present(path)? {
         return read_key().map(|_| ());
     }
     let key = zeroize::Zeroizing::new(format!(
@@ -59,7 +62,7 @@ pub(super) fn create_key() -> Result<(), String> {
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     ));
-    crate::storage::atomic_write(&path, &crate::storage::dpapi(key.as_bytes(), true)?)
+    crate::storage::atomic_write(path, &crate::storage::dpapi(key.as_bytes(), true)?)
 }
 struct HttpSession {
     session: Arc<Session>,
@@ -175,9 +178,10 @@ pub(super) fn start(
             acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(tls)),
         };
         let router = router(state);
-        tokio::spawn(async move {
+        let server = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
+        *shared.http_server.lock().unwrap() = Some(server.abort_handle());
         *active = json!({"brokerPort":port,"fingerprint":fingerprint});
         Ok(active.clone())
     })
@@ -270,6 +274,7 @@ async fn mcp(
                     entry.session.identity.id == identity.id
                         && entry.session.allowed.load(Ordering::SeqCst)
                         && entry.session.admission.load(Ordering::SeqCst) == epoch
+                        && entry.session.vault.load(Ordering::SeqCst) == state.shared.vault.load(Ordering::SeqCst)
                         && !entry.session.cancelled.load(Ordering::SeqCst)
                         && entry.session.connected.load(Ordering::SeqCst)
                 })
@@ -291,6 +296,7 @@ async fn mcp(
                 connected: AtomicBool::new(true),
                 allowed: AtomicBool::new(oauth_admission.is_some()),
                 admission: AtomicU64::new(oauth_admission.unwrap_or(0)),
+                vault: AtomicU64::new(state.shared.vault.load(Ordering::SeqCst)),
             });
             sessions.insert(
                 id.clone(),
@@ -371,6 +377,9 @@ pub(super) mod tests {
             remote_stop: Mutex::new(None),
             revocations: Mutex::new(BTreeMap::new()),
             http: tokio::sync::Mutex::new(Value::Null),
+            http_server: Mutex::new(None),
+            vault: AtomicU64::new(0),
+            incomplete: AtomicBool::new(false),
             oauth: Mutex::new(super::super::oauth::OAuth::default()),
         });
         let (sender, receiver) = std::sync::mpsc::sync_channel(16);

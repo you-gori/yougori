@@ -123,7 +123,7 @@ For Neocloud, agents should offer a local functional trial first. `neocloud plan
 `up|apply|down [-f yougori.yaml]`, `import compose.yaml`, `project list|inspect`; `snapshot …`; `backup …`; `gpu status|setup|test`.
 
 ### Personal Vault
-`vault mcp [--remote …]`, `vault identity`, `vault status`, `vault open|approve|add` (brings the app forward; the person decides there).
+`vault mcp`, `vault status`, `vault open|approve|add` (brings the app forward; the person decides there).
 
 ### Agents and the rest
 `skills print|install`, `agent setup`, `env skills ENV`, `terminal …`, `microvm apps|open`, `window …`, `market discovery|login|status|logout`, `settings get|set`, `jobs …`, `prefs …`, `schema`, `call`.

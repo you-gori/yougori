@@ -247,10 +247,14 @@ pub(crate) fn cloud_channel(cloud: crate::runtime::cloud::Session, session: Stri
             }
             let result = match B64.decode(event["data"].as_str().unwrap_or("")) {
                 Ok(bytes) if bytes.is_empty() => continue,
-                Ok(bytes) => match event["offset"].as_u64() {
-                    Some(next) if next.checked_sub(bytes.len() as u64) == Some(offset) => {
+                Ok(bytes) => match event["offset"].as_u64().and_then(|next| Some((next, next.checked_sub(bytes.len() as u64)?))) {
+                    // Another viewer's follow replays output this one already shows: skip what
+                    // it has and keep only the new tail. A gap still cannot be shown safely.
+                    Some((next, _)) if next <= offset => continue,
+                    Some((next, start)) if start <= offset => {
+                        let fresh = bytes[(offset - start) as usize..].to_vec();
                         offset = next;
-                        Ok(Frame::Output { offset: next, bytes })
+                        Ok(Frame::Output { offset: next, bytes: fresh })
                     }
                     _ => Err("Terminal output cursor expired; reconnect to restore the screen".into()),
                 },
@@ -267,11 +271,17 @@ pub(crate) fn cloud_channel(cloud: crate::runtime::cloud::Session, session: Stri
             let request = match frame {
                 Frame::Input(mut bytes) => {
                     // Everything typed while the previous batch was in flight goes together.
+                    let mut flushed = Ok(serde_json::Value::Null);
                     while bytes.len() < 16 * 1024 {
                         match outgoing.try_recv() {
                             Ok(Frame::Input(more)) if bytes.len() + more.len() <= 16 * 1024 => bytes.extend(more),
                             Ok(Frame::Input(more)) => {
-                                let _ = cloud.request("/v1/terminal/write", json!({"sessionId": session, "data": B64.encode(&bytes)})).await;
+                                // A batch that failed is never skipped: the keys typed after it
+                                // would reach the shell without it.
+                                flushed = cloud.request("/v1/terminal/write", json!({"sessionId": session, "data": B64.encode(&bytes)})).await;
+                                if flushed.is_err() {
+                                    break;
+                                }
                                 bytes = more;
                             }
                             Ok(Frame::Resize(cols, rows)) => {
@@ -280,7 +290,10 @@ pub(crate) fn cloud_channel(cloud: crate::runtime::cloud::Session, session: Stri
                             _ => break,
                         }
                     }
-                    cloud.request("/v1/terminal/write", json!({"sessionId": session, "data": B64.encode(bytes)})).await
+                    match flushed {
+                        Err(error) => Err(error),
+                        Ok(_) => cloud.request("/v1/terminal/write", json!({"sessionId": session, "data": B64.encode(bytes)})).await,
+                    }
                 }
                 Frame::Resize(cols, rows) => cloud.request("/v1/terminal/resize", json!({"sessionId": session, "cols": cols, "rows": rows})).await,
                 _ => Err("Invalid client terminal frame".into()),

@@ -74,20 +74,26 @@ fn setup_command(installer: &str, status: &str) -> Result<String, String> {
 
 fn exit_code(value: &serde_json::Value) -> Result<u8, String> {
     if value["exitCode"] != 0 {
-        return Err("Tool setup ended without a confirmed exit result. Inspect the sandbox before retrying.".into());
+        return Err("Setting up the tool ended without a result.".into());
     }
     value["stdout"]
         .as_str()
         .unwrap_or("")
         .trim()
         .parse::<u8>()
-        .map_err(|_| {
-            "Tool setup ended without a confirmed exit result. Inspect the sandbox before retrying."
-                .into()
-        })
+        .map_err(|_| "Setting up the tool ended without a result.".into())
 }
 
+/// Installs the tool if it is missing. A setup that did not finish says where to look and how to
+/// try again, with this sandbox's own commands.
 pub(super) async fn ensure(id: &str, tool: &str) -> Result<SessionExit, String> {
+    match install(id, tool).await {
+        Err(error) => Err(format!("{error} {}", super::retry_steps(id, tool).await)),
+        result => result,
+    }
+}
+
+async fn install(id: &str, tool: &str) -> Result<SessionExit, String> {
     if !crate::container_tools::TOOLS.contains(&tool) {
         return Err("Unknown tool".into());
     }
@@ -103,7 +109,7 @@ pub(super) async fn ensure(id: &str, tool: &str) -> Result<SessionExit, String> 
         if verified["exitCode"] != 0 {
             task.fail(&format!("{tool} could not start"));
             return Err(format!(
-                "The installed {tool} failed its version check. Inspect the sandbox and retry."
+                "The installed {tool} did not start: its version check failed."
             ));
         }
         task.clear();
@@ -155,8 +161,8 @@ pub(super) async fn ensure(id: &str, tool: &str) -> Result<SessionExit, String> 
             if frame["done"] == true {
                 let value = call("execute_environment_command", json!({"request":{"environmentId":id,"command":format!("test -f {0} && cat {0} && rm -f {0}", shell_words::quote(&status))}})).await?;
                 let code = exit_code(&value)?;
-                if code != 0 { return Err(format!("{tool} installation failed (exit {code}). The sandbox and its files were kept.")); }
-                if !super::tool_ready(id, tool).await? { return Err(format!("Setup finished but {tool} is unavailable. Inspect the sandbox before retrying.")); }
+                if code != 0 { return Err(format!("{tool} did not install (exit {code}); the sandbox and its files are kept.")); }
+                if !super::tool_ready(id, tool).await? { return Err(format!("Setup finished, but {tool} is not available in the sandbox.")); }
                 break;
             }
             tokio::time::sleep(Duration::from_millis(60)).await;
@@ -172,7 +178,7 @@ pub(super) async fn ensure(id: &str, tool: &str) -> Result<SessionExit, String> 
     .await;
     match result {
         Ok(SessionExit::Completed) => {
-            closed.map_err(|error| format!("Installation finished, but its setup terminal could not close: {error}. Inspect the sandbox before retrying."))?;
+            closed.map_err(|error| format!("Installation finished, but its setup terminal did not close ({error})."))?;
             // Drain typing during final verification/close too. An early Enter
             // must not answer a sharing question that has not appeared yet.
             match setup_input(

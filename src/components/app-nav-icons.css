@@ -1,0 +1,6 @@
+/* Sidebar marks: a quiet column beside each label, in the hint's muted colour until hovered or current. */
+.app-nav-item:has(> .app-nav-icon) { grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; }
+.app-nav-item:has(> .app-nav-icon) > :not(.app-nav-icon) { grid-column: 2; }
+.app-nav-icon { grid-row: 1; grid-column: 1; align-self: center; width: 18px; height: 18px; color: var(--ink-soft); transition: color .2s; }
+.app-nav-sub > .app-nav-icon { width: 16px; height: 16px; }
+.app-nav-item:hover > .app-nav-icon, .app-nav-item[aria-current] > .app-nav-icon { color: inherit; }

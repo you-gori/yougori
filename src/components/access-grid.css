@@ -1,0 +1,44 @@
+/* Access Grid page: the same cream sheets, hairlines and one-line rows as the other grids, with a
+   small tab strip for the admin's sections and room under a row for what a request would send. */
+.access-fold > summary { cursor: pointer; list-style: none; }
+.access-fold > summary::-webkit-details-marker { display: none; }
+.access-fold > summary::before { content: "+"; display: inline-block; width: 14px; margin-right: 2px; color: var(--muted-foreground); font-weight: 400; }
+.access-fold[open] > summary::before { content: "−"; }
+.access-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 20px 10px; }
+.access-tabs > button { padding: 5px 12px; border-radius: 75px; color: var(--muted-foreground); font: inherit; font-size: 12.5px; letter-spacing: -0.01em; transition: background-color .15s, color .15s; }
+.access-tabs > button:hover { color: var(--foreground); }
+.access-tabs > button[aria-selected="true"] { background: var(--primary); color: var(--primary-foreground); }
+.access-tabs > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.access-panel { border-top: 1px solid var(--workspace-outline, var(--border)); }
+.access-panel > * + * { border-top: 1px solid var(--workspace-outline, var(--border)); }
+.access-intro { margin: 0; padding: 12px 20px; color: var(--muted-foreground); font-size: 12.5px; line-height: 1.5; max-width: 78ch; }
+.access-add { padding: 0 20px 16px; }
+.access-add > .grid-part-title { padding-left: 0; padding-right: 0; }
+.access-row > * + * { border-top: 1px dashed var(--workspace-outline, var(--border)); }
+.access-row-form { padding: 10px 20px 14px; }
+.access-inline { flex-wrap: wrap; }
+.access-inline [data-slot="input-control"] { width: 260px; max-width: 100%; }
+.access-methods { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+
+/* A request an approver decides: who and what, what it sends, then the buttons. */
+.access-request > * + * { border-top: 1px dashed var(--workspace-outline, var(--border)); }
+.access-who { color: var(--foreground); font-weight: 500; }
+.access-decide { min-height: 36px; }
+.access-detail { margin: 0; padding: 8px 20px; color: var(--muted-foreground); font-size: 12.5px; line-height: 1.5; }
+.access-detail > summary { cursor: pointer; }
+.access-detail pre { max-height: 220px; margin: 8px 0 0; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--background); color: var(--foreground); font-family: var(--font-mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* What an agent may use: the credential, then one line per rule that covers this person. */
+.access-uses { margin: 0; padding: 0 20px 10px 20px; list-style: none; color: var(--muted-foreground); font-size: 12.5px; line-height: 1.7; }
+.access-uses > li::before { content: "–"; margin-right: 8px; }
+.access-uses > li[data-decision="ask"] { color: var(--warning-foreground, #b45309); }
+.access-available .grid-line { min-height: 36px; }
+.access-config { margin: 0; padding: 10px 20px; overflow-x: auto; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5; white-space: pre; }
+
+/* A file path with its Choose button; the delete choice; a key pasted as text. */
+.access-file { display: flex; gap: 8px; align-items: center; }
+.access-file [data-slot="input-control"] { flex: 1 1 auto; }
+.access-choice { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.access-form textarea.grid-textarea { min-height: 90px; }
+.access-form input[type="file"] { font-size: 12px; color: var(--muted-foreground); }
+.access-inline textarea.grid-textarea { flex: 1 1 320px; min-height: 90px; }

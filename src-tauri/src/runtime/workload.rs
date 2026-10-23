@@ -174,7 +174,7 @@ impl RuntimeManager {
         let result=async {
             for (index,bind) in options.binds.iter().enumerate(){
                 let root=std::path::Path::new(&bind.source).canonicalize().map_err(|e|format!("PC volume {}: {e}",bind.source))?;
-                if !root.is_dir()||root.parent().is_none()||root.starts_with(&self.data_root)||self.data_root.starts_with(&root){return Err("Choose a project folder outside Yougori runtime storage".into())}
+                shareable_volume(&root,self).map_err(|e|format!("PC volume {}: {e}",bind.source))?;
                 if let Err(error)=crate::changes::ensure_folder_baseline(self,id,&root).await { eprintln!("Changes baseline for {id}: {error}"); }
                 if servers.len()<=index{servers.push(crate::host_files::HostFolderServer::start(root,bind.read_only).await?)}
                 let server=&servers[index];let endpoint=self.workload_folder_endpoint(id,cuda,server).await?;
@@ -214,6 +214,15 @@ impl RuntimeManager {
         options.validate()?;
         Ok(options)
     }
+}
+
+/// Whether a project may mount this PC folder (canonical) into a container: the dashboard's own
+/// rule, so a folder is never a whole drive and never inside or around Yougori's data.
+fn shareable_volume(folder: &std::path::Path, runtime: &RuntimeManager) -> Result<(), String> {
+    if !folder.is_dir() {
+        return Err("Choose a folder for a PC volume".into());
+    }
+    crate::host_files::ensure_shareable_folder(folder, &crate::host_files::yougori_folders(runtime), false)
 }
 
 fn model_cache_names(options: &Options) -> Vec<String> {
@@ -258,5 +267,21 @@ mod model_cache_tests {
         assert_eq!(runtime.unshared_model_caches("model").unwrap().len(), 1);
         std::fs::write(runtime.storage_root().join("workload-options/stopped-peer.json"), b"broken").unwrap();
         assert!(runtime.unshared_model_caches("model").is_err());
+    }
+
+    #[test]
+    fn project_volumes_never_reach_yougori_data() {
+        let home = tempfile::tempdir().unwrap();
+        // App data as Yougori lays it out: the runtime inside it, beside its own state.
+        let app = home.path().join("app");
+        let runtime = RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), &app).unwrap();
+        crate::host_files::protect_folder(&app);
+        let canonical = |path: std::path::PathBuf| { std::fs::create_dir_all(&path).unwrap(); path.canonicalize().unwrap() };
+        for private in ["swarm", "grid", "backup-credentials", "runtime", "runtime/environments", ""] {
+            let folder = canonical(app.join(private));
+            assert!(shareable_volume(&folder, &runtime).is_err(), "{private} reached a container");
+        }
+        assert!(shareable_volume(&canonical(home.path().into()), &runtime).is_err(), "a folder holding Yougori's data");
+        assert!(shareable_volume(&canonical(home.path().join("project")), &runtime).is_ok());
     }
 }

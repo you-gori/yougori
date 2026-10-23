@@ -1,0 +1,174 @@
+/* Neo Grid and Swarm Mining pages: each grid is a flat cream block of one-line rows split by hairlines. */
+.grid-board { display: grid; align-content: start; gap: 8px; padding: 0 0 16px; }
+.grid-sheet { overflow: hidden; border: 0; border-radius: 0; background: var(--cream, var(--card)); font-size: 13px; }
+.grid-sheet > * + *, .grid-part > * + * { border-top: 1px solid var(--workspace-outline, var(--border)); }
+.grid-part { margin: 0; padding: 0; list-style: none; }
+
+.grid-line { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 40px; padding: 6px 20px; }
+.grid-line > strong { flex: none; max-width: 40%; overflow: hidden; font-size: 13.5px; font-weight: 500; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.grid-line-head { min-height: 46px; }
+.grid-line-head > strong { font-size: 15px; font-weight: 450; letter-spacing: -0.03em; }
+.grid-muted { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--muted-foreground); text-overflow: ellipsis; white-space: nowrap; }
+.grid-meta { flex: none; color: var(--muted-foreground); white-space: nowrap; }
+.grid-key { flex: none; width: 90px; color: var(--muted-foreground); font-size: 12px; font-weight: 450; }
+.grid-line-actions { display: flex; flex: none; gap: 6px; margin-left: auto; }
+.grid-line > button { flex: none; }
+.grid-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); opacity: .5; }
+.grid-dot[data-online] { background: var(--leaf, #5f7d36); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--leaf, #5f7d36) 20%, transparent); }
+
+.grid-part-title { display: flex; align-items: baseline; gap: 10px; margin: 0; padding: 16px 20px 10px; color: var(--foreground); font-size: 15px; font-weight: 450; letter-spacing: -0.03em; }
+.grid-part-title > span { color: var(--ink-muted, var(--muted-foreground)); font-size: 13px; font-weight: 400; letter-spacing: -0.01em; }
+
+/* Commands: a label, the command, then its buttons, all on one line. */
+.grid-command-label { flex: none; width: 46px; color: var(--muted-foreground); font-size: 11px; font-weight: 600; }
+.grid-command code { flex: 1 1 auto; min-width: 0; overflow: hidden; font-family: var(--font-mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+/* Once unblurred, the whole invite is shown rather than cut off. */
+.grid-command code:not([data-blurred]) { overflow-wrap: anywhere; white-space: normal; }
+.grid-seg { display: inline-flex; flex: none; gap: 1px; padding: 2px; border-radius: 7px; background: color-mix(in srgb, var(--foreground) 6%, transparent); }
+.grid-seg > button { height: 20px; padding: 0 8px; border-radius: 5px; color: var(--muted-foreground); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.grid-seg > button[aria-pressed="true"] { background: var(--popover); color: var(--foreground); box-shadow: 0 1px 2px color-mix(in srgb, black 10%, transparent); }
+.grid-note { padding: 8px 20px 14px; color: var(--muted-foreground); font-size: 12.5px; line-height: 1.5; }
+.grid-note code { font-family: var(--font-mono); font-size: 11px; }
+
+
+/* The invite, and anything carrying it, stays blurred until unblurred, e.g. while screen sharing. */
+[data-blurred] { filter: blur(5px); user-select: none; transition: filter .15s ease; }
+@media (prefers-reduced-motion: reduce) { [data-blurred] { transition: none; } }
+
+@media (max-width: 640px) {
+  .grid-line { flex-wrap: wrap; row-gap: 4px; }
+  .grid-line > strong { max-width: 100%; }
+  .grid-line-actions { margin-left: 0; }
+}
+
+/* Host and join dialogs: a label above each control and room between fields. */
+.grid-dialog { width: min(620px, calc(100vw - 32px)); }
+.grid-form { display: grid; gap: 16px; }
+.grid-field { display: grid; gap: 6px; min-width: 0; }
+.grid-field > label, .grid-field-label { color: var(--muted-foreground); font-size: 10.5px; font-weight: 600; letter-spacing: .07em; line-height: 1.2; text-transform: uppercase; }
+.grid-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px 14px; }
+.grid-hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.grid-hint strong { color: var(--foreground); font-weight: 600; }
+/* Requirement hints turn green once met and amber while still short. */
+.grid-hint[data-tone="ok"] { color: #16a34a; }
+.dark .grid-hint[data-tone="ok"] { color: #4ade80; }
+.grid-hint[data-tone="short"] { color: var(--warning-foreground, #b45309); }
+.grid-error { padding: 10px 16px; border-radius: 0; background: color-mix(in srgb, var(--destructive) 9%, transparent); color: var(--destructive-foreground); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.grid-sheet > .grid-error { border-radius: 0; }
+.grid-textarea { width: 100%; min-height: 76px; resize: vertical; padding: 8px 10px; border: 1px solid var(--input, var(--border)); border-radius: 8px; background: var(--background); color: var(--foreground); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
+.grid-textarea:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent); }
+.grid-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.grid-options button { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--background); text-align: left; transition: border-color .15s, background-color .15s; }
+.grid-options button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.grid-options button[aria-checked="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 7%, transparent); box-shadow: 0 0 0 1px var(--primary); }
+.grid-options button:disabled { cursor: not-allowed; opacity: .6; }
+.grid-options strong { font-size: 13px; font-weight: 600; }
+.grid-options span { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+@media (max-width: 560px) { .grid-options { grid-template-columns: minmax(0, 1fr); } }
+
+/* Picking computers for a model, and the member row's details toggle. */
+.grid-check { flex: none; width: 14px; height: 14px; accent-color: var(--primary); cursor: pointer; }
+.grid-check:disabled { cursor: not-allowed; opacity: .4; }
+.grid-line[data-selected] { background: color-mix(in srgb, var(--primary) 7%, transparent); }
+.grid-chevron { width: 15px; height: 15px; transition: transform .15s ease; }
+.grid-chevron[data-open] { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .grid-chevron { transition: none; } }
+
+/* The assign row: every control shares one height, border and radius, so it reads as one row.
+   The model field keeps a fixed hf.co/ in front of what is typed. */
+.grid-plan-form { gap: 8px; }
+.grid-box { display: flex; flex: none; align-items: center; height: 30px; border: 1px solid var(--input, var(--border)); border-radius: 8px; background: var(--background); color: var(--foreground); font-size: 12px; transition: border-color .15s, box-shadow .15s; }
+.grid-box:focus-within, select.grid-box:focus-visible { border-color: var(--ring); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent); }
+.grid-box > input { min-width: 0; height: 100%; border: 0; background: transparent; color: inherit; font: inherit; outline: none; }
+.grid-box > input::placeholder { color: color-mix(in srgb, var(--muted-foreground) 70%, transparent); }
+.grid-box-affix { flex: none; color: var(--muted-foreground); user-select: none; }
+.grid-model-field { flex: 1 1 auto; min-width: 160px; padding: 0 10px; font-family: var(--font-mono); cursor: text; }
+.grid-model-field > input { flex: 1 1 auto; }
+.grid-select { max-width: 240px; padding: 0 8px; font: inherit; font-size: 12px; cursor: pointer; }
+.grid-percent-field { gap: 4px; width: 76px; padding: 0 10px 0 8px; }
+.grid-percent-field > input { width: 100%; text-align: right; }
+.grid-plan-form > .grid-assign { flex: none; height: 30px; }
+
+/* Swarms: rows like the plans above, a try panel under each, and a compact form to add one. */
+.grid-run { flex: none; height: 30px; }
+.grid-swarm-try { display: grid; gap: 6px; padding: 4px 0 8px; background: color-mix(in srgb, var(--foreground) 2.5%, transparent); }
+.grid-swarm-try > .grid-line { align-items: flex-start; }
+.grid-swarm-prompt { flex: 1 1 auto; height: auto; min-height: 54px; padding: 7px 10px; resize: vertical; font: inherit; font-size: 12px; line-height: 1.45; }
+.grid-swarm-error { margin: 0 12px; }
+.grid-swarm-result { display: grid; gap: 6px; margin: 0 12px; padding: 10px 12px; border: 1px solid var(--workspace-outline, var(--border)); border-radius: 10px; background: var(--background); }
+.grid-swarm-summary { color: var(--muted-foreground); font-size: 11.5px; font-weight: 600; }
+.grid-swarm-parts { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.grid-swarm-parts li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; }
+.grid-swarm-parts li strong { font-weight: 600; }
+.grid-swarm-parts li span { color: var(--muted-foreground); }
+.grid-swarm-parts li em { color: var(--destructive-foreground); font-style: normal; }
+.grid-swarm-answer { max-height: 320px; overflow: auto; padding-top: 6px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.grid-swarm-new { display: grid; }
+.grid-swarm-name { flex: 0 1 220px; min-width: 150px; }
+.grid-swarm-strategy { height: 30px; align-items: center; }
+.grid-swarm-strategy > button { height: 24px; }
+.grid-swarm-count { width: 86px; }
+.grid-swarm-workers { flex-wrap: wrap; }
+.grid-swarm-chips { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.grid-swarm-chips > button { height: 26px; padding: 0 10px; border: 1px dashed var(--input, var(--border)); border-radius: 999px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: 11.5px; transition: background .12s, color .12s, border-color .12s; }
+.grid-swarm-chips > button[aria-pressed="true"] { border-style: solid; border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--foreground); }
+
+/* A computer's row: its name, what it is doing in plain words, and a bar while it downloads. */
+.grid-computer-main { display: grid; flex: 1 1 auto; gap: 2px; min-width: 0; }
+.grid-computer-main > strong { overflow: hidden; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.grid-status { overflow: hidden; color: var(--muted-foreground); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.grid-status[data-tone="ok"] { color: #16a34a; }
+.dark .grid-status[data-tone="ok"] { color: #4ade80; }
+.grid-status[data-tone="busy"] { color: var(--foreground); }
+.grid-status[data-tone="error"] { color: var(--destructive-foreground); }
+.grid-bar { display: block; width: 100%; max-width: 280px; height: 3px; margin-top: 3px; overflow: hidden; border-radius: 99px; background: color-mix(in srgb, var(--foreground) 12%, transparent); }
+.grid-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width .4s ease; }
+@media (prefers-reduced-motion: reduce) { .grid-bar > span { transition: none; } }
+.grid-computer[data-excluded] { background: color-mix(in srgb, var(--foreground) 3%, transparent); }
+.grid-computer[data-excluded] .grid-computer-main > strong { color: var(--muted-foreground); }
+
+/* A page with nothing in it yet: a quiet cream block that says what goes here. */
+.grid-empty { display: grid; gap: 10px; padding: 32px 28px 36px; background: var(--cream, var(--card)); }
+.grid-empty-title { margin: 0; font-size: 22px; font-weight: 350; letter-spacing: -0.04em; line-height: 1.15; }
+.grid-empty-hint { max-width: 34rem; margin: 0; color: var(--muted-foreground); font-size: 14px; line-height: 1.5; }
+
+.page-note { color: var(--ink-soft, var(--muted-foreground)); font-size: 13px; }
+
+/* A grid being deleted: a calm amber line while paused, muted once gone. */
+.grid-closing { background: color-mix(in srgb, var(--warning, #b45309) 10%, transparent); color: var(--foreground); font-size: 12.5px; line-height: 1.5; }
+.grid-closing[data-gone] { background: color-mix(in srgb, var(--foreground) 5%, transparent); color: var(--muted-foreground); }
+.grid-delete-choice { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+
+/* Sandbox Grid. Each computer is a block: its name and state, what it has and is using, what the
+   grid may take from it, and a form to change that. The forms for people and desks are labelled
+   fields on a grid with the action under them, not one crowded line. */
+.grid-block { display: grid; gap: 10px; padding: 14px 20px 16px; }
+.grid-block-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.grid-block-head > strong { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 13.5px; font-weight: 500; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.grid-tag { flex: none; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--foreground) 7%, transparent); color: var(--muted-foreground); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.grid-tag[data-tone="ok"] { background: color-mix(in srgb, var(--leaf, #5f7d36) 14%, transparent); color: var(--leaf, #5f7d36); }
+.grid-tag[data-tone="wait"] { background: color-mix(in srgb, var(--warning, #b45309) 14%, transparent); color: var(--warning-foreground, #b45309); }
+.grid-stats { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; }
+.grid-stat { display: grid; gap: 2px; min-width: 0; }
+.grid-stat dt { color: var(--muted-foreground); font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }
+.grid-stat dd { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.grid-stat dd small { color: var(--muted-foreground); font-size: 11.5px; }
+.grid-share { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; font-size: 12.5px; }
+.grid-share > span:first-child { color: var(--muted-foreground); }
+.grid-share > strong { font-weight: 500; }
+.grid-form-block { display: grid; gap: 12px; padding: 12px 20px 16px; }
+.grid-inline-form { display: grid; gap: 12px; padding: 12px 14px 14px; border: 1px solid var(--workspace-outline, var(--border)); border-radius: 10px; background: var(--background); }
+.grid-form-block .grid-fields, .grid-inline-form .grid-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 12px 14px; }
+.grid-field-wide { grid-column: span 2; }
+.grid-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.grid-form-actions > .grid-hint { flex: 1 1 220px; margin: 0; }
+/* A number with its unit at the right edge of the same box. */
+.grid-unit { position: relative; }
+.grid-unit input { padding-right: 58px; }
+.grid-unit-suffix { position: absolute; top: 0; right: 10px; bottom: 0; display: flex; align-items: center; color: var(--muted-foreground); font-size: 11.5px; pointer-events: none; }
+.grid-check-field { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
+.grid-check-field > input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: var(--primary); cursor: pointer; }
+.grid-check-field > input:disabled { cursor: not-allowed; opacity: .4; }
+.grid-select-field { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--input, var(--border)); border-radius: 8px; background: var(--background); color: var(--foreground); font: inherit; font-size: 13px; cursor: pointer; }
+.grid-select-field:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent); }
+@media (min-width: 640px) { .grid-select-field { height: 30px; font-size: 12.5px; } }

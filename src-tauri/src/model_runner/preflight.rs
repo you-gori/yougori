@@ -116,7 +116,7 @@ pub async fn model_preflight(model:String,quant:Option<String>,folder:Option<Str
     if folder.is_some(){crate::host_terminal::require_dashboard(window.label())?;}
     preflight_model(model,quant,folder).await
 }
-pub(crate) async fn preflight_model(model:String,quant:Option<String>,folder:Option<String>)->Result<Value,String>{if let Some(folder)=folder{return super::local::preflight(normalize_model(&model)?,folder,quant).await;}let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);Ok(result)}
+pub(crate) async fn preflight_model(model:String,quant:Option<String>,folder:Option<String>)->Result<Value,String>{if let Some(folder)=folder{return super::local::preflight(normalize_model(&model)?,folder,quant).await;}let mut result=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;result["storageDriveSelection"]=json!(true);result["resources"]["workerMemoryGbRecommended"]=json!(yougori_cli::bounty::model_memory_recommendation(&result));Ok(result)}
 #[tauri::command]
 pub async fn model_support_task(model:String,agent:String,quant:Option<String>)->Result<Value,String>{
     let preflight=preflight_quant(&normalize_model(&model)?,quant.as_deref()).await?;

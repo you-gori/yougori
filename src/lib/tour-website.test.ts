@@ -81,21 +81,26 @@ it.skipIf(!hasPython)("serves Hello World without DNS lookups, disclosing files 
 }, 15000)
 
 const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "/bin/bash"
+// These start real interpreters. Start-up time on a busy machine is outside the test's control
+// (about 0.2 s idle, but nearly 2 s each under parallel builds), so 5 s, vitest's default, is no limit for them.
+const SPAWN_TIMEOUT = 20_000
 it.skipIf(!hasPython)("the staged website and setup are valid Python", () => {
-  for (const code of [helloWebsitePython("test-run"), helloWebsitePython("test-run", "0.0.0.0", 3000, true), helloWebsiteSetupPython("test-run")]) {
-    const result = spawnSync(python, [...pythonArgs, "-c", "import sys; compile(sys.stdin.read(), '<website>', 'exec')"], { input: code, encoding: "utf8", windowsHide: true, timeout: 5000 })
-    expect(result.stderr).toBe("")
-    expect(result.status).toBe(0)
-  }
-})
+  // One interpreter compiles all three programs; one start-up each made this the slowest test here.
+  const programs = [helloWebsitePython("test-run"), helloWebsitePython("test-run", "0.0.0.0", 3000, true), helloWebsiteSetupPython("test-run")]
+  const compileAll = "import json, sys; [compile(code, '<website %d>' % index, 'exec') for index, code in enumerate(json.load(sys.stdin))]"
+  const result = spawnSync(python, [...pythonArgs, "-c", compileAll], { input: JSON.stringify(programs), encoding: "utf8", windowsHide: true, timeout: SPAWN_TIMEOUT })
+  expect(result.error).toBeUndefined()
+  expect(result.stderr).toBe("")
+  expect(result.status).toBe(0)
+}, SPAWN_TIMEOUT)
 it.skipIf(!existsSync(bash))("both generated commands pass real shell syntax checking", () => {
   for (const command of [helloWebsiteCommand("test-run"), helloWebsiteCheck("test-run")]) {
-    const result = spawnSync(bash, ["-n"], { input: command, encoding: "utf8", windowsHide: true, timeout: 5000 })
+    const result = spawnSync(bash, ["-n"], { input: command, encoding: "utf8", windowsHide: true, timeout: SPAWN_TIMEOUT })
     expect(result.stderr).toBe("")
     expect(result.status).toBe(0)
   }
   // Inspect the nested sh -c payload too, without executing its package setup.
-  const nested = spawnSync(bash, ["-s"], { input: `sh() { printf '%s' "$2" | bash -n; }; ${helloWebsiteCommand("test-run")}`, encoding: "utf8", windowsHide: true, timeout: 5000 })
+  const nested = spawnSync(bash, ["-s"], { input: `sh() { printf '%s' "$2" | bash -n; }; ${helloWebsiteCommand("test-run")}`, encoding: "utf8", windowsHide: true, timeout: SPAWN_TIMEOUT })
   expect(nested.stderr).toBe("")
   expect(nested.status).toBe(0)
-})
+}, SPAWN_TIMEOUT)

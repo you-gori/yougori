@@ -38,6 +38,18 @@
         "src/components/ui/LICENSE.txt",
         "compliance/notices/coss-ui-declaration.txt"
       ]
+    },
+    {
+      "id": "theme-palettes",
+      "name": "Theme palettes",
+      "license": "MIT",
+      "upstream": "https://github.com/catppuccin/palette, https://github.com/rose-pine/palette, https://github.com/nordtheme/nord, https://github.com/enkia/tokyo-night-vscode-theme",
+      "files": [
+        "src/lib/appearance.ts"
+      ],
+      "noticeFiles": [
+        "compliance/notices/theme-palettes.txt"
+      ]
     }
   ],
   "generatedAssets": [

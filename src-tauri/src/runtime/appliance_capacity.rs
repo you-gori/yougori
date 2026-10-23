@@ -169,9 +169,27 @@ fn memory_growth_target(base: u64, current: u64, requested: u64, maximum: u64) -
     (current + requested.saturating_sub(current).div_ceil(chunk) * chunk).min(maximum)
 }
 
+/// QEMU's `-m` value for the runtime. Hotplug slots need room above the boot size, and QEMU
+/// refuses slots whose maximum equals it, which is where growth stops at the host's limit.
+pub(super) fn memory_argument(memory_mib: usize, max_memory_mib: usize) -> String {
+    if max_memory_mib > memory_mib {
+        format!("{memory_mib},slots=64,maxmem={max_memory_mib}M")
+    } else {
+        memory_mib.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_runtime_grown_to_the_host_limit_boots_without_hotplug_slots() {
+        assert_eq!(memory_argument(4096, 16384), "4096,slots=64,maxmem=16384M");
+        // Growth is capped at the maximum, so the next boot can start exactly there.
+        let grown = memory_growth_target(4096, 15360, 16384, 16384) as usize;
+        assert_eq!(memory_argument(grown, 16384), "16384");
+        assert_eq!(memory_argument(16512, 16384), "16512");
+    }
     #[test]
     fn hotplug_verification_covers_all_attached_dimm_ranges() {
         let devices = serde_json::json!([

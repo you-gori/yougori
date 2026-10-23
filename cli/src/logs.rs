@@ -38,8 +38,14 @@ pub fn parse(args:&[String])->Result<Options,String>{
 }
 pub async fn read(id:&str,mut options:Options)->Result<Value,String>{
     let mut terminal=TerminalText::default();
+    // One Ctrl+C listener for the whole follow, so a press during a request counts too.
+    let interrupted=tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
     loop{
-        let mut window=public::call("get_environment_log_window",json!({"environmentId":id,"cursor":options.cursor,"limit":options.limit,"tail":options.tail})).await?;
+        let request=public::call("get_environment_log_window",json!({"environmentId":id,"cursor":options.cursor,"limit":options.limit,"tail":options.tail}));
+        let mut window=if options.follow{
+            tokio::select!{_=&mut interrupted=>return Ok(detached(id,&options)),window=request=>window?}
+        }else{request.await?};
         options.cursor=Some(window["nextCursor"].as_str().ok_or("Missing log cursor")?.to_owned());
         if options.last_error{
             let text=window["stdout"].as_str().unwrap_or("");
@@ -51,9 +57,11 @@ pub async fn read(id:&str,mut options:Options)->Result<Value,String>{
         if std::io::stdout().is_terminal(){print!("{}",terminal.feed(window["stdout"].as_str().unwrap_or("")));std::io::stdout().flush().map_err(|e|e.to_string())?;}
         else{println!("{}",serde_json::to_string(&wire::Response::success(window.clone())).map_err(|e|e.to_string())?);}
         if window["truncated"]==true{continue;}
-        tokio::select!{_=tokio::signal::ctrl_c()=>return Ok(json!({"id":id,"detached":true,"nextCursor":options.cursor,"environmentsRemainRunning":true})),_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+        tokio::select!{_=&mut interrupted=>return Ok(detached(id,&options)),_=tokio::time::sleep(Duration::from_secs(1))=>{}}
     }
 }
+/// Following stopped with Ctrl+C: the environment keeps running, and the cursor resumes here.
+fn detached(id:&str,options:&Options)->Value{json!({"id":id,"detached":true,"nextCursor":options.cursor,"environmentsRemainRunning":true})}
 #[cfg(test)]mod tests{
     use super::*;
     #[test]fn log_options_are_bounded_and_cursors_are_opaque(){let options=parse(&["--cursor","opaque","--tail","0","--follow"].map(str::to_owned)).unwrap();assert_eq!(options.cursor.as_deref(),Some("opaque"));assert_eq!(options.tail,0);assert!(options.follow);for args in [vec!["--limit","0"],vec!["--tail","262145"],vec!["--cursor"],vec!["--follow","--follow"]]{assert!(parse(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());}}

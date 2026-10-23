@@ -52,6 +52,10 @@ fn run_case(model: bool) {
         .manage(crate::peer_sharing::Sharing::default())
         .setup(move |app| {
             let app = app.handle().clone();
+            // A model waits for the host's GPU optimizer to grant it memory, as in the app.
+            if model {
+                crate::model_runner::optimizer::start(&app);
+            }
             tauri::async_runtime::spawn(async move {
                 let test_app = app.clone();
                 let path = directory.path().to_owned();
@@ -562,4 +566,118 @@ fn project_summary_lists_every_host_folder_copy_and_secret_reference() {
     assert!(secrets.iter().any(|s| s["variable"] == "API_KEY" && s["reference"] == "company-api"));
     assert!(secrets.iter().any(|s| s["reference"] == "probe-token" && s["use"] == "healthCheck"));
     assert!(!value.to_string().contains("top-secret"));
+}
+
+fn owned_node(id: &str, name: &str, description: &str) -> crate::models::Environment {
+    serde_json::from_value(json!({"id":id,"name":name,"kind":"container","status":"stopped","runtime":"alpine:latest","provider":"yougoriOci","createdAt":"2026-01-01T00:00:00Z","description":description,"cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,"resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":1,"preferred":1,"max":1,"current":0},"priority":"normal","dynamic":false}})).unwrap()
+}
+
+#[test]
+fn a_replaced_node_leaves_the_project_and_its_name() {
+    let mut state = PlatformState::empty().unwrap();
+    state.environments = vec![owned_node("old-id", "shop-api", "Yougori project key / api"), owned_node("other-id", "shop-db", "Yougori project key / db")];
+    retire(&mut state, "old-id", "key", "shop", "api");
+    let old = &state.environments[0];
+    assert!(old.name.starts_with("shop-api-replaced-"), "{}", old.name);
+    assert_eq!(old.description, "Yougori project key / api (replaced)");
+    assert_eq!(state.environments[1].name, "shop-db", "only the replaced node is retired");
+    // A node owned by someone else is never retagged, even when the IDs match.
+    let mut foreign = PlatformState::empty().unwrap();
+    foreign.environments = vec![owned_node("old-id", "shop-api", "another owner")];
+    retire(&mut foreign, "old-id", "key", "shop", "api");
+    assert_eq!(foreign.environments[0].name, "shop-api");
+    // A long project name still leaves a name within the 80-character limit.
+    retire(&mut state, "other-id", "key", &"x".repeat(90), "db");
+    let retired = &state.environments[1].name;
+    assert!(retired.chars().count() <= 80 && retired.contains("-replaced-"), "{retired}");
+}
+
+#[test]
+fn down_and_replaced_nodes_leave_automatic_startup() {
+    let project: Project = serde_json::from_value(json!({"project":"shop","environments":{"api":{"type":"container","image":"alpine:latest","automatic_start":true}}})).unwrap();
+    let record: Record = serde_json::from_value(json!({"path":"shop/yougori.yaml","project":"shop","ids":{"api":"new-id"}})).unwrap();
+    let mut state = PlatformState::empty().unwrap();
+    state.environments = vec![owned_node("old-id", "shop-api-replaced-abcdef", "Yougori project key / api (replaced)"), owned_node("new-id", "shop-api-123456", "Yougori project key / api")];
+    state.settings.auto_start_environment_ids = vec!["old-id".into(), "unrelated".into()];
+    let up = startup_settings(&state, &project, &record, "key", true).unwrap();
+    assert_eq!(up.auto_start_environment_ids, vec!["new-id".to_owned(), "unrelated".to_owned()]);
+    assert!(up.launch_at_startup && up.startup_headless);
+    state.settings = up;
+    assert!(startup_settings(&state, &project, &record, "key", true).is_none(), "nothing to save when nothing changes");
+    let down = startup_settings(&state, &project, &record, "key", false).unwrap();
+    assert_eq!(down.auto_start_environment_ids, vec!["unrelated".to_owned()]);
+}
+
+#[test]
+fn an_import_never_shadows_a_project_or_reuses_its_name() {
+    let folder = tempfile::tempdir().unwrap();
+    let output = folder.path().join("yougori.yaml");
+    let mut projects = BTreeMap::new();
+    assert!(import_preconditions(&output, "shop", &projects).is_ok());
+    projects.insert("elsewhere".to_owned(), serde_json::from_value::<Record>(json!({"path":"other/yougori.yaml","project":"shop"})).unwrap());
+    assert!(import_preconditions(&output, "shop", &projects).unwrap_err().contains("project name shop"));
+    assert!(import_preconditions(&output, "store", &projects).is_ok());
+    std::fs::write(folder.path().join("yougori.yml"), "project: existing\n").unwrap();
+    assert!(import_preconditions(&output, "store", &projects).unwrap_err().contains("yougori.yml"));
+}
+
+#[test]
+fn two_way_compose_links_become_one_connection_and_a_second_apply_changes_nothing() {
+    let link = |a: &str, b: &str, permissions: &[&str], ports: &[&str]| json!({"sourceId":a,"targetId":b,"direction":"oneWay","permissions":permissions,"ports":ports});
+    let desired = merge_two_way(vec![
+        link("api", "db", &["network"], &[]),
+        link("db", "api", &["network"], &[]),
+        link("api", "cache", &["ports"], &["6379"]),
+        link("cache", "api", &["network"], &[]),
+    ]);
+    assert_eq!(desired.len(), 3, "only the matching pair merges: {desired:?}");
+    assert_eq!(desired[0]["direction"], "bidirectional");
+    assert_eq!((desired[1]["direction"].as_str(), desired[2]["direction"].as_str()), (Some("oneWay"), Some("oneWay")));
+    // What the first apply creates, one connection per request.
+    let created: Vec<crate::models::Connection> = desired.iter().enumerate().map(|(index, request)| {
+        let mut connection = request.clone();
+        connection["id"] = json!(format!("conn-{index}"));
+        connection["active"] = json!(true);
+        connection["createdAt"] = json!("2026-10-20T00:00:00Z");
+        serde_json::from_value(connection).unwrap()
+    }).collect();
+    // The second apply neither creates nor deletes anything.
+    assert!(desired.iter().all(|request| created.iter().any(|connection| connection_matches(connection, request))));
+    assert!(created.iter().all(|connection| desired.iter().any(|request| connection_matches(connection, request))));
+    // A one-way connection left by an older apply no longer passes for the two-way one.
+    let mut old = created[0].clone();
+    old.direction = ConnectionDirection::OneWay;
+    assert!(!connection_matches(&old, &desired[0]));
+}
+
+#[test]
+fn a_shared_node_is_never_taken_from_someone_else() {
+    let share = |id: &str, runtime: &str| {
+        let mut node = owned_node(id, id, "");
+        node.runtime = runtime.into();
+        node
+    };
+    let theirs = share("theirs", "shared://owner-a/env-1");
+    let pulling = share("pulling", "alpine:latest");
+    let mine = share("mine", "shared://owner-b/env-2");
+    let before = vec!["theirs".to_owned()];
+    // Someone else's share was already there and nothing new arrived: nothing is adopted.
+    assert_eq!(created_node(&[theirs.clone()], &before, "shop-db", "shared").unwrap(), None);
+    // A container another user is creating at the same moment is not a shared node.
+    assert_eq!(created_node(&[theirs.clone(), pulling.clone(), mine.clone()], &before, "shop-db", "shared").unwrap(), Some("mine".into()));
+    // Two new shares at once is a guess, so it is refused with a next step.
+    let other = share("other", "shared://owner-c/env-3");
+    assert!(created_node(&[theirs, mine, other], &before, "shop-db", "shared").unwrap_err().contains("run apply again"));
+}
+
+#[test]
+fn links_both_ways_with_different_access_are_refused_before_anything_changes() {
+    let project = |connections: Value| -> Project {
+        serde_json::from_value(json!({"project":"shop","environments":{"api":{"type":"container","image":"alpine:latest"},"cache":{"type":"container","image":"redis:7"}},"connections":connections})).unwrap()
+    };
+    let mismatched = project(json!([{"from":"api","to":"cache","ports":[6379]},{"from":"cache","to":"api"}]));
+    assert!(two_way_conflict(&mismatched).unwrap_err().contains("api and cache are linked both ways with different access"));
+    // The same access both ways is one two-way link, and a one-way link is fine.
+    assert!(two_way_conflict(&project(json!([{"from":"api","to":"cache","ports":[6379]},{"from":"cache","to":"api","ports":[6379]}]))).is_ok());
+    assert!(two_way_conflict(&project(json!(["api -> cache"]))).is_ok());
 }

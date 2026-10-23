@@ -2,10 +2,14 @@
 //! terminal output, or the worker JSON file. No public inference route is created.
 mod guest;
 mod memory;
+mod resources;
+mod development;
 pub(crate) mod activity;
+pub(crate) mod prompts;
 mod model_lifecycle;
 mod practice;
-mod live_target;
+pub(crate) mod closed;
+pub(crate) mod rented;
 #[cfg(all(test, windows, not(feature = "engine-only")))]
 mod real_tests;
 mod runner;
@@ -27,6 +31,7 @@ pub struct Swarm {
     prepare: Mutex<()>,
     execution_gates: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     control_gates: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    pub(crate) rented: rented::Rented,
 }
 #[derive(Default)]
 struct Workers {
@@ -37,6 +42,10 @@ struct Workers {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Worker {
     id: String,
+    #[serde(default)]
+    closed: Option<closed::Connection>,
+    #[serde(default)]
+    harness_version: String,
     name: String,
     model: String,
     state: String,
@@ -58,8 +67,8 @@ pub(crate) struct Worker {
     credential_reference: Option<String>,
     #[serde(default)]
     credential_expires_at: i64,
-    #[serde(default)]
-    opencode_password_reference: Option<String>,
+    #[serde(default, alias = "opencodePasswordReference")]
+    harness_password_reference: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
@@ -105,6 +114,12 @@ pub(crate) struct Worker {
     /// `start bounty` reconnects to the newest worker. Workers from earlier releases have 0.
     #[serde(default)]
     created_at: i64,
+    /// The NeoCloud pod whose GPU runs this worker's model, by environment id. Absent for a model
+    /// on this computer, and then never written, so a local worker's saved data is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rented_gpu: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    development_previous_model: Option<development::PreviousModel>,
 }
 /// The stage of a worker that the engine paused while starting; its view reports `restored`.
 const RESTORED: &str =
@@ -117,7 +132,18 @@ impl Worker {
         } else {
             &self.state
         };
-        json!({"id":self.id,"serverId":self.server_id,"name":self.name,"model":self.model,"state":state,"stage":self.stage,"restored":self.restored(),"reviewReports":self.review_reports,"environmentId":self.environment_id,"modelEnvironmentId":self.model_environment_id,"testEnvironmentId":self.test_environment_id,"quant":self.quant,"createdAt":self.created_at,"gpu":self.gpu,"resources":self.resources,"workspaceQuotaGb":self.quota_gb,"keepResident":self.keep_resident,"error":self.error,"summary":self.summary,"completedAttempts":self.attempt_count,"bountyId":self.policy["bountyId"],"policyVersion":self.policy["termsVersion"],"cursor":self.cursor})
+        let mut view = json!({"id":self.id,"serverId":self.server_id,"name":self.name,"networkMode":if self.closed.is_some(){"closed"}else{"public"},"model":self.model,"state":state,"stage":self.stage,"restored":self.restored(),"reviewReports":self.review_reports,"environmentId":self.environment_id,"modelEnvironmentId":self.model_environment_id,"testEnvironmentId":self.test_environment_id,"quant":self.quant,"createdAt":self.created_at,"gpu":self.gpu,"resources":self.resources,"workspaceQuotaGb":self.quota_gb,"keepResident":self.keep_resident,"error":self.error,"summary":self.summary,"completedAttempts":self.attempt_count,"bountyId":self.policy["bountyId"],"policyVersion":self.policy["termsVersion"],"cursor":self.cursor});
+        if let Some(pod) = &self.rented_gpu {
+            view["rentedGpu"] = json!(pod);
+        }
+        if self.development_previous_model.is_some() {
+            view["developmentApiModel"] = json!(true);
+        }
+        view
+    }
+    /// The NeoCloud pod that runs this worker's model, when it is not this computer.
+    pub(crate) fn rented_gpu(&self) -> Option<&str> {
+        self.rented_gpu.as_deref()
     }
     /// Paused by an engine restart rather than by the participant, the bounty or an error.
     fn restored(&self) -> bool {
@@ -132,15 +158,18 @@ impl Worker {
 /// What the participant reviewed for this version besides the digests checked below. A live
 /// policy that changes any recorded one is not the accepted one, even under the same version.
 /// Fields the accepted record does not carry are adopted from the first live policy.
-const CONSENT_FIELDS: [&str; 15] = [
+const CONSENT_FIELDS: [&str; 22] = [
     "objective", "setupCommand", "testCommand", "agentChannelVisibility", "serviceRules", "rulesVersion", "rulesDigest",
     "scope", "inScope", "outOfScope", "exclusions", "prohibitedActions", "qualifyingCriteria", "confidentiality",
-    "confidentialityTerms",
+    "confidentialityTerms", "scopeMode", "target", "startCommand", "targetPort", "healthCheck", "researchTools",
+    // Whether the owner lets the code go to a GPU rented from an outside provider.
+    "rentedGpu",
 ];
 pub(crate) fn consent_changed(state: &Value, worker: &Worker) -> bool {
     CONSENT_FIELDS.iter().any(|key| !worker.policy[*key].is_null() && state["policy"][*key] != worker.policy[*key])
 }
 pub(crate) fn execution_authorized(state: &Value, worker: &Worker) -> bool {
+    if worker.closed.is_some() { return closed::authorized(state,worker); }
     !consent_changed(state, worker)
         && state["executionAllowed"] == true
         && direct_source_policy(&worker.policy).is_ok()
@@ -271,13 +300,26 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
             | "practice"
             | "memory"
             | "activity"
+            | "clearHistory"
             | "practiceStart"
             | "practiceInput"
             | "practiceInterrupt"
             | "practiceResume"
             | "practiceStop"
+            | "rentedGpus"
+            | "stopRentedGpu"
+            | "stopRentedGpus"
+            | "promptsGet"
+            | "promptsSet"
+            | "promptsReset"
+            | "developmentModel"
     ) {
         return Err("Unknown Swarm Mining action".into());
+    }
+    if action == "developmentModel"
+        && !(request["modelEnvironmentId"].is_null() || request["modelEnvironmentId"].as_str().is_some_and(identifier))
+    {
+        return Err("Choose a development model environment by its exact ID".into());
     }
     if action == "memory" && !request["keepResident"].is_boolean() {
         return Err("Choose whether the model stays loaded while the worker waits".into());
@@ -303,7 +345,14 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
         }
     }
     if action == "prepare" {
-        crate::model_runner::normalize_model(string(request, "model")?)?;
+        let model = string(request, "model")?;
+        // Workers run a reviewed Hugging Face GGUF revision, as the app and the CLI already require.
+        // A registry id ("yg/…") would be created under its upstream repository, which the worker
+        // then never claims: the model would keep running and download again at every resume.
+        if crate::model_registry::is_registry(model.trim()) {
+            return Err("Paste a Hugging Face GGUF model: hf.co/OWNER/MODEL-GGUF".into());
+        }
+        crate::model_runner::normalize_model(model)?;
         // Without `gpu`, preparation chooses from the CUDA checks (`worker_gpu`).
         if !request["gpu"].is_null() && !matches!(request["gpu"].as_str(), Some("nvidia" | "metal" | "cpu")) {
             return Err("Choose an NVIDIA, Apple Metal or CPU worker".into());
@@ -335,7 +384,10 @@ pub(crate) fn validate(request: &Value) -> Result<(), String> {
         }) {
             return Err("Worker name must be 2–80 characters".into());
         }
-    } else if !matches!(action, "list" | "workers" | "rewards" | "bounties")
+        if !request["rentedGpu"].is_null() && !request["rentedGpu"].as_str().is_some_and(identifier) {
+            return Err("Choose a rented GPU pod by its environment id".into());
+        }
+    } else if !matches!(action, "list" | "workers" | "rewards" | "bounties" | "rentedGpus" | "stopRentedGpus" | "promptsGet" | "promptsSet" | "promptsReset")
         && !(matches!(action, "reports" | "doctor") && request["workerId"].is_null())
     {
         worker_id(request)?;
@@ -439,13 +491,15 @@ fn restore(rows: &mut BTreeMap<String, Worker>) {
 async fn load(app: &AppHandle) -> Result<(), String> {
     let manager = app.state::<Swarm>();
     let mut inner = manager.inner.lock().await;
+    let root = app.state::<PlatformStore>().data_folder("swarm");
+    // Point the activity log at disk before any worker runs, so its events are kept across restarts.
+    activity::init(root.join("activity"));
+    // Point the editable prompts/guardrails at disk too, so operator overrides are read at runtime.
+    prompts::init(root.clone());
     if inner.loaded {
         return Ok(());
     }
-    let path = app
-        .state::<PlatformStore>()
-        .data_folder("swarm")
-        .join("workers.json");
+    let path = root.join("workers.json");
     match std::fs::read(&path) {
         Ok(bytes) => {
             if bytes.len() > 80 * 1024 * 1024 {
@@ -454,6 +508,16 @@ async fn load(app: &AppHandle) -> Result<(), String> {
             inner.rows = serde_json::from_slice(&bytes)
                 .map_err(|_| "Cannot read worker journal; no workers were started")?;
             restore(&mut inner.rows);
+            // Resources edited on an owned model remain authoritative after an app restart.
+            let store = app.state::<PlatformStore>();
+            for worker in inner.rows.values_mut() {
+                if worker.owned_model && worker.rented_gpu.is_none() && worker.development_previous_model.is_none() {
+                    if let Some(environment) = worker.model_environment_id.as_deref().and_then(|id| store.environment(id).ok()) {
+                        resources::adopt_model_allocation(&mut worker.resources, &environment.resource_policy);
+                    }
+                }
+            }
+            save(app, &inner)?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.to_string()),
@@ -568,6 +632,7 @@ async fn agent_once(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    if let Some(connection)=&worker.closed { return connection.request(method.as_str(),path,body.as_ref()).await; }
     if worker.site != crate::market::website() {
         return Err("Worker belongs to a different configured Yougori website. Reconnect to its original website.".into());
     }
@@ -630,6 +695,7 @@ async fn agent_once(
     Ok(value)
 }
 pub(crate) async fn refresh(app: &AppHandle, worker: &mut Worker) -> Result<(), String> {
+    if worker.closed.is_some() { return Ok(()); }
     if worker.credential_expires_at > now() + 180 {
         return Ok(());
     }
@@ -710,9 +776,18 @@ fn cleanup_deleted_worker(app: &AppHandle, worker: &Worker) -> Result<(), String
             .join("events"),
         &worker.id,
     )?;
+    // Its experiment receipts hold project output and test input; they go with the worker.
+    let receipts = app.state::<PlatformStore>().data_folder("swarm").join("receipts").join(&worker.id);
+    if let Err(error) = std::fs::remove_dir_all(&receipts) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            crate::security::record(crate::security::Event::new("swarm.receipts.kept").text("workerId", &worker.id).text("error", &error.to_string()));
+        }
+    }
+    // Its activity, including practice text, is dropped from memory as well.
+    activity::forget(&worker.id);
     for reference in [
         worker.credential_reference.as_ref(),
-        worker.opencode_password_reference.as_ref(),
+        worker.harness_password_reference.as_ref(),
     ]
     .into_iter()
     .flatten()
@@ -751,6 +826,7 @@ pub(crate) fn launch(app: &AppHandle, id: String, setup: bool) {
             return;
         }
         let work = async {
+            let _residency = model_lifecycle::retain_for_worker(&app, &id);
             if setup {
                 prepare(&app, &id, &cancel).await?;
             }
@@ -772,6 +848,12 @@ pub(crate) fn launch(app: &AppHandle, id: String, setup: bool) {
                 .await
                 {
                     let _ = guest::abort_agent(&app, &worker).await;
+                    // A preparation that failed part-way can have left the agent's sandbox, or a
+                    // private bounty's target sandbox with the company's code in it, with its
+                    // installation network still open; both are closed here.
+                    for environment in [worker.environment_id.clone(), worker.test_environment_id.clone()].into_iter().flatten() {
+                        let _ = crate::commands::update_container_network(environment, false, app.state(), app.state()).await;
+                    }
                     if worker.state == "failed" {
                         model_lifecycle::schedule_unused_cleanup(&app, &worker);
                         let _ = model_lifecycle::stop_if_unused(&app, &worker).await;
@@ -834,79 +916,20 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             None
         };
         return Ok(
-            json!({"host":host,"preflight":preflight,"localOnly":true,"publicInference":false,"minimumResources":{"cpu":4,"memoryGb":8}}),
+            json!({"host":host,"preflight":preflight,"localOnly":crate::rented_gpu::local_only(request["rentedGpu"].as_str()),"publicInference":false,"minimumResources":{"cpu":4,"memoryGb":8}}),
         );
     }
-    if action == "prepare" {
-        if request["platformUrl"]
-            .as_str()
-            .is_some_and(|s| s.trim_end_matches('/') != crate::market::website())
-        {
-            return Err("Set YOUGORI_NETWORK_URL before starting Yougori to select a development website. Account credentials stay bound to that website.".into());
-        }
-        let id = format!("worker-{}", key());
-        let gpu = if request["gpu"].is_null() && cfg!(target_os="macos") {
-            let capabilities = crate::model_runner::model_compute_status(app.clone()).await?;
-            if capabilities["metalSupported"] == true { "metal".into() } else { "cpu".into() }
-        } else { worker_gpu(&request, async {
-            app.state::<crate::runtime::RuntimeManager>().cuda_status().await.supported
-        })
-        .await };
-        let worker = Worker {
-            id: id.clone(),
-            name: request["name"].as_str().unwrap_or("Bounty worker").into(),
-            model: crate::model_runner::normalize_model(string(&request, "model")?)?,
-            state: "preparing".into(),
-            stage: "Checking your model and resources".into(),
-            site: crate::market::website(),
-            gpu,
-            resources: if request["resources"].is_object() {
-                request["resources"].clone()
-            } else {
-                json!({"cpu":4,"memoryGb":8})
-            },
-            quota_gb: request["workspaceQuotaGb"].as_f64().unwrap_or(20.),
-            // The model loads for work only unless the participant keeps it loaded.
-            keep_resident: request["keepResident"].as_bool().unwrap_or(false),
-            environment_id: None,
-            test_environment_id: None,
-            model_environment_id: None,
-            server_id: None,
-            credential_reference: None,
-            credential_expires_at: 0,
-            opencode_password_reference: None,
-            session_id: None,
-            policy: Value::Null,
-            membership: Value::Null,
-            cursor: 0,
-            human_cursor: 0,
-            attempt_count: 0,
-            task_index: 0,
-            error: None,
-            summary: String::new(),
-            lease: Value::Null,
-            quant: request["quant"].as_str().map(str::to_owned),
-            owned_model: false,
-            source_files: Vec::new(),
-            guidance: Vec::new(),
-            generation: 0,
-            skipped_offers: Vec::new(),
-            pending_replies: BTreeMap::new(),
-            tool_results: BTreeMap::new(),
-            review_reports: Vec::new(),
-            created_at: now(),
+    if action == "prepare" { return prepare_worker(request, app, None, Value::Null).await; }
+    if action == "rentedGpus" { return rented::status(&app).await; }
+    if action == "stopRentedGpus" { return rented::stop_all(&app).await; }
+    if matches!(action, "promptsGet" | "promptsSet" | "promptsReset") {
+        // Make sure the prompts file path is set (load() calls prompts::init before it reads).
+        let _ = load(&app).await;
+        return match action {
+            "promptsSet" => prompts::set(&request),
+            "promptsReset" => prompts::reset(),
+            _ => Ok(prompts::view()),
         };
-        {
-            let manager = app.state::<Swarm>();
-            let mut inner = manager.inner.lock().await;
-            if inner.rows.len() >= 32 {
-                return Err("This computer already has 32 workers. Remove unused managed workers before creating more.".into());
-            }
-            inner.rows.insert(id.clone(), worker.clone());
-            save(&app, &inner)?;
-        }
-        launch(&app, id, true);
-        return Ok(json!({"worker":worker.view(),"background":true}));
     }
     if matches!(action, "list" | "workers") {
         let m = app.state::<Swarm>();
@@ -940,15 +963,21 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
     let id = worker_id(&request)?;
     let _control = if matches!(
         action,
-        "accept" | "resume" | "cancelPrepare" | "pause" | "stop" | "leave" | "delete"
+        "accept" | "resume" | "cancelPrepare" | "pause" | "stop" | "leave" | "delete" | "developmentModel"
     ) {
         Some(control_gate(&app, id).await.lock_owned().await)
     } else {
         None
     };
     let mut worker = read(&app, id).await?;
+    if action == "developmentModel" {
+        return development::configure(&app, worker, &request).await;
+    }
     if action == "status" {
         return Ok(json!({"worker":worker.view()}));
+    }
+    if action == "stopRentedGpu" {
+        return rented::stop_worker_gpu(&app, &worker).await;
     }
     if action == "memory" {
         let keep = request["keepResident"] == true;
@@ -964,6 +993,18 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         let mut log = activity::read(id, request["after"].as_u64().unwrap_or(0), 500);
         log["worker"] = worker.view();
         return Ok(log);
+    }
+    if action == "clearHistory" {
+        // Only while nothing writes to the history: a running attempt or practice would refill it.
+        if matches!(worker.state.as_str(), "running" | "awaiting_review" | "preparing_bounty" | "preparing")
+            || activity::practicing(id)
+        {
+            return Err("Pause the worker before clearing its history".into());
+        }
+        // Reports, receipts and the accepted bounty stay; only the activity and the count go.
+        activity::clear(id)?;
+        let worker = update(&app, id, |w| w.attempt_count = 0).await?;
+        return Ok(json!({"worker":worker.view()}));
     }
     if action == "practiceStart" {
         return practice::start(&app, &worker, request["content"].as_str().map(str::trim));
@@ -995,7 +1036,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
             None
         };
         return Ok(
-            json!({"worker":worker.view(),"model":model,"localOnly":true,"publicInference":false,"credentialConfigured":worker.credential_reference.is_some()}),
+            json!({"worker":worker.view(),"model":model,"localOnly":worker.development_previous_model.is_none() && crate::rented_gpu::local_only(worker.rented_gpu()),"publicInference":false,"credentialConfigured":worker.credential_reference.is_some()}),
         );
     }
     if action == "cancelPrepare" {
@@ -1015,6 +1056,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         model_lifecycle::stop_if_unused(&app, &worker).await?;
         return Ok(json!({"worker":worker.view()}));
     }
+    if let Some(result)=closed::dispatch(&app,&mut worker,&request).await? { return Ok(result); }
     if action == "resume" && worker.server_id.is_none() {
         worker = update(&app, id, |w| {
             w.generation += 1;
@@ -1046,6 +1088,9 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         guest::stop_owned(&app, &worker, action == "delete").await?;
         model_lifecycle::schedule_unused_cleanup(&app, &worker);
         model_lifecycle::stop_if_unused(&app, &worker).await?;
+        if action != "pause" {
+            rented::release(&app, &worker).await;
+        }
         if action == "delete" {
             let m = app.state::<Swarm>();
             let mut inner = m.inner.lock().await;
@@ -1194,7 +1239,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         return Ok(json!({"worker":worker.view(),"background":true}));
     }
     if matches!(action, "messages" | "chat") {
-        let path = format!("/api/swarm/workers/{remote}/messages");
+        let path = format!("/api/swarm/workers/{remote}/messages?after={}",request["after"].as_u64().unwrap_or(0));
         let body = if action == "chat" {
             Some(
                 json!({"content":request["content"],"idempotencyKey":request["idempotencyKey"].as_str().map(str::to_owned).unwrap_or_else(key)}),
@@ -1272,6 +1317,7 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
         } else {
             model_lifecycle::schedule_unused_cleanup(&app, &worker);
             model_lifecycle::stop_if_unused(&app, &worker).await?;
+            rented::release(&app, &worker).await;
         }
         if action == "delete" {
             let m = app.state::<Swarm>();
@@ -1317,6 +1363,99 @@ pub async fn swarm_dispatch(request: Value, app: AppHandle) -> Result<Value, Str
     Err("This Swarm Mining operation is not available in the current worker state".into())
 }
 
+
+pub(crate) async fn prepare_worker(request: Value, app: AppHandle, connection: Option<closed::Connection>, accepted_policy: Value) -> Result<Value,String> {
+    closed::check_distribution(&accepted_policy)?;
+    validate(&request)?;
+    load(&app).await?;
+        if request["platformUrl"]
+            .as_str()
+            .is_some_and(|s| s.trim_end_matches('/') != crate::market::website())
+        {
+            return Err("Set YOUGORI_NETWORK_URL before starting Yougori to select a development website. Account credentials stay bound to that website.".into());
+        }
+        let rented_gpu = request["rentedGpu"].as_str().map(str::to_owned);
+        if let Some(pod) = &rented_gpu {
+            // A bounty's code leaves this computer only when its owner allowed it, and a rented GPU
+            // runs one worker's model: never one serving Neo Grid or another worker.
+            crate::rented_gpu::bounty_allows(&accepted_policy, connection.is_some())?;
+            // Deciding the pod is free to take: workers that cannot be read are never read as none.
+            let workers = rented::in_use_checked(&app).await.map_err(|error| format!("Yougori could not read which rented GPUs Swarm's workers use ({error}), so it cannot tell whether one uses this pod. Nothing was changed; try again in a moment."))?;
+            let grid = crate::grid_neocloud::member_pods(&app).await;
+            if let Some(reason) = crate::rented_gpu::refusal(crate::rented_gpu::pod(&app, pod).as_ref(), grid.contains(pod), workers.get(pod).map(String::as_str), "Create worker") {
+                return Err(reason);
+            }
+        }
+        let id = format!("worker-{}", key());
+        let gpu = if rented_gpu.is_some() { "rented".into() } else if request["gpu"].is_null() && cfg!(target_os="macos") {
+            let capabilities = crate::model_runner::model_compute_status(app.clone()).await?;
+            if capabilities["metalSupported"] == true { "metal".into() } else { "cpu".into() }
+        } else { worker_gpu(&request, async {
+            app.state::<crate::runtime::RuntimeManager>().cuda_status().await.supported
+        })
+        .await };
+        let worker = Worker {
+            id: id.clone(),
+            closed: connection.clone(),
+            harness_version: String::new(),
+            name: request["name"].as_str().unwrap_or("Bounty worker").into(),
+            model: crate::model_runner::normalize_model(string(&request, "model")?)?,
+            state: "preparing".into(),
+            stage: "Checking your model and resources".into(),
+            site: crate::market::website(),
+            gpu,
+            resources: if request["resources"].is_object() {
+                request["resources"].clone()
+            } else {
+                json!({"cpu":4})
+            },
+            quota_gb: request["workspaceQuotaGb"].as_f64().unwrap_or(20.),
+            // The model loads for work only unless the participant keeps it loaded.
+            keep_resident: request["keepResident"].as_bool().unwrap_or(false),
+            environment_id: None,
+            test_environment_id: None,
+            model_environment_id: None,
+            server_id: connection.as_ref().map(|c|c.member_id.clone()),
+            credential_reference: None,
+            credential_expires_at: 0,
+            harness_password_reference: None,
+            session_id: None,
+            policy: accepted_policy,
+            membership: Value::Null,
+            cursor: 0,
+            human_cursor: 0,
+            attempt_count: 0,
+            task_index: 0,
+            error: None,
+            summary: String::new(),
+            lease: Value::Null,
+            quant: request["quant"].as_str().map(str::to_owned),
+            owned_model: false,
+            source_files: Vec::new(),
+            guidance: Vec::new(),
+            generation: 0,
+            skipped_offers: Vec::new(),
+            pending_replies: BTreeMap::new(),
+            tool_results: BTreeMap::new(),
+            review_reports: Vec::new(),
+            created_at: now(),
+            rented_gpu,
+            development_previous_model: None,
+        };
+        {
+            let manager = app.state::<Swarm>();
+            let mut inner = manager.inner.lock().await;
+            if inner.rows.len() >= 32 {
+                return Err("This computer already has 32 workers. Remove unused managed workers before creating more.".into());
+            }
+            inner.rows.insert(id.clone(), worker.clone());
+            save(&app, &inner)?;
+        }
+        launch(&app, id, true);
+        Ok(json!({"worker":worker.view(),"background":true}))
+
+}
+
 async fn prepare_lock<'a>(
     lock: &'a Mutex<()>,
     cancel: &CancellationToken,
@@ -1338,6 +1477,7 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
     }
     // Check availability and account credentials before allocating disk/GPU or
     // downloading weights for a platform that has not enabled the pilot.
+    let config = if worker.closed.is_some() { json!({}) } else {
     let config = tokio::select! {_=cancel.cancelled()=>return Ok(()),result=crate::market::swarm_account_request(reqwest::Method::GET,"/api/swarm/config",None)=>result?};
     if config["enabled"] != true {
         return Err("Swarm Mining is not enabled on this platform yet. Your worker can be resumed after it is enabled.".into());
@@ -1351,6 +1491,23 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
                 .into(),
         );
     }
+    config
+    };
+    // A model on a rented GPU creates and adopts nothing on this computer, so nothing below needs
+    // the shared preparation lock, and its wait for the pod must not hold up local workers.
+    if worker.rented_gpu.is_some() {
+        drop(_serial);
+        return rented::prepare(app, worker, &config, cancel).await;
+    }
+    if worker.development_previous_model.is_some() {
+        model_lifecycle::ensure_ready(app, &worker, cancel).await?;
+        guest::prepare_agent(app, &mut worker, cancel).await?;
+        let connection = worker.closed.as_ref().ok_or("Development API models require a private test worker")?;
+        connection.request("POST", "/api/swarm/agent/activate", Some(&json!({"idempotencyKey":format!("activate-{}",worker.id)}))).await?;
+        worker.state = "preparing_bounty".into();
+        worker.stage = "Preparing your private test sandbox".into();
+        return write(app, worker).await;
+    }
     let preflight = tokio::select! {_=cancel.cancelled()=>return Ok(()),result=crate::model_runner::preflight::preflight_model(worker.model.clone(),worker.quant.clone(),None)=>result?};
     if preflight["runner"] != "yougori-llama-cpp" {
         return Err("Swarm workers currently require a supported GGUF model with agent tool calling. Paste its Hugging Face GGUF repository.".into());
@@ -1358,6 +1515,7 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
     // Implicit and explicitly selected defaults refer to the same verified
     // quantization, so reuse compares the resolved preflight selection.
     worker.quant = preflight["quant"].as_str().map(str::to_owned);
+    resources::resolve_defaults(&mut worker.resources, &preflight);
     if cancel.is_cancelled() {
         return Ok(());
     }
@@ -1461,9 +1619,14 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
     if !guest::tool_check(&check) {
         return Err("The model loaded, but did not complete the agent tool check. Choose a GGUF model that supports tool calling.".into());
     }
-    worker.stage = "Preparing OpenCode and its private model connection".into();
+    worker.stage = "Preparing Hermes and its private model connection".into();
     write(app, worker.clone()).await?;
     guest::prepare_agent(app, &mut worker, cancel).await?;
+    if let Some(connection)=&worker.closed {
+        connection.request("POST","/api/swarm/agent/activate",Some(&json!({"idempotencyKey":format!("activate-{}",worker.id)}))).await?;
+        worker.state="preparing_bounty".into();worker.stage="Preparing your private target sandbox".into();
+        write(app,worker).await
+    } else {
     let result=crate::market::swarm_account_request(reqwest::Method::POST,"/api/swarm/workers",Some(&registration_request(&worker, &config))).await?;
     worker.server_id = Some(string(&result["worker"], "id")?.into());
     store_credential(&mut worker, &result)?;
@@ -1471,10 +1634,11 @@ async fn prepare(app: &AppHandle, id: &str, cancel: &CancellationToken) -> Resul
     worker.stage = "Worker ready. Waiting for bounty offers.".into();
     write(app, worker.clone()).await?;
     model_lifecycle::release_while_waiting(app, &worker).await
+    }
 }
 
 fn registration_request(worker: &Worker, config: &Value) -> Value {
-    let mut capabilities = json!({"localOnly":true,"gpu":worker.gpu!="cpu","toolCalling":true});
+    let mut capabilities = json!({"localOnly":crate::rented_gpu::local_only(worker.rented_gpu()),"gpu":worker.gpu!="cpu","toolCalling":true});
     // Older services reject unknown capability fields. Advertise optional
     // platform details only when the service explicitly supports each field.
     for (name, value) in [

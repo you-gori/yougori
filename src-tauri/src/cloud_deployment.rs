@@ -95,9 +95,15 @@ fn bootstrap(image:&str,google:bool)->String{
 
 #[tauri::command]
 pub async fn deploy_cloud_environment(request:DeployRequest,risk_acknowledged:bool,store:State<'_,PlatformStore>)->Result<PlatformState,String>{
+    deploy_cloud_environment_as(format!("env-{}",uuid::Uuid::new_v4()),request,risk_acknowledged,&store).await
+}
+/// The same, under an environment ID the caller chose beforehand, so a caller that must know
+/// which deployment it asked for (the desks cloud fallback) never mistakes another one for it.
+pub(crate) async fn deploy_cloud_environment_as(id:String,request:DeployRequest,risk_acknowledged:bool,store:&PlatformStore)->Result<PlatformState,String>{
     if !risk_acknowledged { return Err("Review and acknowledge the cloud deployment costs and failure risks before creating resources.".into()); }
     validate(&request)?;
-    let id=format!("env-{}",uuid::Uuid::new_v4());let request_id=uuid::Uuid::new_v4().simple().to_string();let name=format!("{}-{}",request.name,&request_id[..8]);
+    if !id.starts_with("env-") || store.snapshot()?.environments.iter().any(|e|e.id==id) { return Err("Invalid new cloud environment ID".into()); }
+    let request_id=uuid::Uuid::new_v4().simple().to_string();let name=format!("{}-{}",request.name,&request_id[..8]);
     let mut deployment=Deployment{provider:request.provider.clone(),account:request.account.clone(),region:request.region.clone(),resource_group:request.resource_group.clone(),name,resource_id:String::new(),state:"Creating".into(),address:String::new(),username:request.username.clone(),request_id,last_error:None};
     let range=json!({"min":0,"preferred":0,"max":0,"current":0});
     let env:Environment=serde_json::from_value(json!({"id":id,"name":request.name,"kind":"cloud","provider":"cloudSsh","status":"provisioning","runtime":format!("{} · deployment {}",request.provider,deployment.name),"description":"Cloud VM managed by Yougori; configure verified SSH access after provisioning.","createdAt":chrono::Utc::now().to_rfc3339(),"cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,"resourcePolicy":{"cpu":range,"memoryGb":range,"priority":"normal","dynamic":false}})).map_err(|e|e.to_string())?;

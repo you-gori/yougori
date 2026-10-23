@@ -50,6 +50,7 @@ where
     }
     let state = rpc("get_platform_state", json!({})).await?;
     target(&state, id)?;
+    let handle = crate::container_tools::handle(state["environments"].as_array().map_or(&[][..], Vec::as_slice), id);
     rpc(
         "set_environment_status",
         json!({"environmentId":id,"status":"stopped"}),
@@ -57,7 +58,7 @@ where
     .await?;
     if action == Action::Delete {
         let deleted = rpc("delete_environment", json!({"environmentId":id})).await
-            .map_err(|error| format!("The sandbox was stopped, but deletion was not confirmed: {error}. Inspect it before retrying."))?;
+            .map_err(|error| format!("The sandbox was stopped, but deletion was not confirmed ({error}). Check it with yougori ps, and remove it with yougori rm {} --yes.", shell_words::quote(&handle)))?;
         if let Some(warnings) = deleted["storageCleanup"]["warnings"].as_array() {
             for warning in warnings.iter().filter_map(Value::as_str) {
                 ui::warn(&crate::presentation::text(

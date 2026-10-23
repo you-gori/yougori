@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { CheckIcon, CopyIcon, RefreshCwIcon } from "lucide-react"
 import { platformApi, type InstalledSkills } from "@/api/platform-api"
 import { terminalClipboard } from "@/lib/terminal-clipboard"
 import { Button } from "@/components/ui/button"
@@ -96,7 +95,7 @@ export function ConnectionSkillsDialog({ environmentId, remoteCanInstall = false
     {renderTrigger ? renderTrigger(openSkills) : <Button aria-label="Connection skills" title="Install environment instructions for your AI agent" size="sm" variant="ghost" onClick={openSkills} className="text-xs text-muted-foreground">Skills</Button>}
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogPopup className="max-w-5xl sm:max-w-5xl">
-        <DialogHeader><DialogTitle>Connection skills</DialogTitle><DialogDescription>Every directly connected node, its access rules and what to do when it cannot be reached. My PC shares are included when attached.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Connection skills</DialogTitle><DialogDescription>Instructions your AI agent can read: every node this one connects to, what it may do there, and what to do when one cannot be reached. My PC shares are included when attached.</DialogDescription></DialogHeader>
         <DialogPanel>
           <section aria-label="Installed skill files" className="mb-4 rounded-md border p-3 text-xs">
             {installing ? <p role="status">Installing Skills inside this environment…</p> : null}
@@ -125,11 +124,11 @@ export function ConnectionSkillsDialog({ environmentId, remoteCanInstall = false
               </li>)}
             </ul>
           </> : null}
-          <div className="mb-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">Full AI instructions · status, files, My PC and error guide</span><Button aria-label="Refresh skills" size="xs" variant="ghost" loading={loading} disabled={copying} onClick={() => setRefresh(value => value + 1)}><RefreshCwIcon aria-hidden="true" />Refresh</Button></div>
+          <div className="mb-2 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">Full AI instructions · status, files, My PC and error guide</span><Button aria-label="Refresh skills" size="xs" variant="ghost" loading={loading} disabled={copying} onClick={() => setRefresh(value => value + 1)}>Refresh</Button></div>
           {loading && !text ? <p role="status" className="text-sm text-muted-foreground">Reading current connections…</p> : <textarea aria-label="AI agent connection instructions" readOnly value={text} className="h-[min(32vh,20rem)] w-full resize-none rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring" />}
           {error ? <p role="alert" className="mt-2 text-sm text-destructive-foreground">{error}</p> : null}
         </DialogPanel>
-        <DialogFooter><p className="mr-auto text-xs text-muted-foreground">Copy refreshes the snapshot. Folder paths are included; contents and private tokens are not. No access is granted by copying.</p><Button disabled={!text || loading} loading={copying} onClick={() => void copy()}>{copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}{copied ? "Copied" : "Copy skills"}</Button></DialogFooter>
+        <DialogFooter><p className="mr-auto text-xs text-muted-foreground">Copy refreshes the snapshot. Folder paths are included; contents and private tokens are not. No access is granted by copying.</p><Button disabled={!text || loading} loading={copying} onClick={() => void copy()}>{copied ? "Copied" : "Copy skills"}</Button></DialogFooter>
       </DialogPopup>
     </Dialog>
   </>

@@ -27,43 +27,52 @@ export function SnapshotDialog({ environmentId, environmentName, trigger, open: 
   const [internalOpen, setInternalOpen] = useState(false)
   const [name, setName] = useState("")
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
   const open = controlledOpen ?? internalOpen
   const setOpen = controlledChange ?? setInternalOpen
 
   useEffect(() => {
-    if (open) setName(`Snapshot ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date())}`)
+    if (!open) return
+    setName(`Snapshot ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date())}`)
+    setError("")
   }, [open])
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (saving || !name.trim()) return
     setSaving(true)
+    setError("")
     try {
       await createSnapshot(environmentId, name.trim())
       setOpen(false)
+    } catch (reason) {
+      // A failed snapshot keeps the popup open and says why, rather than closing on nothing.
+      setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <Dialog onOpenChange={setOpen} open={open}>
+    <Dialog onOpenChange={value => { if (!saving) setOpen(value) }} open={open}>
       {trigger ? <DialogTrigger render={trigger as React.ReactElement} /> : null}
-      <DialogPopup className="sm:max-w-xl">
+      <DialogPopup className="sm:max-w-xl" closeProps={{ disabled: saving }}>
         <DialogHeader>
           <DialogTitle>Create snapshot</DialogTitle>
-          <DialogDescription>Capture {environmentName} as a local copy-on-write restore point.</DialogDescription>
+          <DialogDescription>Saves {environmentName} as it is now, so you can return to this point later. The snapshot stays on this computer.</DialogDescription>
         </DialogHeader>
         <Form className="contents" onSubmit={submit}>
-          <DialogPanel>
+          <DialogPanel className="space-y-3">
             <Field name="snapshot-name">
               <FieldLabel>Name</FieldLabel>
-              <Input autoFocus onChange={(event) => setName(event.target.value)} required type="text" value={name} />
-              <FieldDescription>Only blocks changed since the last snapshot use additional space.</FieldDescription>
+              <Input autoFocus disabled={saving} onChange={(event) => setName(event.target.value)} required type="text" value={name} />
+              <FieldDescription>It only takes up the space of what changed since the last snapshot.</FieldDescription>
             </Field>
+            {error ? <p role="alert" className="break-words text-sm text-destructive-foreground">{error}</p> : null}
           </DialogPanel>
           <DialogFooter>
-            <DialogClose render={<Button type="button" variant="ghost" />}>Cancel</DialogClose>
-            <Button loading={saving} type="submit">Create snapshot</Button>
+            <DialogClose render={<Button disabled={saving} type="button" variant="ghost" />}>Cancel</DialogClose>
+            <Button disabled={!name.trim()} loading={saving} type="submit">Create snapshot</Button>
           </DialogFooter>
         </Form>
       </DialogPopup>

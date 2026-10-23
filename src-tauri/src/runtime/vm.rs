@@ -390,7 +390,7 @@ impl RuntimeManager {
         let canonical = fs::canonicalize(&base).map_err(|e| format!("Find original microVM base: {e}"))?;
         if canonical != fs::canonicalize(&self.layout.appliance_base).map_err(|e| e.to_string())? {
             let bases = verified_runtime_subdirectory(&self.data_root, "bases", "VM base storage")?;
-            require_verified_direct_child(&bases, &base, PathKind::File, "original microVM base")?;
+            verify_original_micro_vm_base(&bases, &base, &canonical)?;
         }
         let lock = self.vm_lifecycle_mutex(new_id).await;
         let _guard = lock.lock().await;
@@ -402,6 +402,12 @@ impl RuntimeManager {
             if capacity > self.inspect_storage(&disk_path, false).await?.capacity_gb { self.grow_disk(&disk_path, capacity, false).await?; }
             let source_path = directory.join("microvm.json");
             write_durable_file(source_path.clone(), serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?).await?;
+            // A deployed OCI workload is configuration, like a container's image: keep it.
+            let workload = old.join("oci-workload.json");
+            if fs::symlink_metadata(&workload).is_ok_and(|metadata| metadata.is_file()) {
+                let spec = fs::read(&workload).map_err(|e| format!("Read microVM workload: {e}"))?;
+                write_durable_file(directory.join("oci-workload.json"), spec).await?;
+            }
             Ok(VmProvisionResult { disk_path, source_path })
         }.await;
         if result.is_err() { let _ = remove_verified_directory(&root, &directory, "failed fresh microVM").await; }
@@ -998,6 +1004,20 @@ impl RuntimeManager {
         Err("VM backing chain is too deep; cached images were kept for safety".into())
     }
 
+    /// The grid reserves the requested disk capacity. Sparse prepared media must not
+    /// silently create a larger logical disk than the host agreed to allocate.
+    pub(crate) async fn validate_prepared_desk_image(&self, path: &Path, capacity_gb: f64) -> Result<(), String> {
+        let format = import_disk_format(path)?;
+        let output = command_output(&self.layout.qemu_img, &["info".into(), "--output=json".into(), "--image-opts".into(), import_image_options(format, path)], "inspect prepared workspace disk").await?;
+        let info: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| "Invalid prepared disk metadata")?;
+        validate_import_info(&info, format, path)?;
+        let size = info["virtual-size"].as_u64().filter(|n| *n > 0).ok_or("Prepared disk has no usable capacity")?;
+        if size > super::storage::storage_bytes(capacity_gb)? {
+            return Err(format!("Prepared image requires {:.0} GB; publish it with a disk allocation at least this large", (size as f64 / 1073741824.0).ceil()));
+        }
+        Ok(())
+    }
+
     async fn import_vm_source(
         &self,
         source_path: &Path,
@@ -1255,12 +1275,17 @@ impl RuntimeManager {
             "managed microVM manifest",
         )?;
         let manifest = read_managed_micro_vm_manifest(manifest_path).await?;
+        let already_running = self.vm_is_running(id).await.unwrap_or(false);
         let console=self.start_vm_with_profile(
             id, disk_path, resource_policy, VmLaunchProfile::Micro(manifest, network_access),
         ).await?;
         if let Err(error) = self.start_micro_workload(id).await {
-            // The environment is reported as failed; do not leave its VM running
-            // and holding CPU, memory and its disk behind that status.
+            // The environment is reported as failed; do not leave a VM this start launched
+            // running and holding CPU, memory and its disk behind that status. One that was
+            // already running before this start keeps running.
+            if already_running {
+                return Err(error);
+            }
             if let Err(stop) = self.vm_action(id, "stop").await {
                 return Err(format!("{error}. Stopping the microVM also failed: {stop}"));
             }
@@ -3325,6 +3350,23 @@ fn safe_regular_file_size(path: &Path, description: &str) -> Result<Option<u64>,
     }
 }
 
+/// An earlier reset records the base as its canonical (`\\?\` on Windows) path, so
+/// match it by name under `bases`: same directory, a verified real file, same target.
+fn verify_original_micro_vm_base(bases: &Path, base: &Path, canonical: &Path) -> Result<(), String> {
+    let unsafe_base = || "refusing an unsafe original microVM base path".to_string();
+    let name = base.file_name().ok_or_else(unsafe_base)?;
+    let parent = base.parent().ok_or_else(unsafe_base)?;
+    if fs::canonicalize(parent).ok() != Some(fs::canonicalize(bases).map_err(|e| e.to_string())?) {
+        return Err(unsafe_base());
+    }
+    let candidate = bases.join(name);
+    require_verified_direct_child(bases, &candidate, PathKind::File, "original microVM base")?;
+    if fs::canonicalize(&candidate).map_err(|e| format!("Find original microVM base: {e}"))? != canonical {
+        return Err(unsafe_base());
+    }
+    Ok(())
+}
+
 fn require_verified_direct_child(
     root: &Path,
     child: &Path,
@@ -4619,6 +4661,27 @@ fn read_file_tail(path: &Path, maximum_bytes: u64) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn microvm_reset_accepts_its_own_canonical_base_and_nothing_else() {
+        let data = tempfile::tempdir().unwrap();
+        let bases = data.path().join("bases");
+        let other = data.path().join("other");
+        std::fs::create_dir_all(&bases).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(bases.join("custom.qcow2"), b"base").unwrap();
+        std::fs::write(other.join("custom.qcow2"), b"elsewhere").unwrap();
+        let plain = bases.join("custom.qcow2");
+        let canonical = std::fs::canonicalize(&plain).unwrap();
+        // The first reset reads the plain path; later resets read the canonical one
+        // (`\\?\C:\...` on Windows) that the previous reset wrote as the backing file.
+        super::verify_original_micro_vm_base(&bases, &plain, &canonical).unwrap();
+        super::verify_original_micro_vm_base(&bases, &canonical, &canonical).unwrap();
+        let outside = std::fs::canonicalize(other.join("custom.qcow2")).unwrap();
+        assert!(super::verify_original_micro_vm_base(&bases, &outside, &outside).is_err());
+        assert!(super::verify_original_micro_vm_base(&bases, &outside, &canonical).is_err());
+        assert!(super::verify_original_micro_vm_base(&bases, &plain, &outside).is_err());
+        assert!(super::verify_original_micro_vm_base(&bases, &bases.join("missing.qcow2"), &canonical).is_err());
+    }
     #[test]
     fn disk_headers_that_reference_other_files_are_refused() {
         let mut qcow2 = vec![0_u8; 104];

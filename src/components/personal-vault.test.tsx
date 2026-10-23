@@ -13,6 +13,17 @@ const client = { id: "client", executable: "C:\\Tools\\agent.exe", digest: "a".r
 const base: VaultStatus = { running: true, locked: false, gateway: { running: true, port: 49732 }, setup: { created: true, mode: "local", hostname: "", localUrl: "http://127.0.0.1:49732/mcp", publicUrl: null }, items: [], clients: [], pending: [], activity: [] }
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 describe("Personal Vault", () => {
+  it("hands a vault created from the toolbar over to its row, and leaves nothing open behind", async () => {
+    const none: VaultStatus = { ...base, setup: { ...base.setup!, created: false } }
+    vi.mocked(vaultApi.status).mockResolvedValue(none)
+    vi.mocked(vaultApi.create).mockImplementation(async () => { vi.mocked(vaultApi.status).mockResolvedValue(base); return base as never })
+    render(<><PersonalVault asCreate /><PersonalVault asRowName /></>)
+    fireEvent.click(await screen.findByRole("button", { name: "Create my personal vault MCP" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Create your personal vault" }))
+    // The toolbar's copy is gone, and exactly one dialog stays open: the row's, carrying on.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Create my personal vault MCP" })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByRole("dialog")).toHaveLength(1))
+  })
   it("opens the approval panel when a background vault request arrives", async () => {
     vi.mocked(vaultApi.status).mockResolvedValue(base)
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false)
@@ -137,6 +148,14 @@ describe("Personal Vault", () => {
     expect(within(guide).getByText(/Settings → Connectors → Add custom connector/)).toBeInTheDocument()
     expect(within(guide).getByText(/Leave the OAuth Client ID and Client Secret/)).toBeInTheDocument()
   })
+  it("says why vault sign-in is off when its saved sign-ins could not be loaded", async () => {
+    const reason = "Personal Vault could not check oauth.dpapi (access denied), so it changed nothing. Try again; if it keeps happening, check that drive."
+    vi.mocked(vaultApi.status).mockResolvedValue({ ...base, oauthReady: false, oauthUnavailable: reason, setup: { ...base.setup!, mode: "quick", publicUrl: "https://test-only.trycloudflare.com/mcp" } })
+    render(<PersonalVault />)
+    fireEvent.click(screen.getByRole("button", { name: "Personal Vault MCP" }))
+    fireEvent.click(await screen.findByText("How to connect ChatGPT or Claude"))
+    expect(screen.getByText(`Vault sign-in is off: ${reason}`)).toBeInTheDocument()
+  })
   it("requires the broker update before offering OAuth connection instructions", async () => {
     vi.mocked(vaultApi.status).mockResolvedValue({ ...base, updateRequired: true, oauthReady: true, setup: { ...base.setup!, mode: "quick", publicUrl: "https://test-only.trycloudflare.com/mcp" } })
     render(<PersonalVault />)
@@ -207,6 +226,15 @@ describe("Personal Vault", () => {
     fireEvent.click(within(pending).getByRole("button", { name: "Deny" }))
     await waitFor(() => expect(vaultApi.control).toHaveBeenCalledWith("deny", "request"))
   })
+  it("opens without crashing when an unregistered app sees only waiting-request counts", async () => {
+    // A broker that does not recognize this copy of Yougori reports pending requests as {ready} only.
+    const counts = [{ ready: true }, { ready: false }] as unknown as VaultStatus["pending"]
+    vi.mocked(vaultApi.status).mockResolvedValue({ ...base, updateRequired: true, notice: "Personal Vault does not recognize this copy of Yougori yet.", pending: counts })
+    render(<PersonalVault />)
+    fireEvent.click(screen.getByRole("button", { name: "Personal Vault MCP" }))
+    expect(await screen.findByRole("button", { name: "Update vault" })).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Pending vault requests" })).not.toBeInTheDocument()
+  })
   it("does not let a slower earlier status read bring back an approved request", async () => {
     const request = { id: "request", client, operation: "personal_info", title: "Share email?", description: "Return only email", allowLabel: "Approve once", ready: true, expiresAt: new Date().toISOString() }
     vi.mocked(vaultApi.status).mockResolvedValue({ ...base, pending: [request] })
@@ -230,7 +258,8 @@ describe("Personal Vault", () => {
     render(<PersonalVault startupError="Container disk needs recovery; Leaked cluster 15130" />)
     fireEvent.click(screen.getByRole("button", { name: "Personal Vault MCP" }))
     expect(await screen.findByRole("region", { name: "Vault recovery" })).toBeInTheDocument()
-    expect(screen.getByText("Start vault")).toBeInTheDocument()
+    // The recovery banner shows at once; the Start button follows the first status read.
+    expect(await screen.findByText("Start vault")).toBeInTheDocument()
   })
   it("shows masked items and explicit client revocation", async () => {
     vi.mocked(vaultApi.status).mockResolvedValue({ ...base, items: [{ id: "item", label: "Work Cloudflare", kind: "cloudflare", resource: "zone", fields: [] }], clients: [client] })

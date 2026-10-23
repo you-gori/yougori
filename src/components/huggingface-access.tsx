@@ -20,11 +20,11 @@ export function HuggingfaceAccess() {
     } catch (reason) { setError(String(reason)) }
     finally { setBusy(false) }
   }
-  return <details className="model-hint">
+  return <details className="model-hint model-access">
     <summary>Hugging Face access · {configured ? "Read token saved" : "Public models"}</summary>
     <p>Private and gated models need a <ExternalLink href="https://huggingface.co/settings/tokens" onError={setError}>Hugging Face read token</ExternalLink> and approved access on their model page. The CLI and App share the token in your OS credential vault.</p>
-    <label htmlFor="hf-read-token">Read token</label>
-    <Input id="hf-read-token" type="password" autoComplete="off" value={token} disabled={busy} onChange={event => setToken(event.target.value)} placeholder="hf_…" />
+    <div className="model-field"><label className="model-label" htmlFor="hf-read-token">Read token</label>
+    <Input id="hf-read-token" type="password" autoComplete="off" value={token} disabled={busy} onChange={event => setToken(event.target.value)} placeholder="hf_…" /></div>
     <div className="model-form-actions"><Button size="sm" disabled={busy || !/^hf_[A-Za-z0-9_]{9,1021}$/.test(token.trim())} loading={busy} onClick={() => void change(false)}>Save token</Button>{configured ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void change(true)}>Forget token</Button> : null}</div>
     {error ? <p role="alert" className="model-error">{error}</p> : null}
   </details>

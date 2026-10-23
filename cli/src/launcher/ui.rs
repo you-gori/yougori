@@ -39,6 +39,42 @@ static PROMPTS: AtomicUsize = AtomicUsize::new(0);
 /// removes only its own entry, so watchers that end out of order never leave a stale one.
 static WATCHED: Mutex<Vec<(u64, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
 static WATCHES: AtomicUsize = AtomicUsize::new(0);
+/// Temporary files and folders removed even when a second Ctrl+C quits at once.
+static LEFT_BEHIND: Mutex<Vec<(u64, std::path::PathBuf)>> = Mutex::new(Vec::new());
+static LEFT_BEHIND_IDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Keeps `path` (a temporary file or folder) from being left behind when the person quits at
+/// once with a second Ctrl+C. Ordinary endings remove it as before; dropping the guard forgets it.
+pub fn remove_on_quit(path: &std::path::Path) -> RemoveOnQuit {
+    let id = LEFT_BEHIND_IDS.fetch_add(1, Ordering::SeqCst) as u64;
+    LEFT_BEHIND.lock().unwrap_or_else(|p| p.into_inner()).push((id, path.to_owned()));
+    RemoveOnQuit(id)
+}
+pub struct RemoveOnQuit(u64);
+impl Drop for RemoveOnQuit {
+    fn drop(&mut self) {
+        LEFT_BEHIND.lock().unwrap_or_else(|p| p.into_inner()).retain(|(id, _)| *id != self.0);
+    }
+}
+fn remove_left_behind() {
+    remove_registered(|_| true);
+}
+/// Removes the registered paths `only` picks and forgets them; the rest stay registered.
+fn remove_registered(only: impl Fn(&std::path::Path) -> bool) {
+    let picked: Vec<std::path::PathBuf> = {
+        let mut registered = LEFT_BEHIND.lock().unwrap_or_else(|p| p.into_inner());
+        let (picked, kept): (Vec<_>, Vec<_>) = registered.drain(..).partition(|(_, path)| only(path));
+        *registered = kept;
+        picked.into_iter().map(|(_, path)| path).collect()
+    };
+    for path in picked {
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
 /// How long [`busy`] waits before showing its spinner, so quick answers do not flash one.
 const QUICK: Duration = Duration::from_millis(150);
 
@@ -200,6 +236,49 @@ pub fn without_back<T>(prompts: impl FnOnce() -> T) -> T {
     result
 }
 
+/// Offers Back in the prompts `ask` opens, for a question asked straight from a menu.
+///
+/// A menu is somewhere to go back to, but a single question asked after one is not inside a
+/// [`Wizard`], so nothing was offering Back and Escape there returned [`CANCELLED`] — which
+/// means leave, so pressing it dropped the person out of the launcher instead of returning them
+/// to the menu they had just come from. Restores whatever was offered before, so a wizard opened
+/// inside this is unaffected.
+pub fn with_back<T>(ask: impl FnOnce() -> T) -> T {
+    let offered = BACK_OFFERED.swap(true, Ordering::Relaxed);
+    let result = ask();
+    BACK_OFFERED.store(offered, Ordering::Relaxed);
+    result
+}
+
+/// Offers Back for as long as it is alive, and puts back whatever was offered before when it is
+/// dropped.
+///
+/// [`with_back`] cannot do this job. It takes a closure, so it cannot be held across an `.await`,
+/// and its restore is an ordinary statement after the call: when the work returns early with `?`
+/// that statement never runs, the flag stays on, and the next question that should have had no
+/// way back offers a Back that goes nowhere. Dropping is what makes putting it back certain.
+pub struct Offering {
+    outer: bool,
+}
+
+impl Offering {
+    pub fn new() -> Self {
+        Self { outer: BACK_OFFERED.swap(true, Ordering::Relaxed) }
+    }
+}
+
+impl Default for Offering {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Offering {
+    fn drop(&mut self) {
+        BACK_OFFERED.store(self.outer, Ordering::Relaxed);
+    }
+}
+
 /// While alive, reads keys whenever no prompt is open: Ctrl+C sets `flag`, a second Ctrl+C
 /// quits at once with [`force_exit`], and other keys are dropped so they neither echo into the
 /// live display nor answer a later prompt. Prompts opened meanwhile still get every key.
@@ -295,6 +374,7 @@ pub fn force_exit() -> ! {
         )).as_bytes());
     });
     let _ = terminal::disable_raw_mode();
+    remove_left_behind();
     std::process::exit(130)
 }
 
@@ -2415,6 +2495,55 @@ pub fn dash_close() {
 
 #[cfg(test)]
 mod tests {
+    /// BACK_OFFERED is one flag for the whole process, and other tests here set it too, so this
+    /// one holds PAINTER_TESTS as they do; it still puts the flag back itself rather than leaving
+    /// a global changed for whatever runs next.
+    #[test]
+    fn back_is_put_back_whether_the_work_finishes_or_stops_early() {
+        let _serial = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+        use std::sync::atomic::Ordering;
+        let before = super::BACK_OFFERED.load(Ordering::Relaxed);
+        super::BACK_OFFERED.store(false, Ordering::Relaxed);
+
+        let finished: Result<(), String> = (|| {
+            let _offering = super::Offering::new();
+            assert!(super::BACK_OFFERED.load(Ordering::Relaxed), "Back is offered while the guard is alive");
+            Ok(())
+        })();
+        assert!(finished.is_ok());
+        assert!(!super::BACK_OFFERED.load(Ordering::Relaxed), "finishing normally put back what was offered before");
+
+        // The reason this is a Drop guard: a restore written after the call never runs here.
+        let stopped: Result<(), String> = (|| {
+            let _offering = super::Offering::new();
+            Err("stopped early".into())
+        })();
+        assert!(stopped.is_err());
+        assert!(!super::BACK_OFFERED.load(Ordering::Relaxed), "stopping early still put back what was offered before");
+
+        // Inside something that already offered Back, it stays offered rather than being cleared.
+        super::BACK_OFFERED.store(true, Ordering::Relaxed);
+        drop(super::Offering::new());
+        assert!(super::BACK_OFFERED.load(Ordering::Relaxed), "a guard nested inside an outer offer leaves it offered");
+
+        super::BACK_OFFERED.store(before, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_forced_quit_removes_registered_temporary_files_and_forgets_finished_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join("copy.bin"), b"partial").unwrap();
+        let finished = root.path().join("finished.tmp");
+        std::fs::write(&finished, b"kept").unwrap();
+        let _staging = super::remove_on_quit(&staging);
+        drop(super::remove_on_quit(&finished));
+        // Only this test's own paths: the registry is shared by every test running at once.
+        super::remove_registered(|path| path.starts_with(root.path()));
+        assert!(!staging.exists(), "the copy in progress goes");
+        assert!(finished.exists(), "a guard already dropped is forgotten");
+    }
     #[test]
     fn ascii_lines_fit_after_expanding_arrows_and_ellipsis() {
         for columns in 0..30 {
@@ -2601,6 +2730,45 @@ mod tests {
         assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Enter)), None);
         list_key(&mut at, &choices, false, key(KeyCode::Down));
         assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Enter)), Some(Ok(2)));
+    }
+
+    /// PROVES that a question asked straight from a menu offers Back, so Escape there returns to
+    /// the menu instead of leaving Yougori.
+    ///
+    /// Whether a prompt offers Back is one flag, and only a `Wizard` step set it. A single
+    /// question asked after a menu is not inside one, so the flag was false, so Escape returned
+    /// `CANCELLED` — which every caller reads as "leave" — and the person who pressed it to go
+    /// back one step found themselves out of the launcher. A menu is always somewhere to go back
+    /// to, which is what `with_back` says.
+    #[test]
+    fn a_question_asked_from_a_menu_offers_back_and_escape_returns_to_it() {
+        let _serial = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        // Outside, nothing is offering Back: Escape leaves.
+        BACK_OFFERED.store(false, Ordering::Relaxed);
+        assert_eq!(leaves_prompt(esc, true, back_offered(true)), Some(CANCELLED));
+
+        // Inside, Escape goes back, and the hint under the question says so.
+        with_back(|| {
+            assert!(back_offered(true));
+            assert_eq!(leaves_prompt(esc, true, back_offered(true)), Some(BACK));
+            assert_eq!(leave_hint(back_offered(true)), "esc back");
+            // Ctrl+C still leaves, whatever Escape does. The two are never the same answer.
+            assert_eq!(leaves_prompt(ctrl_c, true, back_offered(true)), Some(CANCELLED));
+        });
+
+        // And it puts back what it found, so a menu that offered nothing still offers nothing.
+        assert!(!back_offered(true));
+        assert_eq!(leaves_prompt(esc, true, back_offered(true)), Some(CANCELLED));
+
+        // Nested the other way round, each restores the other's answer.
+        with_back(|| {
+            without_back(|| assert!(!back_offered(true)));
+            assert!(back_offered(true), "without_back put back what with_back had set");
+        });
+        assert!(!back_offered(true));
     }
 
     #[test]

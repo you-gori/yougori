@@ -39,5 +39,6 @@
 
 # Guest and Linux scripts run under /bin/sh and must keep LF on every checkout.
 *.sh text eol=lf
+/distribution.txt text eol=lf
 /runtime/cuda/wsl.conf text eol=lf
 /appliance/rootfs/** text eol=lf

@@ -319,7 +319,7 @@ async fn all_three_providers_resume_a_lost_create_response_without_creating_anot
                     EnvironmentStatus::Stopped
                 );
                 resumed.job.status = "complete".into();
-                cleanup_transfer(&mut resumed, &runtime).await.unwrap();
+                cleanup_transfer(&mut resumed, &runtime, false).await.unwrap();
                 assert!(resumed.job.completed.contains_key("cleanup"));
             })
             .await;
@@ -389,4 +389,164 @@ async fn same_name_foreign_cloud_resources_are_never_adopted_or_overwritten() {
             })
             .await;
     }
+}
+
+/// A copy that stopped part way, from AWS to AWS, with what it recorded as it went.
+fn stopped_copy(store: &PlatformStore, status: &str, pending: Option<&str>, completed: &[(&str, Value)], target_provider: &str) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    let request: Request = serde_json::from_value(json!({
+        "operationId": id, "environmentId": "source", "name": "Copy", "destination": "cloud",
+        "source": location("aws"),
+        "target": {"provider":target_provider,"account":"target-account","region":"target-region","resourceGroup":"group","name":"copy","image":"ignored","machineType":"small","subnet":"existing-subnet","securityGroup":"existing-security","keyPair":"keypair","sshPublicKey":"ssh-ed25519 AAAA","imageProject":"account","username":"ubuntu"},
+        "targetBucket": "target-transfer", "storageDrive": null, "reviewed": true,
+    })).unwrap();
+    let job = Job {
+        request,
+        environment_id: "destination".into(),
+        status: status.into(),
+        phase: "test".into(),
+        error: Some("It stopped".into()),
+        resources: vec!["AWS image".into()],
+        completed: completed.iter().map(|(key, value)| ((*key).to_owned(), value.clone())).collect(),
+        pending: pending.map(str::to_owned),
+    };
+    store.mutate(|state| { state.duplication_jobs.insert(id.clone(), job); Ok(()) }).unwrap();
+    id
+}
+
+/// Everything a copy from AWS to AWS records on its way to a destination image.
+fn as_far_as_the_image() -> Vec<(&'static str, Value)> {
+    vec![
+        ("source-image", json!({"ImageId": "ami-mine"})),
+        ("export", json!({"ExportImageTaskId": "export-1"})),
+        ("download", json!(true)),
+        ("upload", json!(true)),
+        ("import", json!({"ImportTaskId": "import-1"})),
+        ("destination-image", json!("ami-target")),
+    ]
+}
+
+type Calls = std::rc::Rc<std::cell::RefCell<Vec<Vec<String>>>>;
+
+/// A provider CLI that records every call and fails the ones `fails` picks.
+fn provider(calls: &Calls, fails: fn(&[String]) -> bool) -> Box<dyn FnMut(&str, &[String]) -> Result<String, String>> {
+    let calls = calls.clone();
+    Box::new(move |_, args| {
+        calls.borrow_mut().push(args.to_vec());
+        if fails(args) {
+            return Err("AccessDenied".into());
+        }
+        Ok(if args.iter().any(|arg| arg == "deregister-image") { json!({"Return": true, "DeleteSnapshotResults": [{"SnapshotId": "snap-1", "ReturnCode": "success"}]}).to_string() } else { String::new() })
+    })
+}
+
+/// PROVES that giving a copy up is refused while it runs, or while a step's result went unwritten.
+///
+/// A step that was sent and never recorded may have made something no record names. Removing what
+/// is recorded and forgetting the copy would leave that billing with nothing that knows of it.
+#[tokio::test]
+async fn giving_a_copy_up_is_refused_while_it_runs_or_a_step_went_unrecorded() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PlatformStore::load(directory.path().join("state.json")).unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), directory.path()).unwrap();
+    let calls: Calls = Default::default();
+    let running = stopped_copy(&store, "running", None, &as_far_as_the_image(), "aws");
+    let unrecorded = stopped_copy(&store, "failed", Some("import"), &as_far_as_the_image(), "aws");
+    TEST_CLI
+        .scope(std::cell::RefCell::new(provider(&calls, |_| false)), async {
+            let refused = clean_copy(running.clone(), true, &store, &runtime).await.unwrap_err();
+            assert!(refused.contains("still running") && refused.contains("nothing was removed"), "{refused}");
+            let refused = clean_copy(unrecorded.clone(), true, &store, &runtime).await.unwrap_err();
+            assert!(refused.contains("(import)") && refused.contains("never written down") && refused.contains(&unrecorded), "{refused}");
+        })
+        .await;
+    assert!(calls.borrow().is_empty(), "nothing was sent to the provider: {:?}", calls.borrow());
+    let state = store.snapshot().unwrap();
+    assert!(state.duplication_jobs.contains_key(&running) && state.duplication_jobs.contains_key(&unrecorded), "both copies are still known");
+}
+
+/// PROVES that giving a copy up removes what it recorded, by the IDs it recorded, and nothing else,
+/// and only then forgets it.
+#[tokio::test]
+async fn giving_a_copy_up_removes_only_what_it_recorded_and_then_forgets_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PlatformStore::load(directory.path().join("state.json")).unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), directory.path()).unwrap();
+    let calls: Calls = Default::default();
+    let id = stopped_copy(&store, "failed", None, &as_far_as_the_image(), "aws");
+    let prefix = format!("yougori-duplication/{}/", key(&id));
+    TEST_CLI
+        .scope(std::cell::RefCell::new(provider(&calls, |_| false)), async {
+            clean_copy(id.clone(), true, &store, &runtime).await.unwrap();
+        })
+        .await;
+    let calls = calls.borrow();
+    let images: Vec<&String> = calls.iter().filter(|args| args.iter().any(|arg| arg == "deregister-image")).map(|args| &args[args.iter().position(|arg| arg == "--image-id").unwrap() + 1]).collect();
+    assert_eq!(images, ["ami-mine", "ami-target"], "the two images it made, by the IDs it recorded");
+    let objects: Vec<&String> = calls.iter().filter(|args| args.starts_with(&words(&["s3", "rm"]))).map(|args| &args[2]).collect();
+    assert_eq!(objects.len(), 2);
+    assert!(objects.iter().all(|object| object.contains(&prefix)), "only objects under this copy's own prefix: {objects:?}");
+    assert_eq!(calls.len(), 4, "nothing else was asked of the provider: {calls:?}");
+    assert!(!store.snapshot().unwrap().duplication_jobs.contains_key(&id), "a copy given up and fully removed is forgotten");
+}
+
+/// PROVES that a copy whose removal stops part way is kept, with why, so what is left is not lost.
+#[tokio::test]
+async fn a_copy_whose_removal_stops_part_way_is_kept_with_why() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PlatformStore::load(directory.path().join("state.json")).unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), directory.path()).unwrap();
+    let calls: Calls = Default::default();
+    let id = stopped_copy(&store, "failed", None, &as_far_as_the_image(), "aws");
+    TEST_CLI
+        .scope(std::cell::RefCell::new(provider(&calls, |args| args.iter().any(|arg| arg == "ami-target"))), async {
+            let error = clean_copy(id.clone(), true, &store, &runtime).await.unwrap_err();
+            assert!(error.contains("could not be removed, so the copy is kept") && error.contains("AccessDenied"), "{error}");
+        })
+        .await;
+    let job = store.snapshot().unwrap().duplication_jobs[&id].clone();
+    assert!(job.error.as_deref().is_some_and(|error| error.contains("could not be removed")), "and says why");
+    assert!(job.completed.contains_key("cleaned-source-image") && !job.completed.contains_key("cleaned-target-image"), "what went is marked gone, what stayed is not");
+}
+
+/// PROVES that a copy is not given up when it got as far as something the cleanup plan cannot
+/// remove, or when work it started at a provider may still be running.
+#[tokio::test]
+async fn a_copy_that_made_something_the_plan_cannot_remove_is_not_given_up() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PlatformStore::load(directory.path().join("state.json")).unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), directory.path()).unwrap();
+    let calls: Calls = Default::default();
+    let azure_disk = stopped_copy(&store, "failed", None, &[("import", json!({"id": "/disks/copy"}))], "azure");
+    let export_running = stopped_copy(&store, "interrupted", None, &[("source-image", json!({"ImageId": "ami-mine"})), ("export", json!({"ExportImageTaskId": "export-1"}))], "aws");
+    let import_running = stopped_copy(&store, "failed", None, &[("upload", json!(true)), ("import", json!({"ImportTaskId": "import-1"}))], "aws");
+    let vm = stopped_copy(&store, "failed", None, &[("destination-vm", json!({"InstanceId": "i-1"}))], "aws");
+    TEST_CLI
+        .scope(std::cell::RefCell::new(provider(&calls, |_| false)), async {
+            for (id, said) in [(&azure_disk, "a disk it imported into Azure"), (&export_running, "an export from AWS that may still be running"), (&import_running, "an image import that may still be running"), (&vm, "the new VM")] {
+                let refused = clean_copy(id.clone(), true, &store, &runtime).await.unwrap_err();
+                assert!(refused.contains(said) && refused.contains("Nothing was removed"), "{said}: {refused}");
+            }
+        })
+        .await;
+    assert!(calls.borrow().is_empty(), "nothing was sent to the provider: {:?}", calls.borrow());
+    assert_eq!(store.snapshot().unwrap().duplication_jobs.len(), 4, "all four copies are still known");
+}
+
+/// PROVES that without giving it up, a copy that can be resumed keeps what it made, refused in the
+/// same words as before.
+#[tokio::test]
+async fn a_copy_that_can_be_resumed_keeps_what_it_made_unless_it_is_given_up() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = PlatformStore::load(directory.path().join("state.json")).unwrap();
+    let runtime = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), directory.path()).unwrap();
+    let calls: Calls = Default::default();
+    let id = stopped_copy(&store, "failed", None, &as_far_as_the_image(), "aws");
+    TEST_CLI
+        .scope(std::cell::RefCell::new(provider(&calls, |_| false)), async {
+            assert_eq!(clean_up_copy(id.clone(), &store, &runtime).await.unwrap_err(), "Finish the copy before removing its transfer resources. Failed operations retain their disks so they can be resumed.");
+        })
+        .await;
+    assert!(calls.borrow().is_empty());
+    assert!(store.snapshot().unwrap().duplication_jobs.contains_key(&id));
 }

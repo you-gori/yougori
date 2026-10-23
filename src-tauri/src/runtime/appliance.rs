@@ -282,6 +282,18 @@ impl RuntimeManager {
         Ok(())
     }
 
+    /// A container that is known to have stopped (its exit was seen, or a restore replaced it)
+    /// no longer holds the shared runtime: shared-GPU changes and space reclaims need not wait
+    /// for it. Only bookkeeping on the host; nothing a container sees changes.
+    pub(crate) async fn forget_active_container(&self, id: &str) {
+        if let Ok(Some(engine)) = self.storage_runtime(id) {
+            return Box::pin(engine.forget_active_container(id)).await;
+        }
+        if let Some(process) = self.appliance.lock().await.as_mut() {
+            process.active_containers.remove(id);
+        }
+    }
+
     pub async fn container_failure_detail(&self, id: &str) -> Result<Option<String>, String> {
         Ok(self.container_exit_detail(id).await?.map(|(_,message)|message))
     }
@@ -528,6 +540,8 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
                 },
             )
             .await?;
+        // The restored container is a new, stopped one: its old process is gone.
+        self.forget_active_container(id).await;
         if let Err(error) = self.release_container_snapshot_data(snapshot_id).await {
             // The container recreation already committed successfully. Report
             // cleanup diagnostically while keeping the restored runtime state
@@ -1128,7 +1142,7 @@ let result:serde_json::Value=self.agent_post("/v1/containers/logs",&serde_json::
         let error_log = File::create(&error_path)
             .map_err(|error| format!("create {}: {error}", error_path.display()))?;
         let appliance_cpus = capacity.cpus.to_string();
-        let appliance_memory = format!("{},slots=64,maxmem={}M", capacity.memory_mib, max_memory_mib);
+        let appliance_memory = super::appliance_capacity::memory_argument(capacity.memory_mib, max_memory_mib);
         let mut command = super::qemu_command(&self.layout, &self.layout.qemu_system)?;
         command
             .current_dir(self.layout.qemu_system.parent().unwrap_or(&self.layout.root))
@@ -1561,6 +1575,32 @@ fn validate_previous_appliance_disk(root:&std::path::Path) -> Result<(),String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_stopped_container_no_longer_holds_the_shared_runtime() -> Result<(), String> {
+        use super::super::{boot_token::BootTokenFile, microvm_network::MicroVmNetwork, vm::VmPortReservations, AgentEndpoint, ApplianceProcess};
+        let data = tempfile::tempdir().unwrap();
+        let manager = RuntimeManager::new(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), data.path())?;
+        let mut stand_in = tokio::process::Command::new(if cfg!(windows) { "ping" } else { "sleep" });
+        if cfg!(windows) { stand_in.args(["-n", "60", "127.0.0.1"]); } else { stand_in.arg("60"); }
+        let credential = "ab".repeat(32);
+        *manager.appliance.lock().await = Some(ApplianceProcess {
+            child: stand_in.stdout(std::process::Stdio::null()).kill_on_drop(true).spawn().map_err(|error| error.to_string())?,
+            internet: MicroVmNetwork::new(true, &crate::runtime::qmp_socket::QmpSocket::unused(), "test-active-containers").await?,
+            _boot_token: BootTokenFile::create(data.path(), &credential)?,
+            endpoint: AgentEndpoint { base_url: "http://127.0.0.1:9".into(), token: credential },
+            qmp: crate::runtime::qmp_socket::QmpSocket::unused(),
+            max_memory_mib: 512,
+            _port_reservations: VmPortReservations::new(),
+            capacity: Default::default(),
+            active_containers: ["env-exited".to_owned(), "env-running".to_owned()].into_iter().collect(),
+            gpu: None,
+        });
+        manager.forget_active_container("env-exited").await;
+        let active = manager.appliance.lock().await.as_ref().unwrap().active_containers.clone();
+        assert_eq!(active, ["env-running".to_owned()].into_iter().collect());
+        Ok(())
+    }
 
     #[test]
     fn slow_arm_boot_requires_progress_and_a_finite_outer_budget() {

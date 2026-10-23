@@ -194,6 +194,9 @@ export function PlatformProvider({ children, pollHostMetrics = true }: { childre
 
     const schedule = () => {
       if (disposed) return
+      // One timer at a time: hiding or showing the window while a refresh is still running
+      // schedules here, and that refresh schedules again when it ends.
+      window.clearTimeout(timer)
       // Runtime telemetry is useful while a workload is active, but polling a
       // completely idle or backgrounded desktop only burns CPU and wakes disks.
       const delay = document.visibilityState === "hidden"
@@ -435,4 +438,10 @@ export function usePlatform() {
   const context = useContext(PlatformContext)
   if (!context) throw new Error("usePlatform must be used within PlatformProvider")
   return context
+}
+
+/** The platform context when there is one, or null when there is not. For a component that only
+ *  wants host facts such as the storage drives and should still render where no provider is set. */
+export function usePlatformOptional() {
+  return useContext(PlatformContext)
 }

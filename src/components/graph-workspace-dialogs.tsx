@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react"
-import { CopyIcon, FolderPlusIcon, XIcon } from "lucide-react"
 import { workspaceApi } from "@/api/workspace-api"
 import { publicationDefinitions, publicationDestination, publicationDestinations } from "@/components/graph-capabilities"
 import type { useWorkspaceFeatures, WorkspaceDialog } from "@/components/use-workspace-features"
@@ -8,7 +7,8 @@ import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogHeader, Dia
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Radio, RadioGroup } from "@/components/ui/radio-group"
-import { CloudflareAccountFields } from "@/components/cloudflare-account-fields"
+import { CloudflareAccountFields, QuickLinkAddress } from "@/components/cloudflare-account-fields"
+import { Address, Outcome, Slot } from "@/components/popup-kit"
 import { accountRequest, emptyCloudflareDraft } from "@/lib/cloudflare-account"
 import { readPublicAccessPresets } from "@/lib/public-access-presets"
 import { rememberPublicAccessPreset } from "@/lib/public-access-preset-actions"
@@ -113,6 +113,15 @@ function WorkspaceDialogContent({ dialog, model, onBusyChange }: { dialog: Works
     setCloudflare(current => ({ ...current, token: "" }))
   })
 
+  // What each destination gives, shown before anything is published: the local address with the
+  // port this PC will use, or the public link Cloudflare will answer on.
+  const chosenPort = hostPort && validPort(hostPort) ? hostPort : null
+  const localAddress = <Address>http://<Slot>this PC's address</Slot>:{chosenPort ?? <Slot>a free port</Slot>}</Address>
+  const chosenPreset = selectedPresetId ? presets.find(item => item.id === selectedPresetId) : undefined
+  const publicAddress = chosenPreset ? <Address>https://{chosenPreset.hostname}</Address>
+    : cloudflare.mode === "account" ? cloudflare.hostname.trim() ? <Address>https://{cloudflare.hostname.trim()}</Address> : <span className="popup-quiet">https:// and the hostname you enter</span>
+    : <QuickLinkAddress />
+
   return <DialogPopup className={dialog.type === "service" ? "w-[min(68rem,calc(100vw-2rem))] max-w-none" : undefined} closeProps={{ disabled: busy }} data-service-options={dialog.type === "service" ? dialog.environmentId : undefined} data-service-port={port}>
     {dialog.type === "service" ? <DialogHeader className="flex-row items-center gap-4 border-b px-6 pb-5! pt-6 pe-14">
       <span aria-hidden="true" className="flex size-14 shrink-0 flex-col items-center justify-center rounded-xl border border-primary/30 bg-primary/10 font-mono text-primary"><span className="text-[10px] font-medium uppercase leading-none tracking-wider opacity-70">Port</span><span className="mt-1 text-base font-semibold leading-none">{port}</span></span>
@@ -132,12 +141,12 @@ function WorkspaceDialogContent({ dialog, model, onBusyChange }: { dialog: Works
         <div className="flex items-center justify-between gap-2 rounded-lg border p-3 text-sm"><span>{env?.workspace?.shares.length ? "PC access: selected folders only" : "No Access — this environment cannot access your PC files"}</span>{env?.workspace?.shares.length ? <Button disabled={busy} variant="outline" onClick={() => void perform(async () => { for (const share of env.workspace?.shares ?? []) await workspaceApi.unshare(share.id) })}>Set No Access</Button> : null}</div>
         {env?.kind === "fullVm" ? <p className="text-xs text-muted-foreground">Open the private folder URL in the VM browser to view files and edit them when permitted. Read-only WebDAV is also available. Containers and managed microVMs mount folders automatically.</p> : null}
         {env?.workspace?.shares.map(share => <div className="space-y-1 rounded-lg border p-3 text-xs" key={share.id}>
-          <div className="flex items-center gap-2"><span className="min-w-0 flex-1 break-all font-medium">{share.path}</span><span className="shrink-0 text-muted-foreground">{share.readOnly ? "View Only" : "View & Edit"}</span><Button aria-label={`Disconnect ${share.path}`} disabled={busy} onClick={() => void perform(() => workspaceApi.unshare(share.id))} size="icon-xs" variant="ghost"><XIcon aria-hidden="true" /></Button></div>
-          <div className="flex items-center gap-2"><code className="min-w-0 flex-1 break-all text-muted-foreground">{share.mountPath ?? "Private folder link"}</code><Button aria-label="Copy guest folder location" disabled={busy} onClick={() => void perform(async () => { const location = share.mountPath ?? (await workspaceApi.shareCredentials(share.id)).guestUrl; copy(location) })} size="icon-xs" variant="ghost"><CopyIcon aria-hidden="true" /></Button></div>
+          <div className="flex items-center gap-2"><span className="min-w-0 flex-1 break-all font-medium">{share.path}</span><span className="shrink-0 text-muted-foreground">{share.readOnly ? "View Only" : "View & Edit"}</span><Button aria-label={`Disconnect ${share.path}`} disabled={busy} onClick={() => void perform(() => workspaceApi.unshare(share.id))} size="xs" variant="ghost">Disconnect</Button></div>
+          <div className="flex items-center gap-2"><code className="min-w-0 flex-1 break-all text-muted-foreground">{share.mountPath ?? "Private folder link"}</code><Button aria-label="Copy guest folder location" disabled={busy} onClick={() => void perform(async () => { const location = share.mountPath ?? (await workspaceApi.shareCredentials(share.id)).guestUrl; copy(location) })} size="xs" variant="ghost">Copy</Button></div>
           {!share.mountPath ? <p className="text-muted-foreground">Keep this URL private. It grants access to the selected folder while connected.</p> : null}
         </div>)}
-        {folders.length ? <div className="space-y-2 rounded-lg border p-3">{folders.map(folder => <div className="flex items-center gap-2 text-xs" key={folder}><span className="min-w-0 flex-1 break-all">{folder}</span><Button aria-label={`Remove selected ${folder}`} disabled={busy} onClick={() => setFolders(current => current.filter(p => p !== folder))} size="icon-xs" variant="ghost"><XIcon aria-hidden="true" /></Button></div>)}</div> : null}
-        <Button disabled={!running || busy} onClick={() => void perform(async () => { const selected = await workspaceApi.chooseFolders(); setFolders(current => [...new Set([...current, ...selected])]) })} variant="outline"><FolderPlusIcon aria-hidden="true" />Choose folders</Button>
+        {folders.length ? <div className="space-y-2 rounded-lg border p-3">{folders.map(folder => <div className="flex items-center gap-2 text-xs" key={folder}><span className="min-w-0 flex-1 break-all">{folder}</span><Button aria-label={`Remove selected ${folder}`} disabled={busy} onClick={() => setFolders(current => current.filter(p => p !== folder))} size="xs" variant="ghost">Remove</Button></div>)}</div> : null}
+        <Button disabled={!running || busy} onClick={() => void perform(async () => { const selected = await workspaceApi.chooseFolders(); setFolders(current => [...new Set([...current, ...selected])]) })} variant="outline">Choose folders</Button>
         <RadioGroup aria-label="Selected folder permission" disabled={busy} value={writeAccess ? "edit" : "view"} onValueChange={value => setWriteAccess(value === "edit")}><label className="flex items-center gap-2 text-sm"><Radio value="view" />View Only — read files</label><label className="flex items-center gap-2 text-sm"><Radio value="edit" />View &amp; Edit — read, change, create, and delete files</label></RadioGroup>
         {writeAccess ? <p className="text-xs text-muted-foreground">Programs inside this environment can change or delete files in the selected folders.</p> : null}
         <Button disabled={!running || !folders.length} loading={busy} onClick={() => void perform(async () => {
@@ -151,16 +160,22 @@ function WorkspaceDialogContent({ dialog, model, onBusyChange }: { dialog: Works
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Connected</h3>
           {publications.map(publication => <div className="rounded-xl border bg-card p-3" key={publication.id}>
             <div className="flex items-center gap-2"><span className="min-w-0 flex-1 text-sm font-medium">{publicationDefinitions.find(item => item.kind === publication.kind)?.title}{publication.cloudflareAccount ? " · Your account" : ""}</span><span className="text-xs text-muted-foreground">{publication.status}</span><Button aria-label={`Disconnect ${publication.kind} from port ${port}`} disabled={busy} onClick={() => void perform(async () => { await workspaceApi.unpublish(publication.id); if (isWebsiteTour(dialog.environmentId, "demo-link")) { model.setDialog(null); changeTour({ step: "demo-port-open" }) } })} size="xs" variant="ghost">Disconnect</Button></div>
-            {publication.urls.map(url => <div className="mt-1 flex items-center gap-1" key={url}><button disabled={busy} className="min-w-0 flex-1 truncate text-left text-xs text-primary underline" onClick={() => void perform(async () => { await workspaceApi.openUrl(url); tourWebsiteOpened(dialog.environmentId, port, publication.kind === "cloudflare" && !publication.cloudflareAccount) })} title={url} type="button">{url}</button><Button aria-label={`Copy ${url}`} disabled={busy} onClick={() => copy(url)} size="icon-xs" variant="ghost"><CopyIcon aria-hidden="true" /></Button></div>)}
+            {publication.urls.map(url => <div className="mt-1 flex items-center gap-1" key={url}><button disabled={busy} className="min-w-0 flex-1 truncate text-left text-xs text-primary underline" onClick={() => void perform(async () => { await workspaceApi.openUrl(url); tourWebsiteOpened(dialog.environmentId, port, publication.kind === "cloudflare" && !publication.cloudflareAccount) })} title={url} type="button">{url}</button><Button aria-label={`Copy ${url}`} disabled={busy} onClick={() => copy(url)} size="xs" variant="ghost">Copy</Button></div>)}
             {publication.message ? <p className="mt-1 text-xs text-muted-foreground">{publication.message}</p> : null}
           </div>)}
         </section> : null}
-        <fieldset className="space-y-2"><legend className="mb-2 text-sm font-medium">Where should this port be available?</legend><RadioGroup aria-label="Publish to" className="grid gap-2" disabled={busy} onValueChange={value => setKind(value === "local" ? "local" : "cloudflare")} value={publicationDestination(kind)}>{publicationDestinations.map(item => <label className={`flex min-h-20 cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${publicationDestination(kind) === item.kind ? "border-primary bg-primary/5" : "bg-card hover:border-primary/40"}`} key={item.kind}><Radio aria-label={item.title} aria-description={item.kind === "local" ? "This PC and devices on your local network" : "A public link that anyone can open"} value={item.kind} /><span aria-hidden="true" className="min-w-0"><span className="block text-sm font-medium">{item.title}</span><span className="mt-1 block text-xs leading-4 text-muted-foreground">{item.kind === "local" ? "This PC and devices on your local network" : "A public link that anyone can open"}</span></span></label>)}</RadioGroup></fieldset>
+        <fieldset className="space-y-2"><legend className="mb-2 text-sm font-medium">Where should this port be available?</legend><RadioGroup aria-label="Publish to" className="grid gap-2" disabled={busy} onValueChange={value => setKind(value === "local" ? "local" : "cloudflare")} value={publicationDestination(kind)}>{publicationDestinations.map(item => <label className={`flex min-h-20 cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${publicationDestination(kind) === item.kind ? "border-primary bg-primary/5" : "bg-card hover:border-primary/40"}`} key={item.kind}><Radio aria-label={item.title} aria-description={item.kind === "local" ? "This PC and devices on your Wi-Fi or office network. Nothing is published to the internet." : "A public Cloudflare link that anyone can open"} value={item.kind} /><span aria-hidden="true" className="min-w-0 space-y-1.5"><span className="block text-sm font-medium">{item.title}</span><span className="block text-xs leading-4 text-muted-foreground">{item.kind === "local" ? "This PC and devices on your Wi-Fi or office network. Nothing is published to the internet." : "A public link through Cloudflare that anyone can open."}</span><span className="block">{item.kind === "local" ? localAddress : publicAddress}</span></span></label>)}</RadioGroup></fieldset>
         </div>
         <div className="min-w-0">
         {kind === "cloudflare" ? <section aria-label="Cloudflare configuration and status" className="space-y-3"><div><h3 className="text-sm font-medium">Choose your public link</h3><p className="mt-1 text-xs text-muted-foreground">Add visitor restrictions in Cloudflare if this app should be private.</p></div><CloudflareAccountFields environmentId={dialog.environmentId} port={port} value={cloudflare} onChange={setCloudflare} onLoadingChange={setCloudflareLoading} busy={busy || cloudflareLoading} perform={perform} refreshKey={publications.filter(p => p.kind === "cloudflare").map(p => p.id).join(",")} compact presets={presets} selectedPresetId={selectedPresetId} onSelectPreset={setSelectedPresetId} /></section> : <Field className="rounded-xl border bg-card p-3"><FieldLabel>Port on this PC <span className="text-xs font-normal text-muted-foreground">Optional</span></FieldLabel><Input disabled={busy} inputMode="numeric" onChange={event => setHostPort(event.target.value)} placeholder="Automatic" type="text" value={hostPort} /><p className="text-xs text-muted-foreground">Leave blank to choose an available port automatically.</p></Field>}
         </div>
         </div>
+        {publications.some(p => p.kind === kind) ? null : <Outcome title="What you'll get">
+          {kind === "local"
+            ? <p>Devices on your network open the app at {localAddress}, and this PC also opens it at <Address>http://127.0.0.1:{chosenPort ?? <Slot>the same port</Slot>}</Address>. Nothing is published to the internet.</p>
+            : <p>Anyone with the link can open the app at {publicAddress}.</p>}
+          <p>A locked-down sandbox's links answer nothing until it is unlocked.</p>
+        </Outcome>}
         {busy ? <p className="text-xs text-muted-foreground" role="status">Connecting… The first Cloudflare download can take a few minutes.</p> : null}
       </>}
     </DialogPanel>

@@ -25,10 +25,18 @@ impl Direction {
     pub fn receives(self) -> bool { self != Self::ToContainer }
 }
 
-pub fn sqlite_file(path: &Path) -> bool {
-    use std::io::Read;
+/// Whether the file is a SQLite database, from its header. A file that is gone, or shorter than a
+/// header, is not one. Any other failure to read it is an error, never "not a database": a
+/// database taken for a plain file is sent whole over the other side's live copy, and every row
+/// that existed only there is lost.
+pub fn sqlite_file(path: &Path) -> std::io::Result<bool> {
+    use std::io::{ErrorKind, Read};
     let mut header = [0; 16];
-    fs::File::open(path).and_then(|mut f| f.read_exact(&mut header)).is_ok() && &header == b"SQLite format 3\0"
+    match fs::File::open(path).and_then(|mut f| f.read_exact(&mut header)) {
+        Ok(()) => Ok(&header == b"SQLite format 3\0"),
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::UnexpectedEof) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// The SQLite databases among `files`, which need a consistent snapshot instead of a copy.
@@ -38,13 +46,21 @@ pub fn sqlite_files(root: &Path, files: &Manifest, mut checked: impl FnMut(usize
     let candidates: Vec<&String> = files.iter().filter(|(_, (size, _))| *size >= 16).map(|(path, _)| path).collect();
     let (next, done, quit) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicBool::new(false));
     let found = Mutex::new(BTreeSet::new());
+    // A file that cannot be read stops the copy: copied as a plain file, a live database can
+    // arrive half written.
+    let unreadable = Mutex::new(None);
     std::thread::scope(|scope| {
         for _ in 0..candidates.len().min(8) {
             scope.spawn(|| {
                 while !quit.load(Ordering::Relaxed) {
                     let Some(path) = candidates.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
-                    if sqlite_file(&root.join(path)) {
-                        found.lock().unwrap_or_else(|p| p.into_inner()).insert((*path).clone());
+                    match sqlite_file(&root.join(path)) {
+                        Ok(true) => { found.lock().unwrap_or_else(|p| p.into_inner()).insert((*path).clone()); }
+                        Ok(false) => {}
+                        Err(error) => {
+                            unreadable.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert(format!("Cannot read {path} to tell whether it is a database ({error}). Nothing was copied; try again once it can be read."));
+                            quit.store(true, Ordering::Relaxed);
+                        }
                     }
                     done.fetch_add(1, Ordering::Relaxed);
                 }
@@ -53,13 +69,16 @@ pub fn sqlite_files(root: &Path, files: &Manifest, mut checked: impl FnMut(usize
         loop {
             let finished = done.load(Ordering::Relaxed);
             let result = checked(finished, candidates.len());
-            if result.is_err() || finished == candidates.len() {
+            if result.is_err() || finished == candidates.len() || quit.load(Ordering::Relaxed) {
                 quit.store(true, Ordering::Relaxed);
                 return result;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
     })?;
+    if let Some(error) = unreadable.into_inner().unwrap_or_else(|p| p.into_inner()) {
+        return Err(error);
+    }
     Ok(found.into_inner().unwrap_or_else(|p| p.into_inner()))
 }
 
@@ -382,9 +401,29 @@ pub struct Saved {
     pub databases: BTreeMap<String, BTreeMap<String, String>>,
     #[serde(default)]
     pub directories: BTreeSet<String>,
+    /// Files and databases whose last shared version was lost with a record that could not be
+    /// read. Nobody can tell which copy of one of these is newer, so a difference in it keeps both
+    /// copies whatever the sync priority, until the two copies match again.
+    #[serde(default)]
+    pub unknown: BTreeSet<String>,
+    /// The record was there and could not be read, or (see `adopt`) it is missing or another
+    /// environment's while this one already holds the project. Either way what differs is not
+    /// decided by the priority.
+    #[serde(skip)]
+    pub unreadable: bool,
 }
 
 impl Saved {
+    /// Takes up this record for `environment`, whose workspace already held the project unless
+    /// it was just `copied` in. A record that is missing, or that is another environment's, says
+    /// nothing about which copy of a file is newer there: the unreadable case by another route,
+    /// and treated the same way.
+    pub fn adopt(&mut self, environment: &str, copied: bool) {
+        if !copied && self.environment != environment {
+            self.unreadable = true;
+        }
+    }
+
     pub fn needs_reconcile(&self, environment: &str, token: &str) -> bool {
         self.copy_version != COPY_VERSION || self.two_way || self.environment != environment
             || self.token.is_empty() || token.trim() != self.token || !self.pending.is_empty()
@@ -398,15 +437,20 @@ impl Saved {
         }
         (changed, removed)
     }
+    /// The record of the last sync. None at all is a first sync; one that is there and cannot be
+    /// read comes back empty and marked `unreadable`, never passed off as a first sync.
     pub fn load(path: &Path) -> Saved {
-        fs::File::open(path)
-            .ok()
-            .and_then(|file| serde_json::from_reader(std::io::BufReader::new(file)).ok())
-            .unwrap_or_default()
+        let unreadable = || Saved { unreadable: true, ..Saved::default() };
+        match fs::File::open(path) {
+            Ok(file) => serde_json::from_reader(std::io::BufReader::new(file)).unwrap_or_else(|_| unreadable()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Saved::default(),
+            Err(_) => unreadable(),
+        }
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let folder = path.parent().ok_or("Missing launcher state folder")?;
         let mut file = tempfile::NamedTempFile::new_in(folder).map_err(|e| e.to_string())?;
+        let _on_quit = super::ui::remove_on_quit(file.path());
         {
             use std::io::{BufWriter, Write};
             // Millions of row checksums should become large writes, rather than
@@ -425,6 +469,9 @@ impl Saved {
 pub struct Staged {
     folder: tempfile::TempDir,
     pub databases: BTreeMap<String, BTreeMap<String, String>>,
+    /// The copy is removed even when a second Ctrl+C quits at once, which skips the folder's
+    /// own cleanup: it can hold the project's files, database snapshots and its .env.
+    _on_quit: super::ui::RemoveOnQuit,
 }
 impl Staged { pub fn path(&self) -> &Path { self.folder.path() } }
 
@@ -481,6 +528,7 @@ pub fn stage_progress(root: &Path, manifest: &Manifest, stop: &AtomicBool, progr
 /// [`stage_progress`] into `staging`, which staging that fails or stops removes. Without `links`
 /// every file is copied, as when the project and the staging folder are on different drives.
 fn stage_into(staging: tempfile::TempDir, root: &Path, manifest: &Manifest, stop: &AtomicBool, mut progress: impl FnMut(&serde_json::Value) -> Result<(), String>, links: bool) -> Result<Staged, String> {
+    let on_quit = super::ui::remove_on_quit(staging.path());
     // The outer folder has no .yougoriignore: the engine must not re-filter the
     // launcher's manifest using the project's own ignore file.
     let target = staging.path().join("project/workspace");
@@ -540,6 +588,7 @@ fn stage_into(staging: tempfile::TempDir, root: &Path, manifest: &Manifest, stop
         fs::write(&script, include_bytes!("assets/sqlite-snapshot.cjs")).map_err(|e| e.to_string())?;
         fs::write(&helper, include_bytes!("assets/sqlite.cjs")).map_err(|e| e.to_string())?;
         let diagnostics = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+        let _diagnostics_on_quit = super::ui::remove_on_quit(diagnostics.path());
         let mut command = Command::new("node");
         command.args(["--no-warnings"]).arg(script).arg(root).arg(staging.path()).arg(helper)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::from(diagnostics.as_file().try_clone().map_err(|e| e.to_string())?));
@@ -580,12 +629,42 @@ fn stage_into(staging: tempfile::TempDir, root: &Path, manifest: &Manifest, stop
         let checkpoint = fs::File::open(staging.path().join("database-baselines.json")).map_err(|e| e.to_string())?;
         serde_json::from_reader(BufReader::new(checkpoint)).map_err(|e| e.to_string())?
     };
-    Ok(Staged { folder: staging, databases: baselines })
+    Ok(Staged { folder: staging, databases: baselines, _on_quit: on_quit })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PROVES that an environment which already holds the project, with no sync record of its
+    /// own, is never synced as if this were the first time.
+    ///
+    /// The unreadable record was closed tonight; this is the same overwrite by the other route.
+    /// When the record is missing (the launch settings were cleared or never existed here) or
+    /// names another environment (the one it was kept for is gone), load gives an empty record
+    /// that reads as a first sync. Every file that differed then went to the pre-selected
+    /// priority, and "This computer wins" pushed this computer's older copies over the
+    /// container's edits. Both launch paths (project.rs, project/cloud.rs) call `adopt`.
+    #[test]
+    fn a_record_that_is_missing_or_another_environments_is_never_a_first_sync() {
+        let folder = tempfile::tempdir().unwrap();
+        // Route 1: no record at all, and the environment already holds the project.
+        let mut missing = Saved::load(&folder.path().join("sync.json"));
+        assert!(!missing.unreadable, "no record is a first sync until the environment says otherwise");
+        missing.adopt("env-1", false);
+        assert!(missing.unreadable, "a missing record over a project already there is not a first sync");
+        // Route 2: the record is another environment's.
+        let mut other = Saved { environment: "env-0".into(), ..Saved::default() };
+        other.adopt("env-1", false);
+        assert!(other.unreadable, "another environment's record says nothing about this one");
+        // This environment's own record stands, and a fresh copy leaves both sides the same.
+        let mut own = Saved { environment: "env-1".into(), ..Saved::default() };
+        own.adopt("env-1", false);
+        assert!(!own.unreadable);
+        let mut fresh = Saved::default();
+        fresh.adopt("env-1", true);
+        assert!(!fresh.unreadable, "a fresh copy is a first sync");
+    }
 
     #[test]
     fn interrupted_addition_then_local_deletion_survives_relaunch() {

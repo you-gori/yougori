@@ -67,14 +67,19 @@ export function AppCloseDialog() {
         <DialogDescription>{phase === "hiding" ? "Closing the windows. Your environments will keep running." : busy ? "Please wait while Yougori finishes closing." : "Choose what happens before closing Yougori."}</DialogDescription>
       </DialogHeader>
       {busy ? <span className="sr-only" role="status">Closing Yougori. Please wait.</span> : <>
-        <DialogPanel>
-          <ul className="space-y-1 text-sm">{active.map(environment => <li key={environment.id}>{environment.name} · {environment.status}</li>)}</ul>
-          <p className="mt-3 text-xs text-muted-foreground">Close the app to keep environments, shared folders and published services running in the background. Reopen Yougori from the tray or with <code>yougori app show</code>. Quitting stops local environments and disconnects their services.</p>
-          {error ? <p role="alert" className="mt-3 text-sm text-destructive-foreground">{error}</p> : null}
+        <DialogPanel className="space-y-4">
+          {active.length ? <ul aria-label="Active environments" className="divide-y rounded-xl border text-sm">{active.map(environment => <li key={environment.id} className="flex items-center justify-between gap-3 px-3 py-2"><span className="min-w-0 truncate">{environment.name}</span><span className="shrink-0 text-xs text-muted-foreground">{environment.status}</span></li>)}</ul> : null}
+          <div className="space-y-2 rounded-xl border p-3">
+            <Button className="w-full" onClick={() => void close(true)}>Close app, keep environments running</Button>
+            <p className="text-xs leading-relaxed text-muted-foreground">Environments, shared folders and published services keep running in the background. Reopen Yougori from the tray, or with <code>yougori app show</code>.</p>
+          </div>
+          <div className="space-y-2 rounded-xl border p-3">
+            <Button className="w-full" variant="outline" onClick={() => void close(false)}>Stop environments and quit</Button>
+            <p className="text-xs leading-relaxed text-muted-foreground">Local environments stop and their shared folders and published services disconnect.</p>
+          </div>
+          {error ? <p role="alert" className="text-sm text-destructive-foreground">{error}</p> : null}
         </DialogPanel>
-        <DialogFooter className="flex-col sm:flex-col sm:items-stretch">
-          <Button onClick={() => void close(true)}>Close app, keep environments running</Button>
-          <Button variant="outline" onClick={() => void close(false)}>Stop environments and quit</Button>
+        <DialogFooter>
           <Button variant="ghost" onClick={() => setPhase("idle")}>Cancel</Button>
         </DialogFooter>
       </>}
