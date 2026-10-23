@@ -7940,7 +7940,7 @@ dependencies = [
 
 [[package]]
 name = "yougori"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -7992,7 +7992,7 @@ dependencies = [
 
 [[package]]
 name = "yougori-cli"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "age",
  "axum",
@@ -8031,7 +8031,7 @@ dependencies = [
 
 [[package]]
 name = "yougori-grid"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8061,7 +8061,7 @@ dependencies = [
 
 [[package]]
 name = "yougori-vault"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "age",
  "axum",

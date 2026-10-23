@@ -1030,7 +1030,10 @@ mod tests {
             // Desktop plumbing with no CLI meaning: token streaming over a webview channel,
             // the one-time move of saved domains out of browser storage, and update-dialog
             // actions. The CLI performs its own release checks without backend automation.
-            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads") {
+            // The Hub pair is desktop plumbing too: one opens a console window running the CLI
+            // itself, the other reads the instance records the CLI writes. In a terminal a person
+            // runs those CLI commands directly, so neither has an automation contract.
+            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads" | "open_hub_console" | "hub_instances") {
                 assert!(yougori_cli::catalog::find(name).is_err());
                 continue;
             }

@@ -1163,7 +1163,11 @@ def dependency_notices():
                 record["noticeIssue"] = str(error)
         records.append(record)
     for component in frontend["vendoredComponents"]:
-        record = {"ecosystem": "vendored", "name": component["id"], "version": component["reviewedRevision"],
+        # A component taken from one upstream records the revision reviewed. One assembled from
+        # several upstreams (palette values, say) has no single revision; its notice file carries
+        # the review instead, so the notice's own digest identifies the reviewed state.
+        version = component.get("reviewedRevision", "reviewed-notice")
+        record = {"ecosystem": "vendored", "name": component["id"], "version": version,
                   "license": component["license"], "upstream": component["upstream"],
                   "files": component["files"], "texts": []}
         for relative in component["noticeFiles"]:
@@ -1197,7 +1201,8 @@ def dependency_notices():
             if not record["texts"]:
                 try:
                     vcs = json.loads((directory / ".cargo_vcs_info.json").read_text(encoding="utf-8"))
-                    upstream_notices(data["package"].get("repository", ""), vcs["git"]["sha1"], record, sections)
+                    repository = data["package"].get("repository", "") or registry_repository(name)
+                    upstream_notices(repository, vcs["git"]["sha1"], record, sections)
                 except (OSError, ValueError, RuntimeError, KeyError) as error:
                     record["noticeIssue"] = f"Supplementary upstream notice lookup: {type(error).__name__}"
             if not record["texts"]:
@@ -1279,6 +1284,19 @@ def declared_standard_notice(directory, metadata, record, sections):
                             "standardLicenseSha256": digest(standard)})
     sections.append(f"{'=' * 72}\n{record['ecosystem']}: {record['name']} {record['version']}\n{text}\n")
     record.pop("noticeIssue", None)
+
+
+def registry_repository(name, cache_root=None):
+    """The repository crates.io records for a crate that ships no `repository` field of its own.
+
+    Crates published from a workspace subdirectory (rsqlite-vfs, say) can omit it from the
+    packaged Cargo.toml while the registry still carries it. That record comes from the same
+    registry as the crate and its checksum, so it is read, never inferred from the crate's name.
+    """
+    cached = (cache_root or WORK) / "registry-metadata" / f"{safe_name(name)}.json"
+    if not cached.exists():
+        download(f"https://crates.io/api/v1/crates/{urllib.parse.quote(name)}", cached)
+    return (json.loads(cached.read_text(encoding="utf-8")).get("crate") or {}).get("repository") or ""
 
 
 def upstream_notices(repository, revision, record, sections):

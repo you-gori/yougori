@@ -2666,7 +2666,7 @@ impl RuntimeManager {
                     drop(processes);
                     // Older distro QEMU cannot exit-failure on panic. Keep the
                     // disk open/inspectable, but report the QMP failure honestly.
-                    if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_millis(500), qmp_request(port, "query-status", None)).await {
+                    if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_millis(500), qmp_request(&port, "query-status", None)).await {
                         if matches!(status["status"].as_str(), Some("guest-panicked" | "internal-error" | "io-error")) {
                             return Ok(super::VmPowerState::Failed);
                         }

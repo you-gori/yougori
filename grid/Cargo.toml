@@ -1,6 +1,6 @@
 [package]
 name = "yougori-grid"
-version = "1.1.0"
+version = "1.1.1"
 description = "Closed Neo Grid: a company's private model grid on its own network"
 edition = "2021"
 license = "AGPL-3.0-only"
