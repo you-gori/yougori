@@ -51,13 +51,13 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-    "sha256": "397566c273a35b9b1f699fb1d74e9146dace5abec39c0c98efdeff85c946ebe4",
+    "sha256": "9751107a6f29a0206541a3ea6f6b3df3426790db84e12b4025c491b9bacfabe4",
     "bytes": 684
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-agent",
-    "sha256": "331e26bfe1291c3daa47250c66cb40ae57d00d02bbeeb7c82dd7094b3c9f32f0",
-    "bytes": 15396988
+    "sha256": "970349cf0716d3ff2f7a067bc8eacdc8e49c1c3916d0a136e043946e7a7c886d",
+    "bytes": 15585404
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-cuda-probe",
@@ -1451,7 +1451,7 @@
   },
   {
     "path": "src-tauri/resources/runtime/SHA256SUMS",
-    "sha256": "9834eb1aee2fbddc3e3118fd42cede0aba4cc3662b20a0e18e3a2d6021b957af",
+    "sha256": "ad23107ed5fe46a4fff56bea2806801cea669e4ceb15634b1655ca145f4fefd0",
     "bytes": 28687
   }
 ]
