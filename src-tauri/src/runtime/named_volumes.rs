@@ -23,8 +23,8 @@ impl RuntimeManager {
         store.engine.as_deref().unwrap_or(self)
     }
 
-    /// Every volume store. `include_stopped` also returns runtimes that would have to boot;
-    /// the GPU runtime is only returned while it runs, because starting it needs a GPU workload.
+    /// Every volume store. `include_stopped` also returns runtimes that would have to boot,
+    /// including an installed GPU runtime: its volumes hold model caches of many gigabytes.
     pub async fn volume_stores(&self, include_stopped: bool) -> (Vec<VolumeStore>, Vec<String>) {
         let mut stores = Vec::new();
         let mut unavailable = Vec::new();
@@ -44,15 +44,23 @@ impl RuntimeManager {
                     if include_stopped || engine.appliance_running().await {
                         stores.push(VolumeStore { location: engine.data_root.display().to_string(), provider: RuntimeProviderKind::YougoriOci, engine: Some(engine.clone()) });
                     }
-                    if engine.cuda.current_endpoint().await.is_ok() {
-                        stores.push(VolumeStore { location: format!("GPU runtime ({})", engine.data_root.display()), provider: RuntimeProviderKind::YougoriCuda, engine: Some(engine) });
+                    // A stopped GPU runtime is started only when stopped runtimes are wanted, as
+                    // for removing a volume: its models would otherwise stay on the disk unseen.
+                    // One that needs its update first is named as not checked, not as a failure.
+                    let location = format!("GPU runtime ({})", engine.data_root.display());
+                    if engine.cuda.current_endpoint().await.is_ok() || (include_stopped && engine.cuda_payload_current()) {
+                        stores.push(VolumeStore { location, provider: RuntimeProviderKind::YougoriCuda, engine: Some(engine) });
+                    } else if include_stopped && engine.cuda.installed_payload_checksum().is_some() {
+                        unavailable.push(format!("{location}, which needs its update ({})", engine.cuda_setup_command()));
                     }
                 }
                 Err(error) => unavailable.push(error),
             }
         }
-        if self.cuda.current_endpoint().await.is_ok() {
+        if self.cuda.current_endpoint().await.is_ok() || (include_stopped && self.cuda_payload_current()) {
             stores.push(VolumeStore { location: "GPU runtime".into(), provider: RuntimeProviderKind::YougoriCuda, engine: None });
+        } else if include_stopped && self.cuda.installed_payload_checksum().is_some() {
+            unavailable.push(format!("GPU runtime, which needs its update ({})", self.cuda_setup_command()));
         }
         (stores, unavailable)
     }

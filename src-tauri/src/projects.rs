@@ -698,7 +698,14 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
         project_cancelled()?;
         let spec = &p.environments[&name];
         let old = record.applied.get(&name);
-        let replace = old.is_some_and(|old| {
+        let mut id = record
+            .ids
+            .get(&name)
+            .filter(|id| node(&app, id).is_ok())
+            .cloned();
+        // Only an existing node is replaced. When it is gone (its instance was removed), the
+        // settings it had are no reason to give the new node another name.
+        let replace = id.is_some() && old.is_some_and(|old| {
             old.kind != spec.kind
                 || old.image != spec.image
                 || old.source != spec.source
@@ -710,11 +717,6 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
                     && !spec.image.is_empty()
                     && old.options(&p.project).ok() != spec.options(&p.project).ok())
         });
-        let mut id = record
-            .ids
-            .get(&name)
-            .filter(|id| node(&app, id).is_ok())
-            .cloned();
         if replace {
             if let Some(old) = &id {
                 status(&app, old, false).await?;
@@ -742,14 +744,21 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
             r.projects.insert(k.clone(), record.clone());
             save_record(&runtime,&k,&record)?;
             let ownership = format!("Yougori project {} / {}", k, name);
-            if let Some(existing) = app
+            let mut existing = app
                 .state::<PlatformStore>()
                 .snapshot()?
                 .environments
                 .iter()
                 .find(|e| e.name == desired)
-                .cloned()
-            {
+                .cloned();
+            if let Some(unfinished) = existing.as_ref().filter(|e| e.description == ownership && crate::commands::vm_creation::creation_unfinished(e)) {
+                // Its creation failed or was cut short, so it holds nothing of the project's: it is
+                // made again rather than blocking every retry. Named volumes are separate and stay.
+                project_cancelled()?;
+                call(&app, "delete_environment", json!({"environmentId": unfinished.id})).await?;
+                existing = None;
+            }
+            if let Some(existing) = existing {
                 if existing.description != ownership {
                     return Err(format!("{desired} already exists outside this project"));
                 }

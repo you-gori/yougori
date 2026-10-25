@@ -246,6 +246,13 @@ impl RuntimeManager {
         self.cuda.cleanup_request(&agent, path, body).await
     }
 
+    /// Whether this GPU runtime is installed with the payload this Yougori ships: it can start
+    /// without the update GPU setup does first.
+    pub(crate) fn cuda_payload_current(&self) -> bool {
+        use sha2::{Digest, Sha256};
+        let expected = hex::encode(Sha256::digest(include_bytes!("../../resources/runtime/cuda/SHA256SUMS")));
+        self.cuda.installed_payload_checksum().as_deref() == Some(expected.as_str())
+    }
     pub async fn cuda_status(&self) -> yougori_cuda_runtime::Status {
         use sha2::{Digest, Sha256};
         let mut status = self.cuda.status().await;
@@ -263,12 +270,24 @@ impl RuntimeManager {
         let status = self.cuda_status().await;
         if !status.supported || !status.installed || status.update_available {
             return Err(format!(
-                "{}Open New environment → GPU to check this computer and set up or update NVIDIA CUDA first. {}",
+                "{}Open New environment → GPU to check this computer and set up or update NVIDIA CUDA first, or run {}. {}",
                 if status.update_available { "[YOUGORI_CUDA_UPDATE_REQUIRED] " } else { "" },
+                self.cuda_setup_command(),
                 status.detail
             ));
         }
         Ok(())
+    }
+    /// The command that sets up or updates this GPU runtime: the default one, or the one kept on
+    /// another drive, which a plain `gpu setup` would not touch.
+    pub(crate) fn cuda_setup_command(&self) -> String {
+        if self.data_root == self.settings_root {
+            return "yougori gpu setup --yes".into();
+        }
+        let root = self.data_root.display().to_string();
+        let root = root.strip_prefix(r"\\?\").unwrap_or(&root);
+        let drive = root.find('\\').map_or(root, |at| &root[..=at]);
+        format!("yougori gpu setup --yes --storage-drive {drive}")
     }
     pub async fn ensure_cuda_capacity(&self) -> Result<(f64, f64), String> {
         self.provider_endpoint(&RuntimeProviderKind::YougoriCuda)

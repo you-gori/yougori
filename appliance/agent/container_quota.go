@@ -103,10 +103,13 @@ func fileProject(fd int, requested *uint32, directory, reassign bool) (uint32, e
 	return attrs.Project, nil
 }
 
-// Assign directories before reading their children, so new files inherit the
-// project. Initial adoption is allowed only while that container is stopped.
-func assignContainerProject(roots []string, project uint32) error {
-	return assignProject(roots, project, false)
+// A container that has not run yet holds nothing of its own, so a project already on its
+// private storage was left by an earlier container: a directory reused after a removal, or a
+// tag inherited from a parent. Such storage is claimed instead of refused when the container
+// was just created (fresh), or when its own first adoption stopped part way, which it must
+// finish before it can start. Once a container has run, another project is refused as before.
+func claimsStaleStorage(fresh bool, saved containerQuota, containerID string) bool {
+	return fresh || (saved.ContainerID == containerID && !saved.Complete)
 }
 
 func assignProject(roots []string, project uint32, reassign bool) error {
@@ -436,7 +439,7 @@ func (s *server) containerStorage(w http.ResponseWriter, r *http.Request) {
 	defer unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	info, err := configureContainerStorage(ctx, request.ID, request.LimitBytes, true)
+	info, err := configureContainerStorage(ctx, request.ID, request.LimitBytes, true, false)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -444,7 +447,10 @@ func (s *server) containerStorage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-func configureContainerStorage(ctx context.Context, id string, limit uint64, allowReduction bool) (containerStorageInfo, error) {
+// fresh: the caller created this container in the same request, so it has never run.
+// Initial adoption is allowed only while the container is stopped; directories are assigned
+// before their children are read, so new files inherit the project.
+func configureContainerStorage(ctx context.Context, id string, limit uint64, allowReduction, fresh bool) (containerStorageInfo, error) {
 	var result containerStorageInfo
 	device, err := containerStoreDevice()
 	if err != nil {
@@ -477,6 +483,7 @@ func configureContainerStorage(ctx context.Context, id string, limit uint64, all
 			return result, err
 		}
 	}
+	claim := claimsStaleStorage(fresh, config, container.ID)
 	if config.ContainerID != container.ID {
 		config.Complete = false
 	}
@@ -519,7 +526,7 @@ func configureContainerStorage(ctx context.Context, id string, limit uint64, all
 			return result, err
 		}
 		if !config.Complete {
-			if err := assignContainerProject(roots, config.Project); err != nil {
+			if err := assignProject(roots, config.Project, claim); err != nil {
 				return result, err
 			}
 			config.Complete = true
@@ -623,11 +630,11 @@ func (s *server) retireContainerStorage(id string) error {
 
 // Call with this container's lifecycle lock already held. The storage lock
 // sorts after lifecycle/image locks and is never held during an image pull.
-func (s *server) ensureContainerStorage(ctx context.Context, id string, limit uint64) error {
+func (s *server) ensureContainerStorage(ctx context.Context, id string, limit uint64, fresh bool) error {
 	unlock := s.locks.lock("storage-quotas")
 	defer unlock()
 	if limit == 0 {
-		info, err := configureContainerStorage(ctx, id, 0, false)
+		info, err := configureContainerStorage(ctx, id, 0, false, fresh)
 		if err != nil {
 			return err
 		}
@@ -636,7 +643,7 @@ func (s *server) ensureContainerStorage(ctx context.Context, id string, limit ui
 		}
 		limit = info.LimitBytes
 	}
-	_, err := configureContainerStorage(ctx, id, limit, false)
+	_, err := configureContainerStorage(ctx, id, limit, false, fresh)
 	return err
 }
 

@@ -29,3 +29,21 @@ func TestPrivateVolumeAccountingExcludesSharesAndOtherNamespaces(t *testing.T) {
 		t.Error("a named volume must not take an anonymous volume's name")
 	}
 }
+
+func TestOnlyStorageOfAContainerThatNeverRanIsClaimedFromAnotherProject(t *testing.T) {
+	saved := containerQuota{Version: 1, ID: "env-1", ContainerID: "abc", Project: 7, Complete: true}
+	if !claimsStaleStorage(true, containerQuota{}, "abc") {
+		t.Error("a container created in this request claims stale tags on its new storage")
+	}
+	if claimsStaleStorage(false, saved, "abc") {
+		t.Error("an adopted container that has run never claims another project's storage")
+	}
+	unfinished := saved
+	unfinished.Complete = false
+	if !claimsStaleStorage(false, unfinished, "abc") {
+		t.Error("a start finishes its own adoption that stopped part way")
+	}
+	if claimsStaleStorage(false, unfinished, "def") {
+		t.Error("another container's unfinished adoption is not this container's")
+	}
+}

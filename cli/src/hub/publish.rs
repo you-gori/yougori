@@ -396,6 +396,7 @@ fn gone(error: &str) -> bool {
 enum Failure {
     Gone,
     Resend(String, u64),
+    SmallerBatch,
     Other(String),
 }
 
@@ -438,6 +439,13 @@ async fn send_files<T: Transport>(transport: &T, uploads: &Uploads, progress: &m
                 uploads.save(progress);
             }
             Err(error) => {
+                // A proxy may accept less than the Hub advertises. Keep the same upload and
+                // acknowledged offsets, but lower its persisted batch size before retrying.
+                if error.contains("HTTP 413") && limit > 8 * 1024 {
+                    progress.batch_bytes = Some((limit / 2).max(8 * 1024) as u64);
+                    uploads.save(progress);
+                    return Err(Failure::SmallerBatch);
+                }
                 return Err(match resend_from(&error) {
                     Some((path, from)) => Failure::Resend(path, from),
                     None if gone(&error) => Failure::Gone,
@@ -464,6 +472,7 @@ async fn send<T: Transport>(transport: &T, uploads: &Uploads, upload: &Upload, i
     loop {
         match send_files(transport, uploads, &mut progress, upload).await {
             Ok(()) => {}
+            Err(Failure::SmallerBatch) => continue,
             Err(Failure::Resend(path, from)) if corrections < 8 && upload.files.contains_key(&path) => {
                 corrections += 1;
                 progress.resend(&path, from);
@@ -740,6 +749,7 @@ mod tests {
         file_requests: AtomicUsize,
         bytes: AtomicUsize,
         failures: Mutex<Vec<(usize, String)>>,
+        max_body: Option<usize>,
     }
 
     impl Transport for Fake {
@@ -747,6 +757,9 @@ mod tests {
             let body = body.unwrap_or_default();
             if path.ends_with("/files") {
                 let request = self.file_requests.fetch_add(1, Ordering::SeqCst) + 1;
+                if self.max_body.is_some_and(|limit| json_size(&body) > limit) {
+                    return Err("The Yougori Network returned HTTP 413".into());
+                }
                 let mut failures = self.failures.lock().unwrap();
                 if let Some(index) = failures.iter().position(|(at, _)| *at == request) {
                     return Err(failures.remove(index).1);
@@ -832,6 +845,26 @@ mod tests {
         assert_eq!(fake.created.load(Ordering::SeqCst), 1, "the same upload carries on; no new one counts toward the day's 20");
         assert_eq!(fake.bytes.load(Ordering::SeqCst), total, "no byte went up twice ({sent_before} before the stop)");
         assert!(uploads.load("acme/shop", "1.0.0", "template", &scan::digest_of(&upload.files), 1_000).is_none(), "a published upload is forgotten");
+    }
+
+    #[tokio::test]
+    async fn oversized_requests_shrink_without_recreating_the_upload_and_stop_at_a_floor() {
+        let root = tempfile::tempdir().unwrap();
+        let uploads = Uploads { root: root.path().to_path_buf() };
+        let upload = upload_of(sample());
+        let total: usize = upload.files.values().map(Vec::len).sum();
+        let fake = Fake { max_body: Some(90 * 1024), ..Default::default() };
+        send(&fake, &uploads, &upload, "acme/shop", 1_000).await.unwrap();
+        assert_eq!(fake.created.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.bytes.load(Ordering::SeqCst), total, "accepted bytes are never resent");
+        assert!(fake.uploads.lock().unwrap().values().all(|u| u.finished));
+        let fake = Fake { max_body: Some(1), ..Default::default() };
+        let error = send(&fake, &uploads, &upload, "acme/shop", 1_000).await.unwrap_err();
+        assert!(error.contains("HTTP 413"));
+        assert!(fake.file_requests.load(Ordering::SeqCst) <= 9, "shrinking is bounded");
+        let saved = uploads.load("acme/shop", "1.0.0", "template", &scan::digest_of(&upload.files), 1_000).unwrap();
+        assert_eq!(saved.batch_bytes, Some(8 * 1024));
+        assert!(fake.uploads.lock().unwrap().values().all(|u| !u.finished));
     }
 
     #[tokio::test]

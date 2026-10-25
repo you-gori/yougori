@@ -30,6 +30,9 @@ type workloadOptions struct {
 	Volumes              []workloadVolume  `json:"volumes"`
 	Binds                []workloadVolume  `json:"binds"`
 	Restart              string            `json:"restart"`
+	// restartMonitor: containerd still runs its own restart monitor (an older runtime
+	// configuration), which nerdctl's --restart needs. Set when the container is created.
+	restartMonitor bool
 }
 
 var workloadName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$`)
@@ -110,7 +113,7 @@ func (o workloadOptions) arguments() ([]string, error) {
 	if o.Restart != "" {
 		switch o.Restart {
 		case "no", "always", "unless-stopped", "on-failure":
-			args = append(args, "--restart", o.Restart)
+			args = append(args, restartArguments(o.Restart, o.restartMonitor)...)
 		default:
 			return nil, fmt.Errorf("invalid restart policy")
 		}
@@ -163,6 +166,22 @@ func (o workloadOptions) arguments() ([]string, error) {
 	}
 	return args, nil
 }
+
+// restartArguments: nerdctl's --restart refuses to work without containerd's restart monitor
+// ("no restart plugin found"), and current runtimes disable that monitor so the agent applies
+// the policy itself (restart_policy.go). There the policy goes on as the label --restart would
+// store; nerdctl start then marks the container running and the agent restarts it by the label.
+func restartArguments(policy string, monitor bool) []string {
+	switch {
+	case monitor:
+		return []string{"--restart", policy}
+	case policy == "no":
+		return nil
+	default:
+		return []string{"--label", restartPolicyLabel + "=" + policy}
+	}
+}
+
 func appendWorkload(args []string, image, command string, o workloadOptions) ([]string, error) {
 	if !validWorkloadImage(image) {
 		return nil, fmt.Errorf("invalid OCI image reference")
@@ -191,6 +210,9 @@ func appendWorkload(args []string, image, command string, o workloadOptions) ([]
 func appendResolvedWorkload(ctx context.Context, imageNamespace string, args []string, image, command string, o workloadOptions) ([]string, error) {
 	if !validWorkloadImage(image) {
 		return nil, fmt.Errorf("invalid OCI image reference")
+	}
+	if o.Restart != "" && o.Restart != "no" {
+		o.restartMonitor = restartMonitorRunning(ctx)
 	}
 	if strings.TrimSpace(command) == "" && ((o.Entrypoint != nil && o.Args == nil) || (o.Entrypoint == nil && o.Args != nil && len(*o.Args) == 0)) {
 		inspect := func() (commandOutput, error) {

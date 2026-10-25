@@ -52,6 +52,10 @@ pub fn wanted(source: &str) -> Result<Wanted, String> {
     if path.is_dir() {
         return path.canonicalize().map(|path| Wanted::Folder(client::plain(path))).map_err(|e| format!("Cannot open the folder {source}: {e}"));
     }
+    if !path.exists() {
+        let here = std::env::current_dir().map(|dir| client::plain(dir).display().to_string()).unwrap_or_else(|_| "this folder".into());
+        return Err(format!("There is no folder {} in {}. Go to the folder that holds it first (cd), give its full path, or use hub/PUBLISHER/NAME.", scan::shown(source), scan::shown(&here)));
+    }
     Err(format!("{} is not a Hub address or a template folder. Use hub/PUBLISHER/NAME, or ./FOLDER with a yougori-template.yaml.", scan::shown(source)))
 }
 
@@ -113,6 +117,15 @@ pub async fn prepare(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Prep
             let digest = scan::digest_of(&collected.files);
             examine(site, cache, collected.files, wanted.clone(), String::new(), digest, false, None, Vec::new(), false).await
         }
+    }
+}
+
+/// Whether a folder instance's template folder has changed since it was made (or last updated).
+/// A folder that cannot be read is left to [`prepare_own`] to explain.
+fn folder_changed(state: &State) -> bool {
+    match (&state.item, &state.path) {
+        (None, Some(path)) => scan::collect(Path::new(path)).is_ok_and(|collected| scan::digest_of(&collected.files) != state.digest),
+        _ => false,
     }
 }
 
@@ -252,12 +265,19 @@ impl Drop for Quiet {
 }
 
 /// This computer's facts for the requirement checks, and the engine's state.
-pub(super) async fn host(folder: &Folder, hub_tools: &BTreeMap<String, Tool>) -> Result<(Host, Value), String> {
+/// This computer as a template run sees it. `drive` is the drive an existing instance is stored
+/// on: its free space is the one that counts, not the default storage's.
+pub(super) async fn host(folder: &Folder, hub_tools: &BTreeMap<String, Tool>, drive: Option<&str>) -> Result<(Host, Value), String> {
     crate::client::start(None).await?;
     let state = crate::public::call("get_platform_state", json!({})).await?;
     let mut host = Host::here();
     host.memory_gb = state["host"]["totalMemoryGb"].as_f64();
-    host.free_disk_gb = state["host"]["totalStorageGb"].as_f64().zip(state["host"]["usedStorageGb"].as_f64()).map(|(total, used)| (total - used).max(0.0));
+    host.free_disk_gb = match drive {
+        Some(drive) => state["host"]["storageDrives"].as_array().into_iter().flatten()
+            .find(|d| d["path"].as_str().is_some_and(|path| crate::storage::same_drive(path, drive)))
+            .and_then(|d| d["freeGb"].as_f64()),
+        None => state["host"]["totalStorageGb"].as_f64().zip(state["host"]["usedStorageGb"].as_f64()).map(|(total, used)| (total - used).max(0.0)),
+    };
     let bundled_gpu = folder.tools.iter().any(|t| matches!(&t.source, Source::Bundled { tool, .. } if tool.gpu() != "none"));
     if folder.gpu() != "none" || bundled_gpu || hub_tools.values().any(|t| t.gpu() != "none") {
         host.gpu = crate::public::call("get_cuda_runtime_status", json!({})).await.ok().and_then(|status| status["supported"].as_bool());
@@ -292,12 +312,13 @@ pub fn questions(prepared: &Prepared) -> Vec<Question> {
             kind: Kind::Secret,
             required: false,
             default: None,
-            when: None,
+            when: Vec::new(),
             hint: format!("Stored as a deployment secret and given to {} as {variable}. Leave it empty to sign in later.", tool.name()),
             choices: Vec::new(),
             pattern: None,
             min: None,
             max: None,
+            min_length: None,
         });
     }
     all
@@ -357,6 +378,9 @@ pub fn given(options: &Options, questions: &[Question], secrets: Option<&[u8]>) 
             }
             let text = match value {
                 Value::String(text) => text.clone(),
+                Value::Array(items) if questions.iter().any(|q| &q.id == id && q.kind == Kind::MultiChoice) => {
+                    items.iter().map(|v| v.as_str().ok_or_else(|| format!("The --inputs list for {id} must contain choice values."))).collect::<Result<Vec<_>, _>>()?.join(",")
+                }
                 Value::Number(number) => number.to_string(),
                 Value::Bool(yes) => if *yes { "yes" } else { "no" }.to_owned(),
                 _ => return Err(format!("The --inputs value for {id} must be text, a number or true/false.")),
@@ -433,9 +457,23 @@ pub fn script_answers(questions: &[Question], given: &Given, already: &BTreeMap<
 }
 
 /// One question at the terminal, with Back. `None` when an optional question was left empty.
-pub(super) fn ask_question(question: &Question, previous: Option<&String>, domains: &[String]) -> Result<Option<String>, String> {
+/// `questions` are the ones this run asks: a template's choice of quick link or domain and its
+/// domain question are asked as one list, as `yougori launch` asks it (see [`access_domain`]).
+pub(super) async fn ask_question<Q: std::borrow::Borrow<Question>>(question: &Question, questions: &[Q], answers: &mut BTreeMap<String, String>, domains: &[String]) -> Result<Option<String>, String> {
+    if let Some(domain) = access_domain(question, questions) {
+        return ask_access(question, domain, answers, domains).await;
+    }
+    let previous = answers.get(&question.id).cloned();
+    let previous = previous.as_ref();
     let note: Vec<String> = if question.hint.is_empty() { Vec::new() } else { vec![question.hint.clone()] };
     match question.kind {
+        Kind::MultiChoice => {
+            let choices: Vec<ui::Choice> = question.choices.iter().map(|c| ui::Choice::new(c.label.clone(), c.hint.clone())).collect();
+            let wanted = previous.or(question.default.as_ref()).map(String::as_str).unwrap_or("");
+            let initial = question.choices.iter().enumerate().filter_map(|(i, c)| wanted.split(',').any(|v| v == c.value).then_some(i)).collect::<Vec<_>>();
+            let selected = ui::multiselect(&question.question, &note, &choices, &initial, question.required)?;
+            Ok(Some(selected.iter().map(|i| question.choices[*i].value.as_str()).collect::<Vec<_>>().join(",")))
+        }
         Kind::Choice => {
             let choices: Vec<ui::Choice> = question.choices.iter().map(|c| ui::Choice::new(c.label.clone(), c.hint.clone())).collect();
             let wanted = previous.or(question.default.as_ref());
@@ -448,20 +486,13 @@ pub(super) fn ask_question(question: &Question, previous: Option<&String>, domai
             let index = ui::select(&question.question, &note, &[ui::Choice::new("Yes", ""), ui::Choice::new("No", "")], initial)?;
             Ok(Some(if index == 0 { "yes" } else { "no" }.into()))
         }
+        // Your own domain, or one already saved: the same list without the template's other answers.
         Kind::Domain => {
-            if domains.is_empty() {
-                let note = vec![
-                    "No domains are saved on this computer yet.".to_owned(),
-                    "Save one with yougori domain add HOST --tunnel-port PORT --file - --yes, then run this again,".to_owned(),
-                    "or go back and choose a quick link.".to_owned(),
-                ];
-                ui::select(&question.question, &note, &[ui::Choice::new("Cancel", "nothing was created")], 0)?;
-                return Err(crate::wire::cancelled("Cancelled. Nothing was created. Save a domain with yougori domain add, then run the template again."));
-            }
-            let choices: Vec<ui::Choice> = domains.iter().map(|d| ui::Choice::new(d.clone(), "saved domain")).collect();
-            let initial = previous.and_then(|p| domains.iter().position(|d| d == p)).unwrap_or(0);
-            let index = ui::select(&question.question, &note, &choices, initial)?;
-            Ok(Some(domains[index].clone()))
+            let initial = previous.and_then(|p| domains.iter().position(|d| d == p)).map_or(0, |i| i + 1);
+            Ok(match pick_domain(&question.question, &note, Vec::new(), initial, domains).await? {
+                Picked::Domain(name) => Some(name),
+                Picked::Before(_) => None,
+            })
         }
         Kind::Text | Kind::Number | Kind::Secret => {
             let secret = question.kind == Kind::Secret;
@@ -486,6 +517,108 @@ pub(super) fn ask_question(question: &Question, previous: Option<&String>, domai
     }
 }
 
+/// A template's "who can open it" pair: a choice of quick, domain (and none) whose domain
+/// question is asked only for domain. In a terminal both are one list, as `yougori launch` asks.
+fn access_domain<'a, Q: std::borrow::Borrow<Question>>(question: &Question, questions: &'a [Q]) -> Option<&'a Question> {
+    if question.kind != Kind::Choice || !question.choices.iter().any(|c| c.value == "domain")
+        || !question.choices.iter().all(|c| matches!(c.value.as_str(), "quick" | "domain" | "none")) {
+        return None;
+    }
+    let when = [format::Condition { input: question.id.clone(), values: vec!["domain".into()], contains: false }];
+    questions.iter().map(Q::borrow).find(|q| q.kind == Kind::Domain && q.when == when)
+}
+
+/// Whether asking `question` needs the saved domains: a domain question, or an access question
+/// asked together with one.
+pub(super) fn wants_domains<Q: std::borrow::Borrow<Question>>(question: &Question, questions: &[Q]) -> bool {
+    question.kind == Kind::Domain || access_domain(question, questions).is_some()
+}
+
+/// A domain question its access question already answered: skipped, so Back passes over it.
+pub(super) fn absorbed<Q: std::borrow::Borrow<Question>>(question: &Question, questions: &[Q]) -> bool {
+    question.kind == Kind::Domain && questions.iter().any(|q| access_domain(q.borrow(), questions).is_some_and(|d| d.id == question.id))
+}
+
+/// The access question as one list: the template's other answers (such as Quick link), Your own
+/// domain, then every saved domain. Picking a domain answers the domain question too.
+async fn ask_access(access: &Question, domain: &Question, answers: &mut BTreeMap<String, String>, domains: &[String]) -> Result<Option<String>, String> {
+    let note: Vec<String> = if access.hint.is_empty() { Vec::new() } else { vec![access.hint.clone()] };
+    let others: Vec<&format::Option_> = access.choices.iter().filter(|c| c.value != "domain").collect();
+    let initial = match answers.get(&access.id).or(access.default.as_ref()).map(String::as_str) {
+        Some("domain") => others.len() + answers.get(&domain.id).and_then(|name| domains.iter().position(|d| d == name)).map_or(0, |i| i + 1),
+        Some(value) => others.iter().position(|c| c.value == value).unwrap_or(0),
+        None => 0,
+    };
+    let choices: Vec<ui::Choice> = others.iter().map(|c| ui::Choice::new(c.label.clone(), c.hint.clone())).collect();
+    match pick_domain(&access.question, &note, choices, initial, domains).await? {
+        Picked::Domain(name) => {
+            answers.insert(domain.id.clone(), name);
+            Ok(Some("domain".into()))
+        }
+        Picked::Before(index) => {
+            answers.remove(&domain.id);
+            Ok(Some(others[index].value.clone()))
+        }
+    }
+}
+
+/// What [`pick_domain`] picked: one of the answers before the domains, or a domain.
+enum Picked {
+    Before(usize),
+    Domain(String),
+}
+
+/// `before` (the template's other answers), Your own domain and the saved domains, in one list.
+/// A new domain is set up and saved before it is returned.
+async fn pick_domain(title: &str, note: &[String], before: Vec<ui::Choice>, initial: usize, domains: &[String]) -> Result<Picked, String> {
+    let own = before.len();
+    let mut choices = before;
+    choices.push(ui::Choice::new("Your own domain", "set up and save a Cloudflare tunnel"));
+    choices.extend(domains.iter().map(|d| ui::Choice::new(d.clone(), "saved domain")));
+    let mut selection = initial;
+    let mut earlier: Option<(String, u16)> = None;
+    loop {
+        selection = ui::select(title, note, &choices, selection)?;
+        if selection < own {
+            return Ok(Picked::Before(selection));
+        }
+        if selection > own {
+            return Ok(Picked::Domain(domains[selection - own - 1].clone()));
+        }
+        // The questions yougori launch asks for a new domain; Back returns to this list.
+        let saved = saved_domain_list().await;
+        let (hostname, token, host_port) = match crate::own_domain::new_domain(&saved, earlier.as_ref().map(|(name, port)| (name.as_str(), *port))) {
+            Ok(answer) => answer,
+            Err(error) if error == ui::BACK => continue,
+            Err(error) => return Err(error),
+        };
+        earlier = Some((hostname.clone(), host_port));
+        let token = Zeroizing::new(token);
+        match save_domain(&hostname, &token, host_port).await {
+            Ok(name) => return Ok(Picked::Domain(name)),
+            Err(error) if error == ui::CANCELLED => return Err(error),
+            // Shown, then the list again: another name, port or token, or a saved domain.
+            Err(error) => ui::warn(&error),
+        }
+    }
+}
+
+/// Saves a new domain for this run and later ones, as yougori launch does; the token goes to the
+/// OS credential vault. Then says which route to add in Cloudflare.
+async fn save_domain(hostname: &str, token: &str, host_port: u16) -> Result<String, String> {
+    let saved = wait(true, "Saving your domain", crate::public::call("add_saved_domain",
+        json!({"hostname": hostname, "token": token, "hostPort": host_port}))).await?;
+    let hostname = saved["hostname"].as_str().unwrap_or(hostname).to_ascii_lowercase();
+    ui::info(&format!("In Cloudflare, open this tunnel and add a Published application route:\nHostname  {hostname}\nType      HTTP\nURL       http://localhost:{host_port}"));
+    Ok(hostname)
+}
+
+/// The saved domains as the engine lists them, for the new-domain questions' checks.
+async fn saved_domain_list() -> Vec<Value> {
+    let value = crate::public::call("list_saved_domains", json!({})).await.unwrap_or(Value::Null);
+    value.as_array().or_else(|| value["domains"].as_array()).cloned().unwrap_or_default()
+}
+
 /// The saved domains' names, for domain questions and their checks.
 pub(super) async fn saved_domains() -> Vec<String> {
     let value = crate::public::call("list_saved_domains", json!({})).await.unwrap_or(Value::Null);
@@ -494,11 +627,11 @@ pub(super) async fn saved_domains() -> Vec<String> {
 }
 
 /// The values placeholders take for this instance.
-pub(super) fn values(state: &State, public: &BTreeMap<String, String>) -> render::Values {
+pub(super) fn values(state: &State, public: &BTreeMap<String, String>, prepared: &Prepared) -> render::Values {
     render::Values {
         instance: state.instance.clone(),
         inputs: state.answers.clone(),
-        secrets: state.secrets.iter().filter(|id| !id.starts_with("tool.")).map(|id| (id.clone(), render::secret_name(&state.instance, id))).collect(),
+        secrets: state.secrets.iter().filter(|id| prepared.folder.questions.iter().any(|q| &q.id == *id && q.kind == Kind::Secret && q.asked(&state.answers))).map(|id| (id.clone(), render::secret_name(&state.instance, id))).collect(),
         public: public.clone(),
         names: state.names.clone(),
     }
@@ -513,6 +646,7 @@ pub(super) fn sandbox_name(state: &State, key: &str) -> String {
 pub(super) fn adjust(state: &State, prepared: &Prepared) -> render::Adjust {
     let mut secrets: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     for use_ in &prepared.folder.tools {
+        if !use_.selected(&state.answers) { continue; }
         let Some(tool) = tool_of(prepared, use_) else { continue };
         if let Some(variable) = tool.key_variable() {
             if state.secrets.contains(&format!("tool.{}", tool.name())) {
@@ -520,7 +654,7 @@ pub(super) fn adjust(state: &State, prepared: &Prepared) -> render::Adjust {
             }
         }
     }
-    render::Adjust { without_gpu: state.without_gpu, secrets }
+    render::Adjust { without_gpu: state.without_gpu, secrets, storage_drive: state.storage_drive.clone() }
 }
 
 /// The deployment secret's name for an answer: inputs keep their ID; tool keys get [`key_id`].
@@ -536,6 +670,10 @@ pub(super) fn stored_name(instance: &str, id: &str) -> String {
 pub(super) fn friendly(error: String, instance: &str) -> String {
     if error.contains("Another project folder already uses this project name") {
         return format!("Another Yougori project is already called {instance}. Choose another instance name with --name; nothing else was changed.");
+    }
+    if let Some(at) = error.find(" needs attention; inspect its error before retrying") {
+        let name = error[..at].rsplit(": ").next().unwrap_or(&error[..at]).trim();
+        return format!("{name} stopped with an error. Read it with yougori logs {name}. To make it again, delete it with yougori env delete {name} --yes and run yougori template continue {instance}; its volumes stay.");
     }
     if let Some(at) = error.find(" already exists outside this project") {
         let name = error[..at].rsplit(": ").next().unwrap_or(&error[..at]).trim();
@@ -561,6 +699,42 @@ pub(super) fn check_live(state: &mut State, live: &Value) -> Vec<String> {
 /// Creates (or brings up to date) the instance's sandboxes with the same reconciliation as
 /// `yougori up`, and records what the engine made: each sandbox's ID and real name. A sandbox
 /// that was replaced or made again has its tools and public access set up again.
+async fn apply_sandboxes<F, Fut>(state: &State, params: Value, mut call: F) -> Result<Value, String>
+where
+    F: FnMut(&'static str, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    let declared: BTreeSet<&str> = state.review["environments"].as_array().into_iter().flatten()
+        .filter_map(|e| e["name"].as_str()).collect();
+    let owned = |live: &Value| instances::sandboxes(state, live).into_iter()
+        .filter(|e| !e.replaced && declared.contains(e.key.as_str())).collect::<Vec<_>>();
+    let live = call("get_platform_state", json!({})).await?;
+    // Stop only this template's current sandboxes. A name alone never proves ownership.
+    // A stopped instance stays stopped until the project starts it with its new settings.
+    for sandbox in owned(&live) {
+        if live["environments"].as_array().into_iter().flatten().any(|e| e["id"] == sandbox.id
+            && matches!(e["status"].as_str(), Some("running" | "paused"))) {
+            call("set_environment_status", json!({"environmentId": sandbox.id, "status": "stopped"})).await?;
+        }
+    }
+    match call("project_action", params.clone()).await {
+        Err(error) if error.contains("stop the container before changing hardware or network access") => {
+            // Older engines can have a stale stopped record while the runtime is running.
+            // A normal restart reconciles that lifecycle, then an explicit stop applies it
+            // at the runtime. Retry this idempotent project only once, never arbitrary errors.
+            let live = call("get_platform_state", json!({})).await?;
+            let sandboxes = owned(&live);
+            if sandboxes.is_empty() { return Err(error); }
+            for sandbox in sandboxes {
+                call("restart_environment", json!({"environmentId": sandbox.id})).await?;
+                call("set_environment_status", json!({"environmentId": sandbox.id, "status": "stopped"})).await?;
+            }
+            call("project_action", params).await
+        }
+        result => result,
+    }
+}
+
 pub(super) async fn up(state: &mut State, instances: &Instances, interactive: bool) -> Result<(), String> {
     let path = instances.folder(&state.instance).join(&state.project);
     if let Some(key) = instances::project_key(&path) {
@@ -570,25 +744,41 @@ pub(super) async fn up(state: &mut State, instances: &Instances, interactive: bo
     state.keys.extend(declared.iter().cloned());
     let params = json!({"path": path, "action": "up"});
     let count = declared.len();
-    let label = format!("Creating {count} {}", if count == 1 { "sandbox" } else { "sandboxes" });
+    let label = format!("Preparing {count} {}", if count == 1 { "sandbox" } else { "sandboxes" });
     let result = if interactive {
         let cancel = Arc::new(AtomicBool::new(false));
         let _keys = ui::Interrupts::watch(cancel.clone());
-        let mut task = ui::loading_task(&label);
-        let result = crate::public::call_with_progress_cancellable("project_action", params, |measurement| match measurement["phase"].as_str() {
-            Some("starting") => task.set("Starting the sandboxes"),
-            Some("publishing") => task.set("Connecting the sandboxes"),
-            Some("readiness") => task.set("Checking that the sandboxes are ready"),
-            _ => {}
-        }, &cancel).await;
+        let task = std::sync::Mutex::new(ui::loading_task(&label));
+        let result = apply_sandboxes(state, params, |method, params| {
+            let task = &task;
+            let cancel = &cancel;
+            async move {
+                if let Ok(mut task) = task.lock() {
+                    match method {
+                        "restart_environment" => task.set("Restarting the sandboxes to apply the update"),
+                        "set_environment_status" => task.set("Stopping the sandboxes before applying settings"),
+                        _ => {}
+                    }
+                }
+                crate::public::call_with_progress_cancellable(method, params, |measurement| {
+                    if let Ok(mut task) = task.lock() { match measurement["phase"].as_str() {
+                        Some("starting") => task.set("Starting the sandboxes"),
+                        Some("publishing") => task.set("Connecting the sandboxes"),
+                        Some("readiness") => task.set("Checking that the sandboxes are ready"),
+                        _ => {}
+                    } }
+                }, cancel).await
+            }
+        }).await;
+        let task = task.into_inner().unwrap_or_else(|e| e.into_inner());
         match &result {
             Ok(_) => task.done(&format!("{} ready", if count == 1 { "Sandbox" } else { "Sandboxes" })),
             Err(error) if crate::wire::cancellation(error).is_some() => task.clear(),
-            Err(_) => task.fail("The sandboxes were not all created"),
+            Err(_) => task.fail("The sandbox update could not finish"),
         }
         result
     } else {
-        crate::public::call("project_action", params).await
+        apply_sandboxes(state, params, crate::public::call).await
     };
     let live = crate::public::call("get_platform_state", json!({})).await.ok();
     match result {
@@ -638,6 +828,7 @@ fn record(state: &mut State, made: &BTreeMap<String, String>, live: Option<&Valu
 /// the others go on; continuing retries only the ones that did not finish.
 pub(super) async fn install_tools(state: &mut State, instances: &Instances, prepared: &Prepared, interactive: bool) -> Result<(), String> {
     for use_ in &prepared.folder.tools {
+        if !use_.selected(&state.answers) { continue; }
         let key = format!("{}/{}", use_.environment, use_.name());
         if state.tools.get(&key).is_some_and(|part| part.is("done")) {
             continue;
@@ -648,9 +839,11 @@ pub(super) async fn install_tools(state: &mut State, instances: &Instances, prep
             continue;
         };
         let part = match (&use_.source, tool_of(prepared, use_)) {
-            (Source::BuiltIn(name), _) if interactive => match crate::terminal::setup_tool(&id, name).await {
+            (Source::BuiltIn(name), _) if interactive => match crate::terminal::setup_tool_in_run(&id, name).await {
                 Ok(crate::terminal::SessionExit::Completed) => Part::done(),
                 Ok(_) => Part::step(format!("yougori {name} --environment {}", shell_words::quote(&sandbox))),
+                // Ctrl+C stops the whole run, which says how to continue; this tool is retried then.
+                Err(error) if error == ui::CANCELLED => return Err(error),
                 Err(error) => Part::failed(error),
             },
             (Source::BuiltIn(name), _) => Part::step(format!("yougori {name} --environment {}", shell_words::quote(&sandbox))),
@@ -659,6 +852,50 @@ pub(super) async fn install_tools(state: &mut State, instances: &Instances, prep
             (Source::Bundled { .. }, None) => Part::failed("The tool's file could not be read.".to_owned()),
         };
         state.tools.insert(key, part);
+        save(instances, state)?;
+    }
+    Ok(())
+}
+
+/// Uses opt-in credential import, then a separate window for each selected subscription.
+/// Scripted runs leave commands for a person and never read credentials from the host.
+async fn signin_tools(state: &mut State, instances: &Instances, prepared: &Prepared, interactive: bool) -> Result<(), String> {
+    signin_tools_with_window(state, instances, prepared, interactive, crate::terminal::open_subscription).await
+}
+
+async fn signin_tools_with_window(state: &mut State, instances: &Instances, prepared: &Prepared, interactive: bool,
+    mut open: impl FnMut(&str, &str, bool) -> Result<(), String>) -> Result<(), String> {
+    for use_ in &prepared.folder.tools {
+        if !use_.needs_signin(&state.answers) { continue; }
+        let Source::BuiltIn(name) = &use_.source else { continue };
+        let key = format!("{}/{}", use_.environment, name);
+        if state.signins.get(&key).is_some_and(|p| p.is("done") || p.is("opened")) { continue; }
+        let command = state.continue_command();
+        if !interactive || !state.tools.get(&key).is_some_and(|p| p.is("done")) {
+            state.signins.insert(key, Part::step(command));
+            continue;
+        }
+        let id = state.environments.get(&use_.environment).ok_or("The tool's sandbox was not created.")?.clone();
+        ui::info(&format!("{name} sign-in opens in its own window. Finish there and close that window when ready. Setup continues here."));
+        if let Some(hint) = &use_.signin_hint {
+            ui::info(&render::render(hint, &values(state, &BTreeMap::new(), prepared))?);
+        }
+        let outcome = async {
+            let mut copy = use_.copy_credentials(&state.answers).unwrap_or(false);
+            if use_.copy_credentials(&state.answers).is_some() {
+                // Nothing to copy means the sandbox signs in on its own: a new-account window.
+                copy = crate::tool_credentials::configure_selected(&id, name, copy).await?;
+            } else {
+                crate::tool_credentials::configure(&id, name, false, &mut copy).await?;
+            }
+            open(&id, name, !copy)?;
+            crate::terminal::subscription_reopen_command(&id, name, !copy)
+        }.await;
+        let part = match outcome {
+            Ok(reopen) => Part { status: "opened".into(), message: Some(reopen) },
+            Err(error) => Part::failed(error),
+        };
+        state.signins.insert(key, part);
         save(instances, state)?;
     }
     Ok(())
@@ -713,7 +950,7 @@ fn quick_url(value: &str) -> bool {
 }
 
 fn public_addresses(state: &State, prepared: &Prepared) -> Result<Vec<Address>, String> {
-    let values = values(state, &BTreeMap::new());
+    let values = values(state, &BTreeMap::new(), prepared);
     prepared.folder.template.public.iter().map(|entry| {
         let access = render::render(entry.access.as_deref().unwrap_or("quick"), &values)?;
         let domain = if access == "domain" {
@@ -826,9 +1063,10 @@ where
 /// sandbox called by its real name.
 pub(super) fn finish(state: &mut State, prepared: &Prepared) -> Result<(), String> {
     let public: BTreeMap<String, String> = state.public.iter().filter_map(|a| a.url.clone().map(|url| (a.environment.clone(), url))).collect();
-    let values = values(state, &public);
+    let values = values(state, &public, prepared);
     let mut steps = Vec::new();
     for step in &prepared.folder.template.steps {
+        if !format::conditions_match(&format::conditions(&step.when, &prepared.folder.questions)?, &state.answers) { continue; }
         steps.push(Step {
             title: render::render(step.title.as_deref().unwrap_or_default(), &values)?,
             detail: step.detail.as_deref().map(|d| render::render(d, &values)).transpose()?,
@@ -842,6 +1080,7 @@ pub(super) fn finish(state: &mut State, prepared: &Prepared) -> Result<(), Strin
         }
     }
     for use_ in &prepared.folder.tools {
+        if !use_.selected(&state.answers) { continue; }
         let Some(tool) = tool_of(prepared, use_) else { continue };
         let sandbox = sandbox_name(state, &use_.environment);
         let shell = format!("yougori terminal {}", shell_words::quote(&sandbox));
@@ -857,6 +1096,15 @@ pub(super) fn finish(state: &mut State, prepared: &Prepared) -> Result<(), Strin
                 command: Some(shell),
             }),
             _ => {}
+        }
+    }
+    for (key, part) in &state.signins {
+        if !part.is("done") && !steps.iter().any(|s| s.command == part.message && part.message.is_some()) {
+            steps.push(Step { title: format!("Finish signing in to {}", key.split('/').next_back().unwrap_or(key)), detail: Some(if part.is("opened") {
+                "Finish in the separate sign-in window, then close it. Setup continues here. The provider confirms access; opening a window does not verify your account. Use this command to reopen the window."
+            } else {
+                "Continue setup to choose credentials and open a separate sign-in window. The provider confirms access."
+            }.into()), command: part.message.clone() });
         }
     }
     state.steps.retain(|s| s.title.starts_with("Check the sandboxes"));
@@ -888,6 +1136,7 @@ pub fn result(state: &State, live: Option<&Value>) -> Value {
         "outputs": state.outputs.iter().map(|(label, value)| json!({"label": label, "value": value})).collect::<Vec<_>>(),
         "steps": state.steps,
         "tools": state.tools,
+        "signins": state.signins,
         "next": state.continue_command(),
         "continue": state.continue_command(),
         "remove": state.remove_command(),
@@ -1009,13 +1258,19 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
     let site = Site::configured()?;
     let cache = Cache::standard()?;
     let prepared = wait(interactive, "Downloading and checking the template", prepare(&site, &cache, &wanted)).await.map_err(nothing_created)?;
-    let (host, engine) = wait(interactive, "Checking this computer", host(&prepared.folder, &prepared.hub_tools)).await.map_err(nothing_created)?;
+    let (host, engine) = wait(interactive, "Checking this computer", host(&prepared.folder, &prepared.hub_tools, None)).await.map_err(nothing_created)?;
     let requirements = review::requirements(&prepared.folder, &prepared.hub_tools, &prepared.review, &host);
     if !requirements.stops.is_empty() {
         return Err(format!("{}\nNothing was created.", requirements.stops.join("\n")));
     }
     let environments: Vec<String> = prepared.folder.project.environments.keys().cloned().collect();
-    let taken: BTreeSet<String> = engine["environments"].as_array().into_iter().flatten().filter_map(|e| e["name"].as_str()).map(str::to_ascii_lowercase).collect();
+    let mut taken: BTreeSet<String> = engine["environments"].as_array().into_iter().flatten().filter_map(|e| e["name"].as_str()).map(str::to_ascii_lowercase).collect();
+    // A removed instance keeps its volumes (its accounts, data and models) unless they were
+    // deleted. A new copy never picks up such a name by itself, which would hand it that data.
+    let volumes: Vec<String> = prepared.folder.project.environments.values().flat_map(|e| e.volumes.iter()).filter(|v| !v.bind).map(|v| v.source.clone()).collect();
+    let kept = if volumes.is_empty() { Value::Null } else { crate::public::call("list_volumes", json!({})).await.unwrap_or(Value::Null) };
+    taken.extend(kept["volumes"].as_array().into_iter().flatten().filter_map(|v| v["name"].as_str()).map(str::to_ascii_lowercase));
+    let suffixes: Vec<String> = environments.iter().chain(&volumes).cloned().collect();
     let name = match &options.name {
         Some(name) => {
             if let Some(problem) = instances::name_problem(name, &environments) {
@@ -1026,7 +1281,7 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
             }
             name.clone()
         }
-        None => instances::available(&base, &environments, &instances.names(), &taken),
+        None => instances::available(&base, &suffixes, &instances.names(), &taken),
     };
     let questions = questions(&prepared);
     let domains = if questions.iter().any(|q| q.kind == Kind::Domain) { wait(interactive, "Reading your saved domains", async { Ok(saved_domains().await) }).await.map_err(nothing_created)? } else { Vec::new() };
@@ -1040,16 +1295,23 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
             "dryRun": true, "template": {"ref": prepared.label(), "version": prepared.version, "verified": prepared.verified, "digest": prepared.digest, "unverifiedTools": prepared.unverified_tools},
             "instance": name, "review": prepared.review, "pageDiffers": prepared.differs, "withoutGpu": requirements.without_gpu,
             "notes": notes.iter().chain(&prepared.notices).collect::<Vec<_>>(),
-            "questions": questions.iter().map(|q| json!({"id": q.id, "question": q.question, "type": q.kind.name(), "required": q.required, "default": q.default, "choices": q.choices.iter().map(|c| &c.value).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "questions": questions.iter().map(|q| json!({"id": q.id, "question": q.question, "type": q.kind.name(), "required": q.required, "default": q.default, "when": q.when, "minLength": q.min_length, "choices": q.choices.iter().map(|c| &c.value).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         }));
     }
     let mut answers: BTreeMap<String, String> = BTreeMap::new();
     let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
     let mut without_gpu = false;
+    let mut storage_drive: Option<String> = None;
     let pc = prepared.folder.pc_access();
     if interactive {
         show_review(&prepared, &notes);
         let cancel = || crate::wire::cancelled("Cancelled. Nothing was created.");
+        // Every sandbox goes on one drive, asked first as yougori launch asks it.
+        let host = wait(true, "Reading this computer's drives", async {
+            Ok(crate::public::call("refresh_host_metrics", json!({})).await.map(|mut value| value["host"].take()).unwrap_or(Value::Null))
+        }).await?;
+        let needed = storage_needed(&prepared.folder.project);
+        let count = prepared.folder.project.environments.len();
         let mut steps = ui::Wizard::new();
         loop {
             let asked: Result<bool, String> = match steps.step() {
@@ -1070,7 +1332,14 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
                     Ok(_) => return Err(cancel()),
                     Err(error) => Err(error),
                 },
-                2 if pc => {
+                2 => crate::storage::choose_drive(&host, None, needed.min(STORAGE_TO_START), true, storage_drive.as_deref(),
+                        &format!("Where should {name} be stored?"),
+                        &format!("Its {count} {} go on this drive. They start small and can grow to {needed} GB together.", if count == 1 { "sandbox" } else { "sandboxes" }))
+                    .map(|selection| {
+                        storage_drive = selection.drive;
+                        true
+                    }),
+                3 if pc => {
                     let choices = [ui::Choice::new("Allow access to these folders", "only the folders listed"), ui::Choice::new("Cancel", "nothing is created")];
                     match ui::select("This template uses folders on this computer", &["See PC access in the review above: its sandboxes can read (or change) those folders.".to_owned()], &choices, 1) {
                         Ok(0) => Ok(true),
@@ -1078,15 +1347,17 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
                         Err(error) => Err(error),
                     }
                 }
-                2 => Ok(false),
+                3 => Ok(false),
                 n => {
-                    let Some(question) = questions.get(n - 3) else { break };
+                    let Some(question) = questions.get(n - 4) else { break };
                     if !question.asked(&answers) {
                         answers.remove(&question.id);
                         secrets.remove(&question.id);
                         Ok(false)
+                    } else if absorbed(question, &questions) {
+                        Ok(false)
                     } else {
-                        ask_question(question, answers.get(&question.id), &domains).map(|answer| {
+                        ask_question(question, &questions, &mut answers, &domains).await.map(|answer| {
                             remember_answer(question, answer, &mut answers, &mut secrets);
                             true
                         })
@@ -1137,10 +1408,21 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
         answers,
         allow_pc_access: pc,
         without_gpu,
+        storage_drive,
         review: prepared.review.clone(),
         ..Default::default()
     };
     build(&mut state, &instances, &prepared, secrets, interactive, &site, Ending::default()).await
+}
+
+/// The free space a drive needs for a run to start: images and first files. Storage limits are
+/// maximums the sandboxes grow into, so their sum is shown, not required.
+const STORAGE_TO_START: u32 = 10;
+
+/// The disk a project's sandboxes may use together, in whole GB.
+fn storage_needed(project: &crate::manifest::Project) -> u32 {
+    let total: f64 = project.environments.values().filter_map(|e| crate::manifest::gib(&e.storage).ok()).sum();
+    total.ceil().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
 fn remember_answer(question: &Question, answer: Option<String>, answers: &mut BTreeMap<String, String>, secrets: &mut BTreeMap<String, Zeroizing<String>>) {
@@ -1188,7 +1470,14 @@ pub async fn continue_instance(name: &str, options: Options, interactive: bool, 
     let instances = Instances::standard()?;
     let mut lock = instances.lock(name)?;
     let mut state = instances.get(name)?;
-    if state.updating.is_some() {
+    // An update that stopped carries on; so does a template folder edited since: it cannot be
+    // continued as it was, and the update shows what changes before it applies anything.
+    if state.updating.is_some() || folder_changed(&state) {
+        // Continuing starts a stopped instance; the update it becomes must not stop it again.
+        if state.updating.is_none() && state.phase == "stopped" {
+            state.phase = "incomplete".into();
+            instances.save(&mut state)?;
+        }
         drop(lock);
         return super::lifecycle::update(name, options, interactive).await;
     }
@@ -1200,7 +1489,7 @@ pub async fn continue_instance(name: &str, options: Options, interactive: bool, 
     let site = Site::configured()?;
     let cache = Cache::standard()?;
     let prepared = wait(interactive, &format!("Checking {name}'s files"), prepare_own(&site, &cache, &state)).await.map_err(nothing_changed)?;
-    let (host, engine) = wait(interactive, "Checking this computer", host(&prepared.folder, &prepared.hub_tools)).await.map_err(nothing_changed)?;
+    let (host, engine) = wait(interactive, "Checking this computer", host(&prepared.folder, &prepared.hub_tools, state.storage_drive.as_deref())).await.map_err(nothing_changed)?;
     let requirements = review::requirements(&prepared.folder, &prepared.hub_tools, &prepared.review, &host);
     if !requirements.stops.is_empty() {
         return Err(format!("{}\nNothing was changed.", requirements.stops.join("\n")));
@@ -1213,12 +1502,13 @@ pub async fn continue_instance(name: &str, options: Options, interactive: bool, 
     let questions = questions(&prepared);
     let stored: BTreeSet<String> = state.secrets.iter().cloned().collect();
     let missing: Vec<&Question> = questions.iter().filter(|q| {
-        q.asked(&state.answers) && q.required && if q.kind == Kind::Secret { !stored.contains(&q.id) } else { !state.answers.contains_key(&q.id) }
+        if q.kind == Kind::Secret { !stored.contains(&q.id) } else { !state.answers.contains_key(&q.id) }
     }).collect();
-    let tools_or_access_missing = state.tools.values().chain(state.public.iter().map(|a| &a.part)).any(|p| p.is("pending") || p.is("failed"));
-    let declared_differs = prepared.folder.tools.len() != state.tools.len() || prepared.folder.template.public.len() != state.public.len();
+    let tools_or_access_missing = state.tools.values().chain(state.signins.values()).chain(state.public.iter().map(|a| &a.part)).any(|p| p.is("pending") || p.is("failed") || (interactive && p.is("step")));
+    let declared_differs = prepared.folder.tools.iter().filter(|t| t.selected(&state.answers)).count() != state.tools.len() || prepared.folder.template.public.len() != state.public.len();
     let needs_gpu_choice = requirements.without_gpu && !state.without_gpu;
-    if state.create.is("done") && !tools_or_access_missing && !declared_differs && missing.is_empty() && !needs_gpu_choice && state.phase != "stopped" {
+    let required_missing = missing.iter().any(|q| q.required && q.asked(&state.answers));
+    if options.inputs.is_empty() && options.inputs_file.is_none() && !options.secrets_stdin && state.create.is("done") && !tools_or_access_missing && !declared_differs && !required_missing && !needs_gpu_choice && state.phase != "stopped" {
         drop(lock);
         let value = super::lifecycle::status(Some(name), interactive).await?;
         if interactive {
@@ -1271,11 +1561,11 @@ pub async fn continue_instance(name: &str, options: Options, interactive: bool, 
                 2 => Ok(false),
                 n => {
                     let Some(question) = missing.get(n - 3) else { break };
-                    if !question.asked(&answers) {
+                    if !question.asked(&answers) || absorbed(question, &missing) {
                         Ok(false)
                     } else {
-                        let domains = if question.kind == Kind::Domain { saved_domains().await } else { Vec::new() };
-                        ask_question(question, answers.get(&question.id), &domains).map(|answer| {
+                        let domains = if wants_domains(question, &missing) { saved_domains().await } else { Vec::new() };
+                        ask_question(question, &missing, &mut answers, &domains).await.map(|answer| {
                             remember_answer(question, answer, &mut answers, &mut secrets);
                             true
                         })
@@ -1302,6 +1592,7 @@ pub async fn continue_instance(name: &str, options: Options, interactive: bool, 
         answers = scripted;
         secrets = given_secrets;
     }
+    if state.answers != answers || !secrets.is_empty() { state.create = Part::pending(); }
     state.answers = answers;
     state.allow_pc_access |= pc;
     lock.heartbeat(instances.folder(name));
@@ -1325,7 +1616,7 @@ pub(super) fn validate_project(state: &State, prepared: &Prepared, secrets: &BTr
         }
     }
     let unchanged = if state.created_at == 0 { "Nothing was created." } else { "Nothing was changed." };
-    let (yaml, project) = render::project(&prepared.folder.project_text, &values(&planned, &BTreeMap::new()), &adjust(&planned, prepared))
+    let (yaml, project) = render::project(&prepared.folder.project_text, &values(&planned, &BTreeMap::new(), prepared), &adjust(&planned, prepared))
         .map_err(|error| format!("The answers do not make a valid project: {error} {unchanged}"))?;
     format::rendered_paths(&project, &state.project, &prepared.files).map_err(|error| format!("{error} {unchanged}"))?;
     public_addresses(&planned, prepared)?;
@@ -1337,6 +1628,15 @@ pub(super) fn validate_project(state: &State, prepared: &Prepared, secrets: &BTr
 pub(super) async fn build(state: &mut State, instances: &Instances, prepared: &Prepared, secrets: BTreeMap<String, Zeroizing<String>>, interactive: bool, site: &Site, ending: Ending) -> Result<Value, String> {
     // The project exactly as it will run, checked before anything is saved, stored or written:
     // the strict rules of `up`, and every path it reads still inside the instance's own files.
+    // Drop stale answers after going Back or changing a parent's choice. Keep old vault names
+    // for removal, but values() binds only secrets whose questions are still active.
+    let mut active = BTreeMap::new();
+    for q in &prepared.folder.questions {
+        if q.asked(&active) {
+            if let Some(value) = state.answers.get(&q.id) { active.insert(q.id.clone(), value.clone()); }
+        }
+    }
+    state.answers = active;
     let yaml = validate_project(state, prepared, &secrets)?;
     let desired = public_addresses(state, prepared)?;
     state.phase = "creating".into();
@@ -1345,8 +1645,11 @@ pub(super) async fn build(state: &mut State, instances: &Instances, prepared: &P
     }
     // Only the tools this version declares. Old public routes must be closed before dropping
     // their records, while the old sandbox IDs are still available.
-    let tool_keys: BTreeSet<String> = prepared.folder.tools.iter().map(|t| format!("{}/{}", t.environment, t.name())).collect();
+    let tool_keys: BTreeSet<String> = prepared.folder.tools.iter().filter(|t| t.selected(&state.answers)).map(|t| format!("{}/{}", t.environment, t.name())).collect();
     state.tools.retain(|key, _| tool_keys.contains(key));
+    let signin_keys: BTreeSet<String> = prepared.folder.tools.iter().filter(|t| t.needs_signin(&state.answers)).map(|t| format!("{}/{}", t.environment, t.name())).collect();
+    state.signins.retain(|key, _| signin_keys.contains(key));
+    for key in signin_keys { state.signins.entry(key).or_insert_with(Part::pending); }
     for key in &tool_keys {
         state.tools.entry(key.clone()).or_insert_with(Part::pending);
     }
@@ -1434,10 +1737,67 @@ async fn parts(state: &mut State, instances: &Instances, prepared: &Prepared, se
     }
     save(instances, state)?;
     if !state.create.is("done") {
-        up(state, instances, interactive).await?;
+        if let Err(error) = up(state, instances, interactive).await {
+            if !run_without_gpu(state, instances, prepared, interactive, &error).await? {
+                return Err(error);
+            }
+            up(state, instances, interactive).await?;
+        }
     }
     install_tools(state, instances, prepared, interactive).await?;
+    signin_tools(state, instances, prepared, interactive).await?;
     publish(state, instances, prepared, interactive).await
+}
+
+/// A GPU sandbox that could not be created, in a template that also runs without a GPU: offered
+/// to run as an ordinary container instead (a script does so, and says it in a step). The failed
+/// sandbox is deleted and the project written again. Returns whether to try once more.
+async fn run_without_gpu(state: &mut State, instances: &Instances, prepared: &Prepared, interactive: bool, error: &str) -> Result<bool, String> {
+    if state.without_gpu || prepared.folder.gpu() != "optional" || error == ui::CANCELLED || crate::wire::cancellation(error).is_some() {
+        return Ok(false);
+    }
+    let Ok(live) = crate::public::call("get_platform_state", json!({})).await else { return Ok(false) };
+    let gpu = prepared.folder.gpu_environments();
+    let failed_status = |id: &str| live["environments"].as_array().into_iter().flatten().any(|e| e["id"] == id && e["status"] == "error");
+    let failed: Vec<instances::Sandbox> = instances::sandboxes(state, &live).into_iter()
+        .filter(|sandbox| !sandbox.replaced && gpu.contains(&sandbox.key) && failed_status(&sandbox.id))
+        .collect();
+    if failed.is_empty() {
+        return Ok(false);
+    }
+    let names = failed.iter().map(|sandbox| sandbox.name.as_str()).collect::<Vec<_>>().join(", ");
+    let reason: String = error.lines().next().unwrap_or_default().chars().take(300).collect();
+    if interactive {
+        let choices = [
+            ui::Choice::new("Run without the GPU", "it becomes an ordinary container; local models use the processor"),
+            ui::Choice::new("Stop here", "everything created so far is kept"),
+        ];
+        match ui::select(&format!("{names} could not be created on the GPU"), &[reason.clone()], &choices, 0) {
+            Ok(0) => {}
+            Ok(_) => return Ok(false),
+            Err(choice) if choice == ui::CANCELLED || choice == ui::BACK => return Ok(false),
+            Err(choice) => return Err(choice),
+        }
+    }
+    for sandbox in &failed {
+        wait(interactive, &format!("Removing {}", sandbox.name), crate::public::call("delete_environment", json!({"environmentId": sandbox.id}))).await?;
+        state.environments.remove(&sandbox.key);
+        state.names.remove(&sandbox.key);
+        instances::reset_environment(state, &sandbox.key);
+    }
+    state.without_gpu = true;
+    let yaml = validate_project(state, prepared, &BTreeMap::new())?;
+    client::write_files(&instances.folder(&state.instance), &[(state.project.clone(), yaml.as_bytes().to_vec())].into())?;
+    state.files.insert(state.project.clone(), scan::sha256_hex(yaml.as_bytes()));
+    state.steps.retain(|step| !step.title.starts_with("Runs without the GPU"));
+    state.steps.push(Step {
+        title: "Runs without the GPU for now".into(),
+        detail: Some(format!("{names} could not be created on the GPU: {reason} An update offers the GPU again.")),
+        command: Some(format!("yougori template update {}", state.instance)),
+    });
+    state.create = Part::pending();
+    save(instances, state)?;
+    Ok(true)
 }
 
 fn next_steps(value: &Value) -> String {
@@ -1452,6 +1812,296 @@ mod tests {
     fn example() -> Files {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub/hello-site");
         scan::collect(&root).unwrap().files
+    }
+
+    fn my_api_files() -> Files {
+        scan::collect(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub/my-api")).unwrap().files
+    }
+
+    #[tokio::test]
+    async fn sandbox_update_stops_only_current_owned_nodes_and_recovers_stale_state_once() {
+        let state = State { project_keys: BTreeSet::from(["owner".into()]),
+            review: json!({"environments": [{"name": "web"}, {"name": "paid"}]}), ..Default::default() };
+        let live = json!({"environments": [
+            {"id": "web", "name": "site-web", "description": "Yougori project owner / web", "status": "running"},
+            {"id": "paid", "name": "site-paid", "description": "Yougori project owner / paid", "status": "stopped"},
+            {"id": "other", "name": "site-web", "description": "Yougori project other / web", "status": "running"},
+            {"id": "old", "name": "site-web-old", "description": "Yougori project owner / web (replaced)", "status": "running"},
+            {"id": "removed", "name": "site-db", "description": "Yougori project owner / db", "status": "running"}
+        ]});
+        let mut calls = Vec::new();
+        let mut attempts = 0;
+        let result = apply_sandboxes(&state, json!({"path": "fixture", "action": "up"}), |method, params| {
+            calls.push((method, params.clone()));
+            std::future::ready(match method {
+                "get_platform_state" => Ok(live.clone()),
+                "project_action" => {
+                    attempts += 1;
+                    if attempts == 1 { Err("runtime rejected the operation: stop the container before changing hardware or network access".into()) }
+                    else { Ok(json!({"ready": true})) }
+                }
+                _ => Ok(json!({})),
+            })
+        }).await.unwrap();
+        assert_eq!(result["ready"], true);
+        assert_eq!(attempts, 2);
+        assert_eq!(calls.iter().map(|(m, _)| *m).collect::<Vec<_>>(), vec![
+            "get_platform_state", "set_environment_status", "project_action", "get_platform_state",
+            "restart_environment", "set_environment_status", "restart_environment", "set_environment_status", "project_action"]);
+        assert!(calls.iter().filter_map(|(_,p)| p["environmentId"].as_str()).all(|id| id == "web" || id == "paid"));
+        for (_, params) in calls.iter().filter(|(m, _)| *m == "set_environment_status") { assert_eq!(params["status"], "stopped"); }
+    }
+
+    #[tokio::test]
+    async fn sandbox_update_does_not_retry_other_errors_or_loop_on_stop_conflicts() {
+        let state = State { project_keys: BTreeSet::from(["owner".into()]),
+            review: json!({"environments": [{"name": "web"}]}), ..Default::default() };
+        let live = json!({"environments": [{"id":"web", "name":"web", "description":"Yougori project owner / web", "status":"stopped"}]});
+        for (error, expected) in [("disk is full", 1), ("YOUGORI_OPERATION_CANCELLED", 1),
+            ("runtime rejected the operation: stop the container before changing hardware or network access", 2)] {
+            let mut attempts = 0;
+            let result = apply_sandboxes(&state, json!({}), |method, _| std::future::ready(match method {
+                "get_platform_state" => Ok(live.clone()),
+                "project_action" => { attempts += 1; Err(error.into()) },
+                _ => Ok(json!({})),
+            })).await;
+            assert_eq!(result.unwrap_err(), error);
+            assert_eq!(attempts, expected);
+        }
+        let mut live = live;
+        live["environments"][0]["status"] = json!("running");
+        let result = apply_sandboxes(&state, json!({}), |method, _| std::future::ready(match method {
+            "get_platform_state" => Ok(live.clone()),
+            "set_environment_status" => Err("busy".into()),
+            _ => panic!("Do not apply settings after a failed stop"),
+        })).await;
+        assert_eq!(result.unwrap_err(), "busy");
+    }
+
+    #[test]
+    fn continuing_an_edited_template_folder_becomes_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(format::TEMPLATE_FILE), "kind: template").unwrap();
+        let digest = scan::digest_of(&scan::collect(dir.path()).unwrap().files);
+        let mut state = State { path: Some(dir.path().to_string_lossy().into_owned()), digest, ..Default::default() };
+        assert!(!folder_changed(&state));
+        std::fs::write(dir.path().join("README.md"), "edited").unwrap();
+        assert!(folder_changed(&state));
+        state.item = Some("acme/my-api".into());
+        assert!(!folder_changed(&state), "a Hub instance continues with its own checked copy");
+        state.item = None;
+        state.path = Some(dir.path().join("gone").to_string_lossy().into_owned());
+        assert!(!folder_changed(&state), "a missing folder is explained by prepare_own");
+    }
+
+    #[test]
+    fn a_sandbox_that_needs_attention_says_how_to_make_it_again() {
+        let said = friendly("project_action: my-api-local needs attention; inspect its error before retrying (job job-1)".into(), "my-api");
+        assert_eq!(said, "my-api-local stopped with an error. Read it with yougori logs my-api-local. To make it again, delete it with yougori env delete my-api-local --yes and run yougori template continue my-api; its volumes stay.");
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_says_where_it_was_looked_for() {
+        let Err(error) = wanted("./no-such-template-folder/my-api") else { panic!("found") };
+        assert!(error.starts_with("There is no folder ./no-such-template-folder/my-api in "), "{error}");
+        assert!(error.contains("(cd)") && error.contains("hub/PUBLISHER/NAME"), "{error}");
+    }
+
+    #[test]
+    fn my_api_asks_how_people_reach_the_website() {
+        let folder = format::template(&my_api_files()).unwrap_or_else(|p| panic!("{}", p.join("\n")));
+        let access = folder.questions.iter().find(|q| q.id == "web_access").unwrap();
+        assert_eq!(access.choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>(), ["quick", "domain"]);
+        assert_eq!(access.default.as_deref(), Some("quick"));
+        let domain = folder.questions.iter().find(|q| q.id == "web_domain").unwrap();
+        assert_eq!(domain.kind, Kind::Domain);
+        assert!(!domain.asked(&[("web_access".to_owned(), "quick".to_owned())].into()));
+        assert!(domain.asked(&[("web_access".to_owned(), "domain".to_owned())].into()));
+        assert_eq!(domain.answer("api.example.com", Some(&["api.example.com".to_owned()])).unwrap(), "api.example.com");
+        // In a terminal they are one list, as yougori launch asks: Quick public link, Your own
+        // domain, then the saved domains. The domain question is then passed over.
+        assert_eq!(access_domain(access, &folder.questions).map(|d| d.id.as_str()), Some("web_domain"));
+        assert!(wants_domains(access, &folder.questions) && absorbed(domain, &folder.questions));
+        let asked: Vec<&Question> = folder.questions.iter().collect();
+        assert!(absorbed(domain, &asked));
+        // Without its access question (answered earlier), the domain question is asked on its own.
+        assert!(!absorbed(domain, &[domain]));
+        let providers = folder.questions.iter().find(|q| q.id == "providers").unwrap();
+        assert!(access_domain(providers, &folder.questions).is_none() && !absorbed(providers, &folder.questions));
+    }
+
+    #[test]
+    fn subscription_source_is_asked_before_creation_only_for_subscriptions() {
+        let files = my_api_files();
+        let folder = format::template(&files).unwrap();
+        // My API does not install Claude Code; Claude models use an Anthropic API key.
+        assert!(folder.tools.iter().all(|t| t.name() != "claude"));
+        assert!(folder.questions.iter().all(|q| !q.id.starts_with("claude_")));
+        for tool in ["codex", "gemini", "opencode", "kilo"] {
+            let use_ = folder.tools.iter().find(|t| t.name() == tool).unwrap();
+            let id = format!("{tool}_signin_source");
+            let question = folder.questions.iter().find(|q| q.id == id).unwrap();
+            let mut answers: BTreeMap<String,String> = [("providers".into(), tool.into()),
+                (format!("{tool}_access"), "subscription".into()), (format!("{tool}_scope"), "all".into())].into();
+            assert!(question.asked(&answers));
+            assert_eq!(use_.copy_credentials(&answers), None);
+            for (value, copy) in [("computer", true), ("new", false)] {
+                answers.insert(id.clone(), question.answer(value, None).unwrap());
+                assert_eq!(use_.copy_credentials(&answers), Some(copy));
+            }
+            answers.insert(format!("{tool}_access"), "api".into());
+            assert!(!question.asked(&answers));
+            answers.insert(format!("{tool}_access"), "both".into());
+            assert!(question.asked(&answers));
+            answers.insert("providers".into(), "ollama".into());
+            assert!(!question.asked(&answers));
+        }
+        for replacement in ["openai_key", "site_name", "providers", "missing"] {
+            let mut broken = files.clone();
+            let text = String::from_utf8(broken["yougori-template.yaml"].clone()).unwrap()
+                .replace("signin_source: codex_signin_source", &format!("signin_source: {replacement}"));
+            broken.insert("yougori-template.yaml".into(), text.into_bytes());
+            assert!(format::template(&broken).unwrap_err().join("\n").contains("signin_source must name a choice input"));
+        }
+    }
+
+    #[test]
+    fn my_api_asks_only_for_selected_api_keys_and_validates_setup_secrets() {
+        let folder = format::template(&my_api_files()).unwrap_or_else(|p| panic!("{}", p.join("\n")));
+        let stored = BTreeSet::from(["admin_password".into(), "bridge_key".into()]);
+        let options = |inputs: Vec<(&str, &str)>| Options { inputs: std::iter::once(("admin_account".into(), "existing".into())).chain(inputs.into_iter().map(|(k,v)| (k.into(),v.into()))).collect(), ..Default::default() };
+        // Claude models come only through an Anthropic API key: no subscription, no tool.
+        let claude = given(&options(vec![("providers", "claude")]), &folder.questions, None).unwrap();
+        let error = script_answers(&folder.questions, &claude, &BTreeMap::new(), &stored, None).unwrap_err();
+        assert!(error.contains("anthropic_key") && !error.contains("openai_key"), "{error}");
+        let with_key = stored.iter().cloned().chain(["anthropic_key".to_owned()]).collect::<BTreeSet<String>>();
+        let (answers, _) = script_answers(&folder.questions, &claude, &BTreeMap::new(), &with_key, None).unwrap();
+        assert_eq!(folder.tools.iter().filter(|t| t.selected(&answers)).count(), 0);
+        assert!(given(&options(vec![("providers", "claude"), ("claude_access", "subscription")]), &folder.questions, None).is_err());
+        for (tool, key) in [("codex", "openai_key"), ("gemini", "gemini_key")] {
+            for access in ["subscription", "api", "both"] {
+                let id = format!("{tool}_access");
+                let given = given(&options(vec![("providers", tool), (&id, access)]), &folder.questions, None).unwrap();
+                let result = script_answers(&folder.questions, &given, &BTreeMap::new(), &stored, None);
+                if access == "subscription" {
+                    let (answers, secrets) = result.unwrap();
+                    assert!(secrets.is_empty());
+                    let selected: Vec<_> = folder.tools.iter().filter(|t| t.selected(&answers)).collect();
+                    assert_eq!(selected.len(), 1);
+                    assert_eq!(selected[0].name(), tool);
+                    assert!(selected[0].needs_signin(&answers));
+                } else {
+                    let error = result.unwrap_err();
+                    assert!(error.contains(key), "{error}");
+                    for other in ["openai_key", "anthropic_key", "gemini_key", "kilo_key", "opencode_key"] {
+                        if other != key { assert!(!error.contains(other), "{error}"); }
+                    }
+                    let mut with_key = stored.clone();
+                    with_key.insert(key.into());
+                    let (answers, _) = script_answers(&folder.questions, &given, &BTreeMap::new(), &with_key, None).unwrap();
+                    assert_eq!(folder.tools.iter().filter(|t| t.selected(&answers)).count(), usize::from(access == "both"));
+                }
+            }
+        }
+        for tool in ["kilo", "opencode"] {
+            let scope = format!("{tool}_scope");
+            let access = format!("{tool}_access");
+            let plan = format!("{tool}_plan");
+            let free = given(&options(vec![("providers", tool)]), &folder.questions, None).unwrap();
+            let (answers, _) = script_answers(&folder.questions, &free, &BTreeMap::new(), &stored, None).unwrap();
+            assert!(!folder.tools.iter().any(|t| t.needs_signin(&answers)), "free needs no subscription");
+            let subscription = given(&options(vec![("providers", tool), (&scope, "all"), (&access, "subscription"), (&plan, "chatgpt")]), &folder.questions, None).unwrap();
+            let (answers, _) = script_answers(&folder.questions, &subscription, &BTreeMap::new(), &stored, None).unwrap();
+            assert!(folder.tools.iter().any(|t| t.needs_signin(&answers)));
+            let paid = given(&options(vec![("providers", tool), (&scope, "all"), (&access, "api")]), &folder.questions, None).unwrap();
+            assert!(script_answers(&folder.questions, &paid, &BTreeMap::new(), &stored, None).unwrap_err().contains(&format!("{tool}_key")));
+        }
+        let providers = folder.questions.iter().find(|q| q.id == "providers").unwrap();
+        assert_eq!(providers.answer("kilo,codex,kilo", None).unwrap(), "codex,kilo");
+        assert!(providers.answer("", None).is_err());
+        assert!(providers.answer("codex,unknown", None).is_err());
+        for id in ["admin_password", "bridge_key"] {
+            let q = folder.questions.iter().find(|q| q.id == id).unwrap();
+            assert!(q.answer("too-short", None).is_err());
+            assert!(q.answer("fixture-long-secret", None).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn deselected_secrets_are_unbound_and_scripted_signin_never_reads_pc_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let site = Site::at("http://127.0.0.1:9").unwrap();
+        let cache = Cache { root: root.path().join("cache") };
+        let prepared = examine(&site, &cache, my_api_files(), Wanted::Folder(root.path().join("source")), String::new(), String::new(), false, None, Vec::new(), false).await.unwrap();
+        let mut state = State {
+            instance: "fixture".into(), project: "yougori.yaml".into(),
+            answers: [("providers".into(), "codex".into()), ("codex_access".into(), "subscription".into()), ("site_name".into(), "Fixture".into()), ("admin_account".into(), "create".into()), ("admin_email".into(), "owner@example.invalid".into())].into(),
+            secrets: vec!["admin_password".into(), "bridge_key".into(), "openai_key".into(), "kilo_key".into()],
+            ..Default::default()
+        };
+        let yaml = validate_project(&state, &prepared, &BTreeMap::new()).unwrap();
+        assert!(yaml.contains("ADMIN_BOOTSTRAP_PASSWORD") && yaml.contains("BRIDGE_KEY"));
+        assert!(!yaml.contains("OPENAI_API_KEY") && !yaml.contains("KILO_API_KEY"));
+        state.answers.insert("codex_access".into(), "both".into());
+        state.answers.insert("codex_signin_source".into(), "computer".into());
+        assert!(validate_project(&state, &prepared, &BTreeMap::new()).unwrap().contains("OPENAI_API_KEY"));
+        let instances = Instances { root: root.path().join("instances") };
+        signin_tools(&mut state, &instances, &prepared, false).await.unwrap();
+        assert_eq!(state.signins.len(), 1);
+        assert_eq!(state.signins["paid/codex"].message.as_deref(), Some("yougori template continue fixture"));
+        assert!(state.signins["paid/codex"].is("step"));
+    }
+
+    #[tokio::test]
+    async fn subscriptions_open_independent_windows_without_waiting_or_claiming_account_verification() {
+        let root = tempfile::tempdir().unwrap();
+        let site = Site::at("http://127.0.0.1:9").unwrap();
+        let cache = Cache { root: root.path().join("cache") };
+        let prepared = examine(&site, &cache, my_api_files(), Wanted::Folder(root.path().join("source")), String::new(), String::new(), false, None, Vec::new(), false).await.unwrap();
+        let instances = Instances { root: root.path().join("instances") };
+        let mut state = State { instance: "fixture".into(), create: Part::done(),
+            answers: [("providers".into(), "codex,gemini".into()), ("codex_access".into(), "subscription".into()),
+                ("gemini_access".into(), "subscription".into()), ("codex_signin_source".into(), "new".into()),
+                ("gemini_signin_source".into(), "new".into())].into(),
+            environments: [("paid".into(), "fixture-env".into())].into(),
+            tools: [("paid/codex".into(), Part::done()), ("paid/gemini".into(), Part::done())].into(), ..Default::default() };
+        let mut opened = Vec::new();
+        signin_tools_with_window(&mut state, &instances, &prepared, true, |id, tool, new_signin| {
+            opened.push((id.to_owned(), tool.to_owned(), new_signin)); Ok(())
+        }).await.unwrap();
+        assert_eq!(opened.len(), 2);
+        assert!(opened.iter().all(|(id, _, new)| id == "fixture-env" && *new));
+        assert!(state.complete(), "the setup need not wait for the provider windows");
+        assert!(state.signins.values().all(|p| p.is("opened") && !p.is("done")));
+        assert!(state.signins.values().all(|p| p.message.as_ref().unwrap().contains("--new-window")));
+        signin_tools_with_window(&mut state, &instances, &prepared, true, |_, _, _| panic!("continuing must not duplicate open windows")).await.unwrap();
+        state.signins.remove("paid/codex");
+        signin_tools_with_window(&mut state, &instances, &prepared, true, |_, _, _| Err("No desktop terminal found".into())).await.unwrap();
+        assert!(state.signins["paid/codex"].is("failed"));
+        assert!(state.signins["paid/gemini"].is("opened"));
+    }
+
+    #[tokio::test]
+    async fn my_api_admin_credentials_are_collected_in_cli_and_payment_network_is_not() {
+        let root = tempfile::tempdir().unwrap();
+        let site = Site::at("http://127.0.0.1:9").unwrap();
+        let cache = Cache { root: root.path().join("cache") };
+        let prepared = examine(&site, &cache, my_api_files(), Wanted::Folder(root.path().join("source")), String::new(), String::new(), false, None, Vec::new(), false).await.unwrap();
+        let questions = &prepared.folder.questions;
+        assert!(!questions.iter().any(|q| ["admin_setup_key", "admin_wallet_network"].contains(&q.id.as_str())));
+        let options = Options { inputs: vec![("providers".into(), "ollama".into()), ("admin_email".into(), "owner@example.invalid".into())], ..Default::default() };
+        let provided = given(&options, questions, Some(br#"{"admin_password":"fixture-admin-password","bridge_key":"fixture-bridge-secret"}"#)).unwrap();
+        let (answers, secrets) = script_answers(questions, &provided, &BTreeMap::new(), &BTreeSet::new(), None).unwrap();
+        assert_eq!(answers["admin_account"], "create");
+        assert!(!answers.contains_key("admin_password"));
+        let state = State { instance: "fixture".into(), project: "yougori.yaml".into(), answers, ..Default::default() };
+        let yaml = validate_project(&state, &prepared, &secrets).unwrap();
+        assert!(yaml.contains("ADMIN_BOOTSTRAP_EMAIL") && yaml.contains("hub-fixture-admin_password"));
+        assert!(!yaml.contains("fixture-admin-password") && !yaml.contains("WALLET_NETWORK"));
+        let email = questions.iter().find(|q| q.id == "admin_email").unwrap();
+        assert!(email.answer("not-an-email", None).is_err());
+        let password = questions.iter().find(|q| q.id == "admin_password").unwrap();
+        assert!(password.answer("too-short", None).is_err());
     }
 
     #[test]

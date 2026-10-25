@@ -280,11 +280,13 @@ where
         }
     }
     let mut volumes = Vec::new();
+    let mut not_found = Vec::new();
     if delete_data && failed.is_empty() {
         for volume in &plan.volumes {
             match run::wait(interactive, &format!("Removing the volume {volume}"), call("remove_volume", json!({"name": volume}))).await {
                 Ok(_) => volumes.push(volume.clone()),
-                Err(error) if error.contains("No volume") || error.to_lowercase().contains("not found") => {}
+                // Never made, or kept where this engine did not look: said, never silently dropped.
+                Err(error) if error.contains("No volume") || error.to_lowercase().contains("not found") => not_found.push(volume.clone()),
                 Err(error) => failed.push(format!("volume {volume}: {error}")),
             }
         }
@@ -312,6 +314,7 @@ where
     Ok(json!({
         "instance": state.instance, "removed": {"environments": removed, "volumes": volumes, "secrets": plan.secrets.len(), "folder": folder},
         "kept": {"volumes": kept, "backups": backups.exists().then_some(backups)},
+        "notFound": {"volumes": not_found},
     }))
 }
 
@@ -370,9 +373,9 @@ pub fn changes(old: &Value, new: &Value) -> (Vec<String>, bool) {
     (said, !pc_added.is_empty())
 }
 
-/// The questions an update still has to ask: new ones, and required ones without an answer.
+/// An update can change choices; existing secrets are reused without asking for them again.
 fn unanswered<'a>(questions: &'a [Question], state: &State) -> Vec<&'a Question> {
-    questions.iter().filter(|q| if q.kind == Kind::Secret { !state.secrets.contains(&q.id) } else { !state.answers.contains_key(&q.id) }).collect()
+    questions.iter().filter(|q| if q.kind == Kind::Secret { !state.secrets.contains(&q.id) } else { true }).collect()
 }
 
 /// `template update INSTANCE [--yes]`: moves an instance to the template's latest version (a
@@ -409,10 +412,12 @@ pub async fn update(name: &str, options: run::Options, interactive: bool) -> Res
         (None, Some(_)) => refs::newer(&prepared.version, &state.version),
         (None, None) => prepared.digest != state.digest,
     };
-    if !newer {
+    // An interactive update also edits setup choices, even when the template's files
+    // already match. Explicit scripted answers likewise mean "apply these choices".
+    if !newer && !interactive && options.inputs.is_empty() && options.inputs_file.is_none() && !options.secrets_stdin {
         return Ok(json!({"instance": name, "updated": false, "version": state.version, "said": format!("{name} already runs the latest version ({}).", state.version)}));
     }
-    let (host, engine) = run::wait(interactive, "Checking this computer", run::host(&prepared.folder, &prepared.hub_tools)).await.map_err(unchanged)?;
+    let (host, engine) = run::wait(interactive, "Checking this computer", run::host(&prepared.folder, &prepared.hub_tools, state.storage_drive.as_deref())).await.map_err(unchanged)?;
     let requirements = review::requirements(&prepared.folder, &prepared.hub_tools, &prepared.review, &host);
     if !requirements.stops.is_empty() {
         return Err(format!("{}\nNothing was changed.", requirements.stops.join("\n")));
@@ -423,6 +428,10 @@ pub async fn update(name: &str, options: run::Options, interactive: bool) -> Res
     let questions = run::questions(&prepared);
     let fresh = unanswered(&questions, &state);
     let needs_gpu_choice = requirements.without_gpu && !state.without_gpu;
+    // An instance that runs without the GPU (none was usable, or its GPU sandbox could not be
+    // created) is offered the GPU again once this computer has one.
+    let gpu_again = interactive && state.without_gpu && !requirements.without_gpu && !prepared.folder.gpu_environments().is_empty();
+    let mut use_gpu = false;
     let mut answers = state.answers.clone();
     let mut secrets: BTreeMap<String, Zeroizing<String>> = BTreeMap::new();
     let was_stopped = state.phase == "stopped";
@@ -471,6 +480,13 @@ pub async fn update(name: &str, options: run::Options, interactive: bool) -> Res
                     Ok(_) => return Err(cancel()),
                     Err(error) => Err(error),
                 },
+                2 if gpu_again => match ui::select("Use this computer's GPU again?", &[format!("{name} runs without the GPU. Its GPU sandboxes are made again on the GPU.")], &[ui::Choice::new("Use the GPU", "local models run on the graphics card"), ui::Choice::new("Keep running without it", "nothing about the GPU changes")], 0) {
+                    Ok(picked) => {
+                        use_gpu = picked == 0;
+                        Ok(true)
+                    }
+                    Err(error) => Err(error),
+                },
                 2 => Ok(false),
                 n => {
                     let Some(question) = fresh.get(n - 3) else { break };
@@ -478,9 +494,11 @@ pub async fn update(name: &str, options: run::Options, interactive: bool) -> Res
                         answers.remove(&question.id);
                         secrets.remove(&question.id);
                         Ok(false)
+                    } else if run::absorbed(question, &fresh) {
+                        Ok(false)
                     } else {
-                        let domains = if question.kind == Kind::Domain { run::saved_domains().await } else { Vec::new() };
-                        run::ask_question(question, answers.get(&question.id), &domains).map(|answer| {
+                        let domains = if run::wants_domains(question, &fresh) { run::saved_domains().await } else { Vec::new() };
+                        run::ask_question(question, &fresh, &mut answers, &domains).await.map(|answer| {
                             match answer {
                                 Some(answer) if question.kind == Kind::Secret => {
                                     secrets.insert(question.id.clone(), Zeroizing::new(answer));
@@ -527,7 +545,7 @@ pub async fn update(name: &str, options: run::Options, interactive: bool) -> Res
     let planned = State {
         answers: answers.clone(), project: prepared.folder.project_path.clone(),
         allow_pc_access: state.allow_pc_access || pc_added,
-        without_gpu: state.without_gpu || needs_gpu_choice,
+        without_gpu: (state.without_gpu && !use_gpu) || needs_gpu_choice,
         ..state.clone()
     };
     run::validate_project(&planned, &prepared, &secrets)?;
@@ -547,9 +565,23 @@ pub async fn update(name: &str, options: run::Options, interactive: bool) -> Res
         }
     }
     run::check_live(&mut state, &engine);
+    for use_ in &prepared.folder.tools {
+        if !use_.needs_signin(&answers) { continue; }
+        let changed_plan = use_.signin_hint.as_ref().is_some_and(|hint| {
+            let old = run::values(&state, &BTreeMap::new(), &prepared);
+            let new = super::render::Values { inputs: answers.clone(), ..old.clone() };
+            super::render::render(hint, &old).ok() != super::render::render(hint, &new).ok()
+        });
+        if changed_plan || use_.copy_credentials(&answers) != use_.copy_credentials(&state.answers) || !use_.needs_signin(&state.answers) {
+            state.signins.remove(&format!("{}/{}", use_.environment, use_.name()));
+        }
+    }
     state.answers = answers;
     state.allow_pc_access |= pc_added;
-    state.without_gpu |= needs_gpu_choice;
+    state.without_gpu = planned.without_gpu;
+    if !state.without_gpu {
+        state.steps.retain(|step| !step.title.starts_with("Runs without the GPU"));
+    }
     state.title = prepared.folder.template.title().into();
     state.review = prepared.review.clone();
     state.files = BTreeMap::new();
@@ -705,15 +737,15 @@ mod tests {
     }
 
     fn question(id: &str, kind: Kind) -> Question {
-        Question { id: id.into(), question: id.into(), kind, required: true, default: None, when: None, hint: String::new(), choices: Vec::new(), pattern: None, min: None, max: None }
+        Question { id: id.into(), question: id.into(), kind, required: true, default: None, when: Vec::new(), hint: String::new(), choices: Vec::new(), pattern: None, min: None, max: None, min_length: None }
     }
 
     #[test]
-    fn an_update_asks_only_what_the_instance_has_no_answer_for() {
+    fn an_update_revisits_choices_without_reasking_stored_secrets() {
         let questions = vec![question("email", Kind::Text), question("site", Kind::Text), question("key", Kind::Secret), question("token", Kind::Secret)];
         let mut state = State { secrets: vec!["key".into()], ..Default::default() };
         state.answers.insert("email".into(), "a@b.c".into());
         let ids: Vec<&str> = unanswered(&questions, &state).iter().map(|q| q.id.as_str()).collect();
-        assert_eq!(ids, ["site", "token"]);
+        assert_eq!(ids, ["email", "site", "token"]);
     }
 }

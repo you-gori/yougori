@@ -210,3 +210,18 @@ async fn fabric_socket_framing_and_disconnect_cleanup() {
     .await
     .unwrap();
 }
+#[test]
+fn a_connection_whose_container_lost_its_link_is_listed_for_relinking() {
+    let fabric = Fabric::default();
+    let _web = peer(&fabric, "web");
+    let local = peer(&fabric, "local");
+    fabric.apply("web-local", "web", "local", &ConnectionDirection::OneWay, &[PermissionKind::Ports], &[11434]).unwrap();
+    assert!(fabric.unlinked().is_empty());
+    // The container restarted on its own: its old link ended with its old process.
+    drop(local);
+    assert_eq!(fabric.unlinked(), vec!["local".to_owned()]);
+    fabric.0.lock().unwrap().peers.remove("local");
+    assert_eq!(fabric.unlinked(), vec!["local".to_owned()]);
+    fabric.remove("web-local");
+    assert!(fabric.unlinked().is_empty(), "a removed connection needs no link");
+}

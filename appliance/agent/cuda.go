@@ -28,7 +28,15 @@ func cudaCapacity() (int, uint64) {
 
 // Do not detach a WSL disk while a container can still be writing to it.
 // On failure keep the agent alive so the host can report/retry shutdown.
-func shutdownCUDAContainers() error {
+func shutdownCUDAContainers() (err error) {
+	// The supervisor must not start what this stops. A shutdown that fails keeps the agent
+	// alive for the host to retry, with restarts as before.
+	restartsPaused.Store(true)
+	defer func() {
+		if err != nil {
+			restartsPaused.Store(false)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	listed, err := run(ctx, "nerdctl", "--namespace", namespace, "ps", "--quiet")

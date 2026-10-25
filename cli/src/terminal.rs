@@ -18,7 +18,7 @@ mod tool_setup;
 mod transport;
 mod ollama;
 
-pub const USAGE: &str = "Usage: yougori terminal ENV [--project] [--container NAME]";
+pub const USAGE: &str = "Usage: yougori terminal ENV [--project] [--container NAME] [--new-window]\n       yougori terminal ENV --subscription TOOL [--new-signin] [--new-window]";
 
 pub(crate) async fn open_ollama(id: &str,name: &str) -> Result<SessionExit,String> {
     ollama::open(id,name).await
@@ -38,7 +38,6 @@ fn project_command(container: Option<&str>) -> String {
 
 /// Open a visible terminal without borrowing the launcher's stdin or stopping sync.
 pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut args = vec![
         "terminal".to_owned(),
         environment.to_owned(),
@@ -50,6 +49,27 @@ pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result
     if let Some(name) = container {
         args.extend(["--container".into(), name.into()]);
     }
+    open_window(&args)
+}
+
+fn subscription_arguments(environment: &str, tool: &str, new_signin: bool, window_flag: &str) -> Result<Vec<String>, String> {
+    subscription_command(tool, &[])?;
+    let mut args = vec!["terminal".into(), environment.into(), "--subscription".into(), tool.into(), window_flag.into()];
+    if new_signin { args.push("--new-signin".into()); }
+    Ok(args)
+}
+
+pub(crate) fn subscription_reopen_command(environment: &str, tool: &str, new_signin: bool) -> Result<String, String> {
+    Ok(shell_words::join(std::iter::once("yougori".into()).chain(subscription_arguments(environment, tool, new_signin, "--new-window")?)))
+}
+
+/// The Hub keeps its own keyboard and screen. No provider process inherits them.
+pub(crate) fn open_subscription(environment: &str, tool: &str, new_signin: bool) -> Result<(), String> {
+    open_window(&subscription_arguments(environment, tool, new_signin, "--window")?)
+}
+
+fn open_window(args: &[String]) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -72,7 +92,7 @@ pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result
     #[cfg(target_os = "macos")]
     {
         let line =
-            shell_words::join(std::iter::once(exe.to_string_lossy().into_owned()).chain(args));
+            shell_words::join(std::iter::once(exe.to_string_lossy().into_owned()).chain(args.iter().cloned()));
         // AppleScript receives a string literal; the shell receives quoted argv.
         let literal = format!("\"{}\"", line.replace('\\', "\\\\").replace('"', "\\\""));
         let status = Command::new("osascript")
@@ -99,7 +119,7 @@ pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result
             match Command::new(program)
                 .arg(flag)
                 .arg(&exe)
-                .args(&args)
+                .args(args)
                 .spawn()
             {
                 Ok(mut child) => {
@@ -114,7 +134,7 @@ pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result
         }
         Err(format!(
             "No desktop terminal found. Open another terminal and run: {}",
-            shell_words::join(std::iter::once(exe.to_string_lossy().into_owned()).chain(args))
+            shell_words::join(std::iter::once(exe.to_string_lossy().into_owned()).chain(args.iter().cloned()))
         ))
     }
 }
@@ -162,23 +182,47 @@ pub async fn run(args: &[String]) -> Result<(), String> {
                 "Could not open the environment shell: {error}\nPress Enter to close this window."
             );
             let _ = io::stdin().read_line(&mut String::new());
+        } else if args.iter().any(|arg| arg == "--subscription") {
+            println!("Sign-in terminal closed. Your setup continues in the original window.\nPress Enter to close this window.");
+            let _ = io::stdin().read_line(&mut String::new());
         }
     }
     result
 }
 
-async fn run_inner(args: &[String]) -> Result<(), String> {
+#[derive(Debug, PartialEq)]
+struct TerminalOptions<'a> {
+    target: &'a str,
+    project: bool,
+    container: Option<&'a str>,
+    subscription: Option<&'a str>,
+    new_signin: bool,
+    new_window: bool,
+}
+
+fn options(args: &[String]) -> Result<TerminalOptions<'_>, String> {
     let target = args
         .get(1)
         .filter(|s| !s.starts_with('-'))
         .ok_or(USAGE)?;
     let mut project = false;
     let mut container = None;
+    let mut subscription = None;
+    let mut new_signin = false;
+    let mut new_window = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--window" => {}
             "--project" => project = true,
+            "--new-window" => new_window = true,
+            "--new-signin" => new_signin = true,
+            "--subscription" if subscription.is_none() => {
+                i += 1;
+                let tool = args.get(i).ok_or("--subscription needs a tool name.")?;
+                subscription_command(tool, &[])?;
+                subscription = Some(tool.as_str());
+            }
             "--container" if container.is_none() => {
                 i += 1;
                 let name = args.get(i).ok_or("--container needs a value: the container's name.")?;
@@ -192,11 +236,37 @@ async fn run_inner(args: &[String]) -> Result<(), String> {
         }
         i += 1;
     }
+    if subscription.is_some() && project {
+        return Err("--subscription cannot be combined with --project or --container.".into());
+    }
+    if new_signin && subscription.is_none() {
+        return Err("--new-signin requires --subscription TOOL.".into());
+    }
+    if new_window && args.iter().any(|arg| arg == "--window") {
+        return Err("--new-window cannot be combined with --window.".into());
+    }
+    Ok(TerminalOptions { target, project, container, subscription, new_signin, new_window })
+}
+
+async fn run_inner(args: &[String]) -> Result<(), String> {
+    let TerminalOptions { target, project, container, subscription, new_signin, new_window } = options(args)?;
+    if new_window {
+        return match subscription {
+            Some(tool) => open_subscription(target, tool, new_signin),
+            None => open(target, project, container),
+        };
+    }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("yougori terminal needs an interactive terminal. For scripts use yougori exec or yougori terminal create.".into());
     }
     crate::client::start(None).await?;
     let id = crate::public::resolve(target).await?;
+    if let Some(tool) = subscription {
+        crossterm::execute!(io::stdout(), crossterm::terminal::SetTitle(format!("Yougori - {tool} sign-in"))).map_err(|e| e.to_string())?;
+        println!("{tool} sign-in\nYour setup is still in the original window. You can close this window when finished.");
+        if new_signin && tool == "gemini" { println!("In Gemini, use /auth to choose the new Google account."); }
+        return attach_subscription_tool(&id, tool, &subscription_login_arguments(tool, new_signin)).await.map(|_| ());
+    }
     attach(&id, project.then(|| project_command(container)).as_deref()).await
 }
 
@@ -306,6 +376,35 @@ pub(crate) async fn attach_prepared_tool(id: &str, tool: &str, arguments: &[Stri
     attach_session(id, None, Some((tool, arguments))).await
 }
 
+/// A subscription terminal must not silently pick up the API bridge's billing credentials.
+/// This changes only the terminal's child process; the bridge keeps its protected bindings.
+fn subscription_command(tool: &str, arguments: &[String]) -> Result<String, String> {
+    let variables = match tool {
+        "codex" => "OPENAI_API_KEY",
+        "claude" => "ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN",
+        "gemini" => "GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENAI_USE_VERTEXAI",
+        "opencode" => "OPENCODE_API_KEY",
+        "kilo" => "KILO_API_KEY",
+        _ => return Err("This tool has no subscription sign-in flow.".into()),
+    };
+    let launch = shell_words::join(std::iter::once(tool.to_owned()).chain(arguments.iter().cloned()));
+    Ok(format!("export PATH=\"$HOME/.local/share/yougori/bin:$HOME/.local/bin:$PATH\"; {TOOL_ENV}; unset {variables}; mkdir -p /workspace; cd /workspace && exec {launch}"))
+}
+
+pub(crate) async fn attach_subscription_tool(id: &str, tool: &str, arguments: &[String]) -> Result<SessionExit, String> {
+    attach_session(id, Some(&subscription_command(tool, arguments)?), None).await
+}
+
+fn subscription_login_arguments(tool: &str, new_signin: bool) -> Vec<String> {
+    if !new_signin { return crate::container_tools::launch_arguments(tool, &[]); }
+    match tool {
+        "codex" => vec!["login".into(), "--device-auth".into()],
+        "claude" => vec!["auth".into(), "login".into(), "--claudeai".into()],
+        "opencode" | "kilo" => vec!["auth".into(), "login".into()],
+        _ => crate::container_tools::launch_arguments(tool, &[]),
+    }
+}
+
 /// A connection that dropped, said the same way however it dropped, with what to do next. Its
 /// code is attached here: what was typed may or may not have arrived, which a program needs to
 /// know whatever words this uses.
@@ -329,6 +428,11 @@ pub(crate) async fn retry_steps(id: &str, tool: &str) -> String {
 
 pub(crate) async fn setup_tool(id: &str, tool: &str) -> Result<SessionExit, String> {
     tool_setup::ensure(id, tool).await
+}
+
+/// [`setup_tool`] inside a Hub run, where Ctrl+C stops the run rather than the sandbox.
+pub(crate) async fn setup_tool_in_run(id: &str, tool: &str) -> Result<SessionExit, String> {
+    tool_setup::ensure_in_run(id, tool).await
 }
 
 pub(crate) async fn tool_ready(id: &str, tool: &str) -> Result<bool, String> {
@@ -729,5 +833,55 @@ mod tests {
             KeyCode::Char('c'),
             KeyModifiers::CONTROL
         )));
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+    #[test]
+    fn subscription_windows_keep_their_mode_and_target_without_recursive_spawning() {
+        for tool in ["codex", "claude", "gemini", "opencode", "kilo"] {
+            for new_signin in [false, true] {
+                let child = subscription_arguments("env with spaces", tool, new_signin, "--window").unwrap();
+                let parsed = options(&child).unwrap();
+                assert_eq!(parsed.target, "env with spaces");
+                assert_eq!(parsed.subscription, Some(tool));
+                assert_eq!(parsed.new_signin, new_signin);
+                assert!(!parsed.new_window, "the child must attach, never spawn another child");
+                let command = subscription_reopen_command("env with spaces", tool, new_signin).unwrap();
+                let command = shell_words::split(&command).unwrap();
+                let reopened = options(&command[1..]).unwrap();
+                assert!(reopened.new_window, "the retry must not take over the caller's terminal");
+                assert_eq!(reopened.target, parsed.target);
+                assert_eq!(reopened.subscription, parsed.subscription);
+                assert_eq!(reopened.new_signin, parsed.new_signin);
+                assert!(!command.iter().any(|arg| arg.contains("API_KEY") || arg.contains("auth.json")));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_subscription_flags_fail_before_connecting_or_spawning() {
+        for extra in [vec!["--subscription", "sh"], vec!["--subscription", "codex;echo nope"],
+            vec!["--new-signin"], vec!["--subscription"],
+            vec!["--subscription", "codex", "--project"],
+            vec!["--subscription", "codex", "--container", "anything"],
+            vec!["--subscription", "codex", "--subscription", "claude"],
+            vec!["--window", "--new-window"]] {
+            let args = [vec!["terminal", "fixture"], extra].concat().into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(options(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn subscription_terminal_drops_bridge_api_billing_keys_in_its_child_only() {
+        for (tool, variable) in [("codex", "OPENAI_API_KEY"), ("claude", "ANTHROPIC_API_KEY"), ("gemini", "GEMINI_API_KEY"), ("opencode", "OPENCODE_API_KEY"), ("kilo", "KILO_API_KEY")] {
+            let command = subscription_command(tool, &[]).unwrap();
+            assert!(command.contains(&format!("unset {variable}")));
+            assert!(command.contains(&format!("exec {tool}")));
+            assert!(!command.contains("rm "));
+        }
+        assert!(subscription_command("arbitrary-command", &[]).is_err());
     }
 }

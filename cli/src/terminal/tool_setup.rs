@@ -87,13 +87,24 @@ fn exit_code(value: &serde_json::Value) -> Result<u8, String> {
 /// Installs the tool if it is missing. A setup that did not finish says where to look and how to
 /// try again, with this sandbox's own commands.
 pub(super) async fn ensure(id: &str, tool: &str) -> Result<SessionExit, String> {
-    match install(id, tool).await {
+    ensure_with(id, tool, true).await
+}
+
+/// As [`ensure`], inside a larger run (a Hub template): Ctrl+C stops that run with
+/// [`ui::CANCELLED`], which says how to carry on, instead of offering to stop the sandbox.
+pub(super) async fn ensure_in_run(id: &str, tool: &str) -> Result<SessionExit, String> {
+    ensure_with(id, tool, false).await
+}
+
+async fn ensure_with(id: &str, tool: &str, stop_menu: bool) -> Result<SessionExit, String> {
+    match install(id, tool, stop_menu).await {
+        Err(error) if error == ui::CANCELLED => Err(error),
         Err(error) => Err(format!("{error} {}", super::retry_steps(id, tool).await)),
         result => result,
     }
 }
 
-async fn install(id: &str, tool: &str) -> Result<SessionExit, String> {
+async fn install(id: &str, tool: &str, stop_menu: bool) -> Result<SessionExit, String> {
     if !crate::container_tools::TOOLS.contains(&tool) {
         return Err("Unknown tool".into());
     }
@@ -155,6 +166,13 @@ async fn install(id: &str, tool: &str) -> Result<SessionExit, String> {
             // must not answer a sharing prompt that has not appeared yet.
             match setup_input(input.read_batch()?, &mut interrupts) {
                 Control::Detach => return Ok(SessionExit::Detached),
+                Control::StopMenu if !stop_menu => {
+                    // Stopped as at a terminal: the installer's own Ctrl+C handling ends its
+                    // downloads and releases its lock, so a later install is not refused.
+                    let _ = call("terminal_action", json!({"environmentId":id,"sessionId":session,"action":"write","data":B64.encode("\x03")})).await;
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    return Err(ui::CANCELLED.into());
+                }
                 Control::StopMenu => { if crate::sandbox_stop::menu(id).await? { return Ok(SessionExit::Stopped); } },
                 Control::Continue => {},
             }
@@ -189,6 +207,10 @@ async fn install(id: &str, tool: &str) -> Result<SessionExit, String> {
                     task.clear();
                     return Ok(SessionExit::Detached);
                 }
+                Control::StopMenu if !stop_menu => {
+                    task.clear();
+                    return Err(ui::CANCELLED.into());
+                }
                 Control::StopMenu if crate::sandbox_stop::menu(id).await? => {
                     task.clear();
                     return Ok(SessionExit::Stopped);
@@ -201,6 +223,10 @@ async fn install(id: &str, tool: &str) -> Result<SessionExit, String> {
         Ok(exit) => {
             task.clear();
             Ok(exit)
+        }
+        Err(error) if error == ui::CANCELLED => {
+            task.clear();
+            Err(error)
         }
         Err(error) => {
             task.fail(&format!("{tool} setup could not finish"));

@@ -93,3 +93,25 @@ func TestExplicitShellCommandOverridesImageEntrypoint(t *testing.T) {
 		t.Fatal(a, e)
 	}
 }
+
+func TestRestartPolicyIsALabelWhenContainerdHasNoRestartMonitor(t *testing.T) {
+	for _, policy := range []string{"always", "unless-stopped", "on-failure"} {
+		args, err := workloadOptions{Restart: policy}.arguments()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"--label", restartPolicyLabel + "=" + policy}; !reflect.DeepEqual(args, want) {
+			t.Fatalf("%s: %q", policy, args)
+		}
+		args, err = workloadOptions{Restart: policy, restartMonitor: true}.arguments()
+		if err != nil || !reflect.DeepEqual(args, []string{"--restart", policy}) {
+			t.Fatalf("%s with the monitor: %q %v", policy, args, err)
+		}
+	}
+	if args, err := (workloadOptions{Restart: "no"}).arguments(); err != nil || len(args) != 0 {
+		t.Fatalf("no: %q %v", args, err)
+	}
+	if _, err := (workloadOptions{Restart: "sometimes"}).arguments(); err == nil {
+		t.Fatal("accepted an unknown policy")
+	}
+}

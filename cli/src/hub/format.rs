@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const TEMPLATE_FILE: &str = "yougori-template.yaml";
 pub const TOOL_FILE: &str = "yougori-tool.yaml";
+pub const MODELS_FILE: &str = "yougori-models.yaml";
 
 pub const LICENSES: &[&str] = &[
     "MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "CC0-1.0", "Zlib",
@@ -65,12 +66,28 @@ pub struct Template {
     pub inputs: Vec<Input>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tool_options: BTreeMap<String, ToolOptions>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public: Vec<Public>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<Output>,
+}
+
+/// [`MODELS_FILE`]: the template takes models started with `yougori run hf.co/OWNER/MODEL
+/// --template INSTANCE`. The CLI links `environment` to the model, then runs `command` there
+/// with one more argument: a private JSON request file (the model's address and API key) that
+/// the command must delete. A file of its own, not a key in the template file, so a Yougori
+/// that predates it still runs and updates the template (and only ignores this file).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Models {
+    #[serde(default)]
+    pub environment: String,
+    #[serde(default)]
+    pub command: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -115,6 +132,66 @@ pub struct Input {
     pub min: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ToolOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<BTreeMap<String, Yaml>>,
+    #[serde(default)]
+    pub signin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signin_when: Option<BTreeMap<String, Yaml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signin_hint: Option<String>,
+    /// A choice input with values `computer` and `new`, asked before sandbox creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signin_source: Option<String>,
+}
+
+/// AND between inputs, OR between their allowed values. Multiple-choice inputs use membership.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Condition {
+    pub input: String,
+    pub values: Vec<String>,
+    pub contains: bool,
+}
+
+pub fn conditions_match(conditions: &[Condition], answers: &BTreeMap<String, String>) -> bool {
+    conditions.iter().all(|c| answers.get(&c.input).is_some_and(|answer| {
+        c.values.iter().any(|value| if c.contains { answer.split(',').any(|v| v == value) } else { answer == value })
+    }))
+}
+
+fn scalar_text(value: &Yaml) -> Option<String> {
+    match value {
+        Yaml::String(text) => Some(text.clone()),
+        Yaml::Number(number) => Some(number.to_string()),
+        Yaml::Bool(value) => Some(if *value { "yes" } else { "no" }.into()),
+        _ => None,
+    }
+}
+
+pub fn conditions(when: &Option<BTreeMap<String, Yaml>>, questions: &[Question]) -> Result<Vec<Condition>, String> {
+    let Some(map) = when else { return Ok(Vec::new()) };
+    if map.is_empty() { return Err("when needs at least one input and its answer.".into()); }
+    map.iter().map(|(id, value)| {
+        let earlier = questions.iter().find(|q| &q.id == id).ok_or_else(|| format!("when names {}, which is not an earlier input.", scan::shown(id)))?;
+        if earlier.kind == Kind::Secret { return Err("when cannot depend on a secret.".into()); }
+        let items = match value { Yaml::Sequence(items) => items.clone(), _ => vec![value.clone()] };
+        if items.is_empty() || items.len() > 12 { return Err("when needs 1 to 12 possible answers per input.".into()); }
+        let mut values = Vec::new();
+        for item in items {
+            let text = scalar_text(&item).ok_or("when answers must be scalar values.")?;
+            let normal = earlier.answer(&text, None).map_err(|e| format!("when {id}: {} is not an answer to {id}. {e}", scan::shown(&text)))?;
+            if earlier.kind == Kind::MultiChoice && normal.contains(',') { return Err("Use a YAML list for alternative when answers.".into()); }
+            values.push(normal);
+        }
+        Ok(Condition { input: id.clone(), values, contains: earlier.kind == Kind::MultiChoice })
+    }).collect()
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -144,6 +221,8 @@ pub struct Public {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<BTreeMap<String, Yaml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,6 +358,7 @@ impl Template {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Choice,
+    MultiChoice,
     Text,
     Number,
     Secret,
@@ -290,6 +370,7 @@ impl Kind {
     fn read(text: &str) -> Option<Kind> {
         Some(match text {
             "choice" => Kind::Choice,
+            "multichoice" => Kind::MultiChoice,
             "text" => Kind::Text,
             "number" => Kind::Number,
             "secret" => Kind::Secret,
@@ -301,6 +382,7 @@ impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Choice => "choice",
+            Kind::MultiChoice => "multichoice",
             Kind::Text => "text",
             Kind::Number => "number",
             Kind::Secret => "secret",
@@ -326,13 +408,13 @@ pub struct Question {
     pub kind: Kind,
     pub required: bool,
     pub default: Option<String>,
-    /// Asked only when the earlier input `.0` was answered `.1`.
-    pub when: Option<(String, String)>,
+    pub when: Vec<Condition>,
     pub hint: String,
     pub choices: Vec<Option_>,
     pub pattern: Option<String>,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    pub min_length: Option<usize>,
 }
 
 fn number_text(number: f64) -> String {
@@ -342,15 +424,24 @@ fn number_text(number: f64) -> String {
 impl Question {
     /// Whether this question is asked, given the answers so far.
     pub fn asked(&self, answers: &BTreeMap<String, String>) -> bool {
-        self.when.as_ref().is_none_or(|(id, value)| answers.get(id) == Some(value))
+        conditions_match(&self.when, answers)
     }
     /// An answer as stored, or why it is not one. `domains` lists the saved domains when known.
     pub fn answer(&self, given: &str, domains: Option<&[String]>) -> Result<String, String> {
         let given = if self.kind == Kind::Secret { given } else { given.trim() };
+        if self.kind == Kind::MultiChoice {
+            if given.is_empty() && !self.required { return Ok(String::new()); }
+            let selected: BTreeSet<&str> = given.split(',').map(str::trim).collect();
+            if selected.iter().any(|v| !self.choices.iter().any(|c| c.value == *v)) {
+                return Err(format!("Choose from: {} (separate values with commas).", self.choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(", ")));
+            }
+            return Ok(self.choices.iter().filter(|c| selected.contains(c.value.as_str())).map(|c| c.value.as_str()).collect::<Vec<_>>().join(","));
+        }
         if given.is_empty() {
             return Err("Give an answer.".into());
         }
         match self.kind {
+            Kind::MultiChoice => unreachable!(),
             Kind::Choice => self.choices.iter().find(|choice| choice.value == given || choice.label.eq_ignore_ascii_case(given))
                 .map(|choice| choice.value.clone())
                 .ok_or_else(|| format!("Choose one of: {}.", self.choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(", "))),
@@ -371,6 +462,9 @@ impl Question {
                 Ok(number_text(number))
             }
             Kind::Text => {
+                if self.min_length.is_some_and(|min| given.chars().count() < min) {
+                    return Err(format!("Use at least {} characters.", self.min_length.unwrap()));
+                }
                 if given.chars().count() > 500 {
                     return Err("Keep the answer to 500 characters.".into());
                 }
@@ -399,6 +493,9 @@ impl Question {
                 }
             }
             Kind::Secret => {
+                if self.min_length.is_some_and(|min| given.chars().count() < min) {
+                    return Err(format!("Use at least {} characters.", self.min_length.unwrap()));
+                }
                 if given.len() > 65536 || given.contains(['\0', '\r', '\n']) {
                     return Err("A secret must be one line of at most 64 KiB.".into());
                 }
@@ -412,7 +509,7 @@ impl Question {
             return default.clone();
         }
         match self.kind {
-            Kind::Choice => self.choices.first().map(|c| c.value.clone()).unwrap_or_default(),
+            Kind::Choice | Kind::MultiChoice => self.choices.first().map(|c| c.value.clone()).unwrap_or_default(),
             Kind::Text => "sample".into(),
             Kind::Number => number_text(self.min.or(self.max).unwrap_or(1.0)),
             Kind::Secret => String::new(),
@@ -447,9 +544,27 @@ pub struct ToolUse {
     /// As written in `tools:`.
     pub spec: String,
     pub source: Source,
+    pub when: Vec<Condition>,
+    pub signin: bool,
+    pub signin_when: Vec<Condition>,
+    pub signin_hint: Option<String>,
+    pub signin_source: Option<String>,
 }
 
 impl ToolUse {
+    pub fn selected(&self, answers: &BTreeMap<String, String>) -> bool {
+        conditions_match(&self.when, answers)
+    }
+    pub fn needs_signin(&self, answers: &BTreeMap<String, String>) -> bool {
+        self.signin && self.selected(answers) && conditions_match(&self.signin_when, answers)
+    }
+    pub fn copy_credentials(&self, answers: &BTreeMap<String, String>) -> Option<bool> {
+        match self.signin_source.as_ref().and_then(|id| answers.get(id)).map(String::as_str) {
+            Some("computer") => Some(true),
+            Some("new") => Some(false),
+            _ => None,
+        }
+    }
     /// The tool's name as the review shows it.
     pub fn name(&self) -> String {
         match &self.source {
@@ -470,6 +585,8 @@ pub struct Folder {
     pub project: manifest::Project,
     pub questions: Vec<Question>,
     pub tools: Vec<ToolUse>,
+    /// Where models started with `--template` go, from [`MODELS_FILE`].
+    pub models: Option<Models>,
 }
 
 impl Folder {
@@ -823,17 +940,17 @@ fn input_problems(problems: &mut Vec<String>, inputs: &[Input]) -> Vec<Question>
         }
         let kind = match input.kind.as_deref().map(Kind::read) {
             None => {
-                bad("add type: choice, text, number, secret, domain or yesno.".into());
+                bad("add type: choice, multichoice, text, number, secret, domain or yesno.".into());
                 Kind::Text
             }
             Some(None) => {
-                bad(format!("type {} is not a question type. Use choice, text, number, secret, domain or yesno.", scan::shown(input.kind.as_deref().unwrap_or_default())));
+                bad(format!("type {} is not a question type. Use choice, multichoice, text, number, secret, domain or yesno.", scan::shown(input.kind.as_deref().unwrap_or_default())));
                 Kind::Text
             }
             Some(Some(kind)) => kind,
         };
         let mut choices = Vec::new();
-        if kind == Kind::Choice {
+        if matches!(kind, Kind::Choice | Kind::MultiChoice) {
             if !(2..=12).contains(&input.choices.len()) {
                 bad("a choice needs 2 to 12 choices.".into());
             }
@@ -855,7 +972,7 @@ fn input_problems(problems: &mut Vec<String>, inputs: &[Input]) -> Vec<Question>
                 choices.push(Option_ { value, label, hint });
             }
         } else if !input.choices.is_empty() {
-            bad("choices work only with type: choice.".into());
+            bad("choices work only with type: choice or multichoice.".into());
         }
         if input.pattern.is_some() && kind != Kind::Text {
             bad("pattern works only with type: text.".into());
@@ -871,41 +988,31 @@ fn input_problems(problems: &mut Vec<String>, inputs: &[Input]) -> Vec<Question>
         if input.min.zip(input.max).is_some_and(|(min, max)| min > max) {
             bad("min is larger than max.".into());
         }
+        if input.min_length.is_some() && !matches!(kind, Kind::Text | Kind::Secret) {
+            bad("min_length works only with text or secret inputs.".into());
+        }
+        if input.min_length.is_some_and(|n| n == 0 || n > if kind == Kind::Text { 500 } else { 65536 }) {
+            bad("min_length is outside the allowed answer size.".into());
+        }
         let default = match &input.default {
             None | Some(Yaml::Null) => None,
             Some(Yaml::String(text)) => Some(text.clone()),
             Some(Yaml::Number(number)) => Some(number.to_string()),
             Some(Yaml::Bool(value)) => Some(if *value { "yes" } else { "no" }.to_owned()),
+            Some(Yaml::Sequence(items)) if kind == Kind::MultiChoice => {
+                if items.iter().any(|v| !matches!(v, Yaml::String(_))) {
+                    bad("multichoice defaults must be a list of choice values.".into());
+                }
+                Some(items.iter().filter_map(scalar_text).collect::<Vec<_>>().join(","))
+            }
             Some(_) => {
-                bad("default must be a single value.".into());
+                bad("default must be a single value (or a list for multichoice).".into());
                 None
             }
         };
-        let when = match &input.when {
-            None => None,
-            Some(map) if map.len() != 1 => {
-                bad("when names exactly one earlier input and its answer, such as when: {access: domain}.".into());
-                None
-            }
-            Some(map) => {
-                let (other, value) = map.iter().next().unwrap();
-                let value = match value {
-                    Yaml::String(text) => text.clone(),
-                    Yaml::Number(number) => number.to_string(),
-                    Yaml::Bool(value) => if *value { "yes" } else { "no" }.to_owned(),
-                    _ => String::new(),
-                };
-                match questions.iter().find(|q| &q.id == other) {
-                    None => bad(format!("when names {}, which is not an earlier input.", scan::shown(other))),
-                    Some(earlier) if earlier.kind == Kind::Secret => bad("when cannot depend on a secret.".into()),
-                    Some(earlier) => {
-                        if let Err(error) = earlier.answer(&value, None) {
-                            bad(format!("when {other}: {} is not an answer to {other}. {error}", scan::shown(&value)));
-                        }
-                    }
-                }
-                Some((other.clone(), value))
-            }
+        let when = match conditions(&input.when, &questions) {
+            Ok(when) => when,
+            Err(error) => { bad(error); Vec::new() }
         };
         let mut question = Question {
             id,
@@ -919,6 +1026,7 @@ fn input_problems(problems: &mut Vec<String>, inputs: &[Input]) -> Vec<Question>
             pattern: input.pattern.clone(),
             min: input.min,
             max: input.max,
+            min_length: input.min_length,
         };
         if let Some(default) = default {
             if kind == Kind::Secret {
@@ -1104,13 +1212,52 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
                     }
                 }
             };
-            let use_ = ToolUse { environment: environment.clone(), spec: spec.clone(), source };
+            let use_ = ToolUse { environment: environment.clone(), spec: spec.clone(), source, when: Vec::new(), signin: false, signin_when: Vec::new(), signin_hint: None, signin_source: None };
             if !seen.insert(use_.name()) {
                 problems.push(format!("tools: {environment} lists {} twice.", use_.name()));
                 continue;
             }
             tools.push(use_);
         }
+    }
+    for (key, options) in &template.tool_options {
+        let Some(use_) = tools.iter_mut().find(|t| format!("{}/{}", t.environment, t.name()) == *key) else {
+            problems.push(format!("tool_options: {key} is not a declared environment/tool."));
+            continue;
+        };
+        if !matches!(use_.source, Source::BuiltIn(_)) {
+            problems.push(format!("tool_options: {key}: options currently apply only to built-in tools."));
+        }
+        if options.signin && !matches!(&use_.source, Source::BuiltIn(name) if ["codex", "claude", "gemini", "opencode", "kilo"].contains(&name.as_str())) {
+            problems.push(format!("tool_options: {key} has no supported subscription sign-in flow."));
+        }
+        match conditions(&options.when, &questions) {
+            Ok(when) => use_.when = when,
+            Err(error) => problems.push(format!("tool_options: {key}: {error}")),
+        }
+        use_.signin = options.signin;
+        if !options.signin && (options.signin_when.is_some() || options.signin_hint.is_some() || options.signin_source.is_some()) {
+            problems.push(format!("tool_options: {key}: signin_when, signin_hint and signin_source need signin: true."));
+        }
+        match conditions(&options.signin_when, &questions) {
+            Ok(when) => use_.signin_when = when,
+            Err(error) => problems.push(format!("tool_options: {key}: {error}")),
+        }
+        if let Some(hint) = &options.signin_hint {
+            if hint.chars().count() > 500 || !one_line(hint) { problems.push(format!("tool_options: {key}: signin_hint must be one line of at most 500 characters.")); }
+            if let Err(error) = render::check(hint, Place::Step, &known) { problems.push(format!("tool_options: {key}: {error}")); }
+        }
+        use_.signin_hint = options.signin_hint.clone();
+        if let Some(id) = &options.signin_source {
+            if !questions.iter().any(|q| q.id == *id && q.kind == Kind::Choice
+                && q.choices.len() == 2 && q.choices.iter().all(|c| matches!(c.value.as_str(), "computer" | "new"))) {
+                problems.push(format!("tool_options: {key}: signin_source must name a choice input with exactly computer and new options."));
+            }
+        }
+        use_.signin_source = options.signin_source.clone();
+    }
+    for step in &template.steps {
+        if let Err(error) = conditions(&step.when, &questions) { problems.push(format!("steps: {error}")); }
     }
     // Public access.
     let mut public_seen = BTreeSet::new();
@@ -1174,6 +1321,27 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
             }
         }
     }
+    // Models started with `yougori run MODEL --template INSTANCE` go to one environment.
+    let models = if files.contains_key(MODELS_FILE) {
+        match parse_yaml::<Models>(files, MODELS_FILE) {
+            Ok(models) => {
+                if !project.environments.contains_key(&models.environment) {
+                    problems.push(format!("{MODELS_FILE}: environment {} is not an environment in {project_path}.", scan::shown(&models.environment)));
+                }
+                if models.command.is_empty() || models.command.len() > 16
+                    || models.command.iter().any(|part| part.is_empty() || part.chars().count() > 512 || !one_line(part)) {
+                    problems.push(format!("{MODELS_FILE}: command is the program and its arguments, such as [python, /app/register.py]: 1 to 16 one-line parts."));
+                }
+                Some(models)
+            }
+            Err(error) => {
+                problems.push(error);
+                None
+            }
+        }
+    } else {
+        None
+    };
     // Steps and outputs.
     if template.steps.len() > 20 {
         problems.push("Use at most 20 steps.".into());
@@ -1214,7 +1382,7 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
     if !problems.is_empty() {
         return Err(problems);
     }
-    Ok(Folder { template, project_path, project_text, project, questions, tools })
+    Ok(Folder { template, project_path, project_text, project, questions, tools, models })
 }
 
 #[cfg(test)]
@@ -1298,10 +1466,24 @@ connections: [web -> paid]
         let checked = template(&folder(&[])).unwrap_or_else(|p| panic!("{}", p.join("\n")));
         assert_eq!(checked.template.name(), "my-api");
         assert_eq!(checked.questions.len(), 4);
-        assert_eq!(checked.questions[1].when, Some(("access".into(), "domain".into())));
+        assert_eq!(checked.questions[1].when, vec![Condition { input: "access".into(), values: vec!["domain".into()], contains: false }]);
         assert_eq!(checked.tools.iter().map(ToolUse::name).collect::<Vec<_>>(), ["codex", "claude", "gateway"]);
         assert_eq!(checked.gpu(), "optional");
         assert_eq!(checked.template.manifest()["kind"], "template");
+    }
+
+    #[test]
+    fn models_name_an_environment_and_a_command() {
+        let checked = template(&folder(&[(MODELS_FILE, "environment: web\ncommand: [node, /app/attach.js]\n")]))
+            .unwrap_or_else(|p| panic!("{}", p.join("\n")));
+        assert_eq!(checked.models, Some(Models { environment: "web".into(), command: vec!["node".into(), "/app/attach.js".into()] }));
+        assert!(problems(&[(MODELS_FILE, "environment: shop\ncommand: [node]\n")]).contains("yougori-models.yaml: environment shop is not an environment"));
+        assert!(problems(&[(MODELS_FILE, "environment: web\ncommand: []\n")]).contains("yougori-models.yaml: command"));
+        assert!(problems(&[(MODELS_FILE, "environment: web\ncommand: [node]\nextra: 1\n")]).contains("extra"));
+        assert!(template(&folder(&[])).unwrap().models.is_none());
+        // The template file itself keeps the keys every Yougori reads.
+        let with = TEMPLATE.replace("steps:\n", "models: {environment: web, command: [node]}\nsteps:\n");
+        assert!(problems(&[(TEMPLATE_FILE, &with)]).contains("unknown field `models`"));
     }
 
     #[test]

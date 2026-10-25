@@ -4101,6 +4101,20 @@ async fn sample_host_metrics(
         // A lost server's connections record their own errors; usage still reads.
         reconcile_connections(&store,&runtime,Reported::Nothing).await?;
     }
+    // A running container whose private network link is down restarted on its own (its restart
+    // policy): link it again, or its connections would stay silently broken.
+    // Tried at most every 30 seconds, as each pass saves the connections' state.
+    static RELINKED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let unlinked = runtime.unlinked_fabric_peers();
+    if !unlinked.is_empty() && store.snapshot()?.environments.iter().any(|e| e.kind == EnvironmentKind::Container
+        && e.status == EnvironmentStatus::Running && unlinked.iter().any(|id| id.as_str() == runtime_id(e)))
+        && RELINKED.lock().is_ok_and(|mut last| {
+            let due = last.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(30));
+            if due { *last = Some(std::time::Instant::now()); }
+            due
+        }) {
+        let _ = reconcile_connections(&store, &runtime, Reported::Nothing).await;
+    }
     // Compute and apply one container allocation at a time. Otherwise a
     // telemetry request holding an older policy can undo a concurrent Save.
     let cuda_capacity = runtime.cuda_capacity().await.ok();

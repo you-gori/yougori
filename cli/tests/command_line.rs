@@ -12,6 +12,24 @@ fn cli(args: &[&str]) -> Output {
 fn response(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
+
+#[test]
+fn subscription_windows_validate_before_spawning_and_inline_signin_requires_a_terminal() {
+    for options in [vec!["--subscription", "sh", "--new-window"],
+        vec!["--subscription", "codex", "--project", "--new-window"],
+        vec!["--new-signin", "--new-window"]] {
+        let args = [vec!["terminal", "unused-environment"], options].concat();
+        let output = cli(&args);
+        assert!(!output.status.success());
+        assert!(response(&output)["error"].is_string());
+    }
+    for tool in ["codex", "claude", "gemini", "opencode", "kilo"] {
+        let output = cli(&["terminal", "unused-environment", "--subscription", tool, "--new-signin"]);
+        assert!(!output.status.success());
+        assert!(response(&output)["error"].as_str().unwrap().contains("interactive terminal"));
+    }
+}
+
 #[test]
 fn tool_shortcuts_validate_offline_and_do_not_create_from_pipes() {
     for tool in ["codex", "claude", "gemini", "ollama", "opencode", "kilo", "openclaw"] {

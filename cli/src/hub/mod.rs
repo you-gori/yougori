@@ -71,28 +71,46 @@ pub struct Reply {
 }
 
 /// The commands this module answers: `template …`, `tool …` and `run hub/…`, where the first
-/// word of `run` that is not an option (or an option's value) is a Hub address.
+/// word of `run` that is not an option (or an option's value) is a Hub address. `run template
+/// SOURCE` is answered too (see [`template_run`]).
 pub fn requested(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("template" | "tool") => true,
-        Some("run") => {
-            let mut words = args[1..].iter();
-            while let Some(word) = words.next() {
-                if word == "--" {
-                    return false;
-                }
-                if word.starts_with('-') {
-                    if RUN_VALUES.iter().any(|name| word == &format!("--{name}")) {
-                        words.next();
-                    }
-                    continue;
-                }
-                return refs::looks_like_ref(word, &client::website());
-            }
-            false
-        }
+        Some("run") => template_run(args).is_some() || first_run_word(args).is_some_and(|at| refs::looks_like_ref(&args[at], &client::website())),
         _ => false,
     }
+}
+
+/// Where the first word of `run` that is not an option (or an option's value) is in `args`.
+fn first_run_word(args: &[String]) -> Option<usize> {
+    let mut at = 1;
+    while let Some(word) = args.get(at) {
+        if word == "--" {
+            return None;
+        }
+        if !word.starts_with('-') {
+            return Some(at);
+        }
+        if RUN_VALUES.iter().any(|name| word == &format!("--{name}")) {
+            at += 1;
+        }
+        at += 1;
+    }
+    None
+}
+
+/// `yougori run template SOURCE …` as people type it: `yougori template run SOURCE …`, so a
+/// folder that is not there is reported as such rather than pulled as an image named `template`.
+fn template_run(args: &[String]) -> Option<Vec<String>> {
+    if args.first().map(String::as_str) != Some("run") {
+        return None;
+    }
+    let at = first_run_word(args)?;
+    let source = args.get(at + 1)?;
+    (args[at] == "template" && !source.starts_with('-')).then(|| {
+        let rest = args.iter().enumerate().skip(1).filter(|(i, _)| *i != at).map(|(_, word)| word.clone());
+        ["template".to_owned(), "run".to_owned()].into_iter().chain(rest).collect()
+    })
 }
 
 /// Whether the desktop app opened this command in a console of its own (`YOUGORI_HUB_CONSOLE=1`).
@@ -260,6 +278,7 @@ fn stopped_message(args: &[String], current: Option<&instances::State>) -> Strin
 
 /// Runs a `template`, `tool` or `run hub/…` command.
 pub async fn run(args: &[String]) -> Result<Reply, String> {
+    let args = &template_run(args).unwrap_or_else(|| args.to_vec());
     let interrupted = async {
         // Interactive screens catch Ctrl+C as a key; this catches it everywhere else, with what
         // the command had done by then and how to go on.
@@ -366,6 +385,10 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
                 }
                 if let Some(backups) = v["kept"]["backups"].as_str() {
                     lines.push(format!("Backups of files you changed are still in {backups}."));
+                }
+                let missing: Vec<&str> = v["notFound"]["volumes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                if !missing.is_empty() {
+                    lines.push(format!("Not found, so not removed: {}. Look for them with yougori volume ls --scan.", missing.join(", ")));
                 }
                 views::done(lines)
             }))
@@ -713,6 +736,17 @@ mod tests {
         }
         for command in ["run nginx", "run -d nginx", "run hf.co/acme/model", "status", "tools", "run hub/nginx", "run --name hub nginx", "run -p 8080:80 nginx hub/acme/x", "run -- hub/acme/x"] {
             assert!(!requested(&words(command)), "{command}");
+        }
+    }
+
+    #[test]
+    fn run_template_is_read_as_template_run() {
+        let typed = words("run --name shop template ./examples/hub/my-api --yes");
+        assert!(requested(&typed));
+        assert_eq!(template_run(&typed), Some(words("template run --name shop ./examples/hub/my-api --yes")));
+        assert_eq!(template_run(&words("run template hub/acme/my-api")), Some(words("template run hub/acme/my-api")));
+        for command in ["run template", "run template --yes", "run -d template", "run nginx template hub/acme/x", "run -- template hub/acme/x"] {
+            assert!(template_run(&words(command)).is_none() && !requested(&words(command)), "{command}");
         }
     }
 

@@ -95,7 +95,7 @@ requires:                 # all optional
 inputs:                   # questions asked when someone runs the template
   - id: access            # [a-z][a-z0-9_]{0,31}, unique
     question: Where should the website be reachable?
-    type: choice          # choice | text | number | secret | domain | yesno
+    type: choice          # choice | multichoice | text | number | secret | domain | yesno
     choices:
       - {value: quick, label: Quick link, hint: Free HTTPS link from Cloudflare. It can change after a restart.}
       - {value: domain, label: My own domain, hint: A domain you saved with yougori domain add.}
@@ -140,14 +140,25 @@ outputs:                  # shown at the end of a run and in status
 Rules:
 
 - `inputs[].type`:
-  - `choice` needs 2–12 `choices` (`value` slug, `label` at most 60, optional `hint` at most 160).
+  - `choice` and `multichoice` need 2–12 `choices` (`value` slug, `label` at most 60, optional `hint` at most 160).
+  - `multichoice` shows checkboxes (Space toggles, Enter confirms). Answers use comma-separated
+    choice values (`--input providers=codex,claude`), or JSON arrays in `--inputs FILE`.
+    Values are stored once in manifest order. A required question needs at least one choice;
+    an optional one can be empty. Defaults may be a YAML list.
+  - `text` and `secret` may set `min_length` (a positive character count), checked before creation.
   - `text` (at most 500 characters, optional `pattern`), `number` (optional `min`, `max`),
-    `yesno` (answers `yes` or `no`), `domain` (a saved domain name; the CLI lists saved domains).
+    `yesno` (answers `yes` or `no`), `domain` (a saved domain name; in a terminal the CLI lists saved domains and offers Your own
+    domain, the same questions `yougori launch` asks, saving it as `yougori domain add` does; a
+    choice of quick/domain/none whose domain question is asked only for domain is shown with it as
+    one list, as `yougori launch` shows it; scripts give a saved domain).
   - `secret` answers are never written to disk, logs or the Hub. The CLI stores each one as a
     deployment secret named `hub-INSTANCE-ID` and the project refers to it as
     `{{secrets.ID}}` in `secrets:` (for example `secrets: {OPENAI_API_KEY: "{{secrets.openai_key}}"}`).
-  - `required` defaults to true; `default` must be a valid answer; `when` names one earlier
-    input and the answer that makes this question appear.
+  - `required` defaults to true; `default` must be a valid answer; `when` names an earlier
+    input and the answer that makes this question appear. A map can name several earlier
+    inputs (all must match); a YAML list matches any listed answer. For `multichoice`, a value
+    matches membership. For example `when: {providers: codex, codex_access: [api, both]}`.
+    Conditions cannot read secrets or forward-reference inputs.
 - `title`, `summary` and `changelog` are counted in UTF-16 units, trimmed, and must be plain:
   no control characters (the changelog may have tabs and line breaks), no bidi or invisible
   characters, no more than 2 combining marks in a row. Title and summary may not contain the word
@@ -176,6 +187,44 @@ Rules:
 - `tools` keys must be environment names in the project. Built-in tool names: `codex`, `claude`,
   `gemini`, `ollama`, `opencode`, `kilo`, `openclaw`. Anything else is a relative path to a bundled
   tool folder or a `hub/PUBLISHER/NAME[@VERSION]` tool reference.
+- `yougori-models.yaml` (optional, beside the template file) says the template sells models a
+  person starts themselves: `environment: web` and `command: [python, /app/site/attached.py]`.
+  It is a file of its own so a Yougori that predates it still runs and updates the template.
+  `yougori run hf.co/OWNER/MODEL --template INSTANCE` (or `yougori model run … --neocloud
+  --environment POD_ID --template INSTANCE`) reads the installed instance's copy and checks it
+  before the model starts, then gives `environment` a one-way connection to the model's port
+  8000 and runs `command` there with one more argument: a JSON request file
+  (`{"action":"attach","model","environment","url","key","place"}`, the model's private API
+  address and key) in a new folder under `/tmp`. The command must delete the file; the CLI then
+  removes the folder. It prints one JSON object on its last line of output, or `{"error":…}`.
+  `environment` must be in the project; `command` is 1 to 16 one-line parts.
+- `tool_options` optionally maps `ENVIRONMENT/BUILTIN` to `when`, `signin`, `signin_when`
+  and `signin_hint`, plus `signin_source`. Only tools selected by `when` install. `signin: true` runs the existing
+  explicit PC credential-copy question and opens that tool in a separate terminal window; `signin_when`
+  can restrict that to subscription/both answers. No host credentials are inspected before
+  opt-in. `signin_hint` is plain text with ordinary input placeholders, never secrets.
+  `signin_source` names a choice input with exactly `computer` and `new` values, so
+  the credential-source question can appear before sandbox creation. Its answer is
+  applied without asking twice; changing it on update repeats terminal setup.
+  Scripted runs leave commands for a person and never import host sign-ins. The record keeps
+  installation and terminal setup separately. An `opened` sign-in means its window was
+  launched, not that the provider verified the subscription. Setup keeps its original
+  terminal and continues without waiting; each sign-in step includes a command to reopen
+  its own window. Continuing does not open duplicate windows. If no desktop terminal is
+  available, setup reports that and never attaches the tool to the setup terminal.
+  Subscription terminals omit the corresponding API billing variables from their child process.
+- `steps[].when` uses the same conditions. Hidden steps are not shown after deployment.
+- Existing environments and data are preserved when tools are deselected. Previously installed
+  tools remain in the sandbox, but are not launched. Secret names remain in the instance record
+  for cleanup; inactive secret questions no longer bind their values into the project.
+- Updates revisit ordinary choices using previous answers and reuse stored active secrets.
+  A continued run evaluates missing dependent questions in order. All four environments of a
+  four-sandbox project still exist; tool selection does not remove environments.
+- Before applying changes, Hub stops the current running sandboxes owned by that
+  instance, then starts them with the updated configuration. If an older runtime
+  reports that a container still needs stopping, Hub reconciles those sandboxes
+  through a restart/stop and retries once. Other projects and retired sandboxes
+  are untouched; unrelated errors and cancellation are never retried.
 - `public[].environment` must exist in the project and `port` must be one of its `ports` targets.
 - The project's own `project:` name is ignored: each instance uses the instance name.
 - A template may not use `pc_access`, writable PC folders (`bind: true` volumes) or
@@ -270,10 +319,15 @@ access → steps and outputs.
    The instance folder `~/.yougori/hub/instances/INSTANCE` gets a copy of the files and a
    generated `yougori.yaml` (project name = instance). The CLI then runs the same reconciliation
    as `yougori up` and records each sandbox's ID and real name (including what a failed attempt
-   made). Every port opens inside its sandbox only. Instance names: the template name, or `--name`.
-   If an instance of the same template exists, a person chooses Open (or Continue) the existing
-   one / Create another (`NAME-2`); scripts are told its `template continue` command, or pass
-   another `--name`.
+   made). A sandbox whose creation failed or was cut short is deleted and made again by the next
+   run; one that ran and failed later is left for inspection. When a GPU sandbox cannot be created
+   and the template says `gpu: optional`, a person may run it without the GPU instead (scripts do
+   so and say it in a step); `update` offers the GPU again. Every port opens inside its sandbox
+   only. Instance names: the template name, or `--name`; a name whose volumes a removed instance
+   left behind is skipped, so a new copy never starts with old accounts and data. If an instance
+   of the same template exists, a person chooses Open (or Continue) the existing one / Create
+   another (`NAME-2`); scripts are told its `template continue` command, or pass another `--name`.
+   `yougori run template SOURCE` is the same as `yougori template run SOURCE`.
 6. **Tools.** Built-in tools are installed with the same quiet installer as `yougori codex` when a
    person is at the terminal; in scripts they become steps. Custom tools install through their
    `install` lines and must pass `check`.
@@ -289,12 +343,12 @@ access → steps and outputs.
 If a part fails, everything already created stays, the instance is marked incomplete, and the
 message names the part, the fix and the two commands `yougori template continue INSTANCE` and
 `yougori template rm INSTANCE --yes`. Ctrl+C stops at once and prints the same two (or, when the
-command had not created anything yet, says so).
+command had not created anything yet, says so), also while a tool installs.
 
 `template continue INSTANCE` carries an instance on from its own record: the same source and
 version and exactly the same files (a Hub instance uses its checked copy, so it keeps working
-after the item left the Hub; a folder instance refuses when its folder changed and points to
-`update`), its stored answers, and only the questions it has no answer for. It runs only the parts
+after the item left the Hub; a folder instance whose folder changed is updated instead, after
+the update's own review), its stored answers, and only the questions it has no answer for. It runs only the parts
 that did not finish, makes again sandboxes deleted elsewhere (with their tools and public access),
 starts a stopped instance, and finishes an update that stopped. A ready instance just shows its
 status. Scripts pass `--yes`.
@@ -665,8 +719,11 @@ containers, GPU hardware and Cloudflare accounts remain separate from the unit a
     only what did not finish.
 21. Running the same template twice: Open (or Continue) the existing one / Create another; scripts
     are told the `template continue` command, or pass another `--name`.
-22. No Cloudflare account: Quick link is the default; Own domain lists saved domains or says how to
-    add one.
+21a. Where it is stored: a first run in a terminal asks for the drive of all its sandboxes after
+    "Run it?", like `yougori launch`; the record keeps it (`storageDrive`) and updates reuse it,
+    since a sandbox moved to another drive would be replaced. Scripts use the default storage.
+22. No Cloudflare account: Quick link is the default; the same list offers Your own domain (set
+    up there and then) and every saved domain.
 23. Quick links can change after a restart: status shows the current address; the run says quick
     links are not for production.
 24. An agent runs a template unattended: `--yes`, `--input`, `--inputs`, `--secrets -`; steps that

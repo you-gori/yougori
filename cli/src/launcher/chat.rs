@@ -11,7 +11,7 @@ use std::{
 };
 use yougori_cli::{
     composer::{Editor, Input},
-    network, public,
+    network, public, template_models,
 };
 
 const CODE: ui::Rgb = ui::Rgb(0xa5, 0xb4, 0xfc);
@@ -47,6 +47,8 @@ struct Options {
     publish: bool,
     quant: Option<String>,
     storage_drive: Option<String>,
+    /// `--template INSTANCE`: also sell the model on that Hub template's site.
+    template: Option<String>,
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
@@ -62,6 +64,7 @@ fn options(args: &[String]) -> Result<Options, String> {
     let mut publish = false;
     let mut quant = None;
     let mut storage_drive = None;
+    let mut template = None;
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
@@ -105,6 +108,10 @@ fn options(args: &[String]) -> Result<Options, String> {
             "--new" if !run => fresh = true,
             "--change" if run => change = true,
             "--neocloud" if run => neocloud = true,
+            "--template" if run && template.is_none() => {
+                i += 1;
+                template = Some(yougori_cli::template_models::instance_name(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--template needs a template's name, such as my-api")?)?);
+            }
             "--environment" if run => {
                 i += 1;
                 environment = Some(args.get(i).filter(|v| !v.starts_with('-')).ok_or("--environment needs a pod name or ID")?.clone());
@@ -116,7 +123,7 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             // `npm run yougori -- model run ...` habits: a bare separator changes nothing.
             "--" => {}
-            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--closed-weights] [--listen (free only)] [--folder PATH] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
+            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--closed-weights] [--listen (free only)] [--folder PATH] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--template INSTANCE] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
         }
         i += 1;
     }
@@ -139,6 +146,7 @@ fn options(args: &[String]) -> Result<Options, String> {
         publish,
         quant,
         storage_drive,
+        template,
     })
 }
 
@@ -208,6 +216,10 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             return yougori_cli::architecture_support::launch(&task);
         }
     }
+    let site = match options.template.as_deref() {
+        Some(name) if !chat_only => Some(super::busy(&format!("Checking {}", clean(name)), template_models::prepare(name)).await?),
+        _ => None,
+    };
     if options.share_mode.is_some() && !super::busy("Checking your Yougori Network sign-in", network::signed_in()).await? {
         ui::step("Sign in to share this model on the Yougori Network");
         super::busy("Waiting for you to approve the sign-in", network::login(|code, address| {
@@ -274,6 +286,10 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
                     return Ok(0);
                 };
                 result["network"] = share;
+            }
+            if let Some(site) = &site {
+                let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
+                result["template"] = sell(site, &id, target).await?;
             }
             ui::outro("API configured; model weights may still be loading");
             // Keys are explicitly requested with --api, as with the scripted local runner.
@@ -391,8 +407,34 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             share().await?;
         }
     }
+    if let Some(site) = &site {
+        if options.neocloud {
+            // The RunPod pod bills meanwhile: Ctrl+C opens its stop options.
+            if wait_or_stop(&id, || sell(site, &id, target)).await?.is_none() {
+                return Ok(0);
+            }
+        } else {
+            sell(site, &id, target).await?;
+        }
+    }
     if options.listen { listen_session(&id, &name).await?; } else { session(&id, &name, options.fresh).await?; }
     Ok(0)
+}
+
+/// `--template INSTANCE`: list the model on that template's site. A failure leaves the model
+/// running and says how to try again.
+async fn sell(site: &template_models::Site, id: &str, target: &str) -> Result<Value, String> {
+    match super::busy(&format!("Adding the model to {}", clean(&site.instance)), template_models::attach(site, id, target)).await {
+        Ok(result) => {
+            ui::step(&clean(&template_models::summary(site, &result)));
+            Ok(result)
+        }
+        Err(error) if error == ui::CANCELLED => Err(error),
+        Err(error) => {
+            ui::warn(&clean(&template_models::failed(site, id, &error)));
+            Ok(Value::Null)
+        }
+    }
 }
 
 /// Free-provider recording opens a live view in an owned guest terminal.
@@ -1278,6 +1320,20 @@ mod tests {
         }
         for flags in [vec!["--closed-weights"],vec!["--publish"],vec!["--nowfree","--closed-weights","--publish"],vec!["--nowfree","--closed-weights","--closed-weights"],vec!["--nowfree","--publish","--publish"],vec!["--nowfree","--folder"],vec!["--nowfree","--folder","D:/M","--neocloud"]] {assert!(options(&args(&flags)).is_err());}
         assert!(!options(&args(&["--nowfree"])).unwrap().publish);
+    }
+
+    #[test]
+    fn template_names_one_instance_to_sell_the_model_on() {
+        let args=|flags:&[&str]| ["model","run","owner/model"].into_iter().chain(flags.iter().copied()).map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(options(&args(&["--template","my-api"])).unwrap().template.as_deref(),Some("my-api"));
+        let pod=options(&args(&["--neocloud","--environment","pod-1","--template","my-api"])).unwrap();
+        assert_eq!((pod.neocloud,pod.environment.as_deref(),pod.template.as_deref()),(true,Some("pod-1"),Some("my-api")));
+        assert!(options(&args(&[])).unwrap().template.is_none());
+        for flags in [vec!["--template"],vec!["--template","--api"],vec!["--template","My API"],vec!["--template","a","--template","b"]] {
+            assert!(options(&args(&flags)).is_err(),"{flags:?}");
+        }
+        // Chat with an existing model never takes it.
+        assert!(options(&["model","chat","env-1","--template","my-api"].map(str::to_owned)).is_err());
     }
     #[test]
     fn stop_choices_control_the_pod_for_neocloud_and_the_environment_for_local_models() {

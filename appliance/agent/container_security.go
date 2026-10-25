@@ -330,6 +330,9 @@ func secureSavedContainer(ctx context.Context, containerNamespace, name string) 
 	if err != nil {
 		return err
 	}
+	if updated, err = refreshGPUAccess(updated); err != nil {
+		return err
+	}
 	if bytes.Equal(updated, spec.Value) {
 		return nil
 	}

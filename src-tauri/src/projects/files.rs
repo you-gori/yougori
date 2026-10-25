@@ -116,7 +116,10 @@ pub(super) async fn reconcile(app:&AppHandle,p:&Project,record:&mut Record,k:&st
             let fingerprint=source_identity.hash.clone();
             let key=format!("{id}/{}",source.target);
             if let Some(binding)=record.files.get(&key).filter(|old|old.fingerprint==fingerprint&&old.active){
-                if running&&active_source_matches(app,&id,binding,&source_identity).await.is_ok(){continue}
+                // Unchanged code stays activated in a stopped sandbox, so it is not staged again:
+                // staging recreates the container twice, minutes for one holding tools or models.
+                // A running sandbox is checked for drift.
+                if !running||active_source_matches(app,&id,binding,&source_identity).await.is_ok(){continue}
                 project_cancelled()?;
             }
             changed.push((key,source.clone(),source_identity));

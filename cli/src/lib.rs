@@ -51,6 +51,8 @@ pub mod legacy_names;
 pub mod bounty_map;
 pub mod security;
 pub mod hub;
+pub mod template_models;
+pub mod own_domain;
 #[cfg(test)]
 mod help_coverage;
 

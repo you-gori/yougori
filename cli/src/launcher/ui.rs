@@ -1806,6 +1806,66 @@ pub fn select_required(question: &str, note: &[String], choices: &[Choice]) -> R
     select_with_cancel(question, note, choices, 0, false)
 }
 
+fn checklist_key(at: &mut usize, choices: &[Choice], checked: &mut [bool], back: bool, key: KeyEvent) -> Option<Result<Vec<usize>, String>> {
+    if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::CONTROL) { return None; }
+    if key.code == KeyCode::Char(' ') && *at < choices.len() {
+        if choices[*at].enabled { checked[*at] = !checked[*at]; }
+        return None;
+    }
+    if key.code == KeyCode::Enter {
+        if back && *at == choices.len() + 1 { return Some(Err(BACK.into())); }
+        return Some(Ok(checked.iter().enumerate().filter_map(|(i, yes)| (*yes && choices[i].enabled).then_some(i)).collect()));
+    }
+    selection_key(at, choices.len() + 1 + usize::from(back), key);
+    None
+}
+
+/// Space toggles a checkbox; Enter confirms the entire selection. Escape/Back behaves like
+/// other wizard questions. Disabled choices can never be submitted.
+pub fn multiselect(question: &str, note: &[String], choices: &[Choice], initial: &[usize], required: bool) -> Result<Vec<usize>, String> {
+    if choices.is_empty() { return Err("There is nothing to choose from.".into()); }
+    let _input = input_lock();
+    let raw = Raw::on()?;
+    let id = add(Item::Lines(Vec::new()));
+    let back = back_offered(true);
+    let mut checked: Vec<bool> = choices.iter().enumerate().map(|(i, c)| c.enabled && initial.contains(&i)).collect();
+    let mut at: usize = 0;
+    let count = choices.len() + 1 + usize::from(back);
+    let mut problem = String::new();
+    let mut early = drop_typed_ahead(true).err();
+    let result = loop {
+        if let Some(error) = early.take() { break Err(error); }
+        let window = size().1.saturating_sub(note.len() + 8).clamp(3, count.max(3)).min(count);
+        let first = (at + 1).saturating_sub(window);
+        let mut lines = vec![asking(question)];
+        lines.extend(note.iter().map(|text| format!("{}  {}", open_rail(), muted(text))));
+        for i in first..(first + window) {
+            let label = if i < choices.len() {
+                format!("{} {}  {}", if checked[i] { "[x]" } else { "[ ]" }, choices[i].label, choices[i].hint)
+            } else if i == choices.len() { "Continue".into() } else { "Back".into() };
+            let text = if i < choices.len() && !choices[i].enabled { muted(&label) } else if i == at { bold(&label) } else { label };
+            lines.push(format!("{}  {} {}", open_rail(), if i == at { "›" } else { " " }, text));
+        }
+        if !problem.is_empty() { lines.push(format!("{}  {}", open_rail(), &problem)); }
+        lines.push(keys_hint(&format!("↑↓ move · space check · enter continue · {}", leave_hint(back))));
+        update(id, |item| *item = Item::Lines(lines));
+        match read_key_with_cancel(true) {
+            Err(error) => break Err(error),
+            Ok(key) => if let Some(answer) = checklist_key(&mut at, choices, &mut checked, back, key) {
+                if answer.as_ref().is_ok_and(|items| required && items.is_empty()) {
+                    problem = "Select at least one option.".into();
+                } else { break answer; }
+            },
+        }
+    };
+    drop(raw);
+    finish(id, match &result {
+        Ok(items) => answered(question, &if items.is_empty() { "None".into() } else { items.iter().map(|i| choices[*i].label.as_str()).collect::<Vec<_>>().join(", ") }),
+        Err(error) => left(question, error),
+    });
+    result
+}
+
 fn selection_key(at: &mut usize, count: usize, key: KeyEvent) -> Option<usize> {
     if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::CONTROL) {
         return None;
@@ -3067,5 +3127,26 @@ mod tests {
         let lines = dash.render(120, 0, now);
         assert!(lines.iter().any(|l| l.contains("1.00 of 2 cores")));
         assert!(lines.iter().any(|l| l.contains("whole PC")));
+    }
+}
+
+#[cfg(test)]
+mod checklist_tests {
+    use super::*;
+    #[test]
+    fn space_toggles_enter_confirms_and_back_preserves_the_wizard() {
+        let choices = [Choice::new("Codex", ""), Choice::new("Claude", ""), Choice::new("Unavailable", "").disabled()];
+        let mut checked = vec![false; 3];
+        let mut at = 0;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Char(' '))).is_none());
+        checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Down));
+        checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Char(' ')));
+        assert_eq!(checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Enter)), Some(Ok(vec![0,1])));
+        at = 2;
+        checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Char(' ')));
+        assert!(!checked[2]);
+        at = 4;
+        assert_eq!(checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Enter)), Some(Err(BACK.into())));
     }
 }

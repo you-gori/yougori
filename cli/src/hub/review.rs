@@ -50,6 +50,14 @@ fn cleaned(mut value: Value) -> Value {
     value
 }
 
+/// Review conditions are descriptions, not executable rules. Keep every input, operator and
+/// alternative while staying inside the Hub's four-level JSON limit (tools is already a list).
+fn conditions(conditions: &[format::Condition]) -> Value {
+    json!(conditions.iter().map(|condition| format!("{} {} {}", condition.input,
+        if condition.contains { "contains any of" } else { "is one of" },
+        json!(condition.values))).collect::<Vec<_>>())
+}
+
 /// What the website refuses in a review: its known parts must have their types, values nest at
 /// most four deep, and every text is short and plain (`server/hub/review.mjs`).
 pub fn shape_problem(review: &Value) -> Option<String> {
@@ -223,7 +231,7 @@ pub fn template(folder: &Folder, notices: &[String], resolved: &BTreeMap<String,
         item
     }).collect();
     let connections: Vec<Value> = project.connections.iter().filter_map(|c| c.endpoints().ok()).map(|(from, to)| json!({"from": from, "to": to})).collect();
-    let tools: Vec<Value> = folder.tools.iter().map(|use_| match &use_.source {
+    let tools: Vec<Value> = folder.tools.iter().map(|use_| { let mut entry = match &use_.source {
         Source::BuiltIn(name) => tool_entry(name.clone(), "built-in", &use_.environment, None),
         Source::Bundled { folder, tool } => {
             let mut entry = tool_entry(tool.name().to_owned(), "bundled", &use_.environment, Some(tool));
@@ -235,6 +243,14 @@ pub fn template(folder: &Folder, notices: &[String], resolved: &BTreeMap<String,
             entry["ref"] = json!(reference.command());
             entry
         }
+    };
+        if !use_.when.is_empty() { entry["when"] = conditions(&use_.when); }
+        if use_.signin {
+            entry["signin"] = json!("Choose PC credentials or a new account; sign-in opens in a separate terminal window");
+            if !use_.signin_when.is_empty() { entry["signinWhen"] = conditions(&use_.signin_when); }
+            if let Some(input) = &use_.signin_source { entry["signinSource"] = json!(input); }
+        }
+        entry
     }).collect();
     let inputs: Vec<Value> = folder.questions.iter().map(|q| json!({"id": q.id, "question": q.question, "type": q.kind.name(), "secret": q.kind == Kind::Secret, "required": q.required})).collect();
     let steps: Vec<Value> = folder.template.steps.iter().filter_map(|s| s.title.clone()).map(Value::String).collect();
@@ -318,6 +334,7 @@ fn essentials(review: &Value) -> Value {
     let tools: Vec<Value> = review["tools"].as_array().into_iter().flatten().map(|tool| json!({
         "name": tool["name"], "source": tool["source"], "environment": tool["environment"],
         "downloads": tool["downloads"], "commands": tool["commands"], "check": tool["check"], "command": tool["command"],
+        "when": tool["when"], "signin": tool["signin"], "signinWhen": tool["signinWhen"], "signinSource": tool["signinSource"],
     })).collect();
     json!({
         "environments": review["environments"], "totals": review["totals"], "public": review["public"], "pcAccess": review["pcAccess"],
@@ -399,7 +416,7 @@ pub fn requirements(folder: &Folder, tools: &BTreeMap<String, Tool>, review: &Va
     }
     if let (Some(needed), Some(free)) = (totals["storageGb"].as_f64(), host.free_disk_gb) {
         if needed > free {
-            found.notes.push(format!("Together the sandboxes may use up to {} GB of disk; {} GB is free on the environment drive. Free space or move storage with yougori storage location --set PATH.", number(needed), number(free.floor())));
+            found.notes.push(format!("Together the sandboxes may use up to {} GB of disk as they grow; {} GB is free on their drive now.", number(needed), number(free.floor())));
         }
     }
     found
@@ -477,6 +494,23 @@ mod tests {
     }
 
     #[test]
+    fn conditional_tools_keep_all_rules_in_a_publishable_review() {
+        let mut folder = checked();
+        let tool = &mut folder.tools[0];
+        tool.when = vec![format::Condition { input: "providers".into(), values: vec!["codex".into()], contains: true }];
+        tool.signin = true;
+        tool.signin_when = vec![format::Condition { input: "access".into(), values: vec!["subscription".into(), "both".into()], contains: false }];
+        tool.signin_source = Some("signin_source".into());
+        let review = template(&folder, &[], &BTreeMap::new());
+        assert_eq!(shape_problem(&review), None);
+        assert_eq!(review["tools"][0]["when"], json!(["providers contains any of [\"codex\"]"]));
+        assert_eq!(review["tools"][0]["signinWhen"], json!(["access is one of [\"subscription\",\"both\"]"]));
+        assert_eq!(review["tools"][0]["signinSource"], "signin_source");
+        folder.tools[0].signin_when[0].values.pop();
+        assert!(differs(&review, &template(&folder, &[], &BTreeMap::new())), "changed sign-in conditions must still be detected");
+    }
+
+    #[test]
     fn template_text_never_brings_hidden_or_control_characters_into_the_review() {
         assert_eq!(plain("postgres:17\u{202e}\u{7}\ttab\nline"), "postgres:17\ttab\nline");
         let review = template(&checked(), &[format!("{}\u{200b}", "w".repeat(5000))], &BTreeMap::new());
@@ -509,7 +543,7 @@ mod tests {
         assert!(found.stops.is_empty() && !found.without_gpu);
         assert_eq!(found.notes.len(), 2, "{:?}", found.notes);
         assert!(found.notes[0].contains("up to 4.5 GB of memory; this computer has 4 GB"));
-        assert!(found.notes[1].contains("up to 30 GB of disk; 12 GB is free"));
+        assert!(found.notes[1].contains("up to 30 GB of disk as they grow; 12 GB is free on their drive"));
         let mut old = folder.clone();
         old.template.requires.yougori = Some("1.3.0".into());
         old.template.requires.platforms = vec!["linux-x86_64".into()];

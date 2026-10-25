@@ -2,7 +2,7 @@
 pub struct Invocation { pub args: Vec<String>, pub needs_model: bool }
 fn alias(flag: &str) -> &str {match flag {"--freenow"|"--free"|"-free"|"-nowfree"=>"--nowfree","--neocoud"=>"--neocloud","--publish"=>"--closed-weights",_=>flag}}
 fn model_flag(flag: &str) -> bool {matches!(alias(flag),"--now"|"--nowfree"|"--neocloud")}
-fn takes_value(flag: &str) -> bool {matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant"|"--folder"|"--backend")}
+fn takes_value(flag: &str) -> bool {matches!(flag,"--cpu"|"--memory"|"--storage"|"--storage-drive"|"--environment"|"--port"|"--quant"|"--folder"|"--backend"|"--template")}
 /// Only options before the image can make `run` a model run; after the first word or `--`
 /// they belong to the container's own command, as in `run -d alpine -- echo --now`.
 fn leading_model_flag(options: &[String]) -> bool {

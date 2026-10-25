@@ -1,0 +1,7 @@
+# Models you start yourself, sold on this website:
+#   yougori run hf.co/OWNER/MODEL --template INSTANCE
+#   yougori model run hf.co/OWNER/MODEL --neocloud --environment POD_ID --template INSTANCE
+# The CLI links the website's sandbox to the model and runs this command there with a private
+# request file (the model's address and API key); the site then lists and sells the model.
+environment: web
+command: [python, /app/site/attached.py]

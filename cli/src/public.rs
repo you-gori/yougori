@@ -28,7 +28,8 @@ Public commands:
   yougori inspect ENV             One environment's full record
   yougori logs ENV [--cursor CURSOR] [--limit BYTES] [--tail BYTES] [--last-error] [--follow]
   yougori exec ENV [--no-wait] [--timeout WAIT_SECONDS] [--guest-timeout SECONDS] -- COMMAND...
-  yougori terminal ENV [--project] [--container NAME]  Interactive shell; exit leaves the workload running
+  yougori terminal ENV [--project] [--container NAME] [--new-window]
+  terminal ENV --subscription TOOL [--new-signin] [--new-window]  Interactive shell; exit leaves the workload running
                                   --project starts in /workspace; --container enters a cloud server's Docker container
   yougori download on ENV [--domain HOST] --yes  Share a complete copy while this CLI stays open
   yougori download list | off ENV_ID  Lifetime download counts / turn off a download link
@@ -81,6 +82,7 @@ Public commands:
   yougori model run [hf.co/OWNER/MODEL] [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
                                   Omit the model in a terminal to fill in hf.co/; Esc cancels
                                   Resources: --cpu N --memory GB --storage GB; --backend auto|cuda|metal|cpu
+                                  --template INSTANCE also sells it on a Hub template that takes models (My API)
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
@@ -1217,7 +1219,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return call("model_preflight", json!({"model":target,"quant":quant})).await;
     }
     if !["run", "chat", "stop", "unshare", "status", "api", "usage", "access", "history"].contains(&action) {
-        return Err("Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--change] [--api] [--port PORT] | chat ENV [--new] | unshare ENV | history ENV | status ENV | api ENV [--port PORT] | access ENV | usage ENV [--days N] [--reset]".into());
+        return Err("Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--change] [--api] [--port PORT] [--template INSTANCE] | chat ENV [--new] | unshare ENV | history ENV | status ENV | api ENV [--port PORT] | access ENV | usage ENV [--days N] [--reset]".into());
     }
     let target = args.get(2).ok_or("Supply a model or environment")?;
     let mut api = false;
@@ -1236,6 +1238,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     let mut publish = false;
     let mut quant = None;
     let mut storage_drive = None;
+    let mut template = None;
     while i < args.len() {
         match args[i].as_str() {
             flag @ ("--now" | "--nowfree") if action == "run" => {
@@ -1254,6 +1257,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
             "--environment" if action == "run" => environment = Some(value(args, &mut i, "--environment")?),
+            "--template" if action == "run" && template.is_none() => template = Some(crate::template_models::instance_name(&value(args, &mut i, "--template")?)?),
             "--cpu" | "--memory" | "--storage" if action == "run" => {
                 let flag = args[i].clone();
                 let raw = value(args, &mut i, &flag)?;
@@ -1299,7 +1303,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return Err("Resetting model usage permanently clears its history. Repeat with --yes.".into());
     }
     if dry {
-        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"closedWeights":publish,"quant":quant,"storageDrive":storage_drive}));
+        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"closedWeights":publish,"quant":quant,"storageDrive":storage_drive,"template":template}));
     }
     if neocloud && environment.is_none() { return Err("Choosing a Neocloud pod needs an interactive terminal. For scripts add --environment POD_NAME --api.".into()); }
     let chat_mode = model_chat_mode(action, api, std::io::stdin().is_terminal(), std::io::stdout().is_terminal());
@@ -1310,6 +1314,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
     } else { None };
     client::start(None).await?;
     if share_mode.is_some() && !crate::network::signed_in().await? { return Err(crate::network::SIGN_IN_FIRST.into()); }
+    // A template that takes the model is checked before the model starts.
+    let site = match &template { Some(name) => Some(crate::template_models::prepare(name).await?), None => None };
     let mut result = if action == "run" && neocloud {
         let state = call("get_platform_state", json!({})).await?;
         let candidates = neocloud_model_targets(&state);
@@ -1349,6 +1355,10 @@ async fn model(args: &[String]) -> Result<Value, String> {
     let id = result["id"].as_str().ok_or("Model environment missing")?.to_owned();
     let id = id.as_str();
     if let Some(mode) = share_mode { result["network"] = crate::network::share_with_publication(id, mode, listen, publish).await?; }
+    if let Some(site) = &site {
+        result["template"] = crate::template_models::attach(site, id, target).await
+            .map_err(|error| crate::template_models::failed(site, id, &error))?;
+    }
     if action == "unshare" { return call("market_unshare_model", json!({"environmentId":id})).await; }
     if action == "stop" { return call("stop_model", json!({"environmentId":id})).await; }
     if action == "chat" { call("start_model", json!({"environmentId":id})).await?; }
@@ -2311,6 +2321,18 @@ mod tests {
         assert!(model_storage_drive(false,&host,Some("C:\\")).unwrap_err().contains("No environment was created"));
         assert!(model_storage_drive(false,&json!({}),Some("D:\\")).is_err());
         assert_eq!(model_storage_drive(true,&host,Some("C:\\")).unwrap(),Some("C:\\".into()));
+    }
+    #[tokio::test]
+    async fn a_template_to_sell_on_is_named_before_anything_starts() {
+        let plan=model(&args(&["model","run","hf.co/test/model","--template","my-api","--dry-run"])).await.unwrap();
+        assert_eq!(plan["template"],"my-api");
+        let pod=model(&args(&["model","run","hf.co/test/model","--neocloud","--environment","pod-1","--template","my-api","--dry-run"])).await.unwrap();
+        assert_eq!((pod["neocloud"].as_bool(),pod["template"].as_str()),(Some(true),Some("my-api")));
+        for bad in [vec!["--template","My API"],vec!["--template"],vec!["--template","a","--template","b"]] {
+            let mut words=vec!["model","run","hf.co/test/model"];words.extend(bad);words.push("--dry-run");
+            assert!(model(&args(&words)).await.is_err());
+        }
+        assert!(model(&args(&["model","status","env-1","--template","my-api"])).await.is_err());
     }
     #[tokio::test]
     async fn model_storage_dry_runs_keep_scripts_noninteractive() {

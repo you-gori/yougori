@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,6 +33,30 @@ func internetPlugin(ctx context.Context, action, id string, pid int) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("internet %s: %w: %.2048s", action, err, output)
+	}
+	if action == "ADD" && cudaMode() {
+		if err := allowBridgeForwarding(ctx); err != nil {
+			log.Printf("keep GPU internet forwarding open: %v", err)
+		}
+	}
+	return nil
+}
+
+// In WSL every distribution shares one network namespace, and Docker Engine or ufw in any of
+// them sets its FORWARD policy to DROP, which would cut GPU sandboxes off the internet (a tool
+// download then times out). The bridge's own traffic is accepted ahead of such rules; each
+// container's firewall in its own namespace still limits where it may go.
+func allowBridgeForwarding(ctx context.Context) error {
+	for _, rule := range [][]string{
+		{"-i", "odinet0", "-j", "ACCEPT"},
+		{"-o", "odinet0", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	} {
+		if _, err := run(ctx, "iptables", append([]string{"-w", "5", "-C", "FORWARD"}, rule...)...); err == nil {
+			continue
+		}
+		if _, err := run(ctx, "iptables", append([]string{"-w", "5", "-I", "FORWARD", "1"}, rule...)...); err != nil {
+			return err
+		}
 	}
 	return nil
 }

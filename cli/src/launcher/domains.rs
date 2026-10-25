@@ -154,34 +154,7 @@ pub(super) async fn run() -> Result<(), String> {
     }
 }
 
-/// A domain someone manages, in lowercase, that has no saved setup yet.
-pub(super) fn hostname(entry: &str, saved: &[Value]) -> Result<String, String> {
-    let name = entry.trim().to_ascii_lowercase();
-    if name.len() > 253
-        || !name.contains('.')
-        || name.parse::<std::net::IpAddr>().is_ok()
-        || name.split('.').any(|part| {
-            part.is_empty()
-                || part.len() > 63
-                || part.starts_with('-')
-                || part.ends_with('-')
-                || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
-        || [".local", ".localhost", ".trycloudflare.com"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-    {
-        return Err("Enter a domain you manage, such as app.example.com, without https://, a port, or a path.".into());
-    }
-    if saved.iter().any(|item| {
-        item["hostname"]
-            .as_str()
-            .is_some_and(|h| h.eq_ignore_ascii_case(&name))
-    }) {
-        return Err("This domain already has a saved setup.".into());
-    }
-    Ok(name)
-}
+pub(super) use yougori_cli::own_domain::hostname;
 
 /// Asks for a setup in turn, where Back returns to the previous question, then saves and
 /// connects it.

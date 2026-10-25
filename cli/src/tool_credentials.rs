@@ -222,13 +222,27 @@ async fn import(id: &str, entries: &[Credential], cancel: &AtomicBool) -> Result
 /// Cancel there asks again. A failed copy is shown and the launch continues, so the person can
 /// sign in inside the tool.
 pub(crate) async fn configure(id: &str, tool: &str, sharing: bool, copy: &mut bool) -> Result<bool, String> {
+    configure_with_choice(id, tool, sharing, copy, false).await
+}
+
+/// The Hub already asked this explicit choice before creating its sandboxes. Scripted Hub
+/// runs never call this; only interactive setup may use the person's saved opt-in. Returns
+/// whether a sign-in was copied: with none on this computer, the tool's own sign-in is needed.
+pub(crate) async fn configure_selected(id: &str, tool: &str, mut copy: bool) -> Result<bool, String> {
+    configure_with_choice(id, tool, false, &mut copy, true).await?;
+    Ok(copy)
+}
+
+async fn configure_with_choice(id: &str, tool: &str, sharing: bool, copy: &mut bool, mut selected: bool) -> Result<bool, String> {
     let product = product(tool);
     loop {
-        let choice = step_prompt(id, || {
-            ui::select(&question(tool), &notes(tool, sharing), &choices(tool), usize::from(!*copy))
-        })
-        .await?;
-        *copy = choice == 0;
+        if !selected {
+            let choice = step_prompt(id, || {
+                ui::select(&question(tool), &notes(tool, sharing), &choices(tool), usize::from(!*copy))
+            }).await?;
+            *copy = choice == 0;
+        }
+        selected = false;
         if !*copy {
             return Ok(true);
         }
@@ -247,6 +261,7 @@ pub(crate) async fn configure(id: &str, tool: &str, sharing: bool, copy: &mut bo
             || (tool == "ollama" && !entries.iter().any(|e| e.target == ".ollama/id_ed25519"))
         {
             ui::info(&format!("No {product} sign-in found on this computer. Sign in inside the tool if it asks."));
+            *copy = false;
             return Ok(true);
         }
         let interrupted = Arc::new(AtomicBool::new(false));
@@ -267,6 +282,7 @@ pub(crate) async fn configure(id: &str, tool: &str, sharing: bool, copy: &mut bo
             Err(error) if !cancelled => {
                 ui::warn(error);
                 ui::info("Continuing without it. Sign in inside the tool if it asks.");
+                *copy = false;
             }
             _ => {}
         }

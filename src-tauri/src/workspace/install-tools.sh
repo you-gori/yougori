@@ -8,7 +8,7 @@ od_cleanup() {
   trap - EXIT HUP INT TERM
   if [ "$od_locked" = 1 ]; then rm -f "$od_lock/pid" "$od_lock/identity"; rmdir "$od_lock" 2>/dev/null || true; fi
   case "$od_work" in /tmp/yougori-install.*)
-    rm -f "$od_work/install.sh" "$od_work/download" "$od_work/SHASUMS256.txt" "$od_work/node.tar.gz" "$od_work/ollama.tar.zst" "$od_work/ollama.tar"
+    rm -f "$od_work/install.sh" "$od_work/download" "$od_work/SHASUMS256.txt" "$od_work/node.tar.gz" "$od_work/ollama.tar.zst" "$od_work/ollama.tar" "$od_work/.curlrc"
     rmdir "$od_work" 2>/dev/null || true;;
   esac
   if [ "$od_status" != 0 ]; then
@@ -126,9 +126,18 @@ if [ "$od_pm" = apk ]; then
   if [ "$od_tool" = claude ]; then od_packages libgcc libstdc++ ripgrep
   else od_packages libgcc libstdc++; fi
 fi
+# Large tools (Ollama is over a gigabyte) take as long as the connection needs: a download stops
+# only when it stalls below 10 KB/s for two minutes, and transient failures are retried.
 od_download() {
-  curl --fail --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 600 "$1" -o "$2"
+  curl --fail --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 20 --speed-limit 10240 --speed-time 120 --retry 3 --retry-delay 5 "$1" -o "$2"
 }
+
+# The tools' own install scripts download with curl too, often without any limit: a stalled
+# download would hold the install lock forever. This file gives every curl here the same rule.
+case "$od_work" in /tmp/yougori-install.*)
+  printf '%s\n' 'connect-timeout = 20' 'speed-limit = 10240' 'speed-time = 120' > "$od_work/.curlrc"
+  export CURL_HOME="$od_work";;
+esac
 
 case "$od_tool" in
   codex)

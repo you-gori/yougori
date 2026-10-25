@@ -1,6 +1,42 @@
 use super::*;
 use std::future::Future;
 
+const CREATION_FAILED: &str = "Environment creation failed: ";
+const CLOSED_DURING_CREATION: &str = "Yougori closed before environment creation finished.";
+const STOPPED_DURING_CREATION: &str = "Environment creation was stopped before it finished.";
+
+/// A node whose creation never finished: it failed, or was cut short by Ctrl+C, a closed
+/// window or Yougori closing. It holds nothing of its own, so it can be deleted and made again.
+pub(crate) fn creation_unfinished(environment: &Environment) -> bool {
+    environment.status == EnvironmentStatus::Error
+        && environment.last_error.as_deref().is_some_and(|error| {
+            [CREATION_FAILED, CLOSED_DURING_CREATION, STOPPED_DURING_CREATION].iter().any(|start| error.starts_with(start))
+        })
+}
+
+/// Marks the node as an error when its creation is dropped part way (a cancelled job aborts
+/// the task), so it never spins as Provisioning until Yougori restarts.
+struct Unfinished<'a> {
+    store: &'a PlatformStore,
+    id: &'a str,
+    armed: bool,
+}
+
+impl Drop for Unfinished<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = self.store.mutate(|state| {
+            if let Some(environment) = state.environments.iter_mut().find(|item| item.id == self.id && item.status == EnvironmentStatus::Provisioning) {
+                environment.status = EnvironmentStatus::Error;
+                environment.last_error = Some(format!("{STOPPED_DURING_CREATION} Delete this incomplete node and create the environment again. Your original images and boot media were not changed."));
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Persist and announce the real node before downloading images or preparing disks.
 /// The async command continues even after its creation form has been closed.
 pub(super) async fn create_on_graph(
@@ -51,7 +87,9 @@ pub(super) async fn create_on_graph(
         Ok(())
     })?;
     notify(&state);
+    let mut unfinished = Unfinished { store, id, armed: true };
     let result = provision.await;
+    unfinished.armed = false;
     let finalized = store.mutate(|state| {
         let environment = state.environments.iter_mut().find(|item| item.id == id)
             .ok_or("The environment creation record is missing")?;
@@ -64,7 +102,7 @@ pub(super) async fn create_on_graph(
             }
             Err(error) => {
                 environment.status = EnvironmentStatus::Error;
-                environment.last_error = Some(format!("Environment creation failed: {error}\nDelete this node and create the environment again. Your original images and boot media were not changed."));
+                environment.last_error = Some(format!("{CREATION_FAILED}{error}\nDelete this node and create the environment again. Your original images and boot media were not changed."));
             }
         }
         Ok(())
@@ -99,7 +137,7 @@ pub(crate) fn recover_interrupted(state: &mut PlatformState) {
             && !state.pending_factory_resets.iter().any(|entry| entry.environment.id == environment.id)
         {
             environment.status = EnvironmentStatus::Error;
-            environment.last_error = Some("Yougori closed before environment creation finished. Delete this incomplete node and create the environment again. Your original images and boot media were not changed.".into());
+            environment.last_error = Some(format!("{CLOSED_DURING_CREATION} Delete this incomplete node and create the environment again. Your original images and boot media were not changed."));
         }
     }
 }
@@ -272,6 +310,34 @@ mod tests {
             assert_eq!(recovered.environments[2].status, EnvironmentStatus::Stopped);
             assert_eq!(recovered.environments.len(), 3);
         }
+    }
+
+    #[tokio::test]
+    async fn a_creation_stopped_part_way_is_an_error_that_can_be_made_again() {
+        let data = tempfile::tempdir().unwrap();
+        let store = PlatformStore::load(data.path().join("state.json")).unwrap();
+        let (request, policy) = fixture();
+        {
+            let task = create_on_graph(&request, policy, "env-dropped", &store, std::future::pending(), |_| {});
+            tokio::pin!(task);
+            tokio::select! {
+                _ = &mut task => panic!("Preparation must still be in progress"),
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            assert_eq!(store.snapshot().unwrap().environments[0].status, EnvironmentStatus::Provisioning);
+        }
+        let environment = &store.snapshot().unwrap().environments[0];
+        assert_eq!(environment.status, EnvironmentStatus::Error);
+        assert!(environment.last_error.as_deref().unwrap().starts_with(STOPPED_DURING_CREATION));
+        assert!(creation_unfinished(environment));
+        let mut failed = environment.clone();
+        failed.last_error = Some(format!("{CREATION_FAILED}pull access denied"));
+        assert!(creation_unfinished(&failed));
+        failed.last_error = Some("The container exited with code 1".into());
+        assert!(!creation_unfinished(&failed), "a node that ran and failed later is kept for inspection");
+        failed.status = EnvironmentStatus::Stopped;
+        failed.last_error = Some(format!("{CREATION_FAILED}old"));
+        assert!(!creation_unfinished(&failed));
     }
 
     #[tokio::test]

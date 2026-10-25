@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	containers "github.com/containerd/containerd/api/services/containers/v1"
@@ -19,7 +21,47 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
+
+// restartsPaused is set while the runtime shuts down, so the supervisor never starts a
+// container that the shutdown has just stopped.
+var restartsPaused atomic.Bool
+
+// markStoppedByHost records a host stop on the container's restart status, as docker stop does:
+// no restart policy (the agent's, or containerd's own monitor in an older runtime) starts it
+// again until the host does. Only a container with a policy is marked; nerdctl start sets its
+// status back to running.
+func markStoppedByHost(ctx context.Context, containerNamespace, name string) error {
+	output, err := run(ctx, "nerdctl", "--namespace", containerNamespace, "inspect", "--format", "{{.Id}}", name)
+	if err != nil {
+		return err
+	}
+	id := strings.TrimSpace(output.Stdout)
+	if !safeID.MatchString(id) {
+		return fmt.Errorf("cannot resolve the container to stop")
+	}
+	connection, err := containerdConnection()
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	ctx = metadata.AppendToOutgoingContext(ctx, "containerd-namespace", containerNamespace)
+	client := containers.NewContainersClient(connection)
+	current, err := client.Get(ctx, &containers.GetContainerRequest{ID: id})
+	if err != nil {
+		return err
+	}
+	labels := current.GetContainer().GetLabels()
+	if policy := labels[restartPolicyLabel]; policy == "" || policy == "no" || labels[restartStatusLabel] == "stopped" {
+		return nil
+	}
+	_, err = client.Update(ctx, &containers.UpdateContainerRequest{
+		Container:  &containers.Container{ID: id, Labels: map[string]string{restartStatusLabel: "stopped"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels." + restartStatusLabel}},
+	})
+	return err
+}
 
 // containerd's own restart monitor would start containers without the agent:
 // no saved-spec hardening, no storage-limit check and no PC folder mounts.
@@ -127,6 +169,18 @@ func restartMonitorActive(ctx context.Context, connection *grpc.ClientConn) (boo
 	return false, nil
 }
 
+// restartMonitorRunning says whether new containers can take nerdctl's --restart. Unknown counts
+// as no: the policy label works with or without the monitor.
+func restartMonitorRunning(ctx context.Context) bool {
+	connection, err := containerdConnection()
+	if err != nil {
+		return false
+	}
+	defer connection.Close()
+	active, err := restartMonitorActive(ctx, connection)
+	return err == nil && active
+}
+
 func restartCandidates(ctx context.Context, connection *grpc.ClientConn, containerNamespace string, managedOnly bool) ([]restartCandidate, error) {
 	ctx = metadata.AppendToOutgoingContext(ctx, "containerd-namespace", containerNamespace)
 	listed, err := containers.NewContainersClient(connection).List(ctx, &containers.ListContainersRequest{
@@ -171,6 +225,9 @@ func (s *server) superviseRestartPolicies() {
 }
 
 func (s *server) reconcileRestartPolicies(now time.Time) {
+	if restartsPaused.Load() {
+		return
+	}
 	if _, err := os.Stat(containerdSocket); err != nil {
 		return
 	}
@@ -235,12 +292,14 @@ func (s *server) restartByPolicy(candidate restartCandidate) error {
 	if !s.workloadMountsAttached(candidate.name) {
 		return errors.New("waiting for the host to attach its PC folders")
 	}
-	if err := s.ensureContainerStorage(ctx, candidate.name, 0); err != nil {
+	if err := s.ensureContainerStorage(ctx, candidate.name, 0, false); err != nil {
 		return err
 	}
 	if err := secureSavedContainer(ctx, namespace, candidate.name); err != nil {
 		return err
 	}
+	// Its private network link went with the old process; the host links the new one.
+	stopFabric(candidate.name)
 	if _, err := run(ctx, "nerdctl", "--namespace", namespace, "start", candidate.name); err != nil {
 		return err
 	}

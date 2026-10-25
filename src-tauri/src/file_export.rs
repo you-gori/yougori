@@ -575,8 +575,8 @@ fn outdated_agent(error: &str, gpu: bool) -> String {
     }
 }
 
-/// Removes a named volume and its data from every container runtime that keeps it. Refuses while
-/// an environment mounts it. The GPU runtime is included only while it runs.
+/// Removes a named volume and its data from every container runtime that keeps it, a stopped GPU
+/// runtime too. Refuses while an environment mounts it.
 pub(crate) async fn remove_named_volume(name: &str, store: &PlatformStore, runtime: &RuntimeManager) -> Result<Value, String> {
     if !valid_volume_name(name) {
         return Err("Volume names use up to 80 letters, numbers, dots, dashes or underscores".into());
@@ -596,9 +596,14 @@ pub(crate) async fn remove_named_volume(name: &str, store: &PlatformStore, runti
             Err(error) => failures.push(format!("{}: {}", place.location, outdated_agent(&error, place.provider == RuntimeProviderKind::YougoriCuda))),
         }
     }
+    // A GPU runtime started for this returns its freed space and stops again when idle, as after
+    // deleting a GPU environment.
+    if stores.iter().any(|place| place.provider == RuntimeProviderKind::YougoriCuda) {
+        let _ = runtime.reclaim_container_storage(&RuntimeProviderKind::YougoriCuda).await;
+    }
     if !failures.is_empty() {
         let done = if removed.is_empty() { String::new() } else { format!(" Removed from {}.", removed.join(", ")) };
-        return Err(format!("Could not remove {name}: {}.{done}", failures.join("; ")));
+        return Err(format!("Could not remove {name}: {}.{done}", failures.join("; ").trim_end_matches('.')));
     }
     if removed.is_empty() {
         let skipped = if unavailable.is_empty() { String::new() } else { format!(" Not checked: {}.", unavailable.join("; ")) };

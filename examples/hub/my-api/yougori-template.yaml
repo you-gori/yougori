@@ -1,0 +1,256 @@
+kind: template
+name: my-api
+title: My API
+summary: Your own model API website, with four sandboxes, credits and a wallet you own.
+version: 1.6.0
+license: MIT
+topics: [ai, api, website, models, payments]
+changelog: Sell models you start with yougori run --template; prices in USDT; Claude Code is no longer installed.
+requires:
+  yougori: 1.1.1
+  gpu: optional
+
+inputs:
+  - id: admin_account
+    question: Set up the website admin account
+    type: choice
+    choices:
+      - {value: create, label: "Create admin account", hint: "Choose its email and password here. Then sign in on the website."}
+      - {value: existing, label: "Keep my existing admin", hint: "For an existing installation. Keeps its account and password."}
+    default: create
+  - id: admin_email
+    question: Admin sign-in email
+    type: text
+    when: {admin_account: create}
+    pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    hint: "Use this email when signing in on the website."
+  - id: admin_password
+    question: Create the admin password
+    type: secret
+    min_length: 12
+    when: {admin_account: create}
+    hint: "Use 12 to 1024 characters. Stored securely; existing admin passwords are never overwritten."
+  - id: providers
+    question: Which tools and model providers do you want to add?
+    type: multichoice
+    hint: "Space checks each option. Enter continues. Only selected tools are installed."
+    choices:
+      - {value: codex, label: "Codex / OpenAI"}
+      - {value: claude, label: "Anthropic API"}
+      - {value: gemini, label: "Gemini CLI / Google"}
+      - {value: opencode, label: "OpenCode"}
+      - {value: kilo, label: "Kilo Code"}
+      - {value: ollama, label: "Ollama (local models)"}
+  - id: codex_access
+    question: How do you want to connect Codex?
+    type: choice
+    when: {providers: codex}
+    choices:
+      - {value: subscription, label: "Subscription", hint: "Sign in to the coding tool inside its sandbox."}
+      - {value: api, label: "API key", hint: "Connect the provider API to your website."}
+      - {value: both, label: "Both", hint: "Set up the subscription terminal and the website API."}
+    default: subscription
+  - id: codex_signin_source
+    question: How do you want to sign in to Codex?
+    type: choice
+    when: {providers: codex, codex_access: [subscription, both]}
+    choices:
+      - {value: computer, label: "Use credentials from this computer", hint: "Copy supported sign-in files into the sandbox; people with sandbox control can use them."}
+      - {value: new, label: "Sign in with a new account", hint: "Open a separate sign-in window. Nothing is copied from this computer."}
+    default: new
+  - id: openai_key
+    question: Enter your OpenAI API key
+    type: secret
+    when: {providers: codex, codex_access: [api, both]}
+    hint: "Stored in the credential vault. API usage has separate provider billing."
+  - id: anthropic_key
+    question: Enter your Anthropic API key
+    type: secret
+    when: {providers: claude}
+    hint: "Stored in the credential vault. API usage has separate provider billing."
+  - id: gemini_access
+    question: How do you want to connect Gemini?
+    type: choice
+    when: {providers: gemini}
+    choices:
+      - {value: subscription, label: "Subscription", hint: "Sign in to the coding tool inside its sandbox."}
+      - {value: api, label: "API key", hint: "Connect the provider API to your website."}
+      - {value: both, label: "Both", hint: "Set up the subscription terminal and the website API."}
+    default: subscription
+  - id: gemini_signin_source
+    question: How do you want to sign in to Gemini?
+    type: choice
+    when: {providers: gemini, gemini_access: [subscription, both]}
+    choices:
+      - {value: computer, label: "Use credentials from this computer", hint: "Copy supported sign-in files into the sandbox; people with sandbox control can use them."}
+      - {value: new, label: "Sign in with a new account", hint: "Open a separate sign-in window. Nothing is copied from this computer."}
+    default: new
+  - id: gemini_key
+    question: Enter your Google AI Studio API key
+    type: secret
+    when: {providers: gemini, gemini_access: [api, both]}
+    hint: "Stored in the credential vault. API usage has separate provider billing."
+  - id: opencode_scope
+    question: Which models do you want from OpenCode?
+    type: choice
+    when: {providers: opencode}
+    choices:
+      - {value: free, label: "Free models only"}
+      - {value: all, label: "Free and paid models", hint: "Choose an account or API connection next."}
+    default: free
+  - id: opencode_access
+    question: How do you want to connect paid access for OpenCode?
+    type: choice
+    when: {providers: opencode, opencode_scope: all}
+    choices:
+      - {value: subscription, label: "Subscription / account", hint: "Choose your plan and sign in through the coding tool."}
+      - {value: api, label: "API key", hint: "Use the gateway API from your website."}
+      - {value: both, label: "Both"}
+    default: subscription
+  - id: opencode_signin_source
+    question: How do you want to sign in to OpenCode?
+    type: choice
+    when: {providers: opencode, opencode_access: [subscription, both], opencode_scope: all}
+    choices:
+      - {value: computer, label: "Use credentials from this computer", hint: "Copy supported sign-in files into the sandbox; people with sandbox control can use them."}
+      - {value: new, label: "Sign in with a new account", hint: "Open a separate sign-in window. Nothing is copied from this computer."}
+    default: new
+  - id: opencode_plan
+    question: Which account will you use in OpenCode?
+    type: choice
+    when: {providers: opencode, opencode_scope: all, opencode_access: [subscription, both]}
+    choices:
+      - {value: go, label: "OpenCode Go"}
+      - {value: chatgpt, label: "ChatGPT subscription"}
+      - {value: other, label: "Another provider account"}
+  - id: opencode_key
+    question: Enter your OpenCode gateway API key
+    type: secret
+    when: {providers: opencode, opencode_scope: all, opencode_access: [api, both]}
+    hint: "Used by the website API bridge. Your coding-tool subscription stays in its terminal."
+  - id: kilo_scope
+    question: Which models do you want from Kilo Code?
+    type: choice
+    when: {providers: kilo}
+    choices:
+      - {value: free, label: "Free models only"}
+      - {value: all, label: "Free and paid models", hint: "Choose an account or API connection next."}
+    default: free
+  - id: kilo_access
+    question: How do you want to connect paid access for Kilo Code?
+    type: choice
+    when: {providers: kilo, kilo_scope: all}
+    choices:
+      - {value: subscription, label: "Subscription / account", hint: "Choose your plan and sign in through the coding tool."}
+      - {value: api, label: "API key", hint: "Use the gateway API from your website."}
+      - {value: both, label: "Both"}
+    default: subscription
+  - id: kilo_signin_source
+    question: How do you want to sign in to Kilo Code?
+    type: choice
+    when: {providers: kilo, kilo_access: [subscription, both], kilo_scope: all}
+    choices:
+      - {value: computer, label: "Use credentials from this computer", hint: "Copy supported sign-in files into the sandbox; people with sandbox control can use them."}
+      - {value: new, label: "Sign in with a new account", hint: "Open a separate sign-in window. Nothing is copied from this computer."}
+    default: new
+  - id: kilo_plan
+    question: Which account will you use in Kilo Code?
+    type: choice
+    when: {providers: kilo, kilo_scope: all, kilo_access: [subscription, both]}
+    choices:
+      - {value: kilo, label: "Kilo account credits"}
+      - {value: chatgpt, label: "ChatGPT subscription"}
+      - {value: other, label: "Another provider account"}
+  - id: kilo_key
+    question: Enter your Kilo Code gateway API key
+    type: secret
+    when: {providers: kilo, kilo_scope: all, kilo_access: [api, both]}
+    hint: "Used by the website API bridge. Your coding-tool subscription stays in its terminal."
+  - id: bridge_key
+    question: Choose a private bridge secret
+    type: secret
+    min_length: 16
+    hint: "Use a secret of at least 16 characters. Protects the internal model servers."
+  - id: site_name
+    question: What should the website be called?
+    type: text
+    default: My API
+    hint: Shown in the header and on the sign-in page.
+  - id: web_access
+    question: Who can open your website?
+    type: choice
+    choices:
+      - {value: quick, label: "Quick public link", hint: "a temporary trycloudflare.com address"}
+      - {value: domain, label: "Your own domain", hint: "set up and save a Cloudflare tunnel, or use a saved one"}
+    default: quick
+  - id: web_domain
+    question: Which domain should the website use?
+    type: domain
+    when: {web_access: domain}
+
+tools:
+  paid: [codex, gemini]
+  local: [ollama]
+  free: [opencode, kilo]
+
+tool_options:
+  paid/codex:
+    signin_source: codex_signin_source
+    when: {providers: codex, codex_access: [subscription, both]}
+    signin: true
+    signin_hint: "Your selected sign-in method is applied now. Subscription access is used by this coding tool."
+  paid/gemini:
+    signin_source: gemini_signin_source
+    when: {providers: gemini, gemini_access: [subscription, both]}
+    signin: true
+    signin_hint: "Your selected sign-in method is applied now. Subscription access is used by this coding tool."
+  local/ollama:
+    when: {providers: ollama}
+  free/opencode:
+    signin_source: opencode_signin_source
+    when: {providers: opencode}
+    signin: true
+    signin_when: {opencode_scope: all, opencode_access: [subscription, both]}
+    signin_hint: "Selected account: {{inputs.opencode_plan}}. Use /connect in the tool to choose that provider, then /models. The provider checks your plan."
+  free/kilo:
+    signin_source: kilo_signin_source
+    when: {providers: kilo}
+    signin: true
+    signin_when: {kilo_scope: all, kilo_access: [subscription, both]}
+    signin_hint: "Selected account: {{inputs.kilo_plan}}. Use /connect in the tool to choose that provider, then /models. The provider checks your plan."
+
+public:
+  - environment: web
+    port: 3000
+    access: "{{inputs.web_access}}"
+    domain: "{{inputs.web_domain}}"
+
+steps:
+  - title: Sign in to the website as admin
+    detail: "Use the email and password you chose in the CLI, or your existing admin credentials when updating."
+    command: yougori template status {{instance}}
+  - title: Attach the wallet that receives the payments
+    detail: "After signing in, open Admin then Receiving wallet. Choose the payment network and wallet address there. Payments stay disabled until saved."
+  - title: Pull a local model
+    when: {providers: ollama}
+    detail: "In the sandbox terminal, run ollama pull MODEL. Model weights persist in the volume."
+    command: yougori terminal {{env.local}}
+  - title: Choose free models in OpenCode
+    when: {providers: opencode, opencode_scope: free}
+    detail: "Open /models and choose a free model. OpenCode's free chat models require its client and are not exported by this website."
+    command: yougori opencode --environment {{env.free}}
+  - title: Choose free models in Kilo
+    when: {providers: kilo, kilo_scope: free}
+    detail: "In the terminal use /models and select a free model. The website bridge rejects paid and unknown-price models in free-only mode."
+    command: yougori kilo --environment {{env.free}}
+  - title: Sell a model you run yourself
+    detail: "Start any Hugging Face model on this computer's GPU and list it on your site at the market rate for its size. Add --neocloud --environment POD_ID to run it on a rented GPU."
+    command: yougori run hf.co/OWNER/MODEL --template {{instance}}
+  - title: Check the model prices
+    detail: "Models appear automatically. In Admin, review the prices: known paid models use list prices plus your markup; other paid models need a selling price."
+
+outputs:
+  - label: Website
+    value: "{{public.web}}"
+  - label: Selected tools and providers
+    value: "{{inputs.providers}}"

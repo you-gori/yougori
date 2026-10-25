@@ -109,6 +109,18 @@ impl Fabric {
             }
         }
     }
+    /// Runtime IDs a connection rule names whose private network link is down, such as a
+    /// container that restarted on its own: its link ended with its old process.
+    pub fn unlinked(&self) -> Vec<String> {
+        let state = self.0.lock().unwrap();
+        let mut ids: Vec<String> = state.rules.values()
+            .flat_map(|rule| [rule.source.clone(), rule.target.clone()])
+            .filter(|id| !state.peers.get(id).is_some_and(|peer| !peer.tx.is_closed()))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
     pub fn connected(&self, id: &str) -> bool {
         self.0
             .lock()
@@ -516,6 +528,10 @@ fn dhcp(packet: &[u8], ip: [u8; 4], mac: [u8; 6]) -> Option<Vec<u8>> {
 }
 
 impl RuntimeManager {
+    /// See [`Fabric::unlinked`].
+    pub fn unlinked_fabric_peers(&self) -> Vec<String> {
+        self.fabric.unlinked()
+    }
     pub(crate) async fn prepare_shared_fabric_peer(&self, environment: &Environment) -> Result<String, String> {
         let id = environment.runtime_id.as_deref().unwrap_or(&environment.id).to_owned();
         if environment.kind == EnvironmentKind::Container && !self.fabric.connected(&id) {

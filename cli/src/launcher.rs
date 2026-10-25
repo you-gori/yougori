@@ -196,20 +196,8 @@ fn text(title: &str, default: &str, secret: bool) -> Result<String, String> {
         }
     })
 }
-fn valid_port(entry: &str) -> Result<u16, String> {
-    entry
-        .parse::<u16>()
-        .ok()
-        .filter(|p| *p > 0 && *p != 7443)
-        .ok_or_else(|| "Enter a port from 1 to 65535 (7443 is reserved for Yougori).".into())
-}
-/// A port, `default` unless another is typed. A single question: as a [`ui::Wizard`] step,
-/// Back returns [`ui::BACK`].
-fn port(title: &str, default: u16) -> Result<u16, String> {
-    valid_port(&ui::input(title, &default.to_string(), false, &|entry| {
-        valid_port(entry).map(|p| p.to_string())
-    })?)
-}
+// "Your own domain" asks the same questions everywhere, Hub templates included.
+use yougori_cli::own_domain::{new_domain, port, tunnel_token, valid_port};
 /// A free port on this computer, suggesting `default` while it is free. A single question: as a
 /// [`ui::Wizard`] step, Back returns [`ui::BACK`].
 fn local_port(default: u16) -> Result<u16, String> {
@@ -442,43 +430,6 @@ enum Network {
         token: String,
         host_port: u16,
     },
-}
-fn tunnel_token(input: &str) -> Result<String, String> {
-    input
-        .split_whitespace()
-        .map(|s| {
-            s.strip_prefix("--token=")
-                .unwrap_or(s)
-                .trim_matches(['\'', '"', '`'])
-        })
-        .max_by_key(|s| s.len())
-        .filter(|s| s.len() >= 32)
-        .map(str::to_owned)
-        .ok_or_else(|| "Paste a Cloudflare tunnel token or the complete install command".into())
-}
-/// A new domain's name, tunnel origin port and Cloudflare tunnel token, asked in turn: Back goes
-/// to the previous question, and from the first one returns [`ui::BACK`]. `saved` setups cannot
-/// be added again; `previous` is an earlier name and port shown again.
-fn new_domain(saved: &[Value], previous: Option<(&str, u16)>) -> Result<(String, String, u16), String> {
-    let (mut hostname, mut host_port) = previous.map_or((String::new(), 45000), |(name, port)| (name.to_owned(), port));
-    let mut token = String::new();
-    let mut steps = ui::Wizard::new();
-    loop {
-        let asked = match steps.step() {
-            0 => ui::input("Public domain", &hostname, false, &|entry| domains::hostname(entry, saved))
-                .map(|entry| hostname = entry),
-            1 => port("Tunnel origin port (Cloudflare routes to http://127.0.0.1:THIS_PORT)", host_port)
-                .map(|entry| host_port = entry),
-            2 => {
-                ui::info("Cloudflare dashboard: https://dash.cloudflare.com/");
-                ui::info("Go to Networking > Tunnels, select your tunnel, then Add a replica to copy its install command.");
-                ui::input("Cloudflare tunnel token (or the full install command)", "", true, &tunnel_token)
-                    .map(|entry| token = entry)
-            }
-            _ => return Ok((hostname, token, host_port)),
-        };
-        steps.next(asked.map(|()| true))?;
-    }
 }
 /// Who can reach a service, with `previous` (an earlier answer) preselected when it is asked
 /// again. "Your own domain" goes on to ask the domain, tunnel port and token, where Back returns

@@ -627,7 +627,7 @@ func (s *server) provision(w http.ResponseWriter, r *http.Request) {
 	if limit == 0 {
 		limit = defaultContainerStorage
 	}
-	if err := s.ensureContainerStorage(ctx, request.ID, limit); err != nil {
+	if err := s.ensureContainerStorage(ctx, request.ID, limit, true); err != nil {
 		writeError(w, http.StatusConflict, "container was kept stopped: "+err.Error())
 		return
 	}
@@ -661,7 +661,7 @@ func (s *server) action(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.lifecycleTimeout(request.Action))
 	defer cancel()
 	if request.Action == "start" || request.Action == "restart" || request.Action == "resume" {
-		if err := s.ensureContainerStorage(ctx, request.ID, 0); err != nil {
+		if err := s.ensureContainerStorage(ctx, request.ID, 0, false); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -672,10 +672,20 @@ func (s *server) action(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Action == "start" {
+		// A container that exited on its own may still hold a private network link into its old
+		// process. Ending it lets the host link the new process when it applies connections.
+		stopFabric(request.ID)
+	}
 	output, err := run(ctx, "nerdctl", append([]string{"--namespace", namespace}, args...)...)
 	if err != nil {
 		writeCommandError(w, err)
 		return
+	}
+	if request.Action == "stop" {
+		if err := markStoppedByHost(ctx, namespace, request.ID); err != nil {
+			log.Printf("keep %s stopped against its restart policy: %v", request.ID, err)
+		}
 	}
 	if request.Action == "stop" || request.Action == "restart" {
 		stopFabric(request.ID)
@@ -817,10 +827,18 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 	}
 	previousImage := retainedContainerImage(ctx, request.ID)
 	temporaryTag := newRetainedImageTag(request.ID)
-	if _, err := run(ctx, "nerdctl", "--namespace", namespace, "commit", "--pause=false", request.ID, temporaryTag); err != nil {
+	// A commit copies the container's whole filesystem: minutes for a sandbox with tools or
+	// models installed. The host waits up to 35 minutes for this request.
+	commitCtx, cancelCommit := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancelCommit()
+	if _, err := run(commitCtx, "nerdctl", "--namespace", namespace, "commit", "--pause=false", request.ID, temporaryTag); err != nil {
 		writeCommandError(w, err)
 		return
 	}
+	// From the removal on, the container exists only as the committed image: recreating it, or
+	// restoring the previous one when that fails, must finish even if the host stopped waiting.
+	ctx, cancel = context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
 	// Keep this image while the recreated container references it. nerdctl
 	// needs the image metadata for later commits, GPU changes and restarts.
 	if _, err := run(ctx, "nerdctl", "--namespace", namespace, "rm", "--force", request.ID); err != nil {
@@ -875,7 +893,7 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	releaseRetainedImage(ctx, previousImage)
-	if err := s.ensureContainerStorage(ctx, request.ID, 0); err != nil {
+	if err := s.ensureContainerStorage(ctx, request.ID, 0, true); err != nil {
 		writeError(w, http.StatusConflict, "configuration saved; storage needs attention: "+err.Error())
 		return
 	}
@@ -1069,7 +1087,7 @@ func (s *server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	releaseRetainedImage(ctx, previousImage)
-	if err := s.ensureContainerStorage(ctx, request.ID, 0); err != nil {
+	if err := s.ensureContainerStorage(ctx, request.ID, 0, true); err != nil {
 		writeError(w, http.StatusConflict, "snapshot restored and kept stopped; storage needs attention: "+err.Error())
 		return
 	}

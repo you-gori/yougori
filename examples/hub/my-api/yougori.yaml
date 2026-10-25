@@ -1,0 +1,100 @@
+project: my-api
+
+environments:
+  # The only sandbox reachable from the internet. It holds the accounts, the keys,
+  # the prices, the credit balances and the wallet address.
+  web:
+    image: python:3.12-slim
+    cpu: 2
+    memory: 2GB
+    storage: 10GB
+    working_dir: /
+    files:
+      - {source: ./site, target: /app/site}
+    environment:
+      SITE_NAME: "{{inputs.site_name}}"
+      ADMIN_BOOTSTRAP_EMAIL: "{{inputs.admin_email}}"
+      PAID_SANDBOX: paid
+      LOCAL_SANDBOX: local
+      FREE_SANDBOX: free
+      COOKIE_SECURE: "1"
+      SELECTED_PROVIDERS: "{{inputs.providers}}"
+    secrets:
+      ADMIN_BOOTSTRAP_PASSWORD: "{{secrets.admin_password}}"
+      BRIDGE_KEY: "{{secrets.bridge_key}}"
+    volumes:
+      - {source: my-api-data, target: /data}
+    command: [python, /app/site/server.py]
+    ports: [3000]
+    restart: unless-stopped
+    health:
+      port: 3000
+      path: /health
+
+  # The shared API uses provider API keys. Coding CLIs remain available for
+  # personal terminal use. No port is published: only the website reaches it.
+  paid:
+    image: python:3.12-slim
+    cpu: 2
+    memory: 4GB
+    storage: 20GB
+    files:
+      - {source: ./site, target: /app}
+    environment:
+      BRIDGE_MODE: paid
+      SELECTED_PROVIDERS: "{{inputs.providers}}"
+      CODEX_ACCESS: "{{inputs.codex_access}}"
+      GEMINI_ACCESS: "{{inputs.gemini_access}}"
+    secrets:
+      BRIDGE_KEY: "{{secrets.bridge_key}}"
+      OPENAI_API_KEY: "{{secrets.openai_key}}"
+      ANTHROPIC_API_KEY: "{{secrets.anthropic_key}}"
+      GEMINI_API_KEY: "{{secrets.gemini_key}}"
+    command: [python, /app/bridge.py]
+    restart: unless-stopped
+
+  # Open models on this computer's GPU, when it has one. No restart policy: GPU
+  # runtimes up to Yougori 1.1.1 refuse one, so start-ollama.sh keeps Ollama running.
+  local:
+    image: ubuntu:24.04
+    cpu: 4
+    memory: 8GB
+    storage: 40GB
+    gpu: true
+    files:
+      - {source: ./site/start-ollama.sh, target: /app/start-ollama.sh}
+    volumes:
+      - {source: my-api-models, target: /models}
+    environment:
+      OLLAMA_MODELS: /models
+      SELECTED_PROVIDERS: "{{inputs.providers}}"
+    command: [sh, /app/start-ollama.sh]
+
+  # Gateway APIs and coding tools; free or paid access follows the setup choices.
+  free:
+    image: python:3.12-slim
+    cpu: 2
+    memory: 4GB
+    storage: 20GB
+    files:
+      - {source: ./site, target: /app}
+    environment:
+      BRIDGE_MODE: free
+      SELECTED_PROVIDERS: "{{inputs.providers}}"
+      KILO_SCOPE: "{{inputs.kilo_scope}}"
+      KILO_ACCESS: "{{inputs.kilo_access}}"
+      OPENCODE_SCOPE: "{{inputs.opencode_scope}}"
+      OPENCODE_ACCESS: "{{inputs.opencode_access}}"
+    secrets:
+      BRIDGE_KEY: "{{secrets.bridge_key}}"
+      KILO_API_KEY: "{{secrets.kilo_key}}"
+      OPENCODE_API_KEY: "{{secrets.opencode_key}}"
+    command: [python, /app/bridge.py]
+    restart: unless-stopped
+
+# One-way: the website reaches the model sandboxes. They cannot reach each other,
+# and they cannot reach the website.
+connections:
+  - web -> paid
+  - web -> local
+  - web -> free

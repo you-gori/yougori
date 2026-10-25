@@ -16,7 +16,7 @@ use std::{
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Part {
-    /// pending, done, failed, or step (left for a person).
+    /// pending, done, failed, step (left for a person), or opened (a sign-in window).
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -104,6 +104,10 @@ pub struct State {
     pub allow_pc_access: bool,
     #[serde(default)]
     pub without_gpu: bool,
+    /// The drive chosen for every sandbox at the first run; updates keep it (a sandbox moved to
+    /// another drive would be replaced). None: the engine's default storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_drive: Option<String>,
     /// Environment name in the project to its ID.
     #[serde(default)]
     pub environments: BTreeMap<String, String>,
@@ -112,6 +116,9 @@ pub struct State {
     /// `ENVIRONMENT/TOOL` to how its installation went.
     #[serde(default)]
     pub tools: BTreeMap<String, Part>,
+    /// Selected interactive sign-in flows completed (the provider validates the account).
+    #[serde(default)]
+    pub signins: BTreeMap<String, Part>,
     #[serde(default)]
     pub public: Vec<Address>,
     #[serde(default)]
@@ -151,7 +158,7 @@ impl State {
     /// Whether every part finished.
     pub fn complete(&self) -> bool {
         self.create.is("done")
-            && self.tools.values().all(|part| !part.is("failed") && !part.is("pending"))
+            && self.tools.values().chain(self.signins.values()).all(|part| !part.is("failed") && !part.is("pending"))
             && self.public.iter().all(|address| !address.part.is("failed") && !address.part.is("pending"))
     }
     /// The first part that did not finish as the desktop app names it (environments, tools or
@@ -161,7 +168,7 @@ impl State {
         if !self.create.is("done") {
             return Some(("environments", message(&self.create)));
         }
-        if let Some(part) = self.tools.values().find(|part| part.is("failed") || part.is("pending")) {
+        if let Some(part) = self.tools.values().chain(self.signins.values()).find(|part| part.is("failed") || part.is("pending")) {
             return Some(("tools", message(part)));
         }
         self.public.iter().find(|a| a.part.is("failed") || a.part.is("pending")).map(|a| ("public", message(&a.part)))
@@ -174,6 +181,9 @@ impl State {
         if let Some((key, part)) = self.tools.iter().find(|(_, part)| part.is("failed") || part.is("pending")) {
             let (environment, tool) = key.split_once('/').unwrap_or((key, ""));
             return Some((format!("installing {tool} in {}-{environment}", self.instance), part.message.clone().unwrap_or_else(|| "It did not finish.".into())));
+        }
+        if let Some((key, part)) = self.signins.iter().find(|(_, part)| part.is("failed") || part.is("pending")) {
+            return Some((format!("opening sign-in for {key}"), part.message.clone().unwrap_or_else(|| "It did not finish.".into())));
         }
         self.public.iter().find(|a| a.part.is("failed") || a.part.is("pending"))
             .map(|a| (format!("public access for {}-{}", self.instance, a.environment), a.part.message.clone().unwrap_or_else(|| "It did not finish.".into())))
@@ -552,7 +562,7 @@ pub fn sandboxes(state: &State, live: &Value) -> Vec<Sandbox> {
 /// A sandbox that changed (replaced or made again) has none of its tools or public access yet.
 pub fn reset_environment(state: &mut State, key: &str) {
     let prefix = format!("{key}/");
-    for (tool, part) in state.tools.iter_mut() {
+    for (tool, part) in state.tools.iter_mut().chain(state.signins.iter_mut()) {
         if tool.starts_with(&prefix) {
             *part = Part::pending();
         }
@@ -624,6 +634,10 @@ mod tests {
         assert_eq!(second, format!("{}-2", "a".repeat(17)));
         assert_eq!(available("My_Site!", &envs, &none, &none), "my_site");
         assert_eq!(available("--", &envs, &none, &none), "template");
+        // The run passes volume names too: a removed instance's kept data takes its name.
+        let with_volumes = vec!["web".to_owned(), "my-api-data".to_owned()];
+        let kept: BTreeSet<String> = ["my-api-my-api-data".to_owned()].into();
+        assert_eq!(available("my-api", &with_volumes, &none, &kept), "my-api-2");
     }
 
     #[test]

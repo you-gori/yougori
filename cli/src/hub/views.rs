@@ -94,8 +94,14 @@ pub fn review(review: &Value) -> Vec<String> {
         if tool["downloads"].as_array().is_some_and(|d| !d.is_empty()) {
             line.push_str(&format!(" · from {}", joined(&tool["downloads"])));
         }
+        if tool["when"].as_array().is_some_and(|c| !c.is_empty()) {
+            line.push_str(" · only when selected during setup");
+        }
         if first { lines.add("Tools", line) } else { lines.more(line) }
         first = false;
+        if tool["signin"].is_string() {
+            lines.more(format!("  {}", text(&tool["signin"])));
+        }
         for command in items(&tool["commands"]) {
             lines.more(format!("  $ {}", text(command)));
         }

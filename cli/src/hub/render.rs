@@ -179,6 +179,8 @@ pub struct Adjust {
     pub without_gpu: bool,
     /// Extra secret bindings per environment, such as a tool's API key.
     pub secrets: BTreeMap<String, BTreeMap<String, String>>,
+    /// The drive every sandbox is stored on, chosen at the instance's first run.
+    pub storage_drive: Option<String>,
 }
 
 /// The host ports a project fixes (`8080:80`), as `ENVIRONMENT HOST:CONTAINER`. Two copies of a
@@ -311,6 +313,9 @@ pub fn project(text: &str, values: &Values, adjust: &Adjust) -> Result<(String, 
                     environment.insert("gpu".into(), false.into());
                 }
             }
+            if let Some(drive) = &adjust.storage_drive {
+                environment.insert("storage_drive".into(), drive.as_str().into());
+            }
             if let Some(extra) = adjust.secrets.get(&key_text(name)) {
                 let secrets = environment.entry("secrets".into()).or_insert_with(|| Yaml::Mapping(Default::default()));
                 let secrets = secrets.as_mapping_mut().ok_or("secrets: must be a mapping of variable names to secret names")?;
@@ -430,6 +435,7 @@ environments:
         let adjust = Adjust {
             without_gpu: true,
             secrets: [("web".to_owned(), [("AIDER_KEY".to_owned(), "hub-my-api-key-aider".to_owned())].into())].into(),
+            storage_drive: None,
         };
         let (_, parsed) = project(PROJECT, &values(), &adjust).unwrap();
         assert_eq!(parsed.environments["ai"].kind, "container");
@@ -437,6 +443,14 @@ environments:
         assert_eq!(parsed.environments["web"].secrets["AIDER_KEY"], "hub-my-api-key-aider");
         let (_, kept) = project(PROJECT, &values(), &Adjust::default()).unwrap();
         assert_eq!(kept.environments["ai"].kind, "gpu");
+        assert!(kept.environments.values().all(|e| e.storage_drive.is_none()));
+    }
+
+    #[test]
+    fn the_drive_chosen_at_the_first_run_holds_every_sandbox() {
+        let adjust = Adjust { storage_drive: Some("D:\\".into()), ..Adjust::default() };
+        let (_, parsed) = project(PROJECT, &values(), &adjust).unwrap();
+        assert!(parsed.environments.values().all(|e| e.storage_drive.as_deref() == Some("D:\\")));
     }
 
     #[test]

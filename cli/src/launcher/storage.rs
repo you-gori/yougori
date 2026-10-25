@@ -1,13 +1,11 @@
-use super::{busy, call, clean, ui};
+use super::{busy, call, ui};
 use serde_json::{json, Value};
 use std::{io::IsTerminal, sync::atomic::Ordering};
 use yougori_cli::{client, public, storage};
 
-pub struct Selection {
-    pub drive: Option<String>,
-    pub host: Value,
-    pub label: String,
-}
+pub use yougori_cli::storage::Selection;
+#[cfg(test)]
+use yougori_cli::storage::initial_drive;
 
 pub fn interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
@@ -59,20 +57,6 @@ pub fn choose_model(
     Ok(selected)
 }
 
-/// The drive to preselect: the one chosen earlier, else the configured storage drive, else the
-/// first with room; only drives that `fit` count.
-fn initial_drive(drives: &[Value], host: &Value, previous: Option<&str>, fits: impl Fn(&Value) -> bool) -> Option<usize> {
-    let at = |path: Option<&str>| {
-        let path = path?;
-        drives.iter().position(|drive| {
-            drive["path"].as_str().is_some_and(|candidate| storage::same_drive(candidate, path)) && fits(drive)
-        })
-    };
-    at(previous)
-        .or_else(|| at(host["storageDrive"].as_str()))
-        .or_else(|| drives.iter().position(&fits))
-}
-
 fn choose_supported(
     host: &Value,
     explicit: Option<&str>,
@@ -80,116 +64,8 @@ fn choose_supported(
     supports_selection: bool,
     previous: Option<&str>,
 ) -> Result<Selection, String> {
-    let drives = host["storageDrives"]
-        .as_array()
-        .map_or(&[][..], Vec::as_slice);
-    if drives.is_empty() {
-        if explicit.is_some() {
-            return Err("The selected storage drive is unavailable".into());
-        }
-        let picked = ui::select(
-            "Where should this environment be stored?",
-            &[],
-            &[
-                ui::Choice::new("Default storage", "use the configured environment storage"),
-                ui::Choice::new("Cancel", "nothing is created"),
-            ],
-            0,
-        )?;
-        if picked == 1 {
-            return Err(ui::CANCELLED.into());
-        }
-        return Ok(Selection {
-            drive: None,
-            host: host.clone(),
-            label: "Default storage".into(),
-        });
-    }
-    let allowed = |drive: &Value| {
-        supports_selection
-            || drive["path"]
-                .as_str()
-                .zip(host["storageDrive"].as_str())
-                .is_some_and(|(a, b)| storage::same_drive(a, b))
-    };
-    let fits = |drive: &Value| {
-        allowed(drive)
-            && drive["readOnly"] != true
-            && drive["freeGb"]
-                .as_f64()
-                .is_some_and(|free| free.is_finite() && free >= f64::from(minimum) + 2.0)
-    };
-    let picked = if let Some(path) = explicit {
-        drives
-            .iter()
-            .position(|drive| {
-                drive["path"]
-                    .as_str()
-                    .is_some_and(|candidate| storage::same_drive(candidate, path))
-            })
-            .ok_or_else(|| {
-                let available = drives.iter().filter_map(|drive| drive["path"].as_str()).map(clean).collect::<Vec<_>>().join(", ");
-                format!("Storage drive {path} is not available. Choose one of: {available}.")
-            })?
-    } else {
-        let mut choices = drives
-            .iter()
-            .map(|drive| {
-                let path = clean(drive["path"].as_str().unwrap_or("Storage"));
-                let free = drive["freeGb"].as_f64().unwrap_or(0.0);
-                let hint = if !allowed(drive) {
-                    "reopen the updated app to enable this drive".into()
-                } else if drive["readOnly"] == true {
-                    "read-only".into()
-                } else if !fits(drive) {
-                    format!(
-                        "{free:.1} GB free; needs at least {} GB",
-                        u64::from(minimum) + 2
-                    )
-                } else {
-                    format!(
-                        "{free:.1} GB free{}",
-                        if drive["removable"] == true {
-                            " · removable"
-                        } else {
-                            ""
-                        }
-                    )
-                };
-                let choice = ui::Choice::new(path, hint);
-                if fits(drive) {
-                    choice
-                } else {
-                    choice.disabled()
-                }
-            })
-            .collect::<Vec<_>>();
-        choices.push(ui::Choice::new("Cancel", "nothing is created"));
-        let initial = initial_drive(drives, host, previous, &fits).unwrap_or(drives.len());
-        let picked = ui::select(
-            "Where should this environment be stored?",
-            &["Storage is chosen for this new environment.".into()],
-            &choices,
-            initial,
-        )?;
-        if picked == drives.len() {
-            return Err(ui::CANCELLED.into());
-        }
-        picked
-    };
-    if !fits(&drives[picked]) {
-        return Err("The selected drive is read-only or does not have enough free space".into());
-    }
-    let path = drives[picked]["path"]
-        .as_str()
-        .ok_or("Storage drive has no path")?
-        .to_owned();
-    let selected = storage::host_on_drive(host, &drives[picked])?;
-    Ok(Selection {
-        drive: Some(path.clone()),
-        host: selected,
-        label: path,
-    })
+    storage::choose_drive(host, explicit, minimum, supports_selection, previous,
+        "Where should this environment be stored?", "Storage is chosen for this new environment.")
 }
 
 /// While alive, the engine's plain "still working" lines stay off the terminal: they would break
