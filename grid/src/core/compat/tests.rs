@@ -1310,10 +1310,20 @@ mod rollout {
         state.advance(Profile::Workspaces, NOW).unwrap();
         assert_eq!(state.state(Profile::Workspaces).unwrap().stage, rollout::Stage::Import);
 
-        // The retention is a floor on retiring the old record, not a suggestion.
-        let too_soon = state.advance(Profile::Models, NOW).unwrap_err();
+        // The old record is not recorded as retired while the product is still served from it,
+        // which in this build is always, however long ago the cutover was written down.
+        for at in [NOW, NOW + i64::from(rollout::KEEP_DAYS) * 86_400] {
+            let refused = state.advance(Profile::Models, at).unwrap_err();
+            assert!(refused.contains("is still served from this record"), "{refused}");
+        }
+        assert_eq!(state.state(Profile::Models).unwrap().stage, rollout::Stage::Cutover, "a refusal records nothing");
+
+        // Once a realm serves it, the retention is a floor on retiring the old record, not a
+        // suggestion.
+        let too_soon = state.advance_when(Profile::Models, true, NOW).unwrap_err();
         assert!(too_soon.contains("kept until"), "{too_soon}");
-        state.advance(Profile::Models, NOW + i64::from(rollout::KEEP_DAYS) * 86_400).unwrap();
+        state.advance_when(Profile::Models, true, NOW + i64::from(rollout::KEEP_DAYS) * 86_400).unwrap();
+        assert_eq!(state.state(Profile::Models).unwrap().stage, rollout::Stage::Retire);
 
         // One profile is watched at a time. Both of these have a bridge, so the refusal is about
         // watching two pilots at once and nothing else.
@@ -1469,7 +1479,10 @@ mod rollout {
     /// deleted until its retention has run out unless somebody forces it.
     ///
     /// DOES NOT PROVE that ninety days is the right number. It is a default this phase proposes;
-    /// nothing here measured it and nobody has reviewed it against a customer's obligations.
+    /// nothing here measured it and nobody has reviewed it against a customer's obligations. Nor
+    /// does it prove `retire` moves anything in this build: it is the move a product that reads a
+    /// realm would get, asked for directly, because no product reads one yet. That `retire`
+    /// refuses meanwhile is `a_record_its_product_still_serves_from_is_never_moved_aside`.
     #[test]
     fn a_retired_record_cannot_be_forgotten_until_its_retention_has_run_out() {
         let folder = tempfile::tempdir().unwrap();
@@ -1478,7 +1491,7 @@ mod rollout {
         let original = std::fs::read(&from).unwrap();
         let stamp = folder.path().join("retired");
 
-        let retired = rollout::retire(&from, Product::NeoGrid, &stamp, rollout::KEEP_DAYS, NOW).unwrap();
+        let retired = rollout::move_aside(&from, Product::NeoGrid, true, &stamp, rollout::KEEP_DAYS, NOW).unwrap();
         assert!(!from.exists(), "the record is moved aside, not copied and left");
         assert_eq!(retired.kept_until, NOW + i64::from(rollout::KEEP_DAYS) * 86_400);
 
@@ -1492,6 +1505,134 @@ mod rollout {
 
         rollout::forget(&stamp, NOW + i64::from(rollout::KEEP_DAYS) * 86_400, false).unwrap();
         assert!(!stamp.exists());
+    }
+
+    /// PROVES that a record its product still serves from is never moved aside, whatever the
+    /// rollout's own file says. In this build no product reads a realm, so the stage machine
+    /// will not record the retire stage after a recorded cutover and its retention, and `retire`
+    /// refuses on its own for all four, so a caller that never asked the stage machine cannot
+    /// move one either. A refusal leaves the record byte for byte where it was, with nothing
+    /// copied and no manifest written.
+    ///
+    /// DOES NOT PROVE anything about a build that serves a profile from a realm. None exists yet;
+    /// the move such a build would get is in
+    /// `a_retired_record_cannot_be_forgotten_until_its_retention_has_run_out`.
+    #[test]
+    fn a_record_its_product_still_serves_from_is_never_moved_aside() {
+        let folder = tempfile::tempdir().unwrap();
+        let sources = fixtures(&folder.path().join("data"));
+
+        // The case that used to move the live record: a cutover recorded and its retention run
+        // out, although nothing a product runs reads the rollout's file. The stage machine
+        // refuses it now.
+        let mut standing = rollout::Rollout::new(NOW);
+        while standing.state(Profile::Models).unwrap().stage < rollout::Stage::Cutover {
+            standing.advance(Profile::Models, NOW).unwrap();
+        }
+        let later = NOW + i64::from(rollout::KEEP_DAYS) * 86_400;
+        let refused = standing.advance(Profile::Models, later).unwrap_err();
+        assert!(refused.contains("is still served from this record"), "the stage machine refuses: {refused}");
+        assert_eq!(standing.state(Profile::Models).unwrap().stage, rollout::Stage::Cutover);
+
+        for profile in Profile::all() {
+            assert!(!rollout::served_by_realm(*profile), "{profile:?}: no product reads a realm in this build");
+            let from = match profile.product() {
+                Product::NeoGrid => sources.neo_hub.clone(),
+                Product::SandboxGrid => sources.desks_hub.clone(),
+                Product::SwarmMining => sources.bounty_host.clone(),
+                Product::AccessGrid | Product::Core => sources.access_hub.clone(),
+            }
+            .unwrap();
+            let before = std::fs::read(&from).unwrap();
+            let stamp = folder.path().join("retired").join(profile.word());
+            let refused = rollout::retire(&from, profile.product(), &stamp, rollout::KEEP_DAYS, later).unwrap_err();
+            assert!(refused.contains("is still served from this record") && refused.contains("nothing was moved"), "{profile:?}: {refused}");
+            assert_eq!(std::fs::read(&from).unwrap(), before, "{profile:?}: the record stays where the product reads it, as it was");
+            assert!(!stamp.exists(), "{profile:?}: nothing was copied aside and no manifest was written");
+        }
+
+        // The move itself refuses the same way when it is told the record still serves.
+        let from = sources.neo_hub.clone().unwrap();
+        let stamp = folder.path().join("told");
+        let refused = rollout::move_aside(&from, Product::NeoGrid, false, &stamp, rollout::KEEP_DAYS, later).unwrap_err();
+        assert!(refused.contains("nothing was moved"), "{refused}");
+        assert!(from.exists() && !stamp.exists());
+    }
+
+    /// PROVES that the rollout is written down in one step: a save over the file already there
+    /// replaces it, on Windows as well, and leaves nothing else in the folder, and a save that
+    /// cannot finish leaves no temporary file behind and, on Windows where a file can refuse to
+    /// be replaced, the rollout that was there exactly as it was.
+    ///
+    /// DOES NOT PROVE what a power cut in the middle does; nothing here pulls the plug. The file
+    /// is put on the disk before it takes the rollout's name, which is the part a test can see.
+    #[test]
+    fn the_rollout_is_written_down_whole_or_not_at_all() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("operations").join("rollout.json");
+        let in_folder = |at: &std::path::Path| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(at).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().to_string()).collect();
+            names.sort();
+            names
+        };
+
+        let mut state = rollout::Rollout::new(NOW);
+        state.save(&path).unwrap();
+        state.advance(Profile::Models, NOW + 1).unwrap();
+        state.save(&path).unwrap();
+        assert_eq!(rollout::Rollout::read(&path).unwrap(), state, "the second save replaced the first");
+        assert_eq!(in_folder(path.parent().unwrap()), vec!["rollout.json"], "and left nothing else behind");
+
+        // A folder has taken the rollout's name, so the rename cannot happen: refused in words,
+        // and no temporary file is left beside it.
+        let taken = folder.path().join("taken").join("rollout.json");
+        std::fs::create_dir_all(&taken).unwrap();
+        let refused = state.save(&taken).unwrap_err();
+        assert!(refused.starts_with("Cannot write how far the rollout has come"), "{refused}");
+        assert_eq!(in_folder(taken.parent().unwrap()), vec!["rollout.json"]);
+        assert!(taken.is_dir());
+
+        // On Windows a read-only file refuses to be replaced, which is a rename failing over a
+        // rollout that is there: it keeps its bytes.
+        #[cfg(windows)]
+        {
+            let before = std::fs::read(&path).unwrap();
+            let writable = std::fs::metadata(&path).unwrap().permissions();
+            let mut locked = writable.clone();
+            locked.set_readonly(true);
+            std::fs::set_permissions(&path, locked).unwrap();
+            state.advance(Profile::Models, NOW + 2).unwrap();
+            let refused = state.save(&path).unwrap_err();
+            std::fs::set_permissions(&path, writable).unwrap();
+            assert!(refused.starts_with("Cannot write how far the rollout has come"), "{refused}");
+            assert_eq!(std::fs::read(&path).unwrap(), before, "the rollout that was there is as it was");
+            assert_eq!(in_folder(path.parent().unwrap()), vec!["rollout.json"]);
+        }
+    }
+
+    /// PROVES that a damaged rollout file and one from a newer build are refused by the reader in
+    /// words that say what to do next, rather than read as something else.
+    ///
+    /// DOES NOT PROVE that nothing writes over them. That is the engine's door, which only starts
+    /// afresh when the file is not there at all; its own tests cover it.
+    #[test]
+    fn a_rollout_file_that_cannot_be_read_says_what_to_do_about_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("rollout.json");
+
+        std::fs::write(&path, b"{ not json").unwrap();
+        let damaged = rollout::Rollout::read(&path).unwrap_err();
+        assert!(damaged.contains("damaged") && damaged.contains("put back a copy you trust"), "{damaged}");
+
+        std::fs::write(&path, br#"{"rollout": 1, "updatedAt": 0}"#).unwrap();
+        let incomplete = rollout::Rollout::read(&path).unwrap_err();
+        assert!(incomplete.contains("damaged") && incomplete.contains("move the file aside"), "{incomplete}");
+
+        let mut newer = serde_json::to_value(rollout::Rollout::new(NOW)).unwrap();
+        newer["rollout"] = json!(rollout::VERSION + 1);
+        std::fs::write(&path, serde_json::to_vec(&newer).unwrap()).unwrap();
+        let refused = rollout::Rollout::read(&path).unwrap_err();
+        assert!(refused.contains("newer Yougori") && refused.contains("update Yougori"), "{refused}");
     }
 
     /// PROVES that the freeze stage's own sentence names which loaders read a version before
@@ -1571,10 +1712,12 @@ mod rollout {
         let kept = std::fs::read(&sandbox).unwrap();
         let stamp = folder.path().join("retired");
 
-        let first = rollout::retire(&neo, Product::NeoGrid, &stamp, rollout::KEEP_DAYS, NOW).unwrap();
+        // Both are moved as they would be once a realm served them, which is the only case a
+        // stamped folder is ever filled in.
+        let first = rollout::move_aside(&neo, Product::NeoGrid, true, &stamp, rollout::KEEP_DAYS, NOW).unwrap();
         // The manifest is what a stamped folder can only hold one of: `retired`, `unretire` and
         // `forget` all read it, and `forget` deletes the whole folder on the retention it names.
-        let refused = rollout::retire(&sandbox, Product::SandboxGrid, &stamp, rollout::KEEP_DAYS, NOW).unwrap_err();
+        let refused = rollout::move_aside(&sandbox, Product::SandboxGrid, true, &stamp, rollout::KEEP_DAYS, NOW).unwrap_err();
         assert!(refused.contains("folder of its own"), "{refused}");
         assert!(sandbox.exists() && std::fs::read(&sandbox).unwrap() == kept, "a refused retire moves nothing");
         assert_eq!(rollout::retired(&stamp).unwrap(), first, "and leaves the first record's manifest as it was");

@@ -1,0 +1,452 @@
+{
+  "aliases": [
+    "swarm mining",
+    "swarm mining grid",
+    "private worker",
+    "bounty",
+    "security review"
+  ],
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "grid.join",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "research.source",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "models.local",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.artifacts",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 4,
+      "gpu": false,
+      "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+      "internet": false,
+      "memoryGb": 8,
+      "name": "sandbox",
+      "pcAccess": [],
+      "ports": [],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 20,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "grid_workers",
+      "id": "mode",
+      "question": "What do you want to do?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "project_title",
+      "question": "What is this project called?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "target_kind",
+      "question": "What are the agents reviewing?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "setup_command",
+      "question": "How is the project prepared, if it needs preparing?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "install_network",
+      "question": "May that preparation reach the internet?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "grid_workers",
+      "id": "start_command",
+      "question": "How is it started?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "service_port",
+      "question": "Which port does it listen on inside the sandbox?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "health_path",
+      "question": "Which path says it is ready?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "test_command",
+      "question": "How are its own tests run, if you want them run?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "instructions",
+      "question": "What should the agents look into?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "authorized_scope",
+      "question": "What are they allowed to test, and with which test accounts?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "visibility",
+      "question": "Who can take part?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "people_access",
+      "id": "host_address",
+      "question": "Which address on your network do they reach it on?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "shared_password",
+      "question": "Password for people joining",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "people_access",
+      "id": "invitation",
+      "question": "The invitation you were given",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "people_access",
+      "id": "join_password",
+      "question": "The password for that project",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "grid_workers",
+      "id": "worker_name",
+      "question": "What should this worker be called?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "model",
+      "question": "Which model should it use?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "model_memory_gb",
+      "question": "How much memory may the model use, in GB?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "worker_cpu",
+      "question": "Processor cores for the worker's sandbox",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "worker_memory_gb",
+      "question": "Memory for the worker's sandbox, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "sandbox_disk_gb",
+      "question": "Disk for the worker's sandbox, in whole GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "budget_minutes",
+      "question": "How long may it work before stopping?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "evidence_gb",
+      "question": "How much room may its findings and evidence use, in GB?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "report_policy",
+      "question": "What happens to a finding?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [
+        "project"
+      ],
+      "id": "computers",
+      "kind": "compute_pool",
+      "summary": {
+        "availability": "always",
+        "gpu": "optional",
+        "grid": "resource:project",
+        "local_user_first": true,
+        "source": "this_computer"
+      },
+      "when": [
+        "mode is one of [\"host\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "evidence",
+      "kind": "artifact_store",
+      "summary": {
+        "access": "setup",
+        "capability": "data.artifacts",
+        "max_gb": "{{inputs.evidence_gb}}"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "membership"
+      ],
+      "id": "joined_computers",
+      "kind": "compute_pool",
+      "summary": {
+        "availability": "always",
+        "gpu": "optional",
+        "grid": "resource:membership",
+        "local_user_first": true,
+        "source": "this_computer"
+      },
+      "when": [
+        "mode is one of [\"join\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "joined_computers",
+        "model",
+        "sandbox"
+      ],
+      "id": "joined_workers",
+      "kind": "worker_group",
+      "summary": {
+        "capability": "research.source",
+        "count": 1,
+        "environment": "resource:sandbox",
+        "max": 1,
+        "model": "resource:model",
+        "name": "{{inputs.worker_name}}",
+        "pool": "resource:joined_computers",
+        "report_policy": "{{inputs.report_policy}}",
+        "role": "research"
+      },
+      "when": [
+        "mode is one of [\"join\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "membership",
+      "kind": "grid",
+      "summary": {
+        "capability": "grid.join",
+        "coordinator": "remote",
+        "member": "computer",
+        "mode": "join",
+        "profile": "swarm_mining_grid",
+        "secrets": "invitation, join_password"
+      },
+      "when": [
+        "mode is one of [\"join\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "model",
+      "kind": "model_service",
+      "summary": {
+        "capability": "models.local",
+        "memory_gb": "{{inputs.model_memory_gb}}",
+        "model": "{{inputs.model}}",
+        "replicas": 1
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "project",
+      "kind": "grid",
+      "summary": {
+        "access": "lan",
+        "address": "{{inputs.host_address}}",
+        "capability": "grid.create",
+        "coordinator": "this_computer",
+        "mode": "create",
+        "name": "{{inputs.project_title}}",
+        "profile": "swarm_mining_grid",
+        "secrets": "join_password"
+      },
+      "when": [
+        "mode is one of [\"host\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "sandbox",
+      "kind": "environment",
+      "summary": {
+        "capability": "research.source",
+        "command": "sleep, infinity",
+        "cpu": "{{inputs.worker_cpu}}",
+        "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+        "internet": false,
+        "memory": "{{inputs.worker_memory_gb}}",
+        "storage": "{{inputs.sandbox_disk_gb}}",
+        "type": "container",
+        "working_dir": "/project"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "computers",
+        "model",
+        "sandbox"
+      ],
+      "id": "workers",
+      "kind": "worker_group",
+      "summary": {
+        "capability": "research.source",
+        "count": 1,
+        "environment": "resource:sandbox",
+        "max": 1,
+        "model": "resource:model",
+        "name": "{{inputs.worker_name}}",
+        "pool": "resource:computers",
+        "report_policy": "{{inputs.report_policy}}",
+        "role": "research",
+        "source": "binding:source_folder"
+      },
+      "when": [
+        "mode is one of [\"host\"]"
+      ]
+    }
+  ],
+  "retention": {
+    "onRemove": "ask",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Read what the agents found",
+    "Talk to your worker"
+  ],
+  "subtitle": "Authorised security review of code you own.",
+  "tools": [],
+  "totals": {
+    "cpu": 4,
+    "environments": 1,
+    "gpu": "optional",
+    "memoryGb": 8,
+    "storageGb": 20
+  },
+  "warnings": [
+    "project starts a grid that other computers can join.",
+    "Uses an NVIDIA GPU when this computer has one."
+  ]
+}

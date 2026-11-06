@@ -2,16 +2,99 @@
 //! computed on this computer from the files themselves. The publisher's CLI sends the same
 //! computation to the Hub, so a run can say when the page and the files disagree.
 use super::{
-    format::{self, Folder, Kind, Source, Tool},
+    format::{self, Folder, Kind, Source, Tool, ToolFile},
+    scan::Files,
     unicode,
 };
 use crate::manifest;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use yougori_setup::plan as planner;
 
-/// The review's format. A page whose review has another format was written by another Yougori
-/// and is not compared part by part.
+/// The format of a v1 package's review. A format 2 package's review is [`template_v2`]'s, format
+/// 2. A page whose review is in a format this Yougori does not know is not compared part by part.
 pub const FORMAT: u64 = 1;
+
+/// The review of a format 2 package, as the shared crate writes it: every format 1 part still
+/// filled, plus the resources, capabilities, subtitle, aliases and retention, and what each
+/// imported component grants. `notices` are the scan's notes. An error when the review can't show
+/// everything the package grants (a component that was not resolved, a part it can't read).
+pub fn template_v2(package: &planner::Package, notices: &[String]) -> Result<Value, String> {
+    planner::published_review(package, notices)
+}
+
+// ---- The Hub page against the files ----
+//
+// The page is what a person read before choosing; the files are what would run. A page that
+// promises less than the files grant (no cost, no folder access, no grid) is the case this exists
+// for. It is ONE rule, applied at the one planning boundary every door goes through: the engine's
+// `setup_plan` works it out for the desktop and for `template run`, and `template plan` applies it
+// when it plans a Hub package locally with no engine. Neither interface has a comparison of its own.
+
+/// Why a template from a folder on this computer has no page to compare with.
+pub const NO_HUB_PAGE: &str = "This template came from a folder on this computer, so there is no Hub page to compare it with.";
+
+/// The Hub page's published review for one version, against the review the downloaded files
+/// themselves produce. `page` is the Hub's page data for the item, when the Hub sent one; `version`
+/// is the version of `files`, which are the files the review is built from (the scan's wallet notice
+/// is part of a published review, so it is part of the comparison, as `template publish` writes it).
+///
+/// `Ok(list)` is what differs, empty when the page agrees. `Err(reason)` is why no comparison could
+/// be made, which is said out loud: an unchecked page passed off as a checked one is worse than no
+/// check, because it is the same silence either way.
+pub fn page_check(package: &planner::Package, files: &Files, page: Option<&Value>, version: &str) -> Result<Vec<String>, String> {
+    let Some(detail) = page else {
+        return Err("The Hub did not send a page for this version, so the files could not be checked against what it says.".into());
+    };
+    if detail["version"]["version"] != version {
+        return Err("The Hub's page is for a different version than the files that were downloaded, so they were not compared.".into());
+    }
+    let published = &detail["version"]["review"];
+    if !published.as_object().is_some_and(|review| !review.is_empty()) {
+        return Err("This version was published without a review, so there is nothing on the Hub to compare the files with.".into());
+    }
+    // Built exactly as `template publish` builds it, including the notices the scan adds to the
+    // warnings: otherwise every template whose files mention a wallet would look changed.
+    let notices: Vec<String> = super::scan::scan(files).wallet_notice().into_iter().collect();
+    // A template built from imported components needs them fetched before its review can be
+    // written at all, which is why this says so rather than comparing against a partial review
+    // and calling the missing parts a difference.
+    let mine = template_v2(package, &notices).map_err(|error| format!("The files could not be checked against the Hub's page: {error}"))?;
+    Ok(differences(&mine, published))
+}
+
+/// What the page check has to say on screen, above the review it qualifies.
+pub fn page_lines(checked: &Result<Vec<String>, String>) -> Vec<String> {
+    match checked {
+        Ok(differences) if !differences.is_empty() => {
+            let mut lines = vec!["The Hub page for this version describes it differently from the files that were downloaded:".to_owned()];
+            lines.extend(differences.iter().map(|what| format!("  - {what}")));
+            lines.push("What follows is built from the files themselves, which is what would run.".to_owned());
+            lines
+        }
+        Err(why) => vec![why.clone()],
+        Ok(_) => Vec::new(),
+    }
+}
+
+/// The page check as a program reads it. `compared` is false when there was nothing to compare,
+/// so no one can mistake "nothing to compare" for "compared, and the same".
+pub fn page_json(checked: &Result<Vec<String>, String>) -> Value {
+    match checked {
+        Ok(differences) => json!({"compared": true, "differs": !differences.is_empty(), "differences": differences}),
+        Err(why) => json!({"compared": false, "differs": false, "differences": [], "reason": why}),
+    }
+}
+
+/// [`page_json`] read back, from a plan the engine returned: `None` when the plan carries no page
+/// check at all (an engine older than this, or a plan that was not of a Hub package).
+pub fn page_from_json(value: &Value) -> Option<Result<Vec<String>, String>> {
+    let page = value.as_object()?;
+    match page.get("compared").and_then(Value::as_bool)? {
+        true => Some(Ok(page.get("differences").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect())),
+        false => Some(Err(page.get("reason").and_then(Value::as_str).unwrap_or("The files were not checked against the Hub's page.").to_owned())),
+    }
+}
 
 /// The longest text a review may hold, in UTF-16 units, as the website allows.
 pub const TEXT_MAX: usize = 4000;
@@ -58,41 +141,11 @@ fn conditions(conditions: &[format::Condition]) -> Value {
         json!(condition.values))).collect::<Vec<_>>())
 }
 
-/// What the website refuses in a review: its known parts must have their types, values nest at
-/// most four deep, and every text is short and plain (`server/hub/review.mjs`).
+/// What the website refuses in a review, in either format: its known parts must have their
+/// types, values nest at most four deep, every text is short and plain, and the whole stays under
+/// the website's size (`server/hub/review.mjs`). The shared crate holds the one copy of the rules.
 pub fn shape_problem(review: &Value) -> Option<String> {
-    fn scalar(value: &Value, at: &str) -> Option<String> {
-        match value {
-            Value::String(text) if unicode::utf16_len(text) > TEXT_MAX => Some(format!("has text longer than {TEXT_MAX} characters at {at}")),
-            Value::String(text) if text.chars().any(|c| unicode::control(c) || unicode::hidden(c)) => Some(format!("has characters that cannot be shown at {at}")),
-            _ => None,
-        }
-    }
-    fn nested(value: &Value, at: &str, depth: usize) -> Option<String> {
-        match value {
-            Value::Array(_) | Value::Object(_) if depth == 0 => Some(format!("is nested too deeply at {at}")),
-            Value::Array(items) => items.iter().enumerate().find_map(|(index, item)| nested(item, &format!("{at}[{index}]"), depth - 1)),
-            Value::Object(fields) => fields.iter().find_map(|(key, item)| nested(item, &format!("{at}.{key}"), depth - 1)),
-            other => scalar(other, at),
-        }
-    }
-    let object = review.as_object()?;
-    for (key, value) in object {
-        let wrong = match key.as_str() {
-            "environments" | "public" | "connections" | "tools" | "inputs" | "pcAccess" => !value.as_array().is_some_and(|items| items.iter().all(Value::is_object)),
-            "steps" | "warnings" => !value.as_array().is_some_and(|items| items.iter().all(Value::is_string)),
-            "totals" | "requires" | "needs" => !value.is_object(),
-            "service" => !(value.is_null() || value.is_object()),
-            _ => false,
-        };
-        if wrong {
-            return Some(format!("The review has {key} in a form the Hub does not accept."));
-        }
-        if let Some(problem) = nested(value, key, 4) {
-            return Some(format!("The review {problem}."));
-        }
-    }
-    None
+    planner::review_shape_problem(review)
 }
 
 /// The warning every unverified item carries, word for word.
@@ -307,7 +360,31 @@ pub fn template(folder: &Folder, notices: &[String], resolved: &BTreeMap<String,
     }))
 }
 
-/// The review of a tool on its own.
+/// The review of a tool file on its own: [`tool`]'s, with what the file declares it reaches
+/// (its access, inputs and outputs) shown as the engine's review shows it, as the tool's own
+/// word. Nothing declared grants anything: a sandbox has only what its own settings and the
+/// person's answers give it, and the review says so beside the declaration.
+pub fn tool_file(file: &ToolFile, notices: &[String]) -> Value {
+    let mut review = tool(&Tool::from(file), notices);
+    let declared = file.declared_access();
+    if !declared.is_empty() {
+        review["tools"][0]["access"] = json!(declared);
+        review["warnings"].as_array_mut().into_iter().for_each(|warnings| {
+            warnings.push(json!(format!("{} says it {}. That is the tool's own word: a sandbox has only what its own settings and your answers give it.", file.name(), declared.join(", "))));
+        });
+    }
+    if !file.inputs.is_empty() {
+        review["tools"][0]["inputs"] = json!(file.inputs.iter().map(|input| input.name.clone()).collect::<Vec<_>>());
+    }
+    if !file.outputs.is_empty() {
+        review["tools"][0]["outputs"] = json!(file.outputs.iter().map(|output| output.name.clone()).collect::<Vec<_>>());
+    }
+    cleaned(review)
+}
+
+/// The review of a tool in the installer's form: what it installs, from where, its check,
+/// command, sign-in, needs and service. A view declares nothing; [`tool_file`] adds what the
+/// file does.
 pub fn tool(tool: &Tool, notices: &[String]) -> Value {
     let downloads = downloads(&tool.install);
     let mut warnings: Vec<String> = downloads.iter().map(|address| format!("Installs software from {address}.")).collect();
@@ -321,36 +398,112 @@ pub fn tool(tool: &Tool, notices: &[String]) -> Value {
     cleaned(json!({
         "format": FORMAT,
         "tools": [{"name": tool.name(), "source": "tool", "version": tool.version(), "downloads": downloads, "commands": tool.install, "check": tool.check, "command": tool.command, "signin": tool.signin_method()}],
-        "needs": {"gpu": tool.gpu(), "memoryGb": format::tool_memory(tool).map(number), "internet": tool.needs.as_ref().and_then(|n| n.internet).unwrap_or(true)},
+        "needs": {"gpu": tool.gpu(), "memoryGb": tool.memory_gb().map(number), "internet": tool.needs.as_ref().and_then(|n| n.internet).unwrap_or(true)},
         "service": tool.service.as_ref().map(|s| json!({"command": s.command, "port": s.port})),
         "warnings": warnings,
     }))
 }
 
-/// The parts of a review that decide what a template does to a computer: its sandboxes and
-/// totals, what it opens to the internet and on this computer, what it installs from where, what
-/// it asks and its warnings.
+/// The parts of a review that decide what a template does to a computer and that every format
+/// writes: its sandboxes and totals, what it opens to the internet and on this computer, what it
+/// installs from where, what it asks and its warnings. Each part is taken in the form format 1
+/// wrote it, so a page in either format is compared with the files on the same grants.
 fn essentials(review: &Value) -> Value {
     let tools: Vec<Value> = review["tools"].as_array().into_iter().flatten().map(|tool| json!({
         "name": tool["name"], "source": tool["source"], "environment": tool["environment"],
         "downloads": tool["downloads"], "commands": tool["commands"], "check": tool["check"], "command": tool["command"],
         "when": tool["when"], "signin": tool["signin"], "signinWhen": tool["signinWhen"], "signinSource": tool["signinSource"],
     })).collect();
+    let inputs: Vec<Value> = review["inputs"].as_array().into_iter().flatten().map(|input| json!({
+        "id": input["id"], "question": input["question"], "type": input["type"], "secret": input["secret"], "required": input["required"],
+    })).collect();
+    let public: Vec<Value> = review["public"].as_array().into_iter().flatten().map(|entry| json!({
+        "environment": entry["environment"], "port": entry["port"], "access": entry["access"], "input": entry["input"],
+    })).collect();
     json!({
-        "environments": review["environments"], "totals": review["totals"], "public": review["public"], "pcAccess": review["pcAccess"],
-        "tools": tools, "inputs": review["inputs"], "warnings": review["warnings"], "needs": review["needs"], "service": review["service"],
+        "environments": review["environments"], "totals": review["totals"], "public": public, "pcAccess": review["pcAccess"],
+        "tools": tools, "inputs": inputs, "warnings": review["warnings"], "needs": review["needs"], "service": review["service"],
     })
 }
 
+/// The parts only a format 2 review has: what it creates beyond sandboxes, which capabilities it
+/// turns on, and what happens to data.
+fn format_2_essentials(review: &Value) -> Value {
+    json!({
+        "resources": review["resources"], "capabilities": review["capabilities"],
+        "retention": review["retention"],
+        // Costs were left out of this comparison until plan L727. A page that said a setup was
+        // free for one that rents a GPU by the hour is exactly the kind of difference someone
+        // needs before they agree, not after the first bill.
+        "costs": review["costs"],
+    })
+}
+
+/// Every part of a review that is compared, in the order a person needs to hear about it, with
+/// the words for what that part covers. `true` marks the parts only a format 2 review has.
+const COMPARED: &[(&str, &str, bool)] = &[
+    ("capabilities", "what it turns on", true),
+    ("resources", "what it creates", true),
+    ("pcAccess", "the folders on this computer it reaches", false),
+    ("public", "what it opens to the internet", false),
+    ("warnings", "what it is allowed to do", false),
+    ("costs", "what it may cost", true),
+    ("tools", "the tools it installs, and what they download", false),
+    ("environments", "the sandboxes it runs", false),
+    ("retention", "what happens to your data when it stops or is removed", true),
+    ("needs", "what it needs in order to run", false),
+    ("service", "what it runs as a service", false),
+    ("inputs", "the questions it asks", false),
+    ("totals", "how much of this computer it uses", false),
+];
+
+/// Which parts of the Hub page's review say something other than the files, in plain words, most
+/// consequential first.
+///
+/// An empty list means they agree **or** that there was nothing to compare — [`differs`] draws the
+/// same distinction and the caller has to say which, since reading "no differences" as "the page
+/// was checked" is the mistake this exists to prevent.
+pub fn differences(local: &Value, page: &Value) -> Vec<String> {
+    let mut found = Vec::new();
+    let Some(fields) = page.as_object().filter(|page| !page.is_empty()) else { return found };
+    let page_format = fields.get("format").and_then(Value::as_u64).unwrap_or(FORMAT);
+    let local_format = local["format"].as_u64().unwrap_or(FORMAT);
+    if !matches!(page_format, 1 | 2) || !matches!(local_format, 1 | 2) {
+        return found;
+    }
+    let both_v2 = page_format == 2 && local_format == 2;
+    // The same projections `differs` uses, so the two can never disagree about whether there is
+    // something to show: a reworded description is not a difference, a changed grant is.
+    let (mine, theirs) = (essentials(local), essentials(page));
+    let (mine_2, theirs_2) = (format_2_essentials(local), format_2_essentials(page));
+    for (key, what, only_v2) in COMPARED {
+        let differs = if *only_v2 {
+            both_v2 && mine_2[key] != theirs_2[key]
+        } else {
+            mine[key] != theirs[key]
+        };
+        if differs {
+            found.push((*what).to_owned());
+        }
+    }
+    found
+}
+
 /// Whether the Hub page's review says something other than the files, in the parts that matter.
-/// A page without one, or with a review written in another format by another Yougori, is not
-/// compared.
+/// A page in format 1 or 2 is compared on the parts both formats write, so an older page never
+/// hides a grant; when both are format 2, on the format 2 parts too. A page without a review, or
+/// with one in a format this Yougori does not know, is not compared.
 pub fn differs(local: &Value, page: &Value) -> bool {
     let Some(fields) = page.as_object().filter(|page| !page.is_empty()) else { return false };
-    if fields.get("format").and_then(Value::as_u64).unwrap_or(FORMAT) != FORMAT {
+    let page_format = fields.get("format").and_then(Value::as_u64).unwrap_or(FORMAT);
+    let local_format = local["format"].as_u64().unwrap_or(FORMAT);
+    if !matches!(page_format, 1 | 2) || !matches!(local_format, 1 | 2) {
         return false;
     }
-    essentials(local) != essentials(page)
+    if essentials(local) != essentials(page) {
+        return true;
+    }
+    page_format == 2 && local_format == 2 && format_2_essentials(local) != format_2_essentials(page)
 }
 
 /// What this computer has, for the requirement checks.
@@ -488,9 +641,69 @@ mod tests {
         assert!(!differs(&review, &reworded), "parts that do not change what runs are not compared");
         let mut newer = faked.clone();
         newer["format"] = json!(FORMAT + 1);
-        assert!(!differs(&review, &newer), "a review in another format is not compared part by part");
+        assert!(differs(&review, &newer), "a format 2 page is compared on the parts both formats write");
+        let mut unknown = faked.clone();
+        unknown["format"] = json!(FORMAT + 2);
+        assert!(!differs(&review, &unknown), "a review in a format this Yougori does not know is not compared part by part");
+        let mut grouped = review.clone();
+        grouped["format"] = json!(2);
+        grouped["inputs"][0]["group"] = json!("website_api");
+        grouped["resources"] = json!([]);
+        assert!(!differs(&review, &grouped), "a format 2 page with the same grants is the same review");
         assert_eq!(review["format"], FORMAT);
         assert_eq!(shape_problem(&review), None, "the website accepts the review as it is");
+    }
+
+    #[test]
+    fn a_page_that_promises_something_other_than_the_files_says_which_parts_differ() {
+        let review = template(&checked(), &[], &BTreeMap::new());
+
+        // Agreement is an empty list — and so is a page there was nothing to compare with. The
+        // two mean opposite things, which is why the caller has to say which happened and cannot
+        // read an empty list as "checked, and fine".
+        assert!(differences(&review, &review.clone()).is_empty());
+        assert!(differences(&review, &json!({})).is_empty());
+
+        // A page that leaves out what the setup may do.
+        let mut quiet = review.clone();
+        quiet["warnings"] = json!([]);
+        assert_eq!(differences(&review, &quiet), ["what it is allowed to do"]);
+
+        // More than one, in the order a person needs to hear them, not the order they were found.
+        let mut several = review.clone();
+        several["warnings"] = json!([]);
+        several["pcAccess"] = json!([]);
+        assert_eq!(
+            differences(&review, &several),
+            ["the folders on this computer it reaches", "what it is allowed to do"],
+        );
+
+        // Wording that changes nothing about what runs is not a difference, here as in `differs`.
+        let mut reworded = review.clone();
+        reworded["steps"] = json!(["Sign in to the shop"]);
+        assert!(differences(&review, &reworded).is_empty());
+
+        // The format 2 parts: the grants, and the money.
+        let mut mine = review.clone();
+        mine["format"] = json!(2);
+        mine["costs"] = json!(["A rented GPU is charged by the hour while this runs."]);
+        mine["capabilities"] = json!([{"id": "grid.create", "selection": "required", "locked": false}]);
+        let mut free = mine.clone();
+        free["costs"] = json!([]);
+        assert_eq!(differences(&mine, &free), ["what it may cost"], "a page saying a paid setup is free");
+        let mut ungranted = mine.clone();
+        ungranted["capabilities"] = json!([]);
+        assert_eq!(differences(&mine, &ungranted), ["what it turns on"]);
+
+        // `differences` and `differs` are the same question asked two ways; they must never
+        // disagree, or a run would warn with nothing to show or show nothing while warning.
+        for page in [&quiet, &several, &reworded, &free, &ungranted, &review.clone(), &json!({})] {
+            assert_eq!(
+                differs(&mine, page),
+                !differences(&mine, page).is_empty(),
+                "differs and differences disagree about {page}",
+            );
+        }
     }
 
     #[test]
@@ -572,5 +785,36 @@ mod tests {
         assert_eq!(stops, ["The tool acme/trainer needs an NVIDIA GPU, and this computer has none that Yougori can use."]);
         let resolved = super::template(&folder, &[], &tools);
         assert_eq!(resolved["tools"][0]["version"], "1.0.0");
+    }
+
+    /// PROVES a tool file's review shows what the tool declares it reaches, in the engine's words
+    /// for a declaration (the tool's own word, never a grant), and that the installer's view of
+    /// the same tool shows the same review without it.
+    #[test]
+    fn a_tool_files_review_shows_its_declared_access_as_the_tools_own_word() {
+        let text = "name: httpie\nsummary: A command-line HTTP client.\nversion: 1.0.0\nlicense: MIT\ncommand: http\ninstall: [python3 -m pip install --user httpie==3.2.4]\ncheck: http --version\nsignin: {method: api-key, variable: HTTPIE_TOKEN}\naccess: {internet: true, folders: [/workspace/.httpie]}\ninputs: [{name: HTTPIE_TOKEN, secret: true}, {name: HTTPIE_CONFIG_DIR}]\noutputs: [{name: report, path: /workspace/report.json}]\n";
+        let file = format::tool_file(&files(&[(format::TOOL_FILE, text)]), "").unwrap_or_else(|p| panic!("{}", p.join(" ")));
+        let review = tool_file(&file, &["A wallet address is in the files.".into()]);
+        let entry = &review["tools"][0];
+        assert_eq!(entry["access"], json!(["uses the internet", "writes /workspace/.httpie", "reads the secret HTTPIE_TOKEN", "reads HTTPIE_CONFIG_DIR"]));
+        assert_eq!(entry["inputs"], json!(["HTTPIE_TOKEN", "HTTPIE_CONFIG_DIR"]));
+        assert_eq!(entry["outputs"], json!(["report"]));
+        let warnings: Vec<&str> = review["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        assert_eq!(warnings, [
+            "Installs software from https://pypi.org.",
+            "A wallet address is in the files.",
+            "httpie says it uses the internet, writes /workspace/.httpie, reads the secret HTTPIE_TOKEN, reads HTTPIE_CONFIG_DIR. That is the tool's own word: a sandbox has only what its own settings and your answers give it.",
+        ]);
+        // The installer's view says nothing about access, and everything else is the same.
+        let mut plain = tool(&Tool::from(&file), &["A wallet address is in the files.".into()]);
+        assert!(plain["tools"][0].get("access").is_none() && plain["tools"][0].get("inputs").is_none());
+        plain["tools"][0]["access"] = entry["access"].clone();
+        plain["tools"][0]["inputs"] = entry["inputs"].clone();
+        plain["tools"][0]["outputs"] = entry["outputs"].clone();
+        plain["warnings"].as_array_mut().unwrap().push(json!(warnings[2]));
+        assert_eq!(plain, review);
+        // A file that declares nothing reviews exactly as its view does.
+        let silent = format::tool_file(&files(&[(format::TOOL_FILE, text.split("access:").next().unwrap())]), "").unwrap();
+        assert_eq!(tool_file(&silent, &[]), tool(&Tool::from(&silent), &[]));
     }
 }

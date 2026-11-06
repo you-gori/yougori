@@ -1,0 +1,51 @@
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2026-10-28T23:00:00Z",
+  "ArtifactName": "fixture",
+  "ArtifactType": "filesystem",
+  "Metadata": {"ImageConfig": {"architecture": "", "created": "0001-01-01T00:00:00Z", "os": "", "rootfs": {"type": "", "diff_ids": null}, "config": {}}},
+  "Results": [
+    {
+      "Target": "fixture/runtime/Cargo.lock",
+      "Class": "lang-pkgs",
+      "Type": "cargo",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2021-25900",
+          "PkgID": "smallvec@1.6.0",
+          "PkgName": "smallvec",
+          "PkgIdentifier": {"PURL": "pkg:cargo/smallvec@1.6.0"},
+          "InstalledVersion": "1.6.0",
+          "FixedVersion": "0.6.14, 1.6.1",
+          "Status": "fixed",
+          "Layer": {},
+          "SeveritySource": "ghsa",
+          "Title": "Buffer overflow in SmallVec::insert_many",
+          "Description": "Deliberately vulnerable fixture entry.",
+          "Severity": "CRITICAL",
+          "CVSS": {"nvd": {"V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "V3Score": 9.8}},
+          "PublishedDate": "2021-01-26T18:16:00Z"
+        },
+        {
+          "VulnerabilityID": "FIXTURE-2026-0001",
+          "PkgID": "fixture-codec@2.1.0",
+          "PkgName": "fixture-codec",
+          "InstalledVersion": "2.1.0",
+          "FixedVersion": "",
+          "Status": "affected",
+          "Layer": {},
+          "Title": "Fixture finding matched by package name only",
+          "Description": "Deliberately false-positive fixture entry.",
+          "Severity": "HIGH",
+          "PublishedDate": "2026-09-15T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "Target": "fixture/Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "MisconfSummary": {"Successes": 24, "Failures": 0}
+    }
+  ]
+}

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { remoteAccessApi } from "@/api/remote-access-api"
 import { Button } from "@/components/ui/button"
 
+/** Uploads a file into a shared sandbox, not a product page: the remote workspace of a
+ *  `shared://desk/…` sandbox offers this when its owner allowed uploads. */
 export function DeskUpload({ environmentId }: { environmentId: string }) {
   const [busy, setBusy] = useState(false), [message, setMessage] = useState(""), [error, setError] = useState("")
   const current = useRef<string | null>(null), cancelled = useRef(false), locked = useRef(false)

@@ -1,0 +1,164 @@
+{
+  "date": "2026-11-02",
+  "source_sha256": {
+    "site/harnesses/.dockerignore": "2affb624fe47c35364d03241a06d93f5b8b171e2693daa4ec0f15e9a83d18745",
+    "site/harnesses/blue.py": "b37e7e922d61cbe55b8bd863bf0fa45defcb19adbb39c255dfdf80b9fd0b2bd0",
+    "site/harnesses/Dockerfile": "22713cc12e5d57253924c954dc745abe7034fe41811f5d6bf9d929b865d67dd5",
+    "site/harnesses/installer.py": "de0fa4e4ec5e3117195617361c936046c1595ea03c5ee2a0dda1972320e0ddb1",
+    "site/harnesses/packages.json": "b26747adf1a275c30b6cbce84ac1b11816fd19db615ff7452d73c7f0de239e81",
+    "site/harnesses/profiles.py": "ea835d22c7d3d63e792917ed1188bec02b11bdd693febfab28dcfeca0be6c2e5",
+    "site/harnesses/README.md": "8e8e5fdb23859c95b47a2732d2b3f67c9cd8161ae6a07ed1f3cf48f9d5738856",
+    "site/harnesses/relay.py": "ac0b1b9e762190f005321197ae62b459dbb8988cf4155288caf6676d3273a078",
+    "site/harnesses/runtime.py": "de28dc49ee79f5584ff050f7aa7f7c1f9bb6b5a21ac0efaf197683852f46108b",
+    "site/harnesses/solver.py": "98c132f59f29efde9c71047d98bd6a5d82582b3bce6613f74475fc78de29c6c4",
+    "tests/runtime_harnesses.py": "7309b18f894e17bd7460cbf421d6341f84bbd8c9620618359eb94f8aaa9e1efa",
+    "site/protocols.py": "e5f5692d30b0638a487044245a7a1bb0150acf5d76ef8784995e7db38c0827e5",
+    "site/google_protocol.py": "25935a4830f156236414609506d67e5bf6676d4ddda7eefaf5aa8975bf62b618"
+  },
+  "results": [
+    {
+      "harness": "aider",
+      "version": "0.86.2",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 124.3,
+      "log_sha256": "299cf97a860479e1d1374b291dbdd010185b426b1ff59e2240efa5ed8d6c2008"
+    },
+    {
+      "harness": "claude",
+      "version": "2.1.316",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 89.6,
+      "log_sha256": "96d67dd1dd47e1d928e0edf9b26e9c89875ce37598ac3811e22964e46654d2fc"
+    },
+    {
+      "harness": "cline",
+      "version": "3.0.74",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 27.8,
+      "log_sha256": "d7cc543594f078de8e3ec92485b529cb97816f6e2ef6f37339b51f0040579611"
+    },
+    {
+      "harness": "codex",
+      "version": "0.166.0",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 153.0,
+      "log_sha256": "05ae4803f69e27b4a770471837e9c98353e7d20e3a043be4192cb9ddc090a70f"
+    },
+    {
+      "harness": "deepseek",
+      "version": "0.2.1-rc.5",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 2,
+      "elapsed_seconds": 101.5,
+      "log_sha256": "92dfb142070a62bce4da5a4865cc031472347df5a9be1595aa55f3c9d532cca2"
+    },
+    {
+      "harness": "gemini",
+      "version": "0.66.0",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 12.2,
+      "log_sha256": "31160ec7629439947d22a01ec9d2f94197160aef41d380583667ff05067ab893"
+    },
+    {
+      "harness": "goose",
+      "version": "1.57.0",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 43.8,
+      "log_sha256": "84499498a0887c40730d4d9c49963c5398c23b9875afa9d2daf37264e3fbb5f8"
+    },
+    {
+      "harness": "grok",
+      "version": "1.0.70",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 2,
+      "elapsed_seconds": 10.5,
+      "log_sha256": "30a8a1f5c93dca9e68a14a87a89247633ec84aef5ba8f4d34ae048d4882a1f10"
+    },
+    {
+      "harness": "interpreter",
+      "version": "0.4.3",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 82.3,
+      "log_sha256": "11cd05c455d70c86015009cfa087029f0c01fcb8377effc1f8a17627565a3b2d"
+    },
+    {
+      "harness": "kilo",
+      "version": "7.8.18",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 173.3,
+      "log_sha256": "d01626df50b92b33f2612ec88afab97fd5251bb4f0c259fa6b1132ed60415d31"
+    },
+    {
+      "harness": "opencode",
+      "version": "1.19.5",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 2,
+      "elapsed_seconds": 187.1,
+      "log_sha256": "7b099024b0f55b6c2050efb51be912f66b59597dae1163d61318313dc46efd73"
+    },
+    {
+      "harness": "openhands",
+      "version": "1.16.0",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 73.6,
+      "log_sha256": "0d9d54a624f5146fb2e38221da1e6da55ba401b76a16465bb3dc99234cf88718"
+    },
+    {
+      "harness": "pentestgpt",
+      "version": "1.0.0 / e8b1bb77d1ac / interactive CLI",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 4.8,
+      "log_sha256": "5760bfa9902833a17fca9c46a640a05b7053f1bf20843562846b8b7e0debcfbf"
+    },
+    {
+      "harness": "pi",
+      "version": "0.73.1",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 1,
+      "elapsed_seconds": 40.0,
+      "log_sha256": "f1b2b5dee2c3a5cbb385dd0e8f216ee5501d4c8047bc2e7a09d9788bada81bdf"
+    },
+    {
+      "harness": "qwen",
+      "version": "0.26.6",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 2,
+      "elapsed_seconds": 102.6,
+      "log_sha256": "51d3eb08408e29e0f7d5a15595421cc446a16047ce127ad5a4328b299028ad89"
+    },
+    {
+      "harness": "swe",
+      "version": "3ea751c087f3",
+      "exit_code": 0,
+      "passed": true,
+      "requests": 2,
+      "elapsed_seconds": 13.8,
+      "log_sha256": "0d3738f98420b861b259565dea604bdd5af82ba88d38050b6bf6a6cc4ed27bc4"
+    }
+  ]
+}

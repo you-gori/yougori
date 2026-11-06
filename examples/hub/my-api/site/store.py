@@ -16,6 +16,7 @@ import sys
 from decimal import Decimal, ROUND_CEILING
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import chain
 import prices
 
 DATA = os.environ.get("MY_API_DATA", "/data")
@@ -39,7 +40,8 @@ LEGACY_EXAMPLE_MODELS = [
     ("kilo", "kilo-free", "free"),
 ]
 
-# Prices and credits are in USDT, so credits are bought with USDT on these networks.
+# Prices and credits are in USDT, so credits are bought with USDT on these networks. The pattern
+# is a quick first check; chain.address() then checks the checksum where the network has one.
 NETWORKS = {
     "tron": ("Tron (TRC-20)", "USDT", r"^T[1-9A-HJ-NP-Za-km-z]{33}$", "A Tron address, T and 33 more characters."),
     "ethereum": ("Ethereum (ERC-20)", "USDT", r"^0x[a-fA-F0-9]{40}$", "An Ethereum-style address, 0x and 40 characters."),
@@ -48,6 +50,21 @@ NETWORKS = {
     "polygon": ("Polygon", "USDT", r"^0x[a-fA-F0-9]{40}$", "An Ethereum-style address, 0x and 40 characters."),
     "arbitrum": ("Arbitrum One", "USDT", r"^0x[a-fA-F0-9]{40}$", "An Ethereum-style address, 0x and 40 characters."),
 }
+
+
+# The database layout this code writes. An older database is copied to /data/backups before it is
+# changed, and the site refuses to start rather than change it without that copy.
+SCHEMA_VERSION = 2
+# Open payment requests one person may have at once.
+MAX_WAITING_PAYMENTS = 5
+
+
+class MigrationRefused(RuntimeError):
+    """The database needs upgrading and its copy could not be made, so nothing was changed."""
+
+
+class PaymentConflict(ValueError):
+    """The transaction id already confirmed another payment."""
 
 
 _local = threading.local()
@@ -76,8 +93,36 @@ def connect():
     return db
 
 
+def backup_before_upgrade(db, version):
+    """Copies the database before an upgrade. Raises MigrationRefused when it can't."""
+    folder = os.path.join(DATA, "backups")
+    target = os.path.join(folder, f"my-api-v{version}-before-v{SCHEMA_VERSION}-{int(time.time())}.db")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        copy = sqlite3.connect(target)
+        try:
+            db.backup(copy)
+        finally:
+            copy.close()
+        check = sqlite3.connect(target)
+        try:
+            if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise sqlite3.DatabaseError("the copy failed its integrity check")
+        finally:
+            check.close()
+    except (OSError, sqlite3.Error) as error:
+        raise MigrationRefused(
+            f"The database needs an upgrade, and its copy could not be saved first ({error}). "
+            "Nothing was changed. Free some space under /data and restart the website.") from None
+    return target
+
+
 def setup():
     db = connect()
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    existing = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone() is not None
+    if existing and version < SCHEMA_VERSION:
+        backup_before_upgrade(db, version)
     with db:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS users (
@@ -183,6 +228,19 @@ def setup():
             db.execute(
                 "INSERT OR IGNORE INTO models (provider, name, price_in, price_out, sandbox, note) VALUES (?, ?, 0, 0, ?, 'Example only; refresh discovery to find actual model IDs.')",
                 (provider, name, sandbox))
+        # Version 2: payments carry the transaction that paid them, who confirmed or closed them and
+        # when they were rejected or cancelled; models carry when they were last found and priced.
+        paid = {row[1] for row in db.execute("PRAGMA table_info(payments)")}
+        for column, kind in (("tx_id", "TEXT"), ("confirmed_by", "INTEGER"), ("closed_at", "INTEGER")):
+            if column not in paid:
+                db.execute(f"ALTER TABLE payments ADD COLUMN {column} {kind}")
+        # One transaction confirms one payment, whatever happens at the same moment elsewhere.
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS payments_transaction ON payments(network, tx_id) WHERE tx_id IS NOT NULL")
+        listed = {row[1] for row in db.execute("PRAGMA table_info(models)")}
+        for column in ("checked_at", "priced_at"):
+            if column not in listed:
+                db.execute(f"ALTER TABLE models ADD COLUMN {column} INTEGER")
+        db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return db
 
 
@@ -310,8 +368,8 @@ def set_price(db, name, price_in, price_out):
     if any(not math.isfinite(value) or value < 0 or value > 10000 for value in (price_in, price_out)):
         raise ValueError("Invalid price")
     with db:
-        changed = db.execute("UPDATE models SET price_in = ?, price_out = ?, price_ready = 1, price_source = 'admin' "
-                             "WHERE name = ?", (price_in, price_out, name))
+        changed = db.execute("UPDATE models SET price_in = ?, price_out = ?, price_ready = 1, price_source = 'admin', priced_at = ? "
+                             "WHERE name = ?", (price_in, price_out, int(time.time()), name))
         if not changed.rowcount:
             raise ValueError("Unknown model")
 
@@ -456,8 +514,8 @@ def set_markup(db, percent):
         for row in db.execute("SELECT * FROM models WHERE price_source IN ('list', 'market', 'estimate')").fetchall():
             price = default_price(db, row["provider"], row_upstream(row), row["sandbox"], row_cost(row), percent)
             if price is not None:
-                db.execute("UPDATE models SET price_in = ?, price_out = ?, price_source = ? WHERE name = ?",
-                           (price[0], price[1], price[2], row["name"]))
+                db.execute("UPDATE models SET price_in = ?, price_out = ?, price_source = ?, priced_at = ? WHERE name = ?",
+                           (price[0], price[1], price[2], int(time.time()), row["name"]))
                 changed += 1
     return changed
 
@@ -471,12 +529,12 @@ def reset_price(db, name):
     if price is None:
         raise ValueError("This model has no default price; set one yourself.")
     with db:
-        db.execute("UPDATE models SET price_in = ?, price_out = ?, price_ready = 1, price_source = ?, note = ? WHERE name = ?",
-                   (price[0], price[1], price[2], NOTES[price[2]], name))
+        db.execute("UPDATE models SET price_in = ?, price_out = ?, price_ready = 1, price_source = ?, note = ?, priced_at = ? WHERE name = ?",
+                   (price[0], price[1], price[2], NOTES[price[2]], int(time.time()), name))
     return price[0], price[1]
 
 
-def set_available(db, sandbox, names, settings=None):
+def set_available(db, sandbox, names, settings=None, keep=None):
     """Retain discovered models under the names buyers see and give each its default price.
     A price the admin set is never touched. This runs on every discovery, so introductory
     prices end on their dates and the markup stays applied without anyone pressing a button."""
@@ -502,25 +560,39 @@ def set_available(db, sandbox, names, settings=None):
                        "route": upstream if sandbox in ("local", "attached") else route,
                        "cost": (0.0, 0.0) if free else valid_cost(item.get("cost"))}
     with db:
-        db.execute("UPDATE models SET available = 0 WHERE sandbox = ?", (sandbox,))
+        # A provider that is only throttled keeps its models listed until it answers again.
+        kept = sorted(set(keep or ()))
+        marks = ",".join("?" * len(kept))
+        db.execute("UPDATE models SET available = 0 WHERE sandbox = ?" + (f" AND provider NOT IN ({marks})" if kept else ""), (sandbox, *kept))
         # Routers listed before are forgotten, unless the admin priced one by hand.
         db.executemany("DELETE FROM models WHERE name = ? AND sandbox = ? AND price_source != 'admin'",
                        [(name, sandbox) for name in routers])
+        now = int(time.time())
+        # A name another source already sells stays with that source; the admin is told which.
+        taken = []
         for name, item in found.items():
             provider, cost = item["provider"], item["cost"]
-            db.execute("INSERT INTO models (provider,name,price_in,price_out,sandbox,available,note,price_ready,upstream,cost_in,cost_out) "
-                       "VALUES (?,?,0,0,?,1,'Needs a selling price',0,?,?,?) "
+            owner = db.execute("SELECT sandbox FROM models WHERE name=?", (name,)).fetchone()
+            if owner is not None and owner[0] != sandbox:
+                taken.append({"name": name, "owner": owner[0]})
+                continue
+            db.execute("INSERT INTO models (provider,name,price_in,price_out,sandbox,available,note,price_ready,upstream,cost_in,cost_out,checked_at) "
+                       "VALUES (?,?,0,0,?,1,'Needs a selling price',0,?,?,?,?) "
                        "ON CONFLICT(name) DO UPDATE SET available=1, upstream=excluded.upstream, cost_in=excluded.cost_in, "
-                       "cost_out=excluded.cost_out WHERE models.sandbox=excluded.sandbox",
-                       (provider, name, sandbox, item["route"], cost[0] if cost else None, cost[1] if cost else None))
+                       "cost_out=excluded.cost_out, checked_at=excluded.checked_at WHERE models.sandbox=excluded.sandbox",
+                       (provider, name, sandbox, item["route"], cost[0] if cost else None, cost[1] if cost else None, now))
             price = default_price(db, provider, item["upstream"], sandbox, cost, percent)
             if price is None:
                 db.execute("UPDATE models SET price_ready=0, price_source='', note='Needs a selling price' "
                            "WHERE name=? AND sandbox=? AND price_source != 'admin'", (name, sandbox))
             else:
+                db.execute("UPDATE models SET priced_at=? WHERE name=? AND sandbox=? AND price_source != 'admin' "
+                           "AND (price_in IS NOT ? OR price_out IS NOT ? OR priced_at IS NULL)", (now, name, sandbox, price[0], price[1]))
                 db.execute("UPDATE models SET price_in=?, price_out=?, price_ready=1, price_source=?, note=? "
                            "WHERE name=? AND sandbox=? AND price_source != 'admin'",
                            (price[0], price[1], price[2], NOTES[price[2]], name, sandbox))
+        db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   ("name_taken_" + sandbox, json.dumps(taken)))
         # Refresh metadata is published in the same transaction as the catalogue.
         for key, value in (settings or {}).items():
             db.execute("INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -565,20 +637,61 @@ def wallet(db):
     return saved if saved and saved.get("network") in NETWORKS else None
 
 
-def set_wallet(db, network, address):
-    setting(db, "wallet", json.dumps({"network": network, "address": address, "at": int(time.time())}))
+def set_wallet(db, network, address, token=None):
+    """Saves where payments go. `token` is the USDT contract or mint on that network, entered by
+    the admin from Tether's own list; buyers see it only when it is set."""
+    saved = {"network": network, "address": address, "at": int(time.time())}
+    if token:
+        saved["token"] = token
+    setting(db, "wallet", json.dumps(saved))
 
 
-def confirm_payment(db, reference):
+def waiting_payments(db, user_id):
+    return db.execute("SELECT COUNT(*) FROM payments WHERE user_id=? AND state='waiting'", (user_id,)).fetchone()[0]
+
+
+def confirm_payment(db, reference, admin_id=None, tx_id=None):
+    """Adds a waiting payment's credits once. With a transaction id, that transaction can confirm
+    no other payment: it raises PaymentConflict naming the payment it already confirmed. Returns
+    the amount, or None when the payment is not waiting (already confirmed, closed or unknown)."""
     with db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM payments WHERE reference=? AND state='waiting'", (reference,)).fetchone()
         if row is None:
             return None
-        db.execute("UPDATE payments SET state='paid',confirmed_at=? WHERE id=?", (int(time.time()), row["id"]))
+        if tx_id:
+            used = db.execute("SELECT reference FROM payments WHERE network=? AND tx_id=?", (row["network"], tx_id)).fetchone()
+            if used is not None:
+                raise PaymentConflict(used["reference"])
+        db.execute("UPDATE payments SET state='paid',confirmed_at=?,confirmed_by=?,tx_id=? WHERE id=?",
+                   (int(time.time()), admin_id, tx_id or None, row["id"]))
         db.execute("UPDATE users SET credits_micro=credits_micro+? WHERE id=?",
                    (int(round(row["dollars"] * 1_000_000)), row["user_id"]))
         return row["dollars"]
+
+
+def close_payment(db, reference, state, user_id=None, admin_id=None):
+    """Rejects (the admin) or cancels (its buyer) a waiting payment. No credits move. Returns
+    whether a waiting payment was closed."""
+    if state not in ("rejected", "cancelled"):
+        raise ValueError("Unknown payment state")
+    query = "UPDATE payments SET state=?, closed_at=?, confirmed_by=? WHERE reference=? AND state='waiting'"
+    values = [state, int(time.time()), admin_id, reference]
+    if user_id is not None:
+        query += " AND user_id=?"
+        values.append(user_id)
+    with db:
+        return db.execute(query, values).rowcount == 1
+
+
+def mark_unavailable(db, sandbox, provider=None, model=None):
+    """Takes models off sale until the next discovery finds them again: one model, or every model
+    of a provider whose sign-in failed."""
+    with db:
+        if model is not None:
+            db.execute("UPDATE models SET available=0 WHERE name=? AND sandbox=?", (model, sandbox))
+        elif provider is not None:
+            db.execute("UPDATE models SET available=0 WHERE sandbox=? AND provider=?", (sandbox, provider))
 
 
 def cost_micro(price_in, price_out, tokens_in, tokens_out):

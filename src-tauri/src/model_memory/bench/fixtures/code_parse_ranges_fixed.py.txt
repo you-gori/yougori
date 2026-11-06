@@ -1,0 +1,13 @@
+def parse_ranges(text):
+    """Return the sorted integers named by text such as "1-3,7,9-10"."""
+    values = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            values.update(range(int(start), int(end) + 1))
+        else:
+            values.add(int(part))
+    return sorted(values)

@@ -1,0 +1,12 @@
+format_version: 2
+project: accept-model
+resources:
+  model:
+    kind: model_service
+    spec:
+      model: "{{inputs.model}}"
+      quantization: "{{inputs.quantization}}"
+      gpu: none
+      memory_gb: 4
+      api:
+        protocol: openai

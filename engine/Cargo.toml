@@ -1,18 +1,29 @@
 [package]
 name = "yougori-engine"
-version = "1.1.2"
+version = "1.2.0"
 description = "The Yougori engine without the desktop app, for command-line and server use"
 authors = ["Yougori"]
 license = "AGPL-3.0-only"
 publish = false
 edition = "2021"
+default-run = "yougori-engine"
 
 [[bin]]
 name = "yougori-engine"
 path = "src/main.rs"
 
+[[bin]]
+name = "yougori-sign"
+path = "src/sign.rs"
+required-features = ["release-tools"]
+
 [dependencies]
 yougori = { path = "../src-tauri", default-features = false, features = ["engine-only"] }
+
+[features]
+# Runtime acceptance only (scripts/acceptance); never enabled by a release build.
+acceptance = ["yougori/acceptance"]
+release-tools = ["yougori/release-tools"]
 
 [profile.release]
 codegen-units = 1
@@ -25,3 +36,28 @@ strip = "symbols"
 # src-tauri so the engine never links the unsound glib (RUSTSEC-2024-0429).
 [patch.crates-io]
 glib = { path = "../vendor/glib" }
+
+# Development builds (the owner's engine runs one) optimize third-party crates: they hash, open,
+# copy and serve every model byte (sha2, cap-std, tokio, serde_json), and unoptimized they made a
+# local model import many times slower than a release build's. Local crates stay unoptimized so
+# edits recompile quickly. Release builds are unchanged.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.yougori]
+opt-level = 0
+
+[profile.dev.package.yougori-cli]
+opt-level = 0
+
+[profile.dev.package.yougori-grid]
+opt-level = 0
+
+[profile.dev.package.yougori-setup]
+opt-level = 0
+
+[profile.dev.package.yougori-vault]
+opt-level = 0
+
+[profile.dev.package.yougori-cuda]
+opt-level = 0

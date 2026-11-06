@@ -87,12 +87,28 @@ pub(crate) fn fresh(product: Product, name: Option<&str>) -> Named {
 }
 
 /// Which product a grid belongs to, read back from what it does.
-pub fn product_of(grid: &Named) -> Product {
-    Product::all()
-        .iter()
-        .copied()
-        .find(|product| grid.does.contains(&product.capability().word().to_owned()))
-        .unwrap_or(Product::Neo)
+///
+/// Nothing when what it does is not one of the four. That is not a grid this build knows how to
+/// talk to, and sending it to a product chosen for it would act on the wrong grid: the caller
+/// refuses instead (`product_or_refuse`).
+pub fn product_of(grid: &Named) -> Option<Product> {
+    Product::all().iter().copied().find(|product| grid.does.contains(&product.capability().word().to_owned()))
+}
+
+/// `product_of`, with the refusal a command gets when a grid says it does something this build
+/// has never heard of, which is what a grid from a newer Yougori looks like from here.
+pub fn product_or_refuse(grid: &Named) -> Result<Product, Fault> {
+    product_of(grid).ok_or_else(|| {
+        Fault::new(
+            Code::GridRefused,
+            format!(
+                "{} is a kind of grid this version of Yougori does not know ({}). Update Yougori to use it; nothing was changed.",
+                grid.name,
+                yougori_cli::grids::join_words(&grid.does.iter().map(String::as_str).collect::<Vec<_>>())
+            ),
+        )
+        .about(&grid.name)
+    })
 }
 
 fn status_method(product: Product) -> &'static str {
@@ -104,27 +120,70 @@ fn status_method(product: Product) -> &'static str {
     }
 }
 
-/// Every grid this computer runs or belongs to.
+/// One product's status read into one entry per grid it holds.
+///
+/// Three of the products can hold several grids on one computer and say so by listing each
+/// instance; each has an expander in the CLI crate, and all three read alike. Swarm Mining keeps
+/// one private project per computer until M11, so its status is one grid as it always was. An
+/// answer from a build before any of this is one grid too, which is what the expanders return
+/// when a status lists no instances.
+fn each_grid(product: Product, status: &Value) -> Vec<Value> {
+    use yougori_cli::grids::alias;
+    match product {
+        Product::Neo => alias::each_neo_grid(status),
+        Product::Desks => alias::each_desks_grid(status),
+        Product::Access => alias::each_access_grid(status),
+        Product::Bounty => vec![status.clone()],
+    }
+}
+
+/// Every grid this computer runs or belongs to, each one named apart: a computer may run several
+/// hubs of a kind and belong to several grids of a kind.
 ///
 /// A product that cannot answer at all is left out rather than reported as a grid that is
-/// broken: nothing here is a reason to stop the other three being listed.
+/// broken: nothing here is a reason to stop the others being listed.
 pub async fn grids(app: &AppHandle) -> Vec<Named> {
-    let mut found = Vec::new();
+    let mut answers = Vec::new();
     for product in Product::all() {
-        let status = dispatch::dispatch(app, status_method(*product), &serde_json::json!({})).await;
-        if let Some(grid) = status.ok().as_ref().and_then(|status| named(*product, status)) {
-            found.push(grid);
+        if let Ok(status) = dispatch::dispatch(app, status_method(*product), &serde_json::json!({})).await {
+            answers.push((*product, status));
         }
     }
-    // Two grids whose company names slug the same get their product's word to tell them apart.
-    for index in 0..found.len() {
-        let clash = found.iter().enumerate().any(|(other, grid)| other != index && grid.handle == found[index].handle);
-        if clash {
-            let product = product_of(&found[index]);
-            found[index].handle = format!("{}-{}", found[index].handle, product.handle());
-        }
-    }
+    read_all(&answers)
+}
+
+/// The statuses the four products answered, read into one list. Apart from asking them, this is
+/// the whole of `grids`, so it is what the tests drive.
+pub(crate) fn read_all(answers: &[(Product, Value)]) -> Vec<Named> {
+    let mut found: Vec<Named> = answers
+        .iter()
+        .flat_map(|(product, status)| each_grid(*product, status).into_iter().filter_map(|grid| named(*product, &grid)))
+        .collect();
+    tell_apart(&mut found);
     found
+}
+
+/// Gives every grid a handle of its own, so `--grid NAME` can name one.
+///
+/// Two grids slug the same whenever two companies are called the same thing, which two grids of
+/// one product now can be. The product's word separates grids of different kinds; past that, the
+/// grid's own id does, because it is the one thing no two grids share.
+fn tell_apart(found: &mut [Named]) {
+    let slugs: Vec<String> = found.iter().map(|grid| grid.handle.clone()).collect();
+    for index in 0..found.len() {
+        if !slugs.iter().enumerate().any(|(other, slug)| other != index && *slug == slugs[index]) {
+            continue;
+        }
+        let product = product_of(&found[index]).map(Product::handle).unwrap_or("grid");
+        found[index].handle = format!("{}-{product}", slugs[index]);
+    }
+    // Same company name, same product: the ids tell them apart, and every grid has one.
+    let paired: Vec<String> = found.iter().map(|grid| grid.handle.clone()).collect();
+    for index in 0..found.len() {
+        if paired.iter().enumerate().any(|(other, handle)| other != index && *handle == paired[index]) {
+            found[index].handle = handle(&found[index].id, &paired[index]);
+        }
+    }
 }
 
 /// Which grid a command is about.
@@ -132,7 +191,11 @@ pub async fn grids(app: &AppHandle) -> Vec<Named> {
 /// Naming one is optional when exactly one grid on this computer can answer the question. When
 /// more than one could, the refusal names them, because guessing would change the wrong grid.
 pub async fn find(app: &AppHandle, wanted: Option<&str>, needs: &[Capability]) -> Result<Named, Fault> {
-    let all = grids(app).await;
+    choose(grids(app).await, wanted, needs)
+}
+
+/// `find`, over grids already read. Apart from reading them, this is the whole of it.
+pub(crate) fn choose(all: Vec<Named>, wanted: Option<&str>, needs: &[Capability]) -> Result<Named, Fault> {
     if let Some(wanted) = wanted {
         let lowered = wanted.to_ascii_lowercase();
         return all

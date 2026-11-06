@@ -1,0 +1,152 @@
+{
+  "aliases": [
+    "shared workspace",
+    "share a sandbox",
+    "share environment",
+    "teammate access",
+    "remote access"
+  ],
+  "capabilities": [
+    {
+      "id": "people.team",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "people.invites",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.folders",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "people_access",
+      "id": "recipient",
+      "question": "Username for the person",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "recipient_name",
+      "question": "Their name, as you will see it",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "recipient_password",
+      "question": "Their password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "people_access",
+      "id": "permission",
+      "question": "What may they do?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "files_data",
+      "id": "folder",
+      "question": "Which folder inside the sandbox?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "expires_hours",
+      "question": "For how many hours?",
+      "required": false,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "How will they reach it?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "recipient",
+      "kind": "access_binding",
+      "summary": {
+        "secrets": "password"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Send them the link",
+    "Revoke access"
+  ],
+  "subtitle": "Let one person into one of your sandboxes, with the access you choose.",
+  "tools": [],
+  "totals": {
+    "cpu": 0,
+    "environments": 0,
+    "gpu": "none",
+    "memoryGb": 0,
+    "storageGb": 0
+  },
+  "warnings": [
+    "recipient shares a sandbox with another person over the internet."
+  ]
+}

@@ -1,0 +1,175 @@
+format_version: 2
+kind: template
+name: agent-tools
+title: Agent Tools
+subtitle: A coding agent with exactly the tools and folders you grant it, and nothing else.
+summary: Run a coding agent in its own sandbox with the tools you pick and only the folders you choose, and give it instructions written from the access it really has.
+version: 1.0.0
+license: MIT
+topics: [agents, tools, sandbox, coding, safety]
+aliases: [agent tools, coding agent, agent sandbox, scoped agent, agent permissions]
+changelog: First version. A sandboxed coding agent with chosen tools, chosen folders, a bundled custom tool and instructions generated from the live grants.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+
+capabilities:
+  - {id: tools.builtin, selection: required}
+  - {id: tools.custom, selection: optional}
+  - {id: tools.provider_access, selection: optional}
+  - {id: data.project_source, selection: required}
+  - {id: data.sync, selection: default}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: image
+    question: Which container image should the agent work in?
+    hint: "Pin a version. ubuntu:24.04, node:22.11-bookworm and python:3.12-slim-bookworm all suit this well."
+    type: text
+    pattern: '^[a-z0-9][a-z0-9._/-]{0,250}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$'
+    default: ubuntu:24.04
+    group: ai_models
+  - id: tools
+    question: Which coding tools should it have?
+    hint: Only the ones you pick are installed. The agent is told it has these and no others.
+    type: multichoice
+    group: ai_models
+    choices:
+      - {value: codex, label: Codex}
+      - {value: claude, label: Claude Code}
+      - {value: gemini, label: Gemini CLI}
+      - {value: opencode, label: OpenCode}
+      - {value: kilo, label: Kilo}
+    default: claude
+  - id: codex_signin_source
+    question: Which ChatGPT sign-in should Codex use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only Codex's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: codex}
+  - id: claude_signin_source
+    question: Which Claude sign-in should Claude Code use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only Claude Code's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: claude}
+  - id: gemini_signin_source
+    question: Which Google sign-in should the Gemini CLI use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer"}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: gemini}
+  - id: project_writable
+    question: May the agent change your project?
+    hint: With no, it reads your project and writes only inside the sandbox. With yes, its changes are copied back to your folder.
+    type: yesno
+    default: false
+    group: files_data
+  - id: reference_path
+    question: Where should reading material appear inside the sandbox?
+    hint: The folder you choose on this computer is mounted here, read only. Leave it as it is unless the agent expects another path.
+    type: text
+    pattern: '^/[A-Za-z0-9._/-]{1,200}$'
+    default: /reference
+    group: files_data
+  - id: internet
+    question: Should the agent reach the internet?
+    hint: Turn it off for work on files alone. A tool that signs in to a provider needs it on.
+    type: yesno
+    default: true
+    group: website_api
+  - id: cpu
+    question: Processor cores
+    type: number
+    min: 1
+    max: 64
+    default: 4
+    group: grid_workers
+  - id: memory_gb
+    question: Memory, in GB
+    type: number
+    min: 1
+    max: 256
+    default: 8
+    group: grid_workers
+  - id: storage_gb
+    question: Disk for the sandbox, in GB
+    type: number
+    min: 5
+    max: 2048
+    default: 40
+    group: grid_workers
+
+bindings:
+  - id: project
+    type: folder
+    question: Which folder holds the project the agent works on?
+    hint: Yougori keeps this folder and the sandbox's copy of it in step. Your folder is never mounted into the sandbox, and never deleted.
+    read_only: false
+    mode: sync
+    when: {project_writable: "yes"}
+  - id: project_readonly
+    type: folder
+    question: Which folder holds the project the agent reads?
+    hint: Mounted read only, exactly as it is. The agent can read it and write nothing back.
+    read_only: true
+    mode: mount
+    when: {project_writable: "no"}
+  - id: reference
+    type: folder
+    question: A folder the agent may read, if you want one
+    hint: "Optional. Read only, mounted as it is: notes or shared files the agent should see but never change."
+    required: false
+    mode: mount
+
+# The chosen built-in tools, plus the small file map that travels with this template: it is
+# installed from the template's own tools/ folder and never fetched from anywhere. Options such
+# as when: apply only to built-in tools, so the bundled one is always installed.
+tools:
+  agent: [codex, claude, gemini, opencode, kilo, tools/repo-map]
+
+tool_options:
+  agent/codex:
+    when: {tools: codex}
+    signin: true
+    signin_source: codex_signin_source
+  agent/claude:
+    when: {tools: claude}
+    signin: true
+    signin_source: claude_signin_source
+  agent/gemini:
+    when: {tools: gemini}
+    signin: true
+    signin_source: gemini_signin_source
+  agent/opencode:
+    when: {tools: opencode}
+  agent/kilo:
+    when: {tools: kilo}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [files, logs]
+
+steps:
+  - title: Read what the agent was told
+    detail: Open AGENTS.md in the project folder. Yougori rewrites it every time the sandbox starts, from the access this setup really has, so it is the honest list of what the agent can do.
+    command: yougori files {{outputs.agent.name}} /workspace/AGENTS.md
+  - title: Work with it
+    detail: Open a terminal in the sandbox and run the tool you chose. It sees your project, the reading folder if you added one, and nothing else of this computer.
+    command: yougori terminal {{outputs.agent.name}}
+  - title: Change what it may reach
+    detail: Run the setup again with different answers. Turning the internet off, making the project read only or dropping a tool takes effect on the next start, and AGENTS.md is rewritten to match.
+
+outputs:
+  - {key: sandbox, label: Sandbox, value: "{{outputs.agent.name}}"}
+  - {key: instructions, label: The agent's instructions, value: "/workspace/AGENTS.md"}

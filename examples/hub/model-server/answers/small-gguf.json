@@ -1,0 +1,6 @@
+{
+  "model": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+  "quantization": "Q8_0",
+  "gpu": "optional",
+  "memory_gb": 8
+}

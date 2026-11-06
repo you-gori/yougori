@@ -128,7 +128,8 @@ button,input,select{font:inherit;color:inherit}
 .quick{position:absolute;top:var(--s);right:var(--s);z-index:50;display:flex;align-items:center;gap:14px;background:var(--paper);
   border:1px solid var(--line);border-radius:var(--r-m);padding:7px 8px 7px 14px;box-shadow:0 14px 40px -26px rgba(3,0,15,.45)}
 .quick .bracket[aria-current="page"]{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
-@media (max-width:1080px){.quick{display:none}}
+.nav-admin{display:none}
+@media (max-width:1080px){.quick{display:none}.nav-admin{display:inline-flex}}
 @media (max-width:520px){.nav-where{display:none}}
 
 /* Page layout */
@@ -393,6 +394,9 @@ td.right,th.right{text-align:right}
 .chooser{display:flex;flex-direction:column;gap:12px}
 .status-row td:first-child{white-space:nowrap}
 .status-name{display:flex;align-items:center;gap:8px}
+.fix{margin-top:6px;display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}
+.fix code{font-family:var(--mono);font-size:11px;overflow-wrap:anywhere}
+.dialog-field{margin-top:18px}
 
 /* Sign in and sign up */
 .auth{max-width:460px;margin:2vh auto 0;display:flex;flex-direction:column;gap:22px}
@@ -951,6 +955,31 @@ function confirmDialog(title, detail, confirmLabel = "Confirm", danger = false) 
     dialog.showModal();
   });
 }
+// Like confirmDialog, with one text field. Resolves to the text (possibly empty), or null when cancelled.
+function inputDialog(title, detail, {label, placeholder = "", help = "", confirmLabel = "Confirm"} = {}) {
+  return new Promise(resolve => {
+    let settled = false;
+    const dialog = el("dialog", {"aria-labelledby": "dialog-title"});
+    const input = el("input", {class: "input mono", id: "dialog-input", placeholder, autocomplete: "off", spellcheck: "false"});
+    const finish = answer => {
+      if (settled) return;
+      settled = true;
+      dialog.close();
+      dialog.remove();
+      resolve(answer);
+    };
+    dialog.append(win("Confirm", [
+      el("h2", {class: "dialog-title", id: "dialog-title"}, title),
+      el("p", {class: "dialog-text"}, detail),
+      el("div", {class: "dialog-field"}, field(label, input, help)),
+      el("div", {class: "row end dialog-actions"}, bracket("Cancel", () => finish(null)),
+        bubble(confirmLabel, {onclick: () => finish(input.value.trim())}))]));
+    dialog.addEventListener("cancel", event => { event.preventDefault(); finish(null); });
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus();
+  });
+}
 function field(label, control, help) {
   return el("div", {class: "field"}, el("label", {class: "label", for: control.id || null}, label), control, help ? el("span", {class: "help"}, help) : null);
 }
@@ -1088,6 +1117,7 @@ function paintChrome() {
       el("button", {class: "nav-brand", type: "button", onclick: () => go("models")},
         el("span", {class: "mark", "aria-hidden": "true"}, pixelIcon("plus")), el("span", {class: "nav-name"}, name)),
       el("span", {class: "nav-where"}, `[${TITLES[current]}]`),
+      me.admin && current !== "admin" ? el("span", {class: "nav-admin"}, bracket("admin", () => go("admin"), {aria: "Open Admin"})) : null,
       toggle),
     panel));
   toggle.addEventListener("click", () => {
@@ -1438,7 +1468,7 @@ async function drawKeys(view) {
       win(`Add ${COIN}`, buy)),
     reveal,
     el("section", {class: "section"}, sectionHead("Keys"), win("Your keys", table, {flush: true})),
-    el("section", {class: "section"}, sectionHead("Payments", "Your balance goes up by itself once a payment is confirmed."), win("Payments", payments, {flush: true})),
+    el("section", {class: "section"}, sectionHead("Payments", "Your balance goes up by itself once the site owner confirms a payment."), win("Payments", payments, {flush: true})),
     el("section", {class: "section"}, sectionHead("Recent usage"), win("Usage", usage, {flush: true})),
     el("section", {class: "section"}, sectionHead("Quickstart", "Works with any OpenAI-compatible SDK."), quick));
 
@@ -1522,13 +1552,15 @@ async function drawKeys(view) {
       const {payments: rows} = await api("/api/payments");
       if (stopped) return;
       const arrived = rows.filter(p => p.state === "paid" && waiting.has(p.reference));
-      waiting = new Set(rows.filter(p => p.state !== "paid").map(p => p.reference));
+      waiting = new Set(rows.filter(p => p.state === "waiting").map(p => p.reference));
       payments.replaceChildren(rows.length ? el("div", {class: "table-wrap"}, el("table", {},
-        el("thead", {}, el("tr", {}, el("th", {}, "Reference"), el("th", {class: "right"}, "Amount"), el("th", {}, "Status"))),
+        el("thead", {}, el("tr", {}, el("th", {}, "Reference"), el("th", {class: "right"}, "Amount"), el("th", {}, "Status"),
+          el("th", {class: "right"}, el("span", {class: "sr-only"}, "Actions")))),
         el("tbody", {}, rows.map(p => el("tr", {},
           el("td", {}, el("span", {class: "mono"}, p.reference), el("div", {class: "muted small"}, `${p.label || p.network} · ${when(p.created_at)}`)),
           el("td", {class: "right num"}, money(p.dollars)),
-          el("td", {}, p.state === "paid" ? tag("Received") : tag("Waiting for payment", "amber")))))))
+          el("td", {}, paymentState(p)),
+          el("td", {class: "right"}, p.state === "waiting" ? flat("Cancel", {onclick: () => cancelPayment(p)}) : null))))))
         : emptyState("No payments yet", `Add ${COIN} above to top up your balance.`));
       if (arrived.length) {
         toast(`Payment received. ${money(arrived.reduce((sum, p) => sum + Number(p.dollars || 0), 0))} added to your balance.`);
@@ -1544,6 +1576,19 @@ async function drawKeys(view) {
       } else if (!stopped && waiting.size) {
         timer = setTimeout(listPayments, 5000);
       }
+    }
+  }
+
+  async function cancelPayment(p) {
+    const sure = await confirmDialog("Cancel this payment request?",
+      `Only cancel if you have not sent the ${money(p.dollars)}. If you already sent it, keep the request so the site owner can match it.`, "Cancel request", true);
+    if (!sure) return;
+    try {
+      await api("/api/payments/cancel", {reference: p.reference});
+      toast("Payment request cancelled.");
+      listPayments();
+    } catch (error) {
+      toast(error.message, true);
     }
   }
 
@@ -1578,6 +1623,7 @@ async function drawKeys(view) {
         details.replaceChildren(el("div", {class: "stack", style: "margin-top:18px"},
           callout("blue", result.instruction),
           field(`Send to this ${result.network} address`, secretBox(result.address)),
+          result.token ? field(`${result.coin} token on ${result.network}`, secretBox(result.token), result.tokenNote) : callout("amber", result.tokenNote),
           field("Your payment reference", secretBox(result.reference), "Keep it: it identifies this payment if you contact the site owner.")));
         listPayments();
       } catch (error) {
@@ -1586,7 +1632,7 @@ async function drawKeys(view) {
       ask.disabled = false;
     }});
     buy.replaceChildren(el("div", {class: "stack"},
-      el("p", {class: "help"}, `Pay in ${wallet.coin} on ${wallet.label}, straight to the site owner's wallet. Your balance goes up here by itself once the payment is confirmed.`),
+      el("p", {class: "help"}, `Pay in ${wallet.coin} on ${wallet.label}, straight to the site owner's wallet. The owner checks the wallet and confirms each payment by hand; your balance then goes up here by itself.`),
       presets,
       field(`Amount in ${COIN}`, amount),
       el("div", {}, ask), details));
@@ -1609,10 +1655,12 @@ async function drawAdmin(view) {
   const providers = el("div", {}, skeleton(3));
   const wallet = el("div", {}, skeleton(4));
   const prices = el("div", {}, skeleton(6));
+  const tools = el("div");
   view.append(pageHead("Admin", "Your site", "Your models, prices, wallet and the payments waiting for you.", check),
     setup, stats, waiting,
     el("div", {class: "section grid2"}, win("Provider connections", providers, {flush: true}), win("Receiving wallet", wallet)),
-    el("section", {class: "section"}, sectionHead("Models and prices", `${COIN} per million tokens.`), prices));
+    el("section", {class: "section"}, sectionHead("Models and prices", `${COIN} per million tokens.`), prices),
+    tools);
 
   check.addEventListener("click", async () => {
     check.disabled = true;
@@ -1641,14 +1689,17 @@ async function drawAdmin(view) {
       stat("Charged for requests", cost(o.spent), "At your selling prices"),
       stat("Waiting payments", count(o.waiting.length), o.waiting.length ? "Need your confirmation" : "Nothing to confirm"));
     renderWaiting(waiting, o.waiting);
-    renderProviders(providers, o.providers);
+    renderProviders(providers, o.providers, o.fixes, o.nameTaken);
   } else {
     stats.replaceChildren(callout("red", overview.reason.message));
     providers.replaceChildren(el("div", {class: "loading"}, callout("red", overview.reason.message)));
   }
   if (walletInfo.status === "fulfilled") renderWallet(wallet, walletInfo.value);
   else wallet.replaceChildren(callout("red", walletInfo.reason.message));
-  if (catalogue.status === "fulfilled") renderPrices(prices, catalogue.value);
+  if (catalogue.status === "fulfilled") {
+    renderPrices(prices, catalogue.value);
+    renderTools(tools, catalogue.value.toolModels);
+  }
   else prices.replaceChildren(callout("red", catalogue.reason.message));
   if (catalogue.status === "fulfilled" && walletInfo.status === "fulfilled") {
     const list = catalogue.value.models || [];
@@ -1683,39 +1734,88 @@ function renderWaiting(box, list) {
         el("td", {}, el("span", {class: "mono"}, p.reference), el("div", {class: "muted small"}, when(p.created_at))),
         el("td", {}, el("div", {}, p.label || p.network), el("div", {class: "mono muted break"}, p.address)),
         el("td", {class: "right num"}, money(p.dollars)),
-        el("td", {class: "right"}, flat("Mark as received", {tone: "blue", onclick: async () => {
-          const sure = await confirmDialog("Confirm this payment?",
-            `Only confirm after checking your wallet: ${money(p.dollars)} on ${p.label || p.network}, with enough confirmations. The balance is added at once and the buyer sees it on their API keys page.`,
-            "Payment received");
-          if (!sure) return;
-          try {
-            await api("/api/admin/confirm", {reference: p.reference});
-            toast("Payment confirmed. Balance added.");
-            refresh();
-          } catch (error) {
-            toast(error.message, true);
-          }
-        }}))))))), {flush: true})));
+        el("td", {class: "right"}, el("div", {class: "row end"},
+          flat("Reject", {onclick: async () => {
+            const sure = await confirmDialog("Reject this payment request?",
+              `Reject it only when no matching ${money(p.dollars)} arrived. No balance is added, and the buyer sees it as rejected.`, "Reject", true);
+            if (!sure) return;
+            try {
+              await api("/api/admin/reject", {reference: p.reference});
+              toast("Payment request rejected.");
+              refresh();
+            } catch (error) {
+              toast(error.message, true);
+            }
+          }}),
+          flat("Mark as received", {tone: "blue", onclick: async () => {
+            const txId = await inputDialog("Confirm this payment?",
+              `Only confirm after checking your wallet: ${money(p.dollars)} on ${p.label || p.network}, with enough confirmations. The balance is added at once and the buyer sees it on their API keys page.`,
+              {label: "Transaction id (recommended)", help: "Paste it from your wallet. The site then refuses to count the same transfer for a second request.",
+               confirmLabel: "Payment received"});
+            if (txId === null) return;
+            try {
+              await api("/api/admin/confirm", {reference: p.reference, txId});
+              toast("Payment confirmed. Balance added.");
+              refresh();
+            } catch (error) {
+              toast(error.message, true);
+            }
+          }})))))))), {flush: true})));
 }
 
-function renderProviders(box, statuses) {
-  // Only the connections the website sells from: coding-tool terminals and sources left
-  // out of setup are not part of the site.
+function paymentState(p) {
+  if (p.state === "paid") return tag("Received");
+  if (p.state === "rejected") return tag("Rejected", "orange", "The site owner found no matching payment.");
+  if (p.state === "cancelled") return tag("Cancelled", "paper");
+  return tag("Waiting for the owner", "amber", "The site owner checks the wallet and confirms by hand.");
+}
+
+// Models the signed-in coding tools offer in their own terminals. They are never sold here.
+function renderTools(box, list) {
+  const rows = Array.isArray(list) ? list : [];
+  if (!rows.length) {
+    box.replaceChildren();
+    return;
+  }
+  box.replaceChildren(el("section", {class: "section"},
+    sectionHead("Connected coding tools", "Use these in each tool's own terminal. They are not sold on this site and have no website keys."),
+    win(`Coding tools · ${rows.length}`, el("div", {class: "table-wrap"}, el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "Tool"), el("th", {}, "Model"), el("th", {}, "Cost"))),
+      el("tbody", {}, rows.map(m => el("tr", {},
+        el("td", {}, providerName(m.tool)),
+        el("td", {}, el("div", {}, text(m.label)), el("div", {class: "mono muted small"}, text(m.model))),
+        el("td", {}, m.free ? tag("Free", "lime round") : el("span", {class: "muted small"}, "Your plan"))))))), {flush: true})));
+}
+
+function renderProviders(box, statuses, fixes, taken) {
+  // The connections the website sells from, plus any coding tool that needs the admin (a
+  // signed-out Codex, say). Healthy tools are listed under Connected coding tools instead.
   const offSite = /coding-tool|terminal|\bclient\b|^not selected/i;
   const rows = Object.entries(statuses || {}).flatMap(([sandbox, list]) =>
-    Object.entries(list || {}).map(([provider, status]) => ({sandbox, provider, status: text(status)})))
-    .filter(({provider, status}) => !provider.endsWith("-tool") && !offSite.test(status));
+    Object.entries(list || {}).map(([provider, status]) => ({sandbox, provider, status: text(status),
+      fix: text(fixes && fixes[sandbox] && fixes[sandbox][provider])})))
+    .filter(({status}) => !offSite.test(status));
   if (!rows.length) {
     box.replaceChildren(emptyState("Not checked yet", "Discovery runs automatically after setup and retries while providers finish starting or signing in."));
     return;
   }
-  box.replaceChildren(el("div", {class: "table-wrap"}, el("table", {}, el("tbody", {}, rows.map(({sandbox, provider, status}) => {
+  // Two sources offering one name: the first keeps it, and the admin sees what was left out.
+  const skipped = (Array.isArray(taken) ? taken : []).filter(item => item && item.name);
+  const clash = skipped.length ? el("div", {class: "loading"}, callout("amber",
+    `Not listed, because another source already sells a model with the same name: ${skipped.map(item => `${text(item.name)} from ${place(item.sandbox)} (kept from ${place(item.owner)})`).join("; ")}.`)) : null;
+  box.replaceChildren(clash || "", el("div", {class: "table-wrap"}, el("table", {}, el("tbody", {}, rows.map(row => {
+    const {sandbox, provider, status} = row;
     const tone = /^connected$/i.test(status) ? "green" : /not configured|requires|client/i.test(status) ? "amber" : "red";
-    const name = provider === sandbox ? (known(BRIDGE, sandbox) ? BRIDGE[sandbox] : sandbox) : providerName(provider);
+    const tool = provider.endsWith("-tool");
+    const name = provider === sandbox ? (known(BRIDGE, sandbox) ? BRIDGE[sandbox] : sandbox)
+      : tool ? `${providerName(provider.slice(0, -5))} (coding tool)` : providerName(provider);
+    // A fix names the exact command; it gets its own copy button.
+    const command = (/yougori [a-z]+ [^().,]+/.exec(row.fix) || [""])[0].trim();
     return el("tr", {class: "status-row"},
       el("td", {}, el("div", {class: "status-name"}, el("span", {class: `dot ${tone}`}), name)),
       el("td", {class: "muted small"}, place(sandbox)),
-      el("td", {class: "small"}, status));
+      el("td", {class: "small"}, el("div", {}, status),
+        row.fix ? el("div", {class: "fix muted"}, el("span", {}, row.fix), command ? copyBracket(command, "copy command") : null) : null));
   })))));
 }
 
@@ -1723,7 +1823,10 @@ function renderWallet(box, info) {
   let network = info.network;
   const address = el("input", {class: "input mono", id: "wallet-address", value: info.address || "", placeholder: info.hint, autocomplete: "off", spellcheck: "false"});
   const help = el("span", {class: "help"}, info.hint);
+  const token = el("input", {class: "input mono", id: "wallet-token", value: info.token || "", autocomplete: "off", spellcheck: "false",
+    placeholder: "Optional. From Tether's official list for this network"});
   const networks = toggles(info.networks.map(n => [n.value, `${n.label} · ${n.coin}`]), network, value => {
+    if (value !== network) token.value = "";
     network = value;
     const chosen = info.networks.find(n => n.value === value);
     help.textContent = chosen ? chosen.hint : "";
@@ -1739,13 +1842,14 @@ function renderWallet(box, info) {
       toast("Paste your wallet address first.", true);
       return;
     }
+    const contract = token.value.trim();
     if (info.set && (value !== info.address || network !== info.network)) {
       const sure = await confirmDialog("Change the receiving wallet?", "New payment requests will show this address. Requests already made keep the old one.", "Change wallet");
       if (!sure) return;
     }
     save.disabled = true;
     try {
-      await api("/api/admin/wallet", {network, address: value});
+      await api("/api/admin/wallet", {network, address: value, token: contract || null});
       toast("Wallet saved. Customers can buy credits.");
       refresh();
     } catch (error) {
@@ -1755,11 +1859,14 @@ function renderWallet(box, info) {
   }});
   box.replaceChildren(el("div", {class: "chooser"},
     info.set
-      ? callout("green", "Payments go to ", info.label, ": ", el("span", {class: "mono break"}, info.address))
+      ? callout("green", "Payments go to ", info.label, ": ", el("span", {class: "mono break"}, info.address),
+          info.token ? el("div", {class: "small"}, "USDT token: ", el("span", {class: "mono break"}, info.token)) : null)
       : callout("amber", "Choose which network should receive credit payments, then add your wallet address. Buying credits stays off until you save."),
     el("div", {class: "field"}, el("span", {class: "label"}, "Network"), networks),
     field("Address", address),
     help,
+    field("USDT token contract or mint (optional)", token,
+      "Copy it from Tether's official list of supported networks. Buyers see it next to your address, so they can check they send Tether USD and not a look-alike token."),
     el("div", {}, save),
     el("p", {class: "help"}, "Only the public address is stored. This site never asks for a private key or recovery phrase.")));
 }

@@ -1,0 +1,115 @@
+format_version: 2
+kind: template
+name: inference-solver
+title: Inference Solver
+subtitle: Your models. Your infrastructure. Your rules.
+summary: An inference website with public signup or invitation-only access, scoped API keys, model discovery, streaming Chat Completions and 21 coding and security tools.
+version: 0.1.0
+license: MIT
+topics: [ai, inference, models, api, website]
+aliases: [inference solver, private inference, inference website]
+changelog: Choose public signup or invitation-only accounts independently of the website address. Connect existing model servers and install supported harness CLIs. Managed SaaS hosting and payments are not enabled.
+requires:
+  yougori: 1.2.0
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: web.private, selection: required, when: {web_access: private}}
+  - {id: web.quick_link, selection: required, when: {web_access: quick}}
+  - {id: web.domain, selection: required, when: {web_access: domain}}
+  - {id: data.volumes, selection: required}
+  - {id: run.service, selection: required}
+  - {id: models.local, selection: required, when: {model_source: local}}
+  - {id: data.private_connections, selection: required, when: {model_source: local}}
+inputs:
+  - id: account_mode
+    question: Who can create an account?
+    type: choice
+    group: people_access
+    default: private
+    choices:
+      - {value: public, label: "Public inference", hint: "Anyone can sign up. Works locally or at a public URL."}
+      - {value: private, label: "Private inference", hint: "Only invited people can create accounts. Works locally or at a public URL."}
+  - id: admin_email
+    question: Administrator email
+    type: text
+    group: people_access
+    pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    hint: "Create the administrator here. Website signup and invitations create ordinary members only."
+  - id: admin_password
+    question: Administrator password
+    type: secret
+    min_length: 12
+    group: people_access
+    hint: "Use 12 to 1024 characters. An existing administrator is never overwritten."
+  - id: site_name
+    question: What should your service be called?
+    type: text
+    default: Inference Solver
+    group: website_api
+    hint: "You can edit the name and appearance in Admin later."
+  - id: web_access
+    question: Where should users reach the website?
+    type: choice
+    default: private
+    group: website_api
+    choices:
+      - {value: private, label: "Only this computer", hint: "A private preview. Nothing is published to the internet."}
+      - {value: quick, label: "Quick HTTPS link", hint: "A temporary public address. Sign-in is still required."}
+      - {value: domain, label: "Your saved domain", hint: "Use a domain configured in Yougori. Sign-in is still required."}
+  - id: web_domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {web_access: domain}
+  - id: model_source
+    question: Start a model on this computer now?
+    type: choice
+    group: ai_models
+    default: none
+    choices:
+      - {value: none, label: "Connect existing servers later", hint: "Use Admin to connect local or NeoCloud APIs. No hardware is rented."}
+      - {value: local, label: "Run a local model", hint: "Yougori downloads the model, runs it and connects it to the website automatically."}
+  - id: model
+    question: Which open model should it run?
+    type: text
+    group: ai_models
+    when: {model_source: local}
+    pattern: '^(hf\.co/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}|yg/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63})$'
+    hint: "Use hf.co/OWNER/MODEL or yg/PUBLISHER/MODEL. The model runner checks fit before downloading."
+  - id: quantization
+    question: Which GGUF quantization?
+    type: text
+    group: ai_models
+    required: false
+    when: {model_source: local}
+    pattern: '^[A-Za-z0-9_.-]{0,32}$'
+    hint: "Optional, for example Q4_K_M. Empty lets Yougori choose."
+  - id: gpu
+    question: Where should the model run?
+    type: choice
+    group: ai_models
+    when: {model_source: local}
+    default: optional
+    choices:
+      - {value: optional, label: "GPU when available", hint: "Processor fallback requires a GGUF model."}
+      - {value: required, label: "GPU required", hint: "Refuse setup if a supported GPU is unavailable."}
+      - {value: none, label: "Processor", hint: "Requires a GGUF model."}
+  - id: memory_gb
+    question: Memory for the model in GB
+    type: number
+    group: ai_models
+    min: 4
+    max: 256
+    default: 16
+    when: {model_source: local}
+retention:
+  on_stop: keep
+  on_remove: keep
+views: [models, api, keys, usage, publications, storage, logs]
+steps:
+  - title: Sign in as administrator
+    detail: "Use the credentials you chose during setup. Admin manages model servers, invitations and the website identity."
+  - title: Connect a model server
+    detail: "A model selected during setup appears automatically. In Admin, you can also connect existing model APIs reachable from this website's environment. This does not buy hardware."
+outputs:
+  - {key: website, label: Website, value: "{{outputs.site.url}}"}

@@ -115,8 +115,9 @@ export function ReachCards({ who, value, onPick, address, port, disabled }: {
   onPick(value: ReachKind): void
   /** This computer's address as typed in the popup. */
   address: string
-  /** The port the hub listens on. */
-  port: number
+  /** The port the hub listens on, or null when Yougori picks a free one because this computer
+   *  already holds a grid of this kind. A port that is not known yet is never promised. */
+  port: number | null
   disabled?: boolean
 }) {
   const here = address.trim()
@@ -130,7 +131,9 @@ export function ReachCards({ who, value, onPick, address, port, disabled }: {
         value: "network",
         title: "This network only",
         detail: `${who === "people" ? "People connect" : "Computers connect"} over the same Wi-Fi, office network or VPN, straight to this computer. Nothing is published to the internet.`,
-        preview: here ? <Address>{here}:{port}</Address> : <span className="popup-quiet">This computer's address, port {port}</span>,
+        preview: port === null
+          ? <span className="popup-quiet">{here ? <Address>{here}</Address> : "This computer's address"}, on a free port Yougori picks</span>
+          : here ? <Address>{here}:{port}</Address> : <span className="popup-quiet">This computer's address, port {port}</span>,
       },
       {
         value: "quick",

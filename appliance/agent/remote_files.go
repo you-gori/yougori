@@ -29,6 +29,9 @@ type remoteFileRequest struct {
 	Length       int64  `json:"length"`
 	Data         string `json:"data"`
 	ExpectedData string `json:"expectedData"`
+	// Set by the engine for its own local transfers only: a path on one of the container's
+	// Yougori volumes is read at the volume (volume_files.go). A teammate's share never sets it.
+	Volumes bool `json:"volumes"`
 }
 
 var remoteFileMutations keyedLocker
@@ -264,10 +267,31 @@ func (s *server) remoteFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unix.Close(root)
-	selected, err := remoteOpen(root, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
-	if err != nil {
-		writeError(w, 403, "folder unavailable; links and mounted shares cannot be shared")
-		return
+	selected := -1
+	if request.Volumes && process != "" && !s.microVM {
+		inside, err := remoteName(request.Path)
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		source, rest, found, err := volumeAt(ctx, request.ID, path.Join("/", name, inside), run)
+		if err != nil {
+			writeError(w, 409, "guest files unavailable")
+			return
+		}
+		if found {
+			if selected, err = openVolume(source); err != nil {
+				writeError(w, 403, "volume unavailable")
+				return
+			}
+			request.Path = rest
+		}
+	}
+	if selected < 0 {
+		if selected, err = remoteOpen(root, name, unix.O_RDONLY|unix.O_DIRECTORY, 0); err != nil {
+			writeError(w, 403, "folder unavailable; links and mounted shares cannot be shared")
+			return
+		}
 	}
 	defer unix.Close(selected)
 	value, err := remoteFileOperation(selected, request)

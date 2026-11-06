@@ -3,15 +3,21 @@
 //! builds them, runs them, shares each with its person over pinned TLS and reports back with every
 //! check-in. A share dies with the engine and expires after a day, so a fresh invitation is minted
 //! whenever none is live. Share tokens stay in memory; only which desk is which sandbox is saved.
+//!
+//! Each Sandbox Grid on this computer (`instances`) has its own hosted desks, moves, parcels and
+//! person sign-in here. The computer-wide limits (how many shares, how much upload staging) stay
+//! shared, because they protect this one computer whichever grid asks.
 pub(crate) mod cloud;
+pub(crate) mod instances;
 pub(crate) mod media;
 pub(crate) mod moving;
 pub(crate) mod parking;
 pub(crate) mod uploads;
 use crate::{models::{CreateEnvironmentRequest, CreateResourcePolicy, CreateResourceRange, EnvironmentKind, EnvironmentStatus, Priority, RuntimeProviderKind}, projects::secrets, security::Event, store::PlatformStore};
+use instances::{Role, DEFAULT};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::{Path, PathBuf}, time::Duration};
+use std::{collections::{BTreeMap, HashMap}, path::{Path, PathBuf}, sync::Arc, time::Duration};
 use tauri::Manager;
 use crate::AppHandle;
 use yougori_grid::{
@@ -32,20 +38,44 @@ const PERSON_INVITE: &str = "yougori-grid-desk-invite";
 pub struct DeskHost {
     /// Yougori is closing: the hub is told, so the desks here move before the computer goes.
     pub(crate) closing: std::sync::atomic::AtomicBool,
-    inner: tokio::sync::Mutex<Inner>,
+    /// Each Sandbox Grid's desks and sign-in on this computer, by instance.
+    slots: std::sync::Mutex<BTreeMap<String, Arc<HostSlot>>>,
+    /// One sign-in at a time, whichever grid: which instance a sign-in lands in is only known once
+    /// the hub has answered, so the choice and the writing happen with nobody else in between.
     sign_in: tokio::sync::Mutex<()>,
     /// Held across every read-modify-write of the parked-parcel record, and never across the
     /// network. Two writers raced here: a pass deleting one desk's superseded parcel computed
     /// its list, went away to delete objects, and wrote that list back after the park branch had
     /// marked a different parcel as reported — putting the mark back to false, so the next pass
     /// deleted a parcel the hub had already accepted. A generation bumped mid-move was enough
-    /// to line it up, which an admin does by resetting somebody's password.
+    /// to line it up, which an admin does by resetting somebody's password. One lock for every
+    /// instance's record: it is never held for long, and never across the network.
     parcels: tokio::sync::Mutex<()>,
+}
+
+#[derive(Default)]
+struct HostSlot {
+    inner: tokio::sync::Mutex<Inner>,
+}
+
+impl DeskHost {
+    fn slot(&self, instance: &str) -> Arc<HostSlot> {
+        let mut slots = self.slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        slots.entry(instance.to_owned()).or_default().clone()
+    }
+}
+
+/// One instance's desks and sign-in.
+async fn host(app: &AppHandle, instance: &str) -> Arc<HostSlot> {
+    ensure_loaded(app, instance).await;
+    app.state::<DeskHost>().slot(instance)
 }
 
 #[derive(Default)]
 struct Inner {
     loaded: bool,
+    /// The move folder has been looked at, once per run.
+    swept: bool,
     hosted: Vec<HostedDesk>,
     /// `hosted` could not be written the last time it changed; written again at the next check-in.
     hosted_dirty: bool,
@@ -86,7 +116,7 @@ struct Share {
 /// A desk this computer hosts: which sandbox it is. Saved beside the membership.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HostedDesk {
+pub(crate) struct HostedDesk {
     id: String,
     name: String,
     environment_id: String,
@@ -95,7 +125,7 @@ struct HostedDesk {
 /// The desk this computer's person signed in to, saved without the password.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Login {
+pub(crate) struct Login {
     grid_id: String,
     grid_name: String,
     username: String,
@@ -127,20 +157,25 @@ struct LoginDesk {
     invitation_hash: String,
 }
 
-fn folder(app: &AppHandle) -> PathBuf {
+fn grid_folder(app: &AppHandle) -> PathBuf {
     app.state::<PlatformStore>().data_folder("grid")
 }
 
-fn hosted_path(app: &AppHandle) -> PathBuf {
-    folder(app).join("desks.json")
+/// One instance's folder: the grid folder itself for `default`.
+fn folder(app: &AppHandle, instance: &str) -> PathBuf {
+    instances::folder(&grid_folder(app), instance)
 }
 
-fn login_path(app: &AppHandle) -> PathBuf {
-    folder(app).join("desk-login.json")
+fn hosted_path(app: &AppHandle, instance: &str) -> PathBuf {
+    folder(app, instance).join(instances::HOSTED)
 }
 
-fn parked_path(app: &AppHandle) -> PathBuf {
-    folder(app).join("desk-parcels.json")
+fn login_path(app: &AppHandle, instance: &str) -> PathBuf {
+    folder(app, instance).join(instances::LOGIN)
+}
+
+fn parked_path(app: &AppHandle, instance: &str) -> PathBuf {
+    folder(app, instance).join(instances::PARCELS)
 }
 
 /// A parcel this computer uploaded, written down so a restart does not forget it.
@@ -175,10 +210,10 @@ fn read_parked(path: &Path, at: i64) -> Result<Vec<Parked>, String> {
 ///
 /// Every change goes through here. A caller that reads, works something out and writes later is
 /// the shape that lost the reported mark, so there is no way to do that from outside.
-async fn change_parked(app: &AppHandle, change: impl FnOnce(&mut Vec<Parked>)) -> Result<(), String> {
+async fn change_parked(app: &AppHandle, instance: &str, change: impl FnOnce(&mut Vec<Parked>)) -> Result<(), String> {
     let host = app.state::<DeskHost>();
     let _held = host.parcels.lock().await;
-    rewrite_parked(&parked_path(app), yougori_grid::now(), change)
+    rewrite_parked(&parked_path(app, instance), yougori_grid::now(), change)
 }
 
 /// `change_parked` on the file itself. It fails as honestly on the way out as on the way in: it
@@ -321,75 +356,99 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     crate::rented_gpu::write_kept(path, value)
 }
 
-async fn ensure_loaded(app: &AppHandle) {
-    let host = app.state::<DeskHost>();
-    let mut inner = host.inner.lock().await;
+async fn ensure_loaded(app: &AppHandle, instance: &str) {
+    let slot = app.state::<DeskHost>().slot(instance);
+    let mut inner = slot.inner.lock().await;
     if inner.loaded {
         return;
     }
-    inner.loaded = true;
     // Anything in the move folder is the remains of a move that will never finish: the handles
     // that track one live in memory and went with the last process, so the hub re-issues the
     // order and the desk is packed again from its sandbox. It is written down rather than
     // deleted, because on a computer where a move sent only its manifest that folder holds the
     // one surviving copy of the desk.
-    moving::sweep(app);
-    match std::fs::read(hosted_path(app)) {
+    if !inner.swept {
+        inner.swept = true;
+        moving::sweep(app, instance);
+    }
+    // Which grid this instance's desks are tagged with. `default`'s desks carry the old tag; any
+    // other instance's carry its grid's id, read from its membership. Until that can be read, a
+    // lost record is not rebuilt from the sandboxes, and loading is tried again next time rather
+    // than settling on "no desks here", which would build every one of them a second time.
+    let tag = match instance {
+        DEFAULT => Some(None),
+        _ => crate::deskgrid::member_grid_id(app, instance).map(Some),
+    };
+    inner.loaded = true;
+    match std::fs::read(hosted_path(app, instance)) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
             Ok(hosted) => inner.hosted = hosted,
             Err(error) => {
-                crate::security::record(Event::new("grid.desk.record_damaged").text("error", &error.to_string()));
+                crate::security::record(Event::new("grid.desk.record_damaged").text("instance", instance).text("error", &error.to_string()));
                 // Only when the sandboxes could actually be read. Writing an empty list over a
                 // damaged record because the store was also unreadable would forget which
                 // sandboxes are desks, and every one of them would be rebuilt empty.
-                if let Some(found) = hosted_from_sandboxes(app) {
-                    inner.hosted = found;
-                    inner.hosted_dirty = true;
+                match tag.as_ref().and_then(|tag| hosted_from_sandboxes(app, tag.as_deref())) {
+                    Some(found) => {
+                        inner.hosted = found;
+                        inner.hosted_dirty = true;
+                    }
+                    None if tag.is_none() => inner.loaded = false,
+                    None => {}
                 }
             }
         },
-        // No record: any sandbox tagged as a desk is still one, so it is not built twice.
-        Err(_) => inner.hosted = hosted_from_sandboxes(app).unwrap_or_default(),
+        // No record: any sandbox tagged as one of this grid's desks is still one, so it is not
+        // built twice.
+        Err(_) => match &tag {
+            Some(tag) => inner.hosted = hosted_from_sandboxes(app, tag.as_deref()).unwrap_or_default(),
+            None => inner.loaded = false,
+        },
     }
-    if let Ok(bytes) = std::fs::read(login_path(app)) {
+    if let Ok(bytes) = std::fs::read(login_path(app, instance)) {
         inner.login = serde_json::from_slice(&bytes).ok();
+        // So a desk opened through its grid's hub after a restart reaches that grid's session.
+        if let Some(login) = inner.login.as_ref() {
+            remember_desk_sign_ins(instance, &login.desks);
+        }
     }
 }
 
 /// How a sandbox kept after leaving a grid is described: it was a desk and is now its owner's.
-const RELEASED_DESK: &str = "Kept from grid desk ";
+#[cfg(test)]
+const RELEASED_DESK: &str = instances::RELEASED_DESK;
 
-/// The desks this computer holds, read back from the sandboxes themselves: every one carries its
-/// desk's ID in its description, so a lost or damaged record does not lose track of their data.
-/// The desks this computer holds, read back from the sandboxes themselves. `None` when the
-/// record of sandboxes could not be read at all, which is not the same as holding none: writing
-/// an empty list over a damaged record would forget which sandboxes are desks, and every one of
-/// them would then be rebuilt empty.
-fn hosted_from_sandboxes(app: &AppHandle) -> Option<Vec<HostedDesk>> {
+/// The desks this computer holds for the grid tagged `tag`, read back from the sandboxes
+/// themselves: every one carries its desk's ID in its description, so a lost or damaged record
+/// does not lose track of their data. `None` when the record of sandboxes could not be read at
+/// all, which is not the same as holding none: writing an empty list over a damaged record would
+/// forget which sandboxes are desks, and every one of them would then be rebuilt empty.
+fn hosted_from_sandboxes(app: &AppHandle, tag: Option<&str>) -> Option<Vec<HostedDesk>> {
     let Ok(state) = app.state::<PlatformStore>().snapshot() else { return None };
     state
         .environments
         .iter()
         .filter_map(|environment| {
-            let id = desk_of(&environment.description)?;
-            Some(HostedDesk { id: id.to_owned(), name: environment.name.clone(), environment_id: environment.id.clone() })
+            let id = instances::tagged_for(&environment.description, tag)?;
+            Some(HostedDesk { id, name: environment.name.clone(), environment_id: environment.id.clone() })
         })
         .collect::<Vec<_>>()
         .into()
 }
 
 /// The desk a sandbox's description names, if it is still a desk.
+#[cfg(test)]
 fn desk_of(description: &str) -> Option<&str> {
-    let id = description.strip_prefix("Grid desk ")?.split(" · ").next()?.trim();
-    (!id.is_empty()).then_some(id)
+    instances::desk_of(description).map(|(desk, _)| desk)
 }
 
 /// Writes which desk is which sandbox. A write that fails is said so and tried again at the
 /// next check-in (`hosted_dirty`), never silently dropped.
-fn persist_hosted(app: &AppHandle, hosted: &[HostedDesk]) -> bool {
-    let result = if hosted.is_empty() { std::fs::remove_file(hosted_path(app)).or_else(|error| if error.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(error) }).map_err(|error| error.to_string()) } else { write_json(&hosted_path(app), &hosted) };
+fn persist_hosted(app: &AppHandle, instance: &str, hosted: &[HostedDesk]) -> bool {
+    let path = hosted_path(app, instance);
+    let result = if hosted.is_empty() { std::fs::remove_file(&path).or_else(|error| if error.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(error) }).map_err(|error| error.to_string()) } else { write_json(&path, &hosted) };
     if let Err(error) = &result {
-        crate::security::record(Event::new("grid.desk.record_failed").text("error", error));
+        crate::security::record(Event::new("grid.desk.record_failed").text("instance", instance).text("error", error));
     }
     result.is_ok()
 }
@@ -442,8 +501,9 @@ pub(crate) fn capacity(app: &AppHandle, activity: &Activity, gpu: bool) -> Capac
     }
 }
 
-/// The sandbox a desk order asks for, as this computer creates it.
-fn request_for(order: &DeskOrder) -> CreateEnvironmentRequest {
+/// The sandbox a desk order asks for, as this computer creates it. `tag` is its grid's desk tag
+/// (`None` for `default`).
+fn request_for(order: &DeskOrder, tag: Option<&str>) -> CreateEnvironmentRequest {
     let spec = &order.spec;
     let (kind, provider) = match spec.kind {
         DeskKind::Container if spec.gpu => (EnvironmentKind::Container, RuntimeProviderKind::YougoriCuda),
@@ -465,7 +525,7 @@ fn request_for(order: &DeskOrder) -> CreateEnvironmentRequest {
         network_access: order.access != yougori_grid::enterprise::DeskAccess::Restricted,
         gpu_access: spec.gpu,
         sandbox_policy: None,
-        description: desk_tag(&order.id, &order.person_name),
+        description: instances::desk_tag(&order.id, &order.person_name, tag),
         branch_type: None,
         resource_policy: CreateResourcePolicy { cpu: range(spec.cpu), memory_gb: range(spec.memory_gb), priority: Priority::Normal, dynamic: true },
     }
@@ -483,8 +543,8 @@ fn request_for(order: &DeskOrder) -> CreateEnvironmentRequest {
 /// auto_setup_cuda. Those match today only because a desk's spec cannot change after it is
 /// ordered, so the imported sandbox was built from the same numbers. The day a spec can be
 /// edited, they belong here too.
-fn as_the_order_says(app: &AppHandle, environment_id: &str, order: &DeskOrder) -> Result<(), String> {
-    let (name, tag) = (format!("Desk {}", order.id), desk_tag(&order.id, &order.person_name));
+fn as_the_order_says(app: &AppHandle, environment_id: &str, order: &DeskOrder, grid: Option<&str>) -> Result<(), String> {
+    let (name, tag) = (format!("Desk {}", order.id), instances::desk_tag(&order.id, &order.person_name, grid));
     let network = order.access != yougori_grid::enterprise::DeskAccess::Restricted;
     let gpu = order.spec.gpu;
     app.state::<PlatformStore>().mutate(|state| {
@@ -496,10 +556,6 @@ fn as_the_order_says(app: &AppHandle, environment_id: &str, order: &DeskOrder) -
         Ok(())
     })?;
     Ok(())
-}
-
-fn desk_tag(desk: &str, person: &str) -> String {
-    if person.is_empty() { format!("Grid desk {desk}") } else { format!("Grid desk {desk} · {person}") }
 }
 
 /// Builds a desk's sandbox and starts it; the outcome is reported at the next check-in.
@@ -527,13 +583,13 @@ impl Drop for BuildGuard {
     }
 }
 
-fn spawn_build(app: &AppHandle, order: DeskOrder, membership: member::Membership) -> tauri::async_runtime::JoinHandle<()> {
-    let app = app.clone();
+fn spawn_build(app: &AppHandle, instance: &str, grid: Option<&str>, order: DeskOrder, membership: member::Membership) -> tauri::async_runtime::JoinHandle<()> {
+    let (app, instance, grid) = (app.clone(), instance.to_owned(), grid.map(str::to_owned));
     tauri::async_runtime::spawn(async move {
-        let mut guard = BuildGuard { app: app.clone(), tag: desk_tag(&order.id, &order.person_name), done: false };
+        let mut guard = BuildGuard { app: app.clone(), tag: instances::desk_tag(&order.id, &order.person_name, grid.as_deref()), done: false };
         let result: Result<String, String> = async {
-            let mut request = request_for(&order);
-            request.runtime = media::resolve(&app, &order, &membership).await?;
+            let mut request = request_for(&order, grid.as_deref());
+            request.runtime = media::resolve(&app, &instance, &order, &membership).await?;
             if order.spec.kind==DeskKind::Vm && order.image_sha256.is_some() {
                 app.state::<crate::runtime::RuntimeManager>().validate_prepared_desk_image(std::path::Path::new(&request.runtime),order.spec.disk_gb).await?;
             }
@@ -542,26 +598,26 @@ fn spawn_build(app: &AppHandle, order: DeskOrder, membership: member::Membership
             let id = state.environments.iter().rev().find(|environment| environment.description == tag).map(|environment| environment.id.clone()).ok_or("The desk's sandbox was not created")?;
             // Persist ownership before starting: a failed start must not orphan the created disk.
             {
-                let host=app.state::<DeskHost>();let mut inner=host.inner.lock().await;
+                let host=app.state::<DeskHost>().slot(&instance);let mut inner=host.inner.lock().await;
                 if !inner.hosted.iter().any(|d|d.id==order.id){inner.hosted.push(HostedDesk{id:order.id.clone(),name:order.name.clone(),environment_id:id.clone()});}
-                if !persist_hosted(&app,&inner.hosted){inner.hosted_dirty=true;}
+                if !persist_hosted(&app,&instance,&inner.hosted){inner.hosted_dirty=true;}
             }
             crate::commands::set_environment_status(id.clone(), EnvironmentStatus::Running, app.state(), app.state()).await?;
             Ok(id)
         }
         .await;
         guard.done = true;
-        let host = app.state::<DeskHost>();
+        let host = app.state::<DeskHost>().slot(&instance);
         let mut inner = host.inner.lock().await;
         inner.building.remove(&order.id);
         match result {
             Ok(environment_id) => {
-                crate::security::record(Event::new("grid.desk.built").env(&environment_id).text("desk", &order.id));
+                crate::security::record(Event::new("grid.desk.built").text("instance", &instance).env(&environment_id).text("desk", &order.id));
                 if !inner.hosted.iter().any(|d|d.id==order.id){inner.hosted.push(HostedDesk { id: order.id.clone(), name: order.name.clone(), environment_id });}
-                if !persist_hosted(&app, &inner.hosted) { inner.hosted_dirty = true; }
+                if !persist_hosted(&app, &instance, &inner.hosted) { inner.hosted_dirty = true; }
             }
             Err(error) => {
-                crate::security::record(Event::new("grid.desk.build_failed").text("desk", &order.id).text("error", &error));
+                crate::security::record(Event::new("grid.desk.build_failed").text("instance", &instance).text("desk", &order.id).text("error", &error));
                 inner.failed.insert(order.id.clone(), (order.generation, error));
             }
         }
@@ -589,8 +645,8 @@ const DESK_RELAYS: usize = 2;
 /// Keeps a couple of connections waiting at the hub while this computer shares any desk, so a
 /// person on another network can open theirs. Each carries one session to the desk's own
 /// listener and ends with it; the hub only copies bytes.
-pub(crate) async fn keep_desk_relays(app: &AppHandle, membership: &member::Membership) {
-    let host = app.state::<DeskHost>();
+pub(crate) async fn keep_desk_relays(app: &AppHandle, instance: &str, membership: &member::Membership) {
+    let host = host(app, instance).await;
     let mut inner = host.inner.lock().await;
     if inner.invitations.is_empty() {
         for (_, held) in inner.relays.drain() {
@@ -600,7 +656,7 @@ pub(crate) async fn keep_desk_relays(app: &AppHandle, membership: &member::Membe
     }
     while inner.relays.len() < DESK_RELAYS {
         inner.relay_next += 1;
-        let (app, membership, mine) = (app.clone(), membership.clone(), inner.relay_next);
+        let (app, membership, mine, instance) = (app.clone(), membership.clone(), inner.relay_next, instance.to_owned());
         inner.relays.insert(
             mine,
             tauri::async_runtime::spawn(async move {
@@ -609,15 +665,15 @@ pub(crate) async fn keep_desk_relays(app: &AppHandle, membership: &member::Membe
                 // opens another in its place.
                 let carry = async {
                     let (desk, relayed) = held.ok()?;
-                    let host = app.state::<DeskHost>();
+                    let host = app.state::<DeskHost>().slot(&instance);
                     let address = host.inner.lock().await.invitations.get(&desk).and_then(|share| share.invitation["address"].as_str().map(str::to_owned))?;
                     let socket = tokio::net::TcpStream::connect(address.parse::<std::net::SocketAddr>().ok()?).await.ok()?;
-                    crate::security::record(Event::new("grid.desk.session_relayed").text("desk", &desk));
+                    crate::security::record(Event::new("grid.desk.session_relayed").text("instance", &instance).text("desk", &desk));
                     yougori_grid::relay::join_socket(relayed, socket).await;
                     Some(())
                 };
                 carry.await;
-                app.state::<DeskHost>().inner.lock().await.relays.remove(&mine);
+                app.state::<DeskHost>().slot(&instance).inner.lock().await.relays.remove(&mine);
             }),
         );
     }
@@ -684,43 +740,47 @@ fn take_taken(
 }
 
 /// Copies left in the company's bucket that this computer could not delete, for the hosting
-/// page to show. A record nobody reads is not telling anybody.
-static LEFTOVERS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+/// page to show, by instance: each grid's bucket is its own company's. A record nobody reads is
+/// not telling anybody.
+static LEFTOVERS: std::sync::Mutex<BTreeMap<String, Vec<String>>> = std::sync::Mutex::new(BTreeMap::new());
 
-pub(crate) fn note_bucket_leftover(desk: &str, object: &str, error: &str) {
+pub(crate) fn note_bucket_leftover(instance: &str, desk: &str, object: &str, error: &str) {
     let said = format!("A copy of {desk} could not be removed from the company's bucket ({object}): {error}. It is still being charged for; remove it there.");
     let mut leftovers = LEFTOVERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let leftovers = leftovers.entry(instance.to_owned()).or_default();
     if !leftovers.contains(&said) {
         leftovers.push(said);
         leftovers.truncate(32);
     }
 }
 
-/// What this computer could not tidy up in the company's bucket.
-pub(crate) fn bucket_leftovers() -> Vec<String> {
-    LEFTOVERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+/// What this computer could not tidy up in one grid's company bucket.
+pub(crate) fn bucket_leftovers(instance: &str) -> Vec<String> {
+    LEFTOVERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(instance).cloned().unwrap_or_default()
 }
 
 /// Deletes the data behind parcels no order will ever use, without holding anything up.
-fn forget_parcels(desk: &str, orphans: Vec<yougori_grid::desks::Parcel>, parking: Option<&Value>) {
+fn forget_parcels(instance: &str, desk: &str, orphans: Vec<yougori_grid::desks::Parcel>, parking: Option<&Value>) {
     if orphans.is_empty() {
         return;
     }
-    let (desk, parking) = (desk.to_owned(), parking.cloned());
+    let (instance, desk, parking) = (instance.to_owned(), desk.to_owned(), parking.cloned());
     tauri::async_runtime::spawn(async move {
         for parcel in &orphans {
-            moving::forget(&desk, parcel, parking.as_ref()).await;
+            moving::forget(&instance, &desk, parcel, parking.as_ref()).await;
         }
     });
 }
 
-/// Brings this computer's desks in line with the hub's orders, and says how each is doing.
-pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership: &member::Membership, grid: &str, parking: Option<&Value>) -> Vec<DeskReport> {
-    ensure_loaded(app).await;
-    let host = app.state::<DeskHost>();
+/// Brings this computer's desks for one grid in line with that grid's orders, and says how each
+/// is doing. Only this instance's desks are looked at: another grid's desks on this computer are
+/// neither dropped nor counted here.
+pub(crate) async fn reconcile(app: &AppHandle, instance: &str, orders: &[DeskOrder], membership: &member::Membership, grid: &str, parking: Option<&Value>) -> Vec<DeskReport> {
+    let host = host(app, instance).await;
+    let tag = crate::deskgrid::desk_tag_of(instance, Some(grid));
     {
         let mut inner = host.inner.lock().await;
-        if inner.hosted_dirty && persist_hosted(app, &inner.hosted) {
+        if inner.hosted_dirty && persist_hosted(app, instance, &inner.hosted) {
             inner.hosted_dirty = false;
         }
     }
@@ -729,7 +789,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
     // this computer could not read to mean "every sandbox has been deleted" turned one bad read
     // into every desk on the computer being thrown away and built again without its data.
     let Ok(environments) = app.state::<PlatformStore>().snapshot().map(|state| state.environments) else {
-        crate::security::record(Event::new("grid.desk.reconcile_skipped").text("reason", "This computer's record of its sandboxes could not be read, so its desks were left exactly as they are"));
+        crate::security::record(Event::new("grid.desk.reconcile_skipped").text("instance", instance).text("reason", "This computer's record of its sandboxes could not be read, so its desks were left exactly as they are"));
         return Vec::new();
     };
     let now = yougori_grid::now();
@@ -743,7 +803,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
     // for deletion stays in the record until its object is actually gone, so a quit in between
     // costs a retry rather than losing the only note of something still being charged for.
     let mut to_delete = Vec::new();
-    let decided = change_parked(app, |parked| {
+    let decided = change_parked(app, instance, |parked| {
         let (keeping, spent) = sort_parked(std::mem::take(parked), &parking_now);
         to_delete = spent.clone();
         *parked = keeping.into_iter().chain(spent).collect();
@@ -752,22 +812,22 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
     if let Err(said) = decided {
         // A damaged record is not an empty one: it is the only note of objects sitting in the
         // company's bucket, so nothing is written over it and nothing is deleted on its word.
-        crate::security::record(Event::new("grid.desk.parcel_record_unreadable").text("error", &said));
+        crate::security::record(Event::new("grid.desk.parcel_record_unreadable").text("instance", instance).text("error", &said));
         to_delete.clear();
     }
     if !to_delete.is_empty() {
-        let (away, parking_with) = (app.clone(), parking.cloned());
+        let (away, parking_with, instance) = (app.clone(), parking.cloned(), instance.to_owned());
         tauri::async_runtime::spawn(async move {
             let mut gone = Vec::new();
             for entry in to_delete {
-                if moving::forget(&entry.desk, &entry.parcel, parking_with.as_ref()).await {
+                if moving::forget(&instance, &entry.desk, &entry.parcel, parking_with.as_ref()).await {
                     gone.push((entry.desk, entry.generation));
                 }
             }
             // Read again, and remove only what was actually deleted. Writing back a list worked
             // out before the network calls is what put a reported mark back to false and had the
             // next pass delete a parcel the hub had already accepted.
-            let _ = change_parked(&away, |parked| without_deleted(parked, &gone)).await;
+            let _ = change_parked(&away, &instance, |parked| without_deleted(parked, &gone)).await;
         });
     }
     let mut reports = Vec::new();
@@ -785,7 +845,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
         dropped
     };
     for desk in dropped {
-        let app = app.clone();
+        let (app, instance) = (app.clone(), instance.to_owned());
         tauri::async_runtime::spawn(async move {
             let result: Result<(), String> = async {
                 if app.state::<PlatformStore>().environment(&desk.environment_id).is_ok() {
@@ -794,9 +854,9 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                 }
                 Ok(())
             }.await;
-            crate::security::record(Event::new("grid.desk.dropped").env(&desk.environment_id).text("desk", &desk.id).outcome(&result));
-            let host=app.state::<DeskHost>();let mut inner=host.inner.lock().await;
-            if result.is_ok(){inner.hosted.retain(|entry|entry.id!=desk.id);if !persist_hosted(&app,&inner.hosted){inner.hosted_dirty=true;}}
+            crate::security::record(Event::new("grid.desk.dropped").text("instance", &instance).env(&desk.environment_id).text("desk", &desk.id).outcome(&result));
+            let host=app.state::<DeskHost>().slot(&instance);let mut inner=host.inner.lock().await;
+            if result.is_ok(){inner.hosted.retain(|entry|entry.id!=desk.id);if !persist_hosted(&app,&instance,&inner.hosted){inner.hosted_dirty=true;}}
             inner.deleting.remove(&desk.id);
         });
     }
@@ -821,12 +881,12 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                 if let Some(Ok(parcel)) = mine {
                     orphans.push(parcel);
                 }
-                forget_parcels(&order.id, orphans, parking);
+                forget_parcels(instance, &order.id, orphans, parking);
                 reports.push(DeskReport { id: order.id.clone(), state: "failed".into(), note: "This desk is locked down on its computer, so it cannot be moved until it is unlocked there".into(), generation: order.generation, ..DeskReport::default() });
                 continue;
             }
             let (packed, orphans) = take_packed(&mut inner.packed, &order.id, order.generation);
-            forget_parcels(&order.id, orphans, parking);
+            forget_parcels(instance, &order.id, orphans, parking);
             if let Some(packed) = packed {
                 if packed.is_err() {
                     if let Some(handle) = inner.moving.remove(&order.id) {
@@ -839,7 +899,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                 // written down waits (see `park_report`). Written down at all, too, if the park's
                 // own note of the parcel did not reach the disk.
                 let marked = match &packed {
-                    Ok(parcel) => change_parked(app, |parked| {
+                    Ok(parcel) => change_parked(app, instance, |parked| {
                         let mut found = false;
                         for entry in parked.iter_mut().filter(|entry| entry.desk == order.id && entry.generation == order.generation) {
                             entry.reported = true;
@@ -866,17 +926,17 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                 revoke_share(app, share.share_id).await;
             }
             if !inner.moving.contains_key(&order.id) {
-                let (app, moved, membership, grid, parking) = (app.clone(), order.clone(), membership.clone(), grid.to_owned(), parking.cloned());
+                let (app, moved, membership, grid, parking, instance) = (app.clone(), order.clone(), membership.clone(), grid.to_owned(), parking.cloned(), instance.to_owned());
                 let handle = tauri::async_runtime::spawn(async move {
                     let environment_id = hosted.environment_id.clone();
                     // Packing runs only while the desk is open, so a lockdown that starts midway
                     // stops it within half a second instead of carrying the desk to a computer
                     // that knows nothing of the lockdown.
-                    let result = match crate::security::while_open(&environment_id, moving::park(&app, &moved, &environment_id, &membership, &grid, parking.as_ref())).await {
+                    let result = match crate::security::while_open(&environment_id, moving::park(&app, &instance, &moved, &environment_id, &membership, &grid, parking.as_ref())).await {
                         Some(result) => result,
                         None => Err("This desk was locked down while its data was being packed, so it stayed on its computer".to_string()),
                     };
-                    crate::security::record(Event::new("grid.desk.parked").text("desk", &moved.id).outcome(&result.as_ref().map(|_| ()).map_err(Clone::clone)));
+                    crate::security::record(Event::new("grid.desk.parked").text("instance", &instance).text("desk", &moved.id).outcome(&result.as_ref().map(|_| ()).map_err(Clone::clone)));
                     // Written to disk before it is remembered in memory, because memory is the
                     // thing that does not survive. A park that landed and was not reported
                     // before the engine stopped used to leave its object in the company's
@@ -884,13 +944,13 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                     // timestamp so the next park wrote a new object beside it rather than over
                     // it: somebody's desk, charged for, invisible.
                     if let Ok(parcel) = &result {
-                        let _ = change_parked(&app, |parked| {
+                        let _ = change_parked(&app, &instance, |parked| {
                             parked.retain(|entry| entry.desk != moved.id || entry.generation != moved.generation);
                             parked.push(Parked { desk: moved.id.clone(), generation: moved.generation, parcel: parcel.clone(), reported: false });
                         })
                         .await;
                     }
-                    let host = app.state::<DeskHost>();
+                    let host = app.state::<DeskHost>().slot(&instance);
                     let mut inner = host.inner.lock().await;
                     inner.moving.remove(&moved.id);
                     inner.packed.insert(packed_key(&moved.id, moved.generation), result);
@@ -941,7 +1001,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                     Ok(environment_id) => {
                         if !inner.hosted.iter().any(|desk| desk.id == order.id) {
                             inner.hosted.push(HostedDesk { id: order.id.clone(), name: order.name.clone(), environment_id: environment_id.clone() });
-                            if !persist_hosted(app, &inner.hosted) { inner.hosted_dirty = true; }
+                            if !persist_hosted(app, instance, &inner.hosted) { inner.hosted_dirty = true; }
                         }
                         // Before it runs, so it never starts as the locked-down copy an import
                         // makes rather than as the desk the order describes.
@@ -954,9 +1014,9 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                         // there had already been deleted on import, so that sandbox was the only
                         // one left. Settings that will not apply are a thing to keep trying,
                         // never a reason to throw the desk away.
-                        let settled = as_the_order_says(app, &environment_id, &order);
+                        let settled = as_the_order_says(app, &environment_id, order, tag.as_deref());
                         if let Err(error) = &settled {
-                            crate::security::record(Event::new("grid.desk.adopted_settings_failed").text("desk", &order.id).text("error", error));
+                            crate::security::record(Event::new("grid.desk.adopted_settings_failed").text("instance", instance).text("desk", &order.id).text("error", error));
                             inner.unsettled.insert(order.id.clone(), order.clone());
                         }
                         let (state, may_start) = arrival(&settled);
@@ -985,11 +1045,11 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
                 continue;
             }
             if !inner.moving.contains_key(&order.id) {
-                let (app, moved, membership, parking) = (app.clone(), order.clone(), membership.clone(), parking.cloned());
+                let (app, moved, membership, parking, instance) = (app.clone(), order.clone(), membership.clone(), parking.cloned(), instance.to_owned());
                 let handle = tauri::async_runtime::spawn(async move {
-                    let result = moving::adopt(&app, &moved, &parcel, &membership, parking.as_ref()).await;
-                    crate::security::record(Event::new("grid.desk.adopted").text("desk", &moved.id).outcome(&result.as_ref().map(|_| ()).map_err(Clone::clone)));
-                    let host = app.state::<DeskHost>();
+                    let result = moving::adopt(&app, &instance, &moved, &parcel, &membership, parking.as_ref()).await;
+                    crate::security::record(Event::new("grid.desk.adopted").text("instance", &instance).text("desk", &moved.id).outcome(&result.as_ref().map(|_| ()).map_err(Clone::clone)));
+                    let host = app.state::<DeskHost>().slot(&instance);
                     let mut inner = host.inner.lock().await;
                     inner.moving.remove(&moved.id);
                     inner.taken.insert(packed_key(&moved.id, moved.generation), (parcel.sha256.clone(), result));
@@ -1008,7 +1068,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
         }
         let Some(hosted) = inner.hosted.iter().find(|desk| desk.id == order.id).cloned() else {
             if !inner.building.contains_key(&order.id) {
-                let handle = spawn_build(app, order.clone(), membership.clone());
+                let handle = spawn_build(app, instance, tag.as_deref(), order.clone(), membership.clone());
                 inner.building.insert(order.id.clone(), handle);
             }
             reports.push(DeskReport { id: order.id.clone(), state: "building".into(), note: "Creating the sandbox".into(), ..DeskReport::default() });
@@ -1017,7 +1077,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
         let Some(environment) = environments.iter().find(|environment| environment.id == hosted.environment_id) else {
             // Its person deleted the sandbox: the hub places the desk again.
             inner.hosted.retain(|desk| desk.id != order.id);
-            if !persist_hosted(app, &inner.hosted) { inner.hosted_dirty = true; }
+            if !persist_hosted(app, instance, &inner.hosted) { inner.hosted_dirty = true; }
             if let Some(share) = inner.invitations.remove(&order.id) {
                 revoke_share(app, share.share_id).await;
             }
@@ -1028,10 +1088,10 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
         // the desk is kept either way; what is withheld is starting it, because a desk running
         // with its network off is a working desk that is quietly broken.
         if inner.unsettled.contains_key(&order.id) {
-            match as_the_order_says(app, &hosted.environment_id, &order) {
+            match as_the_order_says(app, &hosted.environment_id, order, tag.as_deref()) {
                 Ok(()) => {
                     inner.unsettled.remove(&order.id);
-                    crate::security::record(Event::new("grid.desk.settings_applied").text("desk", &order.id));
+                    crate::security::record(Event::new("grid.desk.settings_applied").text("instance", instance).text("desk", &order.id));
                 }
                 Err(error) => {
                     reports.push(DeskReport { id: order.id.clone(), state: "building".into(), environment_id: Some(hosted.environment_id.clone()), note: format!("Waiting to apply this desk's settings: {error}"), generation: order.generation, ..DeskReport::default() });
@@ -1067,7 +1127,7 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
             }
             match mint_share(app, &environment.id, order, membership).await {
                 Ok(share) => {
-                    crate::security::record(Event::new("grid.desk.shared").env(&environment.id).text("desk", &order.id));
+                    crate::security::record(Event::new("grid.desk.shared").text("instance", instance).env(&environment.id).text("desk", &order.id));
                     inner.invitations.insert(order.id.clone(), share);
                 }
                 Err(error) => {
@@ -1096,11 +1156,12 @@ pub(crate) async fn reconcile(app: &AppHandle, orders: &[DeskOrder], membership:
     reports
 }
 
-/// This computer stops hosting: shares end. With `delete` (its grid was deleted) the desks'
-/// sandboxes go too, with their data; otherwise they stay for their owner to keep or delete.
-pub(crate) async fn stop_hosting(app: &AppHandle, delete: bool) {
-    ensure_loaded(app).await;
-    let host = app.state::<DeskHost>();
+/// This computer stops hosting one grid's desks: shares end. With `delete` (its grid was deleted)
+/// the desks' sandboxes go too, with their data; otherwise they stay for their owner to keep or
+/// delete. `tag` is the grid's desk tag (`None` for `default`): only that grid's desks are let go,
+/// so leaving one grid never relabels or deletes another grid's desks on this computer.
+pub(crate) async fn stop_hosting(app: &AppHandle, instance: &str, tag: Option<&str>, delete: bool) {
+    let host = host(app, instance).await;
     let mut inner = host.inner.lock().await;
     for (_, share) in inner.invitations.drain() {
         revoke_share(app, share.share_id).await;
@@ -1113,17 +1174,23 @@ pub(crate) async fn stop_hosting(app: &AppHandle, delete: bool) {
     if !delete {
         // The kept sandboxes are no longer desks. Without the record, the next start reads desks
         // back from their descriptions, and a later grid would stop and delete them as strays.
+        // Released by their tag when this grid's tag is known, and always by the record of what
+        // this grid hosts here: never by the bare "Grid desk " every grid's desks begin with.
+        let ours: Vec<String> = hosted.iter().map(|desk| desk.environment_id.clone()).collect();
+        let tag_known = instance == DEFAULT || tag.is_some();
         let released = app.state::<PlatformStore>().mutate(|state| {
             for environment in &mut state.environments {
-                if let Some(rest) = environment.description.strip_prefix("Grid desk ") {
-                    environment.description = format!("{RELEASED_DESK}{rest}");
+                let by_tag = if tag_known { instances::released(&environment.description, tag) } else { None };
+                let by_record = || ours.contains(&environment.id).then(|| environment.description.strip_prefix("Grid desk ").map(|rest| format!("{}{rest}", instances::RELEASED_DESK))).flatten();
+                if let Some(description) = by_tag.or_else(by_record) {
+                    environment.description = description;
                 }
             }
             Ok(())
         });
-        crate::security::record(Event::new("grid.desk.released").number("desks", hosted.len() as u64).outcome(&released));
+        crate::security::record(Event::new("grid.desk.released").text("instance", instance).number("desks", hosted.len() as u64).outcome(&released));
     }
-    let _ = std::fs::remove_file(hosted_path(app));
+    let _ = std::fs::remove_file(hosted_path(app, instance));
     drop(inner);
     if delete {
         for desk in hosted {
@@ -1135,16 +1202,15 @@ pub(crate) async fn stop_hosting(app: &AppHandle, delete: bool) {
                 Ok(())
             }
             .await;
-            crate::security::record(Event::new("grid.desk.deleted_with_grid").env(&desk.environment_id).text("desk", &desk.id).outcome(&result));
+            crate::security::record(Event::new("grid.desk.deleted_with_grid").text("instance", instance).env(&desk.environment_id).text("desk", &desk.id).outcome(&result));
         }
     }
 }
 
 /// The grid is paused for deletion: every desk here stops and is no longer shared, but stays,
 /// with its data, so a restore starts and shares it again.
-pub(crate) async fn pause(app: &AppHandle) {
-    ensure_loaded(app).await;
-    let host = app.state::<DeskHost>();
+pub(crate) async fn pause(app: &AppHandle, instance: &str) {
+    let host = host(app, instance).await;
     let running: Vec<String> = {
         let mut inner = host.inner.lock().await;
         for (_, share) in inner.invitations.drain() {
@@ -1155,26 +1221,23 @@ pub(crate) async fn pause(app: &AppHandle) {
     };
     for id in running {
         let result = crate::commands::set_environment_status(id.clone(), EnvironmentStatus::Stopped, app.state(), app.state()).await;
-        crate::security::record(Event::new("grid.desk.paused").env(&id).outcome(&result.map(|_| ())));
+        crate::security::record(Event::new("grid.desk.paused").text("instance", instance).env(&id).outcome(&result.map(|_| ())));
     }
 }
 
 /// This computer holds at least one desk for the grid.
-pub(crate) async fn hosts_anything(app: &AppHandle) -> bool {
-    ensure_loaded(app).await;
-    !app.state::<DeskHost>().inner.lock().await.hosted.is_empty()
+pub(crate) async fn hosts_anything(app: &AppHandle, instance: &str) -> bool {
+    !host(app, instance).await.inner.lock().await.hosted.is_empty()
 }
 
 /// A desk's data is being packed up or taken over right now.
-pub(crate) async fn moving_anything(app: &AppHandle) -> bool {
-    ensure_loaded(app).await;
-    !app.state::<DeskHost>().inner.lock().await.moving.is_empty()
+pub(crate) async fn moving_anything(app: &AppHandle, instance: &str) -> bool {
+    !host(app, instance).await.inner.lock().await.moving.is_empty()
 }
 
 /// Every desk here has been packed up and the hub has its data.
-pub(crate) async fn parked_everything(app: &AppHandle) -> bool {
-    ensure_loaded(app).await;
-    let host = app.state::<DeskHost>();
+pub(crate) async fn parked_everything(app: &AppHandle, instance: &str) -> bool {
+    let host = host(app, instance).await;
     let inner = host.inner.lock().await;
     // Keyed on the desk, whichever order packed it. `packed` gained the order's generation in
     // its key, and this was left looking up the bare id, so it was never true and the wait for
@@ -1186,12 +1249,22 @@ pub(crate) async fn parked_everything(app: &AppHandle) -> bool {
     !inner.hosted.is_empty() && inner.hosted.iter().all(|desk| packed_for(&desk.id))
 }
 
-/// The desks this computer hosts, for its own person to see.
-pub(crate) async fn hosting_status(app: &AppHandle) -> Value {
-    ensure_loaded(app).await;
-    let host = app.state::<DeskHost>();
+/// The desks this computer hosts for one grid, for its own person to see.
+pub(crate) async fn hosting_status(app: &AppHandle, instance: &str) -> Value {
+    let host = host(app, instance).await;
     let inner = host.inner.lock().await;
     json!(inner.hosted.iter().map(|desk| json!({"id": desk.id, "name": desk.name, "environmentId": desk.environment_id, "shared": inner.invitations.contains_key(&desk.id)})).collect::<Vec<_>>())
+}
+
+/// Which instance hosts the desk whose sandbox is `environment_id`, if any does.
+pub(crate) async fn instance_of_environment(app: &AppHandle, environment_id: &str) -> Option<String> {
+    let known: Vec<String> = app.state::<DeskHost>().slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).keys().cloned().collect();
+    for instance in known {
+        if host(app, &instance).await.inner.lock().await.hosted.iter().any(|desk| desk.environment_id == environment_id) {
+            return Some(instance);
+        }
+    }
+    None
 }
 
 // ---- The person's side: signing in and opening their desk. ----
@@ -1203,28 +1276,61 @@ fn login_json(login: &Login) -> Value {
     })
 }
 
-pub(crate) async fn desk_status(app: &AppHandle) -> Value {
-    ensure_loaded(app).await;
-    let host = app.state::<DeskHost>();
+pub(crate) async fn desk_status(app: &AppHandle, instance: &str) -> Value {
+    let host = host(app, instance).await;
     let inner = host.inner.lock().await;
     inner.login.as_ref().map(login_json).unwrap_or(Value::Null)
 }
 
-/// The signed-in person's session with their grid's hub, used to open a desk through the hub
-/// when its host cannot be reached directly.
-pub(crate) fn person_session() -> Result<member::DeskSession, String> {
-    management_session()
+/// The grid an instance's person is signed in to, by id and name.
+pub(crate) async fn login_grid(app: &AppHandle, instance: &str) -> Option<(String, String)> {
+    let host = host(app, instance).await;
+    let inner = host.inner.lock().await;
+    inner.login.as_ref().map(|login| (login.grid_id.clone(), login.grid_name.clone()))
 }
 
-pub(crate) fn management_session() -> Result<member::DeskSession, String> {
-    let saved = secrets::resolve(PERSON_SESSION).map_err(|_| "Sign in to your Sandbox Grid with an administrator account")?;
+/// Which sign-in each desk this computer has opened belongs to, by desk. Written when a sign-in
+/// is installed and cleared when it is forgotten, so a desk opened through its grid's hub uses
+/// that grid's session and not another grid's.
+///
+/// Kept here rather than looked up from the slots because the one caller that needs it opens a
+/// relayed desk session with nothing but the desk's id in hand (`peer_sharing::request_relayed`).
+static DESK_SIGN_INS: std::sync::Mutex<BTreeMap<String, String>> = std::sync::Mutex::new(BTreeMap::new());
+
+fn remember_desk_sign_ins(instance: &str, desks: &[LoginDesk]) {
+    let mut known = DESK_SIGN_INS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    known.retain(|_, held| held != instance);
+    for desk in desks {
+        known.insert(desk.id.clone(), instance.to_owned());
+    }
+}
+
+fn forget_desk_sign_ins(instance: &str) {
+    DESK_SIGN_INS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retain(|_, held| held != instance);
+}
+
+/// The signed-in person's session with the hub of the grid `desk` belongs to, used to open that
+/// desk through the hub when its host cannot be reached directly. Falls back to `default`'s
+/// sign-in when no sign-in on this computer lists the desk.
+///
+/// A person can be signed in to several Sandbox Grids. Another grid's session is not the one that
+/// may open this desk: with it, the hub answers that the desk is not one of its own.
+pub(crate) fn person_session_for_desk(desk: &str) -> Result<member::DeskSession, String> {
+    let instance = DESK_SIGN_INS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(desk).cloned();
+    management_session(instance.as_deref().unwrap_or(DEFAULT))
+}
+
+pub(crate) fn management_session(instance: &str) -> Result<member::DeskSession, String> {
+    let saved = secrets::resolve(&instances::vault_name(PERSON_SESSION, instance)).map_err(|_| "Sign in to your Sandbox Grid with an administrator account")?;
     serde_json::from_str(&saved).map_err(|_| "Saved desk session is invalid; sign in again".into())
 }
 
 /// Signs in to the grid an invite names and opens every desk that is ready: each becomes a
 /// shared environment in this computer's sandbox list, replacing an older entry for the same desk.
-pub(crate) async fn desk_login(invite_text: String, username: Option<String>, secret: Option<String>, code: Option<String>, sso: bool, app: AppHandle) -> Result<Value, String> {
-    ensure_loaded(&app).await;
+/// Signing in to the same grid again replaces that sign-in, as it always did; signing in to a
+/// second grid keeps the first beside it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn desk_login(invite_text: String, username: Option<String>, secret: Option<String>, code: Option<String>, sso: bool, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
     let host=app.state::<DeskHost>();let _sign_in=host.sign_in.lock().await;
     let invite = invite::decode_desk(invite_text.trim())?;
     let session: PersonSession = if sso {
@@ -1236,14 +1342,31 @@ pub(crate) async fn desk_login(invite_text: String, username: Option<String>, se
         member::person_login(&invite, &username, &secret, code.as_deref()).await?
     };
     let portal=session.session.manage(json!({"action":"portal"})).await?;
-    secrets::store(PERSON_SESSION,&serde_json::to_string(&session.session).map_err(|e|e.to_string())?)?;
-    secrets::store(PERSON_INVITE,invite_text.trim())?;
-    install_login(&app,portal).await
+    let signed_in=portal["grid"]["id"].as_str().ok_or("Invalid grid response")?.to_owned();
+    let seen=crate::deskgrid::census(&app).await;
+    let chosen=match grid_id.as_deref().map(str::trim).filter(|wanted|!wanted.is_empty()){
+        None=>Ok(instances::for_login(&seen,&signed_in)),
+        Some(wanted)=>instances::choose(&seen,Some(wanted),instances::ANY).and_then(|instance|{
+            match seen.iter().find(|other|other.instance!=instance&&other.login.as_ref().is_some_and(|grid|grid.id==signed_in)){
+                Some(other)=>Err(format!("You are already signed in to {} on this computer under another gridId ({}). Sign out there first, or sign in again without gridId.",other.login.as_ref().map(|grid|grid.name.as_str()).unwrap_or_default(),other.instance)),
+                None=>Ok(Some(instance)),
+            }
+        }),
+    };
+    let instance=match chosen{
+        Ok(Some(instance))=>instance,
+        Ok(None)=>{let mut taken=instances::on_disk(&grid_folder(&app));taken.extend(seen.iter().map(|seen|seen.instance.clone()));instances::new_key(&taken)}
+        // Nothing is kept of a sign-in that has nowhere to go, so the hub forgets it too.
+        Err(error)=>{let _=session.session.manage(json!({"action":"logout"})).await;return Err(error)}
+    };
+    let stored=secrets::store(&instances::vault_name(PERSON_SESSION,&instance),&serde_json::to_string(&session.session).map_err(|e|e.to_string())?).and_then(|_|secrets::store(&instances::vault_name(PERSON_INVITE,&instance),invite_text.trim()));
+    if let Err(error)=stored{instances::tidy(&grid_folder(&app),&instance);return Err(error)}
+    install_login(&app,&instance,portal).await
 }
 
-async fn install_login(app:&AppHandle,portal:Value)->Result<Value,String>{
+async fn install_login(app:&AppHandle,instance:&str,portal:Value)->Result<Value,String>{
     use sha2::{Digest,Sha256};
-    let store=app.state::<PlatformStore>();let host=app.state::<DeskHost>();
+    let store=app.state::<PlatformStore>();let host=host(app,instance).await;
     let previous=host.inner.lock().await.login.clone();
     let grid_id=portal["grid"]["id"].as_str().ok_or("Invalid grid response")?.to_owned();
     let person_id=portal["personId"].as_str().ok_or("Invalid person response")?.to_owned();
@@ -1268,7 +1391,8 @@ async fn install_login(app:&AppHandle,portal:Value)->Result<Value,String>{
         }
         desks.push(LoginDesk{id,name:desk["name"].as_str().unwrap_or_default().into(),state:desk["state"].as_str().unwrap_or_default().into(),note,host:desk["host"].as_str().map(str::to_owned),environment_id,address,invitation_hash});
     }
-    // Account switches, revoked assignments and rotated grants retire only entries from the old sign-in.
+    // Account switches, revoked assignments and rotated grants retire only entries from the old
+    // sign-in of this same instance: another grid's sign-in on this computer is not touched.
     for old in previous.iter().flat_map(|p|p.desks.iter()).filter_map(|d|d.environment_id.as_ref()){
         if !desks.iter().any(|d|d.environment_id.as_ref()==Some(old)){
             crate::peer_sharing::forget(old)?;
@@ -1276,20 +1400,21 @@ async fn install_login(app:&AppHandle,portal:Value)->Result<Value,String>{
         }
     }
     let login=Login{grid_id,grid_name:portal["grid"]["name"].as_str().unwrap_or_default().into(),username:portal["username"].as_str().unwrap_or_default().into(),person_id,name:portal["name"].as_str().unwrap_or_default().into(),admin_role:serde_json::from_value(portal["adminRole"].clone()).unwrap_or_default(),desks,signed_in_at:yougori_grid::now(),connections:portal["connections"].as_array().cloned().unwrap_or_default(),mfa:portal["mfa"]==true};
-    write_json(&login_path(app),&login)?;
-    let shown=login_json(&login);host.inner.lock().await.login=Some(login);Ok(shown)
+    write_json(&login_path(app,instance),&login)?;
+    remember_desk_sign_ins(instance,&login.desks);
+    let mut shown=login_json(&login);shown["instance"]=json!(instance);host.inner.lock().await.login=Some(login);Ok(shown)
 }
 
-pub(crate) async fn desk_refresh(app:AppHandle)->Result<Value,String>{
-    ensure_loaded(&app).await;
-    let session=management_session()?;
+pub(crate) async fn desk_refresh(grid_id:Option<String>,app:AppHandle)->Result<Value,String>{
+    let instance=crate::deskgrid::pick(&app,grid_id.as_deref(),&[Role::Login]).await?;
+    let session=management_session(&instance)?;
     let portal={let host=app.state::<DeskHost>();let _sign_in=host.sign_in.lock().await;session.manage(json!({"action":"portal"})).await};
     match portal{
-        Ok(portal)=>{let host=app.state::<DeskHost>();let _sign_in=host.sign_in.lock().await;install_login(&app,portal).await}
+        Ok(portal)=>{let host=app.state::<DeskHost>();let _sign_in=host.sign_in.lock().await;install_login(&app,&instance,portal).await}
         // The grid was deleted: its desks are gone, so their entries here go too.
         Err(error) if error==yougori_grid::GRID_DELETED=>{
-            let grid=app.state::<DeskHost>().inner.lock().await.login.as_ref().map(|login|login.grid_name.clone()).unwrap_or_default();
-            desk_logout(app).await?;
+            let grid=host(&app,&instance).await.inner.lock().await.login.as_ref().map(|login|login.grid_name.clone()).unwrap_or_default();
+            desk_logout_in(&app,&instance).await?;
             Err(format!("{grid} deleted this sandbox grid; your desks were removed from this computer"))
         }
         Err(error)=>Err(error),
@@ -1298,11 +1423,15 @@ pub(crate) async fn desk_refresh(app:AppHandle)->Result<Value,String>{
 
 /// Forgets the sign-in and removes the desk entries from this computer; the desks and their data
 /// stay on their hosts.
-pub(crate) async fn desk_logout(app: AppHandle) -> Result<Value, String> {
-    ensure_loaded(&app).await;
+pub(crate) async fn desk_logout(grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
+    let instance = crate::deskgrid::pick(&app, grid_id.as_deref(), &[Role::Login]).await?;
+    desk_logout_in(&app, &instance).await
+}
+
+async fn desk_logout_in(app: &AppHandle, instance: &str) -> Result<Value, String> {
+    let host = host(app, instance).await;
     let guard_host=app.state::<DeskHost>();let _sign_in=guard_host.sign_in.lock().await;
-    if let Ok(session)=management_session(){let _=session.manage(json!({"action":"logout"})).await;}
-    let host = app.state::<DeskHost>();
+    if let Ok(session)=management_session(instance){let _=session.manage(json!({"action":"logout"})).await;}
     let login = host.inner.lock().await.login.take();
     let store = app.state::<PlatformStore>();
     for desk in login.iter().flat_map(|login| login.desks.iter()) {
@@ -1313,11 +1442,13 @@ pub(crate) async fn desk_logout(app: AppHandle) -> Result<Value, String> {
             }
         }
     }
-    let _ = std::fs::remove_file(login_path(&app));
-    let _ = secrets::delete_secret(PERSON_INVITE);
-    let _ = secrets::delete_secret(PERSON_SESSION);
-    crate::security::record(Event::new("grid.desk.signed_out"));
-    Ok(json!({"signedOut": true}))
+    let _ = std::fs::remove_file(login_path(app, instance));
+    forget_desk_sign_ins(instance);
+    let _ = secrets::delete_secret(&instances::vault_name(PERSON_INVITE, instance));
+    let _ = secrets::delete_secret(&instances::vault_name(PERSON_SESSION, instance));
+    crate::security::record(Event::new("grid.desk.signed_out").text("instance", instance));
+    instances::tidy(&grid_folder(app), instance);
+    Ok(json!({"signedOut": true, "instance": instance, "gridId": login.map(|login| login.grid_id)}))
 }
 
 // ---- The admin's side: people and desks on the hub this computer runs. ----
@@ -1334,9 +1465,9 @@ async fn derive_new(secret: &str) -> Result<(String, String), String> {
 }
 
 /// Adds a person and, when sized, orders their desk in the same step; the desk is named after them.
-pub(crate) async fn person_add(username: String, name: String, secret: String, desk: Option<DeskSpec>, app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn person_add(username: String, name: String, secret: String, desk: Option<DeskSpec>, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
     let (salt, key) = derive_new(&secret).await?;
-    crate::deskgrid::with_hub(&app, |hub| hub.add_person(&username, &name, &salt, &key, desk)).await
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.add_person(&username, &name, &salt, &key, desk)).await
 }
 
 /// The desk a person is given with their account, when any of its numbers are set: a container
@@ -1348,33 +1479,33 @@ pub(crate) fn person_desk(kind: Option<String>, cpu: Option<f64>, memory_gb: Opt
     DeskSpec::checked(DeskKind::parse(kind.as_deref().unwrap_or("container"))?, cpu.unwrap_or(2.0), memory_gb.unwrap_or(4.0), disk_gb.unwrap_or(20.0), gpu.unwrap_or(false), "").map(Some)
 }
 
-pub(crate) async fn person_password(person: String, secret: String, app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn person_password(person: String, secret: String, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
     let (salt, key) = derive_new(&secret).await?;
-    crate::deskgrid::with_hub(&app, |hub| hub.set_person_password(&person, &salt, &key)).await
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.set_person_password(&person, &salt, &key)).await
 }
 
-pub(crate) async fn person_remove(person: String, app: AppHandle) -> Result<Value, String> {
-    crate::deskgrid::with_hub(&app, |hub| hub.remove_person(&person)).await
+pub(crate) async fn person_remove(person: String, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.remove_person(&person)).await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn desk_add(name: String, kind: Option<String>, cpu: Option<f64>, memory_gb: Option<f64>, disk_gb: Option<f64>, gpu: Option<bool>, image: Option<String>, person: Option<String>, app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn desk_add(name: String, kind: Option<String>, cpu: Option<f64>, memory_gb: Option<f64>, disk_gb: Option<f64>, gpu: Option<bool>, image: Option<String>, person: Option<String>, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
     let spec = DeskSpec::checked(DeskKind::parse(kind.as_deref().unwrap_or("container"))?, cpu.unwrap_or(2.0), memory_gb.unwrap_or(4.0), disk_gb.unwrap_or(20.0), gpu.unwrap_or(false), image.as_deref().unwrap_or(""))?;
     let person = person.map(|person| person.trim().to_owned()).filter(|person| !person.is_empty());
-    crate::deskgrid::with_hub(&app, |hub| hub.add_desk(&name, spec, person.as_deref())).await
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.add_desk(&name, spec, person.as_deref())).await
 }
 
-pub(crate) async fn desk_assign(desk: String, person: Option<String>, app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn desk_assign(desk: String, person: Option<String>, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
     let person = person.map(|person| person.trim().to_owned()).filter(|person| !person.is_empty());
-    crate::deskgrid::with_hub(&app, |hub| hub.assign_desk(&desk, person.as_deref())).await
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.assign_desk(&desk, person.as_deref())).await
 }
 
-pub(crate) async fn desk_retry(desk: String, app: AppHandle) -> Result<Value, String> {
-    crate::deskgrid::with_hub(&app, |hub| hub.retry_desk(&desk)).await
+pub(crate) async fn desk_retry(desk: String, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.retry_desk(&desk)).await
 }
 
-pub(crate) async fn desk_remove(desk: String, app: AppHandle) -> Result<Value, String> {
-    crate::deskgrid::with_hub(&app, |hub| hub.remove_desk(&desk)).await
+pub(crate) async fn desk_remove(desk: String, grid_id: Option<String>, app: AppHandle) -> Result<Value, String> {
+    crate::deskgrid::with_hub(&app, grid_id.as_deref(), |hub| hub.remove_desk(&desk)).await
 }
 
 /// App commands, from the main window only: an environment's window must not manage the sandbox grid.
@@ -1388,65 +1519,66 @@ pub(crate) mod commands {
 
     #[tauri::command]
     #[allow(clippy::too_many_arguments)]
-    pub async fn desks_person_add(app: AppHandle, window: WebviewWindow, username: String, name: String, password: String, kind: Option<String>, cpu: Option<f64>, memory_gb: Option<f64>, disk_gb: Option<f64>, gpu: Option<bool>) -> Result<Value, String> {
+    pub async fn desks_person_add(app: AppHandle, window: WebviewWindow, username: String, name: String, password: String, kind: Option<String>, cpu: Option<f64>, memory_gb: Option<f64>, disk_gb: Option<f64>, gpu: Option<bool>, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
         let desk = super::person_desk(kind, cpu, memory_gb, disk_gb, gpu)?;
-        super::person_add(username, name, password, desk, app).await
+        super::person_add(username, name, password, desk, grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desks_person_password(app: AppHandle, window: WebviewWindow, person: String, password: String) -> Result<Value, String> {
+    pub async fn desks_person_password(app: AppHandle, window: WebviewWindow, person: String, password: String, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::person_password(person, password, app).await
+        super::person_password(person, password, grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desks_person_remove(app: AppHandle, window: WebviewWindow, person: String) -> Result<Value, String> {
+    pub async fn desks_person_remove(app: AppHandle, window: WebviewWindow, person: String, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::person_remove(person, app).await
+        super::person_remove(person, grid_id, app).await
     }
 
     #[tauri::command]
     #[allow(clippy::too_many_arguments)]
-    pub async fn desks_add(app: AppHandle, window: WebviewWindow, name: String, kind: Option<String>, cpu: Option<f64>, memory_gb: Option<f64>, disk_gb: Option<f64>, gpu: Option<bool>, image: Option<String>, person: Option<String>) -> Result<Value, String> {
+    pub async fn desks_add(app: AppHandle, window: WebviewWindow, name: String, kind: Option<String>, cpu: Option<f64>, memory_gb: Option<f64>, disk_gb: Option<f64>, gpu: Option<bool>, image: Option<String>, person: Option<String>, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_add(name, kind, cpu, memory_gb, disk_gb, gpu, image, person, app).await
+        super::desk_add(name, kind, cpu, memory_gb, disk_gb, gpu, image, person, grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desks_assign(app: AppHandle, window: WebviewWindow, desk: String, person: Option<String>) -> Result<Value, String> {
+    pub async fn desks_assign(app: AppHandle, window: WebviewWindow, desk: String, person: Option<String>, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_assign(desk, person, app).await
+        super::desk_assign(desk, person, grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desks_retry(app: AppHandle, window: WebviewWindow, desk: String) -> Result<Value, String> {
+    pub async fn desks_retry(app: AppHandle, window: WebviewWindow, desk: String, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_retry(desk, app).await
+        super::desk_retry(desk, grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desks_remove(app: AppHandle, window: WebviewWindow, desk: String) -> Result<Value, String> {
+    pub async fn desks_remove(app: AppHandle, window: WebviewWindow, desk: String, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_remove(desk, app).await
+        super::desk_remove(desk, grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desk_refresh(app: AppHandle, window: WebviewWindow) -> Result<Value, String> {
+    pub async fn desk_refresh(app: AppHandle, window: WebviewWindow, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_refresh(app).await
+        super::desk_refresh(grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desk_login(app: AppHandle, window: WebviewWindow, invite: String, username: Option<String>, password: Option<String>, code: Option<String>, sso: Option<bool>) -> Result<Value, String> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn desk_login(app: AppHandle, window: WebviewWindow, invite: String, username: Option<String>, password: Option<String>, code: Option<String>, sso: Option<bool>, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_login(invite, username, password, code, sso.unwrap_or(false), app).await
+        super::desk_login(invite, username, password, code, sso.unwrap_or(false), grid_id, app).await
     }
 
     #[tauri::command]
-    pub async fn desk_logout(app: AppHandle, window: WebviewWindow) -> Result<Value, String> {
+    pub async fn desk_logout(app: AppHandle, window: WebviewWindow, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        super::desk_logout(app).await
+        super::desk_logout(grid_id, app).await
     }
 }
 
@@ -1726,14 +1858,50 @@ mod tests {
         assert_eq!(desk_of("Grid desk  · Ada"), None);
     }
 
+    /// PROVES that a desk opened through its grid's hub reaches that grid's own sign-in.
+    ///
+    /// A person signed in to two grids has two sessions. Opening a desk of the second one
+    /// through the hub with the first one's session is not merely the wrong session: the hub
+    /// answers that the desk is not one of its own, and the person is told to sign in again to a
+    /// grid they are already signed in to.
+    #[test]
+    fn a_desk_is_opened_with_the_sign_in_that_lists_it() {
+        let desk = |id: &str| LoginDesk { id: id.into(), name: id.into(), state: "ready".into(), note: String::new(), host: None, environment_id: None, address: None, invitation_hash: String::new() };
+        let instance_of = |id: &str| DESK_SIGN_INS.lock().unwrap().get(id).cloned();
+
+        remember_desk_sign_ins(DEFAULT, &[desk("desk-1")]);
+        remember_desk_sign_ins("i-0000000b", &[desk("desk-2"), desk("desk-3")]);
+        assert_eq!(instance_of("desk-1").as_deref(), Some(DEFAULT));
+        assert_eq!(instance_of("desk-3").as_deref(), Some("i-0000000b"));
+        // A desk nobody has opened falls back to the one sign-in every computer used to have.
+        assert_eq!(instance_of("desk-9"), None);
+
+        // A sign-in that lists fewer desks than before drops only its own.
+        remember_desk_sign_ins("i-0000000b", &[desk("desk-2")]);
+        assert_eq!(instance_of("desk-3"), None, "a desk taken away stayed pointed at its old sign-in");
+        assert_eq!(instance_of("desk-1").as_deref(), Some(DEFAULT), "and the other grid's desk was swept up with it");
+
+        // Signing out forgets that grid's desks and leaves the other grid's alone.
+        forget_desk_sign_ins("i-0000000b");
+        assert_eq!(instance_of("desk-2"), None);
+        assert_eq!(instance_of("desk-1").as_deref(), Some(DEFAULT));
+        forget_desk_sign_ins(DEFAULT);
+        assert!(DESK_SIGN_INS.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn a_desk_order_becomes_a_sandbox_request_of_its_kind_and_size() {
         let order = DeskOrder { access: Default::default(), role_id: None, image_sha256: None, generation: 0, person_id: Some("person-1".into()), id: "desk-1".into(), name: "Design".into(), spec: DeskSpec::checked(DeskKind::Container, 2.0, 8.0, 40.0, true, "").unwrap(), person_name: "Ada".into(), needs_invitation: false, park: false, park_in: yougori_grid::desks::ParcelStore::Hub, adopt: None };
-        let request = request_for(&order);
+        let request = request_for(&order, None);
         assert_eq!((request.kind, request.provider, request.gpu_access, request.auto_setup_cuda), (EnvironmentKind::Container, RuntimeProviderKind::YougoriCuda, true, true));
         assert_eq!((request.resource_policy.cpu.preferred, request.resource_policy.memory_gb.max, request.storage_gb), (2.0, 8.0, Some(40.0)));
         assert_eq!((request.name.as_str(), request.description.as_str()), ("Desk desk-1", "Grid desk desk-1 · Ada"));
-        let vm = request_for(&DeskOrder { spec: DeskSpec::checked(DeskKind::Vm, 1.0, 2.0, 10.0, false, "prepared.qcow2").unwrap(), ..order });
+        // A second grid's desk carries its grid in its description, so that grid alone reads it back.
+        let second = request_for(&order, Some("grid-bbb"));
+        assert_eq!(second.description, "Grid desk desk-1 [grid-bbb] · Ada");
+        assert_eq!(instances::tagged_for(&second.description, Some("grid-bbb")).as_deref(), Some("desk-1"));
+        assert_eq!(instances::tagged_for(&second.description, None), None, "default's grid never takes it for one of its own");
+        let vm = request_for(&DeskOrder { spec: DeskSpec::checked(DeskKind::Vm, 1.0, 2.0, 10.0, false, "prepared.qcow2").unwrap(), ..order }, None);
         assert_eq!((vm.kind, vm.provider, vm.runtime.as_str()), (EnvironmentKind::FullVm, RuntimeProviderKind::Qemu, "prepared.qcow2"));
     }
 }

@@ -154,3 +154,44 @@
 .creation-type-tabs .creation-types { flex: 1 0 auto; overflow: visible; }
 /* The strip scrolls, so it clips anything drawn outside a tab: keep the ring inside, and only for keyboard focus. */
 .creation-type:has(:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+/* Sandbox VM uses the same workbench as the other creation flows. */
+.creation-vm-image { display: flex; min-width: 0; flex-direction: column; gap: 14px; border: 0; padding: 0; }
+.creation-vm-input-row { display: flex; width: 100%; min-width: 0; align-items: stretch; gap: 8px; }
+.creation-vm-input-row > .creation-input { flex: 1; }
+.creation-vm-input-row > button { flex-shrink: 0; }
+.creation-vm-select { width: 100%; min-width: 0; min-height: 40px; padding: 8px 12px; border: 1px solid var(--creation-line); border-radius: 10px; background: var(--creation-input); color: var(--foreground); font-size: 13.5px; text-overflow: ellipsis; }
+.creation-vm-select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.creation-vm-advanced { border: 1px solid var(--creation-line); border-radius: 10px; background: var(--creation-input); }
+.creation-vm-advanced > summary { display: flex; align-items: center; gap: 8px; padding: 11px 12px; cursor: pointer; list-style: none; font-size: 13px; font-weight: 500; }
+.creation-vm-advanced > summary::-webkit-details-marker { display: none; }
+.creation-vm-advanced > summary svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--creation-secondary); }
+.creation-vm-advanced > summary svg:last-child { margin-left: auto; transition: transform 140ms; }
+.creation-vm-advanced[open] > summary svg:last-child { transform: rotate(180deg); }
+.creation-vm-advanced > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 10px; }
+.creation-vm-fields { display: flex; min-width: 0; flex-direction: column; gap: 14px; padding: 14px 12px; border-top: 1px solid var(--creation-line); }
+.creation-network-option { min-width: 0; border: 1px solid var(--creation-line); border-radius: 10px; background: var(--creation-surface); }
+.creation-network-toggle { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; }
+.creation-network-toggle label { cursor: pointer; font-size: 13px; font-weight: 600; }
+.creation-network-toggle p { margin-top: 3px; color: var(--creation-secondary); font-size: 12px; line-height: 1.5; }
+.creation-network-content { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 12px; border-top: 1px solid var(--creation-line); }
+.creation-network-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.creation-network-rows { display: flex; flex-direction: column; gap: 10px; }
+.creation-network-row { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
+.creation-network-row > [data-slot="field"] { flex: 1 1 120px; min-width: 0; }
+.creation-network-request { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--creation-line); }
+.creation-network-advanced { min-width: 0; font-size: 12px; }
+.creation-network-advanced > summary { cursor: pointer; color: var(--creation-secondary); }
+.creation-network-advanced > .creation-network-toggle { padding-inline: 0; }
+.creation-network-advanced > [data-slot="field"] { margin-top: 10px; }
+.creation-vm-routes textarea { min-height: 120px; max-height: 280px; font: 12px/1.6 var(--font-mono); resize: vertical; }
+.creation-vm-consent { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; }
+.creation-vm-consent input { margin-top: 3px; accent-color: var(--primary); }
+.creation-vm-resource-facts { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; padding-block: 16px; border-block: 1px solid var(--creation-line); font-size: 13px; }
+.creation-vm-resource-facts > div { display: flex; justify-content: space-between; gap: 16px; }
+.creation-vm-resource-facts dt { color: var(--creation-secondary); }
+.creation-vm-resource-facts dd { text-align: right; font-weight: 500; }
+.creation-vm-note { display: flex; gap: 10px; margin-top: 4px; font-size: 12px; line-height: 1.5; }
+.creation-vm-note > svg { width: 17px; height: 17px; flex-shrink: 0; margin-top: 1px; color: var(--primary); }
+.creation-vm-note h3 { font-weight: 550; margin-bottom: 4px; }
+.creation-vm-note p { color: var(--creation-secondary); }

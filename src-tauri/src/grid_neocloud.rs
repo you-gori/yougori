@@ -1,4 +1,4 @@
-//! Rented NeoCloud GPUs in the Closed Neo Grid this computer hosts.
+//! Rented NeoCloud GPUs in the Closed Neo Grids this computer hosts.
 //!
 //! A rented pod never runs Yougori. This computer's engine stands in for it: the hub admits the
 //! pod as a member made ahead of time, so no company password travels; the stand-in checks in for
@@ -11,11 +11,16 @@
 //! with the grid paused or deleted, or when Yougori quits with its environments. Nothing here rents
 //! or starts a pod. Pods come from the NeoCloud flow, with its own price review and consent, and a
 //! stopped pod stays stopped until its person starts it there.
-use crate::{projects::secrets, rented_gpu::{billing, leaving, pod, pods, running, settled, Ledger, Pod, Record, Stopped}, security::Event, store::PlatformStore, AppHandle};
+//!
+//! Each hub this computer runs keeps its own list of pods, beside its record (`grid/neocloud.json`
+//! for the `default` grid, `grid/neo/<instance>/neocloud.json` for the others), with each pod's
+//! membership token under a vault name of that grid's. A pod works in one grid at a time. The
+//! stops owed on pods stay in one ledger, keyed by pod, shared with every grid.
+use crate::{grid::instances, projects::secrets, rented_gpu::{billing, leaving, pod, pods, running, settled, Ledger, Pod, Record, Stopped}, security::Event, store::PlatformStore, AppHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -80,6 +85,8 @@ struct Worker {
 }
 
 struct StandIn {
+    /// The grid on this computer whose hub this pod works for.
+    instance: String,
     saved: Saved,
     membership: Option<Membership>,
     live: Live,
@@ -100,10 +107,12 @@ impl StandIn {
 
 #[derive(Default)]
 struct Inner {
-    loaded: bool,
-    /// Why the list of the grid's pods is left where it is (see `read_kept`): nothing is written
-    /// over it, it is read again at the next use, and the page says so meanwhile.
-    unread: Option<String>,
+    /// The grids whose list of pods was read.
+    loaded: BTreeSet<String>,
+    /// Why a grid's list of pods is left where it is (see `read_kept`): nothing is written over
+    /// it, it is read again at the next use, and the page says so meanwhile.
+    unread: BTreeMap<String, String>,
+    /// Every grid's pods, by pod: a pod works in one grid at a time.
     members: BTreeMap<String, StandIn>,
     /// Why pods last left the grid on their own, shown once on this computer's page.
     notice: Option<String>,
@@ -124,11 +133,11 @@ fn folder(app: &AppHandle) -> PathBuf {
     app.state::<PlatformStore>().data_folder("grid")
 }
 
-fn path(app: &AppHandle) -> PathBuf {
-    folder(app).join("neocloud.json")
+fn path(app: &AppHandle, instance: &str) -> PathBuf {
+    instances::file(&folder(app), instance, "neocloud.json")
 }
 
-/// Whether this computer runs the grid now.
+/// Whether this computer runs a grid now.
 #[derive(Debug, PartialEq)]
 enum Hosting {
     Yes,
@@ -141,9 +150,8 @@ enum Hosting {
 
 /// Asks the grid module, never its files: a rollout can move the hub's record aside without
 /// deleting the grid.
-async fn hosting(app: &AppHandle) -> Hosting {
-    let Ok(status) = crate::grid::grid_status(app.clone()).await else { return Hosting::NotNow };
-    hosting_of(&status)
+async fn hosting(app: &AppHandle, instance: &str) -> Hosting {
+    hosting_of(&crate::grid::hub_state(app, instance).await)
 }
 
 fn hosting_of(status: &Value) -> Hosting {
@@ -156,21 +164,28 @@ fn hosting_of(status: &Value) -> Hosting {
     }
 }
 
-fn token_key(member_id: &str) -> String {
-    format!("yougori-grid-neocloud-{member_id}")
+/// A pod's membership token in the vault: the old name in the `default` grid, the grid's own
+/// suffix in any other.
+fn token_key(instance: &str, member_id: &str) -> String {
+    instances::vault_name(&format!("yougori-grid-neocloud-{member_id}"), instance)
 }
 
 /// Written the way the owed stops are: a power cut mid-write leaves the last good list, never a
 /// truncated one that the next start would set aside, forgetting pods that may be billing.
-fn persist(app: &AppHandle, rows: &[Saved]) -> Result<(), String> {
-    crate::rented_gpu::write_kept(&path(app), &rows)
+fn persist(app: &AppHandle, instance: &str, rows: &[Saved]) -> Result<(), String> {
+    crate::rented_gpu::write_kept(&path(app, instance), &rows)
 }
 
-fn save(app: &AppHandle, inner: &Inner) -> Result<(), String> {
-    if inner.unread.is_some() {
+/// One grid's pods, as its list on disk holds them.
+fn rows_of(inner: &Inner, instance: &str) -> Vec<Saved> {
+    inner.members.values().filter(|member| member.instance == instance).map(|member| member.saved.clone()).collect()
+}
+
+fn save(app: &AppHandle, inner: &Inner, instance: &str) -> Result<(), String> {
+    if inner.unread.contains_key(instance) {
         return Err("Yougori cannot write its list of the grid's rented GPUs until it can read the one it has; see the note on this page".into());
     }
-    persist(app, &inner.members.values().map(|member| member.saved.clone()).collect::<Vec<_>>())
+    persist(app, instance, &rows_of(inner, instance))
 }
 
 fn stops_path(app: &AppHandle) -> PathBuf {
@@ -262,7 +277,9 @@ async fn leave(app: &AppHandle, id: &str, reason: &str) {
         let rented = app.state::<RentedGpus>();
         let mut inner = rented.inner.lock().await;
         let member = with_stops(app, |stops| (leave_member(&mut inner, stops, id, reason), true)).await;
-        let _ = save(app, &inner);
+        if let Some(member) = &member {
+            let _ = save(app, &inner, &member.instance);
+        }
         member
     };
     if let Some(mut member) = member {
@@ -270,8 +287,8 @@ async fn leave(app: &AppHandle, id: &str, reason: &str) {
         if let Some(starting) = member.starting.take() {
             starting.abort();
         }
-        let _ = secrets::delete_secret(&token_key(&member.saved.member_id));
-        crate::security::record(Event::new("grid.neocloud.removed").text("grid", &member.saved.grid_name).text("pod", id));
+        let _ = secrets::delete_secret(&token_key(&member.instance, &member.saved.member_id));
+        crate::security::record(Event::new("grid.neocloud.removed").text("instance", &member.instance).text("grid", &member.saved.grid_name).text("pod", id));
     }
     // The stop is owed now and the settle pass sends it. Sending it here would hold up every other
     // pod's check-in for as long as a RunPod stop takes, and the hub would mark them offline.
@@ -301,56 +318,81 @@ fn unreadable(error: &str) -> String {
     format!("This pod's grid membership could not be read ({error}). Yougori tries again every 30 seconds; if this lasts, remove the pod here and add it again. Until then it serves nothing, and a running pod is still billed.")
 }
 
-fn restore(saved: &Saved) -> Result<Membership, String> {
+fn restore(instance: &str, saved: &Saved) -> Result<Membership, String> {
     let address: SocketAddr = saved.address.parse().map_err(|_| "The saved hub address is damaged")?;
-    Membership::new(HubAddress::Direct(address), &saved.certificate, saved.member_id.clone(), secrets::resolve(&token_key(&saved.member_id))?)
+    Membership::new(HubAddress::Direct(address), &saved.certificate, saved.member_id.clone(), secrets::resolve(&token_key(instance, &saved.member_id))?)
 }
 
-async fn ensure_loaded(app: &AppHandle) {
-    let rented = app.state::<RentedGpus>();
-    let mut inner = rented.inner.lock().await;
-    if inner.loaded {
-        return;
-    }
+/// Takes one grid's pods from its list. Returns a note for the page when the list was damaged
+/// and set aside.
+fn read_list(inner: &mut Inner, instance: &str, read: Result<Vec<Saved>, crate::rented_gpu::Unreadable>) -> Option<String> {
     // Unreadable is never an empty grid: the pods would be forgotten, unstopped at quit, free for
     // Swarm to take, and the next save would write the empty list over them. A file the disk would
     // not give is left as it is and read again at the next use. A damaged one is set aside with its
     // bytes kept and the page says so; the grid's hub still lists each pod as a member under its
     // NeoCloud name, which is the way back: remove those there and add the pods again.
-    let rows: Vec<Saved> = match crate::rented_gpu::read_kept(&path(app), yougori_grid::now(), "its list of the rented GPUs in the grid") {
+    let rows = match read {
         Ok(rows) => rows,
         Err(unreadable) if unreadable.locked => {
-            inner.unread = Some(unreadable.said);
-            return;
+            inner.unread.insert(instance.to_owned(), unreadable.said);
+            return None;
         }
         Err(unreadable) => {
-            inner.loaded = true;
-            inner.unread = None;
-            let said = format!("{} The grid's hub still lists those pods as members under their NeoCloud names: remove them there and add the pods again here.", unreadable.said);
-            drop(inner);
-            with_stops(app, |record| {
-                record.note(said, true, yougori_grid::now());
-                ((), true)
-            }).await;
-            return;
+            inner.loaded.insert(instance.to_owned());
+            inner.unread.remove(instance);
+            return Some(format!("{} The grid's hub still lists those pods as members under their NeoCloud names: remove them there and add the pods again here.", unreadable.said));
         }
     };
-    inner.loaded = true;
-    inner.unread = None;
+    inner.loaded.insert(instance.to_owned());
+    inner.unread.remove(instance);
     for saved in rows {
-        let (membership, live) = match restore(&saved) {
+        let (membership, live) = match restore(instance, &saved) {
             Ok(membership) => (Some(membership), Live::default()),
             Err(error) => (None, Live { state: "error".into(), reason: unreadable(&error), ..Live::default() }),
         };
-        inner.members.insert(saved.environment_id.clone(), StandIn { saved, membership, live, worker: None, starting: None, jobs: Arc::default() });
+        inner.members.insert(saved.environment_id.clone(), StandIn { instance: instance.to_owned(), saved, membership, live, worker: None, starting: None, jobs: Arc::default() });
+    }
+    None
+}
+
+/// Reads the list of every grid on this computer not read yet.
+async fn ensure_loaded(app: &AppHandle) {
+    let wanted = instances::on_disk(&folder(app));
+    let rented = app.state::<RentedGpus>();
+    let mut inner = rented.inner.lock().await;
+    let mut notes = Vec::new();
+    let unread: Vec<String> = wanted.into_iter().filter(|instance| !inner.loaded.contains(instance)).collect();
+    for instance in &unread {
+        let read = crate::rented_gpu::read_kept(&path(app, instance), yougori_grid::now(), "its list of the rented GPUs in the grid");
+        notes.extend(read_list(&mut inner, instance, read));
+    }
+    drop(inner);
+    for said in notes {
+        with_stops(app, |record| {
+            record.note(said, true, yougori_grid::now());
+            ((), true)
+        }).await;
     }
 }
 
-/// Why a pod may not join this grid, or nothing when it may. `worker` names a Swarm worker that
-/// runs its model on the pod: a rented GPU serves the grid or one worker, never both.
-fn refusal(members: usize, already: bool, pod: Option<&Pod>, worker: Option<&str>) -> Option<String> {
-    if already {
-        return Some("This pod is already in the grid.".into());
+/// Where a pod is on this computer now, as adding it to a grid sees it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Already {
+    No,
+    /// In the grid it is being added to.
+    Here,
+    /// In another grid on this computer.
+    Elsewhere,
+}
+
+/// Why a pod may not join this grid, or nothing when it may. `members` counts this grid's pods.
+/// `worker` names a Swarm worker that runs its model on the pod: a rented GPU serves one grid or
+/// one worker, never two.
+fn refusal(members: usize, already: Already, pod: Option<&Pod>, worker: Option<&str>) -> Option<String> {
+    match already {
+        Already::Here => return Some("This pod is already in the grid.".into()),
+        Already::Elsewhere => return Some("This pod already works in another grid on this computer. Remove it there first, or choose another pod.".into()),
+        Already::No => {}
     }
     let Some(pod) = pod else {
         return Some("That NeoCloud pod no longer exists. Refresh the list and choose another.".into());
@@ -371,6 +413,18 @@ fn refusal(members: usize, already: bool, pod: Option<&Pod>, worker: Option<&str
         return Some(format!("A grid takes at most {MAX} rented GPUs, each billed by the hour. Remove one before adding another."));
     }
     None
+}
+
+fn already(inner: &Inner, instance: &str, id: &str) -> Already {
+    match inner.members.get(id) {
+        None => Already::No,
+        Some(member) if member.instance == instance => Already::Here,
+        Some(_) => Already::Elsewhere,
+    }
+}
+
+fn count_in(inner: &Inner, instance: &str) -> usize {
+    inner.members.values().filter(|member| member.instance == instance).count()
 }
 
 /// What a check-in answer means for a rented pod.
@@ -441,13 +495,13 @@ async fn forget(app: &AppHandle, id: &str, notice: Option<&str>) {
         if let Some(starting) = member.starting.take() {
             starting.abort();
         }
-        let _ = secrets::delete_secret(&token_key(&member.saved.member_id));
-        crate::security::record(Event::new("grid.neocloud.removed").text("grid", &member.saved.grid_name).text("pod", id));
+        let _ = secrets::delete_secret(&token_key(&member.instance, &member.saved.member_id));
+        crate::security::record(Event::new("grid.neocloud.removed").text("instance", &member.instance).text("grid", &member.saved.grid_name).text("pod", id));
+        let _ = save(app, &inner, &member.instance);
     }
     if let Some(notice) = notice {
         inner.notice = Some(notice.to_owned());
     }
-    let _ = save(app, &inner);
 }
 
 async fn set_live(app: &AppHandle, id: &str, change: impl FnOnce(&mut StandIn)) {
@@ -478,7 +532,8 @@ async fn step(app: &AppHandle, id: &str, owed: bool) {
     let (membership, live) = {
         let mut inner = rented.inner.lock().await;
         let Some(member) = inner.members.get_mut(id) else { return };
-        (retry_membership(member, restore), member.live.clone())
+        let instance = member.instance.clone();
+        (retry_membership(member, |saved| restore(&instance, saved)), member.live.clone())
     };
     let Some(pod) = pod(app, id) else {
         // NeoCloud's record no longer shows the pod's node, which NeoCloud allows once the pod is
@@ -656,6 +711,15 @@ async fn follow(app: &AppHandle, id: &str, pod: &Pod, membership: Membership, as
     }).await;
 }
 
+/// Each grid's pods, by the grid on this computer they work in.
+fn by_grid(inner: &Inner) -> BTreeMap<String, Vec<String>> {
+    let mut grids: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (id, member) in &inner.members {
+        grids.entry(member.instance.clone()).or_default().push(id.clone());
+    }
+    grids
+}
+
 async fn tick(app: &AppHandle) {
     ensure_loaded(app).await;
     // Owed stops finish on their own, so a slow RunPod call never delays a check-in.
@@ -667,34 +731,48 @@ async fn tick(app: &AppHandle) {
             settle_owed(&app).await;
         });
     }
-    let ids: Vec<String> = app.state::<RentedGpus>().inner.lock().await.members.keys().cloned().collect();
-    if ids.is_empty() {
+    let grids = by_grid(&*app.state::<RentedGpus>().inner.lock().await);
+    if grids.is_empty() {
         return;
     }
-    if hosting(app).await == Hosting::No {
-        // No grid runs on this computer now (deleted, or moved aside by a rollout): nothing can
-        // give these pods work, so none is left billing. Their stops are owed here and sent by the
-        // settle pass, never inside this loop. They stay listed, to remove here or to serve again
-        // once the grid runs and their person starts them.
+    let several = crate::grid::hub_instances(app).await.len() > 1;
+    let mut checking = Vec::new();
+    let mut owed_any = false;
+    for (instance, ids) in grids {
+        if hosting(app, &instance).await != Hosting::No {
+            checking.extend(ids);
+            continue;
+        }
+        // This grid's hub does not run on this computer now (deleted, or moved aside by a
+        // rollout): nothing can give these pods work, so none is left billing. Their stops are
+        // owed here and sent by the settle pass, never inside this loop. They stay listed, to
+        // remove here or to serve again once the grid runs and their person starts them.
         let workers = crate::swarm::rented::in_use(app).await;
-        let (ids, owed_now) = owe_all(app, &workers).await;
-        let owed: std::collections::BTreeSet<String> = with_stops(app, |record| (record.pods.keys().cloned().collect(), false)).await;
+        let (ids, owed_now) = owe_all(app, &workers, Some(&instance)).await;
+        let owed: BTreeSet<String> = with_stops(app, |record| (record.pods.keys().cloned().collect(), false)).await;
+        let text = if several {
+            "The grid this pod worked in no longer runs on this computer, so this pod is stopped. Remove it here, or start it in NeoCloud once that grid runs again."
+        } else {
+            "No grid runs on this computer, so this pod is stopped. Remove it here, or start it in NeoCloud once the grid runs again."
+        };
         for id in &ids {
-            let (state, text) = waiting_status(owed.contains(id), workers.get(id).map(String::as_str), "No grid runs on this computer, so this pod is stopped. Remove it here, or start it in NeoCloud once the grid runs again.");
+            let (state, text) = waiting_status(owed.contains(id), workers.get(id).map(String::as_str), text);
             set_live(app, id, |member| status(member, state, text)).await;
         }
-        let rented = app.state::<RentedGpus>();
-        rented.inner.lock().await.notice = Some("No grid runs on this computer, so its rented GPUs are stopped.".into());
-        // Only for a stop owed just now: the settle pass starts at the top of the next tick.
-        if owed_now {
-            rented.wake.notify_one();
-        }
+        app.state::<RentedGpus>().inner.lock().await.notice = Some(if several { "A grid that no longer runs on this computer had rented GPUs, so they are stopped." } else { "No grid runs on this computer, so its rented GPUs are stopped." }.into());
+        owed_any |= owed_now;
+    }
+    // Only for a stop owed just now: the settle pass starts at the top of the next tick.
+    if owed_any {
+        app.state::<RentedGpus>().wake.notify_one();
+    }
+    if checking.is_empty() {
         return;
     }
-    let owed: std::collections::BTreeSet<String> = with_stops(app, |record| (record.pods.keys().cloned().collect(), false)).await;
+    let owed: BTreeSet<String> = with_stops(app, |record| (record.pods.keys().cloned().collect(), false)).await;
     // Each pod checks in on its own: one slow pod must not keep the others past the hub's
     // online window.
-    futures_util::future::join_all(ids.iter().map(|id| step(app, id, owed.contains(id)))).await;
+    futures_util::future::join_all(checking.iter().map(|id| step(app, id, owed.contains(id)))).await;
 }
 
 pub(crate) fn start(app: &AppHandle) {
@@ -723,8 +801,8 @@ fn stops(id: &str, workers: &BTreeMap<String, String>) -> bool {
     !workers.contains_key(id)
 }
 
-/// The pods in the grid this computer hosts, which Swarm leaves alone.
-pub(crate) async fn member_pods(app: &AppHandle) -> std::collections::BTreeSet<String> {
+/// The pods in every grid this computer hosts, which Swarm leaves alone.
+pub(crate) async fn member_pods(app: &AppHandle) -> BTreeSet<String> {
     ensure_loaded(app).await;
     app.state::<RentedGpus>().inner.lock().await.members.keys().cloned().collect()
 }
@@ -749,31 +827,34 @@ fn waiting_status(owed: bool, swarm: Option<&str>, reason: &str) -> (&'static st
     }
 }
 
-/// Owes a stop for every billing pod in the grid not owed one already, except one a Swarm worker
-/// runs its model on, and stops their workers. Returns every pod in the grid, and whether anything
-/// new is owed. A stop already owed is left as it is, so its count of unanswered checks goes on.
-async fn owe_all(app: &AppHandle, workers: &BTreeMap<String, String>) -> (Vec<String>, bool) {
+/// Owes a stop for every billing pod in `grid` (every grid when `None`) not owed one already,
+/// except one a Swarm worker runs its model on, and stops their workers. Returns every pod in
+/// those grids, and whether anything new is owed. A stop already owed is left as it is, so its
+/// count of unanswered checks goes on.
+async fn owe_all(app: &AppHandle, workers: &BTreeMap<String, String>, grid: Option<&str>) -> (Vec<String>, bool) {
     ensure_loaded(app).await;
     let ids: Vec<String> = {
         let rented = app.state::<RentedGpus>();
         let mut inner = rented.inner.lock().await;
-        for member in inner.members.values_mut() {
+        let mut ids = Vec::new();
+        for (id, member) in inner.members.iter_mut().filter(|(_, member)| grid.is_none_or(|grid| member.instance == grid)) {
             member.stop_worker();
+            ids.push(id.clone());
         }
-        inner.members.keys().cloned().collect()
+        ids
     };
-    let owed: std::collections::BTreeSet<String> = with_stops(app, |record| (record.pods.iter().filter(|(_, entry)| entry.stop).map(|(id, _)| id.clone()).collect(), false)).await;
+    let owed: BTreeSet<String> = with_stops(app, |record| (record.pods.iter().filter(|(_, entry)| entry.stop).map(|(id, _)| id.clone()).collect(), false)).await;
     let targets: Vec<String> = ids.iter().filter(|id| !owed.contains(*id) && stops(id, workers) && pod(app, id).is_some_and(|pod| billing(&pod.state))).cloned().collect();
     owe(app, &targets).await;
     (ids, !targets.is_empty())
 }
 
-/// Stops every rented pod in the grid, all at once; they stay in it, offline. Each stop is owed
-/// first, so one that fails is tried again until NeoCloud confirms it. Returns the ones that could
-/// not be stopped, and how many NeoCloud still shows stopping.
-async fn stop_all(app: &AppHandle, reason: &str) -> (Vec<String>, usize) {
+/// Stops every rented pod in `grid` (in every grid when `None`), all at once; they stay in it,
+/// offline. Each stop is owed first, so one that fails is tried again until NeoCloud confirms it.
+/// Returns the ones that could not be stopped, and how many NeoCloud still shows stopping.
+async fn stop_all(app: &AppHandle, reason: &str, grid: Option<&str>) -> (Vec<String>, usize) {
     let workers = crate::swarm::rented::in_use(app).await;
-    let (ids, _) = owe_all(app, &workers).await;
+    let (ids, _) = owe_all(app, &workers, grid).await;
     let owed: Vec<String> = with_stops(app, |record| (record.pods.iter().filter(|(_, entry)| entry.stop).map(|(id, _)| id.clone()).collect(), false)).await;
     let targets: Vec<(String, String)> = ids.iter().filter(|id| owed.contains(id)).map(|id| (id.clone(), OWNER.to_owned())).collect();
     let results: BTreeMap<String, Result<Stopped, String>> = futures_util::future::join_all(targets.iter().map(|(id, _)| async move { (id.clone(), stop_owed(app, id, false).await) })).await.into_iter().collect();
@@ -792,10 +873,33 @@ async fn stop_all(app: &AppHandle, reason: &str) -> (Vec<String>, usize) {
     (failed, pending)
 }
 
+/// The grid on this computer an ID names, as the rented GPUs know it: an instance key, a hub's
+/// grid ID, or the grid ID a pod saved.
+async fn grid_of(app: &AppHandle, id: &str) -> Result<String, String> {
+    let id = id.trim();
+    if let Some((instance, _, _)) = crate::grid::hub_instances(app).await.into_iter().find(|(instance, grid, _)| instance == id || grid.as_deref() == Some(id)) {
+        return Ok(instance);
+    }
+    let rented = app.state::<RentedGpus>();
+    let inner = rented.inner.lock().await;
+    inner
+        .members
+        .values()
+        .find(|member| member.instance == id || member.saved.grid_id == id)
+        .map(|member| member.instance.clone())
+        .ok_or_else(|| format!("No Neo Grid on this computer has the ID {id}. `yougori grid status` lists each one with its ID."))
+}
+
 /// Stop all, as the dashboard and the command line both report it. A warning means a pod may
-/// still be billing.
-pub(crate) async fn stop_all_value(app: &AppHandle) -> Result<Value, String> {
-    let (failed, pending) = stop_all(app, "Stopped from this page. Start it in NeoCloud to serve the grid again.").await;
+/// still be billing. With no grid named it stops the rented GPUs of every grid on this computer:
+/// a control that ends hourly charges never refuses for being unclear.
+pub(crate) async fn stop_all_value(app: &AppHandle, grid_id: Option<&str>) -> Result<Value, String> {
+    ensure_loaded(app).await;
+    let grid = match grid_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => Some(grid_of(app, id).await?),
+        None => None,
+    };
+    let (failed, pending) = stop_all(app, "Stopped from this page. Start it in NeoCloud to serve the grid again.", grid.as_deref()).await;
     if failed.is_empty() && pending > 0 {
         Ok(json!({"message": format!("Every rented GPU in the grid was sent a stop. NeoCloud still shows {pending} of them stopping; Yougori checks them again shortly. They stay in the grid, offline, until you start them in NeoCloud.")}))
     } else if failed.is_empty() {
@@ -809,14 +913,14 @@ pub(crate) async fn stop_all_value(app: &AppHandle) -> Result<Value, String> {
 /// claims is stopped too: the shared gate makes a second stop of a pod harmless, while leaving it
 /// to the other side let a pod both sides claimed go unstopped by either.
 fn quit_targets(members: &[String], owed: &[String], billing_now: impl Fn(&str) -> bool) -> Vec<String> {
-    let targets: std::collections::BTreeSet<&String> = members.iter().chain(owed).filter(|id| billing_now(id)).collect();
+    let targets: BTreeSet<&String> = members.iter().chain(owed).filter(|id| billing_now(id)).collect();
     targets.into_iter().cloned().collect()
 }
 
-/// Yougori is quitting with its environments: every rented pod that may be billing is stopped.
-/// The stops are written down first and then all sent at once, because each is a RunPod call of
-/// up to two minutes and quitting has thirty seconds. One that does not finish is finished at
-/// the next start, and the page says how each went.
+/// Yougori is quitting with its environments: every rented pod that may be billing is stopped,
+/// in every grid. The stops are written down first and then all sent at once, because each is a
+/// RunPod call of up to two minutes and quitting has thirty seconds. One that does not finish is
+/// finished at the next start, and the page says how each went.
 pub(crate) async fn stop_on_quit(app: &AppHandle) {
     ensure_loaded(app).await;
     let members: Vec<String> = {
@@ -832,9 +936,23 @@ pub(crate) async fn stop_on_quit(app: &AppHandle) {
     crate::rented_gpu::stop_all_owed(app, &app.state::<RentedGpus>().stops, &stops_path(app), yougori_grid::now(), &targets, true).await;
 }
 
-pub(crate) async fn status_value(app: &AppHandle) -> Result<Value, String> {
+/// The rented GPUs of the grid `grid_id` names, or of every grid on this computer when none is
+/// named. Each pod says which grid it works in (`instance`, `gridId`); `grids` lists the hubs.
+pub(crate) async fn status_value(app: &AppHandle, grid_id: Option<&str>) -> Result<Value, String> {
     ensure_loaded(app).await;
-    let hosting = hosting(app).await == Hosting::Yes;
+    let scope = match grid_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => Some(grid_of(app, id).await?),
+        None => None,
+    };
+    let mut grids = Vec::new();
+    let mut hosting_any = false;
+    for (instance, grid, name) in crate::grid::hub_instances(app).await {
+        let runs = hosting(app, &instance).await == Hosting::Yes;
+        if scope.as_deref().is_none_or(|scope| scope == instance) {
+            hosting_any |= runs;
+        }
+        grids.push(json!({"instance": instance, "gridId": grid, "name": name, "hosting": runs}));
+    }
     let notices = crate::rented_gpu::ledger_notices(&app.state::<RentedGpus>().stops, &stops_path(app), yougori_grid::now()).await;
     // Read before the grid's lock is taken: Swarm's own lock is never held inside it. Unreadable,
     // the list may offer a worker's pod, which adding refuses.
@@ -842,7 +960,7 @@ pub(crate) async fn status_value(app: &AppHandle) -> Result<Value, String> {
     let rented = app.state::<RentedGpus>();
     let inner = rented.inner.lock().await;
     let (mut hourly, mut unpriced) = (0.0, 0);
-    let members: Vec<Value> = inner.members.iter().map(|(id, member)| {
+    let members: Vec<Value> = inner.members.iter().filter(|(_, member)| scope.as_deref().is_none_or(|scope| member.instance == scope)).map(|(id, member)| {
         let pod = pod(app, id);
         if let Some(pod) = pod.as_ref().filter(|pod| billing(&pod.state)) {
             // A price NeoCloud did not record is counted apart, never as nothing.
@@ -852,6 +970,8 @@ pub(crate) async fn status_value(app: &AppHandle) -> Result<Value, String> {
         json!({
             "environmentId": id,
             "memberId": member.saved.member_id,
+            "instance": member.instance,
+            "gridId": member.saved.grid_id,
             "name": pod.as_ref().map(|pod| pod.name.clone()).unwrap_or_else(|| id.clone()),
             "gpu": pod.as_ref().map(|pod| pod.gpu.clone()),
             "gpuCount": pod.as_ref().map(|pod| pod.gpu_count),
@@ -868,27 +988,30 @@ pub(crate) async fn status_value(app: &AppHandle) -> Result<Value, String> {
         .map(|(id, pod)| json!({"environmentId": id, "name": pod.name, "gpu": pod.gpu, "gpuCount": pod.gpu_count, "hourlyUsd": pod.hourly_usd, "podState": pod.state}))
         .collect();
     let mut notices = notices;
-    notices.extend(inner.unread.iter().map(|text| crate::rented_gpu::Notice { at: yougori_grid::now(), text: text.clone(), warning: true }));
-    Ok(json!({"hosting": hosting, "max": MAX, "hourlyUsd": hourly, "unpriced": unpriced, "members": members, "candidates": candidates, "notice": inner.notice, "notices": notices}))
+    notices.extend(inner.unread.iter().filter(|(instance, _)| scope.as_deref().is_none_or(|scope| scope == instance.as_str())).map(|(_, text)| crate::rented_gpu::Notice { at: yougori_grid::now(), text: text.clone(), warning: true }));
+    Ok(json!({"hosting": hosting_any, "max": MAX, "hourlyUsd": hourly, "unpriced": unpriced, "members": members, "candidates": candidates, "notice": inner.notice, "notices": notices, "grids": grids}))
 }
 
-pub(crate) async fn add(app: &AppHandle, id: &str) -> Result<Value, String> {
+pub(crate) async fn add(app: &AppHandle, grid_id: Option<&str>, id: &str) -> Result<Value, String> {
     ensure_loaded(app).await;
-    if hosting(app).await != Hosting::Yes {
+    let instance = crate::grid::choose_hub(app, grid_id).await?;
+    if hosting(app, &instance).await != Hosting::Yes {
         return Err("Host a grid on this computer first; rented GPUs join the grid it hosts.".into());
     }
-    let (count, already) = {
+    // A grid created a moment ago has no list read yet.
+    ensure_loaded(app).await;
+    let (count, already_in) = {
         let rented = app.state::<RentedGpus>();
         let inner = rented.inner.lock().await;
-        (inner.members.len(), inner.members.contains_key(id))
+        (count_in(&inner, &instance), already(&inner, &instance, id))
     };
     let pod = pod(app, id);
     let workers = crate::swarm::rented::in_use_checked(app).await.map_err(|error| format!("Yougori could not read which rented GPUs Swarm's workers use ({error}), so it cannot tell whether one uses this pod. Nothing was changed; try again in a moment."))?;
-    if let Some(reason) = refusal(count, already, pod.as_ref(), workers.get(id).map(String::as_str)) {
+    if let Some(reason) = refusal(count, already_in, pod.as_ref(), workers.get(id).map(String::as_str)) {
         return Err(reason);
     }
     let pod = pod.ok_or("That NeoCloud pod no longer exists")?;
-    let (made, address, company) = crate::grid::with_hub(app, |hub| {
+    let (made, address, company) = crate::grid::with_hub_in(app, Some(&instance), |hub| {
         let record = hub.record();
         let address = SocketAddr::new(record.address, hub.address().port());
         Ok((hub.preregister_member(&pod.name, PLATFORM)?, address, record.name))
@@ -896,13 +1019,13 @@ pub(crate) async fn add(app: &AppHandle, id: &str) -> Result<Value, String> {
     let member_id = made["memberId"].as_str().ok_or("The hub did not admit the pod")?.to_owned();
     let token = made["memberToken"].as_str().ok_or("The hub did not admit the pod")?.to_owned();
     let fingerprint = made["fingerprint"].as_str().unwrap_or_default().to_owned();
-    let undo = |app: AppHandle, member_id: String| async move {
-        let _ = crate::grid::with_hub(&app, |hub| hub.remove_member(&member_id)).await;
+    let undo = |app: AppHandle, instance: String, member_id: String| async move {
+        let _ = crate::grid::with_hub_in(&app, Some(&instance), |hub| hub.remove_member(&member_id)).await;
     };
     let joined = match member::adopt(&company, HubAddress::Direct(address), &fingerprint, &member_id, &token).await {
         Ok(joined) => joined,
         Err(error) => {
-            undo(app.clone(), member_id).await;
+            undo(app.clone(), instance, member_id).await;
             return Err(format!("The grid could not admit the pod ({error}). Nothing was changed; try again."));
         }
     };
@@ -918,32 +1041,33 @@ pub(crate) async fn add(app: &AppHandle, id: &str) -> Result<Value, String> {
     let rented = app.state::<RentedGpus>();
     let mut inner = rented.inner.lock().await;
     // A second add of the same pod, or one past the cap, may have finished meanwhile.
-    if let Some(reason) = refusal(inner.members.len(), inner.members.contains_key(id), Some(&pod), workers.get(id).map(String::as_str)) {
+    if let Some(reason) = refusal(count_in(&inner, &instance), already(&inner, &instance, id), Some(&pod), workers.get(id).map(String::as_str)) {
         drop(inner);
-        undo(app.clone(), member_id).await;
+        undo(app.clone(), instance, member_id).await;
         return Err(reason);
     }
-    if let Err(error) = secrets::store(&token_key(&member_id), &joined.token) {
+    let key = token_key(&instance, &member_id);
+    if let Err(error) = secrets::store(&key, &joined.token) {
         drop(inner);
-        undo(app.clone(), member_id).await;
+        undo(app.clone(), instance, member_id).await;
         return Err(format!("The pod's grid membership could not be saved in the OS vault ({error}). Nothing was changed."));
     }
-    inner.members.insert(id.to_owned(), StandIn { saved: saved.clone(), membership: Some(joined.membership), live: Live::default(), worker: None, starting: None, jobs: Arc::default() });
+    inner.members.insert(id.to_owned(), StandIn { instance: instance.clone(), saved: saved.clone(), membership: Some(joined.membership), live: Live::default(), worker: None, starting: None, jobs: Arc::default() });
     inner.notice = None;
-    if let Err(error) = save(app, &inner) {
+    if let Err(error) = save(app, &inner, &instance) {
         inner.members.remove(id);
         drop(inner);
-        let _ = secrets::delete_secret(&token_key(&member_id));
-        undo(app.clone(), member_id).await;
+        let _ = secrets::delete_secret(&key);
+        undo(app.clone(), instance, member_id).await;
         return Err(format!("The pod could not be saved on this computer ({error}). Nothing was changed."));
     }
     drop(inner);
     // Added back on purpose: a stop still owed from when it left is not finished now. One already on
     // its way finishes first and says so on this page.
     crate::rented_gpu::withdraw_stop(&rented.stops, &stops_path(app), id, yougori_grid::now()).await;
-    crate::security::record(Event::new("grid.neocloud.added").text("grid", &saved.grid_name).text("pod", id));
+    crate::security::record(Event::new("grid.neocloud.added").text("instance", &instance).text("grid", &saved.grid_name).text("pod", id));
     rented.wake.notify_one();
-    Ok(json!({"added": id, "message": format!("{} joined the grid. Assign it a model under Models; it serves once the model is ready.", pod.name)}))
+    Ok(json!({"added": id, "instance": instance, "gridId": saved.grid_id, "message": format!("{} joined the grid. Assign it a model under Models; it serves once the model is ready.", pod.name)}))
 }
 
 /// Whether a pod leaving the grid may be billing. One NeoCloud's record does not show is never taken
@@ -952,18 +1076,27 @@ fn may_bill(pod: Option<&Pod>) -> bool {
     pod.is_none_or(|pod| billing(&pod.state))
 }
 
-pub(crate) async fn remove(app: &AppHandle, id: &str) -> Result<Value, String> {
+/// Takes a pod out of the grid it works in. A pod is in one grid at a time, so its ID says which;
+/// `grid_id`, when given, must be that grid.
+pub(crate) async fn remove(app: &AppHandle, grid_id: Option<&str>, id: &str) -> Result<Value, String> {
     ensure_loaded(app).await;
-    let membership = {
+    let wanted = match grid_id.map(str::trim).filter(|grid| !grid.is_empty()) {
+        Some(grid) => Some(grid_of(app, grid).await?),
+        None => None,
+    };
+    let (instance, membership) = {
         let rented = app.state::<RentedGpus>();
         let inner = rented.inner.lock().await;
         let member = inner.members.get(id).ok_or("That pod is not in the grid")?;
-        member.membership.clone().map(|membership| (membership, member.saved.member_id.clone()))
+        if wanted.as_deref().is_some_and(|wanted| wanted != member.instance) {
+            return Err("That pod works in another grid on this computer. `yougori grids models gpus` shows which grid each pod is in.".into());
+        }
+        (member.instance.clone(), member.membership.clone().map(|membership| (membership, member.saved.member_id.clone())))
     };
     if let Some((membership, member_id)) = membership {
         if membership.leave().await.is_err() {
             // The hub is this computer's own; take the member out there directly.
-            let _ = crate::grid::with_hub(app, |hub| hub.remove_member(&member_id)).await;
+            let _ = crate::grid::with_hub_in(app, Some(&instance), |hub| hub.remove_member(&member_id)).await;
         }
     }
     // Owed before it leaves the list, so a stop that fails is still tracked and tried again.
@@ -984,7 +1117,8 @@ pub(crate) async fn remove(app: &AppHandle, id: &str) -> Result<Value, String> {
     }
 }
 
-/// The rented GPUs as the dashboard drives them, only from the main window.
+/// The rented GPUs as the dashboard drives them, only from the main window. `grid_id` is optional:
+/// with one grid on this computer nothing changes.
 pub(crate) mod commands {
     use super::*;
     use crate::WebviewWindow;
@@ -994,28 +1128,29 @@ pub(crate) mod commands {
     }
 
     #[tauri::command]
-    pub async fn grid_neocloud_status(app: AppHandle, window: WebviewWindow) -> Result<Value, String> {
+    pub async fn grid_neocloud_status(app: AppHandle, window: WebviewWindow, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        status_value(&app).await
+        status_value(&app, grid_id.as_deref()).await
     }
 
     #[tauri::command]
-    pub async fn grid_neocloud_add(app: AppHandle, window: WebviewWindow, environment_id: String) -> Result<Value, String> {
+    pub async fn grid_neocloud_add(app: AppHandle, window: WebviewWindow, environment_id: String, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        add(&app, &environment_id).await
+        add(&app, grid_id.as_deref(), &environment_id).await
     }
 
     #[tauri::command]
-    pub async fn grid_neocloud_remove(app: AppHandle, window: WebviewWindow, environment_id: String) -> Result<Value, String> {
+    pub async fn grid_neocloud_remove(app: AppHandle, window: WebviewWindow, environment_id: String, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        remove(&app, &environment_id).await
+        remove(&app, grid_id.as_deref(), &environment_id).await
     }
 
-    /// Stops every rented pod in the grid; they stay in it, offline, until started in NeoCloud.
+    /// Stops every rented pod in the grid (every grid, with none named); they stay in it,
+    /// offline, until started in NeoCloud.
     #[tauri::command]
-    pub async fn grid_neocloud_stop_all(app: AppHandle, window: WebviewWindow) -> Result<Value, String> {
+    pub async fn grid_neocloud_stop_all(app: AppHandle, window: WebviewWindow, grid_id: Option<String>) -> Result<Value, String> {
         main_window(&window)?;
-        stop_all_value(&app).await
+        stop_all_value(&app, grid_id.as_deref()).await
     }
 }
 
@@ -1039,25 +1174,25 @@ mod tests {
     #[test]
     fn the_cap_holds_at_eight_rented_gpus() {
         assert_eq!(MAX, 8);
-        assert!(refusal(MAX - 1, false, Some(&gpu_pod("Running")), None).is_none());
-        let refused = refusal(MAX, false, Some(&gpu_pod("Running")), None).expect("the ninth pod is refused");
+        assert!(refusal(MAX - 1, Already::No, Some(&gpu_pod("Running")), None).is_none());
+        let refused = refusal(MAX, Already::No, Some(&gpu_pod("Running")), None).expect("the ninth pod is refused");
         assert!(refused.contains("at most 8"), "{refused}");
     }
 
     #[test]
     fn only_a_live_gpu_pod_may_join_once() {
-        assert!(refusal(0, true, Some(&gpu_pod("Running")), None).is_some_and(|reason| reason.contains("already")));
-        assert!(refusal(0, false, None, None).is_some_and(|reason| reason.contains("no longer exists")));
+        assert!(refusal(0, Already::Here, Some(&gpu_pod("Running")), None).is_some_and(|reason| reason.contains("already")));
+        assert!(refusal(0, Already::No, None, None).is_some_and(|reason| reason.contains("no longer exists")));
         let cpu = Pod { serves: false, ..gpu_pod("Running") };
-        assert!(refusal(0, false, Some(&cpu), None).is_some_and(|reason| reason.contains("GPU pods")));
-        assert!(refusal(0, false, Some(&gpu_pod("Delete requested — verification pending")), None).is_some_and(|reason| reason.contains("being deleted")));
+        assert!(refusal(0, Already::No, Some(&cpu), None).is_some_and(|reason| reason.contains("GPU pods")));
+        assert!(refusal(0, Already::No, Some(&gpu_pod("Delete requested — verification pending")), None).is_some_and(|reason| reason.contains("being deleted")));
         // A stopped pod may join; it serves once its person starts it in NeoCloud.
-        assert!(refusal(0, false, Some(&gpu_pod("Stopped")), None).is_none());
+        assert!(refusal(0, Already::No, Some(&gpu_pod("Stopped")), None).is_none());
     }
 
     #[test]
     fn a_swarm_workers_pod_never_joins_the_grid_or_is_stopped_by_it() {
-        let refused = refusal(0, false, Some(&gpu_pod("Running")), Some("Night shift")).expect("a worker's pod is refused");
+        let refused = refusal(0, Already::No, Some(&gpu_pod("Running")), Some("Night shift")).expect("a worker's pod is refused");
         assert!(refused.contains("Swarm worker Night shift"), "{refused}");
         let workers = BTreeMap::from([("pod-b".to_owned(), "Night shift".to_owned())]);
         assert!(stops("pod-a", &workers));
@@ -1080,7 +1215,7 @@ mod tests {
             environment_id: id.into(), member_id: format!("member-{id}"), grid_id: "grid-1".into(), grid_name: "Acme".into(),
             address: "127.0.0.1:7462".into(), certificate: String::new(), added_at: 0,
         };
-        StandIn { saved, membership: None, live: Live::default(), worker: None, starting: None, jobs: Arc::default() }
+        StandIn { instance: instances::DEFAULT.into(), saved, membership: None, live: Live::default(), worker: None, starting: None, jobs: Arc::default() }
     }
 
     #[test]
@@ -1148,12 +1283,12 @@ mod tests {
     #[test]
     fn a_pod_neocloud_has_not_settled_cannot_join_the_grid() {
         for state in ["Creating", "Needs inspection", "Created — inspect to verify"] {
-            let refused = refusal(0, false, Some(&gpu_pod(state)), None).unwrap_or_default();
+            let refused = refusal(0, Already::No, Some(&gpu_pod(state)), None).unwrap_or_default();
             assert!(refused.contains("still being created"), "{state}: {refused}");
         }
         // Without a provider ID it cannot be stopped from here, so it cannot join.
         let unknown = Pod { known: false, ..gpu_pod("Running") };
-        assert!(refusal(0, false, Some(&unknown), None).is_some_and(|reason| reason.contains("still being created")));
+        assert!(refusal(0, Already::No, Some(&unknown), None).is_some_and(|reason| reason.contains("still being created")));
     }
 
     #[test]

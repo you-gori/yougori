@@ -51,11 +51,11 @@ request = urllib.request.Request(
         "Content-Type": "application/json",
     },
 )
-with urllib.request.urlopen(request, timeout=120) as response:
+with urllib.request.urlopen(request, timeout=600) as response:
     result = json.load(response)
 print(result["choices"][0]["message"]["content"])
 \`\`\`
 
-Keep the request under 64 KiB, with at most 128 messages and 32,768 content characters. The model's context window may be smaller. The GPU serves one request at a time. For 401, check the key; for 429, wait and retry once; for a loading response, check Chat/startup logs before retrying. Shorten the conversation for context or GPU memory errors. Report persistent failures instead of looping.
+Keep the request under 64 KiB, with at most 128 messages and 32,768 content characters. The model's context window may be smaller. Updated GGUF and vLLM runners generate several requests together (four and eight by default); others answer one at a time. Up to 128 more wait in order for up to five minutes. Allow for queue time in your client timeout; 429 means the queue is full, and 504 means the wait or generation timed out. For 401, check the key; for 429, wait and retry once; for a loading response, check Chat/startup logs before retrying. Shorten the conversation for context or GPU memory errors. Report persistent failures instead of looping.
 `
 }

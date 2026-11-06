@@ -50,6 +50,16 @@ pub(super) fn is_control_method(method: &str) -> bool {
     )
 }
 
+/// Setup reads answer at once and are never journaled: `template logs --follow` polls
+/// `setup_operation`, and every poll would otherwise take a slot in the bounded job journal.
+/// Setup writes (`setup_apply`, `setup_action`, `setup_cancel`) stay journaled like any change.
+pub(super) fn is_setup_read(method: &str) -> bool {
+    matches!(
+        method,
+        "setup_capabilities" | "setup_validate" | "setup_plan" | "setup_list" | "setup_get" | "setup_operation" | "setup_export"
+    )
+}
+
 fn snapshot_stop_resource<'a>(method: &str, params: &'a Value) -> Option<&'a str> {
     if matches!(method, "restart_environment" | "delete_environment")
         || (method == "set_environment_status" && matches!(params["status"].as_str(), Some("stopped" | "paused")))
@@ -146,6 +156,19 @@ mod tests {
         assert!(exports.begin("env-snapshot-a").is_ok());
     }
     #[test]
+    fn model_preparation_cancels_only_before_environment_creation() {
+        let (progress, receiver) = tokio::sync::watch::channel(None);
+        let mut job = Job { method: "run_model".into(), progress: receiver, ..Job::default() };
+        assert!(!job.can_cancel());
+        progress.send_replace(Some(json!({"phase":"modelImport", "stage":"catalog", "cancellable":true})));
+        assert!(job.can_cancel());
+        progress.send_replace(Some(json!({"phase":"modelImportFinished", "cancellable":false})));
+        assert!(!job.can_cancel());
+        job.failed("YOUGORI_OPERATION_CANCELLED: model preparation cancelled".into());
+        assert_eq!(job.value(false)["status"], "cancelled");
+    }
+
+    #[test]
     fn snapshot_cancellation_is_available_only_during_export_and_retains_partial_outcome() {
         let (progress, measurement) = tokio::sync::watch::channel(None);
         let mut job = Job { method: "run_backup".into(), status: "running", progress: measurement, ..Job::default() };
@@ -200,6 +223,38 @@ mod tests {
         // Everything else still has its code guessed from its wording, exactly as before.
         job.failed("Copy target could not be written".into());
         assert_eq!(job.value(false)["errorDetails"]["code"], "operation_failed");
+    }
+    #[test]
+    fn a_setup_refusal_keeps_its_code_flag_and_resource_and_shows_only_its_sentence() {
+        let mut job = Job::default();
+        job.failed("YOUGORI_SETUP setup_busy retry setup-6f1c2a1e-1b55-4c55-9a64-2d4a0b5c3e10: Another change to this setup is in progress right now.".into());
+        assert_eq!(job.status, "failed");
+        assert_eq!(job.error.as_deref(), Some("Another change to this setup is in progress right now."));
+        let details = &job.value(false)["errorDetails"];
+        assert_eq!(details["code"], "setup_busy");
+        assert_eq!(details["retryable"], true);
+        assert_eq!(details["affectedResource"], "setup-6f1c2a1e-1b55-4c55-9a64-2d4a0b5c3e10");
+        assert_eq!(job.value(false)["outcome"], "not_started");
+        // The direct reply reads the same head off with the same reader.
+        let (said, direct) = crate::setups::wire_fault("YOUGORI_SETUP plan_expired final: Review the change again.").unwrap();
+        assert_eq!((said.as_str(), direct.code.as_str(), direct.retryable), ("Review the change again.", "plan_expired", false));
+    }
+
+    #[test]
+    fn setup_reads_answer_at_once_and_never_take_a_journal_slot() {
+        for read in ["setup_capabilities", "setup_validate", "setup_plan", "setup_list", "setup_get", "setup_operation", "setup_export"] {
+            assert!(is_setup_read(read), "{read}");
+            assert!(catalog::find(read).is_ok(), "{read} is in the CLI contract");
+        }
+        for write in ["setup_apply", "setup_action", "setup_cancel"] {
+            assert!(!is_setup_read(write), "{write} stays journaled");
+        }
+        // The immediate answer comes before any job is created or journaled.
+        let source = include_str!("queue.rs");
+        let submit = &source[source.find("async fn submit(").unwrap()..];
+        let immediate = submit.find("if is_setup_read(method.name)").unwrap();
+        let journaled = submit.find("let lane = if is_control_method").unwrap();
+        assert!(immediate < journaled);
     }
 
     #[tokio::test]
@@ -298,7 +353,7 @@ impl Default for Job {
 }
 impl Job {
     fn can_cancel(&self) -> bool {
-        self.cancellable || (matches!(self.method.as_str(), "create_snapshot" | "run_backup" | "export_local_backup")
+        self.cancellable || (self.method == "run_model" && self.progress.borrow().as_ref().is_some_and(|progress| progress["phase"] == "modelImport" && progress["cancellable"] == true)) || (matches!(self.method.as_str(), "create_snapshot" | "run_backup" | "export_local_backup")
             && self.progress.borrow().as_ref().is_some_and(|progress| {
                 progress["phase"] == "snapshotExport" && progress["cancellable"] == true
             }))
@@ -327,7 +382,9 @@ impl Job {
         // A refusal from the one grids door already carries its own code and its own sentence.
         // The code comes off here as it does on the direct reply, so what is recorded against
         // the work, and what a person is later shown, is the sentence and nothing else.
-        if let Some((said, details)) = yougori_cli::grids::fault::Fault::read(&error) {
+        if let Some((said, details)) = yougori_cli::grids::fault::Fault::read(&error)
+            .or_else(|| crate::setups::wire_fault(&error))
+        {
             self.status = "failed";
             self.error = Some(said);
             self.error_details = Some(details);
@@ -685,6 +742,10 @@ impl Control {
                 if let Some((said, details)) = yougori_cli::grids::fault::Fault::read(&error) {
                     return Response::failure_with_details(said, details);
                 }
+                // A setup refusal brings its own code the same way (setups::commands::FAULT).
+                if let Some((said, details)) = crate::setups::wire_fault(&error) {
+                    return Response::failure_with_details(said, details);
+                }
                 let mut details = ErrorDetails::from_message(&error);
                 details.affected_resource = resource;
                 if error.starts_with("YOUGORI_QUIESCING") {
@@ -791,7 +852,14 @@ impl Control {
         if method.name == "finish_app_close" {
             return dispatch::dispatch(&app, method.name, &request.params).await;
         }
-        if matches!(
+        // Sandbox status and plan are reads that answer at once: a status poll must not take
+        // a journal slot or wait behind a running command.
+        if method.name == "sandbox_vm"
+            && matches!(request.params["action"].as_str(), Some("status" | "plan" | "remote_control" | "remote_manage" | "remote"))
+        {
+            return dispatch::dispatch(&app, method.name, &request.params).await;
+        }
+        if is_setup_read(method.name) || matches!(
             method.name,
             "get_platform_state"
                 | "list_environment_windows"

@@ -1,0 +1,639 @@
+{
+  "formatVersion": 2,
+  "instance": "sandbox-grid",
+  "template": {
+    "name": "sandbox-grid",
+    "version": "1.0.0",
+    "formatVersion": 2,
+    "profile": "sandbox_grid"
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Create a grid",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.join",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Join a grid",
+      "permissions": []
+    },
+    {
+      "id": "grid.reuse_compute",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Reuse idle computers",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.worker_limits",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Limit what workers use",
+      "permissions": []
+    },
+    {
+      "id": "grid.availability",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Run only when computers are idle",
+      "permissions": []
+    },
+    {
+      "id": "people.team",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Just me, or a team",
+      "permissions": []
+    },
+    {
+      "id": "people.workspaces",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Workspaces",
+      "permissions": []
+    },
+    {
+      "id": "people.roles",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Roles",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "people.invites",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Invites",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "people.sso",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Single sign-on",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.lan",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Reach it on the local network",
+      "permissions": [
+        "Open a port the computers of your local network can reach."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "coordinator_address": "192.168.1.20",
+    "first_person": "yes",
+    "first_person_name": "Sam Example",
+    "first_person_username": "sam",
+    "grid_name": "Example Team",
+    "mode": "create",
+    "reach": "lan",
+    "share_availability": "always",
+    "share_cpu": "4",
+    "share_disk_gb": "120",
+    "share_gpu": "none",
+    "share_memory_gb": "8",
+    "share_mode": "custom",
+    "workspace_cpu": "2",
+    "workspace_disk_gb": "20",
+    "workspace_gpu": "no",
+    "workspace_memory_gb": "4",
+    "workspace_runtime": "container"
+  },
+  "secrets": {
+    "first_person_password": "hub-sandbox-grid-first_person_password",
+    "grid_password": "hub-sandbox-grid-grid_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "company",
+      "kind": "grid",
+      "title": "grid",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "coordinated by this computer",
+      "spec": {
+        "access": "lan",
+        "address": "192.168.1.20",
+        "coordinator": "this_computer",
+        "mode": "create",
+        "name": "Example Team",
+        "profile": "sandbox_grid",
+        "secrets": {
+          "join_password": "hub-sandbox-grid-grid_password"
+        }
+      },
+      "outputs": [
+        "realm_id",
+        "join_address",
+        "name",
+        "page",
+        "invitation"
+      ]
+    },
+    {
+      "id": "this_computer",
+      "kind": "compute_pool",
+      "title": "compute pool",
+      "dependsOn": [
+        "company"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "availability": "always",
+        "gpu": "none",
+        "grid": {
+          "resource": "company"
+        },
+        "limits": {
+          "cpu": 4.0,
+          "disk_gb": 120.0,
+          "memory_gb": 8.0
+        },
+        "local_user_first": true,
+        "source": "this_computer"
+      },
+      "outputs": [
+        "id",
+        "computers"
+      ]
+    },
+    {
+      "id": "workspaces",
+      "kind": "workspace_pool",
+      "title": "workspace pool",
+      "capability": "people.workspaces",
+      "dependsOn": [
+        "this_computer"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "allocation": "per_person",
+        "backup": false,
+        "cloud_fallback": false,
+        "compute": {
+          "resource": "this_computer"
+        },
+        "count": 1,
+        "gpu": false,
+        "parking": false,
+        "resources": {
+          "cpu": 2.0,
+          "disk_gb": 20.0,
+          "memory_gb": 4.0
+        },
+        "runtime": "container"
+      },
+      "outputs": [
+        "id",
+        "access_url"
+      ]
+    },
+    {
+      "id": "first_person",
+      "kind": "access_binding",
+      "title": "people and access",
+      "dependsOn": [
+        "company",
+        "workspaces"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "grid": {
+          "resource": "company"
+        },
+        "invitations": 0,
+        "mfa": false,
+        "people": "team",
+        "person": {
+          "display_name": "Sam Example",
+          "username": "sam"
+        },
+        "reset": 0,
+        "roles": [
+          "member"
+        ],
+        "secrets": {
+          "password": "hub-sandbox-grid-first_person_password"
+        },
+        "workspace_pool": {
+          "resource": "workspaces"
+        },
+        "workspaces": "individual"
+      },
+      "outputs": [
+        "id",
+        "join_method",
+        "page",
+        "invitation"
+      ]
+    }
+  ],
+  "order": [
+    "company",
+    "this_computer",
+    "workspaces",
+    "first_person"
+  ],
+  "steps": [
+    {
+      "title": "Invite people",
+      "detail": "Open the People view, add each person with a username and password, then send them the grid invite and their username privately. Each person runs this template with \"Open my workspace\"."
+    },
+    {
+      "title": "Add more computers",
+      "detail": "On another computer, run this template with \"Add this computer to a grid\" and paste the invite from the People view. Set what it may give in the Computers view."
+    },
+    {
+      "title": "Optional settings",
+      "detail": "In Settings you can add a parking bucket so workspaces move when no computer has room, and cloud fallback computers. Both can cost money with your provider."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "grid_name",
+      "label": "Grid",
+      "value": "{{outputs.company.name}}",
+      "private": false
+    },
+    {
+      "key": "join_address",
+      "label": "Coordinator address",
+      "value": "{{outputs.company.join_address}}",
+      "private": false
+    },
+    {
+      "key": "setup_page",
+      "label": "Grid page",
+      "value": "{{outputs.company.page}}",
+      "private": false
+    },
+    {
+      "key": "workspace",
+      "label": "First workspace",
+      "value": "{{outputs.workspaces.access_url}}",
+      "private": false
+    },
+    {
+      "key": "invite",
+      "label": "Grid invite",
+      "value": "{{outputs.company.invitation}}",
+      "private": true
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "computers",
+    "people",
+    "workspaces",
+    "images",
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "company",
+        "kind": "grid",
+        "title": "grid",
+        "placement": "coordinated by this computer"
+      },
+      {
+        "id": "this_computer",
+        "kind": "compute_pool",
+        "title": "compute pool",
+        "placement": "this computer"
+      },
+      {
+        "id": "workspaces",
+        "kind": "workspace_pool",
+        "title": "workspace pool",
+        "placement": "this computer"
+      },
+      {
+        "id": "first_person",
+        "kind": "access_binding",
+        "title": "people and access",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [],
+    "permissions": [
+      "company starts a Sandbox Grid that other computers can join.",
+      "first_person lets other people in, with the roles member.",
+      "Create a grid: Enroll computers into a grid.",
+      "Reuse idle computers: Enroll computers into a grid.",
+      "A website or API: Run containers on this computer.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "mode",
+        "question": "What do you want to do?",
+        "answer": "create",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "grid_name",
+        "question": "What is the company or team called?",
+        "answer": "Example Team",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "coordinator_address",
+        "question": "What is this computer's private network address?",
+        "answer": "192.168.1.20",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "reach",
+        "question": "Where can people and computers reach the grid from?",
+        "answer": "lan",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "grid_password",
+        "question": "Choose the company password computers use to join",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "share_mode",
+        "question": "How much of this computer may workspaces use?",
+        "answer": "custom",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "share_cpu",
+        "question": "Processor cores for workspaces",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "share_memory_gb",
+        "question": "Memory for workspaces, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "share_disk_gb",
+        "question": "Disk for workspaces, in GB",
+        "answer": "120",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "share_gpu",
+        "question": "May workspaces use this computer's GPU?",
+        "answer": "none",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "share_availability",
+        "question": "When may workspaces use this computer?",
+        "answer": "always",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "first_person",
+        "question": "Add the first person and their workspace now?",
+        "answer": "yes",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "first_person_username",
+        "question": "Their username",
+        "answer": "sam",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "first_person_name",
+        "question": "Their name, as others see it",
+        "answer": "Sam Example",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "first_person_password",
+        "question": "Their password",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "workspace_runtime",
+        "question": "What should their workspace be?",
+        "answer": "container",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "workspace_image",
+        "question": "Image to build it from",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "workspace_cpu",
+        "question": "Processor cores for the workspace",
+        "answer": "2",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "workspace_memory_gb",
+        "question": "Memory for the workspace, in GB",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "workspace_disk_gb",
+        "question": "Disk for the workspace, in whole GB",
+        "answer": "20",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "workspace_gpu",
+        "question": "Give the workspace a GPU?",
+        "answer": "no",
+        "secret": false,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "company",
+        "variable": "join_password",
+        "source": "the question grid_password"
+      }
+    ]
+  },
+  "digest": "1404ee182be2f1362609e7f73961199a3d7651bc173be45f18d8ba8d30f56d6e"
+}

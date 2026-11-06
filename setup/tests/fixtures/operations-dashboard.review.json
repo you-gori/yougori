@@ -1,0 +1,124 @@
+{
+  "aliases": [
+    "operations dashboard",
+    "ops dashboard",
+    "setup health",
+    "status board"
+  ],
+  "capabilities": [
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 0.5,
+      "gpu": false,
+      "image": "docker.io/library/python:3.13-alpine",
+      "internet": false,
+      "memoryGb": null,
+      "name": "board",
+      "pcAccess": [],
+      "ports": [],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 2,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "automation_recovery",
+      "id": "keep_readings",
+      "question": "How many readings should the board keep?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "viewer_port",
+      "question": "Which port on this computer should the board answer on?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "viewer_memory_gb",
+      "question": "Memory for the board, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [
+        "readings"
+      ],
+      "id": "board",
+      "kind": "environment",
+      "summary": {
+        "command": "python, -m, http.server, {{inputs.viewer_port}}, --directory, /readings",
+        "cpu": 0.5,
+        "image": "docker.io/library/python:3.13-alpine",
+        "internet": false,
+        "memory": "{{inputs.viewer_memory_gb}}",
+        "ports": "{{inputs.viewer_port}}",
+        "restart": "always",
+        "storage": 2,
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "readings",
+      "kind": "volume",
+      "summary": {},
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Take a reading",
+    "Open the board",
+    "Read one setup on its own"
+  ],
+  "subtitle": "A private, read-only board of how your setups are doing, on this computer only.",
+  "tools": [],
+  "totals": {
+    "cpu": 0.5,
+    "environments": 1,
+    "gpu": "none",
+    "memoryGb": 0,
+    "storageGb": 2
+  },
+  "warnings": []
+}

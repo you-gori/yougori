@@ -34,6 +34,7 @@ pub mod export;
 pub mod hardware;
 pub mod health;
 pub mod identity;
+pub mod jobs;
 /// How large a grid is supported to get, and what sets each number.
 pub mod limits;
 /// What a realm can say about itself, taken from its own database.
@@ -2839,10 +2840,16 @@ impl Core {
 
     // ---- Keeping and restoring ----
 
-    /// Takes a backup: everything the realm holds, sealed with the realm's key, which must be
-    /// supplied again to restore it. The key itself is never in the backup.
+    /// Takes a backup: everything the realm holds in the portable shape, sealed with the realm's
+    /// key, which must be supplied again to restore it. The key itself is never in the backup. Jobs
+    /// have no place in that shape yet, and a backup of a realm that holds them says so in
+    /// `left_out` rather than leaving it to be found on the day of a restore.
     pub fn backup(&self, now: i64) -> Result<store::Backup, String> {
-        Ok(store::backup(&self.snapshot()?, &self.store.key_reference()?, &self.key, now))
+        let mut backup = store::backup(&self.snapshot()?, &self.store.key_reference()?, &self.key, now);
+        // The portable shape has no place for a realm's jobs yet, and a backup that left them out
+        // without saying so would be taken for the whole realm.
+        backup.left_out = self.jobs_left_out_of_backup()?;
+        Ok(backup)
     }
 
     /// An exact copy of this realm's database, taken while it is open.
@@ -2852,7 +2859,8 @@ impl Core {
     /// same shape as the original, so it does not survive a bad migration; that is what the
     /// portable backup is for. And it is a plain readable realm database, exactly as sensitive as
     /// the folder the realm lives in, so where it is written matters as much as whether it is
-    /// written.
+    /// written. The realm's job artifacts travel with it, each checked against its checksum where
+    /// it landed; a copy that cannot carry one is not kept.
     pub fn copy_to(&self, path: &Path) -> Result<(), String> {
         self.store.copy_to(path)
     }
@@ -2895,6 +2903,7 @@ impl Core {
     /// say those out loud teaches the wrong lesson about what a backup is.
     pub fn rehearse_restore(folder: &Path, backup: store::Backup, key: &str, now: i64) -> Result<RestoreReport, String> {
         let taken_at = backup.taken_at;
+        let left_out = backup.left_out.clone();
         let into = folder.join(format!("drill-{now}.db"));
         let restored = Core::restore(&into, backup, key)?;
         let report = RestoreReport {
@@ -2906,7 +2915,8 @@ impl Core {
             head_sequence: restored.store.head()?.0,
             history_verified: restored.verify_audit().is_ok(),
             faults: restored.check_storage()?,
-            not_restored: NOT_RESTORED.iter().map(|said| (*said).to_owned()).collect(),
+            // What every restore leaves behind, and then whatever this backup said it does not carry.
+            not_restored: NOT_RESTORED.iter().map(|said| (*said).to_owned()).chain(left_out).collect(),
             kept_at: into,
         };
         restored.close()?;

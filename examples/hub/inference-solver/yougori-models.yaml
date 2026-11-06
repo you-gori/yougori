@@ -1,0 +1,2 @@
+environment: web
+command: [python, /app/site/attached.py]

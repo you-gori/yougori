@@ -9,9 +9,11 @@ https://yougori.com/hub, read every file, and run them with one command:
 yougori run hub/PUBLISHER/NAME
 ```
 
-Nothing on the Hub is checked by Yougori. Only templates and tools uploaded by the Yougori
-owner account carry the **Verified** badge. Every other page, and every run, shows the same
-warning:
+Yougori checks only what the Yougori owner account uploads. The **Verified** badge is on those
+uploads, and on everything from a publisher who holds $100 collateral from their yougori.com
+balance (section 6.5). Every page and every run that the owner account did not upload shows the
+same warning, collateral or not; a collateral publisher's adds that they lose it if Yougori
+removes their work for harmful code:
 
 > Not checked by Yougori. Community templates can contain harmful code, including viruses.
 > Read the files first and run only what you trust.
@@ -31,7 +33,8 @@ behaviour every part must keep. The website code lives in the private website re
 | Instance | One running copy of a template on a computer. It has its own name, so two copies never collide. |
 | Clone | A different computer that ran or downloaded an item: the CLI counts each computer once per item with its install id (`~/.yougori/hub/install-id`), and only when the website answered; browser downloads count once per address. |
 | Publisher | The account's public name. It is shared with the model library (`yg/PUBLISHER/...`). |
-| Owner | The Yougori owner account (the account that already moderates Swarm Mining). Its uploads are the only Verified ones. |
+| Owner | The Yougori owner account, which moderates the Hub. Its uploads are the only ones Yougori checks, and are Verified. |
+| Collateral | $100 a publisher holds from their yougori.com balance. While it is held, everything they publish is Verified (`collateral: true`), still with the warning. Released 30 days after their last upload; lost when Yougori removes one of their items for harmful code. |
 
 ## 2. Addresses
 
@@ -148,9 +151,9 @@ Rules:
   - `text` and `secret` may set `min_length` (a positive character count), checked before creation.
   - `text` (at most 500 characters, optional `pattern`), `number` (optional `min`, `max`),
     `yesno` (answers `yes` or `no`), `domain` (a saved domain name; in a terminal the CLI lists saved domains and offers Your own
-    domain, the same questions `yougori launch` asks, saving it as `yougori domain add` does; a
+    domain, asked for there and then and saved as `yougori domain add` saves it; a
     choice of quick/domain/none whose domain question is asked only for domain is shown with it as
-    one list, as `yougori launch` shows it; scripts give a saved domain).
+    one list; scripts give a saved domain).
   - `secret` answers are never written to disk, logs or the Hub. The CLI stores each one as a
     deployment secret named `hub-INSTANCE-ID` and the project refers to it as
     `{{secrets.ID}}` in `secrets:` (for example `secrets: {OPENAI_API_KEY: "{{secrets.openai_key}}"}`).
@@ -238,6 +241,76 @@ Rules:
 `GPL-2.0-only`, `GPL-2.0-or-later`, `GPL-3.0-only`, `GPL-3.0-or-later`,
 `AGPL-3.0-only`, `AGPL-3.0-or-later`.
 
+### 3.3 Format 2: capabilities and typed resources
+
+Everything above is the original template format (format 1). A template may instead be written in
+**format 2**, which adds capabilities, typed resources and richer conditions while keeping every
+format 1 field unchanged. The full contract — every field, the conditions, the placeholders, the
+resource kinds and their specs, the limits, the plan and the review — is in
+[`docs/template-platform/adr-0001-format-v2.md`](template-platform/adr-0001-format-v2.md); the
+shared crate `yougori-setup` is its source of truth. This section is the short version.
+
+- **Opting in.** A file that says `format_version: 2` is format 2; a file without one is format 1,
+  read by the existing parser. Both files of a format 2 package (`yougori-template.yaml` and
+  `yougori.yaml`) must say `format_version: 2`, and the template must declare
+  `requires.yougori: 1.2.0` or newer — 1.2.0 is the first release that reads format 2, so an older
+  Yougori refuses the package at its requirement check and creates nothing. A 1.1.x CLI refuses it
+  earlier still, at parse time, because `format_version` is an unknown field to its strict v1 parser.
+
+- **Capabilities.** A format 2 template lists the engine features it asks for under `capabilities:`,
+  each a stable id such as `grid.create`, `web.service` or `people.workspaces`. Enabling a
+  capability grants nothing: the engine checks permission again when it acts. Every capability, its
+  group, its plain explanation, its real implemented status (Available or Planned), the grid profiles
+  whose handler delivers it, and the permissions it requests are listed in the generated reference
+  [`docs/template-platform/capabilities.md`](template-platform/capabilities.md). A capability marked
+  Planned is described so people can find it but cannot be enabled yet. The same six groups — Grid &
+  workers, AI tools & models, Website & API, People & access, Files & data, Automation & recovery —
+  appear in the desktop builder and in `yougori template new`.
+
+- **Typed resources.** Format 2 describes what a setup owns as typed resources (an environment, a
+  grid, a model service, a workspace pool, a credential broker, a service publication, a volume, a
+  connection and so on) in dependency order, so the planner can produce a deterministic plan and a
+  review before anything is created. Secrets are references, never values; a plan, a review and a
+  published recipe never contain a secret.
+
+- **Same planner, same determinism.** Format 1 packages are planned by the same crate through a v1
+  adapter, so both formats get the same review, the same dependency lock and the same digest — the
+  same package and answers always give the same plan. The website stores a format 2 review beside the
+  format 1 keys, so a client that only reads a package's page still sees every grant.
+
+- **Review.** A format 2 review lists every line each tool runs in its sandbox, and its check:
+  a tool bundled with the template, or a Hub tool resolved for the review (`installs`; the CLI's
+  "Installs:" and the app's "What its tools run"). Applying runs exactly those lines.
+
+- **Reaching a service.** A `service_publication` with `access: private` publishes the sandbox's
+  port at 127.0.0.1 only, on a port of this computer fixed for the setup and publication (20000 to
+  39999), and its `outputs.NAME.url` is that address. `quick` and `domain` give their public
+  address the same way; `none` opens nothing, and the service is reached from inside the setup.
+
+- **Order.** A resource waits for what it references and what it lists in `depends_on`, and a
+  sandbox waits for the template's own volumes it mounts by name (`volumes: [{source: data}]`).
+  A volume's `backup_through` is read when a backup runs, so it does not make the volume wait.
+  Stopping and removing go in reverse.
+
+- **Connections.** Ordinary connections join two sandboxes of the same setup; borrowed
+  sandboxes are refused before anything is made. A connection with `model_request: true`
+  instead joins an owned receiving environment to an owned local `model_service`. It permits
+  only one-way port 8000 access, with no additional permissions. The package must declare
+  `yougori-models.yaml`; the planner pins its `command` as `model_command` in the concrete
+  connection specification and the engine includes that command in the review. Do not author
+  a second independent receiver command in the connection. Grid/borrowed models are refused.
+  The receiver gets the attach request described above and must acknowledge `{"attached":true}`.
+  Removing the connection closes network access first, then sends
+  `{"action":"detach","environment":"MODEL_ENVIRONMENT_ID"}` and expects
+  `{"detached":true}` (or `false` if already removed). Both operations must be idempotent by
+  environment ID and delete the request file. A stopped receiver must be started to finish
+  detaching its catalog entry and credential. Durable intent permits retry after a lost reply;
+  it stores identities and command arguments, never model keys. Existing unrelated connections
+  are not adopted. See `examples/hub/inference-solver` for a complete receiver.
+  To change an ordinary connection into a model attachment (or the reverse), use a new
+  resource name and remove the old resource; changing modes in place is refused so an old
+  grant or saved model credential cannot be silently abandoned.
+
 ## 4. Tool format: `yougori-tool.yaml`
 
 ```yaml
@@ -263,10 +336,24 @@ needs:                          # optional
 service:                        # optional long-running server inside the sandbox
   command: aider --serve --port 8080
   port: 8080
+access:                         # optional: what the tool says it reaches once installed
+  internet: true                # shown in the review; it grants nothing
+  folders: [/workspace/.aider]  # absolute folders inside the sandbox it writes to (at most 20)
+inputs:                         # optional: variables it reads when it runs (at most 50)
+  - {name: OPENAI_API_KEY, secret: true, required: true, about: The key it signs in with}
+outputs:                        # optional: what it leaves in the sandbox for others (at most 20)
+  - {name: history, path: /workspace/.aider.chat.history.md, about: The chat history}
 ```
 
 - `command` and `check` are single shell lines (at most 4096 characters); `install` has at most
   32 lines. They run as the sandbox user with `$HOME/.local/bin` on `PATH`.
+- `access`, `inputs` and `outputs` are the tool's own word, for the review: `yougori tool check`,
+  the template review and the Hub page say "says it uses the internet, writes /workspace/.aider,
+  reads the secret OPENAI_API_KEY". They grant nothing: a sandbox has only what its own settings
+  and the person's answers give it. Each `name` is an environment variable name, listed once; the
+  sign-in key variable, when listed, must say `secret: true`; `about` is one line of at most 160
+  characters; folders and `path` are absolute paths inside the sandbox. The Hub stores a tool's
+  review in format 1 with these under `tools[0]`, so pages that only read format 1 keep working.
 - A line that downloads (`curl`, `wget`, `http://`, `https://`, `pip install`, `npm install`,
   `apt-get`) is listed on the review screen with the address it fetches from.
 - API keys are asked with a hidden prompt (or read from stdin in scripts), stored as a deployment
@@ -311,10 +398,13 @@ access → steps and outputs.
    connections, tools with their sources and the addresses their installers download from, and
    the questions it will ask. Unverified items show the warning above the review. Nothing is
    created until the person chooses **Run it**; scripts must pass `--yes`. PC access needs its own
-   yes (`--allow-pc-access` in scripts). If the Hub page's summary differs from the files, the CLI
-   says so.
+   yes (`--allow-pc-access` in scripts). If the Hub page's review differs from the files, Yougori
+   says so before anyone agrees: the engine compares the two when it plans a Hub package, so the
+   app's review and the CLI show the same differences (`page` in the CLI's JSON), and a page that
+   could not be compared says why rather than passing as checked.
 4. **Questions.** Asked one at a time with Back. Scripts pass `--input ID=VALUE`, `--inputs FILE`
-   (JSON object; secrets are refused there) and `--secrets -` (JSON object on stdin).
+   (JSON object; secrets are refused there) and `--secrets -` (JSON object on stdin). A dry run
+   needs no secret values: its plan carries every secret as a reference.
 5. **Create.** The project is filled in and checked first; secrets are stored only after that.
    The instance folder `~/.yougori/hub/instances/INSTANCE` gets a copy of the files and a
    generated `yougori.yaml` (project name = instance). The CLI then runs the same reconciliation
@@ -352,6 +442,20 @@ the update's own review), its stored answers, and only the questions it has no a
 that did not finish, makes again sandboxes deleted elsewhere (with their tools and public access),
 starts a stopped instance, and finishes an update that stopped. A ready instance just shows its
 status. Scripts pass `--yes`.
+
+For a setup the engine runs, `template continue INSTANCE` carries its last change on. A failed or
+cancelled change runs only the steps that did not finish. A change whose outcome is not known
+(a crash or timeout mid-step) is first checked by the engine, which records what the cut-off step
+left behind; only a change that then reads failed is retried, a change found finished is left
+alone, and one that still can't be told is said as such and nothing runs, so continuing twice never
+does anything twice. A change waiting for a secret (secrets are held only in memory, so one cut
+off by Yougori closing asks again) is answered with the secret on stdin, through `template continue
+INSTANCE --secrets -` or `template configure INSTANCE --secrets -`; its error code is
+`awaiting_input`, not `operation_failed`. An input can't change on a change already under way. On the wire a cancelled change is a failed one whose error code is
+`operation_cancelled`; the CLI reads that code, not a separate state. A cancel that cuts a step
+short is checked by the engine at once, so the change ends as cancelled rather than as unknown.
+When the engine stops while a change runs (Yougori closed, or it crashed), the CLI says the change
+is part done and names `template continue`, rather than that nothing was sent.
 
 Only one command changes an instance at a time (`~/.yougori/hub/locks/INSTANCE.lock`); another one
 says so and changes nothing. A run that stopped without saying so (its window was closed) is still
@@ -448,6 +552,84 @@ yougori template delete REF --yes           Removes your own item from the Hub
   `target`, `dist`, `.DS_Store`, `Thumbs.db`, and anything in `.yougoriignore`. Links are not
   followed. Limits: 1000 files, 5 MiB per file, 25 MiB per version.
 
+### 5.2a The template platform
+
+These commands run a template through the shared engine as a named **setup**: the capability
+catalogue, planning, and the setup lifecycle. They build on the commands above and use the same
+rules — text in a terminal, JSON when piped, a spinner on every wait, Back on every question, and
+Ctrl+C always stops.
+
+```text
+yougori template capabilities [--group grid|models|web|people|data|automation]
+yougori template plan hub/PUBLISHER/NAME[@VERSION] | ./FOLDER | INSTANCE [--input ID=VALUE]...
+                                                   [--inputs FILE] [--dry-run]
+yougori template configure INSTANCE [--input ID=VALUE]... [--inputs FILE] [--secrets -] [--yes]
+                                    [--dry-run]
+yougori template start INSTANCE | stop INSTANCE
+yougori template update INSTANCE [--yes] [--input ID=VALUE]... [--secrets -]
+yougori template logs INSTANCE [--follow] [--cursor N]
+yougori template join
+yougori template export INSTANCE [FOLDER]
+```
+
+- `capabilities` lists the six groups and, when Yougori is running, each capability's availability
+  on this computer: **Available**, **Needs configuration** (a sign-in or provider is needed first),
+  **Unsupported here** (the platform or this setup's grid does not support it) or **Planned**
+  (described so it is discoverable, but not built yet and not enableable). The catalogue is read from
+  the registry, so it lists everything even with no engine running; a Planned capability always reads
+  Planned. JSON carries stable codes. The same data is in
+  [`docs/template-platform/capabilities.md`](template-platform/capabilities.md). In the desktop's
+  template builder, a capability that belongs to another kind of grid than the template's reads
+  **Needs another kind of grid** rather than Unsupported here: turning it on makes the template that
+  kind of grid (or asks which, when several have it), and the builder names any other choice that
+  kind can't hold, with a button to turn those off. A setup that already exists keeps its kind, so
+  there such a capability stays Unsupported here.
+- `plan` resolves a package or an existing setup and returns the concrete plan — resources,
+  placement, downloads, permissions, cost and any change to existing resources — and changes nothing.
+  Planning a package is pure and works with no engine running: the CLI plans a folder or a fetched,
+  verified Hub package locally through `yougori-setup`. A change to an installed setup is a diff the
+  engine computes. Agents should `plan` first.
+- `configure` edits an installed setup's capabilities and inputs and applies the change through the
+  same planner that created it. In a terminal it shows the review and asks you to confirm; a script
+  must pass `--yes`, otherwise it returns the plan and changes nothing. `--dry-run` returns the plan
+  and applies nothing. The apply runs in the engine and the command waits for it to finish before
+  reporting. Secrets come only from `--secrets -` (a JSON object of strings on stdin); the plan keeps
+  a reference, and the value travels privately only when applying — never in an argument, a log or the
+  saved plan. When the setup's last change is waiting for a secret, `configure INSTANCE --secrets -`
+  answers that change rather than planning another: the value goes to the operation that asked, by
+  its own id and the digest of the plan you reviewed, so nothing is created twice (at a terminal the
+  value is asked for without being shown). An input or binding can't change a change already under
+  way; give it up first with `yougori call setup_cancel --setup-id SETUP_ID --operation-id
+  OPERATION_ID --yes` (the ids are in the refusal), then configure. `--dry-run` says what it is
+  waiting for and sends nothing.
+- `update` moves a setup to the newest version of the template it was made from (a folder setup: to
+  the folder as it is now). What you answered and the capabilities you chose are kept; where you left
+  a question at the old version's default, the new version's default applies; an answer to a question
+  the new version removed or retyped is dropped, and a value the new version fixes takes its new
+  value. Each of those is shown first, before the rest of the review, so nothing changes quietly.
+  In a terminal it asks; a script must pass `--yes`. The same move is offered on the setup's page in
+  the desktop app when a newer version is out.
+- `start` and `stop` act on the whole setup and wait for the engine to finish before reporting. Stop
+  keeps data and shows any workload or provider cost the engine reports, never claiming a stop costs
+  nothing without evidence. Deleting data is always a separate, explicit action.
+- `logs` reads a bounded, resumable page of the setup's activity; `--follow` keeps reading from the
+  returned cursor, backing off while idle and stopping when the operation ends, needs an answer, or
+  has an unknown outcome. A closed CLI never stops the engine's operation; reattach with `logs` or
+  `status`, and a timeout is an unknown outcome to reconcile, not a failure.
+- `join` enters a scoped grid invitation privately (a hidden prompt at a terminal, stdin otherwise).
+- `export` asks the engine to write a reviewed recipe to a folder, which must be empty; the CLI
+  turns `FOLDER` into a full path, or names one after the setup where you are. Left out: runtime
+  data, disks, secret values (their questions stay), sign-ins and whether to copy one, the folders,
+  drives and files you picked on this computer, and any answer that looks personal — an address, a
+  domain, a path, a wallet or a key. Everything left out is listed back to you. The recipe is checked
+  as `template check` would check it before anything is written, so an export you cannot run is
+  refused rather than saved. A recipe is settings only, like `template capture`; a full copy of an
+  environment with its data is the separate `yougori download`, which has its own data-exposure
+  review.
+- Several of these depend on engine features that are still being built; where a handler does not
+  exist yet the engine says so plainly and nothing is created. An engine older than the CLI answers
+  with a calm "update Yougori" message rather than a wrong result.
+
 ### 5.3 Tools
 
 ```text
@@ -539,7 +721,7 @@ session (`Authorization: Bearer ygs_…`). Every route is also served under
 | `GET /api/hub/items/:pub/:name/bundle?version=` | `Bundle` (used by the CLI; not counted) |
 | `GET /api/hub/items/:pub/:name/archive?version=` | `.tar.gz` of the version for browsers; counts a clone |
 | `GET /api/hub/items/:pub/:name/forks` | `{items: [Summary]}` |
-| `GET /api/hub/publishers/:pub` | `{publisher: {name, verified, joinedAt, items, clones, stars}, items: [Summary]}` |
+| `GET /api/hub/publishers/:pub` | `{publisher: {name, verified, collateral, joinedAt, items, clones, stars}, items: [Summary]}` |
 | `GET /api/hub/stats` | `{items, templates, tools, publishers, clones, topics: [{topic, items}]}` |
 | `POST /api/hub/items/:pub/:name/clones` | body `{version, install}` (install: 16–128 characters `[A-Za-z0-9_-]`); `{clones}` |
 
@@ -548,10 +730,16 @@ session (`Authorization: Bearer ygs_…`). Every route is also served under
 ```json
 {"ref": "acme/my-api", "publisher": "acme", "name": "my-api", "kind": "template",
  "title": "My API", "summary": "…", "topics": ["ai"], "license": "MIT",
- "verified": false, "latestVersion": "1.0.1", "createdAt": 1760000000, "updatedAt": 1760100000,
+ "verified": false, "collateral": false, "latestVersion": "1.0.1", "createdAt": 1760000000, "updatedAt": 1760100000,
  "counts": {"clones": 12, "clonesWeek": 3, "stars": 4, "forks": 1, "versions": 2},
  "forkedFrom": null}
 ```
+
+`verified` is true only for the owner account's uploads, and is what hides the warning (a
+version's and a bundle's `verified` too). `collateral` is true while the publisher holds
+collateral: the app, the website and the CLI then show Verified (the CLI: `Verified (collateral)`)
+and keep the warning. `?verified=1` lists both. Older apps and CLIs read only `verified`, so they
+keep warning about collateral items and show no badge on them.
 
 `Detail` = `Summary` plus:
 
@@ -623,8 +811,8 @@ none; the account's existing name must be used otherwise.
 | Route | Answer |
 |---|---|
 | `GET /api/hub/admin/reports?state=open|closed` | `{reports: [{id, item: Summary, reason, details, reporter, createdAt, state}]}` |
-| `POST /api/hub/admin/items/:pub/:name/remove` | `{reason: harmful|stolen|abuse|illegal|other, note?}` → `{removed: true}` |
-| `POST /api/hub/admin/items/:pub/:name/restore` | `{}` → `{restored: true}` |
+| `POST /api/hub/admin/items/:pub/:name/remove` | `{reason: harmful|stolen|abuse|illegal|other, note?}` → `{removed: true, collateralLost}`; `harmful` takes the publisher's collateral |
+| `POST /api/hub/admin/items/:pub/:name/restore` | `{}` → `{restored: true, collateralReturned}`; undoes what the removal took |
 | `POST /api/hub/admin/reports/:id/close` | `{}` → `{closed: true}` |
 
 ### 6.4 Limits
@@ -648,6 +836,25 @@ none; the account's existing name must be used otherwise.
 - A new version must be higher than the item's latest version.
 - Uploads expire after 24 hours if not finished.
 - 120 stars, 20 reports and 20 forks per account per hour; 60 clone counts per address per hour.
+
+### 6.5 Collateral (signed in)
+
+A publisher becomes Verified by holding $100 (`COLLATERAL_MICROS` in the website's
+`server/hub/collateral.mjs`) of their yougori.com balance, on the account page or through these
+routes. It is taken from credit first, then earnings, and each part goes back where it came from.
+
+| Route | Answer |
+|---|---|
+| `GET /api/hub/collateral` | `{amountMicros, lockDays, wallet, availableMicros, held: {amountMicros, heldAt, releasableAt} or null, lost: [{at, amountMicros, item}]}` |
+| `POST /api/hub/collateral/hold` | `{amountMicros: 100000000}` (the amount, to confirm it) → the same answer. Needs a linked wallet and that much available; one at a time |
+| `POST /api/hub/collateral/release` | `{}` → the same answer; refused with `collateral_locked` until 30 days after it was held and after the publisher's last upload |
+
+- While it is held, every item of the publisher answers `collateral: true` and shows Verified,
+  including items published before it.
+- Removing one of their items for `harmful` code keeps it (`state: forfeited`); other removal
+  reasons do not. Restoring that item holds it again, or returns it to the balance when the
+  publisher has held new collateral since.
+- The account's activity lists `Hub collateral held` and `Hub collateral released`.
 
 ## 7. Review
 
@@ -697,8 +904,9 @@ containers, GPU hardware and Cloudflare accounts remain separate from the unit a
 7. The publisher deletes an item: new runs are refused with the reason; running instances keep
    working; forks stay; the name cannot be reused.
 8. Republishing the same version, or a lower one, is refused: versions never change.
-9. Forks keep a link to the original; the licence carries over; a fork is never Verified unless
-   the owner made it; a fork of a deleted item still runs and says the original is gone.
+9. Forks keep a link to the original; the licence carries over; a fork is Verified only when the
+   owner made it or its publisher holds collateral; a fork of a deleted item still runs and says
+   the original is gone.
 10. First publish claims the publisher name; a reserved or look-alike name is refused.
 
 **Custom tools**
@@ -720,7 +928,7 @@ containers, GPU hardware and Cloudflare accounts remain separate from the unit a
 21. Running the same template twice: Open (or Continue) the existing one / Create another; scripts
     are told the `template continue` command, or pass another `--name`.
 21a. Where it is stored: a first run in a terminal asks for the drive of all its sandboxes after
-    "Run it?", like `yougori launch`; the record keeps it (`storageDrive`) and updates reuse it,
+    "Run it?"; the record keeps it (`storageDrive`) and updates reuse it,
     since a sandbox moved to another drive would be replaced. Scripts use the default storage.
 22. No Cloudflare account: Quick link is the default; the same list offers Your own domain (set
     up there and then) and every saved domain.
@@ -739,8 +947,9 @@ containers, GPU hardware and Cloudflare accounts remain separate from the unit a
     the notice and how to remove it.
 
 **Hub**
-31. Every unverified page shows the warning above the README; only owner uploads show Verified;
-    a README cannot fake the badge or hide the warning.
+31. Every page the owner account did not upload shows the warning above the README; owner uploads
+    and publishers holding collateral show Verified; a README cannot fake the badge or hide the
+    warning.
 32. Clones count each computer once per item (the CLI's install id; per address for browser
     downloads, at most 5 new clones of an item per address a day); trending uses the last 7 days.
 33. Stars need sign-in; one per account; unstar works.

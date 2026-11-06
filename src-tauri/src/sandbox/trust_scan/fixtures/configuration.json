@@ -1,0 +1,28 @@
+{
+  "key": {"os": "linux", "architecture": "x86_64", "backend": "firecracker"},
+  "boot": "direct_kernel",
+  "components": {
+    "runtime": {
+      "kind": "runtime",
+      "version": "fixture-runtime-0.1.0",
+      "content_key": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "length_bytes": 4194304,
+      "build": {"source": "0123456789abcdef0123456789abcdef01234567", "toolchain": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", "configuration": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5", "builder": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"}
+    },
+    "guest_kernel": {
+      "kind": "guest_kernel",
+      "version": "6.6.52",
+      "content_key": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "length_bytes": 16777216,
+      "build": {"source": "0123456789abcdef0123456789abcdef01234567", "toolchain": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", "configuration": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5", "builder": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"}
+    },
+    "guest_image": {
+      "kind": "guest_image",
+      "version": "fixture-image-2026.10",
+      "content_key": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "length_bytes": 134217728,
+      "build": {"source": "0123456789abcdef0123456789abcdef01234567", "toolchain": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", "configuration": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5", "builder": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"}
+    }
+  },
+  "devices": ["virtio_blk", "virtio_vsock"]
+}

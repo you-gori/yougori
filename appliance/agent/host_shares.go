@@ -96,7 +96,16 @@ func unmountHostShare(ctx context.Context, share *mountedHostShare) error {
 	return share.server.Unmount()
 }
 
-var hostFileClient = &http.Client{Timeout: 20 * time.Second}
+var hostFileClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		// These are scoped host endpoints, never an environment's proxy or redirect.
+		Proxy: nil, DisableCompression: true,
+		MaxConnsPerHost: 8, MaxIdleConns: 64, MaxIdleConnsPerHost: 4,
+		IdleConnTimeout: 10 * time.Second, ResponseHeaderTimeout: 15 * time.Second,
+	},
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 func (n *hostFileNode) call(ctx context.Context, operation string, extra map[string]interface{}) (hostFileReply, syscall.Errno) {
 	if extra == nil {
@@ -149,12 +158,46 @@ func fillHostAttr(info hostFileInfo, out *fuse.Attr, readOnly bool) {
 	out.Ctime = info.Modified
 	out.Nlink = 1
 }
+
+// hostShareRootIno is the number go-fuse reserves for a mount's root node. No
+// derived number may take it.
+const hostShareRootIno = uint64(1)
+
+// hostShareInode derives the inode number a path keeps for the life of a
+// mount. go-fuse hands out a fresh number to every node created without one,
+// so after the 1 s EntryTimeout expires a re-Lookup of the same file used to
+// report a different st_ino; a reader that compares the stat identity of a
+// path before and after a slow read (a model runner's checksum check) then
+// sees a file that was replaced under it and refuses the data.
+//
+// The number is FNV-1a (64 bit) of "endpoint\x00token\x00relative". endpoint
+// and token identify the share: one mount namespace can hold several shares,
+// each mounted separately with its own token, and their inode numbers must not
+// collide for the same relative path. FNV-1a is enough here because the value
+// only has to be stable and practically distinct, not unforgeable: with 64 bits
+// a share would need on the order of a billion paths before a collision is
+// likely, far beyond any shared folder. 0 is reserved by the kernel for "no
+// inode" and 1 for the root, so both are folded away.
+func hostShareInode(endpoint, token, relative string) uint64 {
+	const offset, prime = uint64(14695981039346656037), uint64(1099511628211)
+	sum := offset
+	for _, b := range []byte(endpoint + "\x00" + token + "\x00" + relative) {
+		sum ^= uint64(b)
+		sum *= prime
+	}
+	if sum == 0 || sum == hostShareRootIno {
+		sum = offset
+	}
+	return sum
+}
+
 func (n *hostFileNode) child(ctx context.Context, name string, info hostFileInfo) *fs.Inode {
 	mode := uint32(syscall.S_IFREG)
 	if info.Directory {
 		mode = syscall.S_IFDIR
 	}
-	return n.NewInode(ctx, &hostFileNode{endpoint: n.endpoint, token: n.token, relative: path.Join(n.relative, name), readOnly: n.readOnly}, fs.StableAttr{Mode: mode})
+	relative := path.Join(n.relative, name)
+	return n.NewInode(ctx, &hostFileNode{endpoint: n.endpoint, token: n.token, relative: relative, readOnly: n.readOnly}, fs.StableAttr{Mode: mode, Ino: hostShareInode(n.endpoint, n.token, relative), Gen: 1})
 }
 func (n *hostFileNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	reply, err := n.call(ctx, "stat", map[string]interface{}{"path": path.Join(n.relative, name)})
@@ -193,13 +236,9 @@ func (n *hostFileNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uin
 	return n, fuse.FOPEN_DIRECT_IO, 0
 }
 func (n *hostFileNode) Read(ctx context.Context, _ fs.FileHandle, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	reply, err := n.call(ctx, "read", map[string]interface{}{"offset": off, "length": len(dest)})
+	data, err := n.readBytes(ctx, dest, off)
 	if err != 0 {
 		return nil, err
-	}
-	data, e := base64.StdEncoding.DecodeString(reply.Data)
-	if e != nil {
-		return nil, syscall.EIO
 	}
 	return fuse.ReadResultData(data), 0
 }

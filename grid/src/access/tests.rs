@@ -351,6 +351,149 @@ async fn hourly_limits_send_the_rest_to_an_approver() {
     assert!(third["message"].as_str().unwrap().contains("hourly limit of 2"), "{third}");
 }
 
+/// The rule an approval for some hours made, from the overview.
+fn approval_rule(grid: &Grid) -> Value {
+    let overview = grid.hub.manage_as_owner(json!({"action": "overview"})).unwrap();
+    let rules = overview["rules"].as_array().unwrap();
+    let made: Vec<&Value> = rules.iter().filter(|rule| rule["id"].as_str().unwrap().starts_with("approval-")).collect();
+    assert_eq!(made.len(), 1, "one approval, one rule: {rules:?}");
+    made[0].clone()
+}
+
+#[tokio::test]
+async fn an_approval_for_some_hours_lets_through_only_what_the_request_asked() {
+    let grid = grid().await;
+    let api = service().await;
+    add_person(&grid, "ada", "member", &[]);
+    add_person(&grid, "bob", "approver", &[]);
+    grid.hub.manage_as_owner(json!({"action": "credentialAdd", "name": "Echo", "destinations": [format!("http://{api}")], "value": SECRET})).unwrap();
+    // The widest rule that asks: every path, any method.
+    grid.hub.manage_as_owner(json!({"action": "ruleAdd", "credential": "Echo", "who": "everyone", "decision": "ask"})).unwrap();
+    let ada = sign_in(&grid, "ada").await;
+    let bob = sign_in(&grid, "bob").await;
+
+    let waiting = call(&grid, &ada, "use", json!({"credential": "Echo", "method": "POST", "url": format!("http://{api}/repos/acme/issues")})).await.unwrap();
+    assert_eq!(waiting["state"], "waiting");
+    let approved = call(&grid, &bob, "manage", json!({"action": "decide", "request": waiting["id"], "approve": true, "hours": 1})).await.unwrap();
+    assert!(approved["message"].as_str().unwrap().contains(&format!("POST http://{api}/repos/acme/issues")), "{approved}");
+    assert_eq!(settled(&grid, &ada, waiting["id"].as_str().unwrap()).await["state"], "done");
+
+    // The rule it made is the request's method and path, with no limit because none applied.
+    let rule = approval_rule(&grid);
+    assert_eq!((rule["path"].as_str(), rule["methods"].clone(), rule["decision"].as_str()), (Some("/repos/acme/issues"), json!(["POST"]), Some("allow")), "{rule}");
+    assert!(rule["expiresAt"].is_i64() && rule.get("limit").is_none(), "{rule}");
+
+    // The same request goes straight through now, a closing slash making no difference.
+    for path in ["/repos/acme/issues", "/repos/acme/issues/"] {
+        assert_eq!(call(&grid, &ada, "use", json!({"credential": "Echo", "method": "POST", "url": format!("http://{api}{path}")})).await.unwrap()["state"], "done", "{path}");
+    }
+    // Nothing beside it or beneath it does, and neither does another method on the same path.
+    for (method, path) in [("POST", "/repos/acme/issues/7/comments"), ("POST", "/repos/acme/settings"), ("POST", "/"), ("DELETE", "/repos/acme/issues")] {
+        let other = call(&grid, &ada, "use", json!({"credential": "Echo", "method": method, "url": format!("http://{api}{path}")})).await.unwrap();
+        assert_eq!(other["state"], "waiting", "{method} {path} still waits for an approver: {other}");
+    }
+}
+
+#[tokio::test]
+async fn an_approval_for_some_hours_past_the_hourly_limit_keeps_the_limit() {
+    let grid = grid().await;
+    let api = service().await;
+    add_person(&grid, "ada", "member", &[]);
+    add_person(&grid, "bob", "approver", &[]);
+    grid.hub.manage_as_owner(json!({"action": "credentialAdd", "name": "Echo", "destinations": [format!("http://{api}")], "value": SECRET})).unwrap();
+    grid.hub.manage_as_owner(json!({"action": "ruleAdd", "credential": "Echo", "who": "ada", "methods": ["GET"], "limit": 2})).unwrap();
+    let ada = sign_in(&grid, "ada").await;
+    let bob = sign_in(&grid, "bob").await;
+    let get = |path: &str| json!({"credential": "Echo", "url": format!("http://{api}{path}")});
+
+    for _ in 0..2 {
+        assert_eq!(call(&grid, &ada, "use", get("/x")).await.unwrap()["state"], "done");
+    }
+    let over = call(&grid, &ada, "use", get("/x")).await.unwrap();
+    assert_eq!(over["state"], "waiting");
+    let approved = call(&grid, &bob, "manage", json!({"action": "decide", "request": over["id"], "approve": true, "hours": 1})).await.unwrap();
+    assert!(approved["message"].as_str().unwrap().contains("up to 2 times an hour"), "{approved}");
+    assert_eq!(settled(&grid, &ada, over["id"].as_str().unwrap()).await["state"], "done");
+    let rule = approval_rule(&grid);
+    assert_eq!((rule["path"].as_str(), rule["limit"].as_u64()), (Some("/x"), Some(2)), "{rule}");
+
+    // Two more uses an hour go through on the approval, and then an approver decides again.
+    for _ in 0..2 {
+        assert_eq!(call(&grid, &ada, "use", get("/x")).await.unwrap()["state"], "done");
+    }
+    let again = call(&grid, &ada, "use", get("/x")).await.unwrap();
+    assert_eq!(again["state"], "waiting", "the approval keeps the hourly limit: {again}");
+    // And another path is still only the spent rule's.
+    assert_eq!(call(&grid, &ada, "use", get("/y")).await.unwrap()["state"], "waiting");
+}
+
+#[tokio::test]
+async fn an_approval_for_some_hours_that_cannot_be_saved_leaves_the_request_waiting() {
+    let grid = grid().await;
+    let api = service().await;
+    add_person(&grid, "ada", "member", &[]);
+    add_person(&grid, "bob", "approver", &[]);
+    grid.hub.manage_as_owner(json!({"action": "credentialAdd", "name": "Echo", "destinations": [format!("http://{api}")], "value": SECRET})).unwrap();
+    grid.hub.manage_as_owner(json!({"action": "ruleAdd", "credential": "Echo", "who": "everyone", "decision": "ask"})).unwrap();
+    let ada = sign_in(&grid, "ada").await;
+    let bob = sign_in(&grid, "bob").await;
+    let waiting = call(&grid, &ada, "use", json!({"credential": "Echo", "method": "POST", "url": format!("http://{api}/repos/acme")})).await.unwrap();
+    assert_eq!(waiting["state"], "waiting");
+
+    // The record can no longer be written: a folder has taken its name.
+    std::fs::remove_file(grid.path()).unwrap();
+    std::fs::create_dir(grid.path()).unwrap();
+    let failed = call(&grid, &bob, "manage", json!({"action": "decide", "request": waiting["id"], "approve": true, "hours": 1})).await.unwrap_err();
+    assert!(refused(&failed, "could not be saved") && refused(&failed, "the request still waits"), "{failed:?}");
+
+    // Nothing moved on: the request waits, undecided, and the rule that was not saved is not in
+    // force either.
+    let overview = grid.hub.manage_as_owner(json!({"action": "overview"})).unwrap();
+    let still = overview["waiting"].as_array().unwrap().iter().find(|request| request["id"] == waiting["id"]).cloned().unwrap_or_default();
+    assert_eq!((still["state"].as_str(), still["decidedBy"].is_null()), (Some("waiting"), true), "{still}");
+    assert!(overview["rules"].as_array().unwrap().iter().all(|rule| !rule["id"].as_str().unwrap().starts_with("approval-")), "{overview}");
+    let again = call(&grid, &ada, "use", json!({"credential": "Echo", "method": "POST", "url": format!("http://{api}/repos/acme")})).await.unwrap();
+    assert_eq!(again["state"], "waiting", "the same request still asks an approver");
+
+    // Approving it once writes nothing, so it still goes through and is sent.
+    call(&grid, &bob, "manage", json!({"action": "decide", "request": waiting["id"], "approve": true})).await.unwrap();
+    assert_eq!(settled(&grid, &ada, waiting["id"].as_str().unwrap()).await["state"], "done");
+}
+
+#[tokio::test]
+async fn an_approval_for_some_hours_that_would_reach_further_is_refused_and_the_request_still_waits() {
+    let grid = grid().await;
+    let api = service().await;
+    let mirror = service().await;
+    add_person(&grid, "ada", "member", &[]);
+    add_person(&grid, "bob", "approver", &[]);
+    // Two addresses take the same paths; a rule has no destination, so it would reach both.
+    grid.hub.manage_as_owner(json!({"action": "credentialAdd", "name": "Echo", "destinations": [format!("http://{api}"), format!("http://{mirror}")], "value": SECRET})).unwrap();
+    grid.hub.manage_as_owner(json!({"action": "ruleAdd", "credential": "Echo", "who": "everyone", "decision": "ask"})).unwrap();
+    let ada = sign_in(&grid, "ada").await;
+    let bob = sign_in(&grid, "bob").await;
+    let rules_before = grid.hub.manage_as_owner(json!({"action": "overview"})).unwrap()["rules"].as_array().unwrap().len();
+
+    let cases = [
+        (format!("http://{api}/repos/acme"), "may also be sent to another address"),
+        (format!("http://{api}/"), "root path"),
+        (format!("http://{api}/repos;v=2/acme"), "read differently"),
+    ];
+    for (url, why) in cases {
+        let waiting = call(&grid, &ada, "use", json!({"credential": "Echo", "method": "POST", "url": url})).await.unwrap();
+        assert_eq!(waiting["state"], "waiting", "{url}");
+        let refused_hours = call(&grid, &bob, "manage", json!({"action": "decide", "request": waiting["id"], "approve": true, "hours": 1})).await.unwrap_err();
+        assert!(refused(&refused_hours, why) && refused(&refused_hours, "Approve it once instead"), "{url}: {refused_hours:?}");
+        // Nothing was decided: the request still waits, and approving it once still works.
+        let overview = grid.hub.manage_as_owner(json!({"action": "overview"})).unwrap();
+        let still = overview["waiting"].as_array().unwrap().iter().find(|request| request["id"] == waiting["id"]).cloned().unwrap_or_default();
+        assert_eq!((still["state"].as_str(), still["decidedBy"].is_null()), (Some("waiting"), true), "{url}: {still}");
+        assert_eq!(overview["rules"].as_array().unwrap().len(), rules_before, "{url}: no rule was made");
+        call(&grid, &bob, "manage", json!({"action": "decide", "request": waiting["id"], "approve": true})).await.unwrap();
+        assert_eq!(settled(&grid, &ada, waiting["id"].as_str().unwrap()).await["state"], "done", "{url}");
+    }
+}
+
 #[tokio::test]
 async fn oauth_credentials_send_and_hand_out_only_short_lived_tokens() {
     let grid = grid().await;

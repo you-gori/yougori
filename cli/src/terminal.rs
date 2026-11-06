@@ -36,7 +36,7 @@ fn project_command(container: Option<&str>) -> String {
     }
 }
 
-/// Open a visible terminal without borrowing the launcher's stdin or stopping sync.
+/// Open a visible terminal without borrowing the calling command's stdin.
 pub fn open(environment: &str, project: bool, container: Option<&str>) -> Result<(), String> {
     let mut args = vec![
         "terminal".to_owned(),
@@ -171,7 +171,7 @@ pub fn attach_console() -> Result<(), String> {
 pub async fn run(args: &[String]) -> Result<(), String> {
     let window = args.iter().any(|s| s == "--window");
     // NEW_CONSOLE with null inherited streams: attach explicitly to the new
-    // console, never to the launcher's input or output handles.
+    // console, never to the calling command's input or output handles.
     if window {
         attach_console()?;
     }

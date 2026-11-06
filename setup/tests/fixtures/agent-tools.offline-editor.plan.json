@@ -1,0 +1,391 @@
+{
+  "formatVersion": 2,
+  "instance": "agent-tools",
+  "template": {
+    "name": "agent-tools",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "tools.builtin",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Built-in AI tools",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.custom",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "Your own tool",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.provider_access",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "Provider access",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "data.project_source",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Project source",
+      "permissions": [
+        "Read the project folder you select."
+      ]
+    },
+    {
+      "id": "data.sync",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Sync",
+      "permissions": [
+        "Read only the folders you grant."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "cpu": "2",
+    "image": "python:3.12-slim-bookworm",
+    "internet": "no",
+    "memory_gb": "4",
+    "project_writable": "yes",
+    "reference_path": "/reference",
+    "storage_gb": "20",
+    "tools": "opencode"
+  },
+  "secrets": {},
+  "bindings": {
+    "project": "/example/folder",
+    "reference": "/example/folder"
+  },
+  "resources": [
+    {
+      "id": "agent",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "sh",
+          "-lc",
+          "sh /opt/yougori-agent/write-instructions.sh; exec sleep infinity"
+        ],
+        "cpu": 2.0,
+        "depends_on": [],
+        "environment": {
+          "AGENT_INSTRUCTIONS_PATH": "/workspace/AGENTS.md",
+          "AGENT_INTERNET": "no",
+          "AGENT_PROJECT": "/workspace",
+          "AGENT_PROJECT_WRITABLE": "yes",
+          "AGENT_REFERENCE": "/reference",
+          "AGENT_TOOLS": "opencode"
+        },
+        "files": [
+          {
+            "source": "./rules",
+            "target": "/opt/yougori-agent"
+          }
+        ],
+        "gpu": false,
+        "image": "python:3.12-slim-bookworm",
+        "internet": false,
+        "memory": 4,
+        "pc_access": [
+          {
+            "binding": "reference",
+            "path": "/example/folder",
+            "read_only": true,
+            "target": "/reference"
+          }
+        ],
+        "permissions": {
+          "edit": true,
+          "pc": true
+        },
+        "ports": [],
+        "restart": "",
+        "secrets": {},
+        "storage": 20,
+        "sync": [
+          {
+            "binding": "project",
+            "conflicts": "keep_both",
+            "continuous": true,
+            "path": "/example/folder",
+            "read_only": false,
+            "target": "/workspace"
+          }
+        ],
+        "tools": [
+          {
+            "name": "opencode",
+            "signin": false,
+            "source": "built-in",
+            "spec": "opencode"
+          },
+          {
+            "folder": "tools/repo-map",
+            "name": "repo-map",
+            "signin": false,
+            "source": "bundled",
+            "spec": "tools/repo-map",
+            "version": "1.0.0"
+          }
+        ],
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "home",
+            "target": "/root"
+          }
+        ],
+        "working_dir": "/workspace"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    }
+  ],
+  "order": [
+    "agent"
+  ],
+  "steps": [
+    {
+      "title": "Read what the agent was told",
+      "detail": "Open AGENTS.md in the project folder. Yougori rewrites it every time the sandbox starts, from the access this setup really has, so it is the honest list of what the agent can do.",
+      "command": "yougori files {{outputs.agent.name}} /workspace/AGENTS.md"
+    },
+    {
+      "title": "Work with it",
+      "detail": "Open a terminal in the sandbox and run the tool you chose. It sees your project, the reading folder if you added one, and nothing else of this computer.",
+      "command": "yougori terminal {{outputs.agent.name}}"
+    },
+    {
+      "title": "Change what it may reach",
+      "detail": "Run the setup again with different answers. Turning the internet off, making the project read only or dropping a tool takes effect on the next start, and AGENTS.md is rewritten to match."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{outputs.agent.name}}",
+      "private": false
+    },
+    {
+      "key": "instructions",
+      "label": "The agent's instructions",
+      "value": "/workspace/AGENTS.md",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "files",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "agent",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "python:3.12-slim-bookworm"
+      },
+      {
+        "kind": "tool",
+        "name": "opencode",
+        "from": "built in"
+      }
+    ],
+    "permissions": [
+      "agent can read /example/folder, the folder you chose for reference, and nothing else on this computer.",
+      "agent keeps a copy of /example/folder, the folder you chose for project, in /workspace, and changes sync both ways while the setup runs. A file changed in both places keeps both versions: the sandbox's is saved beside yours as a conflict copy. You agree to the sandbox changing your files again when the setup is applied.",
+      "Built-in AI tools: Run containers on this computer.",
+      "Project source: Read the project folder you select.",
+      "Sync: Read only the folders you grant.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "agent can read /example/folder on this computer.",
+      "agent can change files in /example/folder on this computer."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 2.0,
+      "memoryGb": 4.0,
+      "storageGb": 20.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "image",
+        "question": "Which container image should the agent work in?",
+        "answer": "python:3.12-slim-bookworm",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "tools",
+        "question": "Which coding tools should it have?",
+        "answer": "opencode",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "project_writable",
+        "question": "May the agent change your project?",
+        "answer": "yes",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "reference_path",
+        "question": "Where should reading material appear inside the sandbox?",
+        "answer": "/reference",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "internet",
+        "question": "Should the agent reach the internet?",
+        "answer": "no",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores",
+        "answer": "2",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory, in GB",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the sandbox, in GB",
+        "answer": "20",
+        "secret": false,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [
+      {
+        "environment": "agent",
+        "path": "/example/folder",
+        "target": "/reference",
+        "readOnly": true,
+        "binding": "reference"
+      },
+      {
+        "environment": "agent",
+        "path": "/example/folder",
+        "target": "/workspace",
+        "readOnly": false,
+        "binding": "project",
+        "sync": true
+      }
+    ],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [],
+    "installs": [
+      {
+        "resource": "agent",
+        "tool": "repo-map",
+        "commands": [
+          "mkdir -p \"$HOME/.local/bin\"",
+          "printf '%s\\n' '#!/bin/sh' 'set -eu' 'cd \"${1:-.}\"' 'find . -type f -not -path \"*/.git/*\" -printf \"%s\\t%p\\n\" | sort -rn | head -500' > \"$HOME/.local/bin/repo-map\"",
+          "chmod 755 \"$HOME/.local/bin/repo-map\""
+        ],
+        "check": "repo-map --help >/dev/null 2>&1 || test -x \"$HOME/.local/bin/repo-map\""
+      }
+    ]
+  },
+  "digest": "17906dcf180962a1f0396f6ce39f85384b8376665a56c85c4df286e94161cfcd"
+}

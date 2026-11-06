@@ -1,6 +1,98 @@
 use super::*;
 use std::time::Duration;
 use yougori_cli::workload::Options;
+mod status_batch;
+mod control;
+mod wake;
+mod events;
+mod configuration;
+mod capacity;
+
+/// How often, and past what age, the scheduler sweeps served helper directories no environment
+/// binds (G08).
+const SERVED_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The local GPU's total memory as the host probe reads it, for a measurement's host
+/// description (the helper trial); `None` when the probe does not answer.
+pub(crate) async fn local_gpu_total_bytes() -> Option<u64> {
+    capacity::local_gpu_total().await
+}
+mod runtime_binding;
+#[cfg(test)]
+mod protocol_integration;
+/// The exact runner releases this engine pins, for the helper rollout journal (G08).
+pub(super) use runtime_binding::{pinned_release, pinned_transformers_release};
+
+static WAKE: std::sync::LazyLock<wake::Wake> = std::sync::LazyLock::new(wake::Wake::new);
+// User configuration can start an unmanaged loader when automatic memory is
+// disabled. It must not interleave between another runner's unload and grant.
+static ADMISSION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Serializes a local CUDA stop/delete with grants and captures the exact reservation.
+/// Confirmation is explicit: pause, failed operations and dropped futures release nothing.
+pub(crate) struct RuntimeEnd {
+    _admission: tokio::sync::MutexGuard<'static, ()>,
+    receipt: Option<capacity::EndReceipt>,
+}
+
+impl RuntimeEnd {
+    pub(crate) async fn capture(environment: &str) -> Result<Self, String> {
+        let guard = tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
+            .map_err(|_| "GPU admission is busy. No runtime end was sent; retry after the current operation finishes.")?;
+        Ok(Self { _admission: guard, receipt: capacity::capture_end(environment)? })
+    }
+
+    /// Call only after the runtime acknowledged stopping/removing the container.
+    pub(crate) fn confirm(&mut self) {
+        capacity::confirm_end(self.receipt.take());
+        WAKE.notify();
+    }
+}
+
+pub(super) fn stamp_capacity(environment: &mut Value, compatibility: &Value) -> Result<(), String> {
+    capacity::stamp(environment, compatibility)
+}
+
+/// Stamps a new Transformers chat workload for host-ledger admission when the demand that
+/// covers its context at original precision fits this host's one GPU
+/// (`local-single-transformers-v1`, G03: `capacity::ContextDemand`), and a GGUF workload with
+/// the demand its header gives (`local-single-llama-cpp-v1`); otherwise it keeps the legacy
+/// scheduler. Says whether it stamped.
+pub(super) async fn stamp_local_capacity(environment: &mut Value, compatibility: &Value) -> bool {
+    capacity::local_stamp(environment, compatibility).await
+}
+
+/// The admission profile and demand host admission reserves for a model, read from its saved
+/// workload (`model_status` → `admission`); `None` for the one-resident legacy path. The runner
+/// reports a grant itself only for the profile it enforces (Transformers).
+pub(super) fn admission(options: &std::collections::BTreeMap<String, String>) -> Option<Value> {
+    capacity::demand(options).ok().flatten().map(capacity::Demand::describe)
+}
+
+pub(super) fn shared_host_ledger() -> Option<crate::foundation::coordination::SharedLedger<crate::foundation::ids::SystemClock>> {
+    capacity::shared_host_ledger()
+}
+
+pub(super) fn ledger_view() -> Value {
+    capacity::ledger_view()
+}
+
+/// The GPU memory in use as the host probe reads it now: a helper trial's measure for runners
+/// that report no allocator peak (vLLM, llama.cpp).
+pub(crate) async fn host_gpu_used() -> Option<u64> {
+    capacity::local_used(&tokio_util::sync::CancellationToken::new()).await
+}
+
+pub(super) async fn refresh_host_capacity(shutdown: &tokio_util::sync::CancellationToken) -> Result<crate::foundation::coordination::SharedLedger<crate::foundation::ids::SystemClock>, String> {
+    capacity::refresh_host_capacity(shutdown).await
+}
+pub(super) async fn refresh_gpu_capacity(shutdown: &tokio_util::sync::CancellationToken) -> Result<crate::foundation::coordination::SharedLedger<crate::foundation::ids::SystemClock>, String> {
+    capacity::refresh_gpu_capacity(shutdown).await
+}
+
+pub(super) fn request_completed(path: &str, posted: bool, succeeded: bool) {
+    WAKE.request_completed(path, posted, succeeded);
+}
 
 pub(super) fn source() -> String {
     let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
@@ -9,7 +101,7 @@ pub(super) fn source() -> String {
 }
 
 pub(super) fn environment(environment: &mut Value, protected: &mut Value) -> Result<(), String> {
-    environment["YOUGORI_MODEL_SERVER_SOURCE"] = json!(super::server_payload());
+    super::carry_server(environment);
     let reference = format!("gpu-control-{}", uuid::Uuid::new_v4().simple());
     crate::projects::secrets::store(&reference, &uuid::Uuid::new_v4().simple().to_string())?;
     environment["YOUGORI_GPU_SOURCE"] = json!(source());
@@ -20,6 +112,12 @@ pub(super) fn environment(environment: &mut Value, protected: &mut Value) -> Res
 
 pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
     options.environment.insert("YOUGORI_MODEL_SERVER_SOURCE".into(),super::server_payload());
+    // The engine backends travel with the server that checks them, for GGUF and vLLM runners only.
+    if super::loads_backends(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str)) {
+        options.environment.insert("YOUGORI_BACKENDS_SOURCE".into(), super::backends_source());
+    } else {
+        options.environment.remove("YOUGORI_BACKENDS_SOURCE");
+    }
     options.environment.insert("YOUGORI_GPU_SOURCE".into(),source());
     if options.environment.get("YOUGORI_MODEL_CPU").is_some_and(|v|v == "1") {
         options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(),"0".into());
@@ -37,7 +135,33 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, app: AppHandle) -> Result<Value, String> {
+pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, launch: Option<String>, app: AppHandle) -> Result<Value, String> {
+    if let Some(mode) = launch {
+        // Saved on its own and applied at the next start; nothing is sent to the runner.
+        if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() {
+            return Err("Change the launch mode on its own, then the other settings.".into());
+        }
+        let _admission = tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
+            .map_err(|_| "GPU settings are busy. No changes were sent; retry after the current operation finishes.")?;
+        save_launch(&app, &environment_id, &mode)?;
+        return Ok(json!({"launch": mode, "restartRequired": true}));
+    }
+    let _admission = if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() {
+        Some(tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
+            .map_err(|_| "GPU settings are busy. No changes were sent; retry after the current operation finishes.")?)
+    } else { None };
+    // Checked before anything is saved, so a refused value leaves every setting as it was.
+    if idle_timeout_seconds.is_some_and(|timeout| timeout != 0 && !(10..=3600).contains(&timeout)) {
+        return Err("Idle timeout must be 0 (keep loaded until switching) or 10–3600 seconds".into());
+    }
+    if let Some(slots) = parallel {
+        check_parallel(&app, &environment_id, slots)?;
+        // Alone it is saved now; with other settings, with them once the runner acknowledged.
+        if enabled.is_none() && pinned.is_none() && idle_timeout_seconds.is_none() {
+            save_parallel(&app, &environment_id, slots)?;
+            return Ok(json!({"parallel": slots, "restartRequired": true}));
+        }
+    }
     let health = super::model_status(environment_id.clone(), app.clone()).await?;
     if enabled.is_none() && pinned.is_none() && idle_timeout_seconds.is_none() { return Ok(health["optimizer"].clone()); }
     if health["optimizer"]["supported"] != true { return Err("Restart this model with the updated engine to enable Automatic GPU memory. Files are kept.".into()); }
@@ -45,24 +169,281 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
     if timeout != 0 && !(10..=3600).contains(&timeout) { return Err("Idle timeout must be 0 (keep loaded until switching) or 10–3600 seconds".into()); }
     let on = enabled.unwrap_or(health["optimizer"]["enabled"] == true);
     let pin = pinned.unwrap_or(health["optimizer"]["pinned"] == true);
-    let answer = model_request(&app, &environment_id, "/v1/yougori/optimizer", Some(json!({"action":"configure","enabled":on,"pinned":pin,"idleTimeoutSeconds":timeout}))).await?;
+    let pending = configuration::record(&health)?;
+    let body = control::fence_configuration(&health, json!({"action":"configure","enabled":on,"pinned":pin,"idleTimeoutSeconds":timeout}))
+        .map_err(|_| "Restart this model with the updated engine before changing GPU settings. Model files are kept.")?;
     let runtime = app.state::<RuntimeManager>();
     let state = app.state::<PlatformStore>().snapshot()?;
     let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
     let id = env.runtime_id.as_deref().unwrap_or(&environment_id);
     let mut options = runtime.workload_options(id)?;
+    if !on && options.environment.contains_key(capacity::POLICY) {
+        return Err("This model uses shared GPU admission and cannot bypass its reservations. Keep Automatic GPU memory on; pin it to prevent automatic switching.".into());
+    }
+    if options.environment.get(configuration::PENDING).is_some_and(|prior| !configuration::can_replace(prior, &health)) {
+        return Err("Previous GPU configuration cannot be safely reconciled. Stop and recreate this model environment before changing its settings.".into());
+    }
+    // Durable before send: cancellation or an engine restart cannot forget that
+    // an old remote command might still acquire the runner lock and execute.
+    options.environment.insert(configuration::PENDING.into(), pending.clone());
+    runtime.save_workload_options(id, &options)?;
+    WAKE.notify();
+    let answer = tokio::time::timeout(control::TIMEOUT,
+        model_request(&app, &environment_id, "/v1/yougori/optimizer", Some(body)))
+        .await.map_err(|_| "GPU configuration outcome is unconfirmed. Admission is paused until it can be reconciled.")?
+        .map_err(|_| "GPU configuration outcome is unconfirmed. Admission is paused until it can be reconciled.")?;
+    if !control::configuration_acknowledged(&health, &answer) {
+        return Err("GPU configuration outcome is unconfirmed. Admission is paused until it can be reconciled.".into());
+    }
+    let mut options = runtime.workload_options(id)?;
+    if options.environment.get(configuration::PENDING) != Some(&pending) {
+        return Err("GPU configuration changed while saving its result. Check model status before retrying.".into());
+    }
+    options.environment.remove(configuration::PENDING);
     options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(), if on {"1"} else {"0"}.into());
     options.environment.insert("YOUGORI_GPU_PINNED".into(), if pin {"1"} else {"0"}.into());
     options.environment.insert("YOUGORI_GPU_IDLE_SECONDS".into(), timeout.to_string());
+    if let Some(slots) = parallel {
+        options.environment.insert("YOUGORI_MODEL_PARALLEL".into(), slots.to_string());
+    }
+    // The runner read these when it started; a restart carries the new ones into its container.
+    super::mark_for_start(&mut options);
     runtime.save_workload_options(id, &options)?;
-    Ok(answer["optimizer"].clone())
+    WAKE.notify();
+    let mut result = answer["optimizer"].clone();
+    if let (Some(slots), Some(fields)) = (parallel, result.as_object_mut()) {
+        fields.insert("parallel".into(), json!(slots));
+        fields.insert("restartRequired".into(), json!(true));
+    }
+    Ok(result)
+}
+
+/// How many requests a GGUF (llama.cpp slots sharing one KV pool) or vLLM model generates
+/// together (G02): the runner reads `YOUGORI_MODEL_PARALLEL` when it starts, so a saved change
+/// takes effect at the next start. Other runners generate one request at a time.
+fn save_parallel(app: &AppHandle, environment_id: &str, slots: u64) -> Result<(), String> {
+    let (id, mut options) = check_parallel(app, environment_id, slots)?;
+    options.environment.insert("YOUGORI_MODEL_PARALLEL".into(), slots.to_string());
+    super::mark_for_start(&mut options);
+    app.state::<RuntimeManager>().save_workload_options(&id, &options)
+}
+
+/// How a vLLM model runs (`YOUGORI_MODEL_LAUNCH`, read by engine_backends.py when the runner
+/// starts): "compiled" captures CUDA graphs and compiles the model with torch.compile,
+/// "speculative" (the default) adds n-gram speculative decoding, and "eager" runs it as launches
+/// did before 6 November 2026. A launch that fails to start steps down by itself: speculative to
+/// compiled, then to eager.
+const LAUNCHES: [&str; 3] = ["compiled", "speculative", "eager"];
+
+fn save_launch(app: &AppHandle, environment_id: &str, mode: &str) -> Result<(), String> {
+    if !LAUNCHES.contains(&mode) {
+        return Err("The launch mode must be compiled, speculative or eager".into());
+    }
+    let state = app.state::<PlatformStore>().snapshot()?;
+    let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
+    let id = env.runtime_id.clone().unwrap_or_else(|| environment_id.to_owned());
+    let runtime = app.state::<RuntimeManager>();
+    let mut options = runtime.workload_options(&id)?;
+    if let Some(refusal) = launch_refusal(&env.kind, &options.environment) {
+        return Err(refusal.into());
+    }
+    options.environment.insert("YOUGORI_MODEL_LAUNCH".into(), mode.into());
+    super::mark_for_start(&mut options);
+    runtime.save_workload_options(&id, &options)
+}
+
+/// Why a model takes no launch mode from this engine, if it takes none: only vLLM runners in
+/// this engine's containers have one.
+fn launch_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>) -> Option<&'static str> {
+    if *kind == EnvironmentKind::Cloud {
+        return Some("A model on a cloud server runs with that server's own launch; change it where it runs.");
+    }
+    if !environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|f| f == "vllm") {
+        return Some("Only vLLM models have a launch mode; this model's runner runs one way.");
+    }
+    None
+}
+
+/// Refuses a parallel setting this model cannot take, before anything is saved; returns the
+/// workload's id and its options as they are.
+fn check_parallel(app: &AppHandle, environment_id: &str, slots: u64) -> Result<(String, Options), String> {
+    if !(1..=16).contains(&slots) { return Err("Parallel requests must be 1–16".into()); }
+    let state = app.state::<PlatformStore>().snapshot()?;
+    let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
+    let id = env.runtime_id.clone().unwrap_or_else(|| environment_id.to_owned());
+    let options = app.state::<RuntimeManager>().workload_options(&id)?;
+    match parallel_refusal(&env.kind, &options.environment) {
+        Some(refusal) => Err(refusal.into()),
+        None => Ok((id, options)),
+    }
+}
+
+/// Why a model takes no parallel setting from this engine, if it takes none: a cloud server's
+/// runner keeps its own settings, and the native host service and the Transformers runner
+/// generate one request at a time.
+fn parallel_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>) -> Option<&'static str> {
+    if *kind == EnvironmentKind::Cloud {
+        return Some("A model on a cloud server serves with that server's own settings; set parallel requests where it runs.");
+    }
+    if environment.contains_key("YOUGORI_NATIVE_BACKEND") {
+        return Some("The native host model service generates one request at a time; parallel requests apply to GGUF and vLLM runners in containers.");
+    }
+    if !environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|f| f == "gguf" || f == "vllm") {
+        return Some("Only GGUF and vLLM models generate requests in parallel; this model's runner answers one at a time.");
+    }
+    None
 }
 
 // A conservative shared-device scheduler: one resident model while switching.
 // Active/pinned models always retain residency; runners enforce this atomically.
+// Real demand goes first; a model waiting only because a preparation started it follows (G05).
 fn demand<'a>(rows: &'a [(String, Value)]) -> Option<&'a (String, Value)> {
+    demand_by(rows, super::prepare::speculative)
+}
+
+fn demand_by<'a>(rows: &'a [(String, Value)], speculative: impl Fn(&str) -> bool) -> Option<&'a (String, Value)> {
     rows.iter().filter(|(_, h)| waiting(h))
-        .min_by(|a,b| a.1["optimizer"]["waitingSince"].as_f64().unwrap_or(f64::MAX).total_cmp(&b.1["optimizer"]["waitingSince"].as_f64().unwrap_or(f64::MAX)))
+        .min_by(|a,b| speculative(&a.0).cmp(&speculative(&b.0))
+            .then_with(|| a.1["optimizer"]["waitingSince"].as_f64().unwrap_or(f64::MAX).total_cmp(&b.1["optimizer"]["waitingSince"].as_f64().unwrap_or(f64::MAX))))
+}
+
+/// What each model's measured loads cost (G05, retention by actual reload cost), from its runner's
+/// load view: a parked vLLM's wake (engine wake plus weight reload), else the last completed load
+/// without the stages a reload of retained files does not repeat (the GPU wait, downloads and
+/// imports), with the bytes it holds.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Reload {
+    pub reload_seconds: f64,
+    pub woke: bool,
+    #[serde(skip)]
+    observed: f64,
+}
+
+static RELOADS: std::sync::Mutex<std::collections::BTreeMap<String, Reload>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The reload cost of a completed load, from its load view.
+fn reload_of_load(load: &Value) -> Option<Reload> {
+    if load["inProgress"] != false || load["outcome"] != "ok" { return None; }
+    let stages = &load["stages"];
+    let elapsed = load["elapsedMs"].as_f64()?;
+    // Stages nest (a download inside its snapshot, an import inside its checkpoint), so none is
+    // subtracted from another: a load that fetched or imported nothing is itself a reload (its
+    // time less its GPU wait); a first load counts the engine start or weight load it repeats.
+    let fetched = ["download", "snapshot", "import", "checkpoint"].iter().any(|name| stages.get(*name).is_some());
+    let (seconds, woke) = match (stages["engine_wake"].as_f64(), stages["weight_reload"].as_f64()) {
+        (Some(wake), Some(reload)) => ((wake + reload) / 1000.0, true),
+        _ if !fetched => ((elapsed - stages["admission_wait"].as_f64().unwrap_or(0.0)) / 1000.0, false),
+        _ => (stages["engine_start_to_ready"].as_f64().or_else(|| stages["weight_load"].as_f64())? / 1000.0, false),
+    };
+    Some(Reload { reload_seconds: seconds.max(0.1), woke, observed: elapsed })
+}
+
+/// Records the reload cost `health` reports, once per load.
+fn record_reload(id: &str, health: &Value) {
+    let Some(reload) = reload_of_load(&health["load"]) else { return };
+    let mut reloads = RELOADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if reloads.get(id).is_none_or(|known| known.observed != reload.observed) {
+        reloads.insert(id.to_owned(), reload);
+    }
+}
+
+/// The measured reload cost of `id`, for its status.
+pub(super) fn reload_cost(id: &str) -> Option<Value> {
+    RELOADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).and_then(|reload| serde_json::to_value(reload).ok())
+}
+
+/// Which resident models are parked first when room is needed (GPU §2.7): the library's
+/// GreedyDual-Size ("Landlord") policy over measured reload costs. A model's credit is its reload
+/// cost, renewed whenever it serves; whenever a resident leaves the GPU every other one pays rent
+/// in proportion to its bytes. Idle models that are cheap to bring back per byte go first; a model
+/// never measured counts its first load, or 30 s.
+#[derive(Default)]
+struct Retention {
+    policy: crate::model_memory::residency::retention::GreedyDualSize,
+    /// Each resident's idle clock and size at the last pass, and since when it has not answered.
+    seen: std::collections::BTreeMap<String, (u64, u64, Option<std::time::Instant>)>,
+    /// The models the scheduler sent to park to make room, and when: only their departures were
+    /// its choice, and only those charge the others rent. Forgotten after a minute without one.
+    parked: std::collections::BTreeMap<String, std::time::Instant>,
+    step: u64,
+}
+
+impl Retention {
+    fn bytes(health: &Value) -> u64 {
+        health["optimizer"]["allocatedBytes"].as_u64().or_else(|| health["admission"]["bytes"].as_u64()).unwrap_or(1 << 30).max(1)
+    }
+
+    fn view(id: &str, bytes: u64, evictable: bool, protected: bool) -> crate::model_memory::residency::retention::ObjectView<'_> {
+        let reload = RELOADS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).map_or(30.0, |reload| reload.reload_seconds);
+        crate::model_memory::residency::retention::ObjectView {
+            key: id, kind: crate::model_memory::residency::retention::ObjectKind::BaseWeights, bytes,
+            reload_seconds: reload, last_use_step: 0, use_count: 0, protected, evictable,
+        }
+    }
+
+    /// One scheduler pass over the models that answered: renews the credit of each one used since
+    /// the last pass (a request active, or its idle clock restarted), and forgets the ones that
+    /// left the GPU. A model the scheduler parked to make room charges every other resident rent
+    /// (pinned or busy ones are exempt, as they cannot leave); a stop, an idle unload or a crash
+    /// was no such choice and charges none.
+    fn observe(&mut self, rows: &[(String, Value)], now: std::time::Instant) {
+        use crate::model_memory::residency::retention::RetentionPolicy;
+        self.step += 1;
+        let resident = rows.iter().filter(|(_, h)| h["optimizer"]["resident"] == true).collect::<Vec<_>>();
+        let held = |h: &Value| h["optimizer"]["pinned"] == true || h["optimizer"]["active"].as_u64().unwrap_or(0) > 0;
+        for (id, health) in &resident {
+            record_reload(id, health);
+            let idle = health["optimizer"]["idleSeconds"].as_u64().unwrap_or(0);
+            let bytes = Self::bytes(health);
+            let used = health["optimizer"]["active"].as_u64().unwrap_or(0) > 0
+                || self.seen.get(id).is_none_or(|(before, _, _)| idle < *before);
+            if used { self.policy.on_use(&Self::view(id, bytes, false, false), self.step); }
+            self.seen.insert(id.clone(), (idle, bytes, None));
+        }
+        let mut left = Vec::new();
+        for (id, (_, bytes, silent_since)) in self.seen.iter_mut() {
+            if resident.iter().any(|(other, _)| other == id) { continue; }
+            // One that did not answer may still hold the GPU: it has left once it answers not
+            // resident, or after a minute of silence.
+            let answered = rows.iter().any(|(other, _)| other == id);
+            let since = *silent_since.get_or_insert(now);
+            if answered || now.saturating_duration_since(since) >= Duration::from_secs(60) { left.push((id.clone(), *bytes)); }
+        }
+        // Parked one after another to make room, each in turn charges the least credit per byte
+        // left, which adds up to the largest parked one's: one charge for all of them.
+        let density = |(id, bytes): &&(String, u64)| self.policy.credit(id).unwrap_or(0.0) / *bytes as f64;
+        let charged = left.iter().filter(|(id, _)| self.parked.contains_key(id))
+            .max_by(|a, b| density(a).total_cmp(&density(b))).cloned();
+        if let Some((id, bytes)) = charged {
+            let mut views = resident.iter().map(|(other, health)| Self::view(other, Self::bytes(health), false, held(health))).collect::<Vec<_>>();
+            views.push(Self::view(&id, bytes, true, false));
+            let _ = self.policy.choose_victim(&views, self.step);
+        }
+        for (id, _) in &left {
+            self.policy.on_evict(id);
+            self.seen.remove(id);
+            self.parked.remove(id);
+        }
+        self.parked.retain(|_, at| now.saturating_duration_since(*at) < Duration::from_secs(60));
+    }
+
+    /// The models the scheduler sent to park to make room (their unload requests).
+    fn note_parks(&mut self, ids: Vec<String>, now: std::time::Instant) {
+        for id in ids { self.parked.insert(id, now); }
+    }
+
+    /// `candidates` in the order to park them: least credit per byte first, then as given (the
+    /// longest idle first).
+    fn order(&self, candidates: Vec<String>, rows: &[(String, Value)]) -> Vec<String> {
+        let density = |id: &str| {
+            let bytes = rows.iter().find(|(other, _)| other == id).map_or(1 << 30, |(_, h)| Self::bytes(h));
+            self.policy.credit(id).unwrap_or(0.0) / bytes as f64
+        };
+        let mut ordered = candidates.into_iter().enumerate().collect::<Vec<_>>();
+        ordered.sort_by(|(a_index, a), (b_index, b)| density(a).total_cmp(&density(b)).then(a_index.cmp(b_index)));
+        ordered.into_iter().map(|(_, id)| id).collect()
+    }
 }
 
 /// A model that asked for the GPU and does not hold it.
@@ -127,6 +508,37 @@ struct Seen {
     health: Option<Value>,
 }
 
+/// Once a running member advertises fencing, missing/invalid metadata cannot
+/// silently downgrade it to legacy control or prove that its GPU memory is free.
+fn validate_seen(seen: &mut [Seen], fenced: &mut std::collections::HashSet<String>, revisions: &mut std::collections::HashMap<String, (String, u64)>) -> Vec<String> {
+    fenced.retain(|id| seen.iter().any(|row| &row.id == id));
+    revisions.retain(|id, _| seen.iter().any(|row| &row.id == id));
+    let mut unknown = Vec::new();
+    for row in seen {
+        let advertised = row.health.as_ref().is_some_and(|health| {
+            ["controlProtocol", "instanceId", "sequence"].iter().any(|field| health["optimizer"].get(*field).is_some())
+        });
+        if advertised { fenced.insert(row.id.clone()); }
+        let valid = row.health.as_ref().is_some_and(|health| match control::observation(health) {
+            Ok(control::Observation::V1 { instance_id, sequence }) => {
+                if revisions.get(&row.id).is_some_and(|(prior, previous)| prior == &instance_id && sequence < *previous) {
+                    false
+                } else {
+                    revisions.insert(row.id.clone(), (instance_id, sequence));
+                    true
+                }
+            },
+            Ok(control::Observation::Legacy) => !fenced.contains(&row.id),
+            Err(_) => false,
+        });
+        if !valid {
+            row.health = None;
+            if fenced.contains(&row.id) { unknown.push(row.id.clone()); }
+        }
+    }
+    unknown
+}
+
 /// Updates the models last seen holding the GPU and returns the rows that answered with the
 /// optimizer on, with the models that may hold GPU memory without saying so: one paused, or no
 /// longer answering, while it held the GPU. One that held none when last seen (paused before it
@@ -139,14 +551,46 @@ fn observe(seen: &[Seen], resident: &mut std::collections::HashSet<String>) -> (
     for model in seen {
         match &model.health {
             Some(health) => {
-                if health["optimizer"]["resident"] == true { resident.insert(model.id.clone()); } else { resident.remove(&model.id); }
+                if health["optimizer"]["resident"] == true || health["optimizer"]["loading"] == true || health["optimizer"]["releaseUncertain"] == true { resident.insert(model.id.clone()); } else { resident.remove(&model.id); }
                 if health["optimizer"]["enabled"] == true { rows.push((model.id.clone(), health.clone())); }
+                else if resident.contains(&model.id) || health["optimizer"]["active"].as_u64().unwrap_or(0) > 0 {
+                    // Disabled automatic management cannot prove free capacity;
+                    // this runner cannot be asked to evict, so block other grants.
+                    silent.push(model.id.clone());
+                }
             }
             None => if resident.contains(&model.id) { silent.push(model.id.clone()) },
         }
     }
     resident.retain(|id| seen.iter().any(|model| &model.id == id));
     (rows, silent)
+}
+
+/// What this pass saw of the runner of a GPU grant (S04/G03; `capacity::RunnerGone`): gone
+/// when its environment is stopped or failed, as the engine itself observed through the
+/// platform store (the runner was a process of that container), or when its environment runs
+/// and the runner answering is another instance holding no model. A paused environment is not
+/// gone: its frozen memory stays allocated. One provisioning, or running without a valid
+/// answer, is unknown and keeps its marker.
+fn runner_gone(id: &str, name: &str, status: &EnvironmentStatus, marker: &str, health: Option<&Value>) -> Option<capacity::RunnerGone> {
+    let how = match status {
+        EnvironmentStatus::Stopped => capacity::Gone::Stopped,
+        EnvironmentStatus::Error => capacity::Gone::Error,
+        EnvironmentStatus::Running => capacity::replaced(marker, health?)?,
+        EnvironmentStatus::Paused | EnvironmentStatus::Provisioning => return None,
+    };
+    Some(capacity::RunnerGone { environment: id.to_owned(), name: name.to_owned(), how })
+}
+
+/// The resident models that may be parked to make room (GPU-W05 "park eligible idle models"),
+/// longest idle first: not pinned, not loading, not uncertain, no request active or pending.
+fn evictable(residents: &[(String, Value)]) -> Vec<String> {
+    let idle = |o: &Value| o["pinned"] == false && o["loading"] == false && o["releaseUncertain"] == false
+        && o["active"].as_u64().unwrap_or(0) == 0 && o["pending"].as_u64().unwrap_or(0) == 0;
+    let mut idle_models = residents.iter().filter(|(_, h)| idle(&h["optimizer"]))
+        .map(|(id, h)| (id.clone(), h["optimizer"]["idleSeconds"].as_u64().unwrap_or(0))).collect::<Vec<_>>();
+    idle_models.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    idle_models.into_iter().map(|(id, _)| id).collect()
 }
 
 fn idle_expired(health: &Value) -> bool {
@@ -162,51 +606,468 @@ pub(crate) fn start(app: &AppHandle) {
 pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::CancellationToken) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // VM-first startup must not require a GPU, a model or NVIDIA tooling. A
+        // failed probe does not prevent existing product startup; host admission
+        // remains unavailable and a consumer can explicitly retry its refresh.
+        if let Err(reason) = capacity::refresh_host_capacity(&shutdown).await {
+            if !shutdown.is_cancelled() { eprintln!("Host capacity initialization: {reason}"); }
+        }
+        // The catalog views of the environments still running lease again and stay; the
+        // rest are swept (S02). Files are copied only where a view is incomplete.
+        {
+            let restore_app = app.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let store = restore_app.state::<PlatformStore>();
+                let runtime = restore_app.state::<RuntimeManager>();
+                super::restore_catalog_views(&store, &runtime);
+            }).await;
+        }
+        let subscriptions = shutdown.child_token();
+        let (membership, updates) = tokio::sync::watch::channel(Vec::new());
+        let event_app = app.clone();
+        let watching = events::run(updates, &subscriptions, || WAKE.notify(), move |id, body| {
+            let app = event_app.clone();
+            async move { model_request(&app, &id, "/v1/yougori/optimizer", Some(body)).await }
+        });
+        // The local vLLM runtimes this scheduler bound to the engine's host evidence (G03).
+        let mut binder = runtime_binding::Binder::default();
+        // vLLM runners that parked by sleep when asked to unload, with the GPU memory in use the
+        // host probe read before and after and when: their wake is matched once they are bound
+        // again (CORE-01 sleep-mode weight discarding, G01/G02).
+        let sleeping = std::sync::Mutex::new(std::collections::BTreeMap::<String, (u64, u64, std::time::Instant)>::new());
+        let scheduling = async {
+        // This scope owns the subscription lifetime, even on early return/error.
+        let _stop = subscriptions.clone().drop_guard();
         // Models last seen holding the GPU.
         let mut resident = std::collections::HashSet::<String>::new();
+        let mut fenced = std::collections::HashSet::<String>::new();
+        let mut revisions = std::collections::HashMap::new();
+        // The last reason each model's co-admission waited for, so the log says it once.
+        let mut last_wait = std::collections::HashMap::<String, String>::new();
+        let mut last_started = None;
+        // The served helper directories a restarted runner left (its share server held them
+        // when its options moved on) are swept every few minutes, as at the engine's start.
+        let mut last_served_sweep = tokio::time::Instant::now();
+        let mut retention = Retention::default();
         loop {
-            tokio::select! { _=shutdown.cancelled()=>break, _=tokio::time::sleep(Duration::from_secs(1))=>{} }
+            if !WAKE.wait(&shutdown, last_started).await { break; }
+            last_started = Some(tokio::time::Instant::now());
+            let _admission = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => return,
+                guard = ADMISSION.lock() => guard,
+            };
             let Ok(state) = app.state::<PlatformStore>().snapshot() else { continue };
-            let runtime = app.state::<RuntimeManager>();
-            let models = state.environments.iter().filter(|e| matches!(e.status, EnvironmentStatus::Running | EnvironmentStatus::Paused) && e.kind == EnvironmentKind::Container)
-                .filter(|e| runtime.workload_options(e.runtime_id.as_deref().unwrap_or(&e.id)).is_ok_and(|o| o.environment.get("YOUGORI_GPU_OPTIMIZER").is_some_and(|v|v == "1")))
-                .collect::<Vec<_>>();
-            let mut seen = Vec::new();
-            for model in &models {
-                let paused = model.status == EnvironmentStatus::Paused;
-                let health = if paused { None } else {
-                    let answer = tokio::select! { _=shutdown.cancelled()=>return, answer=tokio::time::timeout(Duration::from_secs(3),super::model_status(model.id.clone(),app.clone()))=>answer };
-                    answer.ok().and_then(Result::ok)
-                };
-                seen.push(Seen { id: model.id.clone(), health });
+            // A completed deletion may have removed both the environment and its marker.
+            // Runtime receipts survive that removal; only their own grants are settled.
+            if let Err(error) = capacity::reconcile_ends(&shutdown).await {
+                eprintln!("GPU completed-runtime reconciliation: {error}");
             }
-            let (rows, silent) = observe(&seen, &mut resident);
+            // A recorded runner whose environment the engine sees stopped, failed or gone has
+            // ended: its helper pins end with it (G08; `helpers::reconcile_runners`).
+            let alive = |id: &str| state.environments.iter().any(|env| env.id == id && !matches!(env.status, EnvironmentStatus::Stopped | EnvironmentStatus::Error));
+            for (runner, outcome) in super::helpers::reconcile_runners(&alive) {
+                if let Err(error) = outcome { eprintln!("Helper pins of the ended model runner {runner} were not recorded: {error}"); }
+            }
+            if last_served_sweep.elapsed() >= SERVED_SWEEP_INTERVAL {
+                last_served_sweep = tokio::time::Instant::now();
+                let (swept, _held) = super::sweep_unbound_served(&state, &app.state::<RuntimeManager>(), Some(SERVED_SWEEP_INTERVAL));
+                if !swept.is_empty() { eprintln!("Served helper directories swept: {}", swept.len()); }
+            }
+            let runtime = app.state::<RuntimeManager>();
+            let mut pending = std::collections::HashMap::new();
+            let mut unreadable = Vec::new();
+            let mut capacity_markers = std::collections::BTreeMap::new();
+            let mut capacity_demand = std::collections::BTreeMap::new();
+            // The stamped context and the facts behind a Transformers demand (G03 co-residency).
+            let mut capacity_context = std::collections::BTreeMap::new();
+            let mut capacity_facts = std::collections::BTreeMap::new();
+            let mut unreadable_marker = false;
+            let mut launches = std::collections::HashMap::new();
+            for env in state.environments.iter().filter(|env| env.kind == EnvironmentKind::Container) {
+                if let Ok(options) = runtime.workload_options(env.runtime_id.as_deref().unwrap_or(&env.id)) {
+                    if let Some(marker) = options.environment.get(capacity::PENDING) {
+                        capacity_markers.insert(env.id.clone(), marker.clone());
+                    }
+                } else if env.gpu_access { unreadable_marker = true; }
+            }
+            let models = state.environments.iter().filter(|e| matches!(e.status, EnvironmentStatus::Running | EnvironmentStatus::Paused) && e.kind == EnvironmentKind::Container)
+                .filter(|e| match runtime.workload_options(e.runtime_id.as_deref().unwrap_or(&e.id)) {
+                    Ok(options) => {
+                        if let Some(marker) = options.environment.get(capacity::PENDING) { capacity_markers.insert(e.id.clone(), marker.clone()); }
+                        launches.insert(e.id.clone(), runtime_binding::Launch::of(&options.environment));
+                        let demand = if options.environment.contains_key(capacity::POLICY)
+                            && e.provider != Some(RuntimeProviderKind::YougoriCuda) {
+                            Err("Shared GPU admission requires a local CUDA workload; this runtime cannot use host capacity evidence.".into())
+                        } else { capacity::demand(&options.environment) };
+                        capacity_demand.insert(e.id.clone(), demand);
+                        if let Some(context) = capacity::stamped_context(&options.environment) { capacity_context.insert(e.id.clone(), context); }
+                        if let Some(facts) = capacity::Facts::read(&options.environment) { capacity_facts.insert(e.id.clone(), facts); }
+                        if let Some(marker) = options.environment.get(configuration::PENDING) { pending.insert(e.id.clone(), marker.clone()); }
+                        pending.contains_key(&e.id) || (options.environment.contains_key("YOUGORI_GPU_OPTIMIZER")
+                            && options.environment.get("YOUGORI_MODEL_CPU").is_none_or(|value| value != "1")
+                            && options.environment.get("YOUGORI_MODEL_FORMAT").is_none_or(|value| value != "source"))
+                    },
+                    Err(_) => {
+                        let known = resident.contains(&e.id) || fenced.contains(&e.id)
+                            || (e.gpu_access && e.description.starts_with("Hugging Face · "));
+                        if known { unreadable.push(e.id.clone()); }
+                        known
+                    },
+                }).collect::<Vec<_>>();
+            let inputs = models.iter().map(|model| (model.id.clone(), model.status == EnvironmentStatus::Paused)).collect();
+            let Some(mut seen) = status_batch::collect(inputs, &shutdown, Duration::from_secs(3), |id| {
+                super::model_status(id, app.clone())
+            }).await else { return };
+            let mut unknown = validate_seen(&mut seen, &mut fenced, &mut revisions);
+            unknown.extend(unreadable);
+            let mut unconfirmed = Vec::new();
+            for (id, marker) in pending {
+                let invalidated = seen.iter().find(|row| row.id == id).and_then(|row| row.health.as_ref())
+                    .is_some_and(|health| configuration::invalidated(&marker, health));
+                let cleared = invalidated && models.iter().find(|model| model.id == id).is_some_and(|model| {
+                    let options_id = model.runtime_id.as_deref().unwrap_or(&model.id);
+                    let Ok(mut options) = runtime.workload_options(options_id) else { return false; };
+                    if options.environment.get(configuration::PENDING) != Some(&marker) { return false; }
+                    options.environment.remove(configuration::PENDING);
+                    runtime.save_workload_options(options_id, &options).is_ok()
+                });
+                if !cleared { unconfirmed.push(id); }
+            }
+            membership.send_replace(events::members(&seen));
+            let (rows, mut silent) = observe(&seen, &mut resident);
+            retention.observe(&rows, std::time::Instant::now());
+            // What each granted runner reports allocated goes on its grant as an observation
+            // (S03: observed allocations on the one host ledger); never authority, never a
+            // change to what is reserved, and the runner's word only about its own grant.
+            for (id, health) in rows.iter().filter(|(id, _)| capacity_markers.contains_key(id)) {
+                if let Some(bytes) = health["optimizer"]["allocatedBytes"].as_u64() {
+                    if let Err(error) = capacity::local_observe_usage(id, bytes) { eprintln!("GPU usage of {id} was not recorded on its grant: {error}"); }
+                }
+            }
+            // Bind each local vLLM runtime known to run under its GPU grant; unbind the ones
+            // that stopped, were released or are gone (G03).
+            let runners = models.iter().map(|model| runtime_binding::Runner {
+                id: &model.id,
+                running: model.status == EnvironmentStatus::Running,
+                local_cuda: model.provider == Some(RuntimeProviderKind::YougoriCuda),
+                image: &model.runtime,
+                launch: launches.get(&model.id).copied(),
+                grant: capacity_markers.get(&model.id).map(String::as_str),
+                health: seen.iter().find(|row| row.id == model.id).and_then(|row| row.health.as_ref()),
+            }).collect::<Vec<_>>();
+            let changes = runtime_binding::pass(&mut binder, &runners);
+            runtime_binding::apply(changes, binder.unbound()).await;
+            // A runner that parked by sleep and is bound again after a wake (its last load woke
+            // the engine and reloaded the weights, with no cold start) completed a sleep cycle.
+            let parked = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect::<Vec<_>>();
+            for id in parked {
+                if !models.iter().any(|model| model.id == id) {
+                    sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                    continue;
+                }
+                let (Some(binding), Some(health)) = (binder.bindings().get(&id), seen.iter().find(|row| row.id == id).and_then(|row| row.health.as_ref())) else { continue };
+                let load = &health["load"];
+                let stages = &load["stages"];
+                let woke = load["inProgress"] == false && load["outcome"] == "ok" && stages.get("engine_start_to_ready").is_none();
+                let (Some(wake), Some(reload)) = (stages["engine_wake"].as_f64(), stages["weight_reload"].as_f64()) else {
+                    sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                    continue;
+                };
+                if !woke {
+                    sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                    continue;
+                }
+                let Some(awake) = capacity::local_used(&shutdown).await else { continue };
+                let Some((before, after, at)) = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) else { continue };
+                let cycle = crate::host_evidence::SleepCycle {
+                    used_before_bytes: before, used_parked_bytes: after, used_awake_bytes: awake,
+                    engine_wake_ms: wake, weight_reload_ms: reload,
+                    slept_ms: u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    recorded_at: crate::foundation::ids::MonotonicTime::from_nanos(0),
+                };
+                let (returned, retaken) = cycle.returned_and_retaken();
+                match crate::host_evidence::record_sleep_cycle(binding.runtime(), cycle).await {
+                    Ok(_) => eprintln!("Sleep cycle of {id}: the park returned {} MiB, the wake took {} MiB again ({wake:.0} ms wake, {reload:.0} ms weight reload)", returned >> 20, retaken >> 20),
+                    Err(error) => eprintln!("Sleep cycle of {id} was not recorded: {error}"),
+                }
+            }
+            for id in unknown { if !silent.contains(&id) { silent.push(id); } }
+            for id in &unconfirmed { if !silent.contains(id) { silent.push(id.clone()); } }
+            // The grants whose runner this pass saw gone (S04/G03): their markers are
+            // settled through the host probe, never on a runner's word.
+            let runners_gone = state.environments.iter().filter_map(|env| runner_gone(&env.id, &env.name, &env.status, capacity_markers.get(&env.id)?,
+                seen.iter().find(|row| row.id == env.id).and_then(|row| row.health.as_ref()))).collect::<Vec<_>>();
             let name = |id: &str| models.iter().find(|model| model.id == id).map_or_else(|| id.to_owned(), |model| model.name.clone());
-            *WAITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = reasons(&rows, &silent, name);
+            let mut waiting = reasons(&rows, &silent, name);
+            if let Some((first, _)) = demand(&rows).filter(|_| !unconfirmed.is_empty()) {
+                let names = unconfirmed.iter().map(|id| name(id)).collect::<Vec<_>>().join(", ");
+                waiting.insert(first.clone(), format!("GPU settings for {names} have an unconfirmed outcome. Admission resumes after reconciliation; stop or recreate the model if it cannot recover."));
+            } else if let Some((first, _)) = demand(&rows) {
+                let disabled = seen.iter().filter(|row| row.health.as_ref().is_some_and(|health|
+                    health["optimizer"]["enabled"] == false && (resident.contains(&row.id)
+                        || health["optimizer"]["active"].as_u64().unwrap_or(0) > 0)))
+                    .map(|row| name(&row.id)).collect::<Vec<_>>();
+                if !disabled.is_empty() {
+                    waiting.insert(first.clone(), format!("{} keep GPU memory while Automatic GPU memory is off. Re-enable it or stop those models to let this model load.", disabled.join(", ")));
+                }
+            }
+            *WAITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = waiting;
             // Never admit another model while a loader owns the GPU.
             if rows.iter().any(|(_,h)|h["optimizer"]["loading"] == true) { continue; }
-            if let Some((id,_)) = demand(&rows) {
-                if must_wait(&rows, id, silent.len()) { continue; }
-                let others = rows.iter().filter(|(other,h)|other != id && h["optimizer"]["resident"] == true).collect::<Vec<_>>();
-                let _ = model_request(&app,id,"/v1/yougori/optimizer",Some(json!({"action":"phase","phase":"freeing_memory"}))).await;
-                let mut freed = true;
-                for (other,_) in others {
-                    if !model_request(&app,other,"/v1/yougori/optimizer",Some(json!({"action":"unload"}))).await.is_ok_and(|v|v["unloaded"] == true) { freed = false; break; }
+            // A vLLM runner asked to unload may park by sleep: the host probe is read around the
+            // unload, and its answer says whether it slept (`sleeping` above).
+            let vllm_runners = launches.iter().filter(|(_, launch)| launch.is_vllm()).map(|(id, _)| id.clone()).collect::<std::collections::HashSet<_>>();
+            let send = |id: String, body: Value| {
+                let app = app.clone();
+                let watched = body["action"] == "unload" && vllm_runners.contains(&id);
+                let (sleeping, shutdown) = (&sleeping, &shutdown);
+                async move {
+                    let before = if watched { capacity::local_used(shutdown).await } else { None };
+                    let answer = model_request(&app, &id, "/v1/yougori/optimizer", Some(body)).await;
+                    if let (Some(before), Ok(reply)) = (before, &answer) {
+                        if reply["unloaded"] == true && reply["parked"] == "sleep" {
+                            if let Some(after) = capacity::local_used(shutdown).await {
+                                sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(), (before, after, std::time::Instant::now()));
+                            }
+                        }
+                    }
+                    answer
                 }
-                if freed { let _ = model_request(&app,id,"/v1/yougori/optimizer",Some(json!({"action":"grant"}))).await; }
+            };
+            let persist_capacity = |id: &str, marker: Option<&str>| {
+                let env = state.environments.iter().find(|env| env.id == id).ok_or("GPU model disappeared during reservation persistence.")?;
+                let runtime_id = env.runtime_id.as_deref().unwrap_or(id);
+                let mut options = runtime.workload_options(runtime_id)?;
+                if let Some(marker) = marker { options.environment.insert(capacity::PENDING.into(), marker.into()); }
+                else { options.environment.remove(capacity::PENDING); }
+                runtime.save_workload_options(runtime_id, &options)
+            };
+            // A model waiting only because a preparation started it loads into a GPU no other
+            // model holds (or as normal demand once a request arrives for it): while residents
+            // hold the GPU it is not served, and this pass does the housekeeping that lets them
+            // leave as their own settings say (idle unloads, releases) instead.
+            let first = demand(&rows).filter(|(id, _)| !(super::prepare::speculative(id)
+                && rows.iter().any(|(other, h)| other != id && h["optimizer"]["resident"] == true)));
+            if let Some((waiting, _)) = demand(&rows).filter(|_| first.is_none()) {
+                WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(waiting.clone(),
+                    "Being prepared in the background: it loads once no other model holds the GPU, or at once when a request arrives for it.".into());
+            }
+            if let Some((id,health)) = first {
+                let others = rows.iter().filter(|(other,h)|other != id && h["optimizer"]["resident"] == true).cloned().collect::<Vec<_>>();
+                let requested = match capacity_demand.get(id) {
+                    Some(Ok(requested)) => *requested,
+                    Some(Err(reason)) => {
+                        WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), reason.clone());
+                        continue;
+                    },
+                    None => continue,
+                };
+                // Co-residency (G03): a model with a ledger demand is admitted beside resident
+                // models that all hold grants, at its stamped context when that fits, after
+                // parking the idle ones when it does not, or at the longest context that fits
+                // beside busy or pinned ones. Everything else keeps the one-resident path.
+                let shared = requested.is_some() && !others.is_empty() && silent.is_empty() && !unreadable_marker
+                    && others.iter().all(|(other, _)| capacity_markers.contains_key(other));
+                if shared {
+                    // The reason this model waits is co-admission's alone: the one-resident
+                    // texts computed above (pinned, busy) do not apply beside granted residents.
+                    WAITING.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+                    let evictable = retention.order(evictable(&others), &rows);
+                    let observations = seen.iter().filter_map(|row| row.health.clone().map(|h| (row.id.clone(), h))).collect::<Vec<_>>();
+                    // The residents stamped with their facts can be held to a shorter context
+                    // (their stamped one at most) to make a fair share for this model.
+                    let resident_facts = others.iter().filter_map(|(other, _)| {
+                        let facts = capacity_facts.get(other)?;
+                        Some((other.clone(), (*facts, capacity_context.get(other).copied().unwrap_or_else(|| facts.served_context()))))
+                    }).collect::<std::collections::BTreeMap<_, _>>();
+                    // The residents it actually asks to unload are the parks retention charges for.
+                    let parking = std::sync::Mutex::new(Vec::new());
+                    let noting = |target: String, body: Value| {
+                        if body["action"] == "unload" { parking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(target.clone()); }
+                        send(target, body)
+                    };
+                    let result = capacity::local_coadmit(id, health, &others, &evictable, &observations, &capacity_markers, &runners_gone,
+                        requested.expect("a shared admission has a demand"), capacity_context.get(id).copied(), capacity_facts.get(id).copied(),
+                        &resident_facts, &shutdown, &noting, &persist_capacity).await;
+                    retention.note_parks(parking.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner), std::time::Instant::now());
+                    match result {
+                        Ok(terms) => {
+                            last_wait.remove(id);
+                            eprintln!("GPU co-admission granted {id} {} bytes{} beside {} resident model(s)", terms.bytes,
+                                terms.context.map_or(String::new(), |context| format!(" covering {context} tokens")), others.len());
+                        }
+                        Err(reason) => {
+                            // Logged once per reason, not once per two-second pass.
+                            if last_wait.get(id) != Some(&reason) {
+                                eprintln!("GPU co-admission of {id} waits: {reason}");
+                                last_wait.insert(id.clone(), reason.clone());
+                            }
+                            let holders = others.iter().map(|(other, _)| name(other)).collect::<Vec<_>>().join(", ");
+                            WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), capacity::waiting_words(&reason, &holders));
+                        }
+                    }
+                    continue;
+                }
+                if must_wait(&rows, id, silent.len()) { continue; }
+                if requested.is_some() || !capacity_markers.is_empty() || capacity::has_reservations() || unreadable_marker {
+                    // Read all persisted grant intents, including stopped/failed
+                    // members omitted from the active scheduler snapshot. Missing
+                    // health is uncertainty, never permission to forget a grant.
+                    if unreadable_marker {
+                        WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), "GPU workload options could not be read; shared admission is paused.".into());
+                        continue;
+                    }
+                    let observations = seen.iter().filter_map(|row| row.health.clone().map(|h| (row.id.clone(), h))).collect::<Vec<_>>();
+                    let result = capacity::local_switch(id, health, &others, &observations, &capacity_markers, &runners_gone, requested, &shutdown, &send, &persist_capacity).await;
+                    if let Err(reason) = result {
+                        WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), reason);
+                    }
+                } else {
+                    let _ = control::switch(id, health, &others, &shutdown, control::TIMEOUT, &send).await;
+                }
             } else {
+                let mut observations = seen.iter().filter_map(|row| row.health.clone().map(|h| (row.id.clone(), h))).collect::<Vec<_>>();
                 for (id,h) in &rows {
-                    if idle_expired(h) {
-                        let _ = model_request(&app,id,"/v1/yougori/optimizer",Some(json!({"action":"unload"}))).await;
+                    if idle_expired(h) && !super::prepare::keeps(id) {
+                        if let Ok(answer) = control::request(id, control::Action::Unload, h, &shutdown, control::TIMEOUT, &send).await {
+                            if let Some((_, observed)) = observations.iter_mut().find(|(key, _)| key == id) { *observed = answer; }
+                        }
+                    }
+                }
+                if !unreadable_marker && (!capacity_markers.is_empty() || capacity::has_reservations()) {
+                    // Residents keep their grants; a grant whose runner is gone, or answered
+                    // holding nothing, returns through the host probe (G03 co-residency).
+                    let residents = rows.iter().filter(|(_, h)| h["optimizer"]["resident"] == true).cloned().collect::<Vec<_>>();
+                    if let Err(reason) = capacity::local_release(&residents, &observations, &capacity_markers, &runners_gone, &shutdown, &persist_capacity).await {
+                        if reason != "GPU release is not yet confirmed." { eprintln!("GPU idle reconciliation: {reason}"); }
+                    }
+                }
+                // Grow-back (G03): with no model waiting, a trimmed resident regains context
+                // when a neighbour left (or memory was freed outside), within what the ledger
+                // admits; its runner grows only on a fenced request and is shown only what it
+                // answers holding.
+                if !unreadable_marker && silent.is_empty() && capacity::growth_due() {
+                    let residents = rows.iter().filter(|(id, h)| h["optimizer"]["resident"] == true && capacity_markers.contains_key(id)).cloned().collect::<Vec<_>>();
+                    let candidates = residents.iter().filter_map(|(id, h)| {
+                        let facts = capacity_facts.get(id)?;
+                        let stamped = capacity_context.get(id).copied()?;
+                        let current = h["optimizer"]["capacityContext"].as_u64()?;
+                        (current < stamped).then(|| (id.clone(), (*facts, stamped, current)))
+                    }).collect::<std::collections::BTreeMap<_, _>>();
+                    if !residents.is_empty() {
+                        match capacity::local_regrow(&residents, &candidates, &shutdown, &send).await {
+                            Ok(grown) => for (id, terms) in grown {
+                                eprintln!("GPU grant of {id} grew back to {} bytes{}", terms.bytes,
+                                    terms.context.map_or(String::new(), |context| format!(" covering {context} tokens")));
+                            },
+                            Err(reason) => eprintln!("GPU grow-back: {reason}"),
+                        }
                     }
                 }
             }
         }
+        };
+        tokio::join!(scheduling, watching);
+        // Nothing this scheduler bound is observed running any longer.
+        let changes = binder.clear();
+        runtime_binding::apply(changes, binder.unbound()).await;
     })
 }
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn the_transformers_stamp_bridge_leaves_other_runners_on_the_legacy_scheduler() {
+        // The runner check runs before the host probe, so nothing is spawned here.
+        for runner in ["yougori-vllm", "yougori-clef", "local-transformers", "file-publisher"] {
+            let compatibility = json!({"runner": runner, "resources": {"weightsBytes": 988_097_824u64, "gpuMemoryGbEstimated": 3,
+                "attention": {"layers":24,"heads":14,"kvHeads":2,"headDim":64,"hiddenSize":896,"bytesPerValue":2,"contextTokens":32768}}});
+            let before = json!({"YOUGORI_MODEL": "example/chat", "YOUGORI_MODEL_PRECISION": "auto"});
+            let mut environment = before.clone();
+            assert!(!stamp_local_capacity(&mut environment, &compatibility).await);
+            assert_eq!(environment, before, "{runner}");
+        }
+    }
+    fn fenced_health(resident: bool) -> Value {
+        json!({"status":"idle","optimizer":{"controlProtocol":1,"instanceId":"a".repeat(32),"sequence":1,
+            "enabled":true,"pinned":false,"resident":resident,"loading":false,"releaseUncertain":false,"active":0,"pending":0}})
+    }
+    #[test] fn malformed_versioned_health_preserves_occupancy_and_blocks_downgrade() {
+        let mut fenced = std::collections::HashSet::new();
+        let mut revisions = std::collections::HashMap::new();
+        let mut resident = std::collections::HashSet::new();
+        let mut good = vec![Seen { id:"model".into(), health:Some(fenced_health(true)) }];
+        assert!(validate_seen(&mut good, &mut fenced, &mut revisions).is_empty());
+        observe(&good, &mut resident);
+        for answer in [None, Some(json!({"status":"idle","optimizer":{"controlProtocol":1}})),
+                       Some(json!({"status":"idle","optimizer":{"enabled":true,"resident":false}}))] {
+            let mut broken = vec![Seen { id:"model".into(), health:answer }];
+            assert_eq!(validate_seen(&mut broken, &mut fenced, &mut revisions), vec!["model"]);
+            assert!(broken[0].health.is_none());
+            let (rows, silent) = observe(&broken, &mut resident);
+            assert!(resident.contains("model"));
+            assert!(must_wait(&rows, "other", silent.len()));
+        }
+        let mut recovered = vec![Seen { id:"model".into(), health:Some(fenced_health(false)) }];
+        assert!(validate_seen(&mut recovered, &mut fenced, &mut revisions).is_empty());
+        observe(&recovered, &mut resident);
+        assert!(!resident.contains("model"));
+    }
+    #[test] fn invalid_fenced_members_block_even_without_a_previous_resident_snapshot() {
+        let mut fenced = std::collections::HashSet::new();
+        let mut revisions = std::collections::HashMap::new();
+        let mut seen = vec![Seen { id:"unknown".into(), health:Some(json!({"optimizer":{"controlProtocol":2}})) }];
+        assert_eq!(validate_seen(&mut seen, &mut fenced, &mut revisions), vec!["unknown"]);
+        let mut downgraded = vec![Seen { id:"unknown".into(), health:Some(json!({"optimizer":{"enabled":true}})) }];
+        assert_eq!(validate_seen(&mut downgraded, &mut fenced, &mut revisions), vec!["unknown"]);
+        validate_seen(&mut [], &mut fenced, &mut revisions); // Membership removal ends this incarnation history.
+        assert!(fenced.is_empty());
+        assert!(validate_seen(&mut [Seen { id:"old".into(), health:Some(json!({"optimizer":{"enabled":true}})) }], &mut fenced, &mut revisions).is_empty());
+    }
+    #[test] fn same_instance_health_cannot_roll_back_a_known_revision_or_free_memory() {
+        let mut fenced = std::collections::HashSet::new();
+        let mut revisions = std::collections::HashMap::new();
+        let mut resident = std::collections::HashSet::new();
+        let mut current = fenced_health(true);
+        current["optimizer"]["sequence"] = json!(9);
+        let mut seen = vec![Seen { id:"model".into(), health:Some(current) }];
+        assert!(validate_seen(&mut seen, &mut fenced, &mut revisions).is_empty());
+        observe(&seen, &mut resident);
+        let mut regressed = vec![Seen { id:"model".into(), health:Some(fenced_health(false)) }];
+        assert_eq!(validate_seen(&mut regressed, &mut fenced, &mut revisions), vec!["model"]);
+        observe(&regressed, &mut resident);
+        assert!(resident.contains("model"));
+        let mut replacement = fenced_health(false);
+        replacement["optimizer"]["instanceId"] = json!("b".repeat(32));
+        let mut replaced = vec![Seen { id:"model".into(), health:Some(replacement) }];
+        assert!(validate_seen(&mut replaced, &mut fenced, &mut revisions).is_empty());
+        observe(&replaced, &mut resident);
+        assert!(!resident.contains("model"));
+    }
+    #[test] fn disabled_gpu_runners_keep_capacity_until_observed_empty() {
+        for field in ["resident", "loading", "releaseUncertain"] {
+            let mut health = fenced_health(false);
+            health["optimizer"]["enabled"] = json!(false);
+            health["optimizer"][field] = json!(true);
+            let mut resident = std::collections::HashSet::new();
+            let (rows, silent) = observe(&[Seen { id:"disabled".into(), health:Some(health.clone()) }], &mut resident);
+            assert!(rows.is_empty());
+            assert!(must_wait(&rows, "next", silent.len()));
+            health["optimizer"][field] = json!(false);
+            let (_, cleared) = observe(&[Seen { id:"disabled".into(), health:Some(health) }], &mut resident);
+            assert!(cleared.is_empty());
+        }
+    }
+    #[test] fn a_loading_or_uncertain_model_still_holds_memory_when_it_stops_answering() {
+        for field in ["loading", "releaseUncertain"] {
+            let mut health = json!({"optimizer":{"enabled":true,"resident":false}});
+            health["optimizer"][field] = json!(true);
+            let mut resident = std::collections::HashSet::new();
+            observe(&[Seen { id:"model".into(), health:Some(health) }], &mut resident);
+            let (_, silent) = observe(&[Seen { id:"model".into(), health:None }], &mut resident);
+            assert_eq!(silent, vec!["model"]);
+        }
+    }
     #[test] fn resident_waits_for_other_model_demand_without_an_idle_deadline() {
         let resident = json!({"status":"ready","optimizer":{"resident":true,"idleTimeoutSeconds":0,"idleSeconds":86400,"pending":0}});
         let mut rows = vec![("current".into(),resident.clone())];
@@ -281,11 +1142,154 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
         health["optimizer"].as_object_mut().unwrap().remove("idleTimeoutSeconds");
         assert!(!idle_expired(&health));
     }
+    #[test] fn a_grants_runner_is_gone_when_its_environment_ended_or_another_runner_answers_holding_nothing() {
+        let marker = configuration::record(&fenced_health(false)).unwrap();
+        let mut replacement = fenced_health(false);
+        replacement["optimizer"]["instanceId"] = json!("b".repeat(32));
+        let gone = |status: &EnvironmentStatus, health: Option<&Value>| runner_gone("model", "Model", status, &marker, health).map(|gone| gone.how);
+        // The engine saw the container end, stopped or failed: nothing of its runner is asked.
+        assert_eq!(gone(&EnvironmentStatus::Stopped, None), Some(capacity::Gone::Stopped));
+        assert_eq!(gone(&EnvironmentStatus::Error, None), Some(capacity::Gone::Error));
+        // A paused environment keeps its frozen memory; a provisioning one is not observed yet.
+        assert_eq!(gone(&EnvironmentStatus::Paused, None), None);
+        assert_eq!(gone(&EnvironmentStatus::Provisioning, None), None);
+        // Running: only another instance holding no model is a replaced runner. The same
+        // instance is today's path (a higher sequence settles it); no answer is unknown.
+        assert_eq!(gone(&EnvironmentStatus::Running, None), None);
+        assert_eq!(gone(&EnvironmentStatus::Running, Some(&fenced_health(false))), None);
+        assert_eq!(gone(&EnvironmentStatus::Running, Some(&replacement)),
+            Some(capacity::Gone::Replaced { old_instance: "a".repeat(32), new_instance: "b".repeat(32) }));
+        for field in ["resident", "loading", "releaseUncertain"] {
+            let mut holding = replacement.clone();
+            holding["optimizer"][field] = json!(true);
+            assert_eq!(gone(&EnvironmentStatus::Running, Some(&holding)), None, "{field}");
+        }
+        let mut busy = replacement.clone();
+        busy["optimizer"]["active"] = json!(1);
+        assert_eq!(gone(&EnvironmentStatus::Running, Some(&busy)), None);
+        let mut disabled = replacement.clone();
+        disabled["optimizer"]["enabled"] = json!(false);
+        assert_eq!(gone(&EnvironmentStatus::Running, Some(&disabled)), None);
+        let observed = runner_gone("model", "Model", &EnvironmentStatus::Stopped, &marker, None).unwrap();
+        assert_eq!((observed.environment.as_str(), observed.name.as_str()), ("model", "Model"));
+    }
     #[test] fn oldest_waiter_wins_and_loaded_or_failed_models_are_excluded() {
         let rows = vec![("loaded".into(),json!({"status":"ready","optimizer":{"pending":3,"resident":true,"waitingSince":1}})),
             ("new".into(),json!({"status":"queued","optimizer":{"pending":1,"waitingSince":20}})),
             ("old".into(),json!({"status":"queued","optimizer":{"pending":1,"waitingSince":10}})),
             ("failed".into(),json!({"status":"error","optimizer":{"pending":1,"waitingSince":0}}))];
         assert_eq!(demand(&rows).unwrap().0,"old");
+    }
+    #[test] fn only_container_vllm_runners_take_a_launch_mode() {
+        let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])), None);
+        for format in ["gguf", "safetensors"] {
+            assert!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", format)])).unwrap().contains("Only vLLM"));
+        }
+        assert!(launch_refusal(&EnvironmentKind::Container, &options(&[])).is_some());
+        assert!(launch_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])).unwrap().contains("cloud server"));
+        // The modes engine_backends.py reads, in the same order.
+        let backends = include_str!("engine_backends.py");
+        assert_eq!(backends.matches("VLLM_LAUNCHES = (\"compiled\", \"speculative\", \"eager\")").count(), 1);
+        assert_eq!(LAUNCHES, ["compiled", "speculative", "eager"]);
+    }
+    #[test] fn only_container_gguf_and_vllm_runners_take_a_parallel_setting() {
+        let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::BTreeMap<_, _>>();
+        for format in ["gguf", "vllm"] {
+            assert_eq!(parallel_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", format)])), None);
+        }
+        assert!(parallel_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "safetensors")])).unwrap().contains("one at a time"));
+        assert!(parallel_refusal(&EnvironmentKind::Container, &options(&[])).is_some());
+        assert!(parallel_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "gguf"), ("YOUGORI_NATIVE_BACKEND", "metal")])).unwrap().contains("native host"));
+        assert!(parallel_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "gguf")])).unwrap().contains("cloud server"));
+    }
+
+    #[test] fn real_demand_goes_before_a_model_waiting_only_for_its_preparation() {
+        let rows = vec![
+            ("prepared".into(),json!({"status":"queued","optimizer":{"pending":1,"resident":false,"waitingSince":1}})),
+            ("requested".into(),json!({"status":"queued","optimizer":{"pending":1,"resident":false,"waitingSince":5}}))];
+        assert_eq!(demand_by(&rows, |_| false).unwrap().0, "prepared");
+        assert_eq!(demand_by(&rows, |id| id == "prepared").unwrap().0, "requested");
+        // A preparation alone in line is still served.
+        assert_eq!(demand_by(&rows[..1], |id| id == "prepared").unwrap().0, "prepared");
+    }
+    #[test] fn a_reload_costs_what_a_retained_load_repeats() {
+        // A first load (it downloaded): what a reload repeats is its engine start.
+        let cold = json!({"inProgress":false,"outcome":"ok","elapsedMs":20_000.0,
+            "stages":{"admission_wait":1_000.0,"snapshot":13_000.0,"download":12_000.0,"engine_start_to_ready":3_500.0}});
+        let reload = reload_of_load(&cold).unwrap();
+        assert!((reload.reload_seconds - 3.5).abs() < 1e-9 && !reload.woke);
+        // A reload of retained files: its own time less its GPU wait.
+        let warm = json!({"inProgress":false,"outcome":"ok","elapsedMs":4_200.0,"stages":{"admission_wait":200.0,"engine_start_to_ready":3_900.0}});
+        assert!((reload_of_load(&warm).unwrap().reload_seconds - 4.0).abs() < 1e-9);
+        // A parked vLLM's wake: its engine wake plus weight reload.
+        let wake = json!({"inProgress":false,"outcome":"ok","elapsedMs":900.0,"stages":{"engine_wake":591.0,"weight_reload":153.0}});
+        let reload = reload_of_load(&wake).unwrap();
+        assert!((reload.reload_seconds - 0.744).abs() < 1e-9 && reload.woke);
+        // Nothing for a load still running or failed; never below 0.1 s.
+        assert!(reload_of_load(&json!({"inProgress":true,"outcome":"ok","elapsedMs":5.0,"stages":{}})).is_none());
+        assert!(reload_of_load(&json!({"inProgress":false,"outcome":"error","elapsedMs":5.0,"stages":{}})).is_none());
+        let tiny = json!({"inProgress":false,"outcome":"ok","elapsedMs":10.0,"stages":{"admission_wait":10.0}});
+        assert_eq!(reload_of_load(&tiny).unwrap().reload_seconds, 0.1);
+    }
+    #[test] fn models_cheap_to_bring_back_per_byte_are_parked_first() {
+        let gib = 1u64 << 30;
+        let resident = |idle: u64, bytes: u64| json!({"status":"ready","optimizer":{"resident":true,"active":0,"pending":0,"idleSeconds":idle,"allocatedBytes":bytes}});
+        let rows = vec![("vllm-sleeper".to_owned(), resident(5, 20 * gib)), ("gguf".to_owned(), resident(5, 2 * gib)), ("fresh".to_owned(), resident(0, 2 * gib))];
+        {
+            let mut reloads = RELOADS.lock().unwrap();
+            reloads.insert("vllm-sleeper".into(), Reload { reload_seconds: 0.8, woke: true, observed: 1.0 });
+            reloads.insert("gguf".into(), Reload { reload_seconds: 4.0, woke: false, observed: 2.0 });
+            reloads.remove("fresh");
+        }
+        let now = std::time::Instant::now();
+        let mut retention = Retention::default();
+        retention.observe(&rows, now);
+        // Every model is credited its reload cost when first seen in use: 0.8 s over 20 GiB is
+        // cheaper per byte than 4 s over 2 GiB or the 30 s assumed for one never measured.
+        let order = retention.order(vec!["gguf".into(), "fresh".into(), "vllm-sleeper".into()], &rows);
+        assert_eq!(order, vec!["vllm-sleeper".to_owned(), "gguf".to_owned(), "fresh".to_owned()]);
+        // The model the scheduler sent to park charges every other one rent and is forgotten.
+        retention.note_parks(vec!["vllm-sleeper".into()], now);
+        let mut parked = rows.clone();
+        parked[0].1["optimizer"]["resident"] = json!(false);
+        retention.observe(&parked, now);
+        assert!(retention.policy.credit("vllm-sleeper").is_none());
+        let rent = retention.policy.credit("gguf").unwrap();
+        assert!(rent < 4.0, "{rent}");
+        // A departure the scheduler did not choose (a stop, an idle unload) only forgets the
+        // model; one that stops answering keeps its place for a minute of silence.
+        let mut stopped = parked.clone();
+        stopped[2].1["optimizer"]["resident"] = json!(false);
+        retention.observe(&stopped, now);
+        assert!(retention.policy.credit("fresh").is_none());
+        assert_eq!(retention.policy.credit("gguf"), Some(rent));
+        retention.observe(&stopped[..1], now + Duration::from_secs(59));
+        assert_eq!(retention.policy.credit("gguf"), Some(rent));
+        retention.observe(&stopped[..1], now + Duration::from_secs(120));
+        assert!(retention.policy.credit("gguf").is_none() && retention.seen.is_empty());
+        for id in ["vllm-sleeper", "gguf", "fresh"] { RELOADS.lock().unwrap().remove(id); }
+    }
+    #[test] fn models_parked_together_charge_the_rest_once() {
+        let gib = 1u64 << 30;
+        let resident = |bytes: u64| json!({"status":"ready","optimizer":{"resident":true,"active":0,"pending":0,"idleSeconds":5,"allocatedBytes":bytes}});
+        let rows = vec![("park-a".to_owned(), resident(2 * gib)), ("park-b".to_owned(), resident(2 * gib)), ("keep-c".to_owned(), resident(gib))];
+        {
+            let mut reloads = RELOADS.lock().unwrap();
+            reloads.insert("park-a".into(), Reload { reload_seconds: 4.0, woke: false, observed: 1.0 });
+            reloads.insert("park-b".into(), Reload { reload_seconds: 8.0, woke: false, observed: 1.0 });
+            reloads.insert("keep-c".into(), Reload { reload_seconds: 100.0, woke: false, observed: 1.0 });
+        }
+        let now = std::time::Instant::now();
+        let mut retention = Retention::default();
+        retention.observe(&rows, now);
+        retention.note_parks(vec!["park-a".into(), "park-b".into()], now);
+        let mut left = rows.clone();
+        for row in &mut left[..2] { row.1["optimizer"]["resident"] = json!(false); }
+        retention.observe(&left, now);
+        // 2 s/GiB then 4 s/GiB parked in turn: C pays 4 s/GiB over its 1 GiB once, not 2 + 4.
+        assert_eq!(retention.policy.credit("keep-c"), Some(96.0));
+        assert!(retention.parked.is_empty());
+        for id in ["park-a", "park-b", "keep-c"] { RELOADS.lock().unwrap().remove(id); }
     }
 }

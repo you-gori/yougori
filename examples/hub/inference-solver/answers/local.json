@@ -1,0 +1,11 @@
+{
+  "admin_email": "admin@example.invalid",
+  "account_mode": "public",
+  "site_name": "Inference Solver",
+  "web_access": "private",
+  "model_source": "local",
+  "model": "hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+  "quantization": "Q4_K_M",
+  "gpu": "optional",
+  "memory_gb": "8"
+}

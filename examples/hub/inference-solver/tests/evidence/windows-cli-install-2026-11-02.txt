@@ -1,0 +1,21 @@
+opencode: real PowerShell install and installed CLI passed
+kilo: real PowerShell install and installed CLI passed
+codex: real PowerShell install and installed CLI passed
+pi: real PowerShell install and installed CLI passed
+qwen: real PowerShell install and installed CLI passed
+cline: real PowerShell install and installed CLI passed
+claude: real PowerShell install and installed CLI passed
+aider: real PowerShell install and installed CLI passed
+interpreter: real PowerShell install and installed CLI passed
+goose: real PowerShell install and installed CLI passed
+deepseek: real PowerShell install and installed CLI passed
+gemini: real PowerShell install and installed CLI passed
+openhands: real PowerShell install and installed CLI passed
+grok: real PowerShell install and installed CLI passed
+swe: real PowerShell install and installed CLI passed
+pentestgpt: real PowerShell install and installed CLI passed
+Reinstall, separate servers and special-character paths passed
+Bad checksums and ZIP traversal refused; working CLI preserved
+Client tools: ['read', 'bash', 'edit', 'write']
+Installed CLI completed real Docker client inference through the HTTP fixture
+Persistent user PATH was unchanged; all Windows installer checks passed

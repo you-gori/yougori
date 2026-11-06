@@ -1,0 +1,683 @@
+{
+  "formatVersion": 2,
+  "instance": "my-api",
+  "template": {
+    "name": "my-api",
+    "version": "2.1.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": []
+  },
+  "capabilities": [
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.health",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Health check",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "data.private_connections",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Private connections",
+      "permissions": []
+    },
+    {
+      "id": "tools.builtin",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Built-in AI tools",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.provider_access",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Provider access",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "admin_account": "create",
+    "admin_email": "owner@example.com",
+    "codex_access": "subscription",
+    "codex_signin_source": "computer",
+    "gemini_access": "both",
+    "gemini_signin_source": "new",
+    "kilo_scope": "free",
+    "opencode_scope": "free",
+    "providers": "codex,claude,gemini,opencode,kilo,ollama",
+    "site_name": "Example Models",
+    "web_access": "quick"
+  },
+  "secrets": {
+    "admin_password": "hub-my-api-admin_password",
+    "anthropic_key": "hub-my-api-anthropic_key",
+    "bridge_key": "hub-my-api-bridge_key",
+    "gemini_key": "hub-my-api-gemini_key"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "models",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "python",
+          "-u",
+          "/app/start-models.py"
+        ],
+        "cpu": 4.0,
+        "depends_on": [],
+        "environment": {
+          "CODEX_ACCESS": "subscription",
+          "GEMINI_ACCESS": "both",
+          "KILO_SCOPE": "free",
+          "OLLAMA_MODELS": "/models",
+          "OPENCODE_SCOPE": "free",
+          "SELECTED_PROVIDERS": "codex,claude,gemini,opencode,kilo,ollama"
+        },
+        "files": [
+          {
+            "source": "./site",
+            "target": "/app"
+          }
+        ],
+        "gpu": true,
+        "image": "python:3.12-slim",
+        "internet": true,
+        "memory": "8GB",
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [],
+        "restart": "unless-stopped",
+        "secrets": {
+          "ANTHROPIC_API_KEY": "hub-my-api-anthropic_key",
+          "BRIDGE_KEY": "hub-my-api-bridge_key",
+          "GEMINI_API_KEY": "hub-my-api-gemini_key"
+        },
+        "storage": "60GB",
+        "tools": [
+          {
+            "copy_credentials": true,
+            "name": "codex",
+            "signin": true,
+            "signin_hint": "Your selected sign-in method is applied now. Subscription access is used by this coding tool.",
+            "source": "built-in",
+            "spec": "codex"
+          },
+          {
+            "copy_credentials": false,
+            "name": "gemini",
+            "signin": true,
+            "signin_hint": "Your selected sign-in method is applied now. Subscription access is used by this coding tool.",
+            "source": "built-in",
+            "spec": "gemini"
+          },
+          {
+            "name": "ollama",
+            "signin": false,
+            "source": "built-in",
+            "spec": "ollama"
+          },
+          {
+            "name": "opencode",
+            "signin": false,
+            "signin_hint": "Use /connect in the tool to choose the account you picked during setup, then /models. The provider checks your plan.",
+            "source": "built-in",
+            "spec": "opencode"
+          },
+          {
+            "name": "kilo",
+            "signin": false,
+            "signin_hint": "Use /connect in the tool to choose the account you picked during setup, then /models. The provider checks your plan.",
+            "source": "built-in",
+            "spec": "kilo"
+          }
+        ],
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "my-api-models",
+            "target": "/models"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "web",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "python",
+          "/app/site/server.py"
+        ],
+        "cpu": 2.0,
+        "depends_on": [],
+        "environment": {
+          "ADMIN_BOOTSTRAP_EMAIL": "owner@example.com",
+          "COOKIE_SECURE": "1",
+          "FREE_PORT": "8081",
+          "FREE_SANDBOX": "models",
+          "LOCAL_SANDBOX": "models",
+          "PAID_SANDBOX": "models",
+          "SELECTED_PROVIDERS": "codex,claude,gemini,opencode,kilo,ollama",
+          "SITE_NAME": "Example Models",
+          "YOUGORI_INSTANCE": "my-api"
+        },
+        "files": [
+          {
+            "source": "./site",
+            "target": "/app/site"
+          }
+        ],
+        "gpu": false,
+        "health": {
+          "path": "/health",
+          "port": 3000
+        },
+        "image": "python:3.12-slim",
+        "internet": true,
+        "memory": "2GB",
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          3000
+        ],
+        "restart": "unless-stopped",
+        "secrets": {
+          "ADMIN_BOOTSTRAP_PASSWORD": "hub-my-api-admin_password",
+          "BRIDGE_KEY": "hub-my-api-bridge_key"
+        },
+        "storage": "10GB",
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "my-api-data",
+            "target": "/data"
+          }
+        ],
+        "working_dir": "/"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "site",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "web"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "quick",
+        "health": {
+          "expected_status": 200,
+          "path": "/health"
+        },
+        "port": 3000,
+        "target": {
+          "resource": "web"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    },
+    {
+      "id": "web_to_models",
+      "kind": "connection",
+      "title": "connection",
+      "dependsOn": [
+        "models",
+        "web"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "direction": "one_way",
+        "from": {
+          "resource": "web"
+        },
+        "model_request": false,
+        "ports": [
+          8080,
+          8081,
+          11434
+        ],
+        "to": {
+          "resource": "models"
+        }
+      },
+      "outputs": [
+        "id"
+      ]
+    }
+  ],
+  "order": [
+    "models",
+    "web",
+    "site",
+    "web_to_models"
+  ],
+  "steps": [
+    {
+      "title": "Sign in to the website as admin",
+      "detail": "Use the email and password you chose in the CLI, or your existing admin credentials when updating.",
+      "command": "yougori template status my-api"
+    },
+    {
+      "title": "Attach the wallet that receives the payments",
+      "detail": "After signing in, open Admin then Receiving wallet. Choose the payment network and wallet address there. Payments stay disabled until saved."
+    },
+    {
+      "title": "Pull a local model",
+      "detail": "In the sandbox terminal, run ollama pull MODEL. Model weights persist in the volume.",
+      "command": "yougori terminal {{env.models}}"
+    },
+    {
+      "title": "Choose free models in OpenCode",
+      "detail": "Open /models and choose a free model. OpenCode's free chat models require its client and are not exported by this website.",
+      "command": "yougori opencode --environment {{env.models}}"
+    },
+    {
+      "title": "Choose free models in Kilo",
+      "detail": "In the terminal use /models and select a free model. The website bridge rejects paid and unknown-price models in free-only mode.",
+      "command": "yougori kilo --environment {{env.models}}"
+    },
+    {
+      "title": "Check the model prices",
+      "detail": "Models appear automatically. In Admin, review the prices: known paid models use list prices plus your markup; other paid models start at a cautious estimate marked for review."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "website",
+      "label": "Website",
+      "value": "{{outputs.site.url}}",
+      "private": false
+    },
+    {
+      "key": "providers",
+      "label": "Selected tools and providers",
+      "value": "codex,claude,gemini,opencode,kilo,ollama",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "models",
+    "api",
+    "keys",
+    "usage",
+    "publications",
+    "storage",
+    "logs",
+    "diagram"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "models",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "web",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "site",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      },
+      {
+        "id": "web_to_models",
+        "kind": "connection",
+        "title": "connection",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "python:3.12-slim"
+      },
+      {
+        "kind": "tool",
+        "name": "codex",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "gemini",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "ollama",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "opencode",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "kilo",
+        "from": "built in"
+      }
+    ],
+    "permissions": [
+      "models uses the NVIDIA GPU.",
+      "models receives the secret ANTHROPIC_API_KEY from the question anthropic_key.",
+      "models receives the secret BRIDGE_KEY from the question bridge_key.",
+      "models receives the secret GEMINI_API_KEY from the question gemini_key.",
+      "models gets a copy of this computer's sign-in for codex, as you chose at setup.",
+      "web receives the secret ADMIN_BOOTSTRAP_PASSWORD from the question admin_password.",
+      "web receives the secret BRIDGE_KEY from the question bridge_key.",
+      "A website or API: Run containers on this computer.",
+      "A quick public link: Open a public web address for this setup.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Built-in AI tools: Run containers on this computer.",
+      "Provider access: Open a sign-in to a provider you choose.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Makes web:3000 reachable from the internet.",
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 2,
+      "cpu": 6.0,
+      "memoryGb": 10.0,
+      "storageGb": 70.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "admin_account",
+        "question": "Set up the website admin account",
+        "answer": "create",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "admin_email",
+        "question": "Admin sign-in email",
+        "answer": "owner@example.com",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "admin_password",
+        "question": "Create the admin password",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "providers",
+        "question": "Which tools and model providers do you want to add?",
+        "answer": "codex,claude,gemini,opencode,kilo,ollama",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "codex_access",
+        "question": "How do you want to connect Codex?",
+        "answer": "subscription",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "codex_signin_source",
+        "question": "How do you want to sign in to Codex?",
+        "answer": "computer",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "anthropic_key",
+        "question": "Enter your Anthropic API key",
+        "secret": true,
+        "group": "ai_models"
+      },
+      {
+        "id": "gemini_access",
+        "question": "How do you want to connect Gemini?",
+        "answer": "both",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "gemini_signin_source",
+        "question": "How do you want to sign in to Gemini?",
+        "answer": "new",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "gemini_key",
+        "question": "Enter your Google AI Studio API key",
+        "secret": true,
+        "group": "ai_models"
+      },
+      {
+        "id": "opencode_scope",
+        "question": "Which models do you want from OpenCode?",
+        "answer": "free",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "kilo_scope",
+        "question": "Which models do you want from Kilo Code?",
+        "answer": "free",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "bridge_key",
+        "question": "Choose a private bridge secret",
+        "secret": true,
+        "group": "website_api"
+      },
+      {
+        "id": "site_name",
+        "question": "What should the website be called?",
+        "answer": "Example Models",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "web_access",
+        "question": "Who can open your website?",
+        "answer": "quick",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "web",
+        "port": 3000,
+        "access": "quick"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "models",
+        "variable": "ANTHROPIC_API_KEY",
+        "source": "the question anthropic_key"
+      },
+      {
+        "resource": "models",
+        "variable": "BRIDGE_KEY",
+        "source": "the question bridge_key"
+      },
+      {
+        "resource": "models",
+        "variable": "GEMINI_API_KEY",
+        "source": "the question gemini_key"
+      },
+      {
+        "resource": "web",
+        "variable": "ADMIN_BOOTSTRAP_PASSWORD",
+        "source": "the question admin_password"
+      },
+      {
+        "resource": "web",
+        "variable": "BRIDGE_KEY",
+        "source": "the question bridge_key"
+      }
+    ]
+  },
+  "digest": "af8e47948aa2a99a5cc6e06efdb0153e919e9d3f0b019e53b9382382d343cdb4"
+}

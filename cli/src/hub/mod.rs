@@ -3,16 +3,20 @@
 //! the commands, section 6 for the website's answers and section 7 for the review.
 pub mod capture;
 pub mod client;
+pub mod components;
 pub mod format;
 pub mod instances;
 pub mod lifecycle;
 pub mod pattern;
+pub mod personal;
+pub mod plan;
 pub mod publish;
 pub mod refs;
 pub mod render;
 pub mod review;
 pub mod run;
 pub mod scan;
+pub mod setups;
 pub mod tools;
 pub mod unicode;
 mod unicode_data;
@@ -25,7 +29,8 @@ pub const TEMPLATE_USAGE: &str = "Yougori Hub templates: whole setups, shared on
 
   yougori run hub/PUBLISHER/NAME[@VERSION] [--name INSTANCE] [--input ID=VALUE]... [--inputs FILE]
                                            [--secrets -] [--yes] [--allow-pc-access] [--dry-run]
-  yougori template run hub/PUBLISHER/NAME[@VERSION] | ./FOLDER   (same options)
+  yougori template run hub/PUBLISHER/NAME[@VERSION] | ./FOLDER   (same options, and for a format 2
+                                           template [--binding ID=VALUE]... [--storage-drive DRIVE])
   yougori template continue INSTANCE [--yes] [--input ID=VALUE]... [--inputs FILE] [--secrets -]
                                      [--allow-pc-access]
   yougori template status [INSTANCE] | list | down INSTANCE
@@ -38,11 +43,27 @@ pub const TEMPLATE_USAGE: &str = "Yougori Hub templates: whole setups, shared on
   yougori template fork REF [--name NAME] | star REF | unstar REF
   yougori template report REF --reason harmful|stolen|abuse|other [--details TEXT]
   yougori template delete REF --yes
+  yougori template capabilities [--group grid|models|web|people|data|automation]
+  yougori template plan hub/PUBLISHER/NAME[@VERSION] | ./FOLDER | INSTANCE [--name INSTANCE] [--input ID=VALUE]... [--inputs FILE] [--dry-run]
+  yougori template configure INSTANCE [--input ID=VALUE]... [--inputs FILE] [--secrets -] [--yes] [--dry-run]
+  yougori template start INSTANCE | stop INSTANCE
+  yougori template logs INSTANCE [--follow] [--cursor N] | --sandbox NAME
+  yougori template jobs INSTANCE JOB [--settle succeeded|failed|run_again]
+  yougori template artifacts INSTANCE [--save ID --to FOLDER]
+  yougori template usage INSTANCE
+  yougori template join
+  yougori template export INSTANCE [FOLDER]
+  yougori template reveal INSTANCE [KEY]
+  yougori template permissions INSTANCE
 
-Nothing on the Hub is checked by Yougori unless it shows Verified. A run downloads the files,
+Yougori checks only its own uploads, which show Verified. Verified (collateral) means the publisher
+holds $100 collateral, lost if Yougori removes their work for harmful code; Yougori has not checked
+those files, so they get the same warning as every community item. A run downloads the files,
 checks every SHA-256 and the version digest, checks this computer, and shows a review built from
-the files before anything is created. A run that stopped (Ctrl+C, a closed window, a failure)
-carries on with template continue INSTANCE, with the same files and answers. In a terminal each
+the files before anything is created, and says when the Hub page describes the version differently
+from those files. A run that stopped (Ctrl+C, a closed window, a failure) carries on with template
+continue INSTANCE, with the same files and answers; a setup waiting for a secret is answered with
+template configure INSTANCE --secrets -. In a terminal each
 question offers Back and Ctrl+C stops; scripts pass --yes, --input/--inputs and --secrets - (JSON
 on stdin; secrets never go on the command line or in --inputs). Text in a terminal, JSON when
 piped or with --format json.";
@@ -62,6 +83,18 @@ tool open codex --environment ENV is yougori codex --environment ENV. Added tool
 that signs in with an API key asks for it (hidden) or reads {\"key\": \"...\"} from --secrets -, and keeps
 it as the deployment secret tool-NAME.";
 
+/// `yougori setup …`: the commands about setups that are not about one setup's lifecycle. Each
+/// one has its own `--help` with the detail.
+pub const SETUP_USAGE: &str = "Yougori setup: reading and recovering what your setups hold
+
+  yougori setup backups SETUP | check … | restore …   the backups a setup keeps, and putting one back
+  yougori setup telemetry [SETUP]                     a read-only reading of your setups
+  yougori setup migration inventory|backup|verify|rehearse …
+                                                      check a copy of a Yougori data folder
+
+Add --help to any of them for what it does and what it leaves alone. A restore is the only one
+that can change anything, and it describes what it would do and stops until you confirm.";
+
 /// A Hub command's answer: JSON for scripts, text for people (empty when the screen already
 /// shows it), and the exit code.
 pub struct Reply {
@@ -76,6 +109,9 @@ pub struct Reply {
 pub fn requested(args: &[String]) -> bool {
     match args.first().map(String::as_str) {
         Some("template" | "tool") => true,
+        // `yougori setup migration …`: the dry run that checks a copy of a data folder before
+        // anything is moved into a setup.
+        Some("setup") => true,
         Some("run") => template_run(args).is_some() || first_run_word(args).is_some_and(|at| refs::looks_like_ref(&args[at], &client::website())),
         _ => false,
     }
@@ -227,19 +263,26 @@ fn run_options(parsed: &Parsed, source: String) -> Result<run::Options, String> 
         Some("-") => true,
         Some(_) => return Err("Secrets are read from stdin only: use --secrets - with a JSON object such as {\"openai_key\": \"…\"}. Never put a secret on the command line.".into()),
     };
+    let mut bindings = Vec::new();
+    for pair in parsed.values.get("binding").into_iter().flatten() {
+        let (id, value) = pair.split_once('=').ok_or_else(|| format!("--binding takes ID=VALUE, such as --binding data=D:/shop or --binding grid=SETUP/RESOURCE (got {}).", scan::shown(pair)))?;
+        bindings.push((id.trim().to_owned(), value.to_owned()));
+    }
     Ok(run::Options {
         source,
         name: parsed.value("name").map(str::to_owned),
         inputs,
+        bindings,
         inputs_file: parsed.value("inputs").map(str::to_owned),
         secrets_stdin: secrets,
         yes: parsed.has("yes"),
         allow_pc_access: parsed.has("allow-pc-access"),
         dry_run: parsed.has("dry-run"),
+        storage_drive: parsed.value("storage-drive").map(str::to_owned),
     })
 }
 
-const RUN_VALUES: &[&str] = &["name", "input", "inputs", "secrets", "format"];
+const RUN_VALUES: &[&str] = &["name", "input", "inputs", "binding", "secrets", "storage-drive", "format"];
 const RUN_SWITCHES: &[&str] = &["yes", "allow-pc-access", "dry-run", "help"];
 
 /// The end of a run or an update, as the mode wants it. An interactive run already showed it.
@@ -249,6 +292,20 @@ fn instance_reply(value: Value, mode: Mode) -> Reply {
 }
 
 /// One word after the command, or the usage.
+/// The template a `run` or `plan` names. One word is an address, a folder or an instance, as
+/// before. Several words are joined only when together they name a template Yougori publishes —
+/// `yougori run my api` — so typing several words by mistake is still the usage error it was, and
+/// no stray word can turn into a reference.
+fn source_words(parsed: &Parsed, usage: &str) -> Result<String, String> {
+    if parsed.words.len() > 1 {
+        let joined = parsed.words.join(" ");
+        if setups::resolve_alias(&joined).is_some() {
+            return Ok(joined);
+        }
+    }
+    one(parsed, 0, usage)
+}
+
 fn one(parsed: &Parsed, at: usize, usage: &str) -> Result<String, String> {
     parsed.words.get(at).cloned().filter(|_| parsed.words.len() == at + 1).ok_or_else(|| usage.to_owned())
 }
@@ -270,6 +327,22 @@ fn stopped_message(args: &[String], current: Option<&instances::State>) -> Strin
         ["template" | "tool", "publish", ..] => publish::STOPPED.to_owned(),
         ["template", "capture", ..] => "Stopped. If the output folder was started, remove it before capturing again.".to_owned(),
         ["template", "download", ..] => "Stopped. If the folder was started, remove it before downloading again.".to_owned(),
+        // These send an operation to the engine, which keeps running after Ctrl+C. The command only
+        // stopped watching it, so it never claims nothing changed; it says where to look.
+        ["template", "configure" | "start" | "stop", ..] => format!("Stopped watching. The operation may still be running; follow it with yougori template logs {}.", named(2)),
+        ["template", "plan", ..] => "Stopped. A plan changes nothing, so nothing was created.".to_owned(),
+        ["template", "capabilities", ..] => "Stopped.".to_owned(),
+        ["template", "join", ..] => "Stopped. Nothing was joined.".to_owned(),
+        ["template", "export", ..] => "Stopped. If a folder was started, remove it before exporting again.".to_owned(),
+        // Reading and rehearsing change nothing at all, so stopping one leaves nothing behind.
+        ["setup", "migration", "inventory" | "rehearse" | "verify", ..] => "Stopped. Nothing was read out and nothing was changed.".to_owned(),
+        ["setup", "migration", "backup", ..] => "Stopped. The folder that was read is untouched; if a backup folder was started, remove it before backing up again.".to_owned(),
+        // Reading the backups, checking one and the operations reading all change nothing.
+        ["setup", "backups", "check", ..] => "Stopped. The backup was not changed, and neither was the volume.".to_owned(),
+        // A restore that was interrupted is in the engine's hands, not this command's: it says
+        // where to look rather than claiming the data is as it was.
+        ["setup", "backups", "restore", ..] => "Stopped watching. If the restore had already started it keeps going; see where it got to with yougori setup backups SETUP.".to_owned(),
+        ["setup", "backups", ..] | ["setup", "telemetry", ..] => "Stopped. Nothing was read out and nothing was changed.".to_owned(),
         ["tool", "install" | "open", ..] => format!("Stopped. The sandbox keeps running; run the same command again to install {} there.", named(2)),
         ["tool", "add", ..] => "Stopped. Nothing was added.".to_owned(),
         _ => "Stopped. Nothing was changed.".to_owned(),
@@ -300,7 +373,7 @@ async fn dispatch(args: &[String]) -> Result<Reply, String> {
                 return Ok(Reply { value: json!({"usage": TEMPLATE_USAGE}), text: Some(format!("{TEMPLATE_USAGE}\n")), code: 0 });
             }
             let parsed = parse(&args[1..], RUN_VALUES, RUN_SWITCHES, TEMPLATE_USAGE)?;
-            let source = one(&parsed, 0, "Usage: yougori run hub/PUBLISHER/NAME[@VERSION] [--name INSTANCE] [--yes]")?;
+            let source = source_words(&parsed, "Usage: yougori run hub/PUBLISHER/NAME[@VERSION] [--name INSTANCE] [--yes]")?;
             let mode = mode(&parsed);
             let value = run::run(run_options(&parsed, source)?, mode.interactive).await?;
             Ok(instance_reply(value, mode))
@@ -311,6 +384,15 @@ async fn dispatch(args: &[String]) -> Result<Reply, String> {
             }
             template(&args[1], &args[2..]).await
         }
+        Some("setup") => match args.get(1).map(String::as_str) {
+            Some("migration") if !help => migration(&args[2..]).await,
+            Some("migration") => Ok(Reply { value: json!({"usage": setups::MIGRATION_USAGE}), text: Some(format!("{}\n", setups::MIGRATION_USAGE)), code: 0 }),
+            Some("backups") if !help => backups(&args[2..]).await,
+            Some("backups") => Ok(Reply { value: json!({"usage": setups::BACKUPS_USAGE}), text: Some(format!("{}\n", setups::BACKUPS_USAGE)), code: 0 }),
+            Some("telemetry") if !help => telemetry(&args[2..]).await,
+            Some("telemetry") => Ok(Reply { value: json!({"usage": setups::TELEMETRY_USAGE}), text: Some(format!("{}\n", setups::TELEMETRY_USAGE)), code: 0 }),
+            _ => Ok(Reply { value: json!({"usage": SETUP_USAGE}), text: Some(format!("{SETUP_USAGE}\n")), code: 0 }),
+        },
         Some("tool") => {
             if help || args.len() == 1 {
                 return Ok(Reply { value: json!({"usage": TOOL_USAGE}), text: Some(format!("{TOOL_USAGE}\n")), code: 0 });
@@ -321,12 +403,141 @@ async fn dispatch(args: &[String]) -> Result<Reply, String> {
     }
 }
 
+/// `yougori setup migration inventory|backup|verify|rehearse …` (plan 19.1, 19.3 steps 1–4).
+///
+/// `--allow-live` is only ever sent because the person typed it; nothing here adds it. Without it
+/// the engine refuses the data folder it is using itself, so a dry run can never read, let alone
+/// disturb, a running installation.
+async fn migration(args: &[String]) -> Result<Reply, String> {
+    let usage = setups::MIGRATION_USAGE;
+    let Some(verb) = args.first().map(String::as_str) else { return Err(usage.to_owned()) };
+    let parsed = parse(&args[1..], &["format", "into"], &["allow-live"], usage)?;
+    let mode = mode(&parsed);
+    let allow_live = parsed.has("allow-live");
+    match verb {
+        "inventory" => {
+            let path = one(&parsed, 0, "Usage: yougori setup migration inventory PATH")?;
+            let value = run::wait(mode.interactive, "Reading the folder", setups::migration_inventory(&path, allow_live)).await?;
+            Ok(reply(value, mode, setups::inventory_view))
+        }
+        "backup" => {
+            let path = one(&parsed, 0, "Usage: yougori setup migration backup PATH --into FOLDER")?;
+            let into = parsed.value("into").ok_or("Usage: yougori setup migration backup PATH --into FOLDER")?.to_owned();
+            let value = run::wait(mode.interactive, "Backing up the records", setups::migration_backup(&path, &into, allow_live)).await?;
+            Ok(reply(value, mode, setups::backup_view))
+        }
+        "verify" => {
+            let folder = one(&parsed, 0, "Usage: yougori setup migration verify FOLDER")?;
+            let value = run::wait(mode.interactive, "Checking the backup", setups::migration_verify(&folder)).await?;
+            Ok(reply(value, mode, setups::verify_view))
+        }
+        "rehearse" => {
+            let path = one(&parsed, 0, "Usage: yougori setup migration rehearse PATH")?;
+            let value = run::wait(mode.interactive, "Rehearsing on the copy", setups::migration_rehearse(&path, allow_live)).await?;
+            Ok(reply(value, mode, setups::rehearse_view))
+        }
+        other => Err(format!("Unknown migration command {}.\n{usage}", scan::shown(other))),
+    }
+}
+
+/// `yougori setup backups …`: the list, the check and the reviewed restore.
+///
+/// A restore is two calls, always. The first one changes nothing and answers with what it would
+/// do and a confirmation word for exactly that restore; `--yes` sends the second with that word.
+/// Without `--yes` the review is all that happens, so no backup can be put back by a typo, and
+/// `--yes` can never apply to a restore the person did not see described.
+async fn backups(args: &[String]) -> Result<Reply, String> {
+    let usage = setups::BACKUPS_USAGE;
+    let verb = args.first().map(String::as_str).unwrap_or("");
+    // `yougori setup backups SETUP` — the list, where the first word is the setup rather than a verb.
+    let (verb, rest) = match verb {
+        "check" | "restore" | "now" => (verb, &args[1..]),
+        _ => ("list", args),
+    };
+    let parsed = parse(rest, &["format", "volume", "backup"], &["yes", "over-original"], usage)?;
+    let mode = mode(&parsed);
+    let setup = one(&parsed, 0, "Usage: yougori setup backups SETUP")?;
+    match verb {
+        "list" => {
+            let value = run::wait(mode.interactive, "Reading the backups", setups::backups_list(&setup)).await?;
+            Ok(reply(value, mode, setups::backups_view))
+        }
+        "check" => {
+            let (volume, backup) = which(&parsed, "check")?;
+            let value = run::wait(mode.interactive, "Checking the backup", setups::backup_check(&setup, &volume, &backup)).await?;
+            Ok(reply(value, mode, setups::backup_check_view))
+        }
+        "now" => {
+            let volume = parsed.value("volume").ok_or("Say which volume to back up: yougori setup backups now SETUP --volume VOLUME. yougori setup backups SETUP lists them.")?.to_owned();
+            let value = run::wait(mode.interactive, "Asking for a backup", setups::backup_now(&setup, &volume)).await?;
+            Ok(reply(value, mode, |v| views::done(vec![v["said"].as_str().unwrap_or("The backup has started.").to_owned()])))
+        }
+        _ => {
+            let (volume, backup) = which(&parsed, "restore")?;
+            let over_original = parsed.has("over-original");
+            let review = run::wait(
+                mode.interactive,
+                "Working out what would be restored",
+                setups::backup_restore_review(&setup, &volume, &backup, over_original),
+            )
+            .await?;
+            if !parsed.has("yes") {
+                // The whole answer, and nothing done. This is the only outcome without --yes.
+                return Ok(reply(review, mode, setups::restore_review_view));
+            }
+            let confirm = review["confirm"]
+                .as_str()
+                .ok_or("Yougori could not work out what this restore would do, so nothing was changed. Try yougori setup backups SETUP to see what is kept.")?
+                .to_owned();
+            // The review is shown even when it is going ahead: a person who typed --yes should
+            // still read what was replaced.
+            let shown = setups::restore_review_view(&review);
+            let done = run::wait(
+                mode.interactive,
+                "Putting the backup back",
+                setups::backup_restore_confirm(&setup, &volume, &backup, over_original, &confirm),
+            )
+            .await?;
+            let text = mode.text.then(|| format!("{shown}{}", setups::restore_done_view(&done)));
+            Ok(Reply { value: done, text, code: 0 })
+        }
+    }
+}
+
+/// The volume and the backup a check or a restore is about. Both are named, never guessed: the
+/// newest backup is not assumed, because "the newest" is not what a person checking a restore
+/// means.
+fn which(parsed: &Parsed, verb: &str) -> Result<(String, String), String> {
+    let usage = format!("Usage: yougori setup backups {verb} SETUP --volume VOLUME --backup BACKUP");
+    let volume = parsed.value("volume").filter(|name| !name.trim().is_empty()).ok_or_else(|| format!("Say which volume with --volume.\n{usage}"))?;
+    let backup = parsed.value("backup").filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+        format!("Say which backup with --backup. yougori setup backups SETUP lists them.\n{usage}")
+    })?;
+    Ok((volume.to_owned(), backup.to_owned()))
+}
+
+/// `yougori setup telemetry [SETUP]`: the read-only operations reading. It changes nothing, so
+/// there is nothing to confirm and nothing to undo.
+async fn telemetry(args: &[String]) -> Result<Reply, String> {
+    let parsed = parse(args, &["format", "limit", "cursor"], &[], setups::TELEMETRY_USAGE)?;
+    let mode = mode(&parsed);
+    let number = |name: &str| -> Result<Option<u64>, String> {
+        match parsed.value(name) {
+            None => Ok(None),
+            Some(given) => given.trim().parse::<u64>().map(Some).map_err(|_| format!("--{name} takes a whole number, such as --{name} 20.")),
+        }
+    };
+    let setup = parsed.words.first().cloned();
+    let value = run::wait(mode.interactive, "Reading your setups", setups::telemetry(setup.as_deref(), number("cursor")?, number("limit")?)).await?;
+    Ok(reply(value, mode, setups::telemetry_view))
+}
+
 async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
     let usage = TEMPLATE_USAGE;
     match action {
         "run" => {
             let parsed = parse(rest, RUN_VALUES, RUN_SWITCHES, usage)?;
-            let source = one(&parsed, 0, "Usage: yougori template run hub/PUBLISHER/NAME[@VERSION] | ./FOLDER [--name INSTANCE] [--yes]")?;
+            let source = source_words(&parsed, "Usage: yougori template run hub/PUBLISHER/NAME[@VERSION] | ./FOLDER [--name INSTANCE] [--yes]")?;
             let mode = mode(&parsed);
             let value = run::run(run_options(&parsed, source)?, mode.interactive).await?;
             Ok(instance_reply(value, mode))
@@ -335,6 +546,21 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             let parsed = parse(rest, &["format", "input", "inputs", "secrets"], &["yes", "allow-pc-access"], usage)?;
             let name = one(&parsed, 0, "Usage: yougori template continue INSTANCE [--yes]")?;
             let mode = mode(&parsed);
+            // An engine setup carries on from its last change that did not finish, as Try again
+            // does on its page: only the steps that did not finish run again.
+            if let Some(setup_id) = setups::setup_named(&name).await {
+                let given = run_options(&parsed, String::new())?;
+                let inputs_given = !given.inputs.is_empty() || given.inputs_file.is_some();
+                let secrets = if given.secrets_stdin { Some(setups::read_secret_values().await?) } else { None };
+                let value = setups::continue_setup(&name, &setup_id, inputs_given, secrets, mode.interactive).await?;
+                return Ok(reply(value, mode, move |v| {
+                    views::done(vec![if v["continued"] == true {
+                        format!("{name} finished the change it had left. Only what had not finished ran again.")
+                    } else {
+                        format!("Nothing to continue: the last change to {name} finished.")
+                    }])
+                }));
+            }
             let value = run::continue_instance(&name, run_options(&parsed, String::new())?, mode.interactive, true).await?;
             Ok(instance_reply(value, mode))
         }
@@ -344,6 +570,13 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
                 return Err("Usage: yougori template status [INSTANCE]".into());
             }
             let mode = mode(&parsed);
+            // A named engine setup shows its own detail; a v1 instance (or no name) is unchanged.
+            if let Some(name) = parsed.words.first() {
+                if let Some(setup_id) = setups::setup_named(name).await {
+                    let value = run::wait(mode.interactive, "Reading the setup", setups::get_setup(&setup_id)).await?;
+                    return Ok(reply(value, mode, setups::setup_view));
+                }
+            }
             let value = lifecycle::status(parsed.words.first().map(String::as_str), mode.interactive).await?;
             Ok(reply(value, mode, |v| if v["instances"].is_array() { views::list(v) } else { views::instance(v) }))
         }
@@ -352,12 +585,44 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             if !parsed.words.is_empty() {
                 return Err("Usage: yougori template list".into());
             }
-            Ok(reply(lifecycle::list()?, mode(&parsed), views::list))
+            let mode = mode(&parsed);
+            // v1 instances unchanged; engine setups added under a new `setups` key (additive).
+            let mut value = lifecycle::list()?;
+            let setups = setups::list_setups().await;
+            if !setups.is_empty() {
+                value["setups"] = json!(setups);
+            }
+            Ok(reply(value, mode, |v| {
+                let mut text = views::list(v);
+                let setups_view = setups::setups_list_view(v["setups"].as_array().map(Vec::as_slice).unwrap_or_default());
+                if !setups_view.is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(&setups_view);
+                }
+                text
+            }))
         }
         "update" => {
             let parsed = parse(rest, &["format", "input", "inputs", "secrets"], &["yes", "allow-pc-access"], usage)?;
             let name = one(&parsed, 0, "Usage: yougori template update INSTANCE [--yes]")?;
             let mode = mode(&parsed);
+            // An engine setup moves to its template's newest version through the engine.
+            if setups::setup_named(&name).await.is_some() {
+                let options = run_options(&parsed, String::new())?;
+                let value = setups::update(&name, &options.inputs, options.inputs_file.as_deref(), options.secrets_stdin, options.yes, mode.interactive).await?;
+                return Ok(reply(value, mode, move |v| {
+                    let mut lines: Vec<String> = v["plan"]["conflicts"].as_array().into_iter().flatten().filter_map(|conflict| conflict["message"].as_str()).map(|said| format!("▲ {}", views::clean(said))).collect();
+                    if v["applied"] == true {
+                        lines.push(format!("Updated {name}."));
+                        return views::done(lines);
+                    }
+                    lines.extend(setups::plan_review_lines(&v["plan"]));
+                    if v["needsConfirmation"] == true {
+                        lines.push(format!("Apply it with: yougori template update {name} --yes"));
+                    }
+                    lines.join("\n")
+                }));
+            }
             let value = lifecycle::update(&name, run_options(&parsed, String::new())?, mode.interactive).await?;
             if value["updated"] == false {
                 let said = value["said"].as_str().unwrap_or_default().to_owned();
@@ -369,6 +634,11 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             let parsed = parse(rest, &["format"], &[], usage)?;
             let name = one(&parsed, 0, "Usage: yougori template down INSTANCE")?;
             let mode = mode(&parsed);
+            // An engine setup stops through setup_action; a v1 instance is unchanged.
+            if let Some(setup_id) = setups::setup_named(&name).await {
+                let value = setups::action(&setup_id, "stop", mode.interactive).await?;
+                return Ok(reply(value, mode, move |_| views::done(vec![format!("{name} stopped. Its sandboxes, files and data are kept.")])));
+            }
             let value = lifecycle::down(&name, mode.interactive).await?;
             Ok(reply(value, mode, |v| views::done(vec![format!("{} stopped. Its sandboxes, files and data are kept.", v["instance"].as_str().unwrap_or_default()), format!("Start it again: {}", v["start"].as_str().unwrap_or_default())])))
         }
@@ -376,6 +646,31 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             let parsed = parse(rest, &["format"], &["yes", "delete-data"], usage)?;
             let name = one(&parsed, 0, "Usage: yougori template rm INSTANCE --yes [--delete-data]")?;
             let mode = mode(&parsed);
+            // An engine setup is reviewed by the engine first (nothing changes), then removed as
+            // reviewed; a script must pass --yes. Its data is kept unless its template asks and the
+            // person agrees (--delete-data). A v1 instance keeps its own removal flow unchanged.
+            if let Some(setup_id) = setups::setup_named(&name).await {
+                let value = setups::remove_setup(&setup_id, parsed.has("yes"), parsed.has("delete-data"), mode.interactive).await?;
+                return Ok(reply(value, mode, move |v| {
+                    if v["removed"] == true {
+                        let mut lines = vec![format!("{name} was removed. Borrowed resources and other setups are untouched.")];
+                        let deleted: Vec<&str> = v["deleted"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                        if !deleted.is_empty() {
+                            lines.push(format!("Deleted with it, as you chose: {}. That can't be undone.", deleted.join(", ")));
+                        }
+                        views::done(lines)
+                    } else {
+                        let mut lines = setups::removal_lines(&v["plan"]);
+                        lines.push(format!("Remove it with: yougori template rm {name} --yes"));
+                        let offered = setups::offered_deletions(&v["plan"]);
+                        if !offered.is_empty() {
+                            lines.push("Add --delete-data as well to also delete what it offers; that can't be undone:".to_owned());
+                            lines.extend(offered.iter().map(|(_, message)| format!("  {}", views::clean(message))));
+                        }
+                        lines.join("\n")
+                    }
+                }));
+            }
             let value = lifecycle::rm(&name, parsed.has("yes"), parsed.has("delete-data"), mode.interactive).await?;
             Ok(reply(value, mode, |v| {
                 let mut lines = vec![format!("{} was removed: {} sandboxes and the instance folder.", v["instance"].as_str().unwrap_or_default(), v["removed"]["environments"].as_array().map_or(0, Vec::len))];
@@ -398,8 +693,10 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             if parsed.words.len() > 1 {
                 return Err("Usage: yougori template new [NAME]".into());
             }
-            let value = new_template(parsed.words.first().map(String::as_str))?;
-            Ok(reply(value, mode(&parsed), |v| views::done(std::iter::once(format!("Created {}", v["created"].as_str().unwrap_or_default())).chain(v["next"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|s| format!("Next: {s}"))).collect())))
+            let mode = mode(&parsed);
+            // In a terminal, walk the six capability groups; a script gets the starter folder.
+            let value = setups::new_setup(parsed.words.first().map(String::as_str), mode.interactive).await?;
+            Ok(reply(value, mode, |v| views::done(std::iter::once(format!("Created {}", v["created"].as_str().unwrap_or_default())).chain(v["next"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|s| format!("Next: {s}"))).collect())))
         }
         "check" => {
             let parsed = parse(rest, &["format"], &[], usage)?;
@@ -407,10 +704,10 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
                 return Err("Usage: yougori template check [FOLDER]".into());
             }
             let folder = parsed.words.first().cloned().unwrap_or_else(|| ".".into());
-            let (upload, _) = publish::template(std::path::Path::new(&folder))?;
-            let bytes: usize = upload.files.values().map(Vec::len).sum();
-            let value = json!({"ok": true, "name": upload.name, "version": upload.version, "files": upload.files.len(), "bytes": bytes, "review": upload.review, "next": format!("yougori template run {}", shell_words::quote(&folder))});
-            Ok(reply(value, mode(&parsed), views::checked))
+            // Either format: a format 2 package is checked by the shared crate and shown with
+            // its resources and capabilities; a format 1 package exactly as before.
+            let value = plan::check_report(&folder).await?;
+            Ok(reply(value, mode(&parsed), |v| if v["format"] == 2 { plan::check_view(v) } else { views::checked(v) }))
         }
         "capture" => {
             let parsed = parse(rest, &["format", "output"], &[], usage)?;
@@ -498,6 +795,136 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             let mode = mode(&parsed);
             let value = run::wait(mode.interactive, "Deleting it from the Hub", publish::delete(&reference)).await?;
             Ok(reply(value, mode, |_| views::done(vec![format!("{} was deleted from the Hub. Instances already running keep working.", reference.item())])))
+        }
+        "capabilities" => {
+            let parsed = parse(rest, &["format", "group"], &[], usage)?;
+            if !parsed.words.is_empty() {
+                return Err("Usage: yougori template capabilities [--group grid|models|web|people|data|automation]".into());
+            }
+            let mode = mode(&parsed);
+            let value = run::wait(mode.interactive, "Reading the capabilities", setups::capabilities(parsed.value("group"))).await?;
+            Ok(reply(value, mode, setups::capabilities_view))
+        }
+        "plan" => {
+            let parsed = parse(rest, &["format", "input", "inputs", "binding", "name"], &["dry-run"], usage)?;
+            let source = source_words(&parsed, "Usage: yougori template plan hub/PUBLISHER/NAME[@VERSION] | ./FOLDER | INSTANCE [--name INSTANCE]")?;
+            let options = run_options(&parsed, source.clone())?;
+            let mode = mode(&parsed);
+            let value = run::wait(mode.interactive, "Working out the plan", setups::plan(&source, options.name.as_deref(), &options.inputs, options.inputs_file.as_deref(), &options.bindings)).await?;
+            Ok(reply(value, mode, setups::plan_view))
+        }
+        "configure" => {
+            let parsed = parse(rest, &["format", "input", "inputs", "binding", "secrets"], &["yes", "dry-run"], usage)?;
+            let name = one(&parsed, 0, "Usage: yougori template configure INSTANCE [--input ID=VALUE]... [--dry-run]")?;
+            let options = run_options(&parsed, String::new())?;
+            let mode = mode(&parsed);
+            let value = setups::configure(&name, &options.inputs, &options.bindings, options.inputs_file.as_deref(), options.secrets_stdin, options.yes, options.dry_run, mode.interactive).await?;
+            Ok(reply(value, mode, |v| {
+                if v["applied"] == true {
+                    views::done(vec![format!("Configured {name}.")])
+                } else if v["needsConfirmation"] == true {
+                    let mut lines = setups::plan_review_lines(&v["plan"]);
+                    lines.push(format!("Apply it with: yougori template configure {name} --yes"));
+                    lines.join("\n")
+                } else {
+                    setups::plan_review_lines(&v["plan"]).join("\n")
+                }
+            }))
+        }
+        "start" | "stop" => {
+            let parsed = parse(rest, &["format"], &[], usage)?;
+            let name = one(&parsed, 0, &format!("Usage: yougori template {action} INSTANCE"))?;
+            let mode = mode(&parsed);
+            let value = setups::action(&name, action, mode.interactive).await?;
+            let word = if action == "start" { "started" } else { "stopped. Its sandboxes, files and data are kept" };
+            Ok(reply(value, mode, move |_| views::done(vec![format!("{name} {word}.")])))
+        }
+        "logs" => {
+            let parsed = parse(rest, &["format", "cursor", "sandbox"], &["follow"], usage)?;
+            let name = one(&parsed, 0, "Usage: yougori template logs INSTANCE [--follow] [--cursor N] | --sandbox NAME")?;
+            if let Some(sandbox) = parsed.value("sandbox") {
+                let mode = mode(&parsed);
+                let value = setups::sandbox_logs(&name, sandbox).await?;
+                return Ok(reply(value, mode, setups::sandbox_logs_view));
+            }
+            let cursor = parsed.value("cursor").map(|c| c.parse::<u64>().map_err(|_| "--cursor must be a whole number.")).transpose()?;
+            let mode = mode(&parsed);
+            if parsed.has("follow") {
+                return setups::follow_logs(&name, cursor, mode.text).await;
+            }
+            let value = setups::logs(&name, cursor).await?;
+            Ok(reply(value, mode, setups::logs_view))
+        }
+        "jobs" => {
+            let parsed = parse(rest, &["format", "settle"], &[], usage)?;
+            const JOBS: &str = "Usage: yougori template jobs INSTANCE JOB [--settle succeeded|failed|run_again]";
+            if parsed.words.len() != 2 {
+                return Err(JOBS.into());
+            }
+            let settle = parsed.value("settle");
+            if let Some(outcome) = settle.filter(|outcome| !matches!(*outcome, "succeeded" | "failed" | "run_again")) {
+                return Err(format!("--settle is succeeded, failed or run_again, not {}. {JOBS}", scan::shown(outcome)));
+            }
+            let mode = mode(&parsed);
+            let value = setups::job(&parsed.words[0], &parsed.words[1], settle).await?;
+            Ok(reply(value, mode, setups::job_view))
+        }
+        "usage" => {
+            let parsed = parse(rest, &["format"], &[], usage)?;
+            let name = one(&parsed, 0, "Usage: yougori template usage INSTANCE")?;
+            let mode = mode(&parsed);
+            let value = setups::usage(&name).await?;
+            Ok(reply(value, mode, setups::usage_view))
+        }
+        "artifacts" => {
+            let parsed = parse(rest, &["format", "save", "to"], &[], usage)?;
+            const ARTIFACTS: &str = "Usage: yougori template artifacts INSTANCE [--save ID --to FOLDER]";
+            let name = one(&parsed, 0, ARTIFACTS)?;
+            let save = match (parsed.value("save"), parsed.value("to")) {
+                (Some(id), Some(folder)) => Some((id, folder)),
+                (None, None) => None,
+                _ => return Err(format!("--save and --to go together. {ARTIFACTS}")),
+            };
+            let mode = mode(&parsed);
+            let value = setups::artifacts(&name, save).await?;
+            Ok(reply(value, mode, setups::artifacts_view))
+        }
+        "join" => {
+            let parsed = parse(rest, &["format"], &[], usage)?;
+            if !parsed.words.is_empty() {
+                return Err("Usage: yougori template join".into());
+            }
+            let mode = mode(&parsed);
+            let value = setups::join(mode.interactive).await?;
+            Ok(reply(value, mode, |v| views::done(vec![format!("Joined {}.", v["setup"].as_str().unwrap_or_default())])))
+        }
+        "export" => {
+            let parsed = parse(rest, &["format"], &[], usage)?;
+            let name = one(&parsed, 0, "Usage: yougori template export INSTANCE [FOLDER]").or_else(|_| parsed.words.first().cloned().ok_or("Usage: yougori template export INSTANCE [FOLDER]".to_owned()))?;
+            if parsed.words.len() > 2 {
+                return Err("Usage: yougori template export INSTANCE [FOLDER]".into());
+            }
+            let mode = mode(&parsed);
+            let value = run::wait(mode.interactive, "Exporting the recipe", setups::export(&name, parsed.words.get(1).map(String::as_str))).await?;
+            Ok(reply(value, mode, |v| views::done(vec![format!("Exported {} into {} (runtime data and secrets left out).", v["exported"].as_str().unwrap_or_default(), v["folder"].as_str().unwrap_or_default())])))
+        }
+        "reveal" => {
+            let parsed = parse(rest, &["format"], &[], usage)?;
+            let shape = "Usage: yougori template reveal INSTANCE [KEY]";
+            let name = parsed.words.first().cloned().ok_or(shape)?;
+            if parsed.words.len() > 2 {
+                return Err(shape.into());
+            }
+            let mode = mode(&parsed);
+            let value = run::wait(mode.interactive, "Asking for it", setups::reveal(&name, parsed.words.get(1).map(String::as_str))).await?;
+            Ok(reply(value, mode, move |v| setups::reveal_view(&name, v)))
+        }
+        "permissions" => {
+            let parsed = parse(rest, &["format"], &[], usage)?;
+            let name = one(&parsed, 0, "Usage: yougori template permissions INSTANCE")?;
+            let mode = mode(&parsed);
+            let value = run::wait(mode.interactive, "Reading what it is allowed to do", setups::permissions(&name)).await?;
+            Ok(reply(value, mode, setups::permissions_view))
         }
         other => Err(format!("Unknown template command {}.\n{usage}", scan::shown(other))),
     }
@@ -705,9 +1132,10 @@ async fn info(reference: &refs::Ref) -> Result<Value, String> {
     let cache = client::Cache::standard()?;
     if detail["kind"] == "tool" {
         let got = client::obtain(&site, &cache, &reference.at(&version)).await?;
-        let tool = format::tool(&got.bundle.files, "").map_err(|problems| tools::list(&reference.item(), &problems))?;
+        let tool = format::tool_file(&got.bundle.files, "").map_err(|problems| tools::list(&reference.item(), &problems))?;
         let wallet: Vec<String> = scan::scan(&got.bundle.files).wallet_notice().into_iter().collect();
-        value["review"] = review::tool(&tool, &wallet);
+        // The shared file, not the installer's view: the review then shows what the tool declares.
+        value["review"] = review::tool_file(&tool, &wallet);
         value["run"] = json!(format!("yougori tool add hub/{}", reference.item()));
         return Ok(value);
     }
@@ -723,6 +1151,29 @@ async fn info(reference: &refs::Ref) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn several_words_are_a_template_name_only_when_they_name_one() {
+        // `yougori run my api` should work: people say names, they do not type identifiers. But
+        // only a name Yougori publishes is joined, so a stray word is still the usage error it
+        // was, rather than turning two arguments into a reference to something.
+        let usage = "Usage: yougori run NAME";
+        let parsed = parse(&["my".to_owned(), "api".to_owned()], RUN_VALUES, RUN_SWITCHES, usage).unwrap();
+        assert_eq!(source_words(&parsed, usage).unwrap(), "my api");
+
+        let parsed = parse(&["swarm".to_owned(), "mining".to_owned(), "grid".to_owned()], RUN_VALUES, RUN_SWITCHES, usage).unwrap();
+        assert_eq!(source_words(&parsed, usage).unwrap(), "swarm mining grid");
+
+        // Two words that name nothing: the usage line, not a guess.
+        let parsed = parse(&["./shop".to_owned(), "oops".to_owned()], RUN_VALUES, RUN_SWITCHES, usage).unwrap();
+        assert_eq!(source_words(&parsed, usage).unwrap_err(), usage);
+
+        // One word is untouched, whatever it is.
+        let parsed = parse(&["hub/acme/x".to_owned()], RUN_VALUES, RUN_SWITCHES, usage).unwrap();
+        assert_eq!(source_words(&parsed, usage).unwrap(), "hub/acme/x");
+        let parsed = parse(&["my api".to_owned()], RUN_VALUES, RUN_SWITCHES, usage).unwrap();
+        assert_eq!(source_words(&parsed, usage).unwrap(), "my api", "the quoted form still works");
+    }
     use super::*;
 
     fn words(text: &str) -> Vec<String> {

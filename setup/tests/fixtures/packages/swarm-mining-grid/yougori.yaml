@@ -1,0 +1,161 @@
+format_version: 2
+project: swarm-mining-grid
+
+# Every resource here is served by Yougori's own research handler, inside a research realm of its
+# own. The template chooses settings; it runs no commands on your computer, and it cannot change
+# the rules the review follows: what was authorised, how long it may run, what a worker may reach,
+# which tool receipts count as evidence, and whether a finding is sent. Those stay in Yougori.
+#
+# There is no resource here for a target that is already running somewhere. The agents read the
+# source you import, and an application Yougori starts inside the worker's own sandbox.
+
+resources:
+  # Host: the review itself, as a realm of its own. Research never shares a realm with a company
+  # grid, its people or its credentials.
+  project:
+    kind: grid
+    when: {mode: host}
+    capability: grid.create
+    spec:
+      profile: swarm_mining_grid
+      mode: create
+      coordinator: this_computer
+      name: "{{inputs.project_title}}"
+      address: "{{inputs.host_address}}"
+      access: lan
+      secrets:
+        join_password: "{{secrets.shared_password}}"
+      # What the agents review and what you authorised, in your own words. Yougori sends the
+      # authorisation as written; it is the record of what the review may test.
+      research:
+        instructions: "{{inputs.instructions}}"
+        authorization: "{{inputs.authorized_scope}}"
+        target: "{{inputs.target_kind}}"
+        setup_command: "{{inputs.setup_command}}"
+        install_network: "{{inputs.install_network}}"
+        start_command: "{{inputs.start_command}}"
+        port: "{{inputs.service_port}}"
+        health_path: "{{inputs.health_path}}"
+        test_command: "{{inputs.test_command}}"
+
+  # Join: this computer contributes a worker to someone else's review.
+  membership:
+    kind: grid
+    when: {mode: join}
+    capability: grid.join
+    spec:
+      profile: swarm_mining_grid
+      mode: join
+      coordinator: remote
+      member: computer
+      secrets:
+        invitation: "{{secrets.invitation}}"
+        join_password: "{{secrets.join_password}}"
+
+  # The part of this computer the review may use. One for a review you host, one for a review you
+  # joined: a pool belongs to exactly one realm, so each mode has its own.
+  computers:
+    kind: compute_pool
+    when: {mode: host}
+    spec:
+      grid: {resource: project}
+      source: this_computer
+      gpu: optional
+      availability: always
+      local_user_first: true
+      limits:
+        cpu: "{{inputs.worker_cpu}}"
+        memory_gb: "{{inputs.worker_memory_gb}}"
+        disk_gb: "{{inputs.sandbox_disk_gb}}"
+
+  joined_computers:
+    kind: compute_pool
+    when: {mode: join}
+    spec:
+      grid: {resource: membership}
+      source: this_computer
+      gpu: optional
+      availability: always
+      local_user_first: true
+      limits:
+        cpu: "{{inputs.worker_cpu}}"
+        memory_gb: "{{inputs.worker_memory_gb}}"
+        disk_gb: "{{inputs.sandbox_disk_gb}}"
+
+  # The model the agent thinks with. It runs on this computer; nothing it reads leaves it.
+  model:
+    kind: model_service
+    capability: models.local
+    spec:
+      model: "{{inputs.model}}"
+      replicas: 1
+      memory_gb: "{{inputs.model_memory_gb}}"
+
+  # The sandbox one worker reads in: no internet during the review, no folder of this computer
+  # beyond the project copy Yougori places there, and nothing of yours mounted into it.
+  sandbox:
+    kind: environment
+    capability: research.source
+    spec:
+      type: container
+      image: ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+      cpu: "{{inputs.worker_cpu}}"
+      memory: "{{inputs.worker_memory_gb}}"
+      storage: "{{inputs.sandbox_disk_gb}}"
+      internet: false
+      working_dir: /project
+      command: [sleep, infinity]
+
+  # The worker: one agent, one sandbox, one model, one budget. Its source is the folder you chose
+  # when you set this up, copied in; the folder itself is never written to.
+  workers:
+    kind: worker_group
+    when: {mode: host}
+    capability: research.source
+    spec:
+      pool: {resource: computers}
+      role: research
+      name: "{{inputs.worker_name}}"
+      report_policy: "{{inputs.report_policy}}"
+      count: 1
+      max: 1
+      model: {resource: model}
+      environment: {resource: sandbox}
+      source: {binding: source_folder}
+      limits:
+        cpu: "{{inputs.worker_cpu}}"
+        memory_gb: "{{inputs.worker_memory_gb}}"
+        disk_gb: "{{inputs.sandbox_disk_gb}}"
+      budget:
+        time_minutes: "{{inputs.budget_minutes}}"
+
+  # Joined: the same worker, on the project you were invited to. Its source comes from that
+  # project, reviewed before anything starts, never from a folder of yours.
+  joined_workers:
+    kind: worker_group
+    when: {mode: join}
+    capability: research.source
+    spec:
+      pool: {resource: joined_computers}
+      role: research
+      name: "{{inputs.worker_name}}"
+      report_policy: "{{inputs.report_policy}}"
+      count: 1
+      max: 1
+      model: {resource: model}
+      environment: {resource: sandbox}
+      limits:
+        cpu: "{{inputs.worker_cpu}}"
+        memory_gb: "{{inputs.worker_memory_gb}}"
+        disk_gb: "{{inputs.sandbox_disk_gb}}"
+      budget:
+        time_minutes: "{{inputs.budget_minutes}}"
+
+  # Findings, and the evidence behind each one. Bounded, kept on this computer, and removed only
+  # when you say so.
+  evidence:
+    kind: artifact_store
+    capability: data.artifacts
+    spec:
+      max_gb: "{{inputs.evidence_gb}}"
+      access: setup

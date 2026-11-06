@@ -1,0 +1,8 @@
+{
+  "image": "ubuntu:24.04",
+  "tools": [],
+  "cpu": 2,
+  "memory_gb": 4,
+  "storage_gb": 20,
+  "access": "none"
+}

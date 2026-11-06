@@ -1,12 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from "react"
 import { workspaceApi } from "@/api/workspace-api"
 import { Button } from "@/components/ui/button"
+import { AlertDialog, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogPopup, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import type { GraphEnvironment } from "@/components/graph-capabilities"
 import { ModelNodeProgress } from "@/components/model-node-progress"
 import { EnvironmentNodeMenu } from "@/components/environment-node-menu"
 import { usePlatform } from "@/context/platform-context"
 import { formatBytesFromGb, formatDateTime, formatRelativeTime } from "@/lib/domain"
 import { environmentLabel } from "@/lib/environment-category"
+import { CombineSandboxesDialog } from "@/components/sandbox-vm/combine-dialog"
 import "@/components/environment-list.css"
 
 export interface ListConnection { id: string; sourceId: string; targetId: string; direction: "oneWay" | "bidirectional"; active: boolean; enforcementStatus?: "enforced" | "pending" | "error" }
@@ -57,8 +59,10 @@ interface RowContext {
 }
 const ListContext = createContext<RowContext | null>(null)
 
-export function EnvironmentList<T extends { id: string; data: { environment: GraphEnvironment; preview?: boolean } }>({ items, connections, colors, onConnect, children, header, rows, footer }: {
+export function EnvironmentList<T extends { id: string; data: { environment: GraphEnvironment; preview?: boolean } }>({ items, connections, colors, onConnect, children, header, rows, footer, onConfigureSelection, onCreateTemplate }: {
   items: T[]
+  onConfigureSelection?(ids: string[]): void
+  onCreateTemplate?(ids: string[]): void
   connections: ListConnection[]
   colors: Record<string, string>
   onConnect(sourceId: string, targetId?: string): void
@@ -69,12 +73,14 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
   rows?: ReactNode
   footer?: ReactNode
 }) {
-  const { setEnvironmentStatus, environmentActions } = usePlatform()
+  const { setEnvironmentStatus, deleteEnvironment, environmentActions } = usePlatform()
   const [prefs, setPrefs] = useState(readPrefs)
   const [query, setQuery] = useState("")
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [combine, setCombine] = useState<[string, string] | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const anchor = useRef<string | null>(null)
@@ -176,17 +182,38 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
 
   const selectableVisible = visible.filter(environment => !previewIds.has(environment.id))
   const selectedVisible = selectableVisible.filter(environment => selected.has(environment.id))
+  // Exactly two running dedicated-VM sandboxes can be combined into one.
+  const [firstSelected, secondSelected] = selectedVisible
+  const combinable: [string, string] | null = selectedVisible.length === 2 && firstSelected && secondSelected
+    && selectedVisible.every(environment => environment.runtime.startsWith("sandbox-vm://") && environment.status === "running")
+    ? [firstSelected.id, secondSelected.id] : null
   const allSelected = selectableVisible.length > 0 && selectedVisible.length === selectableVisible.length
-  const canStart = (environment: GraphEnvironment) => environment.kind !== "cloud" && environment.kind !== "computerBranch" && environment.provider !== "nativeSandbox" && (environment.status === "stopped" || environment.status === "paused") && !environmentActions[environment.id]
-  const canStop = (environment: GraphEnvironment) => environment.kind !== "cloud" && environment.kind !== "computerBranch" && environment.provider !== "nativeSandbox" && (environment.status === "running" || environment.status === "paused") && !environmentActions[environment.id]
-  const startable = selectedVisible.filter(canStart), stoppable = selectedVisible.filter(canStop)
+  const canStart = (environment: GraphEnvironment) => !environment.runtime.startsWith("sandbox-vm://") && environment.kind !== "cloud" && environment.kind !== "computerBranch" && environment.provider !== "nativeSandbox" && (environment.status === "stopped" || environment.status === "paused") && !environmentActions[environment.id]
+  const canStop = (environment: GraphEnvironment) => !environment.runtime.startsWith("sandbox-vm://") && environment.kind !== "cloud" && environment.kind !== "computerBranch" && environment.provider !== "nativeSandbox" && (environment.status === "running" || environment.status === "paused") && !environmentActions[environment.id]
+  // The same rule as a node's own Delete: anything not mid-change can go.
+  const canDelete = (environment: GraphEnvironment) => !environment.runtime.startsWith("sandbox-vm://") && environment.status !== "provisioning" && !environmentActions[environment.id]
+  const startable = selectedVisible.filter(canStart), stoppable = selectedVisible.filter(canStop), deletable = selectedVisible.filter(canDelete)
   const bulk = async (targets: GraphEnvironment[], status: "running" | "stopped") => {
     setBulkBusy(true)
     try { await Promise.allSettled(targets.map(environment => setEnvironmentStatus(environment.id, status))) }
     finally { setBulkBusy(false) }
   }
+  // One at a time, so the runtime is never asked to tear down several disks at once. Each one
+  // reports its own outcome; one that fails stays selected and the rest still go.
+  const bulkDelete = async (targets: GraphEnvironment[]) => {
+    setConfirmDelete(false)
+    setBulkBusy(true)
+    try {
+      for (const environment of targets) {
+        try {
+          await deleteEnvironment(environment.id)
+          setSelected(current => { const next = new Set(current); next.delete(environment.id); return next })
+        } catch { /* The platform reports the failure; the rest still go. */ }
+      }
+    } finally { setBulkBusy(false) }
+  }
 
-  const running = environments.filter(environment => environment.status === "running" && environment.kind !== "cloud")
+  const running = environments.filter(environment => environment.status === "running" && environment.kind !== "cloud" && !environment.runtime.startsWith("sandbox-vm://"))
   const memory = running.reduce((total, environment) => total + environment.memoryUsageGb, 0)
   const storage = environments.reduce((total, environment) => total + (environment.kind === "cloud" ? 0 : environment.storageDeltaGb), 0)
   const filtered = query.trim() !== "" || prefs.status !== "all" || prefs.type !== "all"
@@ -222,9 +249,18 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
       {environments.length ? <div className="environment-list-toolbar" role="toolbar" aria-label="Filter and sort environments">
         {selectedVisible.length ? <div className="environment-list-bulk" role="group" aria-label="Selected environments">
           <strong>{selectedVisible.length} selected</strong>
+          {onConfigureSelection ? <Button size="xs" disabled={bulkBusy} onClick={() => onConfigureSelection(selectedVisible.map(environment => environment.id))}>Configure</Button> : null}
+          {onCreateTemplate ? <Button size="xs" variant="outline"
+            disabled={bulkBusy}
+            title="Choose which selected VMs to include in a template"
+            onClick={() => onCreateTemplate(selectedVisible.map(environment => environment.id))}>Create template</Button> : null}
+          {selectedVisible.some(environment => !environment.runtime.startsWith("sandbox-vm://")) ? <>
           <Button size="xs" variant="outline" disabled={bulkBusy || !startable.length} onClick={() => void bulk(startable, "running")}>Start{startable.length ? ` ${startable.length}` : ""}</Button>
           <Button size="xs" variant="outline" disabled={bulkBusy || !stoppable.length} onClick={() => void bulk(stoppable, "stopped")}>Stop{stoppable.length ? ` ${stoppable.length}` : ""}</Button>
-          <Button size="xs" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+          <Button size="xs" variant="destructive-outline" disabled={bulkBusy || !deletable.length} onClick={() => setConfirmDelete(true)}>Delete{deletable.length ? ` ${deletable.length}` : ""}</Button>
+          </> : null}
+          {combinable ? <Button size="xs" variant="outline" disabled={bulkBusy} onClick={() => setCombine(combinable)}>Combine sandboxes</Button> : null}
+          <Button size="xs" variant="ghost" disabled={bulkBusy} onClick={() => setSelected(new Set())}>Clear</Button>
         </div> : <>
           <label className="environment-list-search">
             <span className="sr-only">Search environments</span>
@@ -246,10 +282,27 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
           <span>{filtered ? `${visible.length} of ${environments.length}` : `${environments.length} total`}</span>
           <span>{counts.running} running</span>
           {running.length ? <span>{formatBytesFromGb(memory)} memory</span> : null}
-          <span>+{formatBytesFromGb(storage)} storage</span>
+          {environments.some(environment => !environment.runtime.startsWith("sandbox-vm://")) ? <span>+{formatBytesFromGb(storage)} storage</span> : null}
           {connections.length ? <span>{connections.length} {connections.length === 1 ? "link" : "links"}</span> : null}
         </p>
       </div> : null}
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deletable.length === 1 ? deletable[0]!.name : `${deletable.length} environments`}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletable.length > 1 ? `${deletable.slice(0, 8).map(environment => environment.name).join(", ")}${deletable.length > 8 ? ` and ${deletable.length - 8} more` : ""}. ` : ""}
+              This removes {deletable.length === 1 ? "it" : "them"} with {deletable.length === 1 ? "its" : "their"} local data, snapshots and connection permissions, and cannot be undone. Your original installer files, exported backups and shared PC files are kept.
+              {deletable.some(environment => environment.kind === "cloud") ? " For a cloud server, only the node and its Yougori connections go; the server and its data are not deleted." : ""}
+              {deletable.length < selectedVisible.length ? ` ${selectedVisible.length - deletable.length} selected ${selectedVisible.length - deletable.length === 1 ? "is" : "are"} busy and ${selectedVisible.length - deletable.length === 1 ? "stays" : "stay"}.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            <Button variant="destructive" disabled={!deletable.length} onClick={() => void bulkDelete(deletable)}>Delete {deletable.length === 1 ? "node" : `${deletable.length} nodes`}</Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <div className="environment-list-scroll" ref={bodyRef}>
         <table className="workspace-environment-list" aria-label="Environments" aria-rowcount={visible.length + 1}>
           <thead><tr>
@@ -273,6 +326,7 @@ export function EnvironmentList<T extends { id: string; data: { environment: Gra
         </table>
       </div>
     </div>
+    {combine ? <CombineSandboxesDialog first={combine[0]} second={combine[1]} open onOpenChange={open => { if (!open) setCombine(null) }} /> : null}
   </ListContext.Provider>
 }
 
@@ -312,9 +366,12 @@ function GpuUsage({ environment }: { environment: GraphEnvironment }) {
   </div>
 }
 
-export function EnvironmentListRow({ environment, preview = false, accent, canLink, busy, fileHovered, fileStatus, dropHint, status, access, services, actions, onConfigure, onDoubleClick }: {
+export function EnvironmentListRow({ environment, preview = false, managedExternally = false, metricsAvailable = true, details, accent, canLink, busy, fileHovered, fileStatus, dropHint, status, access, services, actions, onConfigure, onDoubleClick }: {
   environment: GraphEnvironment
   preview?: boolean
+  managedExternally?: boolean
+  metricsAvailable?: boolean
+  details?: ReactNode
   accent: string
   canLink: boolean
   busy: boolean
@@ -332,15 +389,15 @@ export function EnvironmentListRow({ environment, preview = false, accent, canLi
   const links = context.links.get(environment.id) ?? []
   const expanded = context.expanded.has(environment.id)
   const selected = context.selected.has(environment.id)
-  const cloud = environment.kind === "cloud"
+  const cloud = environment.kind === "cloud" || !metricsAvailable
   const dim = environment.status !== "running"
   const memoryLimit = environment.resourcePolicy?.memoryGb?.current || environment.resourcePolicy?.memoryGb?.max
   const subtitle = environment.description || (cloud || environment.runtime.startsWith("shared://") ? "" : environment.runtime)
   const detailsId = `environment-list-details-${environment.id}`
   return <>
-    <EnvironmentNodeMenu environment={environment} disabled={preview} asChild>
+    <EnvironmentNodeMenu environment={environment} disabled={preview || managedExternally} asChild>
     <tr data-tour-preview={preview || undefined} onClickCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} onPointerDownCapture={preview ? event => { event.preventDefault(); event.stopPropagation() } : undefined} className="workspace-list-row" onDoubleClick={onDoubleClick} data-environment-id={environment.id} data-running={environment.status === "running" || undefined} data-selected={selected || undefined} data-expanded={expanded || undefined} data-file-drop-target={fileHovered || undefined} aria-busy={busy} aria-selected={selected} style={{ "--node-accent": accent } as CSSProperties}>
-      <td className="environment-list-select-cell"><input type="checkbox" aria-label={`Select ${environment.name}`} disabled={preview} checked={selected} onChange={() => undefined} onClick={event => context.toggleSelected(environment.id, event.shiftKey)} /></td>
+      <td className="environment-list-select-cell">{<input type="checkbox" aria-label={`Select ${environment.name}`} disabled={preview} checked={selected} onChange={() => undefined} onClick={event => context.toggleSelected(environment.id, event.shiftKey)} />}</td>
       <th scope="row" className="environment-list-name">
         <div className="environment-list-name-line">
           <button type="button" className="environment-list-disclosure" aria-expanded={expanded} aria-controls={expanded ? detailsId : undefined} aria-label={`${expanded ? "Hide" : "Show"} details for ${environment.name}`} onClick={() => context.toggleExpanded(environment.id)} />
@@ -366,7 +423,7 @@ export function EnvironmentListRow({ environment, preview = false, accent, canLi
       <td className="environment-list-actions">{actions}</td>
     </tr>
     </EnvironmentNodeMenu>
-    {expanded ? <tr className="environment-list-detail" id={detailsId} style={{ "--node-accent": accent } as CSSProperties}><td colSpan={columnCount}><EnvironmentDetails environment={environment} links={links} /></td></tr> : null}
+    {expanded ? <tr className="environment-list-detail" id={detailsId} style={{ "--node-accent": accent } as CSSProperties}><td colSpan={columnCount}>{details ?? <EnvironmentDetails environment={environment} links={links} />}</td></tr> : null}
   </>
 }
 

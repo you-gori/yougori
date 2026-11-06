@@ -1,0 +1,472 @@
+{
+  "formatVersion": 2,
+  "instance": "backup-workflow",
+  "template": {
+    "name": "backup-workflow",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.backups",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Backups",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.schedule",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Schedule",
+      "permissions": []
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.private",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "access": "none",
+    "app_cpu": "1",
+    "app_memory_gb": "1",
+    "backup_consistency": "stop",
+    "backup_keep": "7",
+    "backup_missed": "run_once",
+    "backup_overlap": "skip",
+    "backup_retries": "2",
+    "backup_schedule": "daily 02:00",
+    "backup_timezone": "local",
+    "data_path": "/data",
+    "health_path": "/",
+    "image": "ghcr.io/example/notes-app:1.2.0"
+  },
+  "secrets": {},
+  "bindings": {},
+  "resources": [
+    {
+      "id": "app-data",
+      "kind": "volume",
+      "title": "volume",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "backup_consistency": "stop",
+        "backup_keep": 7,
+        "backup_missed": "run_once",
+        "backup_overlap": "skip",
+        "backup_retries": 2,
+        "backup_schedule": "daily 02:00",
+        "backup_through": {
+          "resource": "backup"
+        },
+        "backup_timezone": "local",
+        "shared": false
+      },
+      "outputs": [
+        "id",
+        "name"
+      ]
+    },
+    {
+      "id": "app",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [
+        "app-data"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "cpu": 1.0,
+        "depends_on": [],
+        "environment": {
+          "DATA_PATH": "/data",
+          "PORT": "8080"
+        },
+        "files": [],
+        "gpu": false,
+        "health": {
+          "path": "/",
+          "port": 8080,
+          "wait_seconds": 180
+        },
+        "image": "ghcr.io/example/notes-app:1.2.0",
+        "internet": true,
+        "memory": 1,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8080
+        ],
+        "restart": "always",
+        "secrets": {},
+        "storage": 10,
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "app-data",
+            "target": "/data"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "backup",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [
+        "app-data"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "sh",
+          "-c",
+          "while true; do sleep 3600; done"
+        ],
+        "cpu": 0.5,
+        "depends_on": [],
+        "environment": {},
+        "files": [],
+        "gpu": false,
+        "image": "docker.io/library/alpine:3.21",
+        "internet": false,
+        "memory": 0.5,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [],
+        "restart": "always",
+        "secrets": {},
+        "storage": 2,
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "app-data",
+            "target": "/data"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    }
+  ],
+  "order": [
+    "app-data",
+    "app",
+    "backup"
+  ],
+  "steps": [
+    {
+      "title": "See when the next backup is, and what has been kept",
+      "detail": "Shows each backup with its time, how many files it holds and whether the app was stopped while it was copied.",
+      "command": "yougori setup show backup-workflow"
+    },
+    {
+      "title": "Practise a restore before you need one",
+      "detail": "Puts the newest backup into a new folder inside the backup sandbox and leaves your data alone, so you can check the files are what you expect. Do this once now, not on the day something goes wrong.",
+      "command": "yougori terminal {{env.backup}}"
+    },
+    {
+      "title": "Read the app's logs",
+      "detail": "If the app does not become healthy after a restore, its output usually says why.",
+      "command": "yougori logs {{env.app}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "app",
+      "label": "App sandbox",
+      "value": "{{outputs.app.name}}",
+      "private": false
+    },
+    {
+      "key": "backup_sandbox",
+      "label": "Backup sandbox",
+      "value": "{{outputs.backup.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "storage",
+    "files",
+    "logs",
+    "publications",
+    "diagram"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "app-data",
+        "kind": "volume",
+        "title": "volume",
+        "placement": "this computer"
+      },
+      {
+        "id": "app",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "backup",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "ghcr.io/example/notes-app:1.2.0"
+      },
+      {
+        "kind": "image",
+        "name": "docker.io/library/alpine:3.21"
+      }
+    ],
+    "permissions": [
+      "Run as a service: Run containers on this computer.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Backups: Reserve storage on a drive you choose.",
+      "A website or API: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 2,
+      "cpu": 1.5,
+      "memoryGb": 1.5,
+      "storageGb": 12.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "image",
+        "question": "Which container image runs your app?",
+        "answer": "ghcr.io/example/notes-app:1.2.0",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "data_path",
+        "question": "Where does your app keep the data to back up?",
+        "answer": "/data",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "app_cpu",
+        "question": "Processor cores for the app",
+        "answer": "1",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "app_memory_gb",
+        "question": "Memory for the app, in GB",
+        "answer": "1",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "backup_schedule",
+        "question": "When should the data be backed up?",
+        "answer": "daily 02:00",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "backup_timezone",
+        "question": "Which time zone are those times in?",
+        "answer": "local",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "backup_keep",
+        "question": "How many backups should Yougori keep?",
+        "answer": "7",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "backup_consistency",
+        "question": "How should the data be copied?",
+        "answer": "stop",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "backup_missed",
+        "question": "What should happen to a backup Yougori was not running for?",
+        "answer": "run_once",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "backup_overlap",
+        "question": "What should happen if a backup is due while the one before is still running?",
+        "answer": "skip",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "backup_retries",
+        "question": "How many times should a failed backup be tried again?",
+        "answer": "2",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "access",
+        "question": "Who can reach the app?",
+        "answer": "none",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "health_path",
+        "question": "Which path answers 200 when the app is healthy?",
+        "answer": "/",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "760581329586e2819ddc3b03b4858962def5a08cf489852f4b42e7f972363601"
+}

@@ -78,6 +78,8 @@ pub enum Code {
     UnsupportedCapability,
     OperationCancelled,
     OperationInterrupted,
+    /// A change under way that waits for an answer (a secret it lost, say) before it can go on.
+    AwaitingInput,
     OutcomeUnknown,
     IncompatibleEngine,
     EngineUnavailable,
@@ -96,6 +98,7 @@ impl Code {
             Code::UnsupportedCapability => ("unsupported_capability", false, "not_started"),
             Code::OperationCancelled => ("operation_cancelled", false, "cancelled"),
             Code::OperationInterrupted => ("operation_interrupted", false, "reconciliation_required"),
+            Code::AwaitingInput => ("awaiting_input", false, "awaiting_input"),
             Code::OutcomeUnknown => ("outcome_unknown", false, "unknown"),
             Code::IncompatibleEngine => ("incompatible_engine", false, "not_started"),
             Code::EngineUnavailable => ("engine_unavailable", true, "not_submitted"),
@@ -298,6 +301,10 @@ pub fn verify_pipe_server(stream: &tokio::net::windows::named_pipe::NamedPipeCli
 /// No network address override: the management API is never a TCP service and
 /// cannot be reached through My PC, guest ports, or Cloudflare publications.
 pub fn endpoint() -> io::Result<String> {
+    #[cfg(feature = "acceptance")]
+    if let Some(named) = acceptance_endpoint()? {
+        return Ok(named);
+    }
     #[cfg(windows)]
     {
         Ok(format!(r"\\.\pipe\Yougori.Control.v1.{}", user_sid()?))
@@ -307,6 +314,50 @@ pub fn endpoint() -> io::Result<String> {
         Ok(format!("/tmp/yougori-{}/control-v1.sock", unsafe {
             libc::geteuid()
         }))
+    }
+}
+
+/// Runtime acceptance (`acceptance` feature, never in a release build): a disposable engine and the
+/// CLI driving it take their control endpoint from YOUGORI_ACCEPTANCE_ENDPOINT, a local pipe (or
+/// socket) name of this user's own, so they run beside the installed engine without reaching it.
+/// Still never a network address, and the same-user checks on both ends still apply.
+///
+/// Fails closed: a name that is set but is not a local pipe (or socket) of its own, or an
+/// acceptance data folder with no name at all, is an error. Falling back to the real endpoint
+/// would send a disposable test's requests to the installed engine.
+#[cfg(feature = "acceptance")]
+fn acceptance_endpoint() -> io::Result<Option<String>> {
+    acceptance_endpoint_from(|name| std::env::var_os(name), &installed_endpoint()?)
+}
+
+/// [`acceptance_endpoint`] over the variables `get` reads, so it is checked without changing the
+/// process's own environment.
+#[cfg(feature = "acceptance")]
+fn acceptance_endpoint_from(get: impl Fn(&str) -> Option<std::ffi::OsString>, installed: &str) -> io::Result<Option<String>> {
+    let Some(named) = get("YOUGORI_ACCEPTANCE_ENDPOINT") else {
+        if get("YOUGORI_ACCEPTANCE_DATA_DIR").is_some() {
+            return Err(io::Error::other("YOUGORI_ACCEPTANCE_DATA_DIR is set without YOUGORI_ACCEPTANCE_ENDPOINT; refusing to use the installed engine's endpoint"));
+        }
+        return Ok(None);
+    };
+    let named = named.into_string().map_err(|_| io::Error::other("YOUGORI_ACCEPTANCE_ENDPOINT is not text"))?;
+    let local = if cfg!(windows) { named.starts_with(r"\\.\pipe\") && named.len() > r"\\.\pipe\".len() } else { named.starts_with('/') };
+    if !local || named.contains("..") || named.contains(':') || named.eq_ignore_ascii_case(installed) {
+        return Err(io::Error::other(format!("YOUGORI_ACCEPTANCE_ENDPOINT must be a local pipe name of a test's own (got {named:?}); refusing to fall back to the installed engine's endpoint")));
+    }
+    Ok(Some(named))
+}
+
+/// The installed engine's endpoint, which an acceptance endpoint must never be.
+#[cfg(feature = "acceptance")]
+fn installed_endpoint() -> io::Result<String> {
+    #[cfg(windows)]
+    {
+        Ok(format!(r"\\.\pipe\Yougori.Control.v1.{}", user_sid()?))
+    }
+    #[cfg(unix)]
+    {
+        Ok(format!("/tmp/yougori-{}/control-v1.sock", unsafe { libc::geteuid() }))
     }
 }
 
@@ -326,6 +377,39 @@ pub fn private_socket_directory() -> io::Result<std::path::PathBuf> {
         ));
     }
     Ok(path)
+}
+
+/// Only with `--features acceptance`: a malformed or missing test endpoint is an error, never the
+/// installed engine's endpoint.
+#[cfg(all(test, feature = "acceptance"))]
+mod acceptance_tests {
+    use std::ffi::OsString;
+
+    fn check(endpoint: Option<&str>, data: Option<&str>) -> std::io::Result<Option<String>> {
+        let installed = super::installed_endpoint().unwrap();
+        super::acceptance_endpoint_from(
+            |name| match name {
+                "YOUGORI_ACCEPTANCE_ENDPOINT" => endpoint.map(OsString::from),
+                "YOUGORI_ACCEPTANCE_DATA_DIR" => data.map(OsString::from),
+                _ => None,
+            },
+            &installed,
+        )
+    }
+
+    #[test]
+    fn a_test_endpoint_that_is_not_its_own_fails_closed() {
+        let installed = super::installed_endpoint().unwrap();
+        let own = r"\\.\pipe\Yougori.Acceptance.run2";
+        // What a shell can make of that name, and other mistakes.
+        let mangled = r"\.\pipe\Yougori.Acceptance.run2";
+        let bare = r"\\.\pipe\";
+        for (endpoint, data) in [(Some(mangled), None), (Some(bare), None), (Some(installed.as_str()), None), (Some("C:/tmp/pipe"), None), (None, Some(r"C:\tmp\run2"))] {
+            assert!(check(endpoint, data).is_err(), "{endpoint:?} {data:?} must not reach the installed engine");
+        }
+        assert_eq!(check(Some(own), Some(r"C:\tmp\run2")).unwrap().as_deref(), Some(own));
+        assert_eq!(check(None, None).unwrap(), None, "with nothing set, the installed engine as always");
+    }
 }
 
 #[cfg(test)]

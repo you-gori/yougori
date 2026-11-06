@@ -1,0 +1,43 @@
+.selection-configuration {
+  width: min(720px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(820px, calc(100dvh - 48px));
+  overflow: hidden;
+}
+.selection-configuration.selection-vm-configuration { width: min(960px, calc(100vw - 32px)); }
+.selection-configuration [data-slot="dialog-header"] { padding: 24px 56px 20px 24px; gap: 8px; border-bottom: 1px solid var(--border); }
+.selection-configuration [data-slot="dialog-title"] { font-size: 20px; line-height: 1.35; overflow-wrap: anywhere; }
+.selection-configuration [data-slot="dialog-description"] { font-size: 13px; line-height: 1.6; }
+.selection-eyebrow { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; color: var(--muted-foreground); font-size: 12px; }
+.selection-eyebrow > svg { width: 14px; height: 14px; }
+.selection-eyebrow > span { margin-left: auto; }
+.selection-configuration .selection-configuration-body { display: flex; flex-direction: column; gap: 24px; padding: 20px 24px; }
+.selection-environments { display: flex; flex-direction: column; gap: 6px; }
+.selection-environment-row, .selection-vm-row > summary { display: flex; align-items: center; width: 100%; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--background); text-align: left; cursor: pointer; list-style: none; }
+.selection-environment-row:hover, .selection-vm-row > summary:hover { background: var(--muted); }
+.selection-environment-row:focus-visible, .selection-vm-row > summary:focus-visible, .selection-setup-row:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.selection-environment-row > svg, .selection-vm-row > summary > svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--muted-foreground); }
+.selection-environment-row > svg:last-child, .selection-vm-row > summary > svg:last-child { width: 15px; height: 15px; }
+.selection-environment-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
+.selection-environment-name small { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 12px; font-weight: 400; }
+.selection-vm-row > summary::-webkit-details-marker { display: none; }
+.selection-vm-row[open] .selection-chevron { transform: rotate(180deg); }
+.selection-vm-controls { padding: 16px 4px 8px; }
+.selection-setup-actions { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 10px; }
+.selection-setup-actions > h3 { display: flex; align-items: center; gap: 7px; font-size: 13px; line-height: 20px; font-weight: 600; }
+.selection-setup-actions > h3 svg { width: 15px; height: 15px; color: var(--muted-foreground); }
+.selection-note { font-size: 12px; line-height: 1.6; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.selection-setup-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; text-align: left; }
+.selection-setup-row:hover { background: var(--muted); }
+.selection-setup-row strong { display: block; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.selection-setup-row small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted-foreground); }
+.selection-setup-row > svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--muted-foreground); }
+.selection-environments + .selection-setup-actions { padding-top: 20px; border-top: 1px solid var(--border); }
+.selection-configuration .selection-configuration-footer { flex-shrink: 0; flex-direction: row; justify-content: flex-end; padding: 12px 24px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 50%, var(--popover)); }
+@media (max-width: 599px) {
+  .selection-configuration [data-slot="dialog-header"] { padding: 20px 48px 16px 18px; }
+  .selection-configuration .selection-configuration-body { padding: 16px 18px; }
+  .selection-environment-row, .selection-vm-row > summary { gap: 9px; padding: 12px; }
+  .selection-environment-name { font-size: 13px; }
+  .selection-configuration .selection-configuration-footer { padding: 12px 18px; }
+}

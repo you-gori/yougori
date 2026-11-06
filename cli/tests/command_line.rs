@@ -213,12 +213,30 @@ fn ssh_ascii_output_does_not_change_wire_json_or_user_text() {
 }
 
 #[test]
-fn launcher_never_prompts_on_pipes_and_model_alias_preserves_resources() {
-    for args in [vec!["launch"],vec!["launch", "--cloud"],vec!["run"],vec!["cli"],vec!["terminal", "unused-environment"],vec!["terminal", "unused-environment", "--project"]] {
+fn nothing_prompts_on_pipes_and_the_model_alias_preserves_resources() {
+    // What still needs a terminal says so rather than hanging on a prompt nobody can answer.
+    for args in [vec!["terminal", "unused-environment"],vec!["terminal", "unused-environment", "--project"]] {
         let output=cli(&args);
         assert!(!output.status.success());
         assert!(response(&output)["error"].as_str().unwrap().contains("interactive terminal"));
     }
+    // `launch` and `cli` were the launcher. They are gone, so they are refused as commands
+    // Yougori does not have — not left half-working, and not silently accepted.
+    for args in [vec!["launch"], vec!["launch", "--cloud"], vec!["cli"]] {
+        let output = cli(&args);
+        assert!(!output.status.success(), "{args:?} should not be a command any more");
+        let said = response(&output)["error"].as_str().unwrap_or_default().to_owned();
+        assert!(!said.contains("interactive terminal"), "{args:?} still reads as the launcher: {said}");
+    }
+    // `yougori cli --help` printed the launcher's own page (a main menu, arrow keys, Escape). That
+    // page is gone with it: asking for help here shows the ordinary help, which offers no launcher.
+    let output = cli(&["cli", "--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    for gone in ["Yougori interactive CLI", "yougori [cli]", "main menu", "Requires an interactive terminal"] {
+        assert!(!help.contains(gone), "the launcher's help page is still printed: {help}");
+    }
+    assert!(help.contains("yougori run"), "the ordinary help should be shown instead: {help}");
     let output=cli(&["run","hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0","--api","--cpu","3","--memory","6GB","--storage","30GB","--dry-run"]);
     assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stdout));
     let result=&response(&output)["result"];
@@ -248,40 +266,41 @@ fn neocloud_model_selection_is_explicit_for_scripts_and_dry_run_stays_offline() 
 }
 
 #[test]
-fn bare_entry_opens_cli_and_help_stays_explicit() {
+fn piped_bare_entry_shows_help_without_waiting_for_menu_input() {
+    // The menu opens only in a terminal. Scripts and captured output keep ordinary help.
     let empty = tempfile::tempdir().unwrap();
     let bare = Command::new(env!("CARGO_BIN_EXE_yougori-cli")).current_dir(empty.path()).output().unwrap();
-    assert!(!bare.status.success());
-    assert_eq!(response(&bare), response(&cli(&["cli"])));
-    assert!(response(&bare)["error"].as_str().unwrap().contains("yougori help"));
+    assert!(bare.status.success(), "{}", String::from_utf8_lossy(&bare.stderr));
+    let shown = String::from_utf8_lossy(&bare.stdout);
+    assert!(shown.contains("yougori run"), "the bare entry should show the help: {shown}");
+
     for args in [["help"], ["--help"], ["-h"]] {
         let output = cli(&args);
         assert!(output.status.success());
         let help = String::from_utf8_lossy(&output.stdout);
-        assert!(help.contains("yougori cli"));
         assert!(help.contains("yougori run"));
+        // The help must not offer what no longer exists. A help page that lists a removed
+        // command is worse than one that is merely out of date: people type what it tells them.
+        assert!(!help.contains("yougori cli"), "the launcher is still offered: {help}");
+        assert!(!help.contains("yougori launch"), "the launcher is still offered: {help}");
+        assert!(!help.contains("npm run yougori"), "the launcher's npm scripts are still offered: {help}");
     }
-    let guided = cli(&["cli", "--help"]);
-    assert!(guided.status.success());
-    assert!(String::from_utf8_lossy(&guided.stdout).contains("arrow keys"));
-    let invalid = cli(&["cli", "unexpected"]);
-    assert!(!invalid.status.success());
-    assert!(response(&invalid)["error"].as_str().unwrap().contains("Usage: yougori cli"));
 }
 
 #[test]
-fn bare_project_entry_keeps_the_menu_without_mutating_on_pipes() {
+fn bare_entry_in_a_project_folder_still_changes_nothing_in_it() {
+    // Opening Yougori must never add scripts or otherwise edit the current project.
     for (name, content) in [("package.json", "{\"scripts\":{\"dev\":\"vite\"}}"), ("main.py", "print('hello')")] {
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join(name), content).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_yougori"))
             .current_dir(folder.path()).output().unwrap();
-        assert!(!output.status.success());
-        assert_eq!(response(&output), response(&cli(&["cli"])));
-        assert_eq!(std::fs::read_to_string(folder.path().join(name)).unwrap(), content);
-        assert!(!folder.path().join("yougori").exists());
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(std::fs::read_to_string(folder.path().join(name)).unwrap(), content, "the file was changed");
+        assert!(!folder.path().join("yougori").exists(), "nothing is written into a project folder");
     }
 }
+
 
 #[test]
 fn one_gib_container_is_validated_before_starting_the_engine() {
@@ -482,18 +501,34 @@ fn help_flags_after_the_separator_belong_to_the_guest_command() {
     assert!(cli(&["exec", "--help"]).status.success());
 }
 #[test]
-fn closed_neo_grid_joins_refuse_passwords_in_arguments_before_any_engine_call() {
-    let help = cli(&["acme", "--neogrid", "--help"]);
-    assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("yougori COMPANY --neogrid --ip HUB_IP"));
-    let typed = cli(&["acme", "--neogrid", "--password", "hunter2hunter2", "--ip", "10.0.0.5"]);
-    assert!(!typed.status.success());
-    assert!(response(&typed)["error"].as_str().unwrap().contains("Never type the password"));
-    // Piped stdin is not a terminal: the password must be requested explicitly with --password -.
-    let piped = Command::new(env!("CARGO_BIN_EXE_yougori-cli")).args(["acme", "--neogrid", "--ip", "10.0.0.5"]).stdin(std::process::Stdio::null()).output().unwrap();
-    assert!(response(&piped)["error"].as_str().unwrap().contains("--password -"));
-    let unconfirmed = cli(&["grid", "create", "Acme", "--ip", "10.0.0.5"]);
-    assert!(response(&unconfirmed)["error"].as_str().unwrap().contains("--yes"));
-    let twice = cli(&["acme", "globex", "--neogrid", "--ip", "10.0.0.5"]);
-    assert!(response(&twice)["error"].as_str().unwrap().contains("Name the company once"));
+fn the_branded_grid_commands_are_gone_and_take_no_arguments_with_them() {
+    // `grid`, `grids`, `desks`, `access`, `create grid` and `yougori COMPANY --neogrid` were the
+    // branded command surface. They are removed, so none of them runs — and, more to the point,
+    // none of them half-runs: a removed command that still parsed its arguments would read a
+    // password out of a command line before refusing, which is the one thing it must not do.
+    for args in [
+        vec!["grid", "status"],
+        vec!["grids", "list"],
+        vec!["desks"],
+        vec!["access", "status"],
+        vec!["acme", "--neogrid", "--ip", "10.0.0.5"],
+        vec!["acme", "--neogrid", "--password", "hunter2hunter2", "--ip", "10.0.0.5"],
+    ] {
+        let output = cli(&args);
+        assert!(!output.status.success(), "{args:?} should not be a command any more");
+        let said = response(&output)["error"].as_str().unwrap_or_default().to_owned();
+        assert!(!said.contains("Never type the password"), "{args:?} still parses grid arguments: {said}");
+        assert!(!said.contains("--password -"), "{args:?} still parses grid arguments: {said}");
+    }
+    // `create grid` is now an ordinary `create` of an image called grid, not a grid command. It is
+    // checked as a dry run: these tests reach whatever engine is running on this computer, and a
+    // real create left a broken `grid` container there on every run. Options come before the
+    // image: anything after it is the container's own command.
+    let output = cli(&["create", "--dry-run", "grid"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    let planned = &response(&output)["result"];
+    assert_eq!((planned["dryRun"].as_bool(), planned["start"].as_bool()), (Some(true), Some(false)));
+    assert_eq!(planned["request"]["runtime"], "grid", "{planned}");
+    // The rule that refusal protected still holds where passwords are still typed: see
+    // closed_bounty's own test, and grids::words, whose library stays for templates.
 }

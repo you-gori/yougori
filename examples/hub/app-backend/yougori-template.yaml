@@ -1,0 +1,115 @@
+format_version: 2
+kind: template
+name: app-backend
+title: App Backend
+subtitle: Your app with a PostgreSQL database and an optional Redis cache, privately connected.
+summary: Run your app's container image beside PostgreSQL and, if you want, Redis. Only your app can reach them, their data is kept on volumes, and the app can go public through a quick link or your domain.
+version: 1.0.0
+license: MIT
+topics: [website, api, database, postgres, redis]
+aliases: [app backend, app with database, postgres app, web app with database, backend]
+changelog: First version. Your app image, PostgreSQL 16.4 and optional Redis 7.4.1, with one-way private connections and persistent volumes.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: none
+
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: web.health, selection: optional}
+  - {id: web.private, selection: default}
+  - {id: web.quick_link, selection: optional}
+  - {id: web.domain, selection: optional}
+  - {id: data.databases, selection: required}
+  - {id: data.volumes, selection: required}
+  - {id: data.private_connections, selection: required}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: image
+    question: Which container image runs your app?
+    hint: An image reference such as ghcr.io/you/app:1.4.2. Pin a version. It must listen on port 8080.
+    type: text
+    pattern: '^[a-z0-9][a-z0-9._/-]{0,250}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$'
+    group: website_api
+  - id: health_path
+    question: Which path answers 200 when the app is healthy?
+    type: text
+    pattern: '^/[A-Za-z0-9._~/-]{0,200}$'
+    default: /
+    group: website_api
+  - id: app_cpu
+    question: Processor cores for the app
+    type: number
+    min: 0.5
+    max: 16
+    default: 1
+    group: grid_workers
+  - id: app_memory_gb
+    question: Memory for the app, in GB
+    type: number
+    min: 0.5
+    max: 64
+    default: 1
+    group: grid_workers
+  - id: db_password
+    question: Choose the database password
+    hint: At least 16 characters. Your app reads it as DATABASE_PASSWORD; nothing else can reach the database.
+    type: secret
+    min_length: 16
+    group: files_data
+  - id: db_storage_gb
+    question: Disk for the database, in whole GB
+    type: number
+    min: 2
+    max: 1024
+    default: 20
+    group: files_data
+  - id: cache
+    question: Add a Redis cache?
+    type: yesno
+    default: false
+    group: files_data
+  - id: cache_host
+    question: Host name your app uses for Redis
+    hint: Set for you; your app reads it as REDIS_HOST.
+    type: text
+    default: cache
+    editable: false
+    group: files_data
+    when: {cache: "yes"}
+  - id: access
+    question: Who can reach the app?
+    type: choice
+    group: website_api
+    choices:
+      - {value: none, label: "Only this computer"}
+      - {value: quick, label: "Anyone with a quick link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "My own domain", hint: "A domain you saved with yougori domain add."}
+    default: none
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {access: domain}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [publications, storage, logs, diagram]
+
+steps:
+  - title: Read the app's logs
+    detail: If the app does not become healthy, its output usually says why, such as a database it cannot reach yet.
+    command: yougori logs {{env.app}}
+  - title: Open a database shell
+    detail: Connects to PostgreSQL from inside its own sandbox.
+    command: yougori terminal {{env.db}}
+
+outputs:
+  - {key: address, label: App address, value: "{{outputs.web.url}}"}
+  - {key: app, label: App sandbox, value: "{{outputs.app.name}}"}
+  - {key: database, label: Database sandbox, value: "{{outputs.db.name}}"}

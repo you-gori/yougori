@@ -1,0 +1,105 @@
+format_version: 2
+kind: template
+name: shared-workspace
+title: Shared Workspace
+subtitle: Let one person into one of your sandboxes, with the access you choose.
+summary: Share one of your sandboxes with one person through a private link and their own password, to view or edit one folder or to use the whole sandbox, until a time you choose or until you revoke it.
+version: 1.0.0
+license: MIT
+topics: [sharing, team, sandbox, collaboration]
+aliases: [shared workspace, share a sandbox, share environment, teammate access, remote access]
+changelog: First version. Shares one existing sandbox with one person through Yougori's remote gateway.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+
+capabilities:
+  - {id: people.team, selection: required}
+  - {id: people.invites, selection: optional}
+  - {id: data.folders, selection: optional}
+  - {id: web.service, selection: required}
+  - {id: web.quick_link, selection: default}
+  - {id: web.domain, selection: optional}
+
+inputs:
+  - id: recipient
+    question: Username for the person
+    hint: 1 to 64 lowercase letters, digits, dots, dashes or underscores. They sign in with it.
+    type: text
+    pattern: '^[a-z0-9._-]{1,64}$'
+    group: people_access
+  - id: recipient_name
+    question: Their name, as you will see it
+    type: text
+    required: false
+    pattern: '^.{0,64}$'
+    group: people_access
+  - id: recipient_password
+    question: Their password
+    hint: At least 8 characters. Give it to them separately from the link.
+    type: secret
+    min_length: 8
+    group: people_access
+  - id: permission
+    question: What may they do?
+    type: choice
+    group: people_access
+    choices:
+      - {value: view, label: "View one folder", hint: "Read files in the folder. No terminal."}
+      - {value: edit, label: "Edit one folder", hint: "Read and change files in the folder. No terminal."}
+      - {value: control, label: "Use the whole sandbox", hint: "Terminal, apps, start and stop. They can change anything in it, including signed-in tools."}
+    default: view
+  - id: folder
+    question: Which folder inside the sandbox?
+    hint: An absolute path such as /workspace. Needed for view and edit; with control it also lets them move files in and out.
+    type: text
+    required: false
+    pattern: '^/[A-Za-z0-9._/ -]{0,500}$'
+    default: /workspace
+    group: files_data
+  - id: expires_hours
+    question: For how many hours?
+    hint: 1 to 8760. Leave empty to keep the share until you revoke it.
+    type: number
+    required: false
+    min: 1
+    max: 8760
+    default: 24
+    group: people_access
+  - id: access
+    question: How will they reach it?
+    type: choice
+    group: website_api
+    choices:
+      - {value: quick, label: "A quick link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "My own domain", hint: "A domain you saved with yougori domain add."}
+    default: quick
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {access: domain}
+
+bindings:
+  - id: workspace
+    type: resource
+    resource: environment
+    question: Which of your sandboxes do you want to share?
+    hint: Your own sandbox keeps running as before. A full VM can only be shared with control.
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [people, files, logs]
+
+steps:
+  - title: Send them the link
+    detail: Send the link below and their username in one message, and the password in another. They run yougori connect with the link and their username, then type the password.
+  - title: Revoke access
+    detail: Remove this setup, or use Revoke in the People view. Their sessions close at once; your sandbox keeps running.
+
+outputs:
+  - {key: share_link, label: Link for the person, value: "{{outputs.recipient.join_method}}", private: true}
+  - {key: page, label: Share page, value: "{{outputs.recipient.page}}"}

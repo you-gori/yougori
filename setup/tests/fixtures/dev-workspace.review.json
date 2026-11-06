@@ -1,0 +1,267 @@
+{
+  "aliases": [
+    "dev workspace",
+    "development sandbox",
+    "code sandbox",
+    "workspace with sync"
+  ],
+  "capabilities": [
+    {
+      "id": "grid.local_only",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.sync",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.folders",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "tools.builtin",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 4,
+      "gpu": false,
+      "image": "{{inputs.image}}",
+      "internet": true,
+      "memoryGb": 8,
+      "name": "dev",
+      "pcAccess": [
+        {
+          "binding": "reference",
+          "path": "the folder you choose for reference",
+          "readOnly": true,
+          "target": "/reference"
+        },
+        {
+          "binding": "project",
+          "conflicts": "keep_both",
+          "continuous": true,
+          "path": "the folder you choose for project",
+          "readOnly": false,
+          "sync": true,
+          "target": "/workspace"
+        }
+      ],
+      "ports": [
+        3000
+      ],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 40,
+      "tools": [
+        "codex",
+        "claude",
+        "gemini",
+        "opencode"
+      ],
+      "type": "container",
+      "writablePcFolders": true
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "ai_models",
+      "id": "image",
+      "question": "Which container image should the sandbox run?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "tools",
+      "question": "Which coding tools should it install?",
+      "required": false,
+      "secret": false,
+      "type": "multichoice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "cpu",
+      "question": "Processor cores for the sandbox",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory for the sandbox, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "storage_gb",
+      "question": "Disk for the sandbox, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "How should port 3000 in the sandbox be reachable?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    }
+  ],
+  "pcAccess": [
+    {
+      "binding": "reference",
+      "environment": "dev",
+      "path": "the folder you choose for reference",
+      "readOnly": true,
+      "target": "/reference"
+    },
+    {
+      "binding": "project",
+      "conflicts": "keep_both",
+      "continuous": true,
+      "environment": "dev",
+      "path": "the folder you choose for project",
+      "readOnly": false,
+      "sync": true,
+      "target": "/workspace"
+    }
+  ],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "dev",
+      "input": "access",
+      "port": 3000
+    }
+  ],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "dev",
+      "kind": "environment",
+      "summary": {
+        "automatic_start": true,
+        "cpu": "{{inputs.cpu}}",
+        "image": "{{inputs.image}}",
+        "internet": true,
+        "memory": "{{inputs.memory_gb}}",
+        "ports": "3000",
+        "restart": "unless-stopped",
+        "storage": "{{inputs.storage_gb}}",
+        "working_dir": "/workspace"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "storage",
+      "kind": "volume",
+      "summary": {
+        "capability": "data.volumes",
+        "size_gb": "{{inputs.storage_gb}}"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Open a terminal in the sandbox",
+    "Sign in to your tools there"
+  ],
+  "subtitle": "A development sandbox with your code synced in and out, and your tools installed.",
+  "tools": [
+    {
+      "environment": "dev",
+      "name": "codex",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"codex\"]"
+      ]
+    },
+    {
+      "environment": "dev",
+      "name": "claude",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"claude\"]"
+      ]
+    },
+    {
+      "environment": "dev",
+      "name": "gemini",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"gemini\"]"
+      ]
+    },
+    {
+      "environment": "dev",
+      "name": "opencode",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"opencode\"]"
+      ]
+    }
+  ],
+  "totals": {
+    "cpu": 4,
+    "environments": 1,
+    "gpu": "none",
+    "memoryGb": 8,
+    "storageGb": 40
+  },
+  "warnings": [
+    "dev can read the folder you choose for reference on this computer.",
+    "dev can change files in the folder you choose for project on this computer.",
+    "Makes dev:3000 reachable from the internet."
+  ]
+}

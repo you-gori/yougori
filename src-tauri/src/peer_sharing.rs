@@ -64,7 +64,9 @@ async fn request_direct(invite:&Invitation,method:&str,params:Value)->Result<Val
 /// The same request, carried to the desk's host by the grid's hub. The desk's own TLS is
 /// negotiated inside the relayed connection, so nothing in between reads it.
 async fn request_relayed(invite:&Invitation,desk:&str,method:&str,params:Value)->Result<Value,String>{
-    let session=crate::desks::person_session().map_err(|_|"Sign in to this grid again to open your desk from here".to_string())?;
+    // The sign-in of the grid this desk belongs to. A person can be signed in to several Sandbox
+    // Grids, and another grid's session is not the one that may open this desk.
+    let session=crate::desks::person_session_for_desk(desk).map_err(|_|"Sign in to this grid again to open your desk from here".to_string())?;
     let wait=Duration::from_secs(if method=="inspect"{20}else{125});
     let (status,value)=session.desk_request(desk,&invite.address,&invite.certificate,&invite.token,&json!({"method":method,"params":params}),wait).await?;
     if (200..300).contains(&status) {Ok(value)} else {Err(value["error"].as_str().unwrap_or("The desk refused this request").into())}

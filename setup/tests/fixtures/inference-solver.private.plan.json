@@ -1,0 +1,382 @@
+{
+  "formatVersion": 2,
+  "instance": "inference-solver",
+  "template": {
+    "name": "inference-solver",
+    "version": "0.1.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": []
+  },
+  "capabilities": [
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.private",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "models.local",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "Local models",
+      "permissions": [
+        "Serve models from this computer."
+      ]
+    },
+    {
+      "id": "data.private_connections",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "files_data",
+      "name": "Private connections",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "account_mode": "private",
+    "admin_email": "owner@example.invalid",
+    "model_source": "none",
+    "site_name": "Inference Solver",
+    "web_access": "private"
+  },
+  "secrets": {
+    "admin_password": "hub-inference-solver-admin_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "data",
+      "kind": "volume",
+      "title": "volume",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "shared": false
+      },
+      "outputs": [
+        "id",
+        "name"
+      ]
+    },
+    {
+      "id": "web",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [
+        "data"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "python",
+          "/app/site/server.py"
+        ],
+        "cpu": 2.0,
+        "depends_on": [],
+        "environment": {
+          "ACCOUNT_MODE": "private",
+          "ADMIN_BOOTSTRAP_EMAIL": "owner@example.invalid",
+          "PYTHONDONTWRITEBYTECODE": "1",
+          "SITE_NAME": "Inference Solver",
+          "SOLVER_BIND": "0.0.0.0",
+          "SOLVER_DATA": "/data",
+          "WEB_ACCESS": "private"
+        },
+        "files": [
+          {
+            "source": "./site",
+            "target": "/app/site"
+          }
+        ],
+        "gpu": false,
+        "health": {
+          "path": "/health",
+          "port": 3000
+        },
+        "image": "python:3.12-slim",
+        "internet": true,
+        "memory": "1GB",
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          3000
+        ],
+        "restart": "unless-stopped",
+        "secrets": {
+          "ADMIN_BOOTSTRAP_PASSWORD": "hub-inference-solver-admin_password"
+        },
+        "storage": "4GB",
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "data",
+            "target": "/data"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "site",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "web"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "private",
+        "health": {
+          "expected_status": 200,
+          "path": "/health"
+        },
+        "port": 3000,
+        "target": {
+          "resource": "web"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    }
+  ],
+  "order": [
+    "data",
+    "web",
+    "site"
+  ],
+  "steps": [
+    {
+      "title": "Sign in as administrator",
+      "detail": "Use the credentials you chose during setup. Admin manages model servers, invitations and the website identity."
+    },
+    {
+      "title": "Connect a model server",
+      "detail": "A model selected during setup appears automatically. In Admin, you can also connect existing model APIs reachable from this website's environment. This does not buy hardware."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "website",
+      "label": "Website",
+      "value": "{{outputs.site.url}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "models",
+    "api",
+    "keys",
+    "usage",
+    "publications",
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "data",
+        "kind": "volume",
+        "title": "volume",
+        "placement": "this computer"
+      },
+      {
+        "id": "web",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "site",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "python:3.12-slim"
+      }
+    ],
+    "permissions": [
+      "web receives the secret ADMIN_BOOTSTRAP_PASSWORD from the question admin_password.",
+      "A website or API: Run containers on this computer.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 2.0,
+      "memoryGb": 1.0,
+      "storageGb": 4.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "account_mode",
+        "question": "Who can create an account?",
+        "answer": "private",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "admin_email",
+        "question": "Administrator email",
+        "answer": "owner@example.invalid",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "admin_password",
+        "question": "Administrator password",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "site_name",
+        "question": "What should your service be called?",
+        "answer": "Inference Solver",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "web_access",
+        "question": "Where should users reach the website?",
+        "answer": "private",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "model_source",
+        "question": "Start a model on this computer now?",
+        "answer": "none",
+        "secret": false,
+        "group": "ai_models"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "web",
+        "port": 3000,
+        "access": "private"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "web",
+        "variable": "ADMIN_BOOTSTRAP_PASSWORD",
+        "source": "the question admin_password"
+      }
+    ]
+  },
+  "digest": "91b2ad75b6ff27df20da561c84f6e1c139e733464fac1b6919b5390de34aa943"
+}

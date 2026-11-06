@@ -1,0 +1,19 @@
+{
+  "name": "run_tests",
+  "description": "Run one test file of the repository and report the failing tests.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Repository-relative path of the test file."
+      },
+      "name_filter": {
+        "type": "string",
+        "description": "Only run tests whose names contain this text."
+      }
+    },
+    "required": ["path"],
+    "additionalProperties": false
+  }
+}

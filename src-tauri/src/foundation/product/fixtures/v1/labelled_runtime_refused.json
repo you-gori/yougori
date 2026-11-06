@@ -1,0 +1,142 @@
+{
+  "contract_version": 1,
+  "subject": {
+    "kind": "setup",
+    "id": "trainer"
+  },
+  "shown_at": {
+    "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+    "at": 1000,
+    "configuration": "ad2eeb2c62c77a270abb87f2900500596964121208c2db0fb539fe0b4d9342db"
+  },
+  "execution": {
+    "requested": {
+      "requirement": {
+        "requires": "vm_sandbox"
+      },
+      "choices": [
+        {
+          "category": {
+            "category": "vm_sandbox",
+            "label": "VM sandbox",
+            "sandbox": true
+          },
+          "allowed": true
+        },
+        {
+          "category": {
+            "category": "shared_kernel_gpu_runtime",
+            "label": "GPU runtime (shared kernel), not a sandbox",
+            "decision": "VM-D4",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "vm_sandbox_required"
+            },
+            "reason": "this request requires a VM sandbox; \"GPU runtime (shared kernel), not a sandbox\" is kept by VM-D4 and is never selected or substituted for one; choose a VM sandbox runtime",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        },
+        {
+          "category": {
+            "category": "provider_container_runtime",
+            "label": "remote runtime (provider container), not a sandbox",
+            "decision": "VM-D5",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "vm_sandbox_required"
+            },
+            "reason": "this request requires a VM sandbox; \"remote runtime (provider container), not a sandbox\" is kept by VM-D5 and is never selected or substituted for one; choose a VM sandbox runtime",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        },
+        {
+          "category": {
+            "category": "host_process_model_runtime",
+            "label": "model runtime (host process, sandbox profile), not a sandbox",
+            "decision": "VM-D6",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "vm_sandbox_required"
+            },
+            "reason": "this request requires a VM sandbox; \"model runtime (host process, sandbox profile), not a sandbox\" is kept by VM-D6 and is never selected or substituted for one; choose a VM sandbox runtime",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        }
+      ]
+    },
+    "actual": {
+      "evidence": {
+        "state": "unavailable",
+        "refusal": {
+          "code": {
+            "domain": "category",
+            "code": "vm_sandbox_required"
+          },
+          "reason": "this request requires a VM sandbox; \"GPU runtime (shared kernel), not a sandbox\" is kept by VM-D4 and is never selected or substituted for one; choose a VM sandbox runtime",
+          "remedy": {
+            "remedy": "evidence",
+            "step": {
+              "action": "choose_allowed_category"
+            }
+          },
+          "remedy_text": "choose a runtime of a category this request allows"
+        }
+      }
+    }
+  },
+  "permissions": [
+    {
+      "kind": "use_gpu",
+      "text": "Use this computer's GPU.",
+      "status": {
+        "status": "requested"
+      }
+    }
+  ],
+  "refusals": [
+    {
+      "code": {
+        "domain": "category",
+        "code": "vm_sandbox_required"
+      },
+      "reason": "this request requires a VM sandbox; \"GPU runtime (shared kernel), not a sandbox\" is kept by VM-D4 and is never selected or substituted for one; choose a VM sandbox runtime",
+      "remedy": {
+        "remedy": "evidence",
+        "step": {
+          "action": "choose_allowed_category"
+        }
+      },
+      "remedy_text": "choose a runtime of a category this request allows"
+    }
+  ]
+}

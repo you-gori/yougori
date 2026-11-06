@@ -1,0 +1,101 @@
+format_version: 2
+kind: template
+name: host-my-app
+title: Host My App
+subtitle: Run your app's container image with a health check and an optional public link.
+summary: Run a web app or API from its container image on this computer, keep its files in /data, and share it through a quick link or your own domain when you want.
+version: 1.0.0
+license: MIT
+topics: [website, api, hosting, container]
+aliases: [host my app, deploy an app, web app, container app, self-host]
+changelog: First version. Runs one container image with a health check, persistent /data and optional public access.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: none
+
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: web.health, selection: optional}
+  - {id: web.private, selection: default}
+  - {id: web.quick_link, selection: optional}
+  - {id: web.domain, selection: optional}
+  - {id: data.volumes, selection: default}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: image
+    question: Which container image runs your app?
+    hint: An image reference such as ghcr.io/you/app:1.4.2. Pin a version rather than latest. It must listen on port 8080.
+    type: text
+    pattern: '^[a-z0-9][a-z0-9._/-]{0,250}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$'
+    group: website_api
+  - id: health_path
+    question: Which path answers 200 when the app is healthy?
+    hint: Yougori waits for this before calling the app ready, and checks it while it runs.
+    type: text
+    pattern: '^/[A-Za-z0-9._~/-]{0,200}$'
+    default: /
+    group: website_api
+  - id: cpu
+    question: Processor cores
+    type: number
+    min: 0.5
+    max: 16
+    default: 1
+    group: grid_workers
+  - id: memory_gb
+    question: Memory, in GB
+    type: number
+    min: 0.5
+    max: 64
+    default: 1
+    group: grid_workers
+  - id: storage_gb
+    question: Disk for the app, in whole GB
+    hint: Holds the image and everything the app writes, including /data.
+    type: number
+    min: 1
+    max: 512
+    default: 10
+    group: files_data
+  - id: app_secret
+    question: A secret your app reads as APP_SECRET (optional)
+    hint: Such as a session key or a database password. Leave empty if your app needs none.
+    type: secret
+    required: false
+    group: website_api
+  - id: access
+    question: Who can reach the app?
+    type: choice
+    group: website_api
+    choices:
+      - {value: none, label: "Only this computer"}
+      - {value: quick, label: "Anyone with a quick link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "My own domain", hint: "A domain you saved with yougori domain add."}
+    default: none
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {access: domain}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [publications, storage, logs]
+
+steps:
+  - title: Read the app's logs
+    detail: If the app does not become healthy, its own output usually says why.
+    command: yougori logs {{env.app}}
+  - title: Open a shell inside the app
+    detail: Check files under /data or try the health path from inside.
+    command: yougori terminal {{env.app}}
+
+outputs:
+  - {key: address, label: Address, value: "{{outputs.web.url}}"}
+  - {key: environment, label: Sandbox, value: "{{outputs.app.name}}"}

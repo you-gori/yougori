@@ -1,0 +1,119 @@
+{
+  "aliases": [
+    "model server",
+    "run a model",
+    "local llm",
+    "openai compatible api",
+    "hugging face model"
+  ],
+  "capabilities": [
+    {
+      "id": "models.local",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "ai_models",
+      "id": "model",
+      "question": "Which model should it run?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "quantization",
+      "question": "Which size of it? (GGUF models only)",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "gpu",
+      "question": "Should it use this computer's GPU?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory for the model, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "model",
+      "kind": "model_service",
+      "summary": {
+        "gpu": "{{inputs.gpu}}",
+        "memory_gb": "{{inputs.memory_gb}}",
+        "model": "{{inputs.model}}",
+        "quantization": "{{inputs.quantization}}"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "See the API address and key",
+    "Chat with it",
+    "Share it on Yougori Network"
+  ],
+  "subtitle": "Run an open model on this computer with a private API.",
+  "tools": [],
+  "totals": {
+    "cpu": 0,
+    "environments": 0,
+    "gpu": "optional",
+    "memoryGb": 0,
+    "storageGb": 0
+  },
+  "warnings": [
+    "Uses an NVIDIA GPU when this computer has one."
+  ]
+}

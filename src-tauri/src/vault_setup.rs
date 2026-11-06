@@ -71,11 +71,7 @@ impl Configuration {
     }
 }
 fn path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("personal-vault-setup.json"))
+    Ok(crate::acceptance::app_data(app)?.join("personal-vault-setup.json"))
 }
 pub fn configuration(app: &AppHandle) -> Result<Configuration, String> {
     load(&path(app)?)
@@ -151,7 +147,7 @@ async fn stop_access_unlocked(app: &AppHandle) -> Vec<String> {
 /// the vault row can say so when the broker is not running. The broker's answer, read from the
 /// vault folder, always wins; this only stands in for it.
 fn unfinished_note(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.path().app_data_dir().ok().map(|folder| folder.join("personal-vault-delete-unfinished"))
+    crate::acceptance::app_data(app).ok().map(|folder| folder.join("personal-vault-delete-unfinished"))
 }
 
 /// Writes or removes the note. Fails with the note's path when it cannot.
@@ -246,7 +242,12 @@ pub(crate) fn unregistered(status: &Value) -> bool {
 }
 #[cfg(windows)]
 async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), String> {
-    use yougori_vault::{client, platform, protocol::Request};
+    use yougori_vault::{platform, protocol::Request};
+    // Installing or registering writes the person's own vault component: never from a disposable
+    // acceptance engine, which has no vault of its own (`vault::broker`).
+    if crate::acceptance::data_directory().is_some() {
+        return Err("Personal Vault isn't available to a disposable acceptance engine.".into());
+    }
     let bundled = crate::vault::bundled_broker(app)?;
     let update_required = platform::update_required(&bundled)?;
     if !allow_install && (update_required || !platform::installed_binary()?.exists()) {
@@ -254,7 +255,7 @@ async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), Strin
     }
     if !update_required {
         for _ in 0..5 {
-            if let Ok(status) = client::call(&Request::Status {}).await {
+            if let Ok(status) = crate::vault::broker(&Request::Status {}).await {
                 if !unregistered(&status) { return Ok(()); }
                 // An unsigned development broker accepts Desktop requests only
                 // from Desktop paths registered by an elevated install.
@@ -265,7 +266,7 @@ async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), Strin
                     .await
                     .map_err(|_| "Could not register Yougori with Personal Vault")??;
                 for _ in 0..20 {
-                    if client::call(&Request::Status {}).await.is_ok_and(|status| !unregistered(&status)) { return Ok(()); }
+                    if crate::vault::broker(&Request::Status {}).await.is_ok_and(|status| !unregistered(&status)) { return Ok(()); }
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }
                 return Err("Personal Vault did not recognize this Yougori after registration. Restart Yougori and retry.".into());
@@ -278,7 +279,7 @@ async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), Strin
         .await
         .map_err(|_| "Could not start vault protection")??;
     for _ in 0..120 {
-        if client::call(&Request::Status {}).await.is_ok()
+        if crate::vault::broker(&Request::Status {}).await.is_ok()
             && !platform::update_required(&bundled)?
         {
             return Ok(());
@@ -290,7 +291,7 @@ async fn ensure_broker(app: &AppHandle, allow_install: bool) -> Result<(), Strin
 #[cfg(windows)]
 async fn start_container(app: &AppHandle) -> Result<(), String> {
     let result =
-        yougori_vault::client::call(&yougori_vault::protocol::Request::HttpEndpoint {}).await?;
+        crate::vault::broker(&yougori_vault::protocol::Request::HttpEndpoint {}).await?;
     let port = result["brokerPort"]
         .as_u64()
         .and_then(|n| u16::try_from(n).ok())
@@ -317,7 +318,7 @@ async fn start_container(app: &AppHandle) -> Result<(), String> {
 async fn stop_tunnel(app: &AppHandle) -> Option<String> {
     #[cfg(windows)]
     let _ =
-        yougori_vault::client::call(&yougori_vault::protocol::Request::HttpOrigin { origin: None })
+        crate::vault::broker(&yougori_vault::protocol::Request::HttpOrigin { origin: None })
             .await;
     let mut old = app.state::<SetupState>().tunnel.lock().await.take()?;
     let _ = old.child.kill().await;
@@ -339,7 +340,7 @@ async fn start_tunnel(
 ) -> Result<(), String> {
     if config.mode == Mode::Local {
         #[cfg(windows)]
-        yougori_vault::client::call(&yougori_vault::protocol::Request::HttpOrigin { origin: None })
+        crate::vault::broker(&yougori_vault::protocol::Request::HttpOrigin { origin: None })
             .await?;
         return Ok(());
     }
@@ -353,7 +354,7 @@ async fn start_tunnel(
             .is_none()
         {
             #[cfg(windows)]
-            yougori_vault::client::call(&yougori_vault::protocol::Request::HttpOrigin {
+            crate::vault::broker(&yougori_vault::protocol::Request::HttpOrigin {
                 origin: Some(tunnel.url.trim_end_matches('/').to_owned()),
             })
             .await?;
@@ -362,7 +363,7 @@ async fn start_tunnel(
         tunnel.logs.abort();
         *active = None;
     }
-    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let root = crate::acceptance::app_data(app)?;
     let executable = crate::workspace::cloudflared(&root).await?;
     let account = if config.mode == Mode::Domain {
         Some(match account {
@@ -394,7 +395,7 @@ async fn start_tunnel(
     )
     .await?;
     #[cfg(windows)]
-    if let Err(error) = yougori_vault::client::call(&yougori_vault::protocol::Request::HttpOrigin {
+    if let Err(error) = crate::vault::broker(&yougori_vault::protocol::Request::HttpOrigin {
         origin: Some(started.url.trim_end_matches('/').to_owned()),
     })
     .await
@@ -411,7 +412,7 @@ async fn start_tunnel(
             let _ = started.child.kill().await;
             started.logs.abort();
             #[cfg(windows)]
-            let _ = yougori_vault::client::call(&yougori_vault::protocol::Request::HttpOrigin {
+            let _ = crate::vault::broker(&yougori_vault::protocol::Request::HttpOrigin {
                 origin: None,
             })
             .await;
@@ -436,7 +437,7 @@ pub async fn vault_bootstrap(app: AppHandle, window: crate::WebviewWindow, inter
         if !interactive.unwrap_or(false) {
             let bundled = crate::vault::bundled_broker(&app)?;
             if yougori_vault::platform::update_required(&bundled)? || !yougori_vault::platform::installed_binary()?.exists()
-                || yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await.is_ok_and(|status| unregistered(&status))
+                || crate::vault::broker(&yougori_vault::protocol::Request::Status {}).await.is_ok_and(|status| unregistered(&status))
             {
                 return Ok(json!({"created":true,"ready":false,"updateRequired":true}));
             }
@@ -458,7 +459,7 @@ pub async fn vault_create(app: AppHandle, window: crate::WebviewWindow) -> Resul
     #[cfg(windows)]
     {
         ensure_broker(&app, true).await?;
-        yougori_vault::client::call(&yougori_vault::protocol::Request::HttpSetup {}).await?;
+        crate::vault::broker(&yougori_vault::protocol::Request::HttpSetup {}).await?;
         start_container(&app).await?;
         let mut config = configuration(&app)?;
         config.created = true;

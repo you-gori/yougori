@@ -1,0 +1,21 @@
+kind: tool
+name: accept-tool
+title: Acceptance tool
+summary: A disposable tool for runtime acceptance. It installs one shell script and nothing else.
+version: 1.0.0
+license: MIT
+topics: [test]
+command: accept-tool
+install:
+  - mkdir -p "$HOME/.local/bin" && printf '#!/bin/sh\necho accept-tool 1.0.0\n' > "$HOME/.local/bin/accept-tool" && chmod 700 "$HOME/.local/bin/accept-tool"
+check: accept-tool
+needs:
+  gpu: none
+  internet: false
+access:
+  internet: false
+  folders: [/home/.local/bin]
+inputs:
+  - {name: ACCEPT_GREETING, secret: false, required: false, about: What the tool says when asked}
+outputs:
+  - {name: marker, path: /home/.local/bin/accept-tool, about: The installed script}

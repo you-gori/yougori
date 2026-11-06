@@ -6,8 +6,8 @@ how long the old record is kept, and which parts of this cannot be written until
 it against a real deployment.
 
 The shapes this rests on are frozen in [frozen-contracts.md](frozen-contracts.md). Where each
-phase stands is in [progress.md](progress.md). The desk bridge's own account of what changes is in
-[desk-migration.md](desk-migration.md), and this page does not repeat it.
+phase stands is in [progress.md](progress.md). The desk bridge's own account of what changes was
+`desk-migration.md`, removed with the grid products on 26 October 2026.
 
 ## 1. What this is, and what it is not
 
@@ -80,8 +80,8 @@ stands; `yougori rollout advance --profile P --yes` moves one on and refuses to 
 | 3 | rehearsal | a scratch folder, deleted when it passes | delete it; it is kept only when something failed, so the failure can be read | not applicable |
 | 4 | import | **nothing yet: no command in this build performs an import** | the bridge's own roll back, then delete the realm's database and its key from the vault, neither of which any command does | until the cutover |
 | 5 | observation | lines in an append-only ledger | stop the comparator; if the pilot is ending, undo the import as well | until the cutover |
-| 6 | cutover | which of the two the product reads | point the product back at its hub | ninety days, unless the administrator asked for longer |
-| 7 | retire | where the legacy record sits | put it back, which is what `unretire` does | the same |
+| 6 | cutover | nothing a product reads: every product keeps serving from its own hub until a realm serves it, which no build does yet, so this stage records where the administrator stands | nothing beyond going back a stage; the product never stopped serving from its hub | for as long as the product reads its hub's record, which in this build is always |
+| 7 | retire | where the legacy record sits, once a realm serves the product; refused until then, which in this build is always | put it back, which is what `unretire` does | ninety days, unless the administrator asked for longer |
 
 **What each stage does, in order.**
 
@@ -118,12 +118,19 @@ stands; `yougori rollout advance --profile P --yes` moves one on and refuses to 
    would perform the import and undo it, and the realm identifier a status would name as the
    rollback's target, arrive together or not at all.
 5. **Observation.** Section 5.
-6. **Cutover.** The product reads the realm instead of the hub. This is the only stage that
-   changes what the shipped product does, and the whole risk of the rollout is concentrated in it.
-   It is reversible because **no bridge ever writes a hub's record**: every function in
-   `compat/` takes it by reference, and the comparisons run the hub's own placement on a copy. So
-   after a cutover the grid on the hub is still byte for byte the grid it was, and going back is a
-   setting rather than a restore.
+6. **Cutover.** Once a product can read a realm, this is where it would read the realm instead
+   of the hub: the one stage that would change what the shipped product does, and where the whole
+   risk of the rollout would sit. It would be reversible because **no bridge ever writes a hub's
+   record**: every function in `compat/` takes it by reference, and the comparisons run the hub's
+   own placement on a copy. So after a cutover the grid on the hub is still byte for byte the grid
+   it was, and going back is a setting rather than a restore.
+
+   **In this build the cutover records the stage and nothing more.** No product reads a realm
+   yet, and every grid is still served by its own hub (`served_by` is `product` for all four in
+   `src-tauri/src/grids/registry.rs`). `yougori rollout advance --profile P --yes` to this stage
+   writes down where the administrator stands and starts the old record's keeping time; what the
+   product does is unchanged. Taking the stage back is just as quiet, because the product never
+   stopped serving from its hub.
 7. **Retire.** `yougori rollout retire` moves the legacy record into a stamped folder with a
    manifest and a checksum. It is copied, the copy is read back, and only then is the original
    removed; a loader that refuses the copy leaves both files where they are.
@@ -136,6 +143,10 @@ stands; `yougori rollout advance --profile P --yes` moves one on and refuses to 
    the day it is added. The recorded stage is written only once the file has actually moved, and
    `unretire` puts the stage back with the record. Without that check the one verb that deletes
    a live record obeyed none of the rules the rest of this page describes.
+
+   **In this build the retire stage is always refused.** A record is moved aside only once a
+   realm serves its product, and none does yet, so every product still reads its record where it
+   is. The desktop's rollout view does not offer the stage for the same reason, and says so.
 
 ## 5. Observation mode: what is compared
 

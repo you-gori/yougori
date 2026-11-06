@@ -1,0 +1,200 @@
+{
+  "aliases": [
+    "gpu lab",
+    "jupyter",
+    "jupyterlab",
+    "notebook",
+    "pytorch notebook"
+  ],
+  "capabilities": [
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.health",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 4,
+      "gpu": true,
+      "image": "docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime",
+      "internet": true,
+      "memoryGb": 16,
+      "name": "lab",
+      "pcAccess": [],
+      "ports": [
+        8888
+      ],
+      "secretSources": [
+        "JUPYTER_TOKEN from the question notebook_token"
+      ],
+      "secrets": [
+        "JUPYTER_TOKEN"
+      ],
+      "storageGb": 60,
+      "tools": [],
+      "type": "gpu",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "people_access",
+      "id": "notebook_token",
+      "question": "Choose the token that opens the notebook",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "grid_workers",
+      "id": "cpu",
+      "question": "Processor cores",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "storage_gb",
+      "question": "Disk for the lab, in whole GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "Where can you open the notebook from?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "lab",
+      "input": "access",
+      "port": 8888,
+      "resource": "notebook"
+    }
+  ],
+  "requires": {
+    "gpu": "required",
+    "platforms": [
+      "windows-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "lab",
+      "kind": "environment",
+      "summary": {
+        "command": "jupyter, lab, --ip=0.0.0.0, --port=8888, --no-browser, --allow-root, --ServerApp.root_dir=/workspace",
+        "cpu": "{{inputs.cpu}}",
+        "image": "docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime",
+        "memory": "{{inputs.memory_gb}}",
+        "ports": "8888",
+        "secrets": "JUPYTER_TOKEN",
+        "storage": "{{inputs.storage_gb}}",
+        "type": "gpu",
+        "working_dir": "/workspace"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "lab"
+      ],
+      "id": "notebook",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.access}}",
+        "domain": "{{inputs.domain}}",
+        "port": 8888,
+        "target": "resource:lab"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Open the notebook",
+    "Check the GPU",
+    "Read the lab's logs"
+  ],
+  "subtitle": "A JupyterLab notebook on this computer's NVIDIA GPU, with your work kept safe.",
+  "tools": [],
+  "totals": {
+    "cpu": 4,
+    "environments": 1,
+    "gpu": "required",
+    "memoryGb": 16,
+    "storageGb": 60
+  },
+  "warnings": [
+    "Makes lab:8888 reachable from the internet.",
+    "Needs an NVIDIA GPU."
+  ]
+}

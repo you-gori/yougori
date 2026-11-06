@@ -18,8 +18,6 @@
 pub mod alias;
 pub mod answer;
 pub mod fault;
-pub mod render;
-pub mod run;
 pub mod words;
 
 use fault::{Code, Fault};
@@ -291,10 +289,10 @@ pub const VERBS: &[Verb] = &[
     verb!("desks", "refresh", DESKS, true, None, &[], &[], "Refresh this computer's desk session"),
     verb!("desks", "sign-out", DESKS, true, Some("Ends this computer's desk session."), &[], &[], "Sign out of your desk"),
     verb!("desks", "portal", DESKS, false, None, &[], &[], "The address a person opens their desk at"),
-    verb!("desks", "add-image", DESKS, true, None, &[], &["image", "from", "sha256"], "Offer a prepared disk image"),
-    verb!("desks", "import-image", DESKS, true, None, &[], &["path", "image"], "Take in a disk image from this computer"),
+    verb!("desks", "add-image", DESKS, true, None, &[], &["image", "version", "from", "sha256", "kind", "cpu", "memory-gb", "disk-gb", "gpu", "description"], "Offer a prepared disk image"),
+    verb!("desks", "import-image", DESKS, true, None, &[], &["path", "image", "version", "cpu", "memory-gb", "disk-gb", "gpu", "description"], "Take in a disk image from this computer"),
     verb!("desks", "remove-image", DESKS, true, Some("Removes this image; desks already built from it are untouched."), &["image"], &[], "Remove a disk image"),
-    verb!("desks", "add-size", DESKS, true, None, &["size"], &["kind", "cpu", "memory-gb", "disk-gb", "gpu", "image"], "Name a size of desk"),
+    verb!("desks", "add-size", DESKS, true, None, &["size"], &["image", "access", "description"], "Name a size of desk"),
     verb!("desks", "remove-size", DESKS, true, Some("Removes this size of desk from the catalogue."), &["size"], &[], "Remove a size of desk"),
     verb!("desks", "parking", DESKS, true, Some("Changes where a desk's data is parked when its computer goes away."), &["step"], &["file"], "Where a desk's data waits"),
     // Credentials.

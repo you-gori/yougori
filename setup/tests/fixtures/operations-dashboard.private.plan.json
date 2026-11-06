@@ -1,0 +1,241 @@
+{
+  "formatVersion": 2,
+  "instance": "operations-dashboard",
+  "template": {
+    "name": "operations-dashboard",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    }
+  ],
+  "inputs": {
+    "keep_readings": "30",
+    "viewer_memory_gb": "0.5",
+    "viewer_port": "8477"
+  },
+  "secrets": {},
+  "bindings": {},
+  "resources": [
+    {
+      "id": "readings",
+      "kind": "volume",
+      "title": "volume",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "shared": false
+      },
+      "outputs": [
+        "id",
+        "name"
+      ]
+    },
+    {
+      "id": "board",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [
+        "readings"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "python",
+          "-m",
+          "http.server",
+          "8477",
+          "--directory",
+          "/readings"
+        ],
+        "cpu": 0.5,
+        "depends_on": [],
+        "environment": {
+          "KEEP_READINGS": "30"
+        },
+        "files": [],
+        "gpu": false,
+        "image": "docker.io/library/python:3.13-alpine",
+        "internet": false,
+        "memory": 0.5,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8477
+        ],
+        "restart": "always",
+        "secrets": {},
+        "storage": 2,
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "readings",
+            "target": "/readings"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    }
+  ],
+  "order": [
+    "readings",
+    "board"
+  ],
+  "steps": [
+    {
+      "title": "Take a reading",
+      "detail": "Writes a reading of every setup you can list into the board's folder. It shows states, health, counts, durations and resource ids only — no names, paths, addresses or secrets. Nothing is sent anywhere.",
+      "command": "yougori setup telemetry --format json"
+    },
+    {
+      "title": "Open the board",
+      "detail": "The readings are listed newest last. Open the file you want; it is plain JSON.",
+      "command": "yougori open operations-dashboard"
+    },
+    {
+      "title": "Read one setup on its own",
+      "detail": "The same reading for a single setup, when you want to look at one thing rather than the whole list.",
+      "command": "yougori setup telemetry SETUP"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "board",
+      "label": "Board sandbox",
+      "value": "{{outputs.board.name}}",
+      "private": false
+    },
+    {
+      "key": "readings",
+      "label": "Readings volume",
+      "value": "{{outputs.readings.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "storage",
+    "files",
+    "logs",
+    "diagram"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "readings",
+        "kind": "volume",
+        "title": "volume",
+        "placement": "this computer"
+      },
+      {
+        "id": "board",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "docker.io/library/python:3.13-alpine"
+      }
+    ],
+    "permissions": [
+      "Run as a service: Run containers on this computer.",
+      "Persistent volumes: Reserve storage on a drive you choose."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 0.5,
+      "memoryGb": 0.5,
+      "storageGb": 2.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "keep_readings",
+        "question": "How many readings should the board keep?",
+        "answer": "30",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "viewer_port",
+        "question": "Which port on this computer should the board answer on?",
+        "answer": "8477",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "viewer_memory_gb",
+        "question": "Memory for the board, in GB",
+        "answer": "0.5",
+        "secret": false,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "afc1dd0401bca602bba3f34300f64de47e15036918dd81c6fcd0029e9634c8ec"
+}

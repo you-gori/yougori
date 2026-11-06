@@ -316,7 +316,26 @@ func (s *server) importFiles(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "Choose a specific guest folder for this copy")
 			return
 		}
-		parent, err = remoteOpen(root, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+		// The engine's own copy into a folder on one of the container's Yougori volumes (a
+		// restore into a setup's volume, say) opens that volume; see volume_files.go.
+		base := root
+		if r.URL.Query().Get("volumes") == "1" && process != "" && !s.microVM {
+			source, rest, found, err := volumeAt(ctx, id, "/"+name, run)
+			if err != nil {
+				writeError(w, 409, "The guest filesystem is unavailable")
+				return
+			}
+			if found {
+				volume, err := openVolume(source)
+				if err != nil {
+					writeError(w, 409, "The selected volume is unavailable")
+					return
+				}
+				defer unix.Close(volume)
+				base, name = volume, rest
+			}
+		}
+		parent, err = remoteOpen(base, name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 		if err != nil {
 			writeError(w, 409, "The selected shared folder is unavailable")
 			return

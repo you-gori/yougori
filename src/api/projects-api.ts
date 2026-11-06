@@ -10,12 +10,25 @@ export interface ChangeReport {
 export const changesApi = { inspect: (environmentId: string, baseline = false, offset = 0) => run<ChangeReport>("environment_changes", { environmentId, baseline, offset }, desktop) }
 /** context and stream are reported by models started with streaming support. */
 export interface GpuOptimizer {
+  releaseUncertain?: boolean
   supported: boolean; enabled: boolean; pinned: boolean; resident: boolean; loading: boolean; active: number; pending: number; idleTimeoutSeconds: number; allocatedBytes: number | null
-  /** While this model waits for the GPU: which model holds it, and what to do about that. */
+  /** Observations from the runner (never admission decisions): segments its allocator still holds, and the most it held at once since its last unload. */
+  reservedBytes?: number | null; peakAllocatedBytes?: number | null
+  /** The shared GPU grant this model holds itself to under host-ledger admission: its bytes and the context it covers, in tokens. Absent on the one-resident scheduler. */
+  capacityBytes?: number | null; capacityContext?: number | null
+  /** While this model waits for the GPU (queued, or preparing GPU memory after a refused switch): which model holds it, and what to do about that. */
   waitingFor?: string
 }
-export interface ModelStatus { optimizer?: GpuOptimizer; sourceOnly?: boolean; inferenceAvailable?: boolean; status: "installing" | "downloading" | "verifying" | "loading" | "ready" | "idle" | "queued" | "unloading" | "freeing_memory" | "error"; model: string; error: string | null; gpu?: string; context?: number; stream?: boolean; task?: string; api?: string; precision?: string; chatTemplate?: boolean; chatWarning?: string; chatModelSuggestion?: string; download?: { receivedBytes: number; totalBytes: number; bytesPerSecond: number; transport: string }; verification?: { checkedBytes: number; totalBytes: number } }
-export interface ModelRun { id: string; model: string; sourceOnly?: boolean; apiUrl?: string; apiKey?: string }
+/** What the runner's launch does or does not support, as the runner reports it: the launch's own fact, not host evidence. */
+export interface RunnerCapability { supported: boolean; detail: string }
+/** How a model folder reached its workload: through the engine's catalog (published once, leased, served from a read-only view), or the folder itself. */
+export interface ModelCatalogOutcome { state: "catalog" | "not_configured" | "source_only" | string; execution?: string; model?: string; view?: string; files?: number; bytes?: number; copied?: boolean; reused?: boolean; remedy?: string; detail?: string }
+/** How the runner's helpers are served, as the helper rollout journal recorded the start (source injection in this build). */
+export interface ModelHelpersOutcome { state: "recorded" | "unchanged" | "skipped" | "not_recorded" | string; loader?: string; helpers?: { helper: string; runner: string; serve: string | { bundle: string }; shadow: string | null }[]; detail?: string }
+/** The profile and the bytes host admission reserves for a model (the engine's, read from its saved workload). */
+export interface ModelAdmission { profile: string; bytes: number }
+export interface ModelStatus { optimizer?: GpuOptimizer; admission?: ModelAdmission; capabilities?: Record<string, RunnerCapability>; sourceOnly?: boolean; inferenceAvailable?: boolean; status: "installing" | "downloading" | "verifying" | "loading" | "ready" | "idle" | "queued" | "unloading" | "freeing_memory" | "error"; model: string; error: string | null; gpu?: string; context?: number; stream?: boolean; task?: string; api?: string; precision?: string; chatTemplate?: boolean; chatWarning?: string; chatModelSuggestion?: string; download?: { receivedBytes: number; totalBytes: number; bytesPerSecond: number; transport: string }; verification?: { checkedBytes: number; totalBytes: number } }
+export interface ModelRun { id: string; model: string; sourceOnly?: boolean; apiUrl?: string; apiKey?: string; catalog?: ModelCatalogOutcome; helpers?: ModelHelpersOutcome }
 export type ArchitectureAgent = "claude" | "codex" | "kilo" | "opencode" | "gemini"
 export interface ArchitectureTask { path: string; skillPath: string; promptPath: string; agent: ArchitectureAgent; launchCommand: string; resumeCommand: string; model: string; revision: string; agentStarted: false }
 export interface ModelPreflight { sourceOnly?: boolean; localCode?: boolean; inferenceAvailable?: boolean; supportAvailable?: boolean; architectures?: string[]; format?: string; quant?: string; files?: { rfilename: string; size: number; sha256?: string }[]; model: string; task: string; modelType: string; supported: boolean; reason: string; runner: string; revision: string; resources: { workerMemoryGbRecommended?: number; storageGbRecommended: number | null; gpuMemoryGbEstimated: number | null; estimateOnly: boolean }; downloads: { location: string; checksumVerification: string; hostWeightImportRequired: boolean } }

@@ -1,0 +1,344 @@
+{
+  "formatVersion": 2,
+  "instance": "access-grid",
+  "template": {
+    "name": "access-grid",
+    "version": "1.0.0",
+    "formatVersion": 2,
+    "profile": "access_grid"
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Create a grid",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.join",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Join a grid",
+      "permissions": []
+    },
+    {
+      "id": "people.team",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Just me, or a team",
+      "permissions": []
+    },
+    {
+      "id": "people.roles",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Roles",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "people.invites",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Invites",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "people.scoped_credentials",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Scoped credentials",
+      "permissions": [
+        "Hold credentials and hand out short-lived access."
+      ]
+    },
+    {
+      "id": "people.mfa",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Two-step sign-in",
+      "permissions": []
+    },
+    {
+      "id": "people.sso",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Single sign-on",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.lan",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Reach it on the local network",
+      "permissions": [
+        "Open a port the computers of your local network can reach."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.quotas",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Quotas",
+      "permissions": []
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "mode": "person",
+    "person_username": "sam"
+  },
+  "secrets": {
+    "person_invite": "hub-access-grid-person_invite",
+    "person_password": "hub-access-grid-person_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "person_session",
+      "kind": "grid",
+      "title": "grid",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "coordinated by another computer",
+      "spec": {
+        "access": "lan",
+        "coordinator": "remote",
+        "member": "person",
+        "mode": "join",
+        "profile": "access_grid",
+        "secrets": {
+          "invitation": "hub-access-grid-person_invite",
+          "password": "hub-access-grid-person_password"
+        },
+        "sign_in": "password",
+        "username": "sam"
+      },
+      "outputs": [
+        "realm_id",
+        "join_address",
+        "name",
+        "page",
+        "invitation"
+      ]
+    }
+  ],
+  "order": [
+    "person_session"
+  ],
+  "steps": [
+    {
+      "title": "Connect an agent",
+      "detail": "On a computer where a person is signed in, add the MCP server shown below to the agent's settings, or call yougori access use from a script. The agent gets the service's answer, never the credential."
+    },
+    {
+      "title": "Turn on two-step sign-in",
+      "detail": "In My account, turn on two-step sign-in with an authenticator app."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "person_grid",
+      "label": "Access Grid",
+      "value": "{{outputs.person_session.name}}",
+      "private": false
+    },
+    {
+      "key": "mcp_server",
+      "label": "MCP server for agents",
+      "value": "yougori access mcp",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "people",
+    "credentials",
+    "policies",
+    "approvals",
+    "audit",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "person_session",
+        "kind": "grid",
+        "title": "grid",
+        "placement": "coordinated by another computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [],
+    "permissions": [
+      "person_session joins a grid someone else coordinates, with a private invitation.",
+      "Scoped credentials: Hold credentials and hand out short-lived access."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "mode",
+        "question": "What do you want to do?",
+        "answer": "person",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "person_invite",
+        "question": "Paste the invite your admin gave you",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "person_username",
+        "question": "Your username",
+        "answer": "sam",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "person_password",
+        "question": "Your password",
+        "secret": true,
+        "group": "people_access"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "person_session",
+        "variable": "invitation",
+        "source": "the question person_invite"
+      },
+      {
+        "resource": "person_session",
+        "variable": "password",
+        "source": "the question person_password"
+      }
+    ]
+  },
+  "digest": "7bc1c32f968aaaa24c4ed6841b7a8fe74b1e14b29ba49cbaf11ef288061bdcf5"
+}

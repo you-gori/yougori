@@ -1,0 +1,233 @@
+{
+  "aliases": [
+    "inference endpoint",
+    "vllm",
+    "model endpoint",
+    "openai compatible endpoint",
+    "llm api"
+  ],
+  "capabilities": [
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.health",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 8,
+      "gpu": true,
+      "image": "docker.io/vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+      "internet": true,
+      "memoryGb": 32,
+      "name": "server",
+      "pcAccess": [],
+      "ports": [
+        8000
+      ],
+      "secretSources": [
+        "HF_TOKEN from the question hf_token",
+        "VLLM_API_KEY from the question api_key"
+      ],
+      "secrets": [
+        "HF_TOKEN",
+        "VLLM_API_KEY"
+      ],
+      "storageGb": 100,
+      "tools": [],
+      "type": "gpu",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "ai_models",
+      "id": "model",
+      "question": "Which Hugging Face model should it serve?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "api_key",
+      "question": "Choose the API key apps must send",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "hf_token",
+      "question": "Hugging Face token (only for gated or private models)",
+      "required": false,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "max_model_len",
+      "question": "Longest conversation, in tokens",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "max_concurrent",
+      "question": "How many requests may run at once?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "cpu",
+      "question": "Processor cores",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "storage_gb",
+      "question": "Disk for the model files, in whole GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "Who can reach the endpoint?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "server",
+      "input": "access",
+      "port": 8000,
+      "resource": "endpoint"
+    }
+  ],
+  "requires": {
+    "gpu": "required",
+    "platforms": [
+      "windows-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [
+        "server"
+      ],
+      "id": "endpoint",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.access}}",
+        "domain": "{{inputs.domain}}",
+        "port": 8000,
+        "target": "resource:server"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "server",
+      "kind": "environment",
+      "summary": {
+        "command": "serve, {{inputs.model}}, --host, 0.0.0.0, --port, 8000, --max-model-len, {{inputs.max_model_len}}, --max-num-seqs, {{inputs.max_concurrent}}",
+        "cpu": "{{inputs.cpu}}",
+        "entrypoint": "python3, -m, vllm.entrypoints.cli.main",
+        "image": "docker.io/vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+        "memory": "{{inputs.memory_gb}}",
+        "ports": "8000",
+        "secrets": "VLLM_API_KEY, HF_TOKEN",
+        "storage": "{{inputs.storage_gb}}",
+        "type": "gpu"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Watch it load",
+    "Call it"
+  ],
+  "subtitle": "One open model behind an OpenAI-compatible endpoint with your own key.",
+  "tools": [],
+  "totals": {
+    "cpu": 8,
+    "environments": 1,
+    "gpu": "required",
+    "memoryGb": 32,
+    "storageGb": 100
+  },
+  "warnings": [
+    "Makes server:8000 reachable from the internet.",
+    "Needs an NVIDIA GPU."
+  ]
+}

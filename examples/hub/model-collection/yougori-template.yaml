@@ -1,0 +1,104 @@
+format_version: 2
+kind: template
+name: model-collection
+title: Model Collection
+subtitle: Several open models on this computer, taking turns on its GPU.
+summary: Run two or three open models on this computer. On an NVIDIA GPU, Yougori loads the one being asked, frees memory from idle ones, and never interrupts a reply in progress.
+version: 1.0.0
+license: MIT
+topics: [ai, models, gpu, local, inference]
+aliases: [model collection, several models, multiple models, model library, local models]
+changelog: First version. Two or three local models with Yougori's GPU residency management.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: optional
+
+capabilities:
+  - {id: models.local, selection: required}
+  - {id: web.service, selection: required}
+  - {id: web.private, selection: required}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: model_one
+    question: First model
+    hint: hf.co/OWNER/MODEL (GGUF or safetensors) or yg/PUBLISHER/MODEL.
+    type: text
+    pattern: '^(hf\.co/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}|yg/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63})$'
+    group: ai_models
+  - id: quant_one
+    question: Size of the first model (GGUF only)
+    hint: Such as Q4_K_M. Leave empty to let Yougori pick.
+    type: text
+    required: false
+    pattern: '^[A-Za-z0-9_.-]{0,32}$'
+    group: ai_models
+  - id: model_two
+    question: Second model
+    type: text
+    pattern: '^(hf\.co/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}|yg/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63})$'
+    group: ai_models
+  - id: quant_two
+    question: Size of the second model (GGUF only)
+    type: text
+    required: false
+    pattern: '^[A-Za-z0-9_.-]{0,32}$'
+    group: ai_models
+  - id: third
+    question: Add a third model?
+    type: yesno
+    default: false
+    group: ai_models
+  - id: model_three
+    question: Third model
+    type: text
+    pattern: '^(hf\.co/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}|yg/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63})$'
+    group: ai_models
+    when: {third: "yes"}
+  - id: quant_three
+    question: Size of the third model (GGUF only)
+    type: text
+    required: false
+    pattern: '^[A-Za-z0-9_.-]{0,32}$'
+    group: ai_models
+    when: {third: "yes"}
+  - id: gpu
+    question: Should the models use this computer's GPU?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: optional, label: "Yes, when this computer has a supported one", hint: "They take turns on it. Otherwise they run on the processor, which needs GGUF models."}
+      - {value: required, label: "Only on the GPU"}
+      - {value: none, label: "No, use the processor", hint: "Every model stays loaded at once, so memory must hold them all."}
+    default: optional
+  - id: memory_gb
+    question: Memory for each model, in GB
+    type: number
+    min: 4
+    max: 256
+    default: 16
+    group: grid_workers
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [models, api, usage, logs]
+
+steps:
+  - title: Keep one model ready
+    detail: Pin the model you use most so it stays loaded on the GPU; the others load when asked.
+    command: yougori model optimize {{outputs.first.id}} --pin
+  - title: Free the GPU sooner
+    detail: Unload a model after it has been idle for a while (10 to 3600 seconds).
+    command: yougori model optimize {{outputs.second.id}} --idle 300
+  - title: See each model's address and key
+    command: yougori model access {{outputs.first.id}}
+
+outputs:
+  - {key: first_model, label: First model, value: "{{outputs.first.endpoint}}"}
+  - {key: second_model, label: Second model, value: "{{outputs.second.endpoint}}"}
+  - {key: third_model, label: Third model, value: "{{outputs.third.endpoint}}", when: {third: "yes"}}

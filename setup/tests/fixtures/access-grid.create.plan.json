@@ -1,0 +1,571 @@
+{
+  "formatVersion": 2,
+  "instance": "access-grid",
+  "template": {
+    "name": "access-grid",
+    "version": "1.0.0",
+    "formatVersion": 2,
+    "profile": "access_grid"
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Create a grid",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.join",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Join a grid",
+      "permissions": []
+    },
+    {
+      "id": "people.team",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Just me, or a team",
+      "permissions": []
+    },
+    {
+      "id": "people.roles",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Roles",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "people.invites",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Invites",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "people.scoped_credentials",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Scoped credentials",
+      "permissions": [
+        "Hold credentials and hand out short-lived access."
+      ]
+    },
+    {
+      "id": "people.mfa",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Two-step sign-in",
+      "permissions": []
+    },
+    {
+      "id": "people.sso",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Single sign-on",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.lan",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Reach it on the local network",
+      "permissions": [
+        "Open a port the computers of your local network can reach."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.quotas",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Quotas",
+      "permissions": []
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "admin_name": "Alex Example",
+    "admin_username": "alex.admin",
+    "coordinator_address": "192.168.1.20",
+    "credential_destination": "https://api.example.com/v1",
+    "credential_field": "X-Api-Key",
+    "credential_kind": "header",
+    "credential_name": "example-api",
+    "first_credential": "yes",
+    "grid_name": "Example Team",
+    "mode": "create",
+    "reach": "lan",
+    "require_two_step": "yes",
+    "rule_decision": "ask",
+    "rule_methods": "get,post",
+    "rule_path": "/v1/reports"
+  },
+  "secrets": {
+    "admin_password": "hub-access-grid-admin_password",
+    "credential_value": "hub-access-grid-credential_value"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "company",
+      "kind": "grid",
+      "title": "grid",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "coordinated by this computer",
+      "spec": {
+        "access": "lan",
+        "address": "192.168.1.20",
+        "coordinator": "this_computer",
+        "mode": "create",
+        "name": "Example Team",
+        "profile": "access_grid"
+      },
+      "outputs": [
+        "realm_id",
+        "join_address",
+        "name",
+        "page",
+        "invitation"
+      ]
+    },
+    {
+      "id": "broker",
+      "kind": "credential_broker",
+      "title": "credential broker",
+      "capability": "people.scoped_credentials",
+      "dependsOn": [
+        "company"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "agents": [
+          "mcp",
+          "cli"
+        ],
+        "audit_export": false,
+        "credentials": [
+          {
+            "approval": "ask",
+            "destinations": [
+              "https://api.example.com/v1"
+            ],
+            "field": "X-Api-Key",
+            "kind": "header",
+            "methods": [
+              "get",
+              "post"
+            ],
+            "name": "example-api",
+            "paths": [
+              "/v1/reports"
+            ],
+            "value": "credential_value"
+          }
+        ],
+        "grid": {
+          "resource": "company"
+        },
+        "secrets": {
+          "credential_value": "hub-access-grid-credential_value"
+        }
+      },
+      "outputs": [
+        "id",
+        "endpoint"
+      ]
+    },
+    {
+      "id": "owner",
+      "kind": "access_binding",
+      "title": "people and access",
+      "dependsOn": [
+        "company"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "admin": {
+          "display_name": "Alex Example",
+          "username": "alex.admin"
+        },
+        "grid": {
+          "resource": "company"
+        },
+        "invitations": 0,
+        "mfa": true,
+        "people": "team",
+        "reset": 0,
+        "roles": [
+          "owner",
+          "admin"
+        ],
+        "secrets": {
+          "admin_password": "hub-access-grid-admin_password"
+        },
+        "workspaces": "individual"
+      },
+      "outputs": [
+        "id",
+        "join_method",
+        "page",
+        "invitation"
+      ]
+    }
+  ],
+  "order": [
+    "company",
+    "broker",
+    "owner"
+  ],
+  "steps": [
+    {
+      "title": "Add people and approvers",
+      "detail": "In the People view, add each person with a username, a permission (member, approver, auditor or admin) and optional teams. Send them the invite and their username privately; they run this template with \"Sign in to an Access Grid\"."
+    },
+    {
+      "title": "Connect an agent",
+      "detail": "On a computer where a person is signed in, add the MCP server shown below to the agent's settings, or call yougori access use from a script. The agent gets the service's answer, never the credential."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "grid_name",
+      "label": "Access Grid",
+      "value": "{{outputs.company.name}}",
+      "private": false
+    },
+    {
+      "key": "grid_page",
+      "label": "Access Grid page",
+      "value": "{{outputs.company.page}}",
+      "private": false
+    },
+    {
+      "key": "join_address",
+      "label": "Sign-in address",
+      "value": "{{outputs.company.join_address}}",
+      "private": false
+    },
+    {
+      "key": "broker",
+      "label": "Broker address",
+      "value": "{{outputs.broker.endpoint}}",
+      "private": false
+    },
+    {
+      "key": "invite",
+      "label": "Invite for people",
+      "value": "{{outputs.company.invitation}}",
+      "private": true
+    },
+    {
+      "key": "mcp_server",
+      "label": "MCP server for agents",
+      "value": "yougori access mcp",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "people",
+    "credentials",
+    "policies",
+    "approvals",
+    "audit",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "company",
+        "kind": "grid",
+        "title": "grid",
+        "placement": "coordinated by this computer"
+      },
+      {
+        "id": "broker",
+        "kind": "credential_broker",
+        "title": "credential broker",
+        "placement": "this computer"
+      },
+      {
+        "id": "owner",
+        "kind": "access_binding",
+        "title": "people and access",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [],
+    "permissions": [
+      "company starts a Access Grid that other computers can join.",
+      "broker brokers 1 credential(s); workloads use them without receiving their values.",
+      "owner lets other people in, with the roles owner, admin.",
+      "Create a grid: Enroll computers into a grid.",
+      "Scoped credentials: Hold credentials and hand out short-lived access.",
+      "A website or API: Run containers on this computer.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "mode",
+        "question": "What do you want to do?",
+        "answer": "create",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "grid_name",
+        "question": "What is the company or team called?",
+        "answer": "Example Team",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "coordinator_address",
+        "question": "What is this computer's private network address?",
+        "answer": "192.168.1.20",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "reach",
+        "question": "Where can people sign in from?",
+        "answer": "lan",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "admin_username",
+        "question": "Your username as the first admin",
+        "answer": "alex.admin",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "admin_name",
+        "question": "Your name, as others see it",
+        "answer": "Alex Example",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "admin_password",
+        "question": "Your password",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "require_two_step",
+        "question": "Require two-step sign-in for everyone?",
+        "answer": "yes",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "first_credential",
+        "question": "Add the first credential now?",
+        "answer": "yes",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "credential_name",
+        "question": "Name for the credential",
+        "answer": "example-api",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "credential_kind",
+        "question": "How is it sent?",
+        "answer": "header",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "credential_field",
+        "question": "Where does the value go?",
+        "answer": "X-Api-Key",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "credential_destination",
+        "question": "Which service may it be sent to?",
+        "answer": "https://api.example.com/v1",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "credential_value",
+        "question": "The credential's value",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "rule_decision",
+        "question": "When someone uses it, what happens?",
+        "answer": "ask",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "rule_methods",
+        "question": "Which kinds of request?",
+        "answer": "get,post",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "rule_path",
+        "question": "Only under this path",
+        "answer": "/v1/reports",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "rule_hours",
+        "question": "Let the rule lapse after how many hours?",
+        "secret": false,
+        "group": "automation_recovery"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "35bec495510291c95b910a27d7fca3b2da45e37c7cc51b480065c4f2b3162f60"
+}

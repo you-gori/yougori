@@ -1,0 +1,354 @@
+{
+  "formatVersion": 2,
+  "instance": "host-my-app",
+  "template": {
+    "name": "host-my-app",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.health",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Health check",
+      "permissions": []
+    },
+    {
+      "id": "web.private",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "access": "none",
+    "cpu": "1",
+    "health_path": "/",
+    "image": "ghcr.io/example/hello-app:1.0.0",
+    "memory_gb": "1",
+    "storage_gb": "10"
+  },
+  "secrets": {
+    "app_secret": "hub-host-my-app-app_secret"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "app",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "cpu": 1.0,
+        "depends_on": [],
+        "environment": {
+          "PORT": "8080"
+        },
+        "files": [],
+        "gpu": false,
+        "health": {
+          "path": "/",
+          "port": 8080,
+          "wait_seconds": 180
+        },
+        "image": "ghcr.io/example/hello-app:1.0.0",
+        "internet": true,
+        "memory": 1,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8080
+        ],
+        "restart": "always",
+        "secrets": {
+          "APP_SECRET": "hub-host-my-app-app_secret"
+        },
+        "storage": 10,
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "data",
+            "target": "/data"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "web",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "app"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "none",
+        "health": {
+          "expected_status": 200,
+          "path": "/"
+        },
+        "port": 8080,
+        "target": {
+          "resource": "app"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    }
+  ],
+  "order": [
+    "app",
+    "web"
+  ],
+  "steps": [
+    {
+      "title": "Read the app's logs",
+      "detail": "If the app does not become healthy, its own output usually says why.",
+      "command": "yougori logs {{env.app}}"
+    },
+    {
+      "title": "Open a shell inside the app",
+      "detail": "Check files under /data or try the health path from inside.",
+      "command": "yougori terminal {{env.app}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "address",
+      "label": "Address",
+      "value": "{{outputs.web.url}}",
+      "private": false
+    },
+    {
+      "key": "environment",
+      "label": "Sandbox",
+      "value": "{{outputs.app.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "publications",
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "app",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "web",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "ghcr.io/example/hello-app:1.0.0"
+      }
+    ],
+    "permissions": [
+      "app receives the secret APP_SECRET from the question app_secret.",
+      "A website or API: Run containers on this computer.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 1.0,
+      "memoryGb": 1.0,
+      "storageGb": 10.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "image",
+        "question": "Which container image runs your app?",
+        "answer": "ghcr.io/example/hello-app:1.0.0",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "health_path",
+        "question": "Which path answers 200 when the app is healthy?",
+        "answer": "/",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores",
+        "answer": "1",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory, in GB",
+        "answer": "1",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the app, in whole GB",
+        "answer": "10",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "app_secret",
+        "question": "A secret your app reads as APP_SECRET (optional)",
+        "secret": true,
+        "group": "website_api"
+      },
+      {
+        "id": "access",
+        "question": "Who can reach the app?",
+        "answer": "none",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "app",
+        "port": 8080,
+        "access": "none"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "app",
+        "variable": "APP_SECRET",
+        "source": "the question app_secret"
+      }
+    ]
+  },
+  "digest": "2cad40dd9d394204e0583f1f28c897e51c7214decedea6aafd265ea4f911233c"
+}

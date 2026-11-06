@@ -1,4 +1,6 @@
-//! Launcher preferences belong to an environment, even though they live outside its disk.
+//! The old launcher's leftover per-environment settings under ~/.yougori/launch. The launcher is
+//! gone; what remains is forgetting these with the environment they belonged to, which the engine
+//! does through `forget_environment`. The file keeps its name because the engine calls it by it.
 use serde_json::Value;
 use std::{fs, io, path::{Path, PathBuf}};
 
@@ -8,7 +10,7 @@ pub fn directory() -> Result<PathBuf, String> {
         .ok_or_else(|| "Cannot find your user profile".into())
 }
 
-/// Keep the lock inode: another launcher may still hold it during deletion.
+/// Keep the lock inode: an older launcher still running may hold it during deletion.
 pub fn clear(path: &Path) -> Result<(), String> {
     for file in [path.with_extension("sync.json"), path.to_path_buf()] {
         match fs::remove_file(&file) {

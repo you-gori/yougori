@@ -114,11 +114,21 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
     // match allocates temporary stack slots for unrelated handlers.
     match method {
         "model_compute_status" => Box::pin(crate::model_runner::model_compute_status(app.clone())),
+        "host_evidence" => Box::pin(async move { crate::host_evidence::dispatch(app.clone(), arg(p, "action")?).await }),
+        "sandbox_doctor" => Box::pin(async move { crate::runtime::doctor::dispatch(app.clone(), arg(p, "action")?, arg(p, "profiles")?).await }),
+        "trust_roots" => Box::pin(async move { crate::trust_roots::dispatch(arg(p, "action")?) }),
+        "catalog_status" => Box::pin(async move { let action = arg(p, "action")?; tokio::task::spawn_blocking(move || crate::catalog_service::dispatch(action)).await.map_err(|e| e.to_string())? }),
+        "ledger_history" => Box::pin(async move { let action = arg(p, "action")?; tokio::task::spawn_blocking(move || crate::ledger_history::dispatch(action)).await.map_err(|e| e.to_string())? }),
+        "model_helpers" => Box::pin(async move { let action = arg(p, "action")?; crate::model_runner::helpers_dispatch(app.clone(), action, p.clone()).await }),
+        "model_migration" => Box::pin(async move { crate::model_runner::migration::dispatch(app.clone(), arg(p, "action")?).await }),
+        "model_prepare" => Box::pin(async move { crate::model_runner::prepare::dispatch(app.clone(), p.clone()).await }),
+        "model_adapters" => Box::pin(async move { crate::model_runner::lora::dispatch(app.clone(), p.clone()).await }),
+        "model_ledger" => Box::pin(async move { Ok(crate::model_runner::ledger_view()) }),
         "execute_guest_job" | "guest_execution_output" | "release_guest_execution" | "cancel_guest_execution" | "cancel_file_transfer" | "patch_settings" | "get_settings_snapshot" | "get_startup_report" | "recover_environment_runtime_report" | "model_preflight" | "model_support_task" | "model_huggingface_status" | "set_deployment_secret" | "delete_deployment_secret" | "deployment_status" | "get_environment_health_check" | "set_environment_health_check" | "publication_preflight" => dispatch_group_0(app,method,p,progress),
         "host_share_credentials" | "get_environment_log_window" | "start_environment_download" | "list_environment_downloads" | "keep_environment_downloads_alive" | "stop_environment_download" | "runpod_status" | "runpod_connect" | "runpod_catalog" | "runpod_disconnect" | "runpod_template" | "runpod_search_templates" | "runpod_hub" | "runpod_hub_repo" | "runpod_links" | "runpod_logs" => dispatch_group_1(app,method,p,progress),
         "runpod_create_endpoint" | "runpod_endpoint_run" | "runpod_action" | "runpod_resources" | "runpod_attach" | "runpod_volume" | "runpod_registry" | "runpod_gpu_offers" | "runpod_create_pod" | "neocloud_providers" | "neocloud_install" | "neocloud_account" | "neocloud_authenticate" | "neocloud_forget_account" | "neocloud_catalog" | "neocloud_discover" => dispatch_group_2(app,method,p,progress),
         "neocloud_prices" | "neocloud_plan" | "create_neocloud_environment" | "neocloud_action" | "neocloud_recover_id" | "run_model" | "run_neocloud_model" | "start_model" | "stop_model" | "test_cloud_connection" | "duplicate_local_environment" | "duplicate_environment" | "inspect_duplication_source" | "cleanup_environment_duplication" | "model_api" | "model_status" | "model_optimizer" => dispatch_group_3(app,method,p,progress),
-        "model_chat" | "model_chat_begin" | "model_chat_read" | "environment_changes" | "inspect_project" | "discover_projects" | "import_compose" | "project_action" | "run_workload" | "cloud_authenticate" | "deploy_cloud_environment" | "cloud_deployment_action" | "finish_app_close" | "open_isolated_cli" | "grant_isolated_cli_environment" | "delete_cloud_deployment" => dispatch_group_4(app,method,p,progress),
+        "model_measurement" | "model_chat" | "model_chat_begin" | "model_chat_read" | "environment_changes" | "inspect_project" | "discover_projects" | "import_compose" | "project_action" | "run_workload" | "cloud_authenticate" | "deploy_cloud_environment" | "cloud_deployment_action" | "finish_app_close" | "open_isolated_cli" | "grant_isolated_cli_environment" | "delete_cloud_deployment" => dispatch_group_4(app,method,p,progress),
         "configure_cloud_environment" | "get_environment_logs" | "manage_oci_images" | "create_remote_share" | "start_remote_tunnel" | "stop_remote_tunnel" | "list_remote_shares" | "update_remote_share" | "remove_remote_share" | "connect_remote_share" | "reconnect_remote_share" | "download_remote_folder" | "remote_share_request" | "create_environment_share" | "list_environment_shares" | "revoke_environment_share" => dispatch_group_5(app,method,p,progress),
         "import_environment_share" | "get_storage_location" | "set_storage_location" | "scan_cloud_host" | "add_cloud_environment" | "get_cloud_connection" | "get_host_terminal_info" | "set_up_agent_access" | "host_terminal_action" | "get_platform_state" | "install_environment_skills" | "get_connection_skills" | "create_environment" | "set_environment_status" | "restart_environment" | "recover_environment_runtime" => dispatch_group_6(app,method,p,progress),
         "delete_environment" | "factory_reset_environment" | "recover_container_runtime" | "recover_vm_runtime" | "rename_environment" | "update_container_startup_command" | "update_resource_policy" | "configure_resource_limits" | "reclaim_storage" | "get_storage_allocation" | "expand_environment_storage" | "update_container_network" | "update_environment_gpu" | "create_connection" | "set_connection_active" | "delete_connection" => dispatch_group_7(app,method,p,progress),
@@ -129,9 +139,14 @@ pub(super) fn dispatch_with_progress<'a>(app: &'a AppHandle, method: &'a str, p:
         "open_personal_vault" | "vault_summary" | "app_show" | "app_quit" => dispatch_group_12(app,method,p,progress),
         "model_registry_connect" | "model_registry_request" | "model_registry_upload" | "model_registry_download" | "model_registry_pause" | "confidential_network_chat" | "market_status" | "market_sign_in" | "market_sign_out" | "market_share_model" | "market_unshare_model" => dispatch_group_13(app,method,p,progress),
         "security_monitor" | "security_audit" | "security_lockdown" | "security_unlock" => dispatch_group_14(app,method,p,progress),
+        "sandbox_vm" => Box::pin(async move {
+            crate::sandbox_vm::dispatch(app.clone(), arg(p, "action")?, p.clone()).await
+        }),
         "access_status" | "access_create" | "access_delete" | "access_restore" | "access_signin" | "access_signout" | "access_manage" | "access_account" | "access_use" | "access_check" | "access_reveal" | "access_backup" | "access_restore_backup" => dispatch_group_16(app,method,p,progress),
         "grid_status" | "grid_suggested_address" | "grid_create" | "grid_password" | "grid_delete" | "grid_restore" | "grid_join" | "grid_leave" | "grid_plan_add" | "grid_plan_update" | "grid_plan_remove" | "grid_member_remove" | "grid_member_exclude" | "grid_member_include" | "grid_neocloud_status" | "grid_neocloud_add" | "grid_neocloud_remove" | "grid_neocloud_stop_all" | "grid_swarm_add" | "grid_swarm_remove" | "grid_swarm_run" | "grid_key_create" | "grid_key_revoke" | "desks_manage" | "desks_status" | "desks_suggested_address" | "desks_create" | "desks_join" | "desks_leave" | "desks_delete" | "desks_restore" | "desks_adopt_membership" | "desks_member_remove" | "desks_member_share" | "desks_person_add" | "desks_person_password" | "desks_person_remove" | "desks_add" | "desks_assign" | "desks_retry" | "desks_remove" | "desk_refresh" | "desk_login" | "desk_logout" | "bounty_dispatch" | "bounty_status" | "bounty_suggested_address" | "bounty_host" | "bounty_member_remove" | "bounty_delete" => dispatch_group_15(app,method,p,progress),
         "swarm_dispatch" => Box::pin(async move {crate::swarm::swarm_dispatch(arg(p,"request")?,app.clone()).await}),
+        // Setups: the same functions the desktop's setup_* commands call (setups::commands).
+        "setup_capabilities" | "setup_validate" | "setup_plan" | "setup_apply" | "setup_list" | "setup_get" | "setup_permissions" | "setup_operation" | "setup_cancel" | "setup_action" | "setup_export" | "setup_backups" | "setup_backup_verify" | "setup_backup_restore" | "setup_backup_now" | "setup_reveal" | "setup_telemetry" | "setup_artifacts" | "setup_artifact_save" | "setup_job_logs" | "setup_job_settle" | "setup_sandbox_logs" | "setup_usage" | "setup_migration_inventory" | "setup_migration_backup" | "setup_migration_verify" | "setup_migration_rehearse" => Box::pin(async move { crate::setups::commands::wire(app, method, p).await }),
         // One door onto all four grids. Every one of these finds the grid the command is about,
         // refuses in words what that grid does not do, and then calls the product handler above.
         // The old methods keep their own arms and their own words, untouched.
@@ -261,7 +276,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         "create_neocloud_environment" => encoded(crate::neocloud::create_neocloud_environment(arg(p, "request")?, arg(p, "costAcknowledged")?, store).await?),
         "neocloud_action" => encoded(crate::neocloud::neocloud_action(arg(p, "environmentId")?, arg(p, "action")?, arg(p, "confirmation")?, store, runtime).await?),
         "neocloud_recover_id" => encoded(crate::neocloud::neocloud_recover_id(arg(p, "environmentId")?, arg(p, "resourceId")?, store).await?),
-        "run_model" => { let mut resources=arg::<Option<crate::model_runner::ModelResources>>(p,"resources")?.unwrap_or_default(); if let Some(folder)=arg::<Option<String>>(p,"folder")? {resources.model_folder=Some(folder);} if let Some(backend)=arg::<Option<String>>(p,"backend")? {resources.backend=Some(backend);} if let Some(memory)=arg::<Option<f64>>(p,"memoryGb")? {resources.memory_gb=Some(memory);} crate::model_runner::run_model_with_resources(arg(p,"model")?,arg(p,"port")?,Some(resources),arg(p,"quant")?,app.clone()).await },
+        "run_model" => { let mut resources=arg::<Option<crate::model_runner::ModelResources>>(p,"resources")?.unwrap_or_default(); if let Some(folder)=arg::<Option<String>>(p,"folder")? {resources.model_folder=Some(folder);} if let Some(backend)=arg::<Option<String>>(p,"backend")? {resources.backend=Some(backend);} if let Some(runner)=arg::<Option<String>>(p,"runner")? {resources.runner=Some(runner);} if let Some(memory)=arg::<Option<f64>>(p,"memoryGb")? {resources.memory_gb=Some(memory);} crate::model_runner::run_model_with_resources(arg(p,"model")?,arg(p,"port")?,Some(resources),arg(p,"quant")?,app.clone()).await },
         "run_neocloud_model" => crate::model_runner::run_neocloud_model(arg(p, "model")?,arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
         "start_model" => crate::model_runner::start_model(arg(p, "environmentId")?,app.clone()).await,
         "stop_model" => crate::model_runner::stop_model(arg(p, "environmentId")?,app.clone()).await,
@@ -272,7 +287,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         // Never gives a copy up: that is only Yougori's own window, after its confirmation.
         "cleanup_environment_duplication" => encoded(crate::duplication::clean_up_copy(arg(p, "operationId")?,&store,&runtime).await?),
         "model_api" => crate::model_runner::model_api(arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
-        "model_optimizer" => crate::model_runner::optimizer::model_optimizer(arg(p,"environmentId")?,arg(p,"enabled")?,arg(p,"pinned")?,arg(p,"idleTimeoutSeconds")?,app.clone()).await,
+        "model_optimizer" => crate::model_runner::optimizer::model_optimizer(arg(p,"environmentId")?,arg(p,"enabled")?,arg(p,"pinned")?,arg(p,"idleTimeoutSeconds")?,arg(p,"parallel")?,arg(p,"launch")?,app.clone()).await,
         "model_status" => crate::model_runner::model_status(arg(p, "environmentId")?,app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }
@@ -280,6 +295,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
 
 dispatch_group! { dispatch_group_4(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
+        "model_measurement" => crate::model_runner::measurement::workflow::command(app, arg(p, "environmentId")?, arg(p, "action")?, arg(p, "sessionId")?).await,
         "model_chat" => crate::model_runner::model_chat(arg(p, "environmentId")?,arg(p, "messages")?,arg(p, "maxTokens")?,arg(p, "temperature")?,app.clone()).await,
         "model_chat_begin" => crate::model_runner::model_chat_begin(arg(p, "environmentId")?,arg(p, "messages")?,arg(p, "maxTokens")?,arg(p, "temperature")?,app.clone()).await,
         "model_chat_read" => crate::model_runner::model_chat_read(arg(p, "requestId")?,arg(p, "offset")?,arg(p, "stop")?),
@@ -816,7 +832,7 @@ dispatch_group! { dispatch_group_12(app, method, p, progress, store, runtime, ba
         "vault_summary" => {
             #[cfg(windows)]
             {
-                let status = yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await;
+                let status = crate::vault::broker(&yougori_vault::protocol::Request::Status {}).await;
                 let waiting = status.as_ref().ok().map(|s| s["pending"].as_array().into_iter().flatten().filter(|r| r["ready"] == true).count());
                 Ok(json!({"running": status.is_ok(), "pendingApprovals": waiting.unwrap_or(0)}))
             }
@@ -905,23 +921,24 @@ dispatch_group! { dispatch_group_14(app, method, p, progress, store, runtime, ba
     }
 }
 
-// Access Grid: the company's credential hub on this computer and this person's sign-in to it.
+// Access Grid: the company credential hubs on this computer and this person's sign-ins to them.
+// gridId (optional) names one when there are several; without it a call acts on the only one.
 // Passwords and credential values arrive only through stdin or private request files (see parse.rs).
 dispatch_group! { dispatch_group_16(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
-        "access_status" => crate::accessgrid::access_status(app.clone()).await,
+        "access_status" => crate::accessgrid::access_status(arg(p, "gridId")?, app.clone()).await,
         "access_create" => crate::accessgrid::access_create(arg(p, "company")?, arg(p, "address")?, arg(p, "username")?, arg(p, "name")?, arg(p, "password")?, arg(p, "tunnel")?, app.clone()).await,
-        "access_delete" => crate::accessgrid::access_delete(arg(p, "when")?, app.clone()).await,
-        "access_restore" => crate::accessgrid::access_restore(app.clone()).await,
-        "access_signin" => crate::accessgrid::access_signin(arg(p, "invite")?, arg(p, "username")?, arg(p, "password")?, arg(p, "code")?, arg(p, "sso")?, app.clone()).await,
-        "access_account" => crate::accessgrid::access_account(arg(p, "request")?, app.clone()).await,
-        "access_backup" => crate::accessgrid::access_backup(arg(p, "output")?, arg(p, "passphrase")?, app.clone()).await,
-        "access_restore_backup" => crate::accessgrid::access_restore_backup(arg(p, "file")?, arg(p, "passphrase")?, arg(p, "address")?, app.clone()).await,
-        "access_signout" => crate::accessgrid::access_signout(app.clone()).await,
-        "access_manage" => crate::accessgrid::access_manage(arg(p, "request")?, app.clone()).await,
-        "access_use" => crate::accessgrid::access_use(arg(p, "credential")?, arg(p, "method")?, arg(p, "url")?, arg(p, "headers")?, arg(p, "body")?, arg(p, "bodyBase64")?, arg(p, "agent")?, app.clone()).await,
-        "access_check" => crate::accessgrid::access_check(arg(p, "id")?, app.clone()).await,
-        "access_reveal" => crate::accessgrid::access_reveal(arg(p, "credential")?, arg(p, "reason")?, arg(p, "agent")?, app.clone()).await,
+        "access_delete" => crate::accessgrid::access_delete(arg(p, "when")?, arg(p, "gridId")?, app.clone()).await,
+        "access_restore" => crate::accessgrid::access_restore(arg(p, "gridId")?, app.clone()).await,
+        "access_signin" => crate::accessgrid::access_signin(arg(p, "invite")?, arg(p, "username")?, arg(p, "password")?, arg(p, "code")?, arg(p, "sso")?, arg(p, "gridId")?, app.clone()).await,
+        "access_account" => crate::accessgrid::access_account(arg(p, "request")?, arg(p, "gridId")?, app.clone()).await,
+        "access_backup" => crate::accessgrid::access_backup(arg(p, "output")?, arg(p, "passphrase")?, arg(p, "gridId")?, app.clone()).await,
+        "access_restore_backup" => crate::accessgrid::access_restore_backup(arg(p, "file")?, arg(p, "passphrase")?, arg(p, "address")?, arg(p, "gridId")?, app.clone()).await,
+        "access_signout" => crate::accessgrid::access_signout(arg(p, "gridId")?, app.clone()).await,
+        "access_manage" => crate::accessgrid::access_manage(arg(p, "request")?, arg(p, "gridId")?, app.clone()).await,
+        "access_use" => crate::accessgrid::access_use(arg(p, "credential")?, arg(p, "method")?, arg(p, "url")?, arg(p, "headers")?, arg(p, "body")?, arg(p, "bodyBase64")?, arg(p, "agent")?, arg(p, "gridId")?, app.clone()).await,
+        "access_check" => crate::accessgrid::access_check(arg(p, "id")?, arg(p, "gridId")?, app.clone()).await,
+        "access_reveal" => crate::accessgrid::access_reveal(arg(p, "credential")?, arg(p, "reason")?, arg(p, "agent")?, arg(p, "gridId")?, app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }
 }
@@ -930,59 +947,61 @@ dispatch_group! { dispatch_group_16(app, method, p, progress, store, runtime, ba
 // Passwords arrive only through stdin or private request files (see parse.rs).
 dispatch_group! { dispatch_group_15(app, method, p, progress, store, runtime, backup, manager, window) =>
     match method {
-        "grid_status" => crate::grid::grid_status(app.clone()).await,
+        "grid_status" => crate::grid::grid_status_in(arg(p, "gridId")?, app.clone()).await,
         "grid_suggested_address" => Ok(json!(crate::grid::suggested_address())),
         "grid_create" => crate::grid::grid_create(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "hostname")?, arg(p, "tunnel")?, app.clone()).await,
-        "grid_password" => crate::grid::grid_password(arg(p, "password")?, app.clone()).await,
-        "grid_delete" => crate::grid::grid_delete(arg(p, "when")?, app.clone()).await,
-        "grid_restore" => crate::grid::grid_restore(app.clone()).await,
+        "grid_password" => crate::grid::grid_password(arg(p, "password")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_delete" => crate::grid::grid_delete(arg(p, "when")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_restore" => crate::grid::grid_restore(arg(p, "gridId")?, app.clone()).await,
         "grid_join" => crate::grid::grid_join(arg(p, "company")?, arg(p, "address")?, arg(p, "password")?, arg(p, "port")?, arg(p, "name")?, arg(p, "fingerprint")?, arg(p, "invite")?, app.clone()).await,
-        "grid_leave" => crate::grid::grid_leave(app.clone()).await,
-        "grid_plan_add" => crate::grid::grid_plan_add(arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, arg(p, "scope")?, arg(p, "computers")?, app.clone()).await,
-        "grid_plan_update" => crate::grid::grid_plan_update(arg(p, "planId")?, arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, app.clone()).await,
-        "grid_plan_remove" => crate::grid::grid_plan_remove(arg(p, "planId")?, app.clone()).await,
-        "grid_member_remove" => crate::grid::grid_member_remove(arg(p, "memberId")?, app.clone()).await,
+        "grid_leave" => crate::grid::grid_leave(arg(p, "gridId")?, app.clone()).await,
+        "grid_plan_add" => crate::grid::grid_plan_add(arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, arg(p, "scope")?, arg(p, "computers")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_plan_update" => crate::grid::grid_plan_update(arg(p, "planId")?, arg(p, "model")?, arg(p, "percent")?, arg(p, "schedule")?, arg(p, "idleAfter")?, arg(p, "quant")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_plan_remove" => crate::grid::grid_plan_remove(arg(p, "planId")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_member_remove" => crate::grid::grid_member_remove(arg(p, "memberId")?, arg(p, "gridId")?, app.clone()).await,
         "bounty_dispatch" => crate::bounty::bounty_dispatch(arg(p,"request")?,app.clone()).await,
         "bounty_status" => crate::bounty::bounty_status(app.clone()).await,
         "bounty_suggested_address" => Ok(json!(crate::bounty::suggested_address())),
         "bounty_host" => crate::bounty::bounty_host(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "title")?, arg(p, "instructions")?, arg(p, "authorization")?, arg(p, "files")?, app.clone()).await,
         "bounty_member_remove" => crate::bounty::bounty_member_remove(arg(p, "memberId")?, app.clone()).await,
         "bounty_delete" => crate::bounty::bounty_delete(app.clone()).await,
-        "grid_member_exclude" => crate::grid::grid_member_exclude(arg(p, "memberId")?, app.clone()).await,
+        "grid_member_exclude" => crate::grid::grid_member_exclude(arg(p, "memberId")?, arg(p, "gridId")?, app.clone()).await,
         // The rented GPUs. These call the module's own functions rather than its `commands`,
         // because those take a `WebviewWindow` to keep other webviews out and this door is the
         // CLI, which is authenticated in its own right and has no window to hand them.
-        "grid_neocloud_status" => crate::grid_neocloud::status_value(app).await,
-        "grid_neocloud_add" => crate::grid_neocloud::add(app, &arg::<String>(p, "environmentId")?).await,
-        "grid_neocloud_remove" => crate::grid_neocloud::remove(app, &arg::<String>(p, "environmentId")?).await,
-        "grid_neocloud_stop_all" => crate::grid_neocloud::stop_all_value(app).await,
-        "grid_member_include" => crate::grid::grid_member_include(arg(p, "memberId")?, app.clone()).await,
-        "grid_swarm_add" => crate::grid::grid_swarm_add(arg(p, "name")?, arg(p, "strategy")?, arg(p, "lead")?, arg(p, "workers")?, arg(p, "computers")?, arg(p, "tasks")?, arg(p, "rounds")?, app.clone()).await,
-        "grid_swarm_remove" => crate::grid::grid_swarm_remove(arg(p, "harnessId")?, app.clone()).await,
-        "grid_swarm_run" => crate::grid::grid_swarm_run(arg(p, "harness")?, arg(p, "prompt")?, app.clone()).await,
-        "grid_key_create" => crate::grid::grid_key_create(arg(p, "name")?, app.clone()).await,
-        "grid_key_revoke" => crate::grid::grid_key_revoke(arg(p, "keyId")?, app.clone()).await,
-        "desks_manage" => crate::deskgrid::desks_manage(arg(p, "request")?, app.clone()).await,
-        "desks_status" => crate::deskgrid::desks_status(app.clone()).await,
+        "grid_neocloud_status" => crate::grid_neocloud::status_value(app, arg::<Option<String>>(p, "gridId")?.as_deref()).await,
+        "grid_neocloud_add" => crate::grid_neocloud::add(app, arg::<Option<String>>(p, "gridId")?.as_deref(), &arg::<String>(p, "environmentId")?).await,
+        "grid_neocloud_remove" => crate::grid_neocloud::remove(app, arg::<Option<String>>(p, "gridId")?.as_deref(), &arg::<String>(p, "environmentId")?).await,
+        "grid_neocloud_stop_all" => crate::grid_neocloud::stop_all_value(app, arg::<Option<String>>(p, "gridId")?.as_deref()).await,
+        "grid_member_include" => crate::grid::grid_member_include(arg(p, "memberId")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_swarm_add" => crate::grid::grid_swarm_add(arg(p, "name")?, arg(p, "strategy")?, arg(p, "lead")?, arg(p, "workers")?, arg(p, "computers")?, arg(p, "tasks")?, arg(p, "rounds")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_swarm_remove" => crate::grid::grid_swarm_remove(arg(p, "harnessId")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_swarm_run" => crate::grid::grid_swarm_run(arg(p, "harness")?, arg(p, "prompt")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_key_create" => crate::grid::grid_key_create(arg(p, "name")?, arg(p, "gridId")?, app.clone()).await,
+        "grid_key_revoke" => crate::grid::grid_key_revoke(arg(p, "keyId")?, arg(p, "gridId")?, app.clone()).await,
+        // gridId picks one of several Sandbox Grids on this computer; without it the only one
+        // that can answer does, as before.
+        "desks_manage" => crate::deskgrid::desks_manage(arg(p, "request")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_status" => crate::deskgrid::desks_status(app.clone(), arg(p, "gridId")?).await,
         "desks_suggested_address" => Ok(json!(crate::bounty::suggested_address())),
         "desks_create" => crate::deskgrid::desks_create(arg(p, "name")?, arg(p, "address")?, arg(p, "password")?, arg(p, "tunnel")?, app.clone()).await,
-        "desks_join" => crate::deskgrid::desks_join(arg(p, "invite")?, arg(p, "password")?, arg(p, "name")?, app.clone()).await,
-        "desks_leave" => crate::deskgrid::desks_leave(app.clone()).await,
-        "desks_delete" => crate::deskgrid::desks_delete(arg(p, "when")?, app.clone()).await,
-        "desks_restore" => crate::deskgrid::desks_restore(app.clone()).await,
+        "desks_join" => crate::deskgrid::desks_join(arg(p, "invite")?, arg(p, "password")?, arg(p, "name")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_leave" => crate::deskgrid::desks_leave(arg(p, "gridId")?, app.clone()).await,
+        "desks_delete" => crate::deskgrid::desks_delete(arg(p, "when")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_restore" => crate::deskgrid::desks_restore(arg(p, "gridId")?, app.clone()).await,
         "desks_adopt_membership" => crate::deskgrid::desks_adopt_membership(arg(p, "membership")?, app.clone()).await,
-        "desks_member_remove" => crate::deskgrid::desks_member_remove(arg(p, "memberId")?, app.clone()).await,
-        "desks_member_share" => crate::deskgrid::desks_member_share(arg(p, "memberId")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?, arg(p, "idleOnly")?, arg(p, "suggested")?, app.clone()).await,
-        "desks_person_add" => { let username: String = arg(p, "username")?; let name: Option<String> = arg(p, "name")?; let desk = crate::desks::person_desk(arg(p, "kind")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?)?; crate::desks::person_add(username.clone(), name.unwrap_or(username), arg(p, "password")?, desk, app.clone()).await }
-        "desks_person_password" => crate::desks::person_password(arg(p, "person")?, arg(p, "password")?, app.clone()).await,
-        "desks_person_remove" => crate::desks::person_remove(arg(p, "person")?, app.clone()).await,
-        "desks_add" => crate::desks::desk_add(arg(p, "name")?, arg(p, "kind")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?, arg(p, "image")?, arg(p, "person")?, app.clone()).await,
-        "desks_assign" => crate::desks::desk_assign(arg(p, "desk")?, arg(p, "person")?, app.clone()).await,
-        "desks_retry" => crate::desks::desk_retry(arg(p, "desk")?, app.clone()).await,
-        "desks_remove" => crate::desks::desk_remove(arg(p, "desk")?, app.clone()).await,
-        "desk_refresh" => crate::desks::desk_refresh(app.clone()).await,
-        "desk_login" => crate::desks::desk_login(arg(p, "invite")?, arg(p, "username")?, arg(p, "password")?, arg(p, "code")?, arg::<Option<bool>>(p, "sso")?.unwrap_or(false), app.clone()).await,
-        "desk_logout" => crate::desks::desk_logout(app.clone()).await,
+        "desks_member_remove" => crate::deskgrid::desks_member_remove(arg(p, "memberId")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_member_share" => crate::deskgrid::desks_member_share(arg(p, "memberId")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?, arg(p, "idleOnly")?, arg(p, "suggested")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_person_add" => { let username: String = arg(p, "username")?; let name: Option<String> = arg(p, "name")?; let desk = crate::desks::person_desk(arg(p, "kind")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?)?; crate::desks::person_add(username.clone(), name.unwrap_or(username), arg(p, "password")?, desk, arg(p, "gridId")?, app.clone()).await }
+        "desks_person_password" => crate::desks::person_password(arg(p, "person")?, arg(p, "password")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_person_remove" => crate::desks::person_remove(arg(p, "person")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_add" => crate::desks::desk_add(arg(p, "name")?, arg(p, "kind")?, arg(p, "cpu")?, arg(p, "memoryGb")?, arg(p, "diskGb")?, arg(p, "gpu")?, arg(p, "image")?, arg(p, "person")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_assign" => crate::desks::desk_assign(arg(p, "desk")?, arg(p, "person")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_retry" => crate::desks::desk_retry(arg(p, "desk")?, arg(p, "gridId")?, app.clone()).await,
+        "desks_remove" => crate::desks::desk_remove(arg(p, "desk")?, arg(p, "gridId")?, app.clone()).await,
+        "desk_refresh" => crate::desks::desk_refresh(arg(p, "gridId")?, app.clone()).await,
+        "desk_login" => crate::desks::desk_login(arg(p, "invite")?, arg(p, "username")?, arg(p, "password")?, arg(p, "code")?, arg::<Option<bool>>(p, "sso")?.unwrap_or(false), arg(p, "gridId")?, app.clone()).await,
+        "desk_logout" => crate::desks::desk_logout(arg(p, "gridId")?, app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }
 }
@@ -1033,7 +1052,9 @@ mod tests {
             // The Hub pair is desktop plumbing too: one opens a console window running the CLI
             // itself, the other reads the instance records the CLI writes. In a terminal a person
             // runs those CLI commands directly, so neither has an automation contract.
-            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads" | "open_hub_console" | "hub_instances") {
+            // Saving a template draft writes through the native folder dialog; in a terminal the
+            // same is `yougori template new`.
+            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads" | "open_hub_console" | "hub_instances" | "hub_builtin_templates" | "hub_save_template_draft") {
                 assert!(yougori_cli::catalog::find(name).is_err());
                 continue;
             }

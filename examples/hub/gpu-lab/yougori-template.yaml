@@ -1,0 +1,88 @@
+format_version: 2
+kind: template
+name: gpu-lab
+title: GPU Lab
+subtitle: A JupyterLab notebook on this computer's NVIDIA GPU, with your work kept safe.
+summary: JupyterLab with PyTorch and CUDA on this computer's NVIDIA GPU, protected by your token, with /workspace kept across restarts and updates.
+version: 1.0.0
+license: MIT
+topics: [gpu, notebook, jupyter, pytorch, machine-learning]
+aliases: [gpu lab, jupyter, jupyterlab, notebook, pytorch notebook]
+changelog: First version. JupyterLab 4.2.5 on the PyTorch 2.8 CUDA 12.8 image, with a persistent /workspace.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64]
+  gpu: required
+
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: web.health, selection: optional}
+  - {id: web.private, selection: default}
+  - {id: web.quick_link, selection: optional}
+  - {id: web.domain, selection: optional}
+  - {id: data.volumes, selection: required}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: notebook_token
+    question: Choose the token that opens the notebook
+    hint: At least 16 characters. Anyone with the address and this token can run code in the lab.
+    type: secret
+    min_length: 16
+    group: people_access
+  - id: cpu
+    question: Processor cores
+    type: number
+    min: 2
+    max: 32
+    default: 4
+    group: grid_workers
+  - id: memory_gb
+    question: Memory, in GB
+    type: number
+    min: 4
+    max: 256
+    default: 16
+    group: grid_workers
+  - id: storage_gb
+    question: Disk for the lab, in whole GB
+    hint: Holds the PyTorch image, packages you install and everything in /workspace.
+    type: number
+    min: 30
+    max: 2048
+    default: 60
+    group: files_data
+  - id: access
+    question: Where can you open the notebook from?
+    type: choice
+    group: website_api
+    choices:
+      - {value: none, label: "Only this computer"}
+      - {value: quick, label: "Anywhere, through a quick link", hint: "A free HTTPS link. It can change after a restart. The token still protects it."}
+      - {value: domain, label: "Anywhere, through my own domain", hint: "A domain you saved with yougori domain add."}
+    default: none
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {access: domain}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [publications, storage, logs]
+
+steps:
+  - title: Open the notebook
+    detail: Open the address below and enter your token. Notebooks and files saved under /workspace are kept.
+  - title: Check the GPU
+    detail: "In a notebook cell, run: import torch; torch.cuda.is_available(), torch.cuda.get_device_name(0)"
+  - title: Read the lab's logs
+    command: yougori logs {{env.lab}}
+
+outputs:
+  - {key: address, label: Notebook address, value: "{{outputs.notebook.url}}"}
+  - {key: sandbox, label: Sandbox, value: "{{outputs.lab.name}}"}

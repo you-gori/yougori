@@ -1,0 +1,291 @@
+{
+  "formatVersion": 2,
+  "instance": "model-collection",
+  "template": {
+    "name": "model-collection",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "models.local",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Local models",
+      "permissions": [
+        "Serve models from this computer."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.private",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "gpu": "optional",
+    "memory_gb": "8",
+    "model_one": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+    "model_two": "hf.co/Qwen/Qwen3-1.7B-GGUF",
+    "quant_one": "Q8_0",
+    "quant_two": "Q4_K_M",
+    "third": "no"
+  },
+  "secrets": {},
+  "bindings": {},
+  "resources": [
+    {
+      "id": "first",
+      "kind": "model_service",
+      "title": "model service",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "api": {
+          "keys": 0,
+          "protocol": "openai"
+        },
+        "gpu": "optional",
+        "memory_gb": 8.0,
+        "model": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+        "quantization": "Q8_0",
+        "replicas": 1
+      },
+      "outputs": [
+        "id",
+        "endpoint",
+        "model",
+        "first_key"
+      ]
+    },
+    {
+      "id": "second",
+      "kind": "model_service",
+      "title": "model service",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "api": {
+          "keys": 0,
+          "protocol": "openai"
+        },
+        "gpu": "optional",
+        "memory_gb": 8.0,
+        "model": "hf.co/Qwen/Qwen3-1.7B-GGUF",
+        "quantization": "Q4_K_M",
+        "replicas": 1
+      },
+      "outputs": [
+        "id",
+        "endpoint",
+        "model",
+        "first_key"
+      ]
+    }
+  ],
+  "order": [
+    "first",
+    "second"
+  ],
+  "steps": [
+    {
+      "title": "Keep one model ready",
+      "detail": "Pin the model you use most so it stays loaded on the GPU; the others load when asked.",
+      "command": "yougori model optimize {{outputs.first.id}} --pin"
+    },
+    {
+      "title": "Free the GPU sooner",
+      "detail": "Unload a model after it has been idle for a while (10 to 3600 seconds).",
+      "command": "yougori model optimize {{outputs.second.id}} --idle 300"
+    },
+    {
+      "title": "See each model's address and key",
+      "command": "yougori model access {{outputs.first.id}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "first_model",
+      "label": "First model",
+      "value": "{{outputs.first.endpoint}}",
+      "private": false
+    },
+    {
+      "key": "second_model",
+      "label": "Second model",
+      "value": "{{outputs.second.endpoint}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "models",
+    "api",
+    "usage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "first",
+        "kind": "model_service",
+        "title": "model service",
+        "placement": "this computer"
+      },
+      {
+        "id": "second",
+        "kind": "model_service",
+        "title": "model service",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "model",
+        "name": "hf.co/Qwen/Qwen3-0.6B-GGUF"
+      },
+      {
+        "kind": "model",
+        "name": "hf.co/Qwen/Qwen3-1.7B-GGUF"
+      }
+    ],
+    "permissions": [
+      "Local models: Serve models from this computer.",
+      "A website or API: Run containers on this computer.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "model_one",
+        "question": "First model",
+        "answer": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "quant_one",
+        "question": "Size of the first model (GGUF only)",
+        "answer": "Q8_0",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "model_two",
+        "question": "Second model",
+        "answer": "hf.co/Qwen/Qwen3-1.7B-GGUF",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "quant_two",
+        "question": "Size of the second model (GGUF only)",
+        "answer": "Q4_K_M",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "third",
+        "question": "Add a third model?",
+        "answer": "no",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "gpu",
+        "question": "Should the models use this computer's GPU?",
+        "answer": "optional",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory for each model, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "71e625a01f9137b7047cf17961e57345f46fb718b1b171a9c3059dc8a242a9b5"
+}

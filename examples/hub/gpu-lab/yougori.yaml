@@ -1,0 +1,40 @@
+format_version: 2
+project: gpu-lab
+
+resources:
+  # PyTorch with CUDA (the image Yougori's model runner uses), plus a pinned JupyterLab.
+  # JupyterLab reads its token from JUPYTER_TOKEN.
+  lab:
+    kind: environment
+    spec:
+      type: gpu
+      image: docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+      cpu: "{{inputs.cpu}}"
+      memory: "{{inputs.memory_gb}}"
+      storage: "{{inputs.storage_gb}}"
+      setup:
+        python_minimum: "3.10"
+        pip: [jupyterlab==4.2.5]
+        verify_command: jupyter lab --version
+      working_dir: /workspace
+      command: [jupyter, lab, --ip=0.0.0.0, --port=8888, --no-browser, --allow-root, --ServerApp.root_dir=/workspace]
+      secrets:
+        JUPYTER_TOKEN: "{{secrets.notebook_token}}"
+      volumes:
+        - {source: work, target: /workspace}
+      ports: [8888]
+      health:
+        port: 8888
+        path: /api
+        wait_seconds: 300
+
+  notebook:
+    kind: service_publication
+    spec:
+      target: {resource: lab}
+      port: 8888
+      access: "{{inputs.access}}"
+      domain: "{{inputs.domain}}"
+      health:
+        path: /api
+        expected_status: 200

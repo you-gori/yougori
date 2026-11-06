@@ -31,7 +31,7 @@ pub fn start(app: &AppHandle) {
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             timer.tick().await;
-            let Ok(status) = yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await else {
+            let Ok(status) = crate::vault::broker(&yougori_vault::protocol::Request::Status {}).await else {
                 // Keep IDs across a brief broker restart so a request is not
                 // announced twice if the same request is still pending.
                 continue;

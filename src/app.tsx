@@ -1,5 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { AppCloseDialog } from "@/components/app-close-dialog"
+import { SandboxVmProvider } from "@/components/sandbox-vm/sandbox-vm-provider"
+import { WorkspacePage } from "@/pages/workspace-page"
+import { HostAccessRequests } from "@/components/sandbox-vm/host-access-requests"
 import { AppShell, type AppPage } from "@/components/app-shell"
 import { WorkspaceActionsProvider } from "@/components/workspace-actions"
 import { LoadingScreen } from "@/components/shared/loading-screen"
@@ -8,23 +11,21 @@ import { PlatformProvider, usePlatform } from "@/context/platform-context"
 import { platformApi } from "@/api/platform-api"
 import { useVaultStartup } from "@/components/use-vault-startup"
 import { environmentIdFromSearch } from "@/lib/environment-window"
-import { gridFocusFromSearch, type GridFocus } from "@/lib/grid-link"
+import { appLocationFromSearch } from "@/components/setups/setup-link"
+import { SetupBuilderProvider } from "@/components/setups/setup-builder-provider"
+import type { DetailTab } from "@/components/setups/setup-detail"
 import type { EnvironmentKind } from "@/types/platform"
-import { prepareTourWindow, tourWindowFailed, useInstructionsTour } from "@/lib/instructions-tour"
+import { prepareTourWindow, stopInstructions, tourWindowFailed, useInstructionsTour } from "@/lib/instructions-tour"
 import { resolveAppearance } from "@/lib/appearance"
 
 const loadCreateEnvironmentDialog = () => import("@/components/dialogs/create-environment-dialog")
 const loadEnvironmentDetailSheet = () => import("@/components/environment-detail-sheet")
 const loadGuestDesktop = () => import("@/components/guest-desktop")
-const loadOverviewPage = () => import("@/pages/overview-page")
 
 const CreateEnvironmentDialog = lazy(async () => ({ default: (await loadCreateEnvironmentDialog()).CreateEnvironmentDialog }))
 const EnvironmentDetailSheet = lazy(async () => ({ default: (await loadEnvironmentDetailSheet()).EnvironmentDetailSheet }))
 const GuestDesktop = lazy(async () => ({ default: (await loadGuestDesktop()).GuestDesktop }))
 const GuestWorkspace = lazy(async () => ({ default: (await import("@/components/guest-workspace")).GuestWorkspace }))
-const OverviewPage = lazy(async () => ({ default: (await loadOverviewPage()).OverviewPage }))
-const GridsPage = lazy(async () => ({ default: (await import("@/pages/grids-page")).GridsPage }))
-const HubPage = lazy(async () => ({ default: (await import("@/pages/hub-page")).HubPage }))
 const InstructionsTour = lazy(() => import("@/components/instructions-tour"))
 
 function ThemeSync() {
@@ -67,13 +68,19 @@ function ThemeSync() {
 function Workspace() {
   const tour = useInstructionsTour()
   const { state, loading, error, openEnvironmentWindow } = usePlatform()
-  // An address may name a grid, in its own word, and the four older spellings still work.
-  const [focus, setFocus] = useState<GridFocus>(() => gridFocusFromSearch(window.location.search))
-  const [page, setPage] = useState<AppPage>(() => gridFocusFromSearch(window.location.search) ? "grids" : "sandboxes")
-  const navigate = useCallback((next: AppPage, where?: GridFocus) => {
+  // Links open discovery or setup details in a popup over the same computer workspace.
+  const [linked] = useState(() => appLocationFromSearch(window.location.search))
+  const [page, setPage] = useState<AppPage>(linked.page)
+  const [highlight, setHighlight] = useState<string | null>(linked.setupId)
+  const [highlightTab, setHighlightTab] = useState<DetailTab | undefined>(undefined)
+  const navigate = useCallback((next: AppPage) => {
     setPage(next)
-    if (next === "grids") setFocus(where ?? null)
-    else setFocus(null)
+    setHighlight(null)
+  }, [])
+  const showSetups = useCallback((setupId: string | null, tab?: DetailTab) => {
+    setPage("setups")
+    setHighlight(setupId)
+    setHighlightTab(tab)
   }, [])
   const [createOpen, setCreateOpen] = useState(false)
   const [createMounted, setCreateMounted] = useState(false)
@@ -109,6 +116,8 @@ function Workspace() {
   }, [openEnvironmentWindow, state?.environments])
   const environment = guestEnvironmentId ? state?.environments.find((item) => item.id === guestEnvironmentId) : undefined
   const openCreate = useCallback((kind?: EnvironmentKind) => {
+    // Hand off from the old guided container exercise to the current VM creation flow.
+    stopInstructions()
     void loadCreateEnvironmentDialog()
     setCreateMounted(true)
     setCreateKind(kind)
@@ -133,18 +142,18 @@ function Workspace() {
     <>
       <ThemeSync />
       <AppCloseDialog />
+      <HostAccessRequests />
       <Suspense fallback={<LoadingScreen message="Loading your environments…" onRetry={() => window.location.reload()} />}>
+        <SandboxVmProvider>
         <WorkspaceActionsProvider onCreate={createSandbox}>
-          <AppShell page={shown} focus={shown === "grids" ? focus : null} onNavigate={navigate}>
-            {shown === "grids" ? <GridsPage focus={focus} onFocus={setFocus} /> : shown === "hub" ? <HubPage /> : (
-              <OverviewPage
-                onOpenEnvironment={openEnvironment}
-                onSelectEnvironment={selectEnvironment}
-                vaultError={vaultStartup.error}
-              />
-            )}
-          </AppShell>
+          <SetupBuilderProvider initial={linked.builder} onShowSetups={showSetups}>
+            <AppShell onOpenHub={() => navigate("hub")}>
+              <WorkspacePage page={shown} onClosePopup={() => navigate("sandboxes")} highlight={highlight} highlightTab={highlightTab}
+                onOpenEnvironment={openEnvironment} onSelectEnvironment={selectEnvironment} vaultError={vaultStartup.error} />
+            </AppShell>
+          </SetupBuilderProvider>
         </WorkspaceActionsProvider>
+        </SandboxVmProvider>
       </Suspense>
       {createMounted ? (
         <Suspense fallback={null}>

@@ -1,0 +1,265 @@
+format_version: 2
+kind: template
+name: swarm-mining-grid
+title: Swarm Mining Grid
+subtitle: Authorised security review of code you own.
+summary: Set up a private security review of source you are authorised to test, with agent workers in isolated sandboxes, a model you choose, and findings you read before anything is sent.
+version: 0.1.0
+license: MIT
+topics: [grid, research, security, review, agents]
+aliases: [swarm mining, swarm mining grid, private worker, bounty, security review]
+profile: swarm_mining_grid
+changelog: First version as a template. Hosts a private review of source you authorise, or joins one you were invited to. Reviewing a live site or service is not part of this template.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: optional
+
+# What this setup needs from Yougori. Reviewing a live target is not here and never will be: this
+# template reviews source you import, and an application it starts inside its own sandbox. The
+# rules, budgets, leases, receipts and evidence handling stay in Yougori's own code, where a
+# template can choose settings but cannot replace them.
+capabilities:
+  - {id: grid.create, selection: required, when: {mode: host}}
+  - {id: grid.join, selection: required, when: {mode: join}}
+  - {id: research.source, selection: required}
+  - {id: models.local, selection: required}
+  - {id: data.artifacts, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: mode
+    question: What do you want to do?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: host, label: "Host a review of my own project", hint: "This computer runs the review and keeps its findings."}
+      - {value: join, label: "Join a review I was invited to", hint: "Contribute a worker to someone else's project."}
+    default: host
+
+  # ---- Hosting a review ----
+
+  - id: project_title
+    question: What is this project called?
+    type: text
+    group: grid_workers
+    when: {mode: host}
+    hint: The name people reviewing it will see. Use a short name, not a customer's name.
+    min_length: 2
+
+  - id: target_kind
+    question: What are the agents reviewing?
+    type: choice
+    group: grid_workers
+    when: {mode: host}
+    choices:
+      - {value: source, label: "The source only", hint: "Nothing is started; the agents read the code."}
+      - {value: web, label: "A website started in the sandbox", hint: "Yougori starts your app inside the sandbox and reviews it there."}
+      - {value: api, label: "An API started in the sandbox", hint: "As above, for a service without pages."}
+    default: source
+    # There is no live-site option. A site or service that is already running somewhere is never
+    # reviewed by this template, whatever its address.
+
+  - id: setup_command
+    question: How is the project prepared, if it needs preparing?
+    type: text
+    group: grid_workers
+    when: {mode: host, target_kind: [web, api]}
+    required: false
+    hint: "A single command, such as: npm ci. Leave it empty if nothing is needed."
+
+  - id: install_network
+    question: May that preparation reach the internet?
+    type: yesno
+    group: grid_workers
+    when: {mode: host, target_kind: [web, api]}
+    default: false
+    hint: Only while preparing, to download dependencies. The review itself runs with no internet.
+
+  - id: start_command
+    question: How is it started?
+    type: text
+    group: grid_workers
+    when: {mode: host, target_kind: [web, api]}
+    hint: "A single command, such as: npm start."
+
+  - id: service_port
+    question: Which port does it listen on inside the sandbox?
+    type: number
+    group: grid_workers
+    when: {mode: host, target_kind: [web, api]}
+    min: 1024
+    max: 65535
+    default: 3000
+
+  - id: health_path
+    question: Which path says it is ready?
+    type: text
+    group: grid_workers
+    when: {mode: host, target_kind: [web, api]}
+    required: false
+    default: /health
+
+  - id: test_command
+    question: How are its own tests run, if you want them run?
+    type: text
+    group: grid_workers
+    when: {mode: host, target_kind: [web, api]}
+    required: false
+
+  - id: instructions
+    question: What should the agents look into?
+    type: text
+    group: grid_workers
+    when: {mode: host}
+    hint: What matters to you, in your own words. For example, the sign-in and the payment pages.
+    min_length: 10
+
+  - id: authorized_scope
+    question: What are they allowed to test, and with which test accounts?
+    type: text
+    group: people_access
+    when: {mode: host}
+    hint: Only the parts you own or have written permission to test. Name the test accounts to use; never a real customer's.
+    min_length: 10
+
+  - id: visibility
+    question: Who can take part?
+    type: choice
+    group: people_access
+    when: {mode: host}
+    choices:
+      - {value: this_computer, label: "Only this computer", hint: "Nothing is reachable from your network."}
+      - {value: lan, label: "People on my network", hint: "They join with the address and password below."}
+    default: this_computer
+
+  - id: host_address
+    question: Which address on your network do they reach it on?
+    type: text
+    group: people_access
+    when: {mode: host, visibility: lan}
+    hint: A private address of this computer, such as 192.168.1.20.
+    pattern: "^[0-9A-Za-z.:_-]{3,64}$"
+
+  - id: shared_password
+    question: Password for people joining
+    type: secret
+    group: people_access
+    when: {mode: host, visibility: lan}
+    min_length: 12
+    hint: At least 12 characters. Give it to them privately; it is never shown again.
+
+  # ---- Joining someone else's review ----
+
+  - id: invitation
+    question: The invitation you were given
+    type: secret
+    group: people_access
+    when: {mode: join}
+    hint: Paste it exactly. It names the project and the computer that runs it.
+
+  - id: join_password
+    question: The password for that project
+    type: secret
+    group: people_access
+    when: {mode: join}
+    min_length: 10
+
+  # ---- The worker that does the reading ----
+
+  - id: worker_name
+    question: What should this worker be called?
+    type: text
+    group: grid_workers
+    default: Review worker
+
+  - id: model
+    question: Which model should it use?
+    type: text
+    group: ai_models
+    hint: "A model from Hugging Face in GGUF form, such as: hf.co/OWNER/MODEL. It runs on this computer."
+    pattern: "^(hf\\.co/)?[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+
+  - id: model_memory_gb
+    question: How much memory may the model use, in GB?
+    type: number
+    group: ai_models
+    min: 4
+    max: 512
+    default: 16
+
+  - id: worker_cpu
+    question: Processor cores for the worker's sandbox
+    type: number
+    group: grid_workers
+    min: 4
+    max: 64
+    default: 4
+
+  - id: worker_memory_gb
+    question: Memory for the worker's sandbox, in GB
+    type: number
+    group: grid_workers
+    min: 8
+    max: 512
+    default: 8
+
+  - id: sandbox_disk_gb
+    question: Disk for the worker's sandbox, in whole GB
+    type: number
+    group: files_data
+    min: 4
+    max: 2000
+    default: 20
+
+  - id: budget_minutes
+    question: How long may it work before stopping?
+    type: number
+    group: automation_recovery
+    min: 1
+    max: 1440
+    default: 60
+    hint: Counted from the moment it starts. It stops by itself when the time is up.
+
+  - id: evidence_gb
+    question: How much room may its findings and evidence use, in GB?
+    type: number
+    group: files_data
+    min: 1
+    max: 500
+    default: 10
+
+  - id: report_policy
+    question: What happens to a finding?
+    type: choice
+    group: automation_recovery
+    choices:
+      - {value: review, label: "I read it first", hint: "Nothing leaves this computer until you send it."}
+      - {value: automatic, label: "Send it to the project automatically", hint: "Only for a project you host yourself."}
+    default: review
+
+bindings:
+  - id: source_folder
+    type: folder
+    question: Which folder holds the project to review?
+    hint: A copy of your own project. It is read inside the sandbox; nothing is sent anywhere.
+    when: {mode: host}
+
+steps:
+  - title: Read what the agents found
+    detail: Findings appear as they are made. Each one says what was tried, what happened, and what it means.
+    command: "yougori bounty reports"
+  - title: Talk to your worker
+    detail: Ask it what it is doing, or steer it towards a part of the project.
+    command: "yougori bounty chat {{inputs.worker_name}}"
+    when: {mode: host}
+
+outputs:
+  - {key: project, label: Project, value: "{{inputs.project_title}}", when: {mode: host}}
+  - {key: invitation, label: Invitation for people joining, value: "{{outputs.project.invitation}}", private: true, when: {mode: host, visibility: lan}}
+  - {key: worker, label: Worker, value: "{{inputs.worker_name}}"}
+
+retention: {on_stop: keep, on_remove: ask}
+
+views: [workers, models, findings, attempts, reports, logs]

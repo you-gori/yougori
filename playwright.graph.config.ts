@@ -9,7 +9,10 @@ export default defineConfig({
   reporter: "line",
   use: {
     ...devices["Desktop Chrome"],
-    channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || "chromium",
+    // Installed Chrome keeps itself patched; Playwright's bundled Chromium lags
+    // behind and runs unsandboxed unless chromiumSandbox is set.
+    channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || "chrome",
+    launchOptions: { chromiumSandbox: true },
     viewport: { width: 1280, height: 1000 },
     baseURL: "http://127.0.0.1:1421",
     // Existing feature tests represent returning users. First-launch tests

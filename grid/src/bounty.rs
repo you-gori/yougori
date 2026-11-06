@@ -518,7 +518,7 @@ async fn route(shared: Arc<Shared>, peer: IpAddr, request: Request<Incoming>) ->
             }
             match (request.method().clone(), path) {
                 (Method::POST, "/bounty/v1/heartbeat") => heartbeat(&shared, &member, peer, request).await,
-                (Method::GET, "/bounty/v1/source") => source(&shared),
+                (Method::GET, "/bounty/v1/source") => source(&shared, &member),
                 (Method::POST, "/bounty/v1/finding") => finding(&shared, &member, request).await,
                 (Method::POST, "/bounty/v1/leave") => leave(&shared, &member),
                 _ => error(StatusCode::NOT_FOUND, "not_found", "Unknown bounty path"),
@@ -591,9 +591,19 @@ async fn heartbeat(shared: &Shared, member: &str, peer: IpAddr, request: Request
     json_response(StatusCode::OK, &json!({"bountyTitle": record.bounty.title, "stillOpen": true}))
 }
 
-/// The published source, for a joined computer to work on.
-fn source(shared: &Shared) -> Response<Body> {
+/// Whether this member may work the bounty now: it accepted the exact terms on offer and its work
+/// budget is running. The same check the agent routes make before they hand over the source or
+/// take work in, so a member token alone, which only says the computer joined, is never enough.
+fn accepted(shared: &Shared, record: &Record, member: &str) -> bool {
+    coordination::allowed(&record.coordination, member, &shared.policy["termsDigest"])
+}
+
+/// The published source, for a joined computer that accepted the bounty to work on.
+fn source(shared: &Shared, member: &str) -> Response<Body> {
     let record = lock(&shared.record);
+    if !accepted(shared, &record, member) {
+        return error(StatusCode::CONFLICT, "not_allowed", "Accept this exact bounty, with its work budget running, before downloading its source");
+    }
     json_response(StatusCode::OK, &json!({"title": record.bounty.title, "instructions": record.bounty.instructions, "authorization": record.bounty.authorization, "files": record.bounty.files}))
 }
 
@@ -612,6 +622,11 @@ async fn finding(shared: &Shared, member: &str, request: Request<Incoming>) -> R
             Some(entry) => (entry.name.clone(), entry.model.clone().unwrap_or_default()),
             None => return error(StatusCode::UNAUTHORIZED, "member_unknown", "This computer has not joined this bounty"),
         };
+        // Checked under the lock the finding is recorded under, after its body arrived, so a
+        // budget that ran out or terms that changed meanwhile are seen.
+        if !accepted(shared, &record, member) {
+            return error(StatusCode::CONFLICT, "not_allowed", "Accept this exact bounty, with its work budget running, before reporting a finding");
+        }
         if record.findings.len() >= MAX_FINDINGS {
             return error(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "This bounty already holds the most findings it keeps");
         }

@@ -1,0 +1,368 @@
+{
+  "aliases": [
+    "ai workspace",
+    "coding agent",
+    "codex",
+    "claude code",
+    "gemini cli",
+    "ai sandbox"
+  ],
+  "capabilities": [
+    {
+      "id": "tools.builtin",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "tools.provider_access",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 2,
+      "gpu": false,
+      "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+      "internet": true,
+      "memoryGb": 4,
+      "name": "workspace",
+      "pcAccess": [],
+      "ports": [],
+      "secretSources": [
+        "ANTHROPIC_API_KEY from the question claude_api_key",
+        "GEMINI_API_KEY from the question gemini_api_key",
+        "KILO_API_KEY from the question kilo_api_key",
+        "OPENAI_API_KEY from the question codex_api_key",
+        "OPENCODE_API_KEY from the question opencode_api_key"
+      ],
+      "secrets": [
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "KILO_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENCODE_API_KEY"
+      ],
+      "storageGb": 20,
+      "tools": [
+        "codex",
+        "claude",
+        "gemini",
+        "opencode",
+        "kilo",
+        "ollama",
+        "openclaw"
+      ],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "ai_models",
+      "id": "tools",
+      "question": "Which AI tools do you want in the sandbox?",
+      "required": true,
+      "secret": false,
+      "type": "multichoice"
+    },
+    {
+      "group": "ai_models",
+      "id": "codex_access",
+      "question": "How should Codex reach its models?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "codex_signin_source",
+      "question": "Which ChatGPT sign-in should Codex use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "codex_api_key",
+      "question": "OpenAI API key for Codex",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "claude_access",
+      "question": "How should Claude Code reach its models?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "claude_signin_source",
+      "question": "Which Claude sign-in should Claude Code use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "claude_api_key",
+      "question": "Anthropic API key for Claude Code",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_access",
+      "question": "How should Gemini CLI reach its models?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_signin_source",
+      "question": "Which Google sign-in should Gemini CLI use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_api_key",
+      "question": "Google API key for Gemini CLI",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_access",
+      "question": "How should OpenCode reach its models?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_signin_source",
+      "question": "Which OpenCode sign-in should OpenCode use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_api_key",
+      "question": "OpenCode API key for OpenCode",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_access",
+      "question": "How should Kilo Code reach its models?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_signin_source",
+      "question": "Which Kilo sign-in should Kilo Code use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_api_key",
+      "question": "Kilo API key for Kilo Code",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "grid_workers",
+      "id": "cpu",
+      "question": "Processor cores for the sandbox",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory for the sandbox, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "storage_gb",
+      "question": "Disk for the sandbox, in whole GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "workspace",
+      "kind": "environment",
+      "summary": {
+        "command": "sleep, infinity",
+        "cpu": "{{inputs.cpu}}",
+        "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+        "internet": true,
+        "memory": "{{inputs.memory_gb}}",
+        "secrets": "OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENCODE_API_KEY, KILO_API_KEY",
+        "storage": "{{inputs.storage_gb}}",
+        "type": "container",
+        "working_dir": "/workspace"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Open Codex",
+    "Open Claude Code",
+    "Open Gemini CLI",
+    "Open OpenCode",
+    "Open Kilo Code",
+    "Start Ollama",
+    "Set up OpenClaw",
+    "Share the sandbox with a teammate"
+  ],
+  "subtitle": "Your AI coding tools in one sandbox, signed in your way.",
+  "tools": [
+    {
+      "environment": "workspace",
+      "name": "codex",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "codex_signin_source",
+      "signinWhen": [
+        "codex_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"codex\"]"
+      ]
+    },
+    {
+      "environment": "workspace",
+      "name": "claude",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "claude_signin_source",
+      "signinWhen": [
+        "claude_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"claude\"]"
+      ]
+    },
+    {
+      "environment": "workspace",
+      "name": "gemini",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "gemini_signin_source",
+      "signinWhen": [
+        "gemini_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"gemini\"]"
+      ]
+    },
+    {
+      "environment": "workspace",
+      "name": "opencode",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "opencode_signin_source",
+      "signinWhen": [
+        "opencode_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"opencode\"]"
+      ]
+    },
+    {
+      "environment": "workspace",
+      "name": "kilo",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "kilo_signin_source",
+      "signinWhen": [
+        "kilo_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"kilo\"]"
+      ]
+    },
+    {
+      "environment": "workspace",
+      "name": "ollama",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"ollama\"]"
+      ]
+    },
+    {
+      "environment": "workspace",
+      "name": "openclaw",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"openclaw\"]"
+      ]
+    }
+  ],
+  "totals": {
+    "cpu": 2,
+    "environments": 1,
+    "gpu": "none",
+    "memoryGb": 4,
+    "storageGb": 20
+  },
+  "warnings": [
+    "May copy this computer's sign-in for codex into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for claude into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for gemini into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for opencode into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for kilo into its sandbox, only if you choose so during setup."
+  ]
+}

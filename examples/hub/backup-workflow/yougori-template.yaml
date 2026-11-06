@@ -1,0 +1,151 @@
+format_version: 2
+kind: template
+name: backup-workflow
+title: Backup Workflow
+subtitle: Scheduled, checksummed backups of one app's data, with a restore you can practise.
+summary: Runs your app with its data on a volume and backs that volume up on a schedule you choose. Each backup is checksummed, the number you want is kept, and you can put one back when you need it.
+version: 1.0.0
+license: MIT
+topics: [backup, restore, schedule, data, recovery]
+aliases: [backup, backups, scheduled backup, nightly backup, restore, backup and restore]
+changelog: First version. A scheduled backup of one named volume, kept in Yougori's data folder on this computer, with a separate sandbox to read it through and a documented restore.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: none
+
+capabilities:
+  - {id: run.service, selection: required}
+  - {id: data.volumes, selection: required}
+  - {id: run.backups, selection: required}
+  - {id: run.schedule, selection: required}
+  - {id: web.service, selection: required}
+  - {id: web.private, selection: default}
+  - {id: web.quick_link, selection: optional}
+  - {id: web.domain, selection: optional}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: image
+    question: Which container image runs your app?
+    hint: An image reference such as ghcr.io/you/app:1.4.2. Pin a version. Its data must be under the path you give next.
+    type: text
+    pattern: '^[a-z0-9][a-z0-9._/-]{0,250}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$'
+    group: website_api
+  - id: data_path
+    question: Where does your app keep the data to back up?
+    hint: A folder inside the sandbox, such as /data. Everything under it is backed up, and nothing else.
+    type: text
+    pattern: '^/[A-Za-z0-9._-]{1,64}(/[A-Za-z0-9._-]{1,64}){0,6}$'
+    default: /data
+    group: files_data
+  - id: app_cpu
+    question: Processor cores for the app
+    type: number
+    min: 0.5
+    max: 16
+    default: 1
+    group: grid_workers
+  - id: app_memory_gb
+    question: Memory for the app, in GB
+    type: number
+    min: 0.5
+    max: 64
+    default: 1
+    group: grid_workers
+  - id: backup_schedule
+    question: When should the data be backed up?
+    hint: "Days and a time, such as: daily 02:00, weekdays 01:30, or Mon-Fri 01:30; Sun 04:00. Times are 24-hour."
+    type: text
+    pattern: '^[A-Za-z0-9 ,;:-]{3,120}$'
+    default: daily 02:00
+    group: automation_recovery
+  - id: backup_timezone
+    question: Which time zone are those times in?
+    hint: local follows this computer's clock, including its summer-time changes. You can also name a zone such as Europe/London, or a fixed offset such as UTC+02:00.
+    type: text
+    pattern: '^[A-Za-z0-9/_+:-]{3,40}$'
+    default: local
+    group: automation_recovery
+  - id: backup_keep
+    question: How many backups should Yougori keep?
+    hint: Once a newer backup is complete, anything older than this is deleted. They are kept in Yougori's data folder on this computer.
+    type: number
+    min: 1
+    max: 90
+    default: 7
+    group: automation_recovery
+  - id: backup_consistency
+    question: How should the data be copied?
+    type: choice
+    group: automation_recovery
+    choices:
+      - {value: stop, label: "Stop the app while it is copied", hint: "The app is unavailable for the length of the copy, and the backup is of data nothing was changing."}
+      - {value: live, label: "Keep the app running", hint: "No downtime, but a file being written at that moment can be copied half-written. A database may not open from such a copy."}
+    default: stop
+  - id: backup_missed
+    question: What should happen to a backup Yougori was not running for?
+    type: choice
+    group: automation_recovery
+    choices:
+      - {value: run_once, label: "Make one as soon as it can", hint: "However many times were missed, one backup catches up."}
+      - {value: skip, label: "Wait for the next time"}
+    default: run_once
+  - id: backup_overlap
+    question: What should happen if a backup is due while the one before is still running?
+    type: choice
+    group: automation_recovery
+    choices:
+      - {value: skip, label: "Leave it out", hint: "Recommended: a backup that takes longer than its gap never piles up."}
+      - {value: queue, label: "Run it straight after", hint: "At most one waits."}
+    default: skip
+  - id: backup_retries
+    question: How many times should a failed backup be tried again?
+    type: number
+    min: 0
+    max: 5
+    default: 2
+    group: automation_recovery
+  - id: access
+    question: Who can reach the app?
+    type: choice
+    group: website_api
+    choices:
+      - {value: none, label: "Only this computer"}
+      - {value: quick, label: "Anyone with a quick link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "My own domain", hint: "A domain you saved with yougori domain add."}
+    default: none
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {access: domain}
+  - id: health_path
+    question: Which path answers 200 when the app is healthy?
+    type: text
+    pattern: '^/[A-Za-z0-9._~/-]{0,200}$'
+    default: /
+    group: website_api
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [storage, files, logs, publications, diagram]
+
+steps:
+  - title: See when the next backup is, and what has been kept
+    detail: Shows each backup with its time, how many files it holds and whether the app was stopped while it was copied.
+    command: yougori setup show {{instance}}
+  - title: Practise a restore before you need one
+    detail: Puts the newest backup into a new folder inside the backup sandbox and leaves your data alone, so you can check the files are what you expect. Do this once now, not on the day something goes wrong.
+    command: yougori terminal {{env.backup}}
+  - title: Read the app's logs
+    detail: If the app does not become healthy after a restore, its output usually says why.
+    command: yougori logs {{env.app}}
+
+outputs:
+  - {key: app, label: App sandbox, value: "{{outputs.app.name}}"}
+  - {key: backup_sandbox, label: Backup sandbox, value: "{{outputs.backup.name}}"}
+  - {key: address, label: App address, value: "{{outputs.web.url}}", when: {access: [quick, domain]}}

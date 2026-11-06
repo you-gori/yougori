@@ -9,8 +9,9 @@ use yougori_grid::desks::{Parcel, ParcelStore};
 /// Read and sent in pieces this size, matching what the hub accepts.
 const PIECE: usize = yougori_grid::enterprise::IMAGE_PIECE;
 
-fn moves(app: &AppHandle) -> Result<PathBuf, String> {
-    let folder = folder(app).join("moving");
+/// One grid's move folder: every instance packs and unpacks in a folder of its own.
+fn moves(app: &AppHandle, instance: &str) -> Result<PathBuf, String> {
+    let folder = folder(app, instance).join("moving");
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     Ok(folder)
 }
@@ -37,8 +38,8 @@ impl Drop for Scratch {
 }
 
 /// A folder of this move's own, under the shared one.
-fn mine(app: &AppHandle, what: &str) -> Result<(PathBuf, Scratch), String> {
-    let folder = moves(app)?.join(format!("{what}-{}", uuid::Uuid::new_v4()));
+fn mine(app: &AppHandle, instance: &str, what: &str) -> Result<(PathBuf, Scratch), String> {
+    let folder = moves(app, instance)?.join(format!("{what}-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     let guard = Scratch(folder.clone());
     Ok((folder, guard))
@@ -57,8 +58,12 @@ fn mine(app: &AppHandle, what: &str) -> Result<(PathBuf, Scratch), String> {
 /// process, so after a restart the hub re-issues the order and the desk is packed again from its
 /// sandbox — which is why none of it is in use, and also why nothing here can tell on its own
 /// whether a given folder is a leak or a rescue.
-pub(super) fn sweep(app: &AppHandle) {
-    let Ok(folder) = moves(app) else { return };
+pub(super) fn sweep(app: &AppHandle, instance: &str) {
+    // Nothing to look at is no reason to make the folder.
+    if !folder(app, instance).join("moving").is_dir() {
+        return;
+    }
+    let Ok(folder) = moves(app, instance) else { return };
     let Ok(entries) = std::fs::read_dir(&folder) else { return };
     let mut left = Vec::new();
     let mut cleared = 0usize;
@@ -81,16 +86,17 @@ pub(super) fn sweep(app: &AppHandle) {
         left.push(format!("{} ({} bytes)", path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), bytes));
     }
     if cleared > 0 {
-        crate::security::record(Event::new("grid.desk.move_scratch_cleared").text("folders", &cleared.to_string()));
+        crate::security::record(Event::new("grid.desk.move_scratch_cleared").text("instance", instance).text("folders", &cleared.to_string()));
     }
     if left.is_empty() {
         return;
     }
     crate::security::record(
         Event::new("grid.desk.move_leftovers")
+            .text("instance", instance)
             // Named relative to the engine's data folder. An absolute path here carries the
             // person's own user name into a record that travels into logs and support bundles.
-            .text("folder", "grid/moving")
+            .text("folder", &if instance == DEFAULT { "grid/moving".to_owned() } else { format!("grid/desks/{instance}/moving") })
             .text("left", &left.join(", "))
             .text("note", "A move that did not finish left these. A folder holding disk.data may be the only copy of that desk; check it before deleting anything here."),
     );
@@ -104,11 +110,11 @@ pub(super) fn sweep(app: &AppHandle) {
 /// this yet — it takes a parcel and gives one back, and the next park for the same desk writes
 /// over it from the first byte — so that case is recorded rather than cleaned, which is the
 /// honest half of what can be done from here.
-pub(super) async fn forget(desk: &str, parcel: &Parcel, parking: Option<&Value>) -> bool {
+pub(super) async fn forget(instance: &str, desk: &str, parcel: &Parcel, parking: Option<&Value>) -> bool {
     if parcel.store != ParcelStore::S3 {
         // The hub has no door for discarding one, so there is nothing to retry: recorded, and
         // not kept on a list that would ask for it again for ever.
-        crate::security::record(Event::new("grid.desk.hub_leftover").text("desk", desk).text("parcel", &parcel.key));
+        crate::security::record(Event::new("grid.desk.hub_leftover").text("instance", instance).text("desk", desk).text("parcel", &parcel.key));
         return true;
     }
     // Tried more than once before it is called a leftover. A delete that fails leaves a copy of
@@ -131,14 +137,14 @@ pub(super) async fn forget(desk: &str, parcel: &Parcel, parking: Option<&Value>)
     }
     match outcome {
         Ok(()) => {
-            crate::security::record(Event::new("grid.desk.parked_copy_dropped").text("desk", desk).text("object", &parcel.key));
+            crate::security::record(Event::new("grid.desk.parked_copy_dropped").text("instance", instance).text("desk", desk).text("object", &parcel.key));
             true
         }
         // Said where somebody will see it, not only in the record. A copy of a desk left in the
         // company's bucket is a bill nobody asked for and data nobody is tracking.
         Err(error) => {
-            crate::security::record(Event::new("grid.desk.bucket_leftover").text("desk", desk).text("object", &parcel.key).text("error", &error));
-            super::note_bucket_leftover(desk, &parcel.key, &error);
+            crate::security::record(Event::new("grid.desk.bucket_leftover").text("instance", instance).text("desk", desk).text("object", &parcel.key).text("error", &error));
+            super::note_bucket_leftover(instance, desk, &parcel.key, &error);
             false
         }
     }
@@ -146,11 +152,12 @@ pub(super) async fn forget(desk: &str, parcel: &Parcel, parking: Option<&Value>)
 
 /// Packs a desk up and sends it to the hub: the sandbox is stopped first so the copy is whole,
 /// and its data stays here until the hub has every piece.
-pub(super) async fn park(app: &AppHandle, order: &DeskOrder, environment_id: &str, membership: &member::Membership, grid: &str, parking: Option<&Value>) -> Result<Parcel, String> {
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn park(app: &AppHandle, instance: &str, order: &DeskOrder, environment_id: &str, membership: &member::Membership, grid: &str, parking: Option<&Value>) -> Result<Parcel, String> {
     if app.state::<PlatformStore>().environment(environment_id).is_ok() {
         let _ = crate::commands::set_environment_status(environment_id.to_owned(), EnvironmentStatus::Stopped, app.state(), app.state()).await;
     }
-    let (folder, guard) = mine(app, "park")?;
+    let (folder, guard) = mine(app, instance, "park")?;
     // The export runs in a task of its own, holding the folder guard, and hands both back
     // together. Two things fall out of that. An abort of this park cannot stop the export
     // half-way, so `export_backup` always reaches its own snapshot cleanup — dropping it there
@@ -194,18 +201,18 @@ pub(super) async fn park(app: &AppHandle, order: &DeskOrder, environment_id: &st
             let bucket = super::parking::open(credentials)?;
             let name = super::parking::object_name(grid, &order.id, yougori_grid::now());
             let (bytes, sha256) = bucket.put(&name, &path).await?;
-            crate::security::record(Event::new("grid.desk.parked_in_bucket").text("desk", &order.id).text("object", &name));
+            crate::security::record(Event::new("grid.desk.parked_in_bucket").text("instance", instance).text("desk", &order.id).text("object", &name));
             Ok(Parcel { store: ParcelStore::S3, key: name, bytes, sha256, at: yougori_grid::now() })
         }
         .await,
         (ParcelStore::S3, None) => Err("The hub parks desks in the company's bucket but sent no credentials for it".into()),
-        (ParcelStore::Hub, _) => send(app, order, &path, membership).await,
+        (ParcelStore::Hub, _) => send(instance, order, &path, membership).await,
     };
     // The packed copy is only scratch: the sandbox itself is still here until the hub says go.
     sent
 }
 
-async fn send(app: &AppHandle, order: &DeskOrder, path: &PathBuf, membership: &member::Membership) -> Result<Parcel, String> {
+async fn send(instance: &str, order: &DeskOrder, path: &PathBuf, membership: &member::Membership) -> Result<Parcel, String> {
     use tokio::io::AsyncReadExt;
     let mut file = tokio::fs::File::open(path).await.map_err(|_| "The packed desk could not be read")?;
     let bytes = file.metadata().await.map_err(|error| error.to_string())?.len();
@@ -236,7 +243,7 @@ async fn send(app: &AppHandle, order: &DeskOrder, path: &PathBuf, membership: &m
         let last = offset + filled as u64 >= bytes;
         membership.desk_parcel_put(&order.id, offset, piece[..filled].to_vec(), last).await?;
         offset += filled as u64;
-        crate::security::record(Event::new("grid.desk.parking").text("desk", &order.id).text("sent", &format!("{offset} of {bytes}")));
+        crate::security::record(Event::new("grid.desk.parking").text("instance", instance).text("desk", &order.id).text("sent", &format!("{offset} of {bytes}")));
         if last {
             break;
         }
@@ -244,17 +251,16 @@ async fn send(app: &AppHandle, order: &DeskOrder, path: &PathBuf, membership: &m
     if offset != bytes {
         return Err("The desk's data was cut short while it was sent".into());
     }
-    let _ = app;
     Ok(Parcel { store: ParcelStore::Hub, key: order.id.clone(), bytes, sha256: hex::encode(hash.finalize()), at: yougori_grid::now() })
 }
 
 /// Takes a desk's packed data from the hub and unpacks it here as this computer's own sandbox.
 /// The checksum is checked before anything is created, so a broken copy never becomes a desk.
-pub(super) async fn adopt(app: &AppHandle, order: &DeskOrder, parcel: &Parcel, membership: &member::Membership, parking: Option<&Value>) -> Result<String, String> {
+pub(super) async fn adopt(app: &AppHandle, instance: &str, order: &DeskOrder, parcel: &Parcel, membership: &member::Membership, parking: Option<&Value>) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
     // A folder of its own, for the same reason the packing side has one: an adopt running beside
     // a park must not have its downloaded parcel removed by that park's cleanup.
-    let (folder, _scratch) = mine(app, "adopt")?;
+    let (folder, _scratch) = mine(app, instance, "adopt")?;
     let path = folder.join(format!("{}.yougori-backup", order.id));
     if parcel.store == ParcelStore::S3 {
         let credentials = parking.ok_or("The desk's data is in the company's bucket but the hub sent no credentials for it")?;
@@ -269,7 +275,7 @@ pub(super) async fn adopt(app: &AppHandle, order: &DeskOrder, parcel: &Parcel, m
             let id = state.environments.into_iter().map(|environment| environment.id).find(|id| !before.contains(id)).ok_or("The desk's sandbox was not restored")?;
             // Unpacked here: the copy in the bucket has done its job.
             if let Err(error) = bucket.delete(&parcel.key).await {
-                crate::security::record(Event::new("grid.desk.bucket_leftover").text("desk", &order.id).text("error", &error));
+                crate::security::record(Event::new("grid.desk.bucket_leftover").text("instance", instance).text("desk", &order.id).text("error", &error));
             }
             Ok(id)
         }
@@ -288,7 +294,7 @@ pub(super) async fn adopt(app: &AppHandle, order: &DeskOrder, parcel: &Parcel, m
             hash.update(&bytes);
             file.write_all(&bytes).await.map_err(|_| "Could not store the desk's data; check free disk space")?;
             offset += bytes.len() as u64;
-            crate::security::record(Event::new("grid.desk.adopting").text("desk", &order.id).text("taken", &format!("{offset} of {size}")));
+            crate::security::record(Event::new("grid.desk.adopting").text("instance", instance).text("desk", &order.id).text("taken", &format!("{offset} of {size}")));
             if offset >= size {
                 break;
             }

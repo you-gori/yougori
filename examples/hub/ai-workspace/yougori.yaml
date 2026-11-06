@@ -1,0 +1,25 @@
+format_version: 2
+project: ai-workspace
+
+resources:
+  # One container sandbox for the selected tools. Yougori installs only the tools you picked,
+  # with the same installer the yougori codex / claude / gemini shortcuts use.
+  workspace:
+    kind: environment
+    spec:
+      type: container
+      image: ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+      cpu: "{{inputs.cpu}}"
+      memory: "{{inputs.memory_gb}}"
+      storage: "{{inputs.storage_gb}}"
+      internet: true
+      working_dir: /workspace
+      volumes:
+        - {source: work, target: /workspace}
+      command: [sleep, infinity]
+      secrets:
+        OPENAI_API_KEY: "{{secrets.codex_api_key}}"
+        ANTHROPIC_API_KEY: "{{secrets.claude_api_key}}"
+        GEMINI_API_KEY: "{{secrets.gemini_api_key}}"
+        OPENCODE_API_KEY: "{{secrets.opencode_api_key}}"
+        KILO_API_KEY: "{{secrets.kilo_api_key}}"

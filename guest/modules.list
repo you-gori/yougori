@@ -1,0 +1,12 @@
+# Kernel modules the sandbox guest loads, by name, beyond what the pinned kernel
+# (src-tauri/resources/runtime/appliance/vmlinuz-virt) builds in. virtio, virtio_ring,
+# virtio_mmio, virtio_console, devtmpfs and tmpfs are built in. scripts/build-guest.sh
+# resolves each name and its dependencies against the pinned module set taken from
+# appliance-base.qcow2 and writes the load order into the initrd
+# (/etc/yougori/modules.load); a name the set lacks stops the build.
+virtio_net    # opt-in outbound NAT adapter; offline profiles attach no NIC
+virtio_blk    # the read-only root drive (virtio-blk-device)
+virtio-rng    # virtio-rng-device (needs rng-core)
+qemu_fw_cfg   # fw_cfg: the link bootstrap file opt/yougori/link-secret
+squashfs      # the root image's filesystem
+fuse          # the staged workspace mount (/run/yougori/workspace, FUSE served by the agent)

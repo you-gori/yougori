@@ -43,4 +43,4 @@ The desktop app and the `yougori` CLI drive one local engine and share one state
 - Running isn't working. Check the app itself: `logs ENV --last-error`, local HTTP, tunnel and public HTTPS separately, `deployment status`, `model status ENV`; use an authenticated probe when the user requires one.
 - Blocked: `yougori doctor`, `app startup-report`, `env recover-report ENV_ID --yes`. Never bypass a live owner.
 
-References (`references/TOPIC.md`): engine, containers, files, deployment, hub, models, grid, connections, access, tools, bounty. Each ends with a troubleshooting table. `references/cli.md` (`skills print --all`) is the full guide.
+References (`references/TOPIC.md`): engine, containers, files, deployment, hub, models, runners, grid, connections, access, tools, bounty. Each ends with a troubleshooting table. `references/cli.md` (`skills print --all`) is the full guide.

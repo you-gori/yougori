@@ -60,7 +60,7 @@ fn a_grid_is_read_from_the_status_its_product_already_answers() {
     // A product answering `"hub": null` still reaches its membership.
     assert_eq!(registry::named(Product::Neo, &json!({"hub":null,"member":{"gridId":"g","grid":"Acme"}})).unwrap().role, "member");
     for grid in [&neo, &access, &bounty] {
-        assert_eq!(registry::product_of(grid).capability().word(), grid.does[0]);
+        assert_eq!(registry::product_of(grid).unwrap().capability().word(), grid.does[0]);
     }
 }
 
@@ -86,13 +86,13 @@ fn the_first_grid_on_a_computer_is_chosen_by_the_words_rather_than_by_what_is_al
         let chosen = from_the_words("new", &said("desks"), already.clone()).unwrap();
         assert_eq!(chosen.name, "Acme");
         assert_eq!(chosen.does, vec!["workspaces".to_owned()]);
-        assert_eq!(registry::product_of(&chosen), Product::Desks);
-        let (method, _) = yougori_cli::grids::alias::product_call(registry::product_of(&chosen), "realm", "new", &said("desks")).unwrap();
+        assert_eq!(registry::product_of(&chosen), Some(Product::Desks));
+        let (method, _) = yougori_cli::grids::alias::product_call(registry::product_of(&chosen).unwrap(), "realm", "new", &said("desks")).unwrap();
         assert_eq!(method, "desks_create", "--serve desks starts a Sandbox Grid whatever else is here");
     }
-    assert_eq!(registry::product_of(&from_the_words("new", &said("models"), None).unwrap()), Product::Neo);
-    assert_eq!(registry::product_of(&from_the_words("new", &said("credentials"), None).unwrap()), Product::Access);
-    assert_eq!(registry::product_of(&from_the_words("new", &said("research"), None).unwrap()), Product::Bounty);
+    assert_eq!(registry::product_of(&from_the_words("new", &said("models"), None).unwrap()), Some(Product::Neo));
+    assert_eq!(registry::product_of(&from_the_words("new", &said("credentials"), None).unwrap()), Some(Product::Access));
+    assert_eq!(registry::product_of(&from_the_words("new", &said("research"), None).unwrap()), Some(Product::Bounty));
 
     // Left out, it asks for the word rather than sending somebody to run what they just ran.
     let empty = serde_json::Map::new();
@@ -104,7 +104,7 @@ fn the_first_grid_on_a_computer_is_chosen_by_the_words_rather_than_by_what_is_al
     assert_eq!(from_the_words("new", &said("everything"), None).unwrap_err().code, Code::ValueUnusable);
     // Joining and asking for an address still work with what is already here, or with nothing.
     assert_eq!(from_the_words("join", &empty, Some(neo_here.clone())).unwrap().id, neo_here.id);
-    assert_eq!(registry::product_of(&from_the_words("address", &empty, None).unwrap()), Product::Neo);
+    assert_eq!(registry::product_of(&from_the_words("address", &empty, None).unwrap()), Some(Product::Neo));
     assert_eq!(from_the_words("join", &empty, None).unwrap_err().code, Code::MissingWords);
 }
 
@@ -302,4 +302,143 @@ fn a_restart_does_not_lose_which_command_caused_what() {
     assert_ne!(reopened.recorded_for(&first).unwrap(), reopened.recorded_for(&second).unwrap());
     assert!(name::is_command(&first) && name::is_command(&second));
     reopened.verify_audit().unwrap();
+}
+
+
+/// Six grids on one computer: two of each of the three products that can hold several. Every one
+/// is listed, named apart and reachable by `--grid`, and the command reaches that grid and no
+/// other. This is the whole point of M06 from a person's side: a second grid they cannot see or
+/// name might as well not be there.
+#[test]
+fn two_grids_of_each_product_are_all_listed_and_each_one_is_reachable_by_name() {
+    let neo = json!({
+        "instance": "default", "hub": {"id": "grid-a", "name": "Acme"}, "member": {"gridId": "grid-a", "grid": "Acme"},
+        "hubs": [
+            {"id": "grid-a", "name": "Acme", "instance": "default", "gridId": "grid-a"},
+            {"id": "grid-b", "name": "Beta", "instance": "i-0000beef", "gridId": "grid-b"},
+        ],
+        "members": [
+            {"gridId": "grid-a", "grid": "Acme", "instance": "default"},
+            {"gridId": "grid-b", "grid": "Beta", "instance": "i-0000beef"},
+        ],
+    });
+    let desks = json!({
+        "hub": {"id": "desks-a", "name": "Acme"}, "member": null, "desk": null,
+        "hubs": [{"id": "desks-a", "name": "Acme", "instance": "default", "gridId": "desks-a"}],
+        "members": [{"gridId": "desks-b", "grid": "Globex", "instance": "i-0000cafe"}],
+        "logins": [],
+    });
+    let access = json!({
+        "hub": {"id": "access-a", "company": "Acme"}, "member": null,
+        "hubs": [{"id": "access-a", "company": "Acme", "instance": "default", "gridId": "access-a"}],
+        "members": [{"accessId": "access-b", "company": "Initech", "instance": "i-0000f00d", "gridId": "access-b"}],
+    });
+    let bounty = json!({"host": {"id": "bounty-a", "name": "Acme Bounty"}});
+    let all = registry::read_all(&[(Product::Neo, neo), (Product::Desks, desks), (Product::Access, access), (Product::Bounty, bounty)]);
+
+    // Six grids of the three products that can hold several, plus the one private project.
+    let listed: Vec<(&str, &str, &str)> = all.iter().map(|grid| (grid.id.as_str(), grid.name.as_str(), grid.does[0].as_str())).collect();
+    assert_eq!(
+        listed,
+        [
+            ("grid-a", "Acme", "models"),
+            ("grid-b", "Beta", "models"),
+            ("desks-a", "Acme", "workspaces"),
+            ("desks-b", "Globex", "workspaces"),
+            ("access-a", "Acme", "credentials"),
+            ("access-b", "Initech", "credentials"),
+            ("bounty-a", "Acme Bounty", "research"),
+        ],
+        "every grid of every product is listed, each with its own id and name",
+    );
+    // A hub and this computer's own membership in that same grid are one grid, not two.
+    assert_eq!(all.iter().filter(|grid| grid.id == "grid-a").count(), 1);
+    assert_eq!(all.iter().find(|grid| grid.id == "grid-a").unwrap().role, "hub");
+    // A grid this computer only joined is listed as a member of it.
+    assert_eq!(all.iter().find(|grid| grid.id == "desks-b").unwrap().role, "member");
+
+    // Four companies called Acme: no two grids share a handle, so `--grid` can name each one.
+    let handles: Vec<&str> = all.iter().map(|grid| grid.handle.as_str()).collect();
+    let mut unique = handles.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), handles.len(), "every grid is nameable: {handles:?}");
+
+    // Naming one reaches that one, by id, by name and by handle.
+    for grid in &all {
+        for wanted in [grid.id.as_str(), grid.handle.as_str()] {
+            assert_eq!(registry::choose(all.clone(), Some(wanted), &[]).unwrap().id, grid.id, "--grid {wanted}");
+        }
+    }
+    assert_eq!(registry::choose(all.clone(), Some("Beta"), &[]).unwrap().id, "grid-b", "by company name");
+    let missing = registry::choose(all.clone(), Some("grid-z"), &[]).unwrap_err();
+    assert_eq!(missing.code, Code::NoSuchGrid);
+
+    // With several that could answer, naming one is required rather than guessed at.
+    let unclear = registry::choose(all.clone(), None, &[Capability::Models]).unwrap_err();
+    assert_eq!(unclear.code, Code::GridNotNamed);
+    assert!(unclear.said.contains("Acme") && unclear.said.contains("Beta") && unclear.said.contains("--grid"), "{}", unclear.said);
+    // One grid of a kind needs no name, exactly as it does today.
+    assert_eq!(registry::choose(all.clone(), None, &[Capability::Research]).unwrap().id, "bounty-a");
+
+    // The grid a command found is the grid its handler is told to act on.
+    for (id, product, key) in [("grid-b", Product::Neo, "gridId"), ("desks-b", Product::Desks, "gridId"), ("access-b", Product::Access, "gridId")] {
+        let mut params = json!({});
+        yougori_cli::grids::alias::aim(product, id, &mut params);
+        assert_eq!(params[key], id, "{product:?} is told which grid");
+    }
+}
+
+/// One grid of a kind, which is every computer today: nothing about the listing changes.
+#[test]
+fn one_grid_of_a_kind_reads_exactly_as_it_did_before() {
+    // A status from a build before any of this lists no instances and is one grid.
+    let old = json!({"hub": {"id": "grid-a", "name": "Acme"}, "member": null});
+    let all = registry::read_all(&[(Product::Neo, old)]);
+    assert_eq!(all.len(), 1);
+    assert_eq!((all[0].id.as_str(), all[0].name.as_str(), all[0].handle.as_str(), all[0].role.as_str()), ("grid-a", "Acme", "acme", "hub"));
+    // Naming it is optional, as it always was.
+    assert_eq!(registry::choose(all.clone(), None, &[]).unwrap().id, "grid-a");
+    assert_eq!(registry::choose(all.clone(), None, &[Capability::Models]).unwrap().id, "grid-a");
+    // A computer with nothing on it still says so in the same words.
+    let nothing = registry::read_all(&[(Product::Neo, json!({"hub": null, "member": null}))]);
+    assert!(nothing.is_empty());
+    assert_eq!(registry::choose(nothing, None, &[]).unwrap_err().code, Code::NoSuchGrid);
+}
+
+/// A record this computer could not read is a grid that is there and cannot be seen into. It is
+/// listed rather than quietly left out, because a grid nobody can see is a grid nobody can
+/// delete, and two of them still get names of their own.
+#[test]
+fn a_grid_whose_record_could_not_be_read_is_still_listed_and_still_nameable() {
+    let neo = json!({
+        "instance": "default", "hub": null, "member": null,
+        "hubs": [
+            {"instance": "default", "gridId": null, "name": null, "error": "The vault did not answer yet"},
+            {"instance": "i-0000beef", "gridId": null, "name": null, "error": "The vault did not answer yet"},
+        ],
+        "members": [],
+    });
+    let all = registry::read_all(&[(Product::Neo, neo)]);
+    assert_eq!(all.len(), 2, "neither is silently omitted as nonexistent");
+    assert_eq!(all.iter().map(|grid| grid.id.as_str()).collect::<Vec<_>>(), ["default", "i-0000beef"], "the instance names it when the record cannot");
+    assert_ne!(all[0].handle, all[1].handle, "and each can still be named");
+}
+
+/// A grid that says it does something this build has never heard of is refused by name, never
+/// sent to a product picked for it: acting on the wrong grid is worse than not acting.
+#[test]
+fn a_kind_of_grid_this_build_does_not_know_is_refused_rather_than_sent_to_the_wrong_product() {
+    let mut unknown = registry::named(Product::Neo, &json!({"hub": {"id": "grid-x", "name": "From a newer Yougori"}})).unwrap();
+    unknown.does = vec!["something-new".to_owned()];
+    assert_eq!(registry::product_of(&unknown), None);
+    let refused = registry::product_or_refuse(&unknown).unwrap_err();
+    assert_eq!(refused.code, Code::GridRefused);
+    assert!(refused.said.contains("From a newer Yougori") && refused.said.contains("Update Yougori"), "{}", refused.said);
+    assert!(refused.said.contains("nothing was changed"), "{}", refused.said);
+    // Every grid of the four products this build does know still reads as its own product.
+    for product in Product::all() {
+        let grid = registry::fresh(*product, Some("Acme"));
+        assert_eq!(registry::product_of(&grid), Some(*product));
+    }
 }

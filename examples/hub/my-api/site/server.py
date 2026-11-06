@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import attached
 import pages
 import prices
+import chain
 import store
 from transport import Failure, request as http_json
 from http_limits import Server, exit_on_stop
@@ -34,7 +35,10 @@ PORT = int(os.environ.get("PORT", "3000"))
 SITE_NAME = os.environ.get("SITE_NAME", "My API")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-store.recover_reservations(store.setup())
+try:
+    store.recover_reservations(store.setup())
+except store.MigrationRefused as refusal:
+    raise SystemExit(str(refusal)) from None
 
 # The website's fonts, read once at start. Only these exact file names are ever served.
 FONT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -68,6 +72,54 @@ catalogue_lock = threading.Lock()
 CATALOGUE_INTERVAL = 30
 
 
+# Provider groups stay separate for discovery, pricing and free-only checks. They
+# share the models sandbox, using separate ports, in the two-sandbox template.
+SANDBOX_PROVIDERS = {"paid": ("codex", "claude", "gemini"), "local": ("ollama",), "free": ("opencode", "kilo")}
+
+
+def selected_providers():
+    raw = os.environ.get("SELECTED_PROVIDERS")
+    return None if raw is None else {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def sandbox_selected(sandbox):
+    chosen = selected_providers()
+    return chosen is None or sandbox not in SANDBOX_PROVIDERS or bool(chosen & set(SANDBOX_PROVIDERS[sandbox]))
+
+
+# How long a free-only gateway model may be sold after its catalogue was last read.
+STALE_SECONDS = 180
+
+
+def instance_name():
+    name = os.environ.get("YOUGORI_INSTANCE", "")
+    return name if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,39}", name) else "INSTANCE"
+
+
+def fix_for(sandbox, status):
+    """The exact thing the admin can do about a provider status, in words a person can follow.
+    Sandbox names are the engine's own, so the hint shows where to read them rather than guess."""
+    text = (status or "").lower()
+    instance = instance_name()
+    where = {"paid": "provider", "local": "Ollama", "free": "gateway"}.get(sandbox, "website")
+    if sandbox in SANDBOX_PROVIDERS and os.environ.get(sandbox.upper() + "_SANDBOX") == "models":
+        where = "models"
+    if text in ("", "connected"):
+        return ""
+    if re.search(r"authori[sz]ation|api key|sign(ing|ed)?[ -]?(in|out)|expired", text):
+        return (f"Replace the API key with yougori template configure {instance}. For a subscription, sign in again "
+                f"in the {where} sandbox's terminal; yougori template status {instance} lists its name.")
+    if "quota" in text or "balance" in text:
+        return "Top up the provider account, or wait for its quota to reset; the models come back by themselves."
+    if "rate limit" in text:
+        return "Wait a few minutes; the provider is limiting requests. The models stay listed meanwhile."
+    if "not selected" in text:
+        return f"Choose it with yougori template configure {instance}."
+    if "client" in text:
+        return f"Use it in the {where} sandbox's terminal; yougori template status {instance} lists its name."
+    return f"See what the {where} sandbox reports with yougori template status {instance}."
+
+
 def refresh_catalogue():
     """One refresh at a time; publish each sandbox as soon as it answers."""
     if not catalogue_lock.acquire(blocking=False):
@@ -77,14 +129,17 @@ def refresh_catalogue():
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {pool.submit(discover, sandbox, os.environ.get(variable, "")): sandbox
                        for sandbox, variable in (("local", "LOCAL_SANDBOX"), ("paid", "PAID_SANDBOX"), ("free", "FREE_SANDBOX"),
-                                                 ("attached", ""))}
+                                                 ("attached", ""))
+                       if sandbox_selected(sandbox)}
             for future in as_completed(futures):
                 sandbox = futures[future]
+                throttled = []
                 try:
                     result = future.result()
                     found[sandbox] = result["data"]
                     statuses[sandbox] = result.get("status", {sandbox: "Connected"})
                     tools = result.get("toolModels", [])
+                    throttled = [item for item in result.get("throttled", []) if isinstance(item, str)]
                 except Failure as error:
                     found[sandbox], tools = [], []
                     statuses[sandbox] = {sandbox: str(error)}
@@ -93,7 +148,7 @@ def refresh_catalogue():
                     statuses[sandbox] = {sandbox: "Discovery is temporarily unavailable; retrying automatically."}
                 store.set_available(db, sandbox, found[sandbox], {
                     "tool_models_" + sandbox: json.dumps(tools),
-                    "provider_status": json.dumps(statuses), "catalogue_updated": str(int(time.time()))})
+                    "provider_status": json.dumps(statuses), "catalogue_updated": str(int(time.time()))}, keep=throttled)
         return {"available": found, "status": statuses}
     finally:
         catalogue_lock.release()
@@ -281,6 +336,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/admin/markup": self.save_markup,
             "/api/admin/refresh": self.refresh_models,
             "/api/admin/confirm": self.confirm_payment,
+            "/api/admin/reject": self.reject_payment,
+            "/api/payments/cancel": self.cancel_payment,
             "/v1/chat/completions": self.chat,
         }
         action = routes.get(path)
@@ -359,6 +416,7 @@ class Handler(BaseHTTPRequestHandler):
                     "defaultIn": default[0] if default else None, "defaultOut": default[1] if default else None,
                     "defaultSource": default[2] if default else None,
                     "promoEnds": None if own else prices.promotion_ends(row["provider"], upstream),
+                    "checkedAt": row["checked_at"], "pricedAt": row["priced_at"],
                 })
             listed.append(item)
         reply = {"models": listed,
@@ -431,16 +489,18 @@ class Handler(BaseHTTPRequestHandler):
         user, _ = viewer(self)
         if user is None:
             return self.fail(401, "Sign in first.")
-        rows = db.execute("SELECT reference,dollars,network,address,state,created_at,confirmed_at FROM payments WHERE user_id=? ORDER BY id DESC LIMIT 100", (user["id"],)).fetchall()
+        rows = db.execute("SELECT reference,dollars,network,address,state,created_at,confirmed_at,closed_at,tx_id FROM payments WHERE user_id=? ORDER BY id DESC LIMIT 100", (user["id"],)).fetchall()
         return self.send(200, {"payments": [{**dict(row), "label": store.NETWORKS.get(row["network"], (row["network"],))[0]} for row in rows]})
 
     def show_wallet(self):
         saved = store.wallet(db)
         network = (saved or {}).get("network")
         label, coin, _, hint = store.NETWORKS.get(network, (None, None, None, "Choose the network that should receive credit payments."))
+        token = (saved or {}).get("token")
         return self.send(200, {
             "set": saved is not None, "network": network, "label": label, "coin": coin, "hint": hint,
-            "address": (saved or {}).get("address"),
+            "address": (saved or {}).get("address"), "token": token,
+            "tokenNote": f"Check that the token is Tether USD (USDT) on {label} before sending." if saved else None,
             "networks": [{"value": key, "label": value[0], "coin": value[1], "hint": value[3]}
                          for key, value in store.NETWORKS.items()],
         })
@@ -455,10 +515,13 @@ class Handler(BaseHTTPRequestHandler):
         if network not in store.NETWORKS:
             return self.fail(400, "Choose one of the networks listed.")
         pattern = store.NETWORKS[network][2]
-        if not re.match(pattern, address):
-            return self.fail(400, f"That is not a {store.NETWORKS[network][0]} address. {store.NETWORKS[network][3]}")
-        store.set_wallet(db, network, address)
-        return self.send(200, {"saved": True, "network": network, "address": address})
+        if not re.match(pattern, address) or not chain.address(network, address):
+            return self.fail(400, f"That is not a valid {store.NETWORKS[network][0]} address: its checksum or length is wrong. Copy it again from your wallet.")
+        token = str(data.get("token") or "").strip()
+        if token and not chain.address(network, token):
+            return self.fail(400, f"That is not a valid {store.NETWORKS[network][0]} token address. Copy the USDT contract or mint from Tether's own list, or leave it empty.")
+        store.set_wallet(db, network, address, token or None)
+        return self.send(200, {"saved": True, "network": network, "address": address, "token": token or None})
 
     def buy_credits(self):
         """Shows where to pay. The admin confirms the payment, then the credits land."""
@@ -474,6 +537,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(400, "Enter an amount in USDT.")
         if not 1 <= dollars <= 10000 or round(dollars, 2) != dollars:
             return self.fail(400, "Choose an amount between 1 and 10000 USDT.")
+        if store.waiting_payments(db, user["id"]) >= store.MAX_WAITING_PAYMENTS:
+            return self.fail(409, f"You already have {store.MAX_WAITING_PAYMENTS} payment requests waiting. Cancel one you have not paid on your API keys page, or wait for the owner to confirm them.")
         reference = "pay_" + secrets.token_hex(8)
         with db:
             db.execute("INSERT INTO payments (user_id, dollars, network, address, reference, created_at) "
@@ -482,19 +547,54 @@ class Handler(BaseHTTPRequestHandler):
         label, coin, _, _ = store.NETWORKS[saved["network"]]
         return self.send(200, {
             "reference": reference, "dollars": dollars, "network": label, "coin": coin,
-            "address": saved["address"],
-            "instruction": f"Send exactly {dollars:.2f} {coin} on {label} to the address below. Your balance goes up on this page as soon as the payment is received.",
+            "address": saved["address"], "token": saved.get("token"),
+            "tokenNote": f"Check that the token is Tether USD (USDT) on {label} before sending.",
+            "instruction": (f"Send exactly {dollars:.2f} {coin} on {label} to the address below and keep this reference. "
+                            f"The site's owner checks the wallet and adds the credits by hand; it is not automatic, so it can "
+                            f"take a while. If it takes long, contact the owner with the reference and your transaction id."),
         })
 
     def confirm_payment(self):
         user, _ = viewer(self)
         if user is None or not user["is_admin"]:
             return self.fail(403, "Only the admin can confirm a payment.")
-        reference = str(body(self).get("reference", "")).strip()
-        dollars = store.confirm_payment(db, reference)
+        data = body(self)
+        reference = str(data.get("reference", "")).strip()
+        row = db.execute("SELECT network FROM payments WHERE reference=?", (reference,)).fetchone()
+        if row is None:
+            return self.fail(409, "This payment is already confirmed or does not exist.")
+        tx_id = None
+        if str(data.get("txId") or "").strip():
+            tx_id = chain.transaction(row["network"], str(data["txId"]))
+            if tx_id is None:
+                return self.fail(400, f"That is not a {store.NETWORKS.get(row['network'], (row['network'],))[0]} transaction id ({chain.transaction_words(row['network'])}).")
+        try:
+            dollars = store.confirm_payment(db, reference, user["id"], tx_id)
+        except store.PaymentConflict as used:
+            return self.fail(409, f"That transaction already confirmed payment {used}. One transfer pays for one request.")
+        except sqlite3.IntegrityError:
+            return self.fail(409, "That transaction already confirmed another payment. One transfer pays for one request.")
         if dollars is None:
             return self.fail(409, "This payment is already confirmed or does not exist.")
-        return self.send(200, {"confirmed": True, "dollars": dollars})
+        return self.send(200, {"confirmed": True, "dollars": dollars, "txId": tx_id})
+
+    def reject_payment(self):
+        user, _ = viewer(self)
+        if user is None or not user["is_admin"]:
+            return self.fail(403, "Only the admin can reject a payment.")
+        reference = str(body(self).get("reference", "")).strip()
+        if not store.close_payment(db, reference, "rejected", admin_id=user["id"]):
+            return self.fail(409, "This payment is not waiting any more.")
+        return self.send(200, {"rejected": True})
+
+    def cancel_payment(self):
+        user, _ = viewer(self)
+        if user is None:
+            return self.fail(401, "Sign in first.")
+        reference = str(body(self).get("reference", "")).strip()
+        if not store.close_payment(db, reference, "cancelled", user_id=user["id"]):
+            return self.fail(409, "This payment is not waiting any more.")
+        return self.send(200, {"cancelled": True})
 
     def save_price(self):
         user, _ = viewer(self)
@@ -547,6 +647,15 @@ class Handler(BaseHTTPRequestHandler):
             "spent": round(spent["total"] / 1_000_000, 6),
             "waiting": [{**dict(row), "label": store.NETWORKS.get(row["network"], (row["network"],))[0]} for row in waiting],
             "providers": json.loads(store.setting(db, "provider_status") or "{}"),
+            "fixes": {sandbox: {name: fix_for(sandbox, status) for name, status in statuses.items()}
+                      for sandbox, statuses in json.loads(store.setting(db, "provider_status") or "{}").items()
+                      if isinstance(statuses, dict)},
+            "instance": instance_name(),
+            # Models not listed because another source already sells one under the same name.
+            "nameTaken": [{**item, "sandbox": sandbox}
+                          for sandbox in ("paid", "local", "free", "attached")
+                          for item in json.loads(store.setting(db, "name_taken_" + sandbox) or "[]")
+                          if isinstance(item, dict)],
         })
 
     # ---- the API itself --------------------------------------------------
@@ -581,6 +690,10 @@ class Handler(BaseHTTPRequestHandler):
         input_bound = len(json.dumps(messages, ensure_ascii=False).encode()) + 4096
         if input_bound > 65536:
             return self.fail(413, "Messages are too large.")
+        free_only = row["sandbox"] == "free" and (row["price_source"] == "free" or store.row_cost(row) == (0.0, 0.0))
+        if free_only and time.time() - int(store.setting(db, "catalogue_updated") or 0) > STALE_SECONDS:
+            # Whether a model is still free is only known from a recent catalogue; never guess.
+            return self.fail(503, "The free model list is out of date, so this model can't be sold right now. It refreshes by itself; try again in a minute.")
         reservation = store.reserve(db, key, row, input_bound, limit)
         if reservation is None:
             return self.fail(402, "Insufficient credits for this request's maximum cost. Lower the token limit or add credits.")
@@ -588,8 +701,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"messages": messages, "max_tokens": limit}
             if row["sandbox"] in ("paid", "free"):
                 # A gateway's free tier is sold at a price, but must never fall through to its paid tier.
-                payload["_yougori_free_only"] = row["sandbox"] == "free" and (
-                    row["price_source"] == "free" or store.row_cost(row) == (0.0, 0.0))
+                payload["_yougori_free_only"] = free_only
             answer = ask_sandbox(row["sandbox"], row["upstream"] or model,
                                  payload)
             usage = answer.get("usage", {})
@@ -610,6 +722,16 @@ class Handler(BaseHTTPRequestHandler):
             store.settle(db, reservation)
             if isinstance(error, Failure) and error.code == "quota_exhausted":
                 store.note_exhausted(db, key["id"], str(error))
+            if isinstance(error, Failure) and error.code in ("no_longer_free", "model_unavailable"):
+                # The bridge checked the live catalogue: off sale until discovery finds it again.
+                store.mark_unavailable(db, row["sandbox"], model=row["name"])
+            if isinstance(error, Failure) and error.code == "provider_auth":
+                # The provider no longer accepts the sign-in or key: take its models off sale and
+                # say so on the admin page, until the next discovery finds it working.
+                store.mark_unavailable(db, row["sandbox"], provider=row["provider"])
+                statuses = json.loads(store.setting(db, "provider_status") or "{}")
+                statuses.setdefault(row["sandbox"], {})[row["provider"]] = "Provider authorization failed. The admin must sign in again or replace its API key."
+                store.setting(db, "provider_status", json.dumps(statuses))
             if isinstance(error, Failure):
                 raise
             raise Failure(502, "Provider returned an invalid completion.") from None
@@ -632,7 +754,10 @@ def endpoint(sandbox):
     name = os.environ.get({"local": "LOCAL_SANDBOX", "paid": "PAID_SANDBOX", "free": "FREE_SANDBOX"}[sandbox], "")
     if not name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
         raise Failure(503, "Sandbox address is not configured.")
-    return f"http://{name}:" + ("11434" if sandbox == "local" else "8080")
+    port = os.environ.get(sandbox.upper() + "_PORT", "11434" if sandbox == "local" else "8080")
+    if not port.isascii() or not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise Failure(503, "Model service port is not configured correctly.")
+    return f"http://{name}:{port}"
 
 
 def discover(sandbox, name):
@@ -643,8 +768,8 @@ def discover(sandbox, name):
             return attached.discover(db)
         finally:
             store.close()
-    if sandbox == "local" and "SELECTED_PROVIDERS" in os.environ and "ollama" not in os.environ["SELECTED_PROVIDERS"].split(","):
-        return {"data": [], "status": {"ollama": "Not selected during setup."}}
+    if not sandbox_selected(sandbox):
+        return {"data": [], "status": {sandbox: "Not selected during setup."}}
     base = endpoint(sandbox)
     if sandbox == "local":
         result = http_json(base + "/api/tags", timeout=12)
@@ -702,7 +827,7 @@ if __name__ == "__main__":
     except ValueError as error:
         # The site stays up and its pages say the admin setup is not finished; exiting would
         # only restart it forever.
-        print(f"The admin account was not created: {error} Run yougori template update with Create admin account.", flush=True)
+        print(f"The admin account was not created: {error} Choose Create admin account with yougori template configure {instance_name()}.", flush=True)
     exit_on_stop()
     server = Server(("0.0.0.0", PORT), Handler)
     worker = CatalogueWorker().start()

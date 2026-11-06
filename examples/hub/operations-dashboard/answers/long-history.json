@@ -1,0 +1,5 @@
+{
+  "keep_readings": 180,
+  "viewer_port": 9120,
+  "viewer_memory_gb": 1
+}

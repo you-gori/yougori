@@ -1,0 +1,358 @@
+{
+  "aliases": [
+    "app backend",
+    "app with database",
+    "postgres app",
+    "web app with database",
+    "backend"
+  ],
+  "capabilities": [
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.health",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.databases",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.private_connections",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [
+    {
+      "from": "app",
+      "resource": "app_to_cache",
+      "to": "cache"
+    },
+    {
+      "from": "app",
+      "resource": "app_to_db",
+      "to": "db"
+    }
+  ],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 1,
+      "gpu": false,
+      "image": "{{inputs.image}}",
+      "internet": true,
+      "memoryGb": 1,
+      "name": "app",
+      "pcAccess": [],
+      "ports": [
+        8080
+      ],
+      "secretSources": [
+        "DATABASE_PASSWORD from the question db_password"
+      ],
+      "secrets": [
+        "DATABASE_PASSWORD"
+      ],
+      "storageGb": 10,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    },
+    {
+      "cpu": 0.5,
+      "gpu": false,
+      "image": "docker.io/library/redis:7.4.1-alpine",
+      "internet": true,
+      "memoryGb": 0.5,
+      "name": "cache",
+      "pcAccess": [],
+      "ports": [
+        6379
+      ],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 2,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    },
+    {
+      "cpu": 1,
+      "gpu": false,
+      "image": "docker.io/library/postgres:16.4-alpine",
+      "internet": true,
+      "memoryGb": 1,
+      "name": "db",
+      "pcAccess": [],
+      "ports": [
+        5432
+      ],
+      "secretSources": [
+        "POSTGRES_PASSWORD from the question db_password"
+      ],
+      "secrets": [
+        "POSTGRES_PASSWORD"
+      ],
+      "storageGb": null,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "website_api",
+      "id": "image",
+      "question": "Which container image runs your app?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "health_path",
+      "question": "Which path answers 200 when the app is healthy?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "app_cpu",
+      "question": "Processor cores for the app",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "app_memory_gb",
+      "question": "Memory for the app, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "db_password",
+      "question": "Choose the database password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "files_data",
+      "id": "db_storage_gb",
+      "question": "Disk for the database, in whole GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "cache",
+      "question": "Add a Redis cache?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "editable": false,
+      "group": "files_data",
+      "id": "cache_host",
+      "question": "Host name your app uses for Redis",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "Who can reach the app?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "app",
+      "input": "access",
+      "port": 8080,
+      "resource": "web"
+    }
+  ],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "app",
+      "kind": "environment",
+      "summary": {
+        "cpu": "{{inputs.app_cpu}}",
+        "image": "{{inputs.image}}",
+        "memory": "{{inputs.app_memory_gb}}",
+        "ports": "8080",
+        "restart": "always",
+        "secrets": "DATABASE_PASSWORD",
+        "storage": 10,
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "app",
+        "cache"
+      ],
+      "id": "app_to_cache",
+      "kind": "connection",
+      "summary": {
+        "direction": "one_way",
+        "from": "resource:app",
+        "ports": "6379",
+        "to": "resource:cache"
+      },
+      "when": [
+        "cache is one of [\"yes\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "app",
+        "db"
+      ],
+      "id": "app_to_db",
+      "kind": "connection",
+      "summary": {
+        "direction": "one_way",
+        "from": "resource:app",
+        "ports": "5432",
+        "to": "resource:db"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "cache",
+      "kind": "environment",
+      "summary": {
+        "command": "redis-server, --appendonly, yes, --dir, /data",
+        "cpu": 0.5,
+        "image": "docker.io/library/redis:7.4.1-alpine",
+        "memory": 0.5,
+        "ports": "6379",
+        "restart": "always",
+        "storage": 2,
+        "type": "container"
+      },
+      "when": [
+        "cache is one of [\"yes\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "db",
+      "kind": "environment",
+      "summary": {
+        "cpu": 1,
+        "image": "docker.io/library/postgres:16.4-alpine",
+        "memory": 1,
+        "ports": "5432",
+        "restart": "always",
+        "secrets": "POSTGRES_PASSWORD",
+        "storage": "{{inputs.db_storage_gb}}",
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "app"
+      ],
+      "id": "web",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.access}}",
+        "domain": "{{inputs.domain}}",
+        "port": 8080,
+        "target": "resource:app"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Read the app's logs",
+    "Open a database shell"
+  ],
+  "subtitle": "Your app with a PostgreSQL database and an optional Redis cache, privately connected.",
+  "tools": [],
+  "totals": {
+    "cpu": 2.5,
+    "environments": 3,
+    "gpu": "none",
+    "memoryGb": 2.5,
+    "storageGb": 12
+  },
+  "warnings": [
+    "Makes app:8080 reachable from the internet."
+  ]
+}

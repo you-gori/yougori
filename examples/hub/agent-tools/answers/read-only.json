@@ -1,0 +1,11 @@
+{
+  "image": "ubuntu:24.04",
+  "tools": ["claude"],
+  "claude_signin_source": "new",
+  "project_writable": false,
+  "reference_path": "/reference",
+  "internet": true,
+  "cpu": 4,
+  "memory_gb": 8,
+  "storage_gb": 40
+}

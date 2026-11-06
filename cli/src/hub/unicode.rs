@@ -19,6 +19,12 @@ pub fn hidden(c: char) -> bool {
     matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
+/// What a name or a path may not hold because nobody can see it: the [`hidden`] characters, the
+/// soft hyphen, the Mongolian vowel separator and the tag characters. The website's `INVISIBLE`.
+pub fn invisible(c: char) -> bool {
+    hidden(c) || matches!(c, '\u{00AD}' | '\u{180E}' | '\u{E0000}'..='\u{E007F}')
+}
+
 /// Control characters other than tab and line breaks: the website's `CONTROL`.
 pub fn control(c: char) -> bool {
     matches!(c, '\0'..='\u{8}' | '\u{B}' | '\u{C}' | '\u{E}'..='\u{1F}' | '\u{7F}')

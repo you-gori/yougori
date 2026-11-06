@@ -10,6 +10,14 @@ class Failure(Exception):
         self.status, self.code = status, code
 
 
+# Refusals the bridge makes itself, in this site's own words. Only these codes pass through, each
+# with a fixed message: a provider's own text is never forwarded, so it can't leak an account detail.
+BRIDGE_REFUSALS = {
+    "no_longer_free": (409, "This model is no longer free, so it was taken off sale. The admin can set a selling price once the catalogue refreshes."),
+    "model_unavailable": (404, "That model is not available from its provider right now. It comes back by itself when the provider lists it again."),
+}
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
@@ -30,6 +38,13 @@ def request(url, payload=None, headers=None, timeout=30):
     except urllib.error.HTTPError as error:
         # Provider responses can contain credentials or account details. Return only classified errors.
         raw = error.read(8192).decode("utf-8", "replace").lower()
+        try:
+            code = json.loads(raw).get("error", {}).get("code")
+        except (ValueError, AttributeError):
+            code = None
+        if code in BRIDGE_REFUSALS:
+            status, message = BRIDGE_REFUSALS[code]
+            raise Failure(status, message, code) from None
         if error.code == 402 or error.code == 429 and any(word in raw for word in ("insufficient_quota", "quota_exceeded", "quota_exhausted", "insufficient balance")):
             raise Failure(429, "Provider quota or balance is exhausted.", "quota_exhausted") from None
         if error.code == 429:

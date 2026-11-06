@@ -1,17 +1,17 @@
 [
   {
     "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
-    "sha256": "a44c81ef5cf8be8d35684e0f4b21c4da1e99e6b0a5facf1c2cd404c89ac0dec6",
-    "bytes": 188824576
+    "sha256": "4f92209019584208c8814ca2593cec797f80580fcbc22da19588c0359cd36921",
+    "bytes": 179638272
   },
   {
     "path": "src-tauri/resources/runtime/appliance/initramfs-virt",
-    "sha256": "f27228f9a4c335c0c5950bd72fffdc8127b3c5a47018504306e4864987ea3ef5",
-    "bytes": 94084304
+    "sha256": "dc81a21dd478a7f4bbae46b39380852ee3414fce99eba98dcbaa929213a9aadb",
+    "bytes": 94163452
   },
   {
     "path": "src-tauri/resources/runtime/appliance/SHA256SUMS",
-    "sha256": "c3fb236d1ed258eb7d0b4be74a45c6c644ff8fbd6f989e224df7c4dccf1aa661",
+    "sha256": "2e091d751da2da559262771a122232f9608e52cdfac6f0fe9eb658336d8fa16a",
     "bytes": 247
   },
   {
@@ -36,8 +36,8 @@
   },
   {
     "path": "src-tauri/resources/runtime/appliance/vmlinuz-virt",
-    "sha256": "fcee60bd42bdcc5f165278e092de0bb00d969843be326f7bd9a9602c2f52de9e",
-    "bytes": 12637184
+    "sha256": "17fbd3efd16f2e7cb1b945f06423b37399ba7d5ac8cdd3665e7f13f363500e85",
+    "bytes": 12641280
   },
   {
     "path": "src-tauri/resources/runtime/cloud/yougori-share-linux-amd64",
@@ -51,13 +51,13 @@
   },
   {
     "path": "src-tauri/resources/runtime/cuda/SHA256SUMS",
-    "sha256": "9751107a6f29a0206541a3ea6f6b3df3426790db84e12b4025c491b9bacfabe4",
+    "sha256": "d1f262a41dbc2842492bffdd76ef6fc8404c967079ff01228135cf9c4d801cb7",
     "bytes": 684
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-agent",
-    "sha256": "970349cf0716d3ff2f7a067bc8eacdc8e49c1c3916d0a136e043946e7a7c886d",
-    "bytes": 15585404
+    "sha256": "af730e625a402620098cede3b83085d0c5f93980866847bea22e16fe02097fa9",
+    "bytes": 15605884
   },
   {
     "path": "src-tauri/resources/runtime/cuda/yougori-cuda-probe",
@@ -1450,8 +1450,38 @@
     "bytes": 127291
   },
   {
+    "path": "src-tauri/resources/runtime/sandbox-guest/artifacts.json",
+    "sha256": "27ad346d395d46014bfe0c6a7d38e39eb5792064502fe874dd014320b59d33b3",
+    "bytes": 8516
+  },
+  {
+    "path": "src-tauri/resources/runtime/sandbox-guest/config-6.18.58-0-virt",
+    "sha256": "aea855e9e485bd68db9dd9a01a787f67d9a0cd10c30b3be835e916b1d25968d8",
+    "bytes": 152061
+  },
+  {
+    "path": "src-tauri/resources/runtime/sandbox-guest/initrd",
+    "sha256": "ad16632f4c54e1e22842bfb670aba903300800be62d591fe37ad72e64e463d81",
+    "bytes": 4226963
+  },
+  {
+    "path": "src-tauri/resources/runtime/sandbox-guest/qemu-windows-x86_64.golden.json",
+    "sha256": "f5ff8b2acf53ca209ed04393a8abd13ffa6095816e473c9e9ffbd31c15aed41f",
+    "bytes": 1722
+  },
+  {
+    "path": "src-tauri/resources/runtime/sandbox-guest/root.img",
+    "sha256": "18c1fa8548e7e88c3700be3008d58a6d6108a8396c0fd0102059849a0776259c",
+    "bytes": 3207168
+  },
+  {
+    "path": "src-tauri/resources/runtime/sandbox-guest/SHA256SUMS",
+    "sha256": "3827c631bab17b1242bc744d7d575db80a6bdd793cd8b345e3d1d28df5b1728f",
+    "bytes": 420
+  },
+  {
     "path": "src-tauri/resources/runtime/SHA256SUMS",
-    "sha256": "ad23107ed5fe46a4fff56bea2806801cea669e4ceb15634b1655ca145f4fefd0",
-    "bytes": 28687
+    "sha256": "0cad5fa02c3edc5d46cec3844e672c36c38d57bea53033985bd7d059154517e2",
+    "bytes": 29559
   }
 ]

@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { ReactNode } from "react"
 import type { GraphEnvironment } from "./graph-capabilities"
 import { EnvironmentList, EnvironmentListRow } from "./environment-list"
 
-const { platform } = vi.hoisted(() => ({ platform: { state: { host: { gpuUsagePercent: 42 as number | null } }, environmentActions: {}, setEnvironmentStatus: vi.fn() } }))
+const { platform } = vi.hoisted(() => ({ platform: { state: { host: { gpuUsagePercent: 42 as number | null } }, environmentActions: {} as Record<string, string>, setEnvironmentStatus: vi.fn(), deleteEnvironment: vi.fn() } }))
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => platform }))
 vi.mock("@/components/environment-node-menu", () => ({ EnvironmentNodeMenu: ({ children }: { children: ReactNode }) => children }))
 beforeEach(() => { localStorage.clear(); platform.state.host.gpuUsagePercent = 42 })
@@ -55,4 +55,57 @@ it("renames private connections and keeps saved sorting and connection actions",
   expect(view.connect).toHaveBeenLastCalledWith("gpu")
   fireEvent.click(view.row("gpu").getByRole("button", { name: "Show details for gpu" }))
   expect(screen.getByRole("region", { name: "Connections of gpu" })).toBeInTheDocument()
+})
+
+it("deletes the selected environments one at a time after confirming, leaving busy ones alone", async () => {
+  platform.environmentActions = { busy: "stopping" }
+  const order: string[] = []
+  platform.deleteEnvironment.mockImplementation(async (id: string) => { order.push(id) })
+  show([environment("one"), environment("two", { status: "stopped" }), environment("busy"), environment("making", { status: "provisioning" })])
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all shown environments" }))
+  const bar = within(screen.getByRole("group", { name: "Selected environments" }))
+  expect(bar.getByText("4 selected")).toBeInTheDocument()
+  fireEvent.click(bar.getByRole("button", { name: "Delete 2" }))
+  const dialog = within(await screen.findByRole("alertdialog"))
+  expect(dialog.getByText("Delete 2 environments?")).toBeInTheDocument()
+  expect(dialog.getByText(/2 selected are busy and stay/)).toBeInTheDocument()
+  expect(platform.deleteEnvironment).not.toHaveBeenCalled()
+  fireEvent.click(dialog.getByRole("button", { name: "Delete 2 nodes" }))
+  await waitFor(() => expect(order).toEqual(["one", "two"]))
+  await waitFor(() => expect(screen.getByText("2 selected")).toBeInTheDocument())
+  platform.environmentActions = {}
+})
+
+
+it("configures a mixed selection without passing VM IDs to old lifecycle or delete commands", async () => {
+  const selected = vi.fn()
+  const envs = [environment("regular"), environment("vm-one", { kind: "fullVm", runtime: "sandbox-vm://vm-one" })]
+  render(<EnvironmentList items={envs.map(environment => ({ id: environment.id, data: { environment } }))} connections={[]} colors={{}} onConnect={vi.fn()} onConfigureSelection={selected}>
+    {item => <EnvironmentListRow key={item.id} environment={item.data.environment} managedExternally={item.id === "vm-one"} metricsAvailable={item.id !== "vm-one"} accent="#888" canLink={false} busy={false} fileStatus={null} dropHint="" status={null} access={null} services={null} actions={null} onConfigure={vi.fn()} onDoubleClick={vi.fn()} />}
+  </EnvironmentList>)
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all shown environments" }))
+  const bar = within(screen.getByRole("group", { name: "Selected environments" }))
+  expect(bar.getByText("2 selected")).toBeInTheDocument()
+  fireEvent.click(bar.getByRole("button", { name: "Configure" }))
+  expect(selected).toHaveBeenCalledWith(["regular", "vm-one"])
+  fireEvent.click(bar.getByRole("button", { name: "Stop 1" }))
+  await waitFor(() => expect(platform.setEnvironmentStatus).toHaveBeenCalledExactlyOnceWith("regular", "stopped"))
+  expect(bar.getByRole("button", { name: "Delete 1" })).toBeInTheDocument()
+  expect(within(document.querySelector('[data-environment-id="vm-one"]') as HTMLElement).queryByRole("meter")).toBeNull()
+})
+
+it("opens the picker for selected VMs and mixed selections instead of silently disabling it", () => {
+  const create = vi.fn()
+  const envs = [environment("vm-a", { runtime: "sandbox-vm://vm-a" }), environment("vm-b", { runtime: "sandbox-vm://vm-b" }), environment("model")]
+  render(<EnvironmentList items={envs.map(environment => ({ id: environment.id, data: { environment } }))} connections={[]} colors={{}} onConnect={vi.fn()} onCreateTemplate={create}>
+    {item => <EnvironmentListRow environment={item.data.environment} accent="#888" canLink={false} busy={false} fileStatus={null} dropHint="" status={null} access={null} services={null} actions={null} onConfigure={vi.fn()} onDoubleClick={vi.fn()} />}
+  </EnvironmentList>)
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select vm-a" }))
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select vm-b" }))
+  fireEvent.click(screen.getByRole("button", { name: "Create template" }))
+  expect(create).toHaveBeenCalledExactlyOnceWith(["vm-a", "vm-b"])
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select model" }))
+  expect(screen.getByRole("button", { name: "Create template" })).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Create template" }))
+  expect(create).toHaveBeenLastCalledWith(["model", "vm-a", "vm-b"])
 })

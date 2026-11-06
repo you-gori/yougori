@@ -1,0 +1,32 @@
+format_version: 2
+kind: template
+name: accept-tiny
+title: Acceptance fixture
+summary: A disposable one-sandbox fixture for runtime acceptance. It serves nothing and keeps a small volume.
+version: 1.0.0
+license: MIT
+topics: [test]
+changelog: Acceptance fixture.
+requires:
+  yougori: 1.2.0
+  gpu: none
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: data.volumes, selection: required}
+  - {id: run.service, selection: required}
+  - {id: run.backups, selection: required}
+  - {id: run.schedule, selection: required}
+inputs:
+  - id: greeting
+    question: What should the sandbox print?
+    type: text
+    default: hello
+    group: website_api
+  - id: token
+    question: A token the sandbox reads as TOKEN
+    type: secret
+    required: true
+    group: ai_models
+retention:
+  on_stop: keep
+  on_remove: ask

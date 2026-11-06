@@ -1,0 +1,74 @@
+format_version: 2
+project: access-grid
+
+# Every resource here is served by Yougori's trusted credential broker. The template only
+# describes what to create; it never reads your computer's other credentials and runs no
+# commands of its own.
+
+resources:
+  # Create: the Access Grid this computer runs.
+  company:
+    kind: grid
+    when: {mode: create}
+    spec:
+      profile: access_grid
+      mode: create
+      coordinator: this_computer
+      name: "{{inputs.grid_name}}"
+      address: "{{inputs.coordinator_address}}"
+      access: "{{inputs.reach}}"
+      domain: "{{inputs.domain}}"
+
+  # Create: you, the owner and first admin, signed in on this computer.
+  owner:
+    kind: access_binding
+    when: {mode: create}
+    spec:
+      grid: {resource: company}
+      people: team
+      roles: [owner, admin]
+      admin:
+        username: "{{inputs.admin_username}}"
+        display_name: "{{inputs.admin_name}}"
+      mfa: "{{inputs.require_two_step}}"
+      secrets:
+        admin_password: "{{secrets.admin_password}}"
+
+  # Create: the broker, with the first credential and its rule when you added one. A value is
+  # sealed by the broker as it arrives and is never stored in the setup.
+  broker:
+    kind: credential_broker
+    when: {mode: create}
+    capability: people.scoped_credentials
+    spec:
+      grid: {resource: company}
+      agents: [mcp, cli]
+      credentials:
+        - when: {first_credential: "yes"}
+          name: "{{inputs.credential_name}}"
+          kind: "{{inputs.credential_kind}}"
+          field: "{{inputs.credential_field}}"
+          destinations: ["{{inputs.credential_destination}}"]
+          methods: "{{inputs.rule_methods}}"
+          paths: ["{{inputs.rule_path}}"]
+          approval: "{{inputs.rule_decision}}"
+          per_hour: "{{inputs.rule_hourly_limit}}"
+          expires_hours: "{{inputs.rule_hours}}"
+          value: credential_value
+      secrets:
+        credential_value: "{{secrets.credential_value}}"
+
+  # Person: this computer's sign-in to someone else's Access Grid.
+  person_session:
+    kind: grid
+    when: {mode: person}
+    spec:
+      profile: access_grid
+      mode: join
+      coordinator: remote
+      member: person
+      sign_in: password
+      username: "{{inputs.person_username}}"
+      secrets:
+        invitation: "{{secrets.person_invite}}"
+        password: "{{secrets.person_password}}"

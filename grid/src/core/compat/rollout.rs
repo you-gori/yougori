@@ -6,9 +6,9 @@
 //! are quoted here because they are the whole argument:
 //!
 //! - **no bridge ever writes a hub's record.** `rehearse`, `import`, `roll_back` and `compare`
-//!   all take `&hub::Record`, and the comparisons run the hub's own placement on a copy. So after
-//!   a cutover the grid on the hub is still byte for byte the grid it was, and going back is a
-//!   setting rather than a restore;
+//!   all take `&hub::Record`, and the comparisons run the hub's own placement on a copy. So once
+//!   a realm serves a profile the grid on the hub is still byte for byte the grid it was, and
+//!   going back would be a matter of which one the product reads rather than a restore;
 //! - **an import records exactly what it created**, including the case where it reused something
 //!   another bridge had already brought in, so taking it out takes out what it put in and nothing
 //!   else.
@@ -18,7 +18,12 @@
 //! or `compat::undo_for`: the only thing that runs them is the rehearsal, on copies. So recording
 //! the import stage says where an administrator stands and moves nothing, and the undo quoted
 //! above is a property of code nobody can yet run rather than a verb anybody can type.
-//! `Stage::changed` and `Stage::undone_by` say so in the sentences the engine prints.
+//!
+//! The cutover is the same. No product reads the rollout's file, so recording the cutover says
+//! where an administrator stands and changes nothing a product reads: every product keeps serving
+//! from its own hub until a realm actually serves it, which `served_by_realm` says no profile does
+//! in this build. `Stage::changed` and `Stage::undone_by` say all of this in the sentences the
+//! engine prints.
 //!
 //! Two of the four carry something an undo cannot reach, and both say so where they are written.
 //! An Access Grid import that carried a decision out of the hub's own log refuses to roll back,
@@ -64,10 +69,12 @@ pub enum Stage {
     Import,
     /// Both paths answer the same questions and every difference is written down.
     Observation,
-    /// The product reads the realm instead of the hub. This is the only stage that changes what
-    /// the shipped product does.
+    /// The stage at which a product is meant to read its realm instead of its hub. Recording it
+    /// changes nothing a product reads: every product keeps serving from its own hub until a
+    /// realm actually serves it (`served_by_realm`), and no build does that yet.
     Cutover,
-    /// The legacy record is moved aside, with its retention running.
+    /// The legacy record is moved aside, with its retention running. Refused while the product is
+    /// still served from that record.
     Retire,
 }
 
@@ -106,7 +113,7 @@ impl Stage {
             Stage::Rehearsal => "a scratch folder, which is deleted when it passes",
             Stage::Import => "nothing yet: no command in this build performs an import, so this stage records where the administrator stands and moves nothing",
             Stage::Observation => "lines in an append-only ledger",
-            Stage::Cutover => "which of the two the product reads",
+            Stage::Cutover => "nothing a product reads: every product keeps serving from its own hub until a realm actually serves it, which no build does yet, so this stage records where the administrator stands",
             Stage::Retire => "where the legacy record sits",
         }
     }
@@ -120,7 +127,7 @@ impl Stage {
             Stage::Rehearsal => "delete the scratch folder; it is kept only when something failed, so that the failure can be read",
             Stage::Import => "take the import back out with the bridge's own roll back, then delete the realm's database and its key from this computer's vault. No command in this build does either half: the four imports and their roll backs are library functions the rehearsal runs against copies, and nothing a person can type calls one",
             Stage::Observation => "stop the comparator; if the pilot is ending, undo the import as well",
-            Stage::Cutover => "point the product back at its hub, which is still exactly the grid it was because no bridge has ever written to it",
+            Stage::Cutover => "nothing beyond going back a stage; the product never stopped serving from its hub, which is still exactly the grid it was because no bridge has ever written to it",
             Stage::Retire => "put the record back where it was, which is what unretire does",
         }
     }
@@ -132,7 +139,8 @@ impl Stage {
             Stage::Backup => "until the backup's own retention runs out",
             Stage::Rehearsal => "not applicable: a rehearsal changed nothing to undo",
             Stage::Import | Stage::Observation => "until the cutover",
-            Stage::Cutover | Stage::Retire => "for the retention period, which is ninety days unless the administrator asked for longer",
+            Stage::Cutover => "for as long as the hub's record is where the product reads it, which in this build is always: the record is moved aside only at the retire stage, once a realm serves the product",
+            Stage::Retire => "for the retention period, which is ninety days unless the administrator asked for longer",
         }
     }
 }
@@ -178,21 +186,46 @@ impl Rollout {
     }
 
     pub fn read(path: &Path) -> Result<Rollout, String> {
+        // What to do about a damaged record is said with it. The engine never writes over a
+        // rollout it cannot read, so the file stays until somebody puts a good copy back or moves
+        // it aside.
+        const REPAIR: &str = "put back a copy you trust, or move the file aside to start the rollout again from the freeze";
         let bytes = std::fs::read(path).map_err(|error| format!("Cannot read how far the rollout has come: {error}"))?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "The rollout's own record is damaged".to_owned())?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| format!("The rollout's own record is damaged; {REPAIR}"))?;
         let found = value["rollout"].as_u64().unwrap_or(0);
         if found > u64::from(VERSION) {
             return Err(format!("This rollout was recorded by a newer Yougori (version {found}); update Yougori to read it"));
         }
-        serde_json::from_value(value).map_err(|error| format!("The rollout's own record is damaged: {error}"))
+        serde_json::from_value(value).map_err(|error| format!("The rollout's own record is damaged ({error}); {REPAIR}"))
     }
 
+    /// Writes the rollout down whole, or leaves the one that was there as it was.
+    ///
+    /// The new state goes into a temporary file in the same folder and is put on the disk, and
+    /// only then takes the rollout's name in one rename, which replaces the old file on Windows
+    /// too. So a crash or a full disk part way through never leaves half a rollout behind, which
+    /// is what matters now that a rollout that cannot be read is refused rather than started
+    /// afresh. A write that fails takes its temporary file away with it.
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(folder) = path.parent() {
-            std::fs::create_dir_all(folder).map_err(|error| format!("Cannot open the folder for the rollout: {error}"))?;
-        }
+        let folder = match path.parent() {
+            Some(folder) if !folder.as_os_str().is_empty() => folder,
+            _ => Path::new("."),
+        };
+        std::fs::create_dir_all(folder).map_err(|error| format!("Cannot open the folder for the rollout: {error}"))?;
         let bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
-        std::fs::write(path, bytes).map_err(|error| format!("Cannot write how far the rollout has come: {error}"))
+        let unwritten = |error: std::io::Error| format!("Cannot write how far the rollout has come: {error}");
+        let mut file = tempfile::NamedTempFile::new_in(folder).map_err(unwritten)?;
+        std::io::Write::write_all(&mut file, &bytes).and_then(|()| file.as_file().sync_all()).map_err(unwritten)?;
+        file.persist(path).map_err(|refused| unwritten(refused.error))?;
+        // On Linux and macOS the rename lives in the folder, so the folder goes to the disk too.
+        // Windows has no such call for a folder; the rename there is already all or nothing.
+        #[cfg(unix)]
+        {
+            if let Ok(folder) = std::fs::File::open(folder) {
+                let _ = folder.sync_all();
+            }
+        }
+        Ok(())
     }
 
     pub fn state(&self, profile: Profile) -> Option<&ProfileState> {
@@ -219,7 +252,20 @@ impl Rollout {
     ///   products move in, the rule above already gives this: a later profile cannot reach the
     ///   import until the one before it has reached the cutover. It is checked in its own right
     ///   so that changing the order cannot quietly take it away.
+    ///
+    /// And the retire stage is refused while the product is still served from its record, which
+    /// `served_by_realm` says is every product in this build. Recording it would say the record
+    /// had been moved aside when nothing moved it, and `retire`, the one thing that moves it,
+    /// refuses for the same reason. It is asked before the retention, so nobody is told to wait
+    /// out a date that would not change the answer.
     pub fn advance(&mut self, profile: Profile, now: i64) -> Result<Stage, String> {
+        self.advance_when(profile, served_by_realm(profile), now)
+    }
+
+    /// `advance`, told whether a realm serves the profile instead of asking. The tests come in
+    /// here to cover the retention a retire waits for, before any build serves a profile from a
+    /// realm.
+    pub(super) fn advance_when(&mut self, profile: Profile, served_by_a_realm: bool, now: i64) -> Result<Stage, String> {
         let at = self.state(profile).ok_or("That is not a profile of this rollout")?.stage;
         let next = Stage::all().get(at.number() + 1).copied().ok_or("This profile has finished its rollout")?;
         if next >= Stage::Import && !has_a_bridge(profile) {
@@ -236,6 +282,9 @@ impl Rollout {
             }
         }
         if next == Stage::Retire {
+            if !served_by_a_realm {
+                return Err(still_served(profile.product()));
+            }
             let kept = self.state(profile).and_then(|state| state.kept_until);
             if let Some(until) = kept.filter(|until| now < *until) {
                 return Err(format!("This grid's old record is kept until {until}; it cannot be retired before then"));
@@ -314,6 +363,29 @@ pub fn why_no_bridge(profile: Profile) -> &'static str {
     }
 }
 
+/// Whether the shipped product reads this profile from a realm instead of from its hub's record.
+///
+/// No product does in this build. A cutover is a line in the rollout's own file, and nothing a
+/// product runs reads that file: every grid is started from its hub's record and served by its
+/// own hub, which is what the engine's grid list says as well (`served_by: "product"`). So a
+/// recorded cutover says where the administrator stands; the record it names is still the one
+/// the product reads and writes. Each profile changes here in the build that moves its serving
+/// onto the core, and not before. The match names every profile so that a new one has to be
+/// decided rather than inherit an answer.
+pub fn served_by_realm(profile: Profile) -> bool {
+    match profile {
+        Profile::Models | Profile::Workspaces | Profile::Research | Profile::Credentials => false,
+    }
+}
+
+/// What the stage machine and the move both say when a product is still served from its record.
+fn still_served(product: Product) -> String {
+    format!(
+        "{} is still served from this record, so it stays where it is and nothing was moved. In this build every product is served by its own hub; a cutover in the rollout's file records where the move stands and does not change what the product reads.",
+        product.name()
+    )
+}
+
 // -------------------------------------------------------------------------------------------
 // Retiring the legacy record, and putting it back
 // -------------------------------------------------------------------------------------------
@@ -333,18 +405,33 @@ pub struct Retired {
     pub notes: Vec<String>,
 }
 
-/// Moves a product's record out of the product's own folder and into a stamped one.
+/// Moves a product's record out of the product's own folder and into a stamped one, once the
+/// product no longer reads it there.
+///
+/// While the product still reads the record this refuses and touches nothing, and in this build
+/// that is always: `served_by_realm` is false for every profile. A cutover is only a line in the
+/// rollout's own file, so ninety days after one the record is exactly as live as the day before,
+/// and moving it aside would leave the product nothing to start from. The engine's retire verb
+/// asks `Rollout::advance` first, which refuses the retire stage for the same reason; this
+/// refuses on its own as well, so nothing that calls it without asking can move a live record.
+pub fn retire(from: &Path, product: Product, into: &Path, keep_for_days: u32, now: i64) -> Result<Retired, String> {
+    let served_by_a_realm = Profile::all().iter().any(|profile| profile.product() == product && served_by_realm(*profile));
+    move_aside(from, product, served_by_a_realm, into, keep_for_days, now)
+}
+
+/// The move itself, told whether a realm serves the product instead of asking.
 ///
 /// Nothing is deleted here. The record is copied, the copy is read back with the product's own
 /// loader, and only then is the original removed; a loader that refuses the copy leaves both
-/// files where they are and says so.
+/// files where they are and says so. A product its record still serves is refused before any of
+/// that, so nothing is copied and no manifest is written.
 ///
-/// It is handed two paths and cannot tell whether the product has stopped writing the first of
-/// them, so it trusts its caller to have asked the stage machine first. `Rollout::advance` is
-/// where that question is answered, and the engine's retire verb asks it before calling this:
-/// a product with no bridge, a profile whose turn it is not, and a profile whose old record is
-/// still inside its retention are all refused there, in `advance`'s own words.
-pub fn retire(from: &Path, product: Product, into: &Path, keep_for_days: u32, now: i64) -> Result<Retired, String> {
+/// `retire` is the only caller outside the tests. The tests come in here to cover the case a
+/// retire exists for, a product that reads a realm, before any build has one.
+pub(super) fn move_aside(from: &Path, product: Product, served_by_a_realm: bool, into: &Path, keep_for_days: u32, now: i64) -> Result<Retired, String> {
+    if !served_by_a_realm {
+        return Err(still_served(product));
+    }
     if keep_for_days < super::backup::LEAST_KEEP_DAYS {
         return Err(format!("A retired record is kept for at least {} days; {keep_for_days} is too few", super::backup::LEAST_KEEP_DAYS));
     }
@@ -381,7 +468,7 @@ pub fn retire(from: &Path, product: Product, into: &Path, keep_for_days: u32, no
         bytes: bytes.len() as u64,
         kept_until: now + i64::from(keep_for_days) * 86_400,
         notes: vec![
-            "the product stopped writing this record at the cutover; retiring it only moves it".to_owned(),
+            "the product stopped writing this record once a realm served it; retiring it only moves it".to_owned(),
             "nothing deletes this on a timer: there is no cleanup on upgrade, none on uninstall and no sweep".to_owned(),
         ],
     };

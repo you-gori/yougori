@@ -1,0 +1,35 @@
+{
+  "date": "2026-11-05",
+  "runtime": "Windows Sandbox VMs, QEMU/WHPX",
+  "applications": "Two disposable Python HTTP services; no inference benchmark or paid resources",
+  "engine_sha256": "a7ffbb4ac458d059a8d580e4659f80511c680b4bca93930d5104a3328fe0e050",
+  "guest_agent_build": "5e4e6ae2123d26fa38150d3e94aca0286efda6cf944031ab558e39618b2ca716",
+  "images": [
+    "docker.io/library/python@sha256:69ebe56e2a764c399514a0a6117131cb730cc4d0e71e85c08deb9af74cbb9f41"
+  ],
+  "checks": [
+    "Two actual VM declarations and their connection captured",
+    "Changed source invalidates capture approval",
+    "Shared installer ran hooks and apps; website reaches models over captured grant",
+    "Installer checkbox starts Sandbox Grid only in the selected VM",
+    "Private installer answers absent from exported package",
+    "Stop/start keeps private data and does not repeat completed setup hooks",
+    "Real failed setup is refused without exposing answers"
+  ],
+  "cleanup_errors": [],
+  "earlier_findings": [
+    "OCI shorthand needed full registry resolution",
+    "OCI root-directory tar headers were incorrectly rejected; root metadata remains unapplied and entries remain budgeted",
+    "Debian Python setuid/setgid files were refused by existing import policy; compatible Alpine image used",
+    "One registry download timed out",
+    "CLI setup_plan omitted its supported storageDrive field",
+    "Acceptance script incorrectly supplied --yes to template stop/start",
+    "Restart attempted a host-folder import of private engine state; replaced with registered-workspace restoration"
+  ],
+  "not_exercised": [
+    "Public Hub upload",
+    "macOS or Linux VM runtime",
+    "Direct CUDA passthrough",
+    "JavaScript inside a real VM (SDK and TypeScript tested separately)"
+  ]
+}

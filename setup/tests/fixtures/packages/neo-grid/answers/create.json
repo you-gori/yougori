@@ -1,0 +1,16 @@
+{
+  "mode": "create",
+  "grid_name": "Example Team",
+  "coordinator_address": "192.168.1.20",
+  "reach": "lan",
+  "model": "hf.co/Qwen/Qwen3-8B-GGUF",
+  "quantization": "Q4_K_M",
+  "placement": "remaining",
+  "percent": 100,
+  "availability": "idle",
+  "idle_after_minutes": 10,
+  "schedule": "Mon-Fri 18:00-08:00; Sat,Sun",
+  "app_key": true,
+  "app_key_name": "Support assistant",
+  "ai_team": false
+}

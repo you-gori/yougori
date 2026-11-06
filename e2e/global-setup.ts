@@ -4,7 +4,7 @@ import { chromium, expect, type FullConfig } from "@playwright/test"
 // This waits on actual app readiness, not a sleep, and captures no images.
 export default async function setup(config: FullConfig) {
   const use = config.projects[0]!.use
-  const browser = await chromium.launch({ channel: use.channel })
+  const browser = await chromium.launch({ ...use.launchOptions, channel: use.channel })
   try {
     const page = await browser.newPage()
     page.on("pageerror", error => console.error("Startup error:", error.message))

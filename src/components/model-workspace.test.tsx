@@ -6,6 +6,8 @@ import { ModelChat, ModelWorkspace } from "./model-workspace"
 
 const { status, chat, run, preflight, stream, history, saveHistory, platform } = vi.hoisted(() => ({ status: vi.fn(), chat: vi.fn(), run: vi.fn(), preflight:vi.fn(), stream: vi.fn(), history: vi.fn(), saveHistory: vi.fn(), platform: { state: { environments: [] as { id: string; status: string; lastError?: string }[] }, environmentActions: {}, setEnvironmentStatus: vi.fn(), refreshPlatform: vi.fn() } }))
 const market = vi.hoisted(() => ({ status: vi.fn(), signIn: vi.fn(), share: vi.fn(), listen: vi.fn(async () => () => {}) }))
+const toast = vi.hoisted(() => ({ add: vi.fn() }))
+vi.mock("@/components/ui/toast", () => ({ toastManager: toast }))
 vi.mock("@/api/market-api", () => ({ marketApi: market }))
 vi.mock("@/context/platform-context", () => ({ usePlatform: () => platform }))
 vi.mock("@/api/projects-api", () => ({ modelsApi: { compute: async () => ({ backend: "cuda", os: "windows", available: true }), status, chat, run, preflight, stream, history, saveHistory, huggingface: async () => ({ configured: false }) } }))
@@ -24,6 +26,22 @@ it("source-only publishers show file availability instead of a chat composer", a
   expect(await screen.findByRole("region", { name: "Source-only model" })).toBeVisible()
   expect(screen.queryByRole("textbox", { name: /Message/ })).not.toBeInTheDocument()
   expect(chat).not.toHaveBeenCalled()
+})
+
+it("tells what a catalog-served folder import did, and nothing when the folder itself is mounted", async () => {
+  run.mockResolvedValueOnce({ id: "catalog-model", catalog: { state: "catalog", files: 3, bytes: 999_586_347, copied: true, reused: false } })
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Run model" }))
+  await waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(toast.add).toHaveBeenCalledWith(expect.objectContaining({ title: "Model files published in the catalog", description: "3 files, 1.00 GB, copied once from the folder, which stays as it was." })))
+  cleanup(); toast.add.mockClear()
+  run.mockResolvedValueOnce({ id: "plain-model", catalog: { state: "not_configured", remedy: "Set YOUGORI_CATALOG_ROOT" } })
+  render(<ModelWorkspace />)
+  fireEvent.click(screen.getByRole("button", { name: "Huggingface" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Run model" }))
+  await waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+  expect(toast.add).not.toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringMatching(/catalog/) }))
 })
 
 it("passes explicit native compute and memory through the ordinary model launch", async () => {

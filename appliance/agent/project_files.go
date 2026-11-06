@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/sys/unix"
+	"io"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -66,6 +68,19 @@ func projectReadlink(parent int, name string) (string, error) {
 
 // A lost acknowledgement is harmless: an already activated link is adopted.
 // NOREPLACE / EXCHANGE preserve unrelated paths, including a raced-in target.
+// emptyProjectTarget says whether the folder `name` in `parent` has nothing in it, read through a
+// descriptor that refuses a link.
+func emptyProjectTarget(parent int, name string) bool {
+	fd, err := unix.Openat(parent, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	folder := os.NewFile(uintptr(fd), name)
+	defer folder.Close()
+	names, err := folder.Readdirnames(1)
+	return len(names) == 0 && err == io.EOF
+}
+
 func activateProjectFiles(ctx context.Context, root int, request projectActivationRequest) (map[string]bool, error) {
 	target, err := projectActivationName(request.Target, false)
 	if err != nil {
@@ -131,6 +146,15 @@ func activateProjectFiles(ctx context.Context, root int, request projectActivati
 	statErr := unix.Fstatat(parent, name, &stat, unix.AT_SYMLINK_NOFOLLOW)
 	if statErr != nil && !errors.Is(statErr, unix.ENOENT) {
 		return nil, statErr
+	}
+	// The runtime makes a sandbox's working directory before the project's files arrive, so a
+	// project whose files go to its working directory (`working_dir: /app` with files into /app)
+	// finds an empty folder there. An empty folder holds nothing of anyone's: the files take its
+	// place. Anything in it, or a mount on it, makes the removal fail and the folder is kept.
+	if statErr == nil && !replace && stat.Mode&unix.S_IFMT == unix.S_IFDIR && emptyProjectTarget(parent, name) {
+		if unix.Unlinkat(parent, name, unix.AT_REMOVEDIR) == nil {
+			statErr = unix.ENOENT
+		}
 	}
 	if statErr == nil && !replace {
 		return nil, fmt.Errorf("target already belongs to the application or another deployment; it was preserved")

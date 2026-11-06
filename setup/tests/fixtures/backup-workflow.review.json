@@ -1,0 +1,318 @@
+{
+  "aliases": [
+    "backup",
+    "backups",
+    "scheduled backup",
+    "nightly backup",
+    "restore",
+    "backup and restore"
+  ],
+  "capabilities": [
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.backups",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.schedule",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 1,
+      "gpu": false,
+      "image": "{{inputs.image}}",
+      "internet": true,
+      "memoryGb": 1,
+      "name": "app",
+      "pcAccess": [],
+      "ports": [
+        8080
+      ],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 10,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    },
+    {
+      "cpu": 0.5,
+      "gpu": false,
+      "image": "docker.io/library/alpine:3.21",
+      "internet": false,
+      "memoryGb": 0.5,
+      "name": "backup",
+      "pcAccess": [],
+      "ports": [],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 2,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "website_api",
+      "id": "image",
+      "question": "Which container image runs your app?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "files_data",
+      "id": "data_path",
+      "question": "Where does your app keep the data to back up?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "app_cpu",
+      "question": "Processor cores for the app",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "app_memory_gb",
+      "question": "Memory for the app, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_schedule",
+      "question": "When should the data be backed up?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_timezone",
+      "question": "Which time zone are those times in?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_keep",
+      "question": "How many backups should Yougori keep?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_consistency",
+      "question": "How should the data be copied?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_missed",
+      "question": "What should happen to a backup Yougori was not running for?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_overlap",
+      "question": "What should happen if a backup is due while the one before is still running?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "backup_retries",
+      "question": "How many times should a failed backup be tried again?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "Who can reach the app?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    },
+    {
+      "group": "website_api",
+      "id": "health_path",
+      "question": "Which path answers 200 when the app is healthy?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "app",
+      "input": "access",
+      "port": 8080,
+      "resource": "web"
+    }
+  ],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [
+        "app-data"
+      ],
+      "id": "app",
+      "kind": "environment",
+      "summary": {
+        "cpu": "{{inputs.app_cpu}}",
+        "image": "{{inputs.image}}",
+        "memory": "{{inputs.app_memory_gb}}",
+        "ports": "8080",
+        "restart": "always",
+        "storage": 10,
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "app-data",
+      "kind": "volume",
+      "summary": {
+        "backup_consistency": "{{inputs.backup_consistency}}",
+        "backup_keep": "{{inputs.backup_keep}}",
+        "backup_missed": "{{inputs.backup_missed}}",
+        "backup_overlap": "{{inputs.backup_overlap}}",
+        "backup_retries": "{{inputs.backup_retries}}",
+        "backup_schedule": "{{inputs.backup_schedule}}",
+        "backup_through": "resource:backup",
+        "backup_timezone": "{{inputs.backup_timezone}}"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "app-data"
+      ],
+      "id": "backup",
+      "kind": "environment",
+      "summary": {
+        "command": "sh, -c, while true; do sleep 3600; done",
+        "cpu": 0.5,
+        "image": "docker.io/library/alpine:3.21",
+        "internet": false,
+        "memory": 0.5,
+        "restart": "always",
+        "storage": 2,
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "app"
+      ],
+      "id": "web",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.access}}",
+        "domain": "{{inputs.domain}}",
+        "port": 8080,
+        "target": "resource:app"
+      },
+      "when": [
+        "access is one of [\"quick\",\"domain\"]"
+      ]
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "See when the next backup is, and what has been kept",
+    "Practise a restore before you need one",
+    "Read the app's logs"
+  ],
+  "subtitle": "Scheduled, checksummed backups of one app's data, with a restore you can practise.",
+  "tools": [],
+  "totals": {
+    "cpu": 1.5,
+    "environments": 2,
+    "gpu": "none",
+    "memoryGb": 1.5,
+    "storageGb": 12
+  },
+  "warnings": [
+    "Makes app:8080 reachable from the internet."
+  ]
+}

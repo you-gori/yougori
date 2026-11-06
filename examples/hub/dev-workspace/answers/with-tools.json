@@ -1,0 +1,8 @@
+{
+  "image": "node:22.11-bookworm",
+  "tools": ["codex", "claude"],
+  "cpu": 4,
+  "memory_gb": 8,
+  "storage_gb": 40,
+  "access": "quick"
+}

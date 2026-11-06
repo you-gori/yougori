@@ -1,0 +1,367 @@
+{
+  "date": "2026-11-04",
+  "runtime": "Yougori Sandbox VM on Windows/QEMU",
+  "model": "Disposable HTTP model fixture; actual pinned client binaries; no external target",
+  "downloads": {
+    "checks": [
+      "deepseek: full image/tool downloads match their checksums",
+      "opencode: full image/tool downloads match their checksums",
+      "codex: full image/tool downloads match their checksums",
+      "pi: full image/tool downloads match their checksums",
+      "gemini: full image/tool downloads match their checksums",
+      "openhands: full image/tool downloads match their checksums",
+      "cline: full image/tool downloads match their checksums",
+      "interpreter: full image/tool downloads match their checksums",
+      "goose: full image/tool downloads match their checksums",
+      "aider: full image/tool downloads match their checksums",
+      "qwen: full image/tool downloads match their checksums",
+      "kilo: full image/tool downloads match their checksums",
+      "grok: full image/tool downloads match their checksums",
+      "swe: full image/tool downloads match their checksums",
+      "plandex: full image/tool downloads match their checksums",
+      "strix: full image/tool downloads match their checksums",
+      "shannon: full image/tool downloads match their checksums",
+      "pentagi: full image/tool downloads match their checksums",
+      "pentestgpt: full image/tool downloads match their checksums",
+      "hexstrike: full image/tool downloads match their checksums",
+      "claude: full image/tool downloads match their checksums",
+      "PowerShell 5.1 installs the server-bound Pi command from the VM origin",
+      "Pi downloads, verifies and imports its real image through the running Yougori engine"
+    ],
+    "passed": true
+  },
+  "native_checks_this_run": [
+    {
+      "harness": "codex",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-codex.log",
+      "log_sha256": "827a47674a2f4376e5686dc3a38e9415bfde77132fe989fbda9a0c961429d340"
+    },
+    {
+      "harness": "opencode",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-opencode.log",
+      "log_sha256": "e6967b838467f776ee67b48f2a26796140134e6f2d1abf70b56ac1d4a0d98eed"
+    },
+    {
+      "harness": "kilo",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-kilo.log",
+      "log_sha256": "5be85fd0389893b4415f2d2cde6782d5377a3821722e0e2406eab060caa58119"
+    },
+    {
+      "harness": "qwen",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-qwen.log",
+      "log_sha256": "7924c8fb3ab872b67d94908d1daa10cec1490955eaaf93fdf0ec7adf819474a0"
+    },
+    {
+      "harness": "cline",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-cline.log",
+      "log_sha256": "810fd37bc60f53a9956134d8eda3a06ed54be7d31f3cf0b786720e51da78ae7c"
+    },
+    {
+      "harness": "claude",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-claude.log",
+      "log_sha256": "33efc4604923227742755fa03cc6ff8f547ae4d7fe3323dcc4b2c8ca60f09eda"
+    },
+    {
+      "harness": "aider",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-aider.log",
+      "log_sha256": "8813c39819d94a9862207dfbd744c0318466f6c7d5c371771989b7136945061d"
+    },
+    {
+      "harness": "interpreter",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-interpreter.log",
+      "log_sha256": "7dfff1219b769d66b42b4cf6d4455ff77c469cd36ae593a957f6aff9cd073d14"
+    },
+    {
+      "harness": "goose",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-goose.log",
+      "log_sha256": "de87feb39ae2cfa7c52e2c5c59b5437da5817f8257ee1b319a365d09d4a31c95"
+    },
+    {
+      "harness": "deepseek",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-deepseek.log",
+      "log_sha256": "9d793ccbec637e3fdbc9258c7dbcd9c997f8f3ae0bf2d8e1018bedd1c5e4f4f6"
+    },
+    {
+      "harness": "gemini",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-gemini.log",
+      "log_sha256": "b4648dc9b0220b2a118fabd8a0b5cc0fc5b4b5b11dab6bee89e31f97f37b39e4"
+    },
+    {
+      "harness": "openhands",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-openhands.log",
+      "log_sha256": "862b71db328c4f94385d4f559bcdd204732576f8eb9138fe34550eae7b444d72"
+    },
+    {
+      "harness": "grok",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-grok.log",
+      "log_sha256": "702dfdad6efab9e363f3c9be90af9fecacda1fd20e680df19457a4a3bec5c8b1"
+    },
+    {
+      "harness": "swe",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-swe.log",
+      "log_sha256": "745d8dcd8b5a9a7ec1d7d5e2f672b04b99ccbdc4830b39bd25fe8b8b1fd1237e"
+    },
+    {
+      "harness": "pentestgpt",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\native-pentestgpt.log",
+      "log_sha256": "cddfaeecd906b6cd56bc0f0d261e2fa873303e2ca86b0f4d400998117aa6bf24"
+    },
+    {
+      "harness": "pi",
+      "result": "passed",
+      "log": "D:\\YougoriBuildCache\\scratch\\website-restart\\pi-native.log",
+      "log_sha256": "e4846470919c344e7931c0372a49e7aab2d4f446bd079de8c4a8594dfc8b6d83"
+    }
+  ],
+  "packages": {
+    "opencode": {
+      "sha256": "fc98e5171cb6925ad68830081f78e16f16fbcc8181b1930b50de9fb62e47a2d6",
+      "bytes": 124352631,
+      "version": "1.19.5",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "6b4a24af68a94625c2cbd2ca8edccc3277ce6a7d2b787390cda0431f29924a27",
+        "bytes": 159311683
+      }
+    },
+    "kilo": {
+      "sha256": "929cb71348273bf7b10f9d733d5b5ac52d02e766d8ec918f0a1371ddf8e7bc46",
+      "bytes": 124352611,
+      "version": "7.8.18",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "b813eee88b3d7952c9b9ba022f6f47b681319d5e209e0db92211e9221f93cece",
+        "bytes": 178725623
+      }
+    },
+    "codex": {
+      "sha256": "4e821a163cf6ec7fa0b0b6acbf71eedd53765fae482170e821626408322c8fa1",
+      "bytes": 124297973,
+      "version": "0.166.0",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "5205b6bfdb6c9ad4692eef945de1d8def109ef7ff5fb1af714c02e71c5b80b83",
+        "bytes": 169801996
+      }
+    },
+    "pi": {
+      "sha256": "2fc0f0d96dd430f7f82a48560f11b64e54ee828a95649da896e689fa83a720b9",
+      "bytes": 124648261,
+      "version": "0.73.1",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "5ec3ffd412d0b5f8c5f82bda4c2e078210922dbb09568e2c980587d331423b9c",
+        "bytes": 33669169
+      }
+    },
+    "qwen": {
+      "sha256": "580dbb45d94aaecb062ba53312fa93e0908ff79e97f6514cc11cede4595cd540",
+      "bytes": 124297358,
+      "version": "0.26.6",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "e91d4d163245916848c9d5b99c09f9186f9b017b46b79c7db989b794a0dc3b29",
+        "bytes": 109822422
+      }
+    },
+    "cline": {
+      "sha256": "b4c6d05defe1a5a353ff1ea8fd6d2ef68b59e075c828a295746d26409e3738dd",
+      "bytes": 124297679,
+      "version": "3.0.74",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "b41ac39c3af62837a90cbc493b4d0a140bc3463e6571f46da26f55ded7b46334",
+        "bytes": 91129417
+      }
+    },
+    "claude": {
+      "sha256": "e8d14bab5d4cfd92d0bfe6101810276bcaf070aed0cdfceeaf3a8bb75b17f09c",
+      "bytes": 124297507,
+      "version": "2.1.316",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "0a136df6c6984ee8fa35e382a749ab2f682df32665e33e872ad8565d09e344d4",
+        "bytes": 150402727
+      }
+    },
+    "aider": {
+      "sha256": "a833aebecc27363d7a967e1a3d6551637b24757c0931e91809140de8fe3e4a5a",
+      "bytes": 123905946,
+      "version": "0.86.2",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "344d8b0fd9109a9fb9737ba3afe98b0e5d3518b5ea91aeeb375a2b5917807eeb",
+        "bytes": 158926330
+      }
+    },
+    "interpreter": {
+      "sha256": "00cc6ea5f90931b310472257990815ba372b9d7bd07e41db1f8272e5487bd58d",
+      "bytes": 123905990,
+      "version": "0.4.3",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "cdd674a071dd07fb560f3cfbc2e3f9ae4ef054fb83174df93d82d90501d7c021",
+        "bytes": 189381402
+      }
+    },
+    "goose": {
+      "sha256": "fa0252a8fea6fe332acdc0990c171d30e91d9c504fc5f4346e27e8b75cf863af",
+      "bytes": 123906372,
+      "version": "1.57.0",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "a6984a35c49d71994ecda033cab94a7540cac78a6ab805ac2a8c96005f96bd92",
+        "bytes": 62286225
+      }
+    },
+    "deepseek": {
+      "sha256": "884b20fc27870aedc9a2ef699f1b0c233b02ab1a66e72b4bec7388cb5ad764b4",
+      "bytes": 124297253,
+      "version": "0.2.1-rc.5",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "95dae15d28950336151e7eb4b59cb9c5ea324edd010044a8f9e7c4407466adb4",
+        "bytes": 168537256
+      }
+    },
+    "gemini": {
+      "sha256": "63e7f15e6cac202a774f8e28b2381b14dcc895058728eb4af8d26ace2f9c801a",
+      "bytes": 124297253,
+      "version": "0.66.0",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "ab5a0614fde4d4acaaf0beec3b4751889614bb752991ebcc0aff5662a51612b4",
+        "bytes": 21739546
+      }
+    },
+    "openhands": {
+      "sha256": "ea5d8ef13b25d3c1f5adf5394446390bd591dda8f47bd5ad807b9dc2320a2814",
+      "bytes": 123905945,
+      "version": "1.16.0",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "81115bccebf9658a645637dea44dcf8e2ae52f8599a9ca5280a1a9ddce8db2e4",
+        "bytes": 207617235
+      }
+    },
+    "grok": {
+      "sha256": "886548703e63fa0168f16a3bb305089f6b22a142df0bb0139aa063b59edd2384",
+      "bytes": 123906092,
+      "version": "1.0.70",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "d11303ccc4ab40005321f13a7d55920af117ce730dae7ba30f427d7a2ee0e2b0",
+        "bytes": 77337281
+      }
+    },
+    "swe": {
+      "sha256": "5ae949a2f91eed1206082c007736b34307b7448413642edb4aa68b764b5babad",
+      "bytes": 123906114,
+      "version": "3ea751c087f3",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "98ba0023f209a66ac9f259b641f620dadbec1ae45f5f2d97b482b7bc29b0bf3c",
+        "bytes": 294754668
+      }
+    },
+    "plandex": {
+      "sha256": "fddeb868347e7b188bab3055991469fab4bb02ea99697bf081ac541d5002affb",
+      "bytes": 207694754,
+      "version": "2.2.1 / e2d772072efa",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "8c88c3e75db2ffabdc5529be8a33228f8bc61fee4eea927e8de6e7960e1f7ab7",
+        "bytes": 26495217
+      }
+    },
+    "strix": {
+      "sha256": "3b2def9e1fe0f4e33264be8a346205ad79fc6849a8df99e864632559f340a0d1",
+      "bytes": 77256678,
+      "version": "1.7.0",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "cb285184265c204d91926a37db119c5b69cb40134d4e654579e7c74d49318794",
+        "bytes": 174918262
+      }
+    },
+    "shannon": {
+      "sha256": "2199454256f11118992e2d3ae37726961ea4d51703d6efa742689ff743f7741b",
+      "bytes": 224688154,
+      "version": "b9744f6cecc5",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "da64bef881617f8f62836c77f095e921286b0e3707f11de919f23f7921439981",
+        "bytes": 407759126
+      }
+    },
+    "pentagi": {
+      "sha256": "c355f5f368623d90494d6cf9104c14d4c1ed864e6836b0ea84699e1ac255d7aa",
+      "bytes": 160684704,
+      "version": "cffed9485aa1",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "1266c31e91ababbf2b6038bc1aa06367905e310c584ac7f1954928ecd159e7ba",
+        "bytes": 27388047
+      }
+    },
+    "pentestgpt": {
+      "sha256": "fa0818ac25b446331f2cc89933c6cf976969f8589de3ecbce4d940d8d768609d",
+      "bytes": 123906079,
+      "version": "1.0.0 / e8b1bb77d1ac / interactive CLI",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm",
+      "tool": {
+        "sha256": "e89950f8567b8cbcf7b44728ae2d8a70ed64f1816623ef278563233e673cb8b5",
+        "bytes": 340339978
+      }
+    },
+    "hexstrike": {
+      "sha256": "8ff6144be4db77631968bf2f5f9421adf0b57747b22ec66bcea58d517224cba1",
+      "bytes": 182302457,
+      "version": "6.0 / d689933ff579",
+      "platform": "linux/amd64",
+      "runtime": "yougori-sandbox-vm"
+    }
+  },
+  "unchanged_previously_validated_packages": [
+    "plandex",
+    "strix",
+    "shannon",
+    "pentagi",
+    "hexstrike"
+  ]
+}

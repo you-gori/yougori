@@ -531,12 +531,16 @@ pub async fn obtain(site: &Site, cache: &Cache, reference: &Ref) -> Result<Obtai
 /// since keeps working from the copy here; only new runs are refused.
 pub async fn own(site: &Site, cache: &Cache, reference: &Ref, digest: &str) -> Result<Obtained, String> {
     let version = reference.version.clone().ok_or("A Hub instance always names its version.")?;
-    if let Ok(Some(bundle)) = cache.load(&reference.publisher, &reference.name, &version) {
+    let saved = cache.load(&reference.publisher, &reference.name, &version);
+    if let Ok(Some(bundle)) = &saved {
         if bundle.digest.eq_ignore_ascii_case(digest) {
-            return Ok(Obtained { bundle, detail: None, notice: None });
+            return Ok(Obtained { bundle: bundle.clone(), detail: None, notice: None });
         }
     }
-    let got = obtain(site, cache, reference).await.map_err(|error| format!("The files of {} {version} are no longer on this computer and could not be downloaded again: {error}", reference.item()))?;
+    // A copy changed since it was downloaded was removed just now; say so rather than only that
+    // it is not here.
+    let changed = saved.err().map(|why| format!("{why} ")).unwrap_or_default();
+    let got = obtain(site, cache, reference).await.map_err(|error| format!("{changed}The files of {} {version} are no longer on this computer and could not be downloaded again: {error}", reference.item()))?;
     if !got.bundle.digest.eq_ignore_ascii_case(digest) {
         return Err(format!("The Hub's copy of {} {version} does not match the files this instance was made from, so it was not used. Nothing was changed.", reference.item()));
     }

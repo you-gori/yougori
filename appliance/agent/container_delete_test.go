@@ -5,9 +5,13 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestDeletionRequiresConfirmedAbsence(t *testing.T) {
+	settle := deletionSettle
+	deletionSettle.pause = time.Millisecond
+	t.Cleanup(func() { deletionSettle = settle })
 	for _, item := range []struct {
 		name, remaining    string
 		removeErr, listErr error
@@ -39,5 +43,29 @@ func TestDeletionRequiresConfirmedAbsence(t *testing.T) {
 				t.Fatal(calls)
 			}
 		})
+	}
+}
+
+// A removal nerdctl reported done is listed for a moment while containerd finishes it (seen on a
+// real runtime as "is still present; deletion did not finish"): the list is read again, and the
+// container counts as deleted once it is gone, without a second removal.
+func TestADeletionStillListedForAMomentIsConfirmedOnceItIsGone(t *testing.T) {
+	settle := deletionSettle
+	deletionSettle.pause = time.Millisecond
+	t.Cleanup(func() { deletionSettle = settle })
+	var removals, lists int
+	_, err := deleteContainerVerified(context.Background(), "env-delete", func(_ context.Context, program string, args ...string) (commandOutput, error) {
+		if args[2] == "rm" {
+			removals++
+			return commandOutput{}, nil
+		}
+		lists++
+		if lists < 3 {
+			return commandOutput{Stdout: "peer\nenv-delete\n"}, nil
+		}
+		return commandOutput{Stdout: "peer\n"}, nil
+	})
+	if err != nil || removals != 1 || lists != 3 {
+		t.Fatalf("err=%v removals=%d lists=%d", err, removals, lists)
 	}
 }

@@ -103,6 +103,57 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(self.runner.request('run', self.body), {'reused': False})
         self.assertTrue(self.ready()['admin'])
 
+    def delivery(self, files, named=None, shadow=None):
+        import hashlib
+        return {'files': [{'path': path, 'data': base64.b64encode(data).decode(), 'sha256': hashlib.sha256(data).hexdigest()}
+                          for path, data in files],
+                'named': named or {}, 'shadow': shadow or {}}
+
+    def test_delivered_helpers_are_checked_written_fresh_and_named_for_the_runner(self):
+        pin = 'b' * 64
+        self.body['helpers'] = self.delivery([('gpu-optimizer/gpu_optimizer.py', b'A = 1\n'),
+                                              ('shadow/yougori-shadow.py', b'attach = None\n')],
+                                             {'gpu-optimizer': {'entry': 'gpu-optimizer/gpu_optimizer.py', 'pin': pin}})
+        self.body['source'] = SERVER.replace("'status':'ready'", "'status':'ready', 'helpers':os.environ.get('YOUGORI_HELPERS'), 'root':os.environ.get('YOUGORI_HELPERS_ROOT')")
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        result = self.ready()
+        root = self.runner.root_dir() / 'helpers'
+        self.assertEqual(result['root'], str(root))
+        self.assertEqual(json.loads(result['helpers']),
+                         {'gpu-optimizer': {'entry': str(root / 'gpu-optimizer' / 'gpu_optimizer.py'), 'pin': pin}})
+        entry = root / 'gpu-optimizer' / 'gpu_optimizer.py'
+        self.assertEqual(entry.read_bytes(), b'A = 1\n')
+        self.assertEqual(stat.S_IMODE(entry.stat().st_mode), 0o600)
+        # A run without a delivery removes the earlier one.
+        self.runner.request('stop', self.body)
+        del self.body['helpers']
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        self.assertIsNone(self.ready()['helpers'])
+        self.assertFalse(root.exists())
+
+    def test_a_delivery_that_fails_its_checks_installs_nothing_and_starts_nothing(self):
+        pin = 'c' * 64
+        good = self.delivery([('gpu-optimizer/g.py', b'A = 1\n')], {'gpu-optimizer': {'entry': 'gpu-optimizer/g.py', 'pin': pin}})
+        bad_digest = json.loads(json.dumps(good))
+        bad_digest['files'][0]['sha256'] = '0' * 64
+        cases = [bad_digest,
+                 self.delivery([('../escape.py', b'x')]),
+                 self.delivery([('gpu-optimizer/g.py', b'x')], {'gpu-optimizer': {'entry': 'gpu-optimizer/other.py', 'pin': pin}}),
+                 self.delivery([('gpu-optimizer/g.py', b'x')], {'gpu-optimizer': {'entry': 'gpu-optimizer/g.py', 'pin': 'short'}}),
+                 dict(good, extra=1)]
+        for delivery in cases:
+            self.body['helpers'] = delivery
+            with self.assertRaises(ValueError):
+                self.runner.request('run', self.body)
+            root = self.runner.root_dir()
+            self.assertFalse((root / 'helpers').exists())
+            self.assertFalse((root / 'helpers.new').exists())
+            self.assertFalse((root / 'process.json').exists())
+        with patch.object(self.runner, 'HELPER_BYTES', 4):
+            self.body['helpers'] = self.delivery([('gpu-optimizer/g.py', b'12345')])
+            with self.assertRaisesRegex(ValueError, 'larger'):
+                self.runner.request('run', self.body)
+
     def test_reviewed_vllm_runner_is_persisted_and_injected_into_isolated_bootstrap(self):
         self.body['format']='vllm'
         self.body['source']=SERVER.replace("'status':'ready'", "'status':'ready', 'format':os.environ.get('YOUGORI_MODEL_FORMAT'), 'installVllm':os.environ.get('YOUGORI_INSTALL_VLLM')")

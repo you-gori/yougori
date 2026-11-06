@@ -27,7 +27,8 @@ Work from this checkout's root. Run `git status` first: people and other agents 
 - Engine: `cargo test --manifest-path src-tauri/Cargo.toml --lib MODULE::`, then `npm run check:native` (all targets).
 - Guest agent: `go test ./...` in `appliance/agent`. Scripts: `node --test scripts/NAME.test.mjs`.
 - Everything: `npm run verify`. Runtime and hardware suites (`test:runtime`, `test:workspace`, `cli:test:runtime`) are ignored tests that need real runtimes; run them only when the change needs them.
-- Rust builds are large: point `CARGO_TARGET_DIR` at a drive with free space when the system drive is small. Keep LF line endings.
+- Rust builds are large: when the system drive is small, set `CARGO_TARGET_DIR` to the shared `D:\YougoriBuildCache\target`. Never create a new per-session target or scratch folder on D:\ or in C:\tmp; put scratch under `D:\YougoriBuildCache\scratch` and delete it when done. Keep LF line endings.
+- Releases: a release workspace is `D:\yougori-X.Y.Z` (Linux builds go to `/build/*-X.Y.Z` in `Yougori-Release-Build`). After a release ships, run `npm run disk:clean`; it keeps the two newest versions. See `docs/build-cache.md`.
 
 ## Rules
 

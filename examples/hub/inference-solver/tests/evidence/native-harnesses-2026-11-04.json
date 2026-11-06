@@ -1,0 +1,173 @@
+{
+  "date": "2026-11-04",
+  "host": "Windows, QEMU/WHPX, native Yougori Sandbox VM",
+  "model": "Disposable local HTTP fixture; actual upstream harness binaries; no external target",
+  "results": [
+    {
+      "harness": "hexstrike",
+      "version": "6.0 / d689933ff579",
+      "commit": "d689933ff579d839c676c82b231f8e98326c5f04",
+      "result": "passed",
+      "log": "C:\\YougoriBuildCache\\scratch\\solver\\hexstrike-runtime.log",
+      "log_sha256": "90b49dd0237a7aedc8d246128f59b1090fd328b51d528d5f114b43988cfd0d4b",
+      "image": {
+        "sha256": "8ff6144be4db77631968bf2f5f9421adf0b57747b22ec66bcea58d517224cba1",
+        "bytes": 182302457,
+        "version": "6.0 / d689933ff579",
+        "platform": "linux/amd64",
+        "runtime": "yougori-sandbox-vm"
+      }
+    },
+    {
+      "harness": "plandex",
+      "version": "2.2.1 / e2d772072efa",
+      "commit": "e2d772072efadbe41d2946d97d79be55532dbab5",
+      "result": "passed",
+      "log": "C:\\YougoriBuildCache\\scratch\\solver\\plandex-runtime5.log",
+      "log_sha256": "710f2d8a589d6be9d783dd750276d48f88fda2632e666d190ab92c13f5f50884",
+      "image": {
+        "sha256": "fddeb868347e7b188bab3055991469fab4bb02ea99697bf081ac541d5002affb",
+        "bytes": 207694754,
+        "version": "2.2.1 / e2d772072efa",
+        "platform": "linux/amd64",
+        "runtime": "yougori-sandbox-vm",
+        "tool": {
+          "sha256": "8c88c3e75db2ffabdc5529be8a33228f8bc61fee4eea927e8de6e7960e1f7ab7",
+          "bytes": 26495217
+        }
+      }
+    },
+    {
+      "harness": "strix",
+      "version": "1.7.0",
+      "commit": null,
+      "result": "passed",
+      "log": "C:\\YougoriBuildCache\\scratch\\solver\\strix-runtime-final.log",
+      "log_sha256": "02cc92c4e8ceda6f321b643cd28ed4730e5ff56d6459901094e546d8c2849c45",
+      "image": {
+        "sha256": "3b2def9e1fe0f4e33264be8a346205ad79fc6849a8df99e864632559f340a0d1",
+        "bytes": 77256678,
+        "version": "1.7.0",
+        "platform": "linux/amd64",
+        "runtime": "yougori-sandbox-vm",
+        "tool": {
+          "sha256": "cb285184265c204d91926a37db119c5b69cb40134d4e654579e7c74d49318794",
+          "bytes": 174918262
+        }
+      }
+    },
+    {
+      "harness": "pentagi",
+      "version": "cffed9485aa1",
+      "commit": "cffed9485aa1cca70762cd08a57ac62a80406258",
+      "result": "passed",
+      "log": "C:\\YougoriBuildCache\\scratch\\solver\\pentagi-runtime4.log",
+      "log_sha256": "b4194ec1fe0ca06d6f75cdc4ea5217c4f798eee830b08c0c0cdd8e710ce2835f",
+      "image": {
+        "sha256": "c355f5f368623d90494d6cf9104c14d4c1ed864e6836b0ea84699e1ac255d7aa",
+        "bytes": 160684704,
+        "version": "cffed9485aa1",
+        "platform": "linux/amd64",
+        "runtime": "yougori-sandbox-vm",
+        "tool": {
+          "sha256": "1266c31e91ababbf2b6038bc1aa06367905e310c584ac7f1954928ecd159e7ba",
+          "bytes": 27388047
+        }
+      }
+    },
+    {
+      "harness": "shannon",
+      "version": "b9744f6cecc5",
+      "commit": "b9744f6cecc5429333873b86a6762f1d70c54fc2",
+      "result": "passed",
+      "mode": "Actual Temporal worker and model-validation workflow; no pentest",
+      "log": "C:\\YougoriBuildCache\\scratch\\solver\\shannon-runtime6.log",
+      "log_sha256": "cb7e88d8fa409e47fb2e93c7df9c7b90f173ddd2aa41f854f44b2df674fa6740",
+      "image": {
+        "sha256": "0a2273b36ea65257aa507b740782d4c01d26a9eb2948bbd265158e5e8f4247ea",
+        "bytes": 224817430,
+        "version": "b9744f6cecc5",
+        "platform": "linux/amd64",
+        "runtime": "yougori-sandbox-vm",
+        "tool": {
+          "sha256": "da64bef881617f8f62836c77f095e921286b0e3707f11de919f23f7921439981",
+          "bytes": 407759126
+        }
+      },
+      "helper_sha256": "eea33bd985977b584f0125f4eb26cc739d2d580785a1182f3ab9095d0bad3d4c",
+      "validation_note": "Directory-placeholder fix applied to disposable VM before worker startup; published image then rebuilt with byte-identical helper and same tool package."
+    }
+  ],
+  "grid": {
+    "result": "REAL_GRID_OK: HTTP launch, native VM command, guest output, stop, website reconciliation."
+  },
+  "engine": {
+    "path": "C:/YougoriBuildCache/scratch/solver/solver-vm-validation/bin/yougori-engine.exe",
+    "sha256": "2c5c26d789dd6cdc7e5b783275907b093dc8534b05dff4fec90ef1e8443e10c9"
+  },
+  "cli": {
+    "path": "D:/YougoriBuildCache/target/debug/yougori.exe",
+    "version": "1.2.0",
+    "sha256": "abce88dc0ba00af185f4738d59f5bb5fb44308f4ff280b1835113df6517540ea"
+  },
+  "python_tests": {
+    "passed": 124,
+    "failed": 0,
+    "seconds": 128.177
+  },
+  "browser": "Passed desktop/mobile and inline admin workflow",
+  "network_probe": "Real guest socket to external address refused with ENETUNREACH (101)",
+  "source_sha256": {
+    "site\\app.js": "9726998fafab58c2b0c28b8c42aff6a71a05b3f23f2f730cd7350f517a548719",
+    "site\\attached.py": "6e8b9a929bae35a8e8341f8212e4f0841548e3246853fb2faca048421709c915",
+    "site\\categories.json": "627eba794567169b16d8571a0d07a93fb3fe88484603d77a8eaa9c38997c1b55",
+    "site\\chain.py": "a754b3b19816f90d614fceed8f6793e3fc97d80eda320ee5f21969e7586a389f",
+    "site\\compute-ui.js": "83a42eb2d51889b93ef52bbb2edab14f9dc2227de5f993e826b3b026c2ab9607",
+    "site\\compute.py": "0d3c0388fe31efc02aad529ffb2887c3a25312cab5bc97c3cdf6b6c81e9254b2",
+    "site\\compute_adapter.py": "985ef7ea8ff263fb171073001b38e6f9ffe70164d65dd75becb7719371c9e0b7",
+    "site\\compute_node.py": "05f0c2c8e8f40349f2414f3dac7f0b0331bc8cfbb004f8261d6befa23ad4b740",
+    "site\\compute_options.py": "c937ccc06cc1ccd0ff47cb6c56335519e38acca4da32ffa94d601ba56dc4fc5a",
+    "site\\device_auth.py": "aa6bb16e536bac58e415ec52a1e75cf97f27cc1543681df970a5be3c01c6a06d",
+    "site\\gateway.py": "f6ed502bb906a5c7d8ededdf07968b9428a0082ac4bf584dffb2f1f72e57e801",
+    "site\\google_protocol.py": "25935a4830f156236414609506d67e5bf6676d4ddda7eefaf5aa8975bf62b618",
+    "site\\grid_adapter.py": "2644cf5c6a1a94bbb226f3ef07f91feeff602a728fa0bd92593d90ceb6aba17b",
+    "site\\harness_download.py": "7e3583dabf5b2436b957ac073629946b140d957c8d442ce116a4beb9545b24ee",
+    "site\\harnesses\\blue.py": "b37e7e922d61cbe55b8bd863bf0fa45defcb19adbb39c255dfdf80b9fd0b2bd0",
+    "site\\harnesses\\cli_entry.py": "b3ef688e3509d91d427b946bbaefba33118d46953571f3b3053e9959e55b68a5",
+    "site\\harnesses\\device_login.py": "3552a76a84414cc99a6eb160fa7946ad41b8a503b4cba606aa2db74372781d87",
+    "site\\harnesses\\hexstrike_cli.py": "c58c01ac82dbbeb3fece33356cd163add72d1ec47b7a48b0e18903a3a8fea29c",
+    "site\\harnesses\\install_pentagi.py": "d4cff9ff22d931e9941eef3408e08eab3dac4f137471024acf3abf7ce49088db",
+    "site\\harnesses\\install_shannon.py": "c3ac8783e76513f95150d7e3341024be6f0a758dd7f29a3aa9e6152525e99624",
+    "site\\harnesses\\installer.py": "d777cd641c36098bd6936113b11268718aa04d68c8f705d52942ab71bbbf3ca6",
+    "site\\harnesses\\packages.json": "93c736134d69fc3f7297eb2f5ff6bcee22f85b4f98210574eb413acda3197a19",
+    "site\\harnesses\\pentagi_cli.py": "085792cc3edff2080768314d3dc7be426a4fdab0c686546ffa83b9c8192e0820",
+    "site\\harnesses\\pentagi_vm.go": "6195e608e3b5512d29016ff90919b77b29c2dbe5dd822178c0290f8c2a9ff1c3",
+    "site\\harnesses\\pentagi_vm_test.go": "aa0b1c224ae35004c340903fd42716490df973c0864dc1f1d77a4fd91294c33f",
+    "site\\harnesses\\plandex_cli.py": "19d955fb47f6f6d0094519e30c70381cde02b23935ab8c63673b96a68274ccd9",
+    "site\\harnesses\\profiles.py": "0292f50099bc9e1be4bdc07ac1d7dfd9b2d68945955f2123835238b4136deae3",
+    "site\\harnesses\\relay.py": "9bb3547093a559626eeb9f70eabc5d8ed60c4e0886e4f927545c1982766332bc",
+    "site\\harnesses\\runtime.py": "b02c62c17ad916e0f7f4cedfc6dfd503c007f11235861467bbd20ca7ca5cfbeb",
+    "site\\harnesses\\shannon_cli.py": "eea33bd985977b584f0125f4eb26cc739d2d580785a1182f3ab9095d0bad3d4c",
+    "site\\harnesses\\solver.py": "d88120acd332b8fa7b53e2bb83d7a62ec3fdfcb29d25a41ecf3e61c12583b647",
+    "site\\harnesses\\strix_cli.py": "3ff84c238906e3a7c5fa03ce726c6fcbacbab5ae02129546a747b094f50e0ff2",
+    "site\\harnesses\\vm_guest.py": "e1bdf944688688899631256ccdce2f1c0f6f9c6c691ebedcb9239c7fb45ae2a1",
+    "site\\harnesses\\vm_host.py": "f2703a7e831c9c2fa0bcbfc710c4817d7c9108941492bed221ed5333c8aed3fa",
+    "site\\harnesses\\vm_package.py": "c08df862b3c72fe2c6b599a112060eea74261759264cd5e0788a86ad58312b48",
+    "site\\harnesses\\vm_relay.py": "473fd02ecfc20a301eff761aa69da16ffb8e1097e26c70907e17b7feb469e093",
+    "site\\harnesses.json": "52ff544d0d2adef0e703a1752b735c5763a8efc56c65b34bc45d0f5f3b76c959",
+    "site\\infrastructure-ui.js": "653f135f0cf082a51359a477bf4465fc35e5d674cca2cfefa9ee8beb57d5c21e",
+    "site\\payments.py": "c2241c124c7bdc65d790c07f787daa6ce78909030f1b27e6524a31c802907805",
+    "site\\protocols.py": "e5f5692d30b0638a487044245a7a1bb0150acf5d76ef8784995e7db38c0827e5",
+    "site\\sandbox_grid.py": "0084f57cd49f843ca0acc9f44f9cf2a7e54f2646515067df3ef56948fc0bfa37",
+    "site\\server.py": "c33d892a97dff7d32f93b54ce06de951792bd1ceb016b1ab57aa6fba90afb5e8",
+    "site\\store.py": "f90bd1ce95330346278d61cb4f8a2bb72b1a5dd8c07140831e5492782d032064",
+    "site\\theme.js": "37dc2e748f8895d40e4879f0a53591fa54b4493f0c61644dc8e6fd4be9b498c8",
+    "site\\upstream.py": "6b3090818066a27412bf66ceb4015056caa824b0c03c792a7b340bb868faaa1a"
+  },
+  "after_catalog_enable": {
+    "harness_tests_passed": 21,
+    "browser": "passed",
+    "preview": "All five downloads and VM descriptors available; local Qwen model present",
+    "active_disposable_vm_processes": 0
+  }
+}

@@ -4,7 +4,7 @@
 //! `~/.yougori/tools/NAME`.
 use super::{
     client::{self, Cache, Site},
-    format::{self, Tool},
+    format::{self, Tool, ToolFile},
     refs,
     review,
     scan::{self, Files},
@@ -242,7 +242,9 @@ impl Added {
         found
     }
     /// Saves a checked tool's files under its name, replacing an earlier copy from the same place.
-    pub fn save(&self, tool: &Tool, files: &Files, source: Value) -> Result<(), String> {
+    /// The files are kept whole, so whatever the tool declares (its access, inputs and outputs)
+    /// is read back with them.
+    pub fn save(&self, tool: &ToolFile, files: &Files, source: Value) -> Result<(), String> {
         let name = tool.name();
         if let Some(reason) = clash(name) {
             return Err(reason);
@@ -278,15 +280,21 @@ impl Added {
     }
 }
 
-/// Reads and checks a tool folder on this computer, refusing credentials as publishing would.
-pub fn read_folder(folder: &Path) -> Result<(Tool, Files, scan::Findings), String> {
+/// Reads and checks a tool folder on this computer, refusing credentials as publishing would:
+/// its file as the one tool format checks it, its files and what the scan found.
+pub fn read_file(folder: &Path) -> Result<(ToolFile, Files, scan::Findings), String> {
     let collected = scan::collect(folder)?;
     if !collected.files.contains_key(format::TOOL_FILE) {
         return Err(format!("{} has no {}. Start one with yougori tool new NAME.", folder.display(), format::TOOL_FILE));
     }
-    let tool = format::tool(&collected.files, "").map_err(|problems| list("This tool", &problems))?;
-    let findings = scan::scan(&collected.files);
+    let tool = format::tool_file(&collected.files, "").map_err(|problems| list("This tool", &problems))?;
+    let findings = scan::scan_upload(&collected.files, format::TOOL_FILE, &[("title", Some(tool.title())), ("summary", tool.summary.as_deref()), ("changelog", tool.changelog.as_deref())]);
     Ok((tool, collected.files, findings))
+}
+
+/// [`read_file`], with the tool in the installer's form.
+pub fn read_folder(folder: &Path) -> Result<(Tool, Files, scan::Findings), String> {
+    read_file(folder).map(|(file, files, findings)| (Tool::from(&file), files, findings))
 }
 
 /// Problems as a message: one per line.
@@ -318,9 +326,9 @@ pub async fn add(source: &str, yes: bool, interactive: bool) -> Result<Value, St
         if got.bundle.kind != "tool" {
             return Err(format!("{} is a template, not a tool. Run it with yougori run {}.", reference.item(), reference.command()));
         }
-        let tool = format::tool(&got.bundle.files, "").map_err(|problems| list(&reference.item(), &problems))?;
+        let tool = format::tool_file(&got.bundle.files, "").map_err(|problems| list(&reference.item(), &problems))?;
         let wallet: Vec<String> = scan::scan(&got.bundle.files).wallet_notice().into_iter().collect();
-        let review = review::tool(&tool, &wallet);
+        let review = review::tool_file(&tool, &wallet);
         let verified = got.bundle.verified;
         let first = !added_before(&added, tool.name(), &reference.item());
         if !yes {
@@ -359,13 +367,13 @@ pub async fn add(source: &str, yes: bool, interactive: bool) -> Result<Value, St
         return Ok(json!({"added": tool.name(), "version": tool.version(), "source": "hub", "from": reference.item(), "verified": verified, "notice": got.notice, "review": review, "counted": counted, "next": format!("yougori tool install {} --environment ENV", tool.name())}));
     }
     let folder = client::plain(std::fs::canonicalize(source).map_err(|e| format!("Cannot open the folder {source}: {e}. Give a tool folder or hub/PUBLISHER/NAME."))?);
-    let (tool, files, findings) = read_folder(&folder)?;
+    let (tool, files, findings) = read_file(&folder)?;
     if !findings.refused.is_empty() {
         return Err(list("This tool's folder", &findings.refused));
     }
     let from = folder.to_string_lossy().into_owned();
     added.save(&tool, &files, json!({"source": "folder", "from": from}))?;
-    Ok(json!({"added": tool.name(), "version": tool.version(), "source": "folder", "from": from, "review": review::tool(&tool, &findings.wallet_notice().into_iter().collect::<Vec<_>>()), "next": format!("yougori tool install {} --environment ENV", tool.name())}))
+    Ok(json!({"added": tool.name(), "version": tool.version(), "source": "folder", "from": from, "review": review::tool_file(&tool, &findings.wallet_notice().into_iter().collect::<Vec<_>>()), "next": format!("yougori tool install {} --environment ENV", tool.name())}))
 }
 
 /// `tool list`: built-in tools and added ones.
@@ -522,15 +530,16 @@ fn new_files(name: &str) -> Files {
     files
 }
 
-/// `tool check [FOLDER]`.
+/// `tool check [FOLDER]`: every rule of the tool format, the credential scan and the review,
+/// with whatever the tool declares it reaches.
 pub fn check_folder(folder: &str) -> Result<Value, String> {
     let path = PathBuf::from(folder);
-    let (tool, files, findings) = read_folder(&path)?;
+    let (tool, files, findings) = read_file(&path)?;
     if !findings.refused.is_empty() {
         return Err(list("This tool's folder", &findings.refused));
     }
     let notices: Vec<String> = findings.wallet_notice().into_iter().collect();
-    Ok(json!({"ok": true, "name": tool.name(), "version": tool.version(), "files": files.len(), "bytes": files.values().map(Vec::len).sum::<usize>(), "review": review::tool(&tool, &notices), "clash": clash(tool.name())}))
+    Ok(json!({"ok": true, "name": tool.name(), "version": tool.version(), "files": files.len(), "bytes": files.values().map(Vec::len).sum::<usize>(), "review": review::tool_file(&tool, &notices), "clash": clash(tool.name())}))
 }
 
 #[cfg(test)]
@@ -614,14 +623,14 @@ mod tests {
         let added = Added { root: root.path().to_path_buf() };
         let text = "name: aider\nsummary: Pair programming.\nversion: 1.0.0\nlicense: MIT\ncommand: aider\ncheck: aider --version\n";
         let files: Files = [(format::TOOL_FILE.to_owned(), text.as_bytes().to_vec())].into();
-        let parsed = format::tool(&files, "").unwrap();
+        let parsed = format::tool_file(&files, "").unwrap();
         added.save(&parsed, &files, json!({"source": "folder", "from": "C:/tools/aider"})).unwrap();
         assert_eq!(added.get("aider").unwrap().unwrap().0.version(), "1.0.0");
         assert!(added.save(&parsed, &files, json!({"source": "hub", "from": "acme/aider"})).unwrap_err().contains("already added from C:/tools/aider"));
         added.save(&parsed, &files, json!({"source": "folder", "from": "C:/tools/aider"})).unwrap();
         assert_eq!(added.list().len(), 1);
         let codex: Files = [(format::TOOL_FILE.to_owned(), text.replace("aider", "codex").into_bytes())].into();
-        assert!(added.save(&format::tool(&codex, "").unwrap(), &codex, json!({"source": "folder", "from": "x"})).unwrap_err().contains("is a built-in tool"));
+        assert!(added.save(&format::tool_file(&codex, "").unwrap(), &codex, json!({"source": "folder", "from": "x"})).unwrap_err().contains("is a built-in tool"));
         assert!(added.remove("aider").unwrap());
         assert!(added.get("aider").unwrap().is_none());
     }
@@ -633,9 +642,64 @@ mod tests {
         let text = "name: aider\nsummary: Pair programming.\nversion: 1.0.0\nlicense: MIT\ncommand: aider\ncheck: aider --version\n";
         let files: Files = [(format::TOOL_FILE.to_owned(), text.as_bytes().to_vec())].into();
         assert!(!added_before(&added, "aider", "acme/aider"));
-        added.save(&format::tool(&files, "").unwrap(), &files, json!({"source": "hub", "from": "acme/aider", "verified": false})).unwrap();
+        added.save(&format::tool_file(&files, "").unwrap(), &files, json!({"source": "hub", "from": "acme/aider", "verified": false})).unwrap();
         assert!(added_before(&added, "aider", "acme/aider"));
         assert!(!added_before(&added, "aider", "other/aider"));
+    }
+
+    /// A tool file that declares what it reaches, as the shared format reads it.
+    const DECLARED: &str = "kind: tool\nname: httpie\ntitle: HTTPie\nsummary: A command-line HTTP client.\nversion: 1.0.0\nlicense: MIT\ncommand: http\ninstall:\n  - python3 -m pip install --user httpie==3.2.4\ncheck: http --version\nsignin: {method: api-key, variable: HTTPIE_TOKEN}\nneeds: {internet: true}\naccess: {internet: true, folders: [/workspace/.httpie]}\ninputs:\n  - {name: HTTPIE_TOKEN, secret: true, about: The token sent with every request.}\n  - {name: HTTPIE_CONFIG_DIR}\noutputs:\n  - {name: report, path: /workspace/report.json, about: The last response.}\n";
+
+    fn tool_folder(root: &Path, name: &str, text: &str) -> String {
+        let folder = root.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format::TOOL_FILE), text).unwrap();
+        folder.to_string_lossy().into_owned()
+    }
+
+    /// PROVES `tool check` reads a tool's declared access, inputs and outputs with the one tool
+    /// format: a file that declares them passes and its review shows them, one without them still
+    /// passes, and one past the shared bounds or with a relative folder is refused in the shared
+    /// format's words.
+    #[test]
+    fn tool_check_reads_declared_access_inputs_and_outputs_with_the_shared_format() {
+        let root = tempfile::tempdir().unwrap();
+        let checked = check_folder(&tool_folder(root.path(), "declared", DECLARED)).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((checked["ok"].as_bool(), checked["name"].as_str()), (Some(true), Some("httpie")));
+        let shown = &checked["review"]["tools"][0];
+        assert_eq!(shown["access"], json!(["uses the internet", "writes /workspace/.httpie", "reads the secret HTTPIE_TOKEN", "reads HTTPIE_CONFIG_DIR"]));
+        assert_eq!(shown["inputs"], json!(["HTTPIE_TOKEN", "HTTPIE_CONFIG_DIR"]));
+        assert_eq!(shown["outputs"], json!(["report"]));
+        assert_eq!(shown["commands"], json!(["python3 -m pip install --user httpie==3.2.4"]), "the installer's part of the review is unchanged");
+
+        let plain = DECLARED.split("access:").next().unwrap();
+        let checked = check_folder(&tool_folder(root.path(), "plain", plain)).unwrap_or_else(|e| panic!("{e}"));
+        assert!(checked["review"]["tools"][0].get("access").is_none(), "nothing declared, nothing shown: {checked}");
+
+        let refused = |name: &str, extra: &str| check_folder(&tool_folder(root.path(), name, &format!("{plain}{extra}"))).unwrap_err();
+        let relative = refused("relative", "access: {folders: [relative/x]}\n");
+        assert!(relative.contains("This tool has one thing to fix:") && relative.contains("access.folders: relative/x is not an absolute folder inside the sandbox."), "{relative}");
+        let many = (0..=yougori_setup::limits::INPUTS.max).map(|n| format!("  - {{name: V{n}}}\n")).collect::<String>();
+        assert!(refused("many", &format!("inputs:\n{many}")).contains(&yougori_setup::limits::INPUTS.exceeded(yougori_setup::limits::INPUTS.max + 1)));
+        assert!(refused("unsecret", "inputs: [{name: HTTPIE_TOKEN}]\n").contains("inputs: HTTPIE_TOKEN is the sign-in key, so it must say secret: true."));
+        assert!(refused("unknown", "access: {network: all}\n").contains("is not valid"), "an unknown key under access is refused rather than ignored");
+    }
+
+    /// PROVES an added tool keeps what it declares: the files are saved whole, and the installer's
+    /// view read back for `tool install` carries exactly the install lines, check and sign-in.
+    #[test]
+    fn an_added_tool_keeps_its_declared_access_and_installs_from_the_same_view() {
+        let root = tempfile::tempdir().unwrap();
+        let added = Added { root: root.path().to_path_buf() };
+        let files: Files = [(format::TOOL_FILE.to_owned(), DECLARED.as_bytes().to_vec())].into();
+        let file = format::tool_file(&files, "").unwrap_or_else(|p| panic!("{}", p.join(" ")));
+        added.save(&file, &files, json!({"source": "folder", "from": "C:/tools/httpie"})).unwrap();
+        let (view, _) = added.get("httpie").unwrap().unwrap();
+        assert_eq!(view, Tool::from(&file));
+        assert_eq!((view.key_variable(), view.install.len(), view.check.as_deref()), (Some("HTTPIE_TOKEN"), 1, Some("http --version")));
+        let kept = format::tool_file(&scan::collect(&added.folder("httpie")).unwrap().files, "").unwrap();
+        assert_eq!(kept.declared_access(), file.declared_access());
+        assert_eq!(fingerprint(&view), fingerprint(&Tool::from(&kept)));
     }
 
     #[test]

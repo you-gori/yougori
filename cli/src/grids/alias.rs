@@ -181,6 +181,123 @@ fn admin(action: &str, request: &Map<String, Value>, pairs: &[(&str, &str)]) -> 
     json!({ "request": Value::Object(body) })
 }
 
+/// What was typed for `key`, or what the legacy surface sends when nothing was.
+fn typed_or(request: &Map<String, Value>, key: &str, otherwise: Value) -> Value {
+    request.get(key).filter(|value| !value.is_null()).cloned().unwrap_or(otherwise)
+}
+
+/// Whether `key` was typed at all.
+fn given(request: &Map<String, Value>, key: &str) -> bool {
+    request.get(key).is_some_and(|value| !value.is_null())
+}
+
+/// A desk's kind in the hub's own word, read the way the engine reads `--kind` for a person's
+/// desk (`DeskKind::parse` in `grid/src/desks.rs`).
+fn desk_kind(request: &Map<String, Value>) -> Result<&'static str, Fault> {
+    match request.get("kind").and_then(Value::as_str).map(|kind| kind.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("container" | "") => Ok("container"),
+        Some("microvm" | "micro-vm" | "micro") => Ok("microVm"),
+        Some("vm" | "fullvm" | "full-vm") => Ok("vm"),
+        Some(_) => Err(Fault::new(Code::ValueUnusable, "Give --kind as container, microvm or vm.")),
+    }
+}
+
+/// The image request the Sandbox Grid's admin form sends (`src/components/sandbox-grid-admin.tsx`),
+/// field for field. The hub reads every one of these and defaults none of them, so whatever was
+/// not typed takes the form's own default: version 1, 2 cores, 4 GB of memory, 40 GB of disk and
+/// no GPU, with no description and no applications listed.
+fn image_request(action: &str, kind: &str, image: Value, request: &Map<String, Value>) -> Result<Map<String, Value>, Fault> {
+    let mut body = Map::new();
+    body.insert("action".into(), json!(action));
+    body.insert("name".into(), json!(text(request, "image", "Give the image a name with --image NAME.")?));
+    body.insert("version".into(), typed_or(request, "version", json!("1")));
+    body.insert("description".into(), typed_or(request, "description", json!("")));
+    body.insert("applications".into(), json!([]));
+    body.insert(
+        "spec".into(),
+        json!({
+            "kind": kind,
+            "image": image,
+            "cpu": typed_or(request, "cpu", json!(2)),
+            "memoryGb": typed_or(request, "memory-gb", json!(4)),
+            "diskGb": typed_or(request, "disk-gb", json!(40)),
+            "gpu": typed_or(request, "gpu", json!(false)),
+        }),
+    );
+    Ok(body)
+}
+
+/// Every Closed Neo Grid in one `grid_status` answer, each shaped like a status of its own
+/// (`hub` and `member`, either one null), so the register can name each one: a computer may run
+/// several hubs and belong to several grids. A hub and this computer's own membership in that
+/// same grid are one instance and one entry. A hub that has not started yet is listed with what
+/// is known of it rather than left out, because a grid nobody can see is a grid nobody can
+/// delete. An answer from before there could be several is returned as it is.
+pub fn each_neo_grid(status: &Value) -> Vec<Value> {
+    each_instance(status, &[("hub", status["hubs"].as_array()), ("member", status["members"].as_array())])
+}
+
+/// The shared shape of `each_neo_grid` and `each_access_grid`: one entry per instance, with the
+/// roles that instance holds filled in. `lists` is in the order the roles should be tried.
+///
+/// The register reads a grid's id from `id`, so an entry that names its grid some other way
+/// (`gridId`, or a sign-in's `accessId`) has it copied there. An entry that names no grid at all,
+/// which is a record this computer could not read, is still listed, under its instance, so that
+/// it can be seen and acted on; without that it would be one more grid silently missing.
+fn each_instance(status: &Value, lists: &[(&str, Option<&Vec<Value>>)]) -> Vec<Value> {
+    if lists.iter().all(|(_, list)| list.is_none()) {
+        return vec![status.clone()];
+    }
+    let blank: Value = lists.iter().map(|(role, _)| ((*role).to_owned(), Value::Null)).collect::<Map<String, Value>>().into();
+    let mut found: Vec<(String, Value)> = Vec::new();
+    for (role, list) in lists {
+        for entry in list.iter().copied().flatten() {
+            let instance = entry["instance"].as_str().unwrap_or_default().to_owned();
+            let mut entry = entry.clone();
+            if entry.get("id").is_none_or(Value::is_null) {
+                let named_by = entry["gridId"].as_str().or_else(|| entry["accessId"].as_str()).unwrap_or(instance.as_str()).to_owned();
+                entry["id"] = json!(named_by);
+            }
+            match found.iter_mut().find(|(seen, _)| *seen == instance) {
+                Some((_, grid)) => grid[*role] = entry,
+                None => {
+                    let mut grid = blank.clone();
+                    grid[*role] = entry;
+                    found.push((instance, grid));
+                }
+            }
+        }
+    }
+    found.into_iter().map(|(_, grid)| grid).collect()
+}
+
+/// Every Sandbox Grid in one `desks_status` answer, each shaped like a status of its own (`hub`,
+/// `member` and `desk`, any of them null), so the register can name each one: a computer may host
+/// one grid, belong to another and have its person signed in to a third. What one instance holds
+/// is one entry; an instance holding only a sign-in is listed too. An answer from before there
+/// could be several is returned as it is.
+pub fn each_desks_grid(status: &Value) -> Vec<Value> {
+    let lists = [("hub", status["hubs"].as_array()), ("member", status["members"].as_array()), ("desk", status["logins"].as_array())];
+    if lists.iter().all(|(_, list)| list.is_none()) {
+        return vec![status.clone()];
+    }
+    let mut found: Vec<(String, Value)> = Vec::new();
+    for (role, list) in lists {
+        for entry in list.into_iter().flatten() {
+            let instance = entry["instance"].as_str().unwrap_or_default().to_owned();
+            match found.iter_mut().find(|(seen, _)| *seen == instance) {
+                Some((_, grid)) => grid[role] = entry.clone(),
+                None => {
+                    let mut grid = json!({"hub": null, "member": null, "desk": null});
+                    grid[role] = entry.clone();
+                    found.push((instance, grid));
+                }
+            }
+        }
+    }
+    found.into_iter().map(|(_, grid)| grid).collect()
+}
+
 /// Which product handler one typed command reaches, and with what.
 ///
 /// Every arm names a method that exists today. As each product moves onto Grid Core its arm
@@ -325,11 +442,53 @@ pub fn product_call(product: Product, noun: &str, verb: &str, request: &Map<Stri
         },
         ("people", "add") => match product {
             Product::Desks => {
-                let mut params = Map::new();
-                params.insert("username".into(), json!(text(request, "person", "Name the person: yougori grids people add USERNAME.")?));
-                params.insert("password".into(), json!(text(request, "password", "A person needs a password; read it from stdin with --password -.")?));
-                carry(&mut params, request, &[("person-name", "name"), ("kind", "kind"), ("cpu", "cpu"), ("memory-gb", "memoryGb"), ("disk-gb", "diskGb"), ("gpu", "gpu")]);
-                Ok(("desks_person_add", Value::Object(params)))
+                // A Sandbox Grid keeps no teams, and takes an email only once the person exists, so
+                // both are refused with what to run instead rather than sent and dropped.
+                if given(request, "teams") {
+                    return Err(Fault::new(Code::ValueUnusable, "A Sandbox Grid has no teams. Add the person without --teams."));
+                }
+                if given(request, "email") {
+                    return Err(Fault::new(Code::ValueUnusable, "A Sandbox Grid takes a person's email once they are added. Add them without --email, then run yougori grids people set USERNAME --email ADDRESS."));
+                }
+                let username = text(request, "person", "Name the person: yougori grids people add USERNAME.")?;
+                let password = text(request, "password", "A person needs a password; read it from stdin with --password -.")?;
+                let sized = ["kind", "cpu", "memory-gb", "disk-gb", "gpu"].iter().any(|key| given(request, key));
+                if given(request, "size") && sized {
+                    return Err(Fault::new(Code::ValueUnusable, "A size already sets the desk's cores, memory and disk. Give --size, or the desk's own --kind, --cpu, --memory-gb, --disk-gb and --gpu, not both."));
+                }
+                if !given(request, "size") && !given(request, "permission") {
+                    // What `yougori desks add-person` sends.
+                    let mut params = Map::new();
+                    params.insert("username".into(), json!(username));
+                    params.insert("password".into(), json!(password));
+                    carry(&mut params, request, &[("person-name", "name"), ("kind", "kind"), ("cpu", "cpu"), ("memory-gb", "memoryGb"), ("disk-gb", "diskGb"), ("gpu", "gpu")]);
+                    return Ok(("desks_person_add", Value::Object(params)));
+                }
+                // A permission or a size goes to the hub's own personAdd, the request `yougori desks
+                // manage` sends: the engine turns the password into what the hub keeps, the hub
+                // calls the permission `adminRole`, and a size is a workspace role the first desk
+                // is built from. A desk sized by hand keeps `desks add-person`'s defaults: a
+                // container of 2 cores, 4 GB and 20 GB (`person_desk` in src-tauri/src/desks.rs).
+                let mut body = Map::new();
+                body.insert("action".into(), json!("personAdd"));
+                body.insert("username".into(), json!(username));
+                body.insert("name".into(), typed_or(request, "person-name", json!(username)));
+                body.insert("password".into(), json!(password));
+                carry(&mut body, request, &[("permission", "adminRole"), ("size", "roleId")]);
+                if sized {
+                    body.insert(
+                        "spec".into(),
+                        json!({
+                            "kind": desk_kind(request)?,
+                            "cpu": typed_or(request, "cpu", json!(2)),
+                            "memoryGb": typed_or(request, "memory-gb", json!(4)),
+                            "diskGb": typed_or(request, "disk-gb", json!(20)),
+                            "gpu": typed_or(request, "gpu", json!(false)),
+                            "image": "",
+                        }),
+                    );
+                }
+                Ok(("desks_manage", json!({ "request": Value::Object(body) })))
             }
             Product::Access => {
                 let mut body = Map::new();
@@ -342,7 +501,19 @@ pub fn product_call(product: Product, noun: &str, verb: &str, request: &Map<Stri
             _ => Err(not_here(product, "This grid has computers rather than people.")),
         },
         ("people", "set") => match product {
-            Product::Desks => Ok(("desks_manage", admin("personUpdate", request, &[("person", "id"), ("person-name", "name"), ("email", "email"), ("permission", "permission"), ("teams", "teams")]))),
+            // What the Sandbox Grid's admin screen sends: the hub calls a person's permission
+            // `adminRole`, and it changes neither a person's name nor any teams, so those are
+            // refused rather than sent and quietly dropped.
+            Product::Desks => {
+                if given(request, "person-name") {
+                    return Err(Fault::new(Code::ValueUnusable, "A Sandbox Grid cannot change a person's name once they are added; it changes their email and their permission."));
+                }
+                if given(request, "teams") {
+                    return Err(Fault::new(Code::ValueUnusable, "A Sandbox Grid has no teams; it changes a person's email and their permission."));
+                }
+                Ok(("desks_manage", admin("personUpdate", request, &[("person", "id"), ("email", "email"), ("permission", "adminRole")])))
+            }
+            // What `yougori access set-person` sends.
             Product::Access => Ok(("access_manage", admin("personUpdate", request, &[("person", "person"), ("person-name", "name"), ("email", "email"), ("permission", "permission"), ("teams", "teams")]))),
             _ => Err(not_here(product, "This grid has computers rather than people.")),
         },
@@ -395,14 +566,37 @@ pub fn product_call(product: Product, noun: &str, verb: &str, request: &Map<Stri
         },
         ("people", "my-password") => Ok(("access_account", admin("password", request, &[("password", "password"), ("code", "code")]))),
         ("people", "sso") => {
-            let off = request.get("off").is_some_and(|value| value == &json!(true));
-            let action = if off { "ssoClear" } else { "ssoSet" };
-            let pairs: &[(&str, &str)] = if off { &[] } else { &[("issuer", "issuer"), ("client-id", "clientId"), ("claim", "claim"), ("redirect-port", "redirectPort"), ("passwordless", "passwordless")] };
-            match product {
-                Product::Access => Ok(("access_manage", admin(action, request, pairs))),
-                Product::Desks => Ok(("desks_manage", admin(action, request, pairs))),
-                _ => Err(not_here(product, "Nobody signs in to this grid; its computers join it.")),
+            let method = match product {
+                Product::Access => "access_manage",
+                Product::Desks => "desks_manage",
+                _ => return Err(not_here(product, "Nobody signs in to this grid; its computers join it.")),
+            };
+            if request.get("off").is_some_and(|value| value == &json!(true)) {
+                return Ok((method, admin("ssoClear", request, &[])));
             }
+            // Both products read the same settings under their own names, and both send the claim
+            // and passwordless every time, as `yougori access sso` and the Sandbox Grid's admin
+            // screen do: the claim is email unless another was named.
+            let mut body = Map::new();
+            body.insert("action".into(), json!("ssoSet"));
+            body.insert("issuer".into(), json!(text(request, "issuer", "Give your identity provider's address with --issuer, such as https://login.microsoftonline.com/TENANT/v2.0.")?));
+            body.insert("clientId".into(), json!(text(request, "client-id", "Give the client ID of the app registered at your identity provider with --client-id.")?));
+            let claim = typed_or(request, "claim", json!("email"));
+            body.insert("passwordless".into(), json!(request.get("passwordless").is_some_and(|value| value == &json!(true))));
+            match product {
+                Product::Access => {
+                    body.insert("claim".into(), claim);
+                    carry(&mut body, request, &[("redirect-port", "redirectPort")]);
+                }
+                _ => {
+                    // A Sandbox Grid opens its sign-in page on a new port every time.
+                    if given(request, "redirect-port") {
+                        return Err(Fault::new(Code::ValueUnusable, "A Sandbox Grid picks a new sign-in port each time, so --redirect-port belongs to an Access Grid only."));
+                    }
+                    body.insert("usernameClaim".into(), claim);
+                }
+            }
+            Ok((method, json!({ "request": Value::Object(body) })))
         }
         // ---- Computers ----
         ("computers", "list" | "show") => Ok((status, json!({}))),
@@ -432,14 +626,38 @@ pub fn product_call(product: Product, noun: &str, verb: &str, request: &Map<Stri
         }
         // ---- What a computer gives ----
         ("share", "show") => Ok((status, json!({}))),
-        ("share", "set") => {
-            let mut params = Map::new();
-            params.insert("memberId".into(), json!(text(request, "computer", "Give the computer's ID. yougori grids computers list shows each computer with its ID.")?));
-            carry(&mut params, request, &[("cpu", "cpu"), ("memory-gb", "memoryGb"), ("disk-gb", "diskGb"), ("gpu", "gpu"), ("idle-only", "idleOnly"), ("suggested", "suggested")]);
-            Ok(("desks_member_share", Value::Object(params)))
-        }
-        ("share", "drain") => Ok(("grid_member_exclude", json!({ "memberId": text(request, "computer", "Give the computer's ID. yougori grids computers list shows each computer with its ID.")? }))),
-        ("share", "bring-back") => Ok(("grid_member_include", json!({ "memberId": text(request, "computer", "Give the computer's ID. yougori grids computers list shows each computer with its ID.")? }))),
+        // A share is the Sandbox Grid's (`yougori desks share`); leaving a computer out and
+        // bringing it back are the Closed Neo Grid's (`yougori grid exclude` and `include`).
+        // Neither product has the other's, so each is refused in words rather than sent to the
+        // wrong product.
+        ("share", "set") => match product {
+            Product::Desks => {
+                let mut params = Map::new();
+                params.insert("memberId".into(), json!(text(request, "computer", "Give the computer's ID. yougori grids computers list shows each computer with its ID.")?));
+                carry(&mut params, request, &[("cpu", "cpu"), ("memory-gb", "memoryGb"), ("disk-gb", "diskGb"), ("gpu", "gpu"), ("idle-only", "idleOnly"), ("suggested", "suggested")]);
+                Ok(("desks_member_share", Value::Object(params)))
+            }
+            Product::Neo => Err(not_here(
+                product,
+                "The Closed Neo Grid uses all of a computer or none of it. Leave one out with yougori grids share drain, and use it again with yougori grids share bring-back.",
+            )),
+            _ => Err(not_here(product, "Only a Sandbox Grid is given a share of a computer.")),
+        },
+        ("share", "drain" | "bring-back") => match product {
+            Product::Neo => Ok((
+                if verb == "drain" { "grid_member_exclude" } else { "grid_member_include" },
+                json!({ "memberId": text(request, "computer", "Give the computer's ID. yougori grids computers list shows each computer with its ID.")? }),
+            )),
+            Product::Desks if verb == "drain" => Err(not_here(
+                product,
+                "A Sandbox Grid cannot leave one computer out yet. Give it no share instead, with yougori grids share set COMPUTER --cpu 0 --memory-gb 0 --disk-gb 0, and no new desk is built on it.",
+            )),
+            Product::Desks => Err(not_here(
+                product,
+                "A Sandbox Grid never leaves a computer out, so there is nothing to bring back. Give a computer its share again with yougori grids share set COMPUTER --suggested.",
+            )),
+            _ => Err(not_here(product, "Only the Closed Neo Grid leaves a computer out and brings it back.")),
+        },
         // ---- Models ----
         ("models", "list" | "show") => Ok(("grid_status", json!({}))),
         ("models", "gpus") => Ok(("grid_neocloud_status", json!({}))),
@@ -504,11 +722,37 @@ pub fn product_call(product: Product, noun: &str, verb: &str, request: &Map<Stri
         ("desks", "refresh") => Ok(("desk_refresh", json!({}))),
         ("desks", "sign-out") => Ok(("desk_logout", json!({}))),
         ("desks", "portal") => Ok(("desks_manage", admin("portal", request, &[]))),
-        ("desks", "add-image") => Ok(("desks_manage", admin("imageAdd", request, &[("image", "name"), ("from", "url"), ("sha256", "sha256")]))),
-        ("desks", "import-image") => Ok(("desks_manage", admin("imageImport", request, &[("path", "path"), ("image", "name")]))),
+        // An image is what the admin form publishes: a prepared VM disk unless --kind container
+        // says otherwise, from an HTTPS address with its SHA-256 checksum, or a container image
+        // whose reference carries its own digest.
+        ("desks", "add-image") => {
+            let kind = request.get("kind").and_then(Value::as_str).unwrap_or("vm").to_owned();
+            let from = text(request, "from", "Say where the image comes from with --from: an HTTPS address for a prepared disk, or a container image pinned with @sha256.")?;
+            let sha256 = if kind == "vm" {
+                json!(text(request, "sha256", "A prepared disk needs its SHA-256 checksum, so every computer can check the bytes. Give it with --sha256.")?.trim())
+            } else if kind == "container" && given(request, "sha256") {
+                return Err(Fault::new(Code::ValueUnusable, "A container image carries its digest in its reference, after @sha256. Leave out --sha256."));
+            } else {
+                Value::Null
+            };
+            let mut body = image_request("imageAdd", &kind, json!(from), request)?;
+            body.insert("sha256".into(), sha256);
+            Ok(("desks_manage", json!({ "request": Value::Object(body) })))
+        }
+        // Taking in a disk from this computer is always a prepared VM disk. The engine reads the
+        // file, works out its checksum and where the hub keeps it, then publishes it as imageAdd.
+        ("desks", "import-image") => {
+            let path = text(request, "path", "Name the prepared disk file on this computer with --path.")?;
+            let mut body = image_request("imageImport", "vm", json!(""), request)?;
+            body.insert("path".into(), json!(path));
+            body.insert("sha256".into(), json!(""));
+            Ok(("desks_manage", json!({ "request": Value::Object(body) })))
+        }
         ("desks", "remove-image") => Ok(("desks_manage", admin("imageRemove", request, &[("image", "id")]))),
-        // A size is a workspace role: a name over a prepared image, which sets its resources.
-        ("desks", "add-size") => Ok(("desks_manage", admin("roleAdd", request, &[("size", "name"), ("kind", "kind"), ("cpu", "cpu"), ("memory-gb", "memoryGb"), ("disk-gb", "diskGb"), ("gpu", "gpu"), ("image", "imageId")]))),
+        // A size is a workspace role: a name over an image, which sets its cores, memory and disk.
+        // Access is restricted unless --access says otherwise, which is the hub's default and the
+        // admin form's.
+        ("desks", "add-size") => Ok(("desks_manage", admin("roleAdd", request, &[("size", "name"), ("image", "imageId"), ("access", "access"), ("description", "description")]))),
         ("desks", "remove-size") => Ok(("desks_manage", admin("roleRemove", request, &[("size", "id")]))),
         ("desks", "parking") => {
             let action = match text(request, "step", "Say set or clear.")?.as_str() {
@@ -536,7 +780,15 @@ pub fn product_call(product: Product, noun: &str, verb: &str, request: &Map<Stri
             carry(&mut body, request, &[("field", "field"), ("note", "note"), ("config", "config")]);
             Ok(("access_manage", json!({ "request": Value::Object(body) })))
         }
-        ("credentials", "set") => Ok(("access_manage", admin("credentialUpdate", request, &[("credential", "credential"), ("credential-name", "name"), ("kind", "kind"), ("field", "field"), ("note", "note"), ("config", "config")]))),
+        ("credentials", "set") => {
+            let mut params = admin("credentialUpdate", request, &[("credential", "credential"), ("credential-name", "name"), ("kind", "kind"), ("field", "field"), ("note", "note"), ("config", "config")]);
+            // Where it may be sent is a list on the hub, as `add` and `yougori access
+            // add-credential` send it; the one typed here replaces the list.
+            if let Some(destination) = request.get("destination").filter(|value| !value.is_null()) {
+                params["request"]["destinations"] = json!([destination]);
+            }
+            Ok(("access_manage", params))
+        }
         ("credentials", "rotate") => Ok((
             "access_manage",
             admin("credentialUpdate", request, &[("credential", "credential"), ("value", "value")]),
@@ -705,4 +957,39 @@ pub fn chosen_by_the_words(noun: &str, verb: &str) -> bool {
 /// Which capability a product's grid has, for the registry and for the refusals.
 pub fn capability_of(product: Product) -> Capability {
     product.capability()
+}
+
+/// Whether a product's handlers are told which grid a command found. A product belongs here once
+/// every one of its dispatch methods accepts `gridId`; one arm per product, so each opts in by
+/// name.
+fn takes_grid_id(product: Product) -> bool {
+    match product {
+        Product::Access => true,
+        Product::Desks => true,
+        Product::Neo => true,
+        Product::Bounty => false,
+    }
+}
+
+/// Tells the product handler which grid a command found, where that product can hold several on
+/// one computer (`takes_grid_id`). Such a handler takes `gridId` (the grid's id, or its
+/// instance); the handler's own product word, which the register falls back to when a status
+/// names no id, is not a grid id and is not sent. The other products keep one grid of a kind and
+/// are left alone.
+pub fn aim(product: Product, grid_id: &str, params: &mut Value) {
+    let grid_id = grid_id.trim();
+    if !takes_grid_id(product) || grid_id.is_empty() || grid_id == product.handle() {
+        return;
+    }
+    if let Some(params) = params.as_object_mut() {
+        params.insert("gridId".to_owned(), json!(grid_id));
+    }
+}
+
+/// Every Access Grid in one `access_status` answer, each shaped like a status of its own (`hub`
+/// and `member`, either one null), so the register can name each one: a computer may run several
+/// hubs and be signed in to several grids. A hub and the sign-in to that same grid are one
+/// instance and one entry. An answer from before there could be several is returned as it is.
+pub fn each_access_grid(status: &Value) -> Vec<Value> {
+    each_instance(status, &[("hub", status["hubs"].as_array()), ("member", status["members"].as_array())])
 }

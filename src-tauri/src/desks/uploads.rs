@@ -1,4 +1,7 @@
 //! Inbound-only, owner-scoped upload staging. No path or byte-read operation is exposed.
+//!
+//! Files are staged in the folder of the grid whose desk they are for. The limits (16 uploads, two
+//! per person, 1 GiB staged) are this computer's own and hold across every grid on it.
 use super::*;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use std::io::Write;
@@ -99,7 +102,8 @@ pub(crate) async fn action(
                         .into(),
                 );
             }
-            let directory = folder(app).join("incoming");
+            let instance = super::instance_of_environment(app, environment).await.unwrap_or_else(|| DEFAULT.to_owned());
+            let directory = folder(app, &instance).join("incoming");
             std::fs::create_dir_all(&directory).map_err(|_| "Upload storage unavailable")?;
             let directory =
                 tempfile::tempdir_in(directory).map_err(|_| "Upload storage unavailable")?;

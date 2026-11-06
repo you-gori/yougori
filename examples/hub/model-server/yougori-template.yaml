@@ -1,0 +1,74 @@
+format_version: 2
+kind: template
+name: model-server
+title: Model Server
+subtitle: Run an open model on this computer with a private API.
+summary: Download an open model from Hugging Face or Yougori, run it on this computer's GPU or processor, and call it through a private OpenAI-compatible API.
+version: 1.0.0
+license: MIT
+topics: [ai, models, api, gpu, inference]
+aliases: [model server, run a model, local llm, openai compatible api, hugging face model]
+changelog: First version. Runs one open model on this computer with a private OpenAI-compatible API.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: optional
+
+capabilities:
+  - {id: models.local, selection: required}
+  - {id: web.service, selection: required}
+  - {id: web.private, selection: required}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: model
+    question: Which model should it run?
+    hint: hf.co/OWNER/MODEL from Hugging Face (GGUF or safetensors), or yg/PUBLISHER/MODEL from Yougori.
+    type: text
+    pattern: '^(hf\.co/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}|yg/[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9_-]{0,63})$'
+    group: ai_models
+  - id: quantization
+    question: Which size of it? (GGUF models only)
+    hint: Such as Q4_K_M. Leave empty and Yougori picks one that fits this computer.
+    type: text
+    required: false
+    pattern: '^[A-Za-z0-9_.-]{0,32}$'
+    group: ai_models
+  - id: gpu
+    question: Should it use this computer's GPU?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: optional, label: "Yes, when this computer has a supported one", hint: "Otherwise it runs on the processor, which needs a GGUF model."}
+      - {value: required, label: "Only on the GPU", hint: "Setup stops before anything is downloaded if there is no supported GPU."}
+      - {value: none, label: "No, use the processor", hint: "Needs a GGUF model."}
+    default: optional
+  - id: memory_gb
+    question: Memory for the model, in GB
+    hint: At least 4. Larger models need more; Yougori checks the model's own size before downloading.
+    type: number
+    min: 4
+    max: 256
+    default: 16
+    group: grid_workers
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [models, api, usage, logs]
+
+steps:
+  - title: See the API address and key
+    detail: Apps call the address with the key as a bearer token. The key stays in this computer's credential store; this command shows it again whenever you need it.
+    command: yougori model access {{outputs.model.id}}
+  - title: Chat with it
+    command: yougori model chat {{outputs.model.id}}
+  - title: Share it on Yougori Network
+    detail: Optional. From the setup's API view, share it free or paid with your Yougori account. Prompts then pass through the Network and the computer serving them.
+
+outputs:
+  - {key: model, label: Model, value: "{{outputs.model.model}}"}
+  - {key: endpoint, label: API address, value: "{{outputs.model.endpoint}}"}

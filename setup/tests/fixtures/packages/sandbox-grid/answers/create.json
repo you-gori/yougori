@@ -1,0 +1,20 @@
+{
+  "mode": "create",
+  "grid_name": "Example Team",
+  "coordinator_address": "192.168.1.20",
+  "reach": "lan",
+  "share_mode": "custom",
+  "share_cpu": 4,
+  "share_memory_gb": 8,
+  "share_disk_gb": 120,
+  "share_gpu": "none",
+  "share_availability": "always",
+  "first_person": true,
+  "first_person_username": "sam",
+  "first_person_name": "Sam Example",
+  "workspace_runtime": "container",
+  "workspace_cpu": 2,
+  "workspace_memory_gb": 4,
+  "workspace_disk_gb": 20,
+  "workspace_gpu": false
+}

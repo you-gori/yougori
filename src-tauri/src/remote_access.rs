@@ -106,6 +106,10 @@ pub struct CreateShare {
     pub confirm_pc_files: bool,
     #[serde(default)]
     pub acknowledge_existing_access: bool,
+    /// The ownership stamp of the setup that shares this, shown back by `list_remote_shares`. Only
+    /// the setup engine sets it; a share without one is the person's own.
+    #[serde(default)]
+    pub stamp: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +124,8 @@ struct Grant {
     verifier: String,
     revoked: bool,
     acknowledge_existing_access: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stamp: Option<String>,
 }
 impl Grant {
     fn active(&self) -> bool {
@@ -415,6 +421,9 @@ pub async fn create_remote_share(
     let _serial = manager.operations.lock().await;
     validate_password(&request.password)?;
     let username = username(&request.username)?;
+    if request.stamp.as_deref().is_some_and(|stamp| stamp.is_empty() || stamp.len() > 200 || !stamp.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))) {
+        return Err("A setup stamp uses up to 200 letters, digits, dots, colons, slashes, dashes or underscores".into());
+    }
     if request.expires_at.is_some_and(|e| e <= now()) {
         return Err("Choose an expiration in the future".into());
     }
@@ -479,6 +488,7 @@ pub async fn create_remote_share(
         verifier,
         revoked: false,
         acknowledge_existing_access: request.acknowledge_existing_access,
+        stamp: request.stamp,
     };
     let mut next = db.clone();
     if next.grants.len() >= 128 {
@@ -591,7 +601,7 @@ pub async fn list_remote_shares(manager: State<'_, RemoteAccess>) -> Result<Valu
         });
     let db = manager.db.lock().await;
     let sessions = manager.sessions.lock().await;
-    let grants:Vec<_>=db.grants.iter().map(|g| json!({"id":g.id,"targetId":g.target_id,"username":g.username,"permission":g.permission,"folder":g.folder,"expiresAt":g.expires_at,"status":if g.revoked {"revoked"} else if !g.active(){"expired"} else if url.is_some(){"online"}else{"offline"},"link":url.as_ref().map(|u|format!("{u}/share/{}",g.id)),"connectedUsers":sessions.values().filter(|s|s.grant==g.id && s.expires>now() && s.seen>now()-900).count()})).collect();
+    let grants:Vec<_>=db.grants.iter().map(|g| json!({"id":g.id,"targetId":g.target_id,"username":g.username,"permission":g.permission,"folder":g.folder,"expiresAt":g.expires_at,"status":if g.revoked {"revoked"} else if !g.active(){"expired"} else if url.is_some(){"online"}else{"offline"},"link":url.as_ref().map(|u|format!("{u}/share/{}",g.id)),"connectedUsers":sessions.values().filter(|s|s.grant==g.id && s.expires>now() && s.seen>now()-900).count(),"stamp":g.stamp})).collect();
     Ok(json!({"grants":grants,"audit":db.audit,"url":url,"port":live.as_ref().map(|l|l.port)}))
 }
 #[tauri::command]

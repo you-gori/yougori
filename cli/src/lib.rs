@@ -17,12 +17,19 @@ pub mod terminal;
 pub mod terminal_stream;
 pub mod container_tools;
 mod tool_public_access;
-mod tool_credentials;
+pub mod tool_credentials;
 pub mod tool_sharing;
 pub mod sandbox_stop;
-#[path = "launcher/ui.rs"]
+// The terminal UI and the line editor: the whole CLI uses them, and they lived under launcher/
+// only by where the files sat. They are library modules in their own right now, so removing the
+// launcher cannot take them with it. The `cli_ui` and `composer` names are unchanged, so no
+// caller moved.
+pub mod activity;
+pub mod storage_prompt;
 pub mod cli_ui;
-#[path = "launcher/composer.rs"]
+pub mod interactive;
+pub mod inference;
+pub mod grid_contributor;
 pub mod composer;
 pub mod presentation;
 pub mod doctor;
@@ -33,10 +40,8 @@ pub mod discovery;
 pub mod execution;
 pub mod logs;
 pub mod vault;
-pub mod access;
 pub mod model_auth;
 pub mod network;
-pub mod grid;
 pub mod grids;
 pub mod rollout;
 pub mod closed_bounty;
@@ -45,10 +50,10 @@ pub mod distribution;
 pub mod model_registry;
 pub mod confidential;
 pub mod bounty;
+pub mod bounty_map;
 pub mod bounty_practice;
 mod bounty_console;
 pub mod legacy_names;
-pub mod bounty_map;
 pub mod security;
 pub mod hub;
 pub mod template_models;

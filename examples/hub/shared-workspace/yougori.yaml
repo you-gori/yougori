@@ -1,0 +1,21 @@
+format_version: 2
+project: shared-workspace
+
+resources:
+  # One person's access to one of your existing sandboxes, through Yougori's remote gateway.
+  # The sandbox stays owned by its own setup; this setup only adds and removes the access.
+  recipient:
+    kind: access_binding
+    spec:
+      share:
+        target: {binding: workspace}
+        permission: "{{inputs.permission}}"
+        folder: "{{inputs.folder}}"
+        expires_hours: "{{inputs.expires_hours}}"
+        access: "{{inputs.access}}"
+        domain: "{{inputs.domain}}"
+      person:
+        username: "{{inputs.recipient}}"
+        display_name: "{{inputs.recipient_name}}"
+      secrets:
+        password: "{{secrets.recipient_password}}"

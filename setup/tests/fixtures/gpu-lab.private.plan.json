@@ -1,0 +1,357 @@
+{
+  "formatVersion": 2,
+  "instance": "gpu-lab",
+  "template": {
+    "name": "gpu-lab",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "required",
+    "platforms": [
+      "windows-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.health",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Health check",
+      "permissions": []
+    },
+    {
+      "id": "web.private",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "access": "none",
+    "cpu": "4",
+    "memory_gb": "16",
+    "storage_gb": "60"
+  },
+  "secrets": {
+    "notebook_token": "hub-gpu-lab-notebook_token"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "lab",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "jupyter",
+          "lab",
+          "--ip=0.0.0.0",
+          "--port=8888",
+          "--no-browser",
+          "--allow-root",
+          "--ServerApp.root_dir=/workspace"
+        ],
+        "cpu": 4.0,
+        "depends_on": [],
+        "environment": {},
+        "files": [],
+        "gpu": false,
+        "health": {
+          "path": "/api",
+          "port": 8888,
+          "wait_seconds": 300
+        },
+        "image": "docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime",
+        "internet": true,
+        "memory": 16,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8888
+        ],
+        "restart": "",
+        "secrets": {
+          "JUPYTER_TOKEN": "hub-gpu-lab-notebook_token"
+        },
+        "setup": {
+          "pip": [
+            "jupyterlab==4.2.5"
+          ],
+          "python_minimum": "3.10",
+          "verify_command": "jupyter lab --version"
+        },
+        "storage": 60,
+        "type": "gpu",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "work",
+            "target": "/workspace"
+          }
+        ],
+        "working_dir": "/workspace"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "notebook",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "lab"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "none",
+        "health": {
+          "expected_status": 200,
+          "path": "/api"
+        },
+        "port": 8888,
+        "target": {
+          "resource": "lab"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    }
+  ],
+  "order": [
+    "lab",
+    "notebook"
+  ],
+  "steps": [
+    {
+      "title": "Open the notebook",
+      "detail": "Open the address below and enter your token. Notebooks and files saved under /workspace are kept."
+    },
+    {
+      "title": "Check the GPU",
+      "detail": "In a notebook cell, run: import torch; torch.cuda.is_available(), torch.cuda.get_device_name(0)"
+    },
+    {
+      "title": "Read the lab's logs",
+      "command": "yougori logs {{env.lab}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "address",
+      "label": "Notebook address",
+      "value": "{{outputs.notebook.url}}",
+      "private": false
+    },
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{outputs.lab.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "publications",
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "lab",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "notebook",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "docker.io/pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime"
+      }
+    ],
+    "permissions": [
+      "lab uses the NVIDIA GPU.",
+      "lab receives the secret JUPYTER_TOKEN from the question notebook_token.",
+      "A website or API: Run containers on this computer.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Needs an NVIDIA GPU."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 4.0,
+      "memoryGb": 16.0,
+      "storageGb": 60.0,
+      "gpu": "required"
+    },
+    "questions": [
+      {
+        "id": "notebook_token",
+        "question": "Choose the token that opens the notebook",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory, in GB",
+        "answer": "16",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the lab, in whole GB",
+        "answer": "60",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "access",
+        "question": "Where can you open the notebook from?",
+        "answer": "none",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "lab",
+        "port": 8888,
+        "access": "none"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "lab",
+        "variable": "JUPYTER_TOKEN",
+        "source": "the question notebook_token"
+      }
+    ]
+  },
+  "digest": "6c3978bae3a71b5bed48f6a0ac0cf2581871c8f9de9c6ea076a31ef7615d3397"
+}

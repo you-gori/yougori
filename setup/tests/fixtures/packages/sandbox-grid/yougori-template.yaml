@@ -1,0 +1,281 @@
+format_version: 2
+kind: template
+name: sandbox-grid
+title: Sandbox Grid
+subtitle: Workspaces for people on your computers.
+summary: Give each person a private workspace that runs on your own computers, with sign-in, roles and optional company single sign-on.
+version: 1.0.0
+license: MIT
+topics: [grid, workspaces, sandbox, team, desks]
+aliases: [sandbox grid, desks, desk grid, workspaces, team workspaces]
+profile: sandbox_grid
+changelog: First version as a template. Creates a Sandbox Grid, adds a computer to one, or opens your own workspace in one.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: optional
+
+capabilities:
+  - {id: grid.create, selection: required, when: {mode: create}}
+  - {id: grid.join, selection: required, when: {mode: [join, person]}}
+  - {id: grid.reuse_compute, selection: default, when: {mode: create}}
+  - {id: grid.worker_limits, selection: default, when: {mode: create}}
+  - {id: grid.availability, selection: optional, when: {mode: create}}
+  - {id: people.team, selection: required}
+  - {id: people.workspaces, selection: required}
+  - {id: people.roles, selection: optional, when: {mode: create}}
+  - {id: people.invites, selection: optional, when: {mode: [create, join]}}
+  - {id: people.sso, selection: optional, when: {mode: create}}
+  - {id: web.service, selection: required, when: {mode: create}}
+  - {id: web.lan, selection: optional, when: {mode: create}}
+  - {id: web.quick_link, selection: optional, when: {mode: create}}
+  - {id: web.domain, selection: optional, when: {mode: create}}
+  - {id: run.service, selection: required, when: {mode: [create, join]}}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: mode
+    question: What do you want to do?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: create, label: "Create a Sandbox Grid", hint: "This computer runs the grid."}
+      - {value: join, label: "Add this computer to a grid", hint: "Host workspaces for a grid someone else runs."}
+      - {value: person, label: "Open my workspace", hint: "Sign in as a person the admin added."}
+    default: create
+
+  # Create: the grid itself.
+  - id: grid_name
+    question: What is the company or team called?
+    hint: Shown to everyone who joins. Up to 64 characters.
+    type: text
+    pattern: "^.{1,64}$"
+    group: grid_workers
+    when: {mode: create}
+  - id: coordinator_address
+    question: What is this computer's private network address?
+    hint: An address on your LAN or VPN, such as 192.168.1.20. Yougori suggests one; other computers reach the grid here.
+    type: text
+    pattern: "^[0-9A-Fa-f.:]{2,45}$"
+    group: grid_workers
+    when: {mode: create}
+  - id: reach
+    question: Where can people and computers reach the grid from?
+    type: choice
+    group: website_api
+    choices:
+      - {value: lan, label: "This network only", hint: "Computers on your LAN or VPN."}
+      - {value: quick, label: "A quick public link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "My own domain", hint: "A domain you saved with yougori domain add."}
+    default: lan
+    when: {mode: create}
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {mode: create, reach: domain}
+  - id: grid_password
+    question: Choose the company password computers use to join
+    hint: At least 10 characters. People do not use it; they get their own passwords.
+    type: secret
+    min_length: 10
+    group: people_access
+    when: {mode: create}
+
+  # Create: what this computer gives the grid.
+  - id: share_mode
+    question: How much of this computer may workspaces use?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: automatic, label: "Let Yougori suggest a share", hint: "Leaves room for the person using this computer."}
+      - {value: custom, label: "Set it myself"}
+    default: automatic
+    when: {mode: create}
+  - id: share_cpu
+    question: Processor cores for workspaces
+    type: number
+    min: 0
+    max: 1024
+    default: 4
+    group: grid_workers
+    when: {mode: create, share_mode: custom}
+  - id: share_memory_gb
+    question: Memory for workspaces, in GB
+    type: number
+    min: 0
+    max: 65536
+    default: 8
+    group: grid_workers
+    when: {mode: create, share_mode: custom}
+  - id: share_disk_gb
+    question: Disk for workspaces, in GB
+    type: number
+    min: 0
+    max: 1048576
+    default: 120
+    group: grid_workers
+    when: {mode: create, share_mode: custom}
+  - id: share_gpu
+    question: May workspaces use this computer's GPU?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: none, label: "No"}
+      - {value: optional, label: "Yes, when a workspace asks for one"}
+    default: none
+    when: {mode: create, share_mode: custom}
+  - id: share_availability
+    question: When may workspaces use this computer?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: always, label: "Whenever it is on"}
+      - {value: idle, label: "Only while nobody is using it"}
+    default: always
+    when: {mode: create, share_mode: custom}
+
+  # Create: the first person and their workspace.
+  - id: first_person
+    question: Add the first person and their workspace now?
+    hint: You can add more people later from the setup's People view.
+    type: yesno
+    default: true
+    group: people_access
+    when: {mode: create}
+  - id: first_person_username
+    question: Their username
+    hint: 3 to 32 letters, digits, dots, dashes or underscores.
+    type: text
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$"
+    group: people_access
+    when: {mode: create, first_person: "yes"}
+  - id: first_person_name
+    question: Their name, as others see it
+    type: text
+    required: false
+    pattern: "^.{0,64}$"
+    group: people_access
+    when: {mode: create, first_person: "yes"}
+  - id: first_person_password
+    question: Their password
+    hint: At least 10 characters. Give it to them privately; they can change it after signing in.
+    type: secret
+    min_length: 10
+    group: people_access
+    when: {mode: create, first_person: "yes"}
+  - id: workspace_runtime
+    question: What should their workspace be?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: container, label: "Container", hint: "Fast and light. Shares the host's kernel."}
+      - {value: microvm, label: "MicroVM", hint: "Its own kernel, still quick to start."}
+      - {value: vm, label: "Full VM", hint: "A complete virtual machine from a prepared disk image."}
+    default: container
+    when: {mode: create, first_person: "yes"}
+  - id: workspace_image
+    question: Image to build it from
+    hint: Leave empty for the default (Ubuntu 24.04 for a container, a small Alpine system for a MicroVM). A full VM needs a prepared disk image.
+    type: text
+    required: false
+    pattern: '^[^\s]{0,1000}$'
+    group: grid_workers
+    when: {mode: create, first_person: "yes"}
+  - id: workspace_cpu
+    question: Processor cores for the workspace
+    type: number
+    min: 0.5
+    max: 64
+    default: 2
+    group: grid_workers
+    when: {mode: create, first_person: "yes"}
+  - id: workspace_memory_gb
+    question: Memory for the workspace, in GB
+    type: number
+    min: 0.5
+    max: 512
+    default: 4
+    group: grid_workers
+    when: {mode: create, first_person: "yes"}
+  - id: workspace_disk_gb
+    question: Disk for the workspace, in whole GB
+    type: number
+    min: 1
+    max: 2048
+    default: 20
+    group: files_data
+    when: {mode: create, first_person: "yes"}
+  - id: workspace_gpu
+    question: Give the workspace a GPU?
+    hint: Only works when a computer with a supported GPU shares it.
+    type: yesno
+    default: false
+    group: grid_workers
+    when: {mode: create, first_person: "yes"}
+
+  # Join: this computer hosts workspaces for another grid.
+  - id: invite
+    question: Paste the invite from the grid's admin
+    hint: It starts with desk-invite:.
+    type: secret
+    group: grid_workers
+    when: {mode: join}
+  - id: join_password
+    question: The grid's company password
+    type: secret
+    group: grid_workers
+    when: {mode: join}
+
+  # Person: open your own workspace.
+  - id: person_invite
+    question: Paste the grid invite your admin gave you
+    hint: It starts with desk-invite:.
+    type: secret
+    group: people_access
+    when: {mode: person}
+  - id: person_username
+    question: Your username
+    type: text
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$"
+    group: people_access
+    when: {mode: person}
+  - id: person_password
+    question: Your password
+    type: secret
+    group: people_access
+    when: {mode: person}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [computers, people, workspaces, images, storage, logs]
+
+steps:
+  - title: Invite people
+    detail: Open the People view, add each person with a username and password, then send them the grid invite and their username privately. Each person runs this template with "Open my workspace".
+    when: {mode: create}
+  - title: Add more computers
+    detail: On another computer, run this template with "Add this computer to a grid" and paste the invite from the People view. Set what it may give in the Computers view.
+    when: {mode: create}
+  - title: Optional settings
+    detail: In Settings you can add a parking bucket so workspaces move when no computer has room, and cloud fallback computers. Both can cost money with your provider.
+    when: {mode: create}
+  - title: Set what this computer gives
+    detail: The grid's admin decides how much of this computer workspaces may use. Ask them to check it in their Computers view.
+    when: {mode: join}
+  - title: Turn on two-step sign-in
+    detail: In your workspace view, turn on two-step sign-in with an authenticator app.
+    when: {mode: person}
+
+outputs:
+  - {key: grid_name, label: Grid, value: "{{outputs.company.name}}", when: {mode: create}}
+  - {key: join_address, label: Coordinator address, value: "{{outputs.company.join_address}}", when: {mode: create}}
+  - {key: setup_page, label: Grid page, value: "{{outputs.company.page}}", when: {mode: create}}
+  - {key: workspace, label: First workspace, value: "{{outputs.workspaces.access_url}}", when: {mode: create, first_person: "yes"}}
+  - {key: invite, label: Grid invite, value: "{{outputs.company.invitation}}", private: true, when: {mode: create}}
+  - {key: joined_grid, label: Grid, value: "{{outputs.membership.name}}", when: {mode: join}}
+  - {key: person_grid, label: Grid, value: "{{outputs.person_session.name}}", when: {mode: person}}
+  - {key: person_page, label: Your workspaces, value: "{{outputs.person_session.page}}", when: {mode: person}}

@@ -60,7 +60,7 @@ function audit() {
   const result = spawnSync('python', ['-B', '-c', 'import sys,json;sys.path.insert(0,sys.argv[1]);import pages;print(json.dumps({"html":pages.shell("Fixture"),"js":pages.SCRIPT,"css":pages.CSS,"theme":pages.THEME_SCRIPT}))', site], {encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
   const assets = JSON.parse(result.stdout);
-  const browser = await chromium.launch({headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'chromium'});
+  const browser = await chromium.launch({headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome', chromiumSandbox: true});
   try {
     // Reduced motion: no curtain or entrance animation half-way through when the audit runs.
     const context = await browser.newContext({viewport: {width: 1400, height: 900}, colorScheme: 'light', reducedMotion: 'reduce'});
@@ -68,6 +68,7 @@ function audit() {
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     let viewer = 'visitor';
+    const posted = [];
     const model = (name, maker, priceIn, priceOut, more = {}) => ({name, maker, available: true, discovered: true, priceIn, priceOut, ...more});
     const catalogue = () => {
       const admin = viewer === 'admin';
@@ -90,18 +91,30 @@ function audit() {
       if (url.pathname === '/theme.js') return route.fulfill({body: assets.theme, contentType: 'text/javascript'});
       if (url.pathname === '/api/me') data = {signedIn, admin: viewer === 'admin', anyAdmin: true, walletSet: true, email: `${viewer}@example.invalid`, credits: 42.5, siteName: 'Fixture'};
       else if (url.pathname === '/api/models') data = {models: catalogue(), updatedAt: 1, refreshSeconds: 30, markup: 0, pricesAsOf: '2026-10-24',
-        priceSources: {openai: 'https://openai.com/api/pricing', market: 'https://openrouter.ai/models'}};
+        priceSources: {openai: 'https://openai.com/api/pricing', market: 'https://openrouter.ai/models'},
+        ...(viewer === 'admin' ? {toolModels: [{id: 'kilo/fixture-free', tool: 'kilo', model: 'fixture-free', label: 'Fixture Free', free: true, access: 'coding-tool'}]} : {})};
       else if (url.pathname === '/api/keys') data = {keys: [{id: 1, name: 'Production', prefix: 'yg-abc1234', model: null, created_at: 1, last_used_at: 2, exhausted_note: null}]};
       else if (url.pathname === '/api/usage') data = {usage: [{model: 'openai/gpt-6-astra', tokensIn: 1200, tokensOut: 300, cost: 0.0324, at: 3}]};
       else if (url.pathname === '/api/wallet') data = {set: true, network: 'tron', label: 'Tron (TRC-20)', coin: 'USDT', hint: 'A Tron address, T and 33 more characters.',
-        address: 'TFixtureAddressFixtureAddressFixtur', networks: [{value: 'tron', label: 'Tron (TRC-20)', coin: 'USDT', hint: 'A Tron address.'},
+        address: 'TFixtureAddressFixtureAddressFixtur', token: 'TFixtureTokenFixtureTokenFixtureTok', tokenNote: 'Check that the token is Tether USD (USDT) on Tron (TRC-20) before sending.', networks: [{value: 'tron', label: 'Tron (TRC-20)', coin: 'USDT', hint: 'A Tron address.'},
           {value: 'ethereum', label: 'Ethereum (ERC-20)', coin: 'USDT', hint: 'An Ethereum-style address.'}]};
       else if (url.pathname === '/api/payments') data = {payments: [
         {reference: 'pay_waiting', dollars: 25, network: 'tron', label: 'Tron (TRC-20)', state: 'waiting', created_at: 1},
-        {reference: 'pay_received', dollars: 50, network: 'tron', label: 'Tron (TRC-20)', state: 'paid', created_at: 1}]};
+        {reference: 'pay_received', dollars: 50, network: 'tron', label: 'Tron (TRC-20)', state: 'paid', created_at: 1},
+        {reference: 'pay_rejected', dollars: 5, network: 'tron', label: 'Tron (TRC-20)', state: 'rejected', created_at: 1},
+        {reference: 'pay_cancelled', dollars: 5, network: 'tron', label: 'Tron (TRC-20)', state: 'cancelled', created_at: 1}]};
       else if (url.pathname === '/api/admin/overview') data = {users: 3, paid: 125, spent: 1.25, waiting: [
         {reference: 'pay_waiting', dollars: 25, network: 'tron', label: 'Tron (TRC-20)', address: 'TFixtureAddressFixtureAddressFixtur', created_at: 1, user_id: 2}],
-        providers: {paid: {openai: 'Connected', anthropic: 'API key not configured'}, local: {local: 'Connected'}, free: {kilo: 'Provider authorization failed.'}}};
+        providers: {paid: {openai: 'Connected', anthropic: 'API key not configured', 'codex-tool': 'Finish signing in to Codex; models will appear automatically.'},
+          local: {local: 'Connected'}, free: {kilo: 'Provider authorization failed.', 'kilo-tool': '1 models in kilo; available in its coding-tool terminal.'}},
+        fixes: {paid: {openai: '', anthropic: "Replace the API key with yougori template configure fixture. For a subscription, sign in again in the provider sandbox's terminal; yougori template status fixture lists its name.",
+          'codex-tool': "Replace the API key with yougori template configure fixture. For a subscription, sign in again in the provider sandbox's terminal; yougori template status fixture lists its name."},
+          free: {kilo: "Replace the API key with yougori template configure fixture. For a subscription, sign in again in the gateway sandbox's terminal; yougori template status fixture lists its name."}},
+        instance: 'fixture', nameTaken: [{name: 'openai/gpt-6-astra', owner: 'paid', sandbox: 'free'}]};
+      else if (['/api/admin/confirm', '/api/admin/reject', '/api/payments/cancel'].includes(url.pathname)) {
+        posted.push([url.pathname, route.request().postDataJSON()]);
+        data = {done: true};
+      }
       else if (!url.pathname.startsWith('/api/') && !url.pathname.includes('.')) return route.fulfill({body: assets.html, contentType: 'text/html'});
       else if (url.pathname.includes('.')) return route.fulfill({status: 404, body: ''});
       return route.fulfill({json: data});
@@ -110,7 +123,7 @@ function audit() {
     const views = [
       ['visitor', '/', () => page.locator('.mcard').first().waitFor()],
       ['buyer', '/', () => page.locator('.mcard').first().waitFor()],
-      ['buyer', '/keys', () => page.getByText('Waiting for payment', {exact: true}).waitFor()],
+      ['buyer', '/keys', () => page.getByText('Waiting for the owner', {exact: true}).waitFor()],
       ['admin', '/admin', () => page.getByText('Mark as received', {exact: true}).waitFor()],
     ];
     const problems = [];
@@ -134,6 +147,48 @@ function audit() {
     }
     assert.deepEqual(problems, [], `Text below the contrast minimum:\n${problems.join('\n')}`);
     assert.ok(audited > 400, `audited ${audited} texts`);
+
+    // The admin's page: every problem names its fix, a signed-out coding tool shows, the tools'
+    // own models are listed apart, and a payment is confirmed with its transaction id or rejected.
+    await page.emulateMedia({colorScheme: 'light'});
+    viewer = 'admin';
+    await page.goto('http://fixture.invalid/admin');
+    await page.getByText('Mark as received', {exact: true}).waitFor();
+    await page.getByText('Codex (coding tool)', {exact: true}).waitFor();
+    assert.equal(await page.locator('.status-row .fix').count(), 3, 'each problem row carries its fix');
+    assert.equal(await page.locator('.status-row', {hasText: 'Kilo (coding tool)'}).count(), 0, 'healthy tools are not connection problems');
+    assert.ok(await page.locator('.status-row .fix .copy').count() >= 3, 'each fix command can be copied');
+    // The fixture origin is not a secure context, so the copy goes to a stand-in clipboard.
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText: async value => { window.copied = value; }}}));
+    await page.locator('.status-row', {hasText: 'Anthropic'}).locator('.copy').click();
+    assert.equal(await page.evaluate(() => window.copied), 'yougori template configure fixture');
+    await page.getByText('Fixture Free', {exact: true}).waitFor();
+    await page.getByText(/Not listed, because another source already sells a model with the same name: openai\/gpt-6-astra from Gateway API \(kept from Provider API\)/).waitFor();
+    assert.ok(await page.locator('.section-head', {hasText: 'Connected coding tools'}).count(), 'coding tools have their own section');
+    assert.equal(await page.locator('#wallet-token').inputValue(), 'TFixtureTokenFixtureTokenFixtureTok');
+    await page.getByText('Mark as received', {exact: true}).click();
+    await page.locator('#dialog-input').fill('ab'.repeat(32));
+    await page.locator('dialog .bubble', {hasText: 'Payment received'}).click();
+    await page.getByText('Payment confirmed. Balance added.', {exact: true}).waitFor();
+    await page.getByText('Reject', {exact: true}).click();
+    await page.locator('dialog .bubble', {hasText: 'Reject'}).click();
+    await page.getByText('Payment request rejected.', {exact: true}).waitFor();
+    // On a phone the quick links are hidden; Admin stays one tap away in the bar.
+    await page.setViewportSize({width: 420, height: 860});
+    await page.goto('http://fixture.invalid/keys');
+    await page.locator('.nav-admin .bracket').waitFor({state: 'visible'});
+    await page.setViewportSize({width: 1400, height: 900});
+    // A buyer sees the token to check, closed requests as such, and can cancel a waiting one.
+    viewer = 'buyer';
+    await page.goto('http://fixture.invalid/keys');
+    await page.getByText('Rejected', {exact: true}).waitFor();
+    await page.getByText('Cancelled', {exact: true}).waitFor();
+    assert.equal(await page.locator('.nav-admin').count(), 0, 'no Admin link for a buyer');
+    await page.locator('td .flat', {hasText: 'Cancel'}).click();
+    await page.locator('dialog .bubble', {hasText: 'Cancel request'}).click();
+    await page.getByText('Payment request cancelled.', {exact: true}).waitFor();
+    assert.deepEqual(posted, [['/api/admin/confirm', {reference: 'pay_waiting', txId: 'ab'.repeat(32)}],
+      ['/api/admin/reject', {reference: 'pay_waiting'}], ['/api/payments/cancel', {reference: 'pay_waiting'}]]);
 
     // The switch: a choice is remembered, applies before the page paints, and following the
     // device again is the same as picking what it shows.
@@ -161,6 +216,6 @@ function audit() {
     await page.locator('.nav-small .bracket', {hasText: 'dark mode'}).click();
     assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(15, 16, 20)');
     assert.deepEqual(errors, []);
-    console.log(`Theme UI passed: ${audited} texts on 4 pages meet WCAG contrast in light and dark, pixel titles follow the theme, the switch remembers and applies before paint.`);
+    console.log(`Theme UI passed: ${audited} texts on 4 pages meet WCAG contrast in light and dark, admin fixes, coding tools, transaction ids, reject and cancel work, Admin stays reachable on a phone, pixel titles follow the theme, the switch remembers and applies before paint.`);
   } finally { await browser.close(); }
 })().catch(error => {console.error(error); process.exitCode = 1;});

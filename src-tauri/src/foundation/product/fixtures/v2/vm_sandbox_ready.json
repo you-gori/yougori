@@ -1,0 +1,336 @@
+{
+  "contract_version": 2,
+  "subject": {
+    "kind": "setup",
+    "id": "web"
+  },
+  "shown_at": {
+    "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+    "at": 1000001000,
+    "configuration": "ad2eeb2c62c77a270abb87f2900500596964121208c2db0fb539fe0b4d9342db"
+  },
+  "execution": {
+    "requested": {
+      "requirement": {
+        "requires": "vm_sandbox"
+      },
+      "choices": [
+        {
+          "category": {
+            "category": "vm_sandbox",
+            "label": "VM sandbox",
+            "sandbox": true
+          },
+          "allowed": true
+        },
+        {
+          "category": {
+            "category": "shared_kernel_gpu_runtime",
+            "label": "GPU runtime (shared kernel), not a sandbox",
+            "decision": "VM-D4",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "vm_sandbox_required"
+            },
+            "reason": "this request requires a VM sandbox; \"GPU runtime (shared kernel), not a sandbox\" is kept by VM-D4 and is never selected or substituted for one; choose a VM sandbox runtime",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        },
+        {
+          "category": {
+            "category": "provider_container_runtime",
+            "label": "remote runtime (provider container), not a sandbox",
+            "decision": "VM-D5",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "vm_sandbox_required"
+            },
+            "reason": "this request requires a VM sandbox; \"remote runtime (provider container), not a sandbox\" is kept by VM-D5 and is never selected or substituted for one; choose a VM sandbox runtime",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        },
+        {
+          "category": {
+            "category": "host_process_model_runtime",
+            "label": "model runtime (host process, sandbox profile), not a sandbox",
+            "decision": "VM-D6",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "vm_sandbox_required"
+            },
+            "reason": "this request requires a VM sandbox; \"model runtime (host process, sandbox profile), not a sandbox\" is kept by VM-D6 and is never selected or substituted for one; choose a VM sandbox runtime",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        }
+      ]
+    },
+    "actual": {
+      "value": {
+        "category": {
+          "category": "vm_sandbox",
+          "label": "VM sandbox",
+          "sandbox": true
+        },
+        "release": {
+          "backend": "vllm",
+          "version": "0.31.0"
+        },
+        "instance": "79dfb5f037490c5deb4ffe0f70c2fe4f0fd6a00a019bcd7a6215a11b1dcba12a"
+      },
+      "evidence": {
+        "state": "verified",
+        "by": {
+          "kind": "host_probe",
+          "capability": "runtime_category"
+        },
+        "observed_at": 1000,
+        "fresh_until": 3600000001000
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "capability": "runtime_category",
+      "required": "host_probe",
+      "evidence": {
+        "state": "verified",
+        "by": {
+          "kind": "host_probe",
+          "capability": "runtime_category"
+        },
+        "observed_at": 1000,
+        "fresh_until": 3600000001000
+      }
+    },
+    {
+      "capability": "io_uring",
+      "required": "host_probe",
+      "evidence": {
+        "state": "unavailable",
+        "refusal": {
+          "code": {
+            "domain": "evidence",
+            "code": "evidence_source_too_weak"
+          },
+          "reason": "io_uring needs a host probe, and a guest report never satisfies a host-only requirement",
+          "remedy": {
+            "remedy": "evidence",
+            "step": {
+              "action": "obtain_stronger_evidence",
+              "required": "host_probe"
+            }
+          },
+          "remedy_text": "obtain evidence from a host probe or a stronger source"
+        }
+      }
+    }
+  ],
+  "sandbox": {
+    "view": "cc5e9bee08a3b3eb32fc17abd6df7d6927e90895573da4056ac4581e75ba3b89",
+    "launch_record": "5cfc956001893c3c0d8dd755d09d9e32570f1a3fa65f8002a11c1f5412870122",
+    "sections": [
+      {
+        "section": "what_runs",
+        "title": "What will run",
+        "lines": [
+          {
+            "kind": "accelerator",
+            "text": "runs on KVM (hardware virtualization)",
+            "evidence": {
+              "state": "verified",
+              "by": {
+                "kind": "controlled_check"
+              },
+              "observed_at": 1000001000,
+              "fresh_until": 3601000001000
+            }
+          },
+          {
+            "kind": "hypervisor_available",
+            "text": "a usable KVM hypervisor on the host",
+            "evidence": {
+              "state": "verified",
+              "by": {
+                "kind": "host_probe",
+                "capability": "hypervisor_available"
+              },
+              "observed_at": 1000001000,
+              "fresh_until": 3601000001000
+            }
+          },
+          {
+            "kind": "unobserved",
+            "text": "device inventory",
+            "evidence": {
+              "state": "unavailable",
+              "refusal": {
+                "code": {
+                  "domain": "evidence",
+                  "code": "only_guest_asserted"
+                },
+                "reason": "only the guest asserted it and the host has no observation (it was not tested); a guest assertion never satisfies a host requirement",
+                "remedy": {
+                  "remedy": "evidence",
+                  "step": {
+                    "action": "obtain_stronger_evidence",
+                    "required": "host_probe"
+                  }
+                },
+                "remedy_text": "obtain evidence from a host probe or a stronger source"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "section": "reads_and_keeps",
+        "title": "What it can read, write and keep",
+        "lines": [
+          {
+            "kind": "persistence",
+            "text": "persistence: ephemeral task",
+            "evidence": {
+              "state": "asserted",
+              "by": "guest",
+              "received_at": 1000001000
+            }
+          },
+          {
+            "kind": "access",
+            "text": "sandbox \"main\" may read file grant \"inputs\" during analysis (any authorization epoch) [required]",
+            "evidence": {
+              "state": "asserted",
+              "by": "contract"
+            }
+          }
+        ]
+      },
+      {
+        "section": "releases",
+        "title": "What it can release, and where",
+        "lines": [
+          {
+            "kind": "network_mode",
+            "text": "network mode: offline mode",
+            "evidence": {
+              "state": "asserted",
+              "by": "declaration"
+            }
+          },
+          {
+            "kind": "network",
+            "text": "network channels: named_transport_routes",
+            "evidence": {
+              "state": "unavailable",
+              "refusal": {
+                "code": {
+                  "domain": "evidence",
+                  "code": "evidence_stale"
+                },
+                "reason": "the observation is 1.000001s old, beyond its 10ns limit; last observed at 0 ns on the evidence clock",
+                "remedy": {
+                  "remedy": "evidence",
+                  "step": {
+                    "action": "run_check_again"
+                  }
+                },
+                "remedy_text": "run the check again"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "section": "unavailable",
+        "title": "What is unavailable, and why",
+        "lines": [
+          {
+            "kind": "requested",
+            "text": "[optional] sandbox \"main\" may write file grant \"outputs\" during analysis (any authorization epoch)",
+            "evidence": {
+              "state": "unavailable",
+              "refusal": {
+                "code": {
+                  "domain": "sandbox_policy",
+                  "code": "required_authority_removed"
+                },
+                "reason": "not permitted by the product ceiling; it was optional and is dropped",
+                "remedy": {
+                  "remedy": "sandbox_policy",
+                  "code": "required_authority_removed"
+                },
+                "remedy_text": "Ask the host to permit it, delegate it, or mark the capability optional."
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "notice": "This view is an evidence record, not a certificate. Observed and verified facts hold only while current under the configuration in force; guest, launch request, declaration and contract statements are assertions; a contract states what is granted, not that anything enforces it."
+  },
+  "permissions": [
+    {
+      "kind": "run_containers",
+      "text": "Run containers on this computer.",
+      "status": {
+        "status": "requested"
+      }
+    },
+    {
+      "kind": "access",
+      "text": "sandbox \"main\" may read file grant \"inputs\" during analysis (any authorization epoch) [required]",
+      "status": {
+        "status": "permitted_by_contract"
+      }
+    },
+    {
+      "kind": "requested",
+      "text": "[optional] sandbox \"main\" may write file grant \"outputs\" during analysis (any authorization epoch)",
+      "status": {
+        "status": "not_permitted",
+        "refusal": {
+          "code": {
+            "domain": "sandbox_policy",
+            "code": "required_authority_removed"
+          },
+          "reason": "not permitted by the product ceiling; it was optional and is dropped",
+          "remedy": {
+            "remedy": "sandbox_policy",
+            "code": "required_authority_removed"
+          },
+          "remedy_text": "Ask the host to permit it, delegate it, or mark the capability optional."
+        }
+      }
+    }
+  ]
+}

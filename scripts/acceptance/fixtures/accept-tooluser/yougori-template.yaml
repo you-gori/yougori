@@ -1,0 +1,17 @@
+format_version: 2
+kind: template
+name: accept-tooluser
+title: Acceptance tool user
+summary: A disposable sandbox that installs one tool from the Hub, for runtime acceptance of the tool path.
+version: 1.0.0
+license: MIT
+topics: [test]
+changelog: Acceptance fixture.
+requires:
+  yougori: 1.2.0
+  gpu: none
+capabilities:
+  - {id: tools.custom, selection: required}
+  - {id: run.service, selection: required}
+tools:
+  app: [hub/yougori/accept-tool@1.0.0]

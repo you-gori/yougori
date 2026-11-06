@@ -5,7 +5,7 @@
 //!
 //! These verbs (`bounty host|hosted|remove-hunter|unhost`) are handled here, before the Swarm
 //! worker CLI, so the one `bounty` word covers both roles. The host runs no model.
-use crate::{grid, public::call};
+use crate::{cli_ui as grid, public::call};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::Path};
 

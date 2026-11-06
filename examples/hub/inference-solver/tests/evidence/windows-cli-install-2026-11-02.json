@@ -1,0 +1,13 @@
+{
+  "date": "2026-11-02",
+  "platform": "Windows amd64, Windows PowerShell 5.1",
+  "checks": "16 installers, reinstall, server collision, special-character paths, bad checksum, ZIP traversal, installed Pi through Docker + HTTP model fixture",
+  "source_sha256": {
+    "site/install-harness.ps1": "041e9d5e08d2019c61aa0b7007f10877f49027124c520fc57682a7ce2049dbe2",
+    "site/harness_download.py": "a788abe67bfe6bb20f7b91dd59d30e3efe3878bd8235f8b56e9236be56f025b9",
+    "site/harnesses/cli_entry.py": "22b5ed7f16c5afed881bb9ba666b118f9a8550c2d392b82aab47765152bf31f3",
+    "site/server.py": "f4b9b48d2c54af8f4230cce85dd51ebaee4e6fc13044663dc3178124f4f67d7e",
+    "site/app.js": "900444fc382ce19597caecc281a1e647ca8c6fad03716ab980325a4aa148bd1a",
+    "tests/windows_installer.py": "76d50777977f6a6885653fb9a8523f932411ecc7bc04a3d7820903b8658dfb6b"
+  }
+}

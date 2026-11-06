@@ -20,7 +20,7 @@ while :; do
 done
 export OLLAMA_HOST=0.0.0.0:11434
 export OLLAMA_MODELS=/models
-# The sandbox has no restart policy, so Ollama is started again here if it stops.
+# Restart Ollama independently so the provider bridges keep serving.
 while :; do
   ollama serve &
   child=$!

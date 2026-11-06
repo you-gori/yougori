@@ -100,6 +100,14 @@ fn error_cause(error: String, details: wire::ErrorDetails) -> String {
 }
 
 pub async fn call_at(endpoint: &str, request: &Request) -> Result<Value, String> {
+    // The other way to the engine on this computer. `call` is not the only caller: the job waits
+    // resolve the real endpoint themselves and come straight here, so the guard belongs here too.
+    // Only the real endpoint is diverted — tests that stand up their own pipe and talk to it by
+    // name are doing the thing they mean to, and keep working.
+    #[cfg(test)]
+    if wire::endpoint().is_ok_and(|real| real == endpoint) {
+        return fake_engine::answer(request);
+    }
     clear_error_cause();
     let response=exchange_at(endpoint,request).await?;
     if response.version != wire::VERSION {
@@ -281,7 +289,78 @@ fn request_timeout(request: &Request) -> Duration {
     }
 }
 pub async fn call(request: &Request) -> Result<Value, String> {
+    // In tests every engine call is answered here, never by the engine running on this computer.
+    // A test that installs no answer gets a refusal rather than a real call, so there is no path
+    // from a unit test to a live engine even by mistake.
+    #[cfg(test)]
+    return fake_engine::answer(request);
+    #[cfg(not(test))]
     call_at(&wire::endpoint().map_err(|e| e.to_string())?, request).await
+}
+
+/// The engine, as tests see it: every call recorded, every answer given by the test.
+///
+/// This exists because the CLI's own tests must never reach the engine running on this computer —
+/// a dry run that quietly called the real engine would be a test that proves nothing and a command
+/// that touched someone's setups. `call` consults this instead, and refuses when a test forgot to
+/// install an engine, so the failure is loud rather than a real request. `call_at` diverts the real
+/// endpoint here too, because the job waits resolve it themselves and never pass through `call`.
+///
+/// What this does NOT cover: `#[cfg(test)]` is only set for this crate's own unit tests. The
+/// integration tests in `cli/tests/` link this library built without it, so a test written there
+/// that calls `public::call` would reach the engine on this computer for real. None does today.
+/// Closing that properly needs a cargo feature rather than `cfg(test)`; until then, engine calls
+/// belong in unit tests.
+#[cfg(test)]
+pub(crate) mod fake_engine {
+    use super::{Request, Value};
+    use std::cell::RefCell;
+
+    type Answer = Box<dyn Fn(&str, &Value) -> Result<Value, String>>;
+
+    thread_local! {
+        static ANSWER: RefCell<Option<Answer>> = const { RefCell::new(None) };
+        static CALLS: RefCell<Vec<(String, Value)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Answers engine calls on this thread for as long as it is held, and records every one.
+    /// Dropping it puts the thread back to refusing calls, so one test cannot leak into another.
+    pub(crate) struct Installed;
+
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            ANSWER.with(|slot| *slot.borrow_mut() = None);
+            CALLS.with(|calls| calls.borrow_mut().clear());
+        }
+    }
+
+    /// Install an engine for this test. `answer` receives the method and its parameters.
+    pub(crate) fn install(answer: impl Fn(&str, &Value) -> Result<Value, String> + 'static) -> Installed {
+        ANSWER.with(|slot| *slot.borrow_mut() = Some(Box::new(answer)));
+        CALLS.with(|calls| calls.borrow_mut().clear());
+        Installed
+    }
+
+    /// Every method called since the engine was installed, in order, with its parameters.
+    pub(crate) fn calls() -> Vec<(String, Value)> {
+        CALLS.with(|calls| calls.borrow().clone())
+    }
+
+    /// Whether a method was called at all.
+    pub(crate) fn called(method: &str) -> bool {
+        calls().iter().any(|(name, _)| name == method)
+    }
+
+    pub(super) fn answer(request: &Request) -> Result<Value, String> {
+        CALLS.with(|calls| calls.borrow_mut().push((request.method.clone(), request.params.clone())));
+        ANSWER.with(|slot| match slot.borrow().as_ref() {
+            Some(answer) => answer(&request.method, &request.params),
+            None => Err(format!(
+                "This test called the engine method {} without installing a fake engine. Tests never reach the engine on this computer; install one with client::fake_engine::install.",
+                request.method
+            )),
+        })
+    }
 }
 pub fn request(method: &str, params: Value) -> Request {
     Request {
@@ -506,6 +585,16 @@ fn engine_directory(executable: &Path) -> PathBuf {
 }
 
 fn launch(executable: &Path, args: &[&str]) -> Result<std::process::Child, String> {
+    // Tests never start the app or the engine on this computer. `call` is answered by the test's
+    // own engine, so nothing should arrive here; if a path ever does, it refuses rather than
+    // starting a second copy of Yougori beside the one the person is running.
+    #[cfg(test)]
+    {
+        let _ = (executable, args);
+        return Err("A test tried to start Yougori on this computer. Tests answer engine calls themselves; see client::fake_engine.".into());
+    }
+    #[cfg(not(test))]
+    {
     let mut command = std::process::Command::new(executable);
     command
         .args(args)
@@ -539,8 +628,10 @@ fn launch(executable: &Path, args: &[&str]) -> Result<std::process::Child, Strin
     command
         .spawn()
         .map_err(|e| format!("Cannot start Yougori: {e}"))
+    }
 }
 
+#[cfg_attr(test, allow(dead_code))]
 async fn wait_for_engine(mut child: std::process::Child) -> Result<Value, String> {
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
@@ -710,6 +801,46 @@ fn process_present(pid: u32) -> Option<bool> {
         if std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|text|text.rsplit_once(") ").map(|(_,tail)|tail.starts_with('Z')))==Some(true) {return Some(false);}
         Some(true)
     } else {match std::io::Error::last_os_error().raw_os_error() {Some(libc::ESRCH)=>Some(false),Some(libc::EPERM)=>Some(true),_=>None}}
+}
+
+#[cfg(test)]
+mod engine_seam_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_test_that_installs_no_engine_is_refused_rather_than_reaching_this_computer() {
+        // The seam's whole point. Someone writing a test later should not be able to call the
+        // engine running on this computer by forgetting a line: the call stops here and says so.
+        let said = call(&request("setup_apply", json!({}))).await.unwrap_err();
+        assert!(said.contains("setup_apply"), "it should name the method it stopped: {said}");
+        assert!(said.contains("fake_engine"), "it should say how to install one: {said}");
+    }
+
+    #[tokio::test]
+    async fn an_installed_engine_answers_and_records_and_leaves_nothing_behind_after() {
+        {
+            let _engine = fake_engine::install(|method, params| match method {
+                "app_status" => Ok(json!({"running": true})),
+                _ => Err(format!("no {method} here, params {params}")),
+            });
+            assert_eq!(call(&request("app_status", json!({}))).await.unwrap()["running"], true);
+            assert!(call(&request("setup_plan", json!({"name": "shop"}))).await.is_err());
+            let calls = fake_engine::calls();
+            assert_eq!(calls.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["app_status", "setup_plan"]);
+            assert_eq!(calls[1].1["name"], "shop", "the parameters are recorded too");
+            assert!(fake_engine::called("setup_plan") && !fake_engine::called("setup_apply"));
+        }
+        // Out of scope: back to refusing, with no record of the test before it.
+        assert!(fake_engine::calls().is_empty());
+        assert!(call(&request("app_status", json!({}))).await.is_err(), "the engine should be gone with its guard");
+    }
+
+    #[test]
+    fn a_test_cannot_start_yougori_on_this_computer() {
+        // The other way out of a test and onto this computer: starting the app or the engine.
+        let said = launch(Path::new("yougori.exe"), &["--headless"]).unwrap_err();
+        assert!(said.contains("A test tried to start Yougori"), "{said}");
+    }
 }
 
 #[cfg(test)]

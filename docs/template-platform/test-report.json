@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "startedAt": "2026-10-26T19:46:28.306Z",
+  "finishedAt": "2026-10-26T19:54:00.565Z",
+  "source": {
+    "commit": "da2b00c2eafa8ca7353eba2232e6e350ac328fbd",
+    "dirty": true,
+    "changedPaths": 195
+  },
+  "sourceAfter": null,
+  "machine": {
+    "os": "win32",
+    "arch": "x64",
+    "logicalProcessors": 24,
+    "memoryGiB": 63.43
+  },
+  "environment": {
+    "cargoTarget": "D:/tmp/codex-target",
+    "cargoOffline": true,
+    "cargoBuildJobs": 4,
+    "incremental": false,
+    "debugInfo": false,
+    "npmOffline": true
+  },
+  "suites": [
+    {
+      "id": "setup",
+      "command": "cargo test --manifest-path setup/Cargo.toml",
+      "evidence": "pure unit/contract test",
+      "fixture": "In-memory synthetic packages, temporary files and planner fixtures.",
+      "skippedByPolicy": [],
+      "startedAt": "2026-10-26T19:46:28.406Z",
+      "finishedAt": "2026-10-26T19:47:10.888Z",
+      "durationSeconds": 42.48,
+      "exitCode": 0,
+      "status": "passed",
+      "counts": {
+        "passed": 159,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "targets": 11
+      },
+      "diagnostic": null
+    },
+    {
+      "id": "cli",
+      "command": "cargo test --manifest-path cli/Cargo.toml -- --skip swarm --skip bounty",
+      "evidence": "mocked integration",
+      "fixture": "CLI unit/contract tests, temporary configuration and mocked services; no live engine.",
+      "skippedByPolicy": [
+        "swarm",
+        "bounty"
+      ],
+      "startedAt": "2026-10-26T19:47:10.888Z",
+      "finishedAt": "2026-10-26T19:50:04.548Z",
+      "durationSeconds": 173.66,
+      "exitCode": 0,
+      "status": "passed",
+      "counts": {
+        "passed": 1009,
+        "failed": 0,
+        "ignored": 10,
+        "measured": 0,
+        "filtered": 85,
+        "targets": 10
+      },
+      "diagnostic": null
+    },
+    {
+      "id": "grid",
+      "command": "cargo test --manifest-path grid/Cargo.toml -- --skip bounty",
+      "evidence": "mocked integration",
+      "fixture": "Grid unit tests and synthetic/local mock-server fixtures; no live grid or bounty.",
+      "skippedByPolicy": [
+        "bounty"
+      ],
+      "startedAt": "2026-10-26T19:50:04.549Z",
+      "finishedAt": "2026-10-26T19:52:29.936Z",
+      "durationSeconds": 145.39,
+      "exitCode": 0,
+      "status": "passed",
+      "counts": {
+        "passed": 570,
+        "failed": 0,
+        "ignored": 6,
+        "measured": 0,
+        "filtered": 15,
+        "targets": 2
+      },
+      "diagnostic": null
+    }
+  ],
+  "interrupted": {
+    "reason": "Coordinator replaced J4/J5 with read-only removal audit J6.",
+    "unfinishedSuites": [
+      "engine",
+      "desktop"
+    ]
+  }
+}

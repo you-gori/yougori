@@ -33,6 +33,11 @@ fn fixture(noun: &str, verb: &str) -> Map<String, Value> {
         if switches.contains(option) {
             continue;
         }
+        // A Sandbox Grid refuses teams and an email when a person is added, and a permission
+        // takes the hub's own door, so the plain path for both products leaves all three out.
+        if (noun, verb) == ("people", "add") && ["teams", "email", "permission"].contains(option) {
+            continue;
+        }
         if (noun, verb, *option) == ("models", "add", "computers") {
             request.insert("computers".to_owned(), json!(["Studio PC"]));
             continue;
@@ -233,59 +238,49 @@ fn a_new_spelling_reaches_the_same_product_call_as_the_old_one() {
 fn old_words_still_parse_to_the_old_wire_method() {
     // Only the rows `parse` itself owns: the rest are parsed by their own modules, which this
     // phase does not touch at all, and `grid::password` blocks on a hidden prompt.
-    let through_parse = [
-        (["grid", "status"], "grid_status"),
-        (["grid", "leave"], "grid_leave"),
-        (["grid", "delete"], "grid_delete"),
-        (["grid", "restore"], "grid_restore"),
-        (["grid", "add-plan"], "grid_plan_add"),
-        (["grid", "remove-plan"], "grid_plan_remove"),
-        (["grid", "add-key"], "grid_key_create"),
-        (["desks", "status"], "desks_status"),
-        (["desks", "leave"], "desks_leave"),
-        (["desks", "add-desk"], "desks_add"),
-        (["desks", "remove-person"], "desks_person_remove"),
-        (["desk", "refresh"], "desk_refresh"),
-        (["desk", "logout"], "desk_logout"),
+    // The words below were the CLI's own, and that surface is removed. What still has to hold is
+    // the table the engine's grids door reads (`alias::chosen_by_the_words`, `product_call`):
+    // every one of these old spellings must still have a row naming the method it meant, or a
+    // request that arrives at the engine by the old name has nowhere to land.
+    let was_typed: [(&[&str], &str); 13] = [
+        (&["grid", "status"], "grid_status"),
+        (&["grid", "leave"], "grid_leave"),
+        (&["grid", "delete"], "grid_delete"),
+        (&["grid", "restore"], "grid_restore"),
+        (&["grid", "add-plan"], "grid_plan_add"),
+        (&["grid", "remove-plan"], "grid_plan_remove"),
+        (&["grid", "add-key"], "grid_key_create"),
+        (&["desks", "status"], "desks_status"),
+        (&["desks", "leave"], "desks_leave"),
+        (&["desks", "add-desk"], "desks_add"),
+        (&["desks", "remove-person"], "desks_person_remove"),
+        (&["desk", "refresh"], "desk_refresh"),
+        (&["desk", "logout"], "desk_logout"),
     ];
-    for (words, method) in through_parse {
-        let mut argv: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
-        argv.push("--yes".into());
-        if method == "grid_plan_add" {
-            argv.extend(["--model".to_string(), "hf.co/Qwen/Qwen3-8B".to_string()]);
-        }
-        if method == "grid_plan_remove" || method == "desks_person_remove" {
-            argv.insert(2, "a-name".into());
-        }
-        if method == "desks_add" {
-            argv.extend(["--name".to_string(), "Design desk".to_string()]);
-        }
-        if method == "grid_key_create" {
-            argv.extend(["--name".to_string(), "Billing".to_string()]);
-        }
-        let parsed = crate::parse::parse(&argv, |_| Err("no file".into())).unwrap_or_else(|error| panic!("{words:?}: {error}"));
-        assert_eq!(parsed.request.method, method, "{words:?} must still reach {method}");
-        assert!(ALIASES.iter().any(|alias| alias.old == words), "{words:?} has no row");
+    for (words, method) in was_typed {
+        let row = ALIASES.iter().find(|alias| alias.old == words)
+            .unwrap_or_else(|| panic!("{words:?} has no row in ALIASES"));
+        assert_eq!(row.old_method, method, "{words:?} must still name {method}");
     }
+    // And no row names a method twice under different words without meaning to.
+    assert!(!ALIASES.is_empty());
 }
 
 #[test]
-fn grid_and_grids_never_shadow_each_other() {
-    // `grid::requested` claims any argv with --neogrid in it, so the order in main.rs is what
-    // keeps the two apart. This reads the router rather than trusting it.
+fn no_grid_words_are_commands_any_more() {
+    // `grid`, `grids`, `desks` and `access` were commands, and main.rs had to order `grids`
+    // before `grid` so `--neogrid` could not claim the wrong one. They are all removed: this
+    // reads the router rather than trusting it, and holds that none of them is routed again.
     let main = include_str!("../main.rs");
-    let grids_at = main.find("yougori_cli::grids::requested").expect("main.rs routes grids");
-    let grid_at = main.find("yougori_cli::grid::requested").expect("main.rs routes grid");
-    assert!(grids_at < grid_at, "grids must be matched before grid, or --neogrid would claim it");
-    assert!(super::requested(&["grids".to_string(), "list".to_string()]));
-    assert!(!super::requested(&["grid".to_string(), "status".to_string()]));
-    assert!(!super::requested(&["desks".to_string()]));
-    // No word of the new namespace is a route `parse` already owns, so neither can swallow the
-    // other's command by accident.
+    for gone in ["yougori_cli::grids::requested", "yougori_cli::grid::requested", "yougori_cli::access::requested", "grid_setup::requested"] {
+        assert!(!main.contains(gone), "main.rs still routes {gone}");
+    }
+    // The words fall through to ordinary command handling, which refuses them by name. The
+    // library underneath stays, because a template still builds these things.
     for noun in NOUNS {
         let argv = vec!["grids".to_string(), (*noun).to_string()];
         let refused = crate::parse::parse(&argv, |_| Err("no file".into())).unwrap_err();
-        assert!(refused.starts_with("Unknown command"), "grids {noun} must not route through parse: {refused}");
+        assert!(refused.starts_with("Unknown command"), "grids {noun}: {refused}");
     }
 }
 
@@ -474,4 +469,388 @@ fn desks_administrator_words_send_the_fields_the_hub_reads() {
     // The hub has no per-computer desk limit, and computerLimit without `limit` clears the
     // grid's computer cap, so there are no words that send it.
     assert!(find("share", "limit").is_none());
+}
+
+/// `yougori grids WORDS...` as typed: read by the namespace's own parser, then routed to one
+/// product, exactly as the engine routes it.
+fn sent(product: Product, typed: &[&str]) -> Result<(&'static str, Value), super::fault::Fault> {
+    let argv: Vec<String> = typed.iter().map(|word| (*word).to_string()).collect();
+    let typed = words::parse(&argv).unwrap_or_else(|fault| panic!("{argv:?}: {}", fault.said));
+    alias::product_call(product, typed.noun, typed.verb, &typed.request)
+}
+
+
+/// Each row: what was typed, and the request the legacy surface sends for the same answers.
+fn sends(product: Product, method: &str, rows: &[(&[&str], Value)]) {
+    for (typed, expected) in rows {
+        let (reached, params) = sent(product, typed).unwrap_or_else(|fault| panic!("{typed:?} was refused: {}", fault.said));
+        assert_eq!(reached, method, "{typed:?}");
+        assert_eq!(&params, expected, "{typed:?}");
+    }
+}
+
+/// Each row: what was typed, and the kind of refusal it gets before anything is sent.
+fn refuses(product: Product, rows: &[(&[&str], Code)]) {
+    for (typed, code) in rows {
+        let fault = sent(product, typed).map(|(method, _)| method).expect_err(&format!("{typed:?} should be refused"));
+        assert_eq!(fault.code, *code, "{typed:?}: {}", fault.said);
+        assert!(fault.said.ends_with('.') && !fault.said.contains('_'), "{typed:?}: {}", fault.said);
+    }
+}
+
+#[test]
+fn desks_add_image_sends_what_the_admin_form_publishes() {
+    // The form's request (src/components/sandbox-grid-admin.tsx, Images): every field the hub
+    // reads, with the form's own defaults for whatever was not typed.
+    let digest = "ab".repeat(32);
+    let pinned = format!("registry.acme.example/tools@sha256:{digest}");
+    sends(Product::Desks, "desks_manage", &[
+        (
+            &["desks", "add-image", "--image", "Research", "--from", "https://images.acme.example/research.qcow2", "--sha256", digest.as_str()],
+            json!({"request": {"action": "imageAdd", "name": "Research", "version": "1", "description": "", "applications": [], "spec": {"kind": "vm", "image": "https://images.acme.example/research.qcow2", "cpu": 2, "memoryGb": 4, "diskGb": 40, "gpu": false}, "sha256": digest}}),
+        ),
+        (
+            &["desks", "add-image", "--image", "Tools", "--version", "2026.10", "--kind", "container", "--from", pinned.as_str(), "--cpu", "4", "--memory-gb", "8", "--disk-gb", "60", "--gpu", "true", "--description", "Build tools"],
+            json!({"request": {"action": "imageAdd", "name": "Tools", "version": "2026.10", "description": "Build tools", "applications": [], "spec": {"kind": "container", "image": pinned, "cpu": 4, "memoryGb": 8, "diskGb": 60, "gpu": true}, "sha256": null}}),
+        ),
+    ]);
+    refuses(Product::Desks, &[
+        // A prepared disk without its checksum, which every computer checks the bytes against.
+        (&["desks", "add-image", "--image", "Research", "--from", "https://images.acme.example/research.qcow2"], Code::MissingWords),
+        (&["desks", "add-image", "--image", "Research", "--sha256", digest.as_str()], Code::MissingWords),
+        // A container's digest is in its reference, so a second one would be dropped.
+        (&["desks", "add-image", "--image", "Tools", "--kind", "container", "--from", pinned.as_str(), "--sha256", digest.as_str()], Code::ValueUnusable),
+    ]);
+}
+
+#[test]
+fn desks_import_image_sends_what_the_admin_form_takes_in() {
+    // The form's local import: always a prepared VM disk, its checksum and the hub's copy worked
+    // out by the engine (src-tauri/src/desks/media.rs), everything else as the form sends it.
+    sends(Product::Desks, "desks_manage", &[
+        (
+            &["desks", "import-image", "--path", "D:/disks/research.qcow2", "--image", "Research"],
+            json!({"request": {"action": "imageImport", "path": "D:/disks/research.qcow2", "name": "Research", "version": "1", "description": "", "applications": [], "spec": {"kind": "vm", "image": "", "cpu": 2, "memoryGb": 4, "diskGb": 40, "gpu": false}, "sha256": ""}}),
+        ),
+        (
+            &["desks", "import-image", "--path", "D:/disks/research.qcow2", "--image", "Research", "--version", "3", "--disk-gb", "120"],
+            json!({"request": {"action": "imageImport", "path": "D:/disks/research.qcow2", "name": "Research", "version": "3", "description": "", "applications": [], "spec": {"kind": "vm", "image": "", "cpu": 2, "memoryGb": 4, "diskGb": 120, "gpu": false}, "sha256": ""}}),
+        ),
+    ]);
+    refuses(Product::Desks, &[
+        (&["desks", "import-image", "--image", "Research"], Code::MissingWords),
+        (&["desks", "import-image", "--path", "D:/disks/research.qcow2"], Code::MissingWords),
+    ]);
+    // Only a VM disk can be taken in, so there is no kind to choose.
+    assert_eq!(words::parse(&["desks".into(), "import-image".into(), "--kind".into(), "container".into()]).unwrap_err().code, Code::UnknownWords);
+}
+
+#[test]
+fn desks_add_size_sends_what_the_admin_form_names() {
+    // A size is a workspace role: the form sends its name, its image, its access and its purpose
+    // (src/components/sandbox-grid-admin.tsx, Roles). Access left out is the hub's restricted.
+    sends(Product::Desks, "desks_manage", &[
+        (&["desks", "add-size", "Research", "--image", "image-1"], json!({"request": {"action": "roleAdd", "name": "Research", "imageId": "image-1"}})),
+        (
+            &["desks", "add-size", "Ops", "--image", "image-2", "--access", "standard", "--description", "IT operations"],
+            json!({"request": {"action": "roleAdd", "name": "Ops", "imageId": "image-2", "access": "standard", "description": "IT operations"}}),
+        ),
+    ]);
+    // A role takes its cores, memory and disk from its image, so those words are not offered.
+    for option in ["--kind", "--cpu", "--memory-gb", "--disk-gb", "--gpu"] {
+        let argv: Vec<String> = ["desks", "add-size", "Research", option, "2"].iter().map(|word| (*word).to_string()).collect();
+        assert_eq!(words::parse(&argv).unwrap_err().code, Code::UnknownWords, "{option}");
+    }
+}
+
+#[test]
+fn people_set_sends_what_each_product_reads() {
+    // The Sandbox Grid's admin screen: a person's permission is its hub's `adminRole`.
+    sends(Product::Desks, "desks_manage", &[
+        (
+            &["people", "set", "ada", "--permission", "administrator", "--email", "ada@acme.example"],
+            json!({"request": {"action": "personUpdate", "id": "ada", "adminRole": "administrator", "email": "ada@acme.example"}}),
+        ),
+        (&["people", "set", "ada", "--permission", "auditor"], json!({"request": {"action": "personUpdate", "id": "ada", "adminRole": "auditor"}})),
+    ]);
+    // `yougori access set-person ada --name NAME --email ... --permission approver --team Ops
+    // --team Research` (cli/src/access.rs).
+    sends(Product::Access, "access_manage", &[(
+        &["people", "set", "ada", "--permission", "approver", "--person-name", "Ada Lovelace", "--email", "ada@acme.example", "--teams", "Ops,Research"],
+        json!({"request": {"action": "personUpdate", "person": "ada", "permission": "approver", "name": "Ada Lovelace", "email": "ada@acme.example", "teams": ["Ops", "Research"]}}),
+    )]);
+    // A Sandbox Grid keeps neither, so they are refused rather than sent and dropped.
+    refuses(Product::Desks, &[
+        (&["people", "set", "ada", "--person-name", "Ada Lovelace"], Code::ValueUnusable),
+        (&["people", "set", "ada", "--teams", "Ops"], Code::ValueUnusable),
+    ]);
+}
+
+#[test]
+fn people_sso_sends_what_each_product_reads() {
+    // `yougori access sso` (cli/src/access.rs): the claim is email unless named, and passwordless
+    // is always said.
+    sends(Product::Access, "access_manage", &[
+        (
+            &["people", "sso", "--issuer", "https://acme.okta.com", "--client-id", "app", "--passwordless"],
+            json!({"request": {"action": "ssoSet", "issuer": "https://acme.okta.com", "clientId": "app", "claim": "email", "passwordless": true}}),
+        ),
+        (
+            &["people", "sso", "--issuer", "https://acme.okta.com", "--client-id", "app", "--claim", "upn", "--redirect-port", "8765"],
+            json!({"request": {"action": "ssoSet", "issuer": "https://acme.okta.com", "clientId": "app", "claim": "upn", "passwordless": false, "redirectPort": 8765}}),
+        ),
+        (&["people", "sso", "--off"], json!({"request": {"action": "ssoClear"}})),
+    ]);
+    // The Sandbox Grid's admin screen: its hub calls the claim `usernameClaim`.
+    sends(Product::Desks, "desks_manage", &[
+        (
+            &["people", "sso", "--issuer", "https://acme.okta.com", "--client-id", "app", "--claim", "upn"],
+            json!({"request": {"action": "ssoSet", "issuer": "https://acme.okta.com", "clientId": "app", "usernameClaim": "upn", "passwordless": false}}),
+        ),
+        (
+            &["people", "sso", "--issuer", "https://acme.okta.com", "--client-id", "app", "--passwordless"],
+            json!({"request": {"action": "ssoSet", "issuer": "https://acme.okta.com", "clientId": "app", "usernameClaim": "email", "passwordless": true}}),
+        ),
+        (&["people", "sso", "--off"], json!({"request": {"action": "ssoClear"}})),
+    ]);
+    refuses(Product::Desks, &[
+        // A Sandbox Grid opens its sign-in page on a new port each time.
+        (&["people", "sso", "--issuer", "https://acme.okta.com", "--client-id", "app", "--redirect-port", "8765"], Code::ValueUnusable),
+        (&["people", "sso", "--client-id", "app"], Code::MissingWords),
+    ]);
+    refuses(Product::Access, &[(&["people", "sso", "--issuer", "https://acme.okta.com"], Code::MissingWords)]);
+}
+
+#[test]
+fn share_words_reach_only_the_product_that_has_them() {
+    // A share is the Sandbox Grid's: exactly what `yougori desks share` sends.
+    sends(Product::Desks, "desks_member_share", &[
+        (
+            &["share", "set", "m-1", "--cpu", "2", "--memory-gb", "4", "--disk-gb", "50", "--gpu", "true", "--idle-only", "true"],
+            json!({"memberId": "m-1", "cpu": 2, "memoryGb": 4, "diskGb": 50, "gpu": true, "idleOnly": true}),
+        ),
+        // Zeroes are sent as zeroes, not dropped: "no limit" and "unset" are different answers.
+        (
+            &["share", "set", "m-1", "--cpu", "0", "--memory-gb", "0", "--disk-gb", "0"],
+            json!({"memberId": "m-1", "cpu": 0, "memoryGb": 0, "diskGb": 0}),
+        ),
+    ]);
+    sends(Product::Desks, "desks_member_share", &[(&["share", "set", "m-1", "--suggested"], json!({"memberId": "m-1", "suggested": true}))]);
+    // Leaving a computer out and bringing it back are the Closed Neo Grid's: exactly what
+    // `yougori grid exclude` and `yougori grid include` send.
+    sends(Product::Neo, "grid_member_exclude", &[(&["share", "drain", "m-1"], json!({"memberId": "m-1"}))]);
+    sends(Product::Neo, "grid_member_include", &[(&["share", "bring-back", "m-1"], json!({"memberId": "m-1"}))]);
+    // Neither product has the other's, so each is told so instead of reaching the wrong one.
+    refuses(Product::Neo, &[(&["share", "set", "m-1", "--cpu", "2"], Code::NotYetOnThisDoor)]);
+    refuses(Product::Desks, &[
+        (&["share", "drain", "m-1"], Code::NotYetOnThisDoor),
+        (&["share", "bring-back", "m-1"], Code::NotYetOnThisDoor),
+    ]);
+    for product in [Product::Access, Product::Bounty] {
+        refuses(product, &[
+            (&["share", "set", "m-1", "--cpu", "2"], Code::NotYetOnThisDoor),
+            (&["share", "drain", "m-1"], Code::NotYetOnThisDoor),
+            (&["share", "bring-back", "m-1"], Code::NotYetOnThisDoor),
+        ]);
+    }
+    // What the refusals point at is a command that exists.
+    let neo = sent(Product::Neo, &["share", "set", "m-1"]).unwrap_err();
+    assert!(neo.said.contains("yougori grids share drain") && find("share", "drain").is_some(), "{}", neo.said);
+    let desks = sent(Product::Desks, &["share", "drain", "m-1"]).unwrap_err();
+    assert!(desks.said.contains("yougori grids share set COMPUTER --cpu 0 --memory-gb 0 --disk-gb 0"), "{}", desks.said);
+}
+
+#[test]
+fn credentials_set_sends_where_it_may_be_sent() {
+    // The hub's credentialUpdate takes destinations as a list, the shape `add` and `yougori
+    // access add-credential` send; the one typed here replaces the list.
+    sends(Product::Access, "access_manage", &[
+        (
+            &["credentials", "set", "GitHub", "--destination", "https://api.github.com", "--note", "CI"],
+            json!({"request": {"action": "credentialUpdate", "credential": "GitHub", "destinations": ["https://api.github.com"], "note": "CI"}}),
+        ),
+        (&["credentials", "set", "GitHub", "--note", "CI"], json!({"request": {"action": "credentialUpdate", "credential": "GitHub", "note": "CI"}})),
+    ]);
+    let mut added = Map::new();
+    for (key, value) in [("credential", "GitHub"), ("kind", "bearer"), ("destination", "https://api.github.com"), ("value", "x")] {
+        added.insert(key.into(), json!(value));
+    }
+    let (_, add) = alias::product_call(Product::Access, "credentials", "add", &added).unwrap();
+    let (_, set) = sent(Product::Access, &["credentials", "set", "GitHub", "--destination", "https://api.github.com"]).unwrap();
+    assert_eq!(set["request"]["destinations"], add["request"]["destinations"]);
+}
+
+/// As `sent`, with the password filled in afterwards the way `run::prepare` fills a secret in
+/// from stdin or a hidden prompt: it is never in the words.
+fn added(product: Product, typed: &[&str]) -> Result<(&'static str, Value), super::fault::Fault> {
+    let argv: Vec<String> = typed.iter().map(|word| (*word).to_string()).collect();
+    let mut typed = words::parse(&argv).unwrap_or_else(|fault| panic!("{argv:?}: {}", fault.said));
+    assert_eq!(typed.secrets, ["password"], "a person's password is asked for, never typed");
+    typed.request.insert("password".into(), json!("correct horse battery"));
+    alias::product_call(product, typed.noun, typed.verb, &typed.request)
+}
+
+#[test]
+fn people_add_on_a_sandbox_grid_sends_what_its_hub_takes() {
+    // (typed, method, what it sends). The plain words are `yougori desks add-person`, read by the
+    // engine as src-tauri/src/automation/dispatch.rs does; a permission or a size is the hub's
+    // own personAdd (grid/src/hub/enterprise.rs), reached the way `yougori desks manage` is.
+    let rows: &[(&[&str], &str, Value)] = &[
+        (
+            &["people", "add", "ada", "--person-name", "Ada Lovelace", "--cpu", "4", "--memory-gb", "8", "--disk-gb", "40", "--gpu", "true"],
+            "desks_person_add",
+            json!({"username": "ada", "password": "correct horse battery", "name": "Ada Lovelace", "cpu": 4, "memoryGb": 8, "diskGb": 40, "gpu": true}),
+        ),
+        (&["people", "add", "ada"], "desks_person_add", json!({"username": "ada", "password": "correct horse battery"})),
+        (
+            &["people", "add", "ada", "--permission", "administrator"],
+            "desks_manage",
+            json!({"request": {"action": "personAdd", "username": "ada", "name": "ada", "password": "correct horse battery", "adminRole": "administrator"}}),
+        ),
+        (
+            &["people", "add", "ada", "--person-name", "Ada", "--size", "role-1"],
+            "desks_manage",
+            json!({"request": {"action": "personAdd", "username": "ada", "name": "Ada", "password": "correct horse battery", "roleId": "role-1"}}),
+        ),
+        (
+            &["people", "add", "ada", "--permission", "operator", "--kind", "MicroVM", "--cpu", "2.5"],
+            "desks_manage",
+            json!({"request": {"action": "personAdd", "username": "ada", "name": "ada", "password": "correct horse battery", "adminRole": "operator", "spec": {"kind": "microVm", "cpu": 2.5, "memoryGb": 4, "diskGb": 20, "gpu": false, "image": ""}}}),
+        ),
+    ];
+    for (typed, method, expected) in rows {
+        let (reached, params) = added(Product::Desks, typed).unwrap_or_else(|fault| panic!("{typed:?} was refused: {}", fault.said));
+        assert_eq!(reached, *method, "{typed:?}");
+        assert_eq!(&params, expected, "{typed:?}");
+    }
+    // What the hub cannot take is refused before anything is sent, with what to run instead.
+    let refusals: &[(&[&str], &str)] = &[
+        (&["people", "add", "ada", "--teams", "Ops"], "Add the person without --teams."),
+        (&["people", "add", "ada", "--email", "ada@acme.example"], "then run yougori grids people set USERNAME --email ADDRESS."),
+        (&["people", "add", "ada", "--size", "role-1", "--cpu", "4"], "Give --size, or the desk's own"),
+        (&["people", "add", "ada", "--permission", "user", "--kind", "pod"], "Give --kind as container, microvm or vm."),
+    ];
+    for (typed, words) in refusals {
+        let fault = added(Product::Desks, typed).map(|(method, _)| method).expect_err(&format!("{typed:?} should be refused"));
+        assert_eq!(fault.code, Code::ValueUnusable, "{typed:?}");
+        assert!(fault.said.contains(words) && fault.said.ends_with('.') && !fault.said.contains('_'), "{typed:?}: {}", fault.said);
+    }
+    // What a refusal points at is a command that takes those words.
+    assert!(find("people", "set").is_some_and(|verb| verb.options.contains(&"email")));
+    // An Access Grid takes all of them, as `yougori access add-person` sends them.
+    let (method, params) = added(Product::Access, &["people", "add", "ada", "--permission", "approver", "--email", "ada@acme.example", "--teams", "Ops"]).unwrap();
+    assert_eq!(method, "access_manage");
+    assert_eq!(params, json!({"request": {"action": "personAdd", "username": "ada", "password": "correct horse battery", "permission": "approver", "email": "ada@acme.example", "teams": ["Ops"]}}));
+}
+
+/// Several Access Grids on one computer: the grid a command found reaches the Access handler as
+/// `gridId`, the other products are left as they are, and one status lists each grid apart.
+#[test]
+fn an_access_command_is_aimed_at_the_grid_it_found_and_each_grid_is_listed() {
+    let mut params = json!({"request": {"action": "overview"}});
+    alias::aim(Product::Access, "access-0123456789abcdef", &mut params);
+    assert_eq!(params["gridId"], "access-0123456789abcdef");
+    catalog::find("access_manage").unwrap().validate(&params).unwrap();
+    // The register's own fallback word is not a grid id, and other products take no gridId.
+    for (product, id) in [(Product::Access, "credentials"), (Product::Access, " "), (Product::Neo, "models"), (Product::Bounty, "grid-1"), (Product::Desks, "desks")] {
+        let mut params = json!({});
+        alias::aim(product, id, &mut params);
+        assert_eq!(params, json!({}), "{product:?} {id}");
+    }
+    // A Sandbox Grid's handlers take gridId too, now that a computer can hold several.
+    let mut params = json!({});
+    alias::aim(Product::Desks, "desks-1", &mut params);
+    assert_eq!(params, json!({"gridId": "desks-1"}), "the Sandbox Grid a command found reaches its handler");
+    catalog::find("desks_leave").unwrap().validate(&params).unwrap();
+    // Every Access method the door reaches takes gridId.
+    for method in ["access_status", "access_delete", "access_restore", "access_signin", "access_signout", "access_manage", "access_account", "access_use", "access_check", "access_reveal", "access_backup", "access_restore_backup"] {
+        let parameters = catalog::find(method).unwrap().parameters;
+        assert!(parameters.split_whitespace().any(|parameter| parameter == "gridId?:string"), "{method}: {parameters}");
+    }
+
+    // A status from before there could be several is one grid, as it always was.
+    let old = json!({"hub": {"id": "access-a", "company": "Acme"}, "member": null});
+    assert_eq!(alias::each_access_grid(&old), vec![old.clone()]);
+    // A hub and the sign-in to that same grid are one entry; a sign-in elsewhere is another.
+    let status = json!({
+        "hub": {"id": "access-a"}, "member": {"accessId": "access-a"},
+        "hubs": [{"id": "access-a", "company": "Acme", "instance": "default", "gridId": "access-a"}],
+        "members": [
+            {"accessId": "access-a", "company": "Acme", "instance": "default", "gridId": "access-a"},
+            {"accessId": "access-b", "company": "Globex", "instance": "i-0a1b2c3d", "gridId": "access-b"},
+        ],
+    });
+    let grids = alias::each_access_grid(&status);
+    assert_eq!(grids.len(), 2);
+    assert_eq!((grids[0]["hub"]["id"].as_str(), grids[0]["member"]["company"].as_str()), (Some("access-a"), Some("Acme")));
+    assert!(grids[1]["hub"].is_null());
+    assert_eq!((grids[1]["member"]["id"].as_str(), grids[1]["member"]["company"].as_str()), (Some("access-b"), Some("Globex")));
+}
+
+/// Several Sandbox Grids on one computer: one status lists each grid apart, so the register can
+/// name a hub here and a grid this computer joined as two grids rather than only the hub; and
+/// every desks method the door reaches takes gridId, so the grid it found is the one it changes.
+#[test]
+fn every_sandbox_grid_is_listed_and_every_desks_method_takes_its_grid() {
+    let old = json!({"hub": {"id": "grid-a", "name": "Acme"}, "member": null, "desk": null});
+    assert_eq!(alias::each_desks_grid(&old), vec![old.clone()], "an answer from before several is kept as it is");
+    let status = json!({
+        "hub": {"id": "grid-a"}, "member": {"gridId": "grid-a"},
+        "hubs": [{"id": "grid-a", "name": "Acme", "instance": "default", "gridId": "grid-a"}],
+        "members": [
+            {"gridId": "grid-a", "grid": "Acme", "instance": "default"},
+            {"gridId": "grid-b", "grid": "Globex", "instance": "i-0a1b2c3d"},
+        ],
+        "logins": [{"gridId": "grid-c", "grid": "Initech", "instance": "i-0e1f2a3b"}],
+    });
+    let grids = alias::each_desks_grid(&status);
+    assert_eq!(grids.len(), 3);
+    assert_eq!((grids[0]["hub"]["id"].as_str(), grids[0]["member"]["gridId"].as_str()), (Some("grid-a"), Some("grid-a")), "a hub and its own membership are one grid");
+    assert!(grids[1]["hub"].is_null() && grids[1]["member"]["grid"] == "Globex");
+    assert!(grids[2]["hub"].is_null() && grids[2]["member"].is_null() && grids[2]["desk"]["grid"] == "Initech");
+    for method in ["desks_status", "desks_manage", "desks_join", "desks_leave", "desks_delete", "desks_restore", "desks_member_remove", "desks_member_share", "desks_person_add", "desks_person_password", "desks_person_remove", "desks_add", "desks_assign", "desks_retry", "desks_remove", "desk_refresh", "desk_login", "desk_logout"] {
+        let parameters = catalog::find(method).unwrap().parameters;
+        assert!(parameters.split_whitespace().any(|parameter| parameter == "gridId?:string"), "{method}: {parameters}");
+    }
+    // Making a grid, or taking up a ready-made membership, chooses its own place.
+    for method in ["desks_create", "desks_adopt_membership"] {
+        assert!(!catalog::find(method).unwrap().parameters.contains("gridId"), "{method}");
+    }
+}
+
+/// Several Closed Neo Grids on one computer: the grid a command found reaches every Neo handler
+/// the door can send it to as `gridId`, and one status lists each grid apart.
+#[test]
+fn every_neo_grid_is_listed_and_every_neo_method_the_door_reaches_takes_its_grid() {
+    for known in VERBS {
+        if alias::answered_by_the_register(known.noun, known.verb) {
+            continue;
+        }
+        let Ok((method, mut params)) = alias::product_call(Product::Neo, known.noun, known.verb, &fixture(known.noun, known.verb)) else { continue };
+        // A new grid is named by the words that start it, never by a grid already here. Methods
+        // that are not the Neo product's own are left alone here: the research verbs reach Swarm
+        // Mining (one project per computer until M11) and the work verbs reach Grid Core's shared
+        // job handlers, neither of which is this milestone's to give a grid id.
+        if method == "grid_create" || !method.starts_with("grid_") {
+            continue;
+        }
+        alias::aim(Product::Neo, "grid-b", &mut params);
+        assert_eq!(params["gridId"], "grid-b", "grids {} {} reaches {method}", known.noun, known.verb);
+        catalog::find(method).unwrap().validate(&params).unwrap_or_else(|error| panic!("grids {} {} aims {method} wrongly: {error}", known.noun, known.verb));
+    }
+    assert!(!catalog::find("grid_create").unwrap().parameters.contains("gridId"), "creating chooses its own place");
+    // A Neo status lists each hub and each membership; a hub and this computer's own membership
+    // in it are one grid, and an answer from before several is kept as it is.
+    let old = json!({"hub": {"id": "grid-a", "name": "Acme"}, "member": null});
+    assert_eq!(alias::each_access_grid(&old), vec![old.clone()]);
+    let status = json!({
+        "instance": "default", "hub": {"id": "grid-a"}, "member": {"gridId": "grid-a"},
+        "hubs": [{"id": "grid-a", "name": "Acme", "instance": "default", "gridId": "grid-a"}, {"instance": "i-0000cafe", "gridId": "grid-c", "name": "Coral", "error": "Not started yet"}],
+        "members": [{"gridId": "grid-a", "grid": "Acme", "instance": "default"}, {"gridId": "grid-b", "grid": "Globex", "instance": "i-0a1b2c3d"}],
+    });
+    let grids = alias::each_access_grid(&status);
+    assert_eq!(grids.len(), 3);
+    assert_eq!((grids[0]["hub"]["id"].as_str(), grids[0]["member"]["gridId"].as_str()), (Some("grid-a"), Some("grid-a")));
+    assert_eq!((grids[1]["hub"]["gridId"].as_str(), grids[1]["member"].is_null()), (Some("grid-c"), true), "a hub that has not started is still a grid");
+    assert_eq!((grids[2]["member"]["id"].as_str(), grids[2]["member"]["grid"].as_str()), (Some("grid-b"), Some("Globex")));
 }

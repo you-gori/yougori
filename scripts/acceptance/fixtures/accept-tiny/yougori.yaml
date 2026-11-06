@@ -1,0 +1,28 @@
+format_version: 2
+project: accept-tiny
+resources:
+  data:
+    kind: volume
+    spec:
+      backup_schedule: "daily 03:00"
+      backup_through: {resource: app}
+      backup_keep: 3
+      backup_consistency: live
+  app:
+    kind: environment
+    spec:
+      type: container
+      image: alpine:3.20
+      cpu: 0.5
+      memory: 0.5
+      storage: 2
+      command: [sh, -c, "printf '%s\n' \"$GREETING\" > /data/greeting.txt; while true; do sleep 30; done"]
+      environment:
+        GREETING: "{{inputs.greeting}}"
+      secrets:
+        TOKEN: "{{secrets.token}}"
+      volumes:
+        - {source: data, target: /data}
+      ports: [8080]
+      internet: false
+      restart: always

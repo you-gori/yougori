@@ -105,6 +105,34 @@ fn available(entries: Vec<Credential>) -> Vec<Credential> {
         .collect()
 }
 
+/// The sign-in files a tool has on this computer, as `(host file, target path inside the sandbox)`
+/// pairs — the same set `candidates()` + `available()` compute for the CLI's own copy, including the
+/// Ollama rule that the identity is copied only when its private key is present.
+///
+/// This exists so the engine can copy a tool's host sign-in the way the CLI does, on the explicit
+/// "use credentials from this computer" choice. It reads only file metadata (existence, type, size)
+/// through `available()`, never a file's contents, and returns nothing when the tool has no usable
+/// sign-in here. The caller copies the files; this only names them.
+pub fn host_signin(tool: &str) -> Vec<(PathBuf, String)> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    match home.filter(|p| p.is_absolute()) {
+        Some(home) => host_signin_at(tool, &home, |name| std::env::var_os(name).map(PathBuf::from)),
+        None => Vec::new(),
+    }
+}
+
+/// [`host_signin`] against a given home and environment, so the computation is testable without
+/// touching the real `$HOME`.
+fn host_signin_at(tool: &str, home: &Path, env: impl Fn(&str) -> Option<PathBuf>) -> Vec<(PathBuf, String)> {
+    let entries = available(candidates(tool, home, env));
+    // Match the CLI: Ollama's sign-in is only meaningful with its private key, so if that is missing
+    // (only the .pub survived, say), copy nothing rather than a useless public half.
+    if tool == "ollama" && !entries.iter().any(|entry| entry.target == ".ollama/id_ed25519") {
+        return Vec::new();
+    }
+    entries.into_iter().map(|entry| (entry.source, entry.target.to_owned())).collect()
+}
+
 fn notes(tool: &str, sharing: bool) -> Vec<String> {
     if !offered(tool) {
         return vec![format!("{} keeps its sign-in in a database with other data, so Yougori cannot copy it yet. Sign in during its onboarding.", product(tool))];
@@ -323,6 +351,48 @@ mod tests {
                 if tool == "ollama" { 2 } else { 1 }
             );
         }
+    }
+
+    #[test]
+    fn host_signin_names_each_tools_files_and_nothing_when_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let env = |_: &str| None;
+        // No files on disk yet: nothing to copy for any tool.
+        for tool in ["codex", "claude", "gemini", "ollama", "opencode", "kilo", "openclaw"] {
+            assert!(host_signin_at(tool, home, env).is_empty(), "{tool} with no files");
+        }
+        // With its sign-in present, each supported tool names its (host file, target) pairs, and the
+        // target matches what the sandbox expects.
+        for tool in ["codex", "claude", "gemini", "opencode", "kilo"] {
+            for entry in candidates(tool, home, env) {
+                std::fs::create_dir_all(entry.source.parent().unwrap()).unwrap();
+                std::fs::write(&entry.source, "fixture-secret").unwrap();
+            }
+            let pairs = host_signin_at(tool, home, env);
+            assert_eq!(pairs.len(), 1, "{tool}");
+            assert!(pairs[0].0.exists(), "{tool} host file named");
+            assert!(pairs[0].1.ends_with(".json"), "{tool} target path");
+        }
+        // A tool Yougori cannot copy (database-backed) names nothing even if asked.
+        assert!(host_signin_at("openclaw", home, env).is_empty());
+    }
+
+    #[test]
+    fn host_signin_copies_ollama_identity_only_with_its_private_key() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let env = |_: &str| None;
+        std::fs::create_dir_all(home.join(".ollama")).unwrap();
+        // Only the public half present: not meaningful, so copy nothing.
+        std::fs::write(home.join(".ollama/id_ed25519.pub"), "public").unwrap();
+        assert!(host_signin_at("ollama", home, env).is_empty());
+        // Add the private key: now both are named.
+        std::fs::write(home.join(".ollama/id_ed25519"), "private").unwrap();
+        let pairs = host_signin_at("ollama", home, env);
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().any(|(_, target)| target == ".ollama/id_ed25519"));
+        assert!(pairs.iter().any(|(_, target)| target == ".ollama/id_ed25519.pub"));
     }
 
     #[test]

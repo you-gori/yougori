@@ -1,0 +1,287 @@
+Actual installed client transcripts. Disposable HTTP model fixture; no GPU inference.
+
+=== aider ===
+Client tools: []
+\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+HTTPSConnectionPool(host='raw.githubusercontent.com', port=443): Max retries exceeded with url: /BerriAI/litellm/main/model_prices_and_context_window.json (Caused by NameResolutionError("HTTPSConnection(host='raw.githubusercontent.com', port=443): Failed to resolve 'raw.githubusercontent.com' ([Errno -3] Temporary failure in name resolution)"))
+Warning for openai/d1e3d5d0c3:test/one: Unknown context window size and costs, 
+using sane defaults.
+You can skip this check with --no-show-model-warnings
+
+https://aider.chat/docs/llms/warnings.html
+
+Aider v0.86.2
+Model: openai/d1e3d5d0c3:test/one with whole edit format
+Git repo: none
+Repo-map: disabled
+
+\u2591\u2588  SOLVER_OK                                                                       
+
+
+
+Tokens: 588 sent, 4 received.
+
+aider: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== claude ===
+Client tools: ['Agent', 'Bash', 'Edit', 'ListAgents', 'Read', 'ReportFindings', 'ScheduleWakeup', 'Skill', 'ToolSearch', 'Workflow', 'DeferredToolPlaceholder', 'Write']
+Claude Code doesn't recognize the model "fd8f0d186a:test/one", so it assumes a context window of 200k tokens. Update Claude Code, or see https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id to set the window.
+[claude-code:unrecognized_model] {"model":"fd8f0d186a:test/one","query_source":"sdk"}
+SOLVER_OK
+
+claude: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== cline ===
+Client tools: ['read_files', 'run_commands', 'editor', 'submit_and_exit']
+Completion tool schema: {'type': 'object', 'properties': {'summary': {'type': 'string', 'minLength': 10, 'description': 'Summarization of the investigation, steps taken, and resolution status to submit at the end of the session. Before submitting, re-read the task requirements together with any provided tests or assertions, and confirm from your own tool output � not from assumption � that your solution produces the expected results at the expected file locations.'}, 'verified': {'type': 'boolean', 'description': 'Have you verified that the issue is resolved to the best of your knowledge, including updating and creating all the requested files and items? \'True\' if you have completed the investigation and gathered concrete evidence that every requirement is met.\n\'False\' if you have done all you can but cannot resolve the issue or if you are stuck and cannot proceed further.\nIMPORTANT: verify by EXECUTION, not by assumption. Before setting \'true\' you must have observed evidence in this session that your solution works:\n- If the task provides or references specific tests, run those exact test(s) and include the passing output in your reasoning. If they still fail, revise and re-run.\n- If no tests are provided, construct your own check: actually run the program, script, or command you produced; confirm every required output file exists at the exact path requested; and confirm its contents match the required format, data types, and values. Read the output back as evidence.\nPhrases like "assume it works", "should be correct", or "probably fine" are NOT verification. Do NOT set \'true\' unless your tool output shows the requirements are met; if you cannot obtain such evidence, set \'false\'.'}}, 'required': ['summary', 'verified'], 'additionalProperties': False}
+Provider configured: openai-compatible (de2e203cd6:test/one)
+SOLVER_OK
+[submit_and_exit] {"summary":"SOLVER_OK completed successfully","verified":...
+   \u23bf Submission recorded (verified): SOLVER_OK completed successfully
+
+cline: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== codex ===
+Client tools: ['exec_command', 'write_stdin', 'request_user_input', 'view_image', 'ns_4e4a21c0ae2dc3008a85f78725c6b3ca581df4985983a222', 'ns_01cc6017356031bd22a00b3b08f884e1a82c092c3793b3b1', 'ns_ba78fa14bdd18bc0e88722933d6607ed21de75762d7b605b', 'ns_ba58fe271a028d725945fdfeba5f073409cb66da49536a17', 'ns_619dd87b269e0982a3503919ab1a8297d6e90178b8288e8f', 'get_goal', 'create_goal', 'update_goal']
+OpenAI Codex v0.166.0
+--------
+workdir: /workspace
+model: 97cc188cf7:test/one
+provider: solver
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 01a19e4a-2e3e-7833-bace-cfb48f09c09f
+--------
+user
+Say SOLVER_OK. Do not call tools.
+warning: Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled bubblewrap in the meantime.
+codex
+SOLVER_OK
+tokens used
+14
+
+codex: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== deepseek ===
+Client tools: []
+SOLVER_OK
+
+deepseek: real CLI, server-only inference and cleanup passed (2 requests)
+
+=== gemini ===
+Client tools: ['update_topic', 'list_directory', 'read_file', 'grep_search', 'glob', 'enter_plan_mode', 'invoke_agent']
+Warning: tools.exclude in settings.json is deprecated and will be removed in 1.0. Migrate to Policy Engine: https://geminicli.com/docs/core/policy-engine/
+Ripgrep is not available. Falling back to GrepTool.
+[STARTUP] Phase 'cleanup_ops' was started but never ended. Skipping metrics.
+[STARTUP] Cannot measure phase 'cleanup_ops': start mark 'startup:cleanup_ops:start' not found (likely cleared by reset).
+SOLVER_OK
+
+gemini: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== goose ===
+Client tools: ['analyze', 'apps__create_app', 'apps__delete_app', 'apps__iterate_app', 'apps__list_apps', 'delegate', 'edit', 'extensionmanager__list_resources', 'extensionmanager__manage_extensions', 'extensionmanager__read_resource', 'extensionmanager__search_available_extensions', 'load', 'load_skill', 'read_image', 'shell', 'tree', 'write']
+]0;\U0001fabf workspace
+    __( O)>  \u25cf new session \xb7 openai 28dd15120e:test/one
+   \____)    20261102_1 \xb7 /workspace
+     L L     goose is ready
+SOLVER_OK
+
+goose: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== grok ===
+Client tools: ['run_terminal_command', 'read_file', 'search_replace', 'list_dir', 'grep', 'kill_command_or_subagent', 'todo_write', 'get_command_or_subagent_output', 'spawn_subagent', 'scheduler_create', 'scheduler_delete', 'scheduler_list', 'monitor', 'search_tool', 'use_tool', 'workflow', 'enter_plan_mode', 'exit_plan_mode', 'ask_user_question', 'send_feedback', 'image_gen', 'image_edit', 'image_to_video', 'reference_to_video', 'write']
+SOLVER_OK
+
+grok: real CLI, server-only inference and cleanup passed (2 requests)
+
+=== interpreter ===
+Client tools: []
+P+q544e\P+q524742\P+q636f6c6f7273\P+q626c696e6b\P+q7369746d\P+q7269746d\P+q6376766973\P+q536d756c78\P+q536574756c63\P+q4d73\/opt/solver/tool/lib/python3.12/site-packages/interpreter/core/utils/system_debug_info.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  import pkg_resources
+
+We were unable to determine the context window of this model. Defaulting to     
+8000.                                                                           
+
+If your model can handle more, run self.context_window = {token limit}.         
+
+Also please set self.max_tokens = {max tokens per response}.                    
+
+Continuing...                                                                   
+
+                                                                                
+  \u25cf                                                                             
+                                                                                
+                                                                                
+  SOLVER_OK\u25cf                                                                    
+                                                                                
+                                                                                
+  SOLVER_OK                                                                     
+                                                                                
+                                                                                
+  SOLVER_OK                                                                     
+                                                                                
+                                                                                
+  SOLVER_OK                                                                     
+                                                                                
+
+interpreter: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== kilo ===
+Client tools: ['agent_manager_models', 'background_process', 'bash', 'board_post', 'board_read', 'cancel_wakeup', 'cron_create', 'cron_delete', 'cron_list', 'edit', 'glob', 'goal', 'goal_report', 'grep', 'kilo_local_recall', 'link_pr', 'read', 'schedule_wakeup', 'skill', 'task', 'todowrite', 'webfetch', 'write']
+
+> code \xb7 30c14db2f4:test/one
+
+SOLVER_OK
+
+
+kilo: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== opencode ===
+Client tools: []
+
+> build \xb7 1b6b577911:test/one
+
+SOLVER_OK
+
+
+opencode: real CLI, server-only inference and cleanup passed (2 requests)
+
+=== openhands ===
+Client tools: ['terminal', 'file_editor', 'task_tracker', 'task', 'finish', 'think']
+ 
+                             'https://github.com/OpenHands/extension            
+                             s/': Could not resolve host: github.com            
+                                                                                
+[11/02/26 22:08:28] ERROR    Git command failed: git clone --depth 1 ]8;id=133388;file:///opt/solver/tool/lib/python3.12/site-packages/openhands/sdk/git/utils.py\utils.py]8;;\:]8;id=853222;file:///opt/solver/tool/lib/python3.12/site-packages/openhands/sdk/git/utils.py#48\48]8;;\
+                             --branch main                                      
+                             https://github.com/OpenHands/extensions            
+                             /home/node/.openhands/cache/skills/publ            
+                             ic-skills. Exit code: 128. Stderr:                 
+                             Cloning into                                       
+                             '/home/node/.openhands/cache/skills/pub            
+                             lic-skills'...                                     
+                             fatal: unable to access                            
+                             'https://github.com/OpenHands/extension            
+                             s/': Could not resolve host: github.com            
+                                                                                
+[11/02/26 22:08:28] ERROR    Git command failed: git clone --depth 1 ]8;id=177099;file:///opt/solver/tool/lib/python3.12/site-packages/openhands/sdk/git/utils.py\utils.py]8;;\:]8;id=368104;file:///opt/solver/tool/lib/python3.12/site-packages/openhands/sdk/git/utils.py#48\48]8;;\
+                             --branch main                                      
+                             https://github.com/OpenHands/extensions            
+                             /home/node/.openhands/cache/skills/publ            
+                             ic-skills. Exit code: 128. Stderr:                 
+                             Cloning into                                       
+                             '/home/node/.openhands/cache/skills/pub            
+                             lic-skills'...                                     
+                             fatal: unable to access                            
+                             'https://github.com/OpenHands/extension            
+                             s/': Could not resolve host: github.com            
+                                                                                
+Initializing agent...
+[11/02/26 22:08:28] ERROR    Git command failed: git clone --depth 1 ]8;id=826836;file:///opt/solver/tool/lib/python3.12/site-packages/openhands/sdk/git/utils.py\utils.py]8;;\:]8;id=672726;file:///opt/solver/tool/lib/python3.12/site-packages/openhands/sdk/git/utils.py#48\48]8;;\
+                             --branch main                                      
+                             https://github.com/OpenHands/extensions            
+                             /home/node/.openhands/cache/skills/publ            
+                             ic-skills. Exit code: 128. Stderr:                 
+                             Cloning into                                       
+                             '/home/node/.openhands/cache/skills/pub            
+                             lic-skills'...                                     
+                             fatal: unable to access                            
+                             'https://github.com/OpenHands/extension            
+                             s/': Could not resolve host: github.com            
+                                                                                
+\u2713 Agent initialized with model: openai/5e2cb86fec:test/one
+Agent is working
+Agent finished
+
+\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 CONVERSATION SUMMARY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+Number of agent messages: 2
+Last message sent by the agent:
+\u256d\u2500 Agent \u2500\u2500\u2500\u256e
+\u2502 SOLVER_OK \u2502
+\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f
+\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+Goodbye! \U0001f44b
+Conversation ID: 334b3e6031844ff6ad590fc20cbef146
+Hint: run openhands --resume 334b3e60-3184-4ff6-ad59-0fc20cbef146 to resume this
+conversation.
+
+openhands: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== pentestgpt ===
+Client tools: []
+SOLVER_OK
+
+pentestgpt: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== pi ===
+Client tools: ['read', 'bash', 'edit', 'write']
+SOLVER_OK
+
+pi: real CLI, server-only inference and cleanup passed (1 requests)
+
+=== qwen ===
+Client tools: ['glob', 'grep_search', 'read_file', 'skill', 'tool_call', 'tool_search']
+SOLVER_OK
+
+qwen: real CLI, server-only inference and cleanup passed (2 requests)
+
+=== swe ===
+Client tools: ['bash', 'str_replace_editor', 'submit']
+Completion tool schema: {'type': 'object'}
+ the issue.                 
+              You can do this with `git checkout -- /path/to/test/file.py`. Use 
+            below <diff> to find the files you need to revert.                  
+            4. Run the submit command again to confirm.                         
+                                                                                
+            Here is a list of all of your changes:                              
+                                                                                
+            <diff>                                                              
+                                                                                
+            </diff>                                                             
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+\U0001f920 INFO     ========================= STEP 2 =========================          
+\U0001f916 DEBUG    n_cache_control: 2                                                  
+\U0001f916 WARN     No max input tokens found for model 'openai/99f656a75a:test/one'. If
+            you are using a local model, you can set `max_input_token` in the   
+            model config to override this.                                      
+\U0001f527 DEBUG    Choosing API key 0 for thread MainThread (idx 0)                    
+\U0001f916 DEBUG    Response: ModelResponse(id='chatcmpl-fixture', created=1,           
+            model='99f656a75a:test/one', object='chat.completion',              
+            system_fingerprint=None,                                            
+            choices=[Choices(finish_reason='tool_calls', index=0,               
+            message=Message(content='SOLVER_OK', role='assistant',              
+            tool_calls=[ChatCompletionMessageToolCall(function=Function(argument
+            s='{}', name='submit'), id='call_fixture', type='function')],       
+            function_call=None, provider_specific_fields={'refusal': None}),    
+            provider_specific_fields={})], usage=Usage(completion_tokens=2,     
+            prompt_tokens=12, total_tokens=14, completion_tokens_details=None,  
+            prompt_tokens_details=None), moderation=None, service_tier=None)    
+\U0001f916 DEBUG    Error calculating cost: This model isn't mapped yet.                
+            model=openai/99f656a75a:test/one, custom_llm_provider=openai. Add it
+            here -                                                              
+            https://github.com/BerriAI/litellm/blob/main/model_prices_and_contex
+            t_window.json., setting cost to 0.                                  
+\U0001f916 DEBUG    input_tokens=490, output_tokens=4, instance_cost=0.00, cost=0.00    
+\U0001f916 DEBUG    total_tokens_sent=783, total_tokens_received=8, total_cost=0.00,    
+            total_api_calls=2                                                   
+\U0001f920 INFO     \U0001f4ad THOUGHT                                                          
+            SOLVER_OK                                                           
+                                                                                
+            \U0001f3ac ACTION                                                           
+            submit                                                              
+\U0001f9f0 DEBUG    Retrieved state from environment: {'working_dir': '/workspace'}     
+\U0001f920 INFO     Found submission:                                                   
+\U0001f920 INFO     \U0001f916 MODEL INPUT                                                      
+            Your command ran successfully and did not produce any output.       
+\U0001f920 INFO     Trajectory saved to /home/node/.swe/output/a394c2/a394c2.traj       
+\u26a1\ufe0f INFO    No patch to save.                                                    
+\U0001f3c3 INFO     Done                                                                
+\U0001fab4 INFO     Beginning environment shutdown...                                   
+\U0001f996 DEBUG    Ensuring deployment is stopped because object is deleted            
+
+swe: real CLI, server-only inference and cleanup passed (2 requests)

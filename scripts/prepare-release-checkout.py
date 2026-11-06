@@ -13,8 +13,8 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOTS = ('src/', 'src-tauri/', 'assets/', 'public/', 'cli/', 'engine/', 'crates/', '.cargo/', 'vault/', 'vendor/', 'appliance/',
-                'runtime/', 'scripts/', 'skills/', 'docs/', 'compliance/', 'e2e/', '.github/')
+SOURCE_ROOTS = ('src/', 'src-tauri/', 'assets/', 'public/', 'cli/', 'engine/', 'crates/', 'grid/', 'setup/', '.cargo/', 'vault/', 'vendor/', 'appliance/',
+                'runtime/', 'scripts/', 'skills/', 'docs/', 'compliance/', 'e2e/', '.github/', 'examples/')
 ROOT_ASSET_SUFFIXES = {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.otf'}
 ROOT_FILES = {'LICENSE', 'COPYING', 'NOTICE', 'COMMERCIAL_LICENSE.txt', '.gitignore',
               'distribution.txt', 'distribution.rs',

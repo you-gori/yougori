@@ -307,11 +307,22 @@ mod plugin_tests {
     }
 }
 
+/// The one way to the Personal Vault broker. The broker belongs to this Windows account, not to
+/// an engine, so a disposable acceptance engine (scripts/acceptance) never calls it: it must not
+/// read or change the person's own vault, or raise its approval notifications.
+#[cfg(windows)]
+pub(crate) async fn broker(request: &yougori_vault::protocol::Request) -> Result<Value, String> {
+    if crate::acceptance::data_directory().is_some() {
+        return Err("Personal Vault isn't available to a disposable acceptance engine.".into());
+    }
+    yougori_vault::client::call(request).await
+}
+
 #[tauri::command]
 pub async fn vault_add_items(window: WebviewWindow, items: Vec<yougori_vault::protocol::ItemInput>) -> Result<Value, String> {
     focused_dashboard(&window)?;
     #[cfg(windows)]
-    { yougori_vault::client::call(&yougori_vault::protocol::Request::AddItems { items }).await }
+    { broker(&yougori_vault::protocol::Request::AddItems { items }).await }
     #[cfg(not(windows))]
     { let _ = items; Err("Personal Vault requires Windows in this release".into()) }
 }
@@ -340,7 +351,7 @@ pub async fn vault_status(app: AppHandle, window: WebviewWindow) -> Result<Value
         // which offers Update vault with the person's consent. Nothing is written on this answer.
         let update_required = yougori_vault::platform::update_required(&bundled_broker(&app)?)?
             || !yougori_vault::platform::installed_binary()?.exists();
-        match yougori_vault::client::call(&yougori_vault::protocol::Request::Status {}).await {
+        match broker(&yougori_vault::protocol::Request::Status {}).await {
             Ok(mut value) => {
                 // The broker's answer, read from the vault folder, is the truth; the note follows it.
                 if let Some(unfinished) = value["destroyIncomplete"].as_bool() {
@@ -375,6 +386,9 @@ pub async fn vault_control(
     id: Option<String>,
 ) -> Result<Value, String> {
     focused_dashboard(&window)?;
+    if crate::acceptance::data_directory().is_some() {
+        return Err("Personal Vault isn't available to a disposable acceptance engine.".into());
+    }
     #[cfg(windows)]
     {
         use yougori_vault::{client, protocol::Request};
@@ -420,7 +434,7 @@ pub async fn vault_control(
                     // Sent and no answer came: the broker stopped, or did not answer in time.
                     // What the vault folder holds, as the broker reads it, settles it.
                     Delivered::Unknown(error) => {
-                        let status = client::call(&Request::Status {}).await;
+                        let status = broker(&Request::Status {}).await;
                         let on_disk = status.as_ref().ok().and_then(|status| status["onDisk"].as_str()).map(str::to_owned);
                         return match settled(&error, on_disk.as_deref()) {
                             Settled::Finished => Ok(with_left_behind(json!({"destroyed": true}), crate::vault_setup::forget(&app).await)),
@@ -440,7 +454,7 @@ pub async fn vault_control(
             },
             _ => return Err("Unsupported vault management action".into()),
         };
-        client::call(&request).await
+        broker(&request).await
     }
     #[cfg(not(windows))]
     {

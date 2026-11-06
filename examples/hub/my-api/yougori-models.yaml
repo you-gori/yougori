@@ -1,7 +1,8 @@
-# Models you start yourself, sold on this website:
+# Models you start yourself, sold on this website (an instance installed from 1.6.0):
 #   yougori run hf.co/OWNER/MODEL --template INSTANCE
 #   yougori model run hf.co/OWNER/MODEL --neocloud --environment POD_ID --template INSTANCE
-# The CLI links the website's sandbox to the model and runs this command there with a private
-# request file (the model's address and API key); the site then lists and sells the model.
+# The command gets a private one-time request file with the model's address and API key; the
+# site then lists and sells the model. A 2.0.0 setup can't take models this way yet: setups don't
+# deliver a connection to another setup's model. See Known limits in the README.
 environment: web
 command: [python, /app/site/attached.py]

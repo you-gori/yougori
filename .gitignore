@@ -40,6 +40,8 @@ src-tauri/resources/cli/
 /.agents/skills/*
 !/.agents/skills/edit-yougori/
 !/.agents/skills/edit-yougori/SKILL.md
+!/.agents/skills/create-yougori-template/
+!/.agents/skills/create-yougori-template/SKILL.md
 /.codex/
 /.claude/
 /.cursor/
@@ -106,3 +108,4 @@ crates/*/target/
 
 # Local audit and report output.
 /output/
+setup/target/

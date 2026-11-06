@@ -1,0 +1,395 @@
+{
+  "formatVersion": 2,
+  "instance": "agent-tools",
+  "template": {
+    "name": "agent-tools",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "tools.builtin",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Built-in AI tools",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.custom",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "Your own tool",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.provider_access",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "Provider access",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "data.project_source",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Project source",
+      "permissions": [
+        "Read the project folder you select."
+      ]
+    },
+    {
+      "id": "data.sync",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Sync",
+      "permissions": [
+        "Read only the folders you grant."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "claude_signin_source": "new",
+    "cpu": "4",
+    "image": "ubuntu:24.04",
+    "internet": "yes",
+    "memory_gb": "8",
+    "project_writable": "no",
+    "reference_path": "/reference",
+    "storage_gb": "40",
+    "tools": "claude"
+  },
+  "secrets": {},
+  "bindings": {
+    "project_readonly": "/example/folder",
+    "reference": "/example/folder"
+  },
+  "resources": [
+    {
+      "id": "agent",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "sh",
+          "-lc",
+          "sh /opt/yougori-agent/write-instructions.sh; exec sleep infinity"
+        ],
+        "cpu": 4.0,
+        "depends_on": [],
+        "environment": {
+          "AGENT_INSTRUCTIONS_PATH": "/workspace/AGENTS.md",
+          "AGENT_INTERNET": "yes",
+          "AGENT_PROJECT": "/workspace",
+          "AGENT_PROJECT_WRITABLE": "no",
+          "AGENT_REFERENCE": "/reference",
+          "AGENT_TOOLS": "claude"
+        },
+        "files": [
+          {
+            "source": "./rules",
+            "target": "/opt/yougori-agent"
+          }
+        ],
+        "gpu": false,
+        "image": "ubuntu:24.04",
+        "internet": true,
+        "memory": 8,
+        "pc_access": [
+          {
+            "binding": "project_readonly",
+            "path": "/example/folder",
+            "read_only": true,
+            "target": "/workspace"
+          },
+          {
+            "binding": "reference",
+            "path": "/example/folder",
+            "read_only": true,
+            "target": "/reference"
+          }
+        ],
+        "permissions": {
+          "edit": false,
+          "pc": true
+        },
+        "ports": [],
+        "restart": "",
+        "secrets": {},
+        "storage": 40,
+        "tools": [
+          {
+            "copy_credentials": false,
+            "name": "claude",
+            "signin": true,
+            "source": "built-in",
+            "spec": "claude"
+          },
+          {
+            "folder": "tools/repo-map",
+            "name": "repo-map",
+            "signin": false,
+            "source": "bundled",
+            "spec": "tools/repo-map",
+            "version": "1.0.0"
+          }
+        ],
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "home",
+            "target": "/root"
+          }
+        ],
+        "working_dir": "/workspace"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    }
+  ],
+  "order": [
+    "agent"
+  ],
+  "steps": [
+    {
+      "title": "Read what the agent was told",
+      "detail": "Open AGENTS.md in the project folder. Yougori rewrites it every time the sandbox starts, from the access this setup really has, so it is the honest list of what the agent can do.",
+      "command": "yougori files {{outputs.agent.name}} /workspace/AGENTS.md"
+    },
+    {
+      "title": "Work with it",
+      "detail": "Open a terminal in the sandbox and run the tool you chose. It sees your project, the reading folder if you added one, and nothing else of this computer.",
+      "command": "yougori terminal {{outputs.agent.name}}"
+    },
+    {
+      "title": "Change what it may reach",
+      "detail": "Run the setup again with different answers. Turning the internet off, making the project read only or dropping a tool takes effect on the next start, and AGENTS.md is rewritten to match."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{outputs.agent.name}}",
+      "private": false
+    },
+    {
+      "key": "instructions",
+      "label": "The agent's instructions",
+      "value": "/workspace/AGENTS.md",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "files",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "agent",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "ubuntu:24.04"
+      },
+      {
+        "kind": "tool",
+        "name": "claude",
+        "from": "built in"
+      }
+    ],
+    "permissions": [
+      "agent can read /example/folder, the folder you chose for project_readonly, and nothing else on this computer.",
+      "agent can read /example/folder, the folder you chose for reference, and nothing else on this computer.",
+      "Built-in AI tools: Run containers on this computer.",
+      "Project source: Read the project folder you select.",
+      "Sync: Read only the folders you grant.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "agent can read /example/folder on this computer.",
+      "agent can read /example/folder on this computer."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 4.0,
+      "memoryGb": 8.0,
+      "storageGb": 40.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "image",
+        "question": "Which container image should the agent work in?",
+        "answer": "ubuntu:24.04",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "tools",
+        "question": "Which coding tools should it have?",
+        "answer": "claude",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "claude_signin_source",
+        "question": "Which Claude sign-in should Claude Code use?",
+        "answer": "new",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "project_writable",
+        "question": "May the agent change your project?",
+        "answer": "no",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "reference_path",
+        "question": "Where should reading material appear inside the sandbox?",
+        "answer": "/reference",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "internet",
+        "question": "Should the agent reach the internet?",
+        "answer": "yes",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the sandbox, in GB",
+        "answer": "40",
+        "secret": false,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [
+      {
+        "environment": "agent",
+        "path": "/example/folder",
+        "target": "/workspace",
+        "readOnly": true,
+        "binding": "project_readonly"
+      },
+      {
+        "environment": "agent",
+        "path": "/example/folder",
+        "target": "/reference",
+        "readOnly": true,
+        "binding": "reference"
+      }
+    ],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [],
+    "installs": [
+      {
+        "resource": "agent",
+        "tool": "repo-map",
+        "commands": [
+          "mkdir -p \"$HOME/.local/bin\"",
+          "printf '%s\\n' '#!/bin/sh' 'set -eu' 'cd \"${1:-.}\"' 'find . -type f -not -path \"*/.git/*\" -printf \"%s\\t%p\\n\" | sort -rn | head -500' > \"$HOME/.local/bin/repo-map\"",
+          "chmod 755 \"$HOME/.local/bin/repo-map\""
+        ],
+        "check": "repo-map --help >/dev/null 2>&1 || test -x \"$HOME/.local/bin/repo-map\""
+      }
+    ]
+  },
+  "digest": "a3d1e8389b932f7f8a5fa6adc40c17e63afd70fe25a8c9c4f18130c2158deca2"
+}

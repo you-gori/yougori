@@ -1,0 +1,378 @@
+{
+  "aliases": [
+    "access grid",
+    "credential broker",
+    "company credentials",
+    "api keys",
+    "agent access"
+  ],
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "grid.join",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "people.team",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "people.roles",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "people.invites",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "people.scoped_credentials",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "people.mfa",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "people.sso",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.lan",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.quotas",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "grid_workers",
+      "id": "mode",
+      "question": "What do you want to do?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "people_access",
+      "id": "grid_name",
+      "question": "What is the company or team called?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "coordinator_address",
+      "question": "What is this computer's private network address?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "reach",
+      "question": "Where can people sign in from?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_username",
+      "question": "Your username as the first admin",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_name",
+      "question": "Your name, as others see it",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_password",
+      "question": "Your password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "people_access",
+      "id": "require_two_step",
+      "question": "Require two-step sign-in for everyone?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "people_access",
+      "id": "first_credential",
+      "question": "Add the first credential now?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "people_access",
+      "id": "credential_name",
+      "question": "Name for the credential",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "credential_kind",
+      "question": "How is it sent?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "people_access",
+      "id": "credential_field",
+      "question": "Where does the value go?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "credential_destination",
+      "question": "Which service may it be sent to?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "credential_value",
+      "question": "The credential's value",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "people_access",
+      "id": "rule_decision",
+      "question": "When someone uses it, what happens?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "people_access",
+      "id": "rule_methods",
+      "question": "Which kinds of request?",
+      "required": true,
+      "secret": false,
+      "type": "multichoice"
+    },
+    {
+      "group": "people_access",
+      "id": "rule_path",
+      "question": "Only under this path",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "rule_hourly_limit",
+      "question": "Uses an hour per person before an approver must decide",
+      "required": false,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "rule_hours",
+      "question": "Let the rule lapse after how many hours?",
+      "required": false,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "people_access",
+      "id": "person_invite",
+      "question": "Paste the invite your admin gave you",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "people_access",
+      "id": "person_username",
+      "question": "Your username",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "person_password",
+      "question": "Your password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [
+        "company"
+      ],
+      "id": "broker",
+      "kind": "credential_broker",
+      "summary": {
+        "agents": "mcp, cli",
+        "capability": "people.scoped_credentials",
+        "grid": "resource:company",
+        "secrets": "credential_value"
+      },
+      "when": [
+        "mode is one of [\"create\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "company",
+      "kind": "grid",
+      "summary": {
+        "access": "{{inputs.reach}}",
+        "address": "{{inputs.coordinator_address}}",
+        "coordinator": "this_computer",
+        "domain": "{{inputs.domain}}",
+        "mode": "create",
+        "name": "{{inputs.grid_name}}",
+        "profile": "access_grid"
+      },
+      "when": [
+        "mode is one of [\"create\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "company"
+      ],
+      "id": "owner",
+      "kind": "access_binding",
+      "summary": {
+        "grid": "resource:company",
+        "mfa": "{{inputs.require_two_step}}",
+        "people": "team",
+        "roles": "owner, admin",
+        "secrets": "admin_password"
+      },
+      "when": [
+        "mode is one of [\"create\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "person_session",
+      "kind": "grid",
+      "summary": {
+        "coordinator": "remote",
+        "member": "person",
+        "mode": "join",
+        "profile": "access_grid",
+        "secrets": "invitation, password",
+        "sign_in": "password",
+        "username": "{{inputs.person_username}}"
+      },
+      "when": [
+        "mode is one of [\"person\"]"
+      ]
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Add people and approvers",
+    "Connect an agent",
+    "Turn on two-step sign-in"
+  ],
+  "subtitle": "Let agents use approved credentials without receiving their values.",
+  "tools": [],
+  "totals": {
+    "cpu": 0,
+    "environments": 0,
+    "gpu": "none",
+    "memoryGb": 0,
+    "storageGb": 0
+  },
+  "warnings": [
+    "broker holds credentials for workloads to use without receiving their values.",
+    "company starts a grid that other computers can join.",
+    "owner lets other people in."
+  ]
+}

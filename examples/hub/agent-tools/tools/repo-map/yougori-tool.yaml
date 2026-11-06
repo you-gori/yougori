@@ -1,0 +1,17 @@
+kind: tool
+name: repo-map
+title: Repo Map
+summary: Lists a project's files and their sizes, so an agent can see the shape of a repository without reading all of it.
+version: 1.0.0
+license: MIT
+topics: [agents, files]
+changelog: First version. A small, dependency-free file map for coding agents.
+command: repo-map
+install:
+  - mkdir -p "$HOME/.local/bin"
+  - printf '%s\n' '#!/bin/sh' 'set -eu' 'cd "${1:-.}"' 'find . -type f -not -path "*/.git/*" -printf "%s\t%p\n" | sort -rn | head -500' > "$HOME/.local/bin/repo-map"
+  - chmod 755 "$HOME/.local/bin/repo-map"
+check: repo-map --help >/dev/null 2>&1 || test -x "$HOME/.local/bin/repo-map"
+needs:
+  gpu: none
+  internet: false

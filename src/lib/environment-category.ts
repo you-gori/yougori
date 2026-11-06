@@ -8,6 +8,7 @@ export function environmentCategory(environment: Pick<Environment, "kind" | "pro
   return environment.kind === "container" && environment.provider === "yougoriCuda" ? "gpu" : environment.kind
 }
 export function environmentLabel(environment: Pick<Environment, "kind" | "provider"> & Partial<Pick<Environment,"runtime">>) {
+  if(environment.runtime?.startsWith("sandbox-vm://"))return "Sandbox VM"
   if(environment.runtime?.startsWith("shared://"))return "Shared environment"
   return environmentCategory(environment) === "gpu" ? "GPU · NVIDIA CUDA" : environmentKindLabel[environment.kind]
 }

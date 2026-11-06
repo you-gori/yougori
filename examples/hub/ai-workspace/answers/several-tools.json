@@ -1,0 +1,9 @@
+{
+  "tools": "claude,gemini,ollama",
+  "claude_access": "subscription",
+  "claude_signin_source": "new",
+  "gemini_access": "api",
+  "cpu": 4,
+  "memory_gb": 8,
+  "storage_gb": 40
+}

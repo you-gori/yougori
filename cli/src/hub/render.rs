@@ -297,7 +297,7 @@ fn substitute(value: &mut Yaml, path: &mut Vec<String>, values: &Values) -> Resu
 /// the project name, and any run adjustments; then checked with the same strict rules as
 /// `yougori up`. Returns the YAML to write and the parsed project.
 pub fn project(text: &str, values: &Values, adjust: &Adjust) -> Result<(String, manifest::Project), String> {
-    let mut tree: Yaml = serde_yaml_ng::from_str(text).map_err(|e| format!("Invalid yougori.yaml: {e}"))?;
+    let mut tree: Yaml = yougori_setup::format::read_yaml(text).map_err(|e| format!("Invalid yougori.yaml: {e}"))?;
     substitute(&mut tree, &mut Vec::new(), values)?;
     let root = tree.as_mapping_mut().ok_or("yougori.yaml must be a mapping with project: and environments:")?;
     root.insert(Yaml::String("project".into()), Yaml::String(values.instance.clone()));

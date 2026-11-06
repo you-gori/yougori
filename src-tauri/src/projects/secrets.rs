@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 const SERVICE: &str = "Yougori.DeploymentSecrets.v1";
 fn entry(name: &str) -> Result<keyring::Entry, String> {
     if !yougori_cli::workload::identifier(name) { return Err("Use a secret reference with 1–80 letters, digits, dots, dashes or underscores".into()); }
-    keyring::Entry::new(SERVICE, name).map_err(|_| "Cannot open the OS credential vault".into())
+    // A disposable acceptance engine keeps its entries apart from the installed engine's (and so
+    // never reads this user's own sign-ins); the suffix is empty for every other build.
+    let service = format!("{SERVICE}{}", crate::acceptance::lock_suffix());
+    keyring::Entry::new(&service, name).map_err(|_| "Cannot open the OS credential vault".into())
 }
 pub(crate) fn store(name: &str, value: &str) -> Result<(), String> {
     // Env-file records are one line. JSON/PEM credentials belong in protected guest files instead.
@@ -17,14 +20,15 @@ fn validate_value(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-/// The byte door of the same store, for Grid Core's credential broker.
+/// The byte door of the same store, for Grid Core's own entries.
 ///
 /// This is one credential vault with two doors on it, and on Windows they do not agree: the text
 /// door above stores the UTF-16 of a value, so bytes read back from something written that way
 /// are not the value's UTF-8. Whatever goes in through here comes back out through here
-/// unchanged, on every platform, which is what lets the broker fingerprint what it read and know
-/// it has the value the grid recorded. The two doors are never mixed on one entry; Grid Core's
-/// entries are the ones named `grid-core.`, and `crate::core_vault` is the only caller.
+/// unchanged, on every platform, which is what lets a reader fingerprint what it read and know
+/// it has the value that was recorded. The two doors are never mixed on one entry; Grid Core's
+/// entries are the ones named `grid-core.`, and a setup's jobs key (`setups::jobs`) is the only
+/// caller.
 ///
 /// Windows keeps a credential blob to 2560 bytes, so a long value belongs in a protected guest
 /// file rather than here, the same as a multi-line one does.

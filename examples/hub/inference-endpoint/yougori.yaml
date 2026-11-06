@@ -1,0 +1,49 @@
+format_version: 2
+project: inference-endpoint
+
+resources:
+  # vLLM's OpenAI-compatible server, from the same pinned image Yougori's own model runner uses.
+  # It reads the API key from VLLM_API_KEY and refuses /v1 requests without it.
+  server:
+    kind: environment
+    spec:
+      type: gpu
+      image: docker.io/vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+      cpu: "{{inputs.cpu}}"
+      memory: "{{inputs.memory_gb}}"
+      storage: "{{inputs.storage_gb}}"
+      entrypoint: [python3, -m, vllm.entrypoints.cli.main]
+      command:
+        - serve
+        - "{{inputs.model}}"
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        - --max-model-len
+        - "{{inputs.max_model_len}}"
+        - --max-num-seqs
+        - "{{inputs.max_concurrent}}"
+      environment:
+        HF_HOME: /models
+      secrets:
+        VLLM_API_KEY: "{{secrets.api_key}}"
+        HF_TOKEN: "{{secrets.hf_token}}"
+      volumes:
+        - {source: models, target: /models}
+      ports: [8000]
+      health:
+        port: 8000
+        path: /health
+        wait_seconds: 600
+
+  endpoint:
+    kind: service_publication
+    spec:
+      target: {resource: server}
+      port: 8000
+      access: "{{inputs.access}}"
+      domain: "{{inputs.domain}}"
+      health:
+        path: /health
+        expected_status: 200

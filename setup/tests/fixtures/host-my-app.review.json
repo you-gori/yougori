@@ -1,0 +1,214 @@
+{
+  "aliases": [
+    "host my app",
+    "deploy an app",
+    "web app",
+    "container app",
+    "self-host"
+  ],
+  "capabilities": [
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.health",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 1,
+      "gpu": false,
+      "image": "{{inputs.image}}",
+      "internet": true,
+      "memoryGb": 1,
+      "name": "app",
+      "pcAccess": [],
+      "ports": [
+        8080
+      ],
+      "secretSources": [
+        "APP_SECRET from the question app_secret"
+      ],
+      "secrets": [
+        "APP_SECRET"
+      ],
+      "storageGb": 10,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "website_api",
+      "id": "image",
+      "question": "Which container image runs your app?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "health_path",
+      "question": "Which path answers 200 when the app is healthy?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "cpu",
+      "question": "Processor cores",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "files_data",
+      "id": "storage_gb",
+      "question": "Disk for the app, in whole GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "website_api",
+      "id": "app_secret",
+      "question": "A secret your app reads as APP_SECRET (optional)",
+      "required": false,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "website_api",
+      "id": "access",
+      "question": "Who can reach the app?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "app",
+      "input": "access",
+      "port": 8080,
+      "resource": "web"
+    }
+  ],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "app",
+      "kind": "environment",
+      "summary": {
+        "cpu": "{{inputs.cpu}}",
+        "image": "{{inputs.image}}",
+        "memory": "{{inputs.memory_gb}}",
+        "ports": "8080",
+        "restart": "always",
+        "secrets": "APP_SECRET",
+        "storage": "{{inputs.storage_gb}}",
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "app"
+      ],
+      "id": "web",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.access}}",
+        "domain": "{{inputs.domain}}",
+        "port": 8080,
+        "target": "resource:app"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Read the app's logs",
+    "Open a shell inside the app"
+  ],
+  "subtitle": "Run your app's container image with a health check and an optional public link.",
+  "tools": [],
+  "totals": {
+    "cpu": 1,
+    "environments": 1,
+    "gpu": "none",
+    "memoryGb": 1,
+    "storageGb": 10
+  },
+  "warnings": [
+    "Makes app:8080 reachable from the internet."
+  ]
+}

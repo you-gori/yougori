@@ -1,0 +1,89 @@
+{
+  "database": {
+    "advisory-count": 2,
+    "last-commit": "0000000000000000000000000000000000000000",
+    "last-updated": "2026-10-28T00:00:00Z"
+  },
+  "lockfile": {"dependency-count": 4},
+  "settings": {
+    "target_arch": [],
+    "target_os": [],
+    "severity": null,
+    "ignore": [],
+    "informational_warnings": ["unmaintained", "unsound", "yanked"]
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 2,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2021-0003",
+          "package": "smallvec",
+          "title": "Buffer overflow in SmallVec::insert_many",
+          "description": "Deliberately vulnerable fixture entry.",
+          "date": "2021-01-08",
+          "aliases": ["CVE-2021-25900"],
+          "related": [],
+          "collection": "crates",
+          "categories": ["memory-corruption"],
+          "keywords": [],
+          "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+          "informational": null,
+          "references": [],
+          "source": null,
+          "url": null,
+          "withdrawn": null,
+          "license": "CC0-1.0"
+        },
+        "versions": {
+          "patched": [">=0.6.14, <1.0.0", ">=1.6.1"],
+          "unaffected": ["<0.6.3"]
+        },
+        "affected": {
+          "arch": [],
+          "os": [],
+          "functions": {"smallvec::SmallVec::insert_many": ["<0.6.14, >=0.6.3", ">=1.0.0, <1.6.1"]}
+        },
+        "package": {
+          "name": "smallvec",
+          "version": "1.6.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "dependencies": [],
+          "replace": null
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-0000-0000",
+          "package": "fixture-build-helper",
+          "title": "Fixture advisory for a build-time crate the runtime does not ship",
+          "description": "Deliberately vulnerable fixture entry.",
+          "date": "2026-09-01",
+          "aliases": [],
+          "related": [],
+          "collection": "crates",
+          "categories": [],
+          "keywords": [],
+          "cvss": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+          "informational": null,
+          "references": [],
+          "source": null,
+          "url": null,
+          "withdrawn": null,
+          "license": "CC0-1.0"
+        },
+        "versions": {"patched": [], "unaffected": []},
+        "affected": null,
+        "package": {
+          "name": "fixture-build-helper",
+          "version": "0.3.0",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "dependencies": [],
+          "replace": null
+        }
+      }
+    ]
+  },
+  "warnings": {}
+}

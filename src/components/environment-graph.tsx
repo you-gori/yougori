@@ -1,3 +1,4 @@
+import { SandboxVmEnvironmentRow } from "@/components/sandbox-vm/sandbox-vm-environment"
 import { SharingPanel } from "@/components/sharing-panel"
 import { EnvironmentDuplicateAction, type DuplicateDestination } from "@/components/environment-duplicate-action"
 import { DuplicateEnvironmentDialog } from "@/components/dialogs/duplicate-environment-dialog"
@@ -158,7 +159,11 @@ function EnvironmentCard({ data }: { data: EnvironmentNodeData }) {
 
 }
 
-export function EnvironmentGraph({ environments, connections, errorContainer, onConnect, onOpen, onSelect, footer, vaultError }: {
+export function EnvironmentGraph({ environments, connections, errorContainer, onConnect, onOpen, onSelect, footer, vaultError, sandboxVms = [], onOpenSandboxVm = () => {}, onConfigureSelection, onCreateTemplate }: {
+  onConfigureSelection?(ids: string[]): void
+  onCreateTemplate?(ids: string[]): void
+  sandboxVms?: Environment[]
+  onOpenSandboxVm?(id: string): void
   footer?: () => ReactNode
   errorContainer: HTMLElement | null
   environments: Environment[]
@@ -239,10 +244,10 @@ export function EnvironmentGraph({ environments, connections, errorContainer, on
     for (const preset of savedDomains) if (!found.has(preset.hostname)) found.set(preset.hostname, { url: `https://${preset.hostname}`, hostname: preset.hostname, environment: null, port: preset.port, live: false })
     return [...found.values()]
   }, [decorated, savedDomains])
-  const items = useMemo<EnvironmentItem[]>(() => [...(preview ? [preview] : []), ...decorated].map(environment => ({
+  const items = useMemo<EnvironmentItem[]>(() => [...(preview ? [preview] : []), ...decorated, ...sandboxVms].map(environment => ({
     id: environment.id,
     data: { fileHovered: fileDrop.hovered === environment.id, fileCopy: fileDrop.copies[environment.id], preview: environment === preview, accent: colors[environment.id] ?? "#7194c2", pending: pending.has(environment.id), environment, onCapabilityChange: change, onConnect, onOpen, onSelect, onService: openEnvironmentService, onShares: openShares, onDuplicate: openDuplicate },
-  })), [fileDrop.hovered, fileDrop.copies, preview, colors, pending, change, decorated, onConnect, onOpen, onSelect, openEnvironmentService, openShares, openDuplicate])
+  })), [fileDrop.hovered, fileDrop.copies, preview, colors, pending, change, decorated, onConnect, onOpen, onSelect, openEnvironmentService, openShares, openDuplicate, sandboxVms])
 
 
   return (
@@ -275,12 +280,12 @@ export function EnvironmentGraph({ environments, connections, errorContainer, on
           className="relative z-10 h-[clamp(460px,calc(100dvh-400px),1200px)]"
           data-environment-canvas
         >
-          <EnvironmentList items={items} connections={connections} colors={colors} onConnect={onConnect} rows={<VaultSandboxRow startupError={vaultError} />} header={!environments.length && !preview ? <div className="workspace-empty flex flex-col items-center justify-center gap-2 px-6 py-8 text-center"><p className="text-base font-medium">Your workspace starts here</p><p className="max-w-sm text-sm leading-6 text-muted-foreground">Add your first sandbox above.</p><p className="mt-2 text-xs text-muted-foreground">Then connect its files, network and service ports here.</p></div> : undefined}>
-            {item => <EnvironmentCard key={item.id} data={item.data} />}
+          <EnvironmentList onCreateTemplate={onCreateTemplate} onConfigureSelection={onConfigureSelection} items={items} connections={connections} colors={colors} onConnect={onConnect} rows={<VaultSandboxRow startupError={vaultError} />} header={!environments.length && !sandboxVms.length && !preview ? <div className="workspace-empty flex flex-col items-center justify-center gap-2 px-6 py-8 text-center"><p className="text-base font-medium">Your workspace starts here</p><p className="max-w-sm text-sm leading-6 text-muted-foreground">Add your first sandbox above.</p><p className="mt-2 text-xs text-muted-foreground">Then connect its files, network and service ports here.</p></div> : undefined}>
+            {item => item.data.environment.runtime.startsWith("sandbox-vm://") ? <SandboxVmEnvironmentRow key={item.id} environment={item.data.environment} onOpen={onOpenSandboxVm} /> : <EnvironmentCard key={item.id} data={item.data} />}
           </EnvironmentList>
         </div>
         <div className="workspace-graph-caption flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2 text-[11px] text-muted-foreground">
-          <span className="workspace-footer-counts"><span><strong>{environments.length}</strong> {environments.length === 1 ? "environment" : "environments"}</span><span aria-hidden="true">·</span><span><strong>{connections.length}</strong> {connections.length === 1 ? "connection" : "connections"}</span></span>
+          <span className="workspace-footer-counts"><span><strong>{environments.length + sandboxVms.length}</strong> {environments.length + sandboxVms.length === 1 ? "environment" : "environments"}</span><span aria-hidden="true">·</span><span><strong>{connections.length}</strong> {connections.length === 1 ? "connection" : "connections"}</span></span>
           {footer?.()}
           <ConfigurationHelp label="Workspace controls">Double-click a row to configure. Use the row controls to start, stop, or manage files and service ports.</ConfigurationHelp>
         </div>

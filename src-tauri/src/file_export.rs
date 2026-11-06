@@ -127,10 +127,24 @@ impl Source<'_> {
     async fn request(&self, operation: &str, path: &str, offset: u64, length: u64) -> Result<Value, String> {
         match self {
             Source::Shared(env) => crate::remote_access::client::request_saved(env, "files", json!({"operation":operation,"path":path,"offset":offset,"length":length})).await,
-            Source::Guest(runtime, env) => runtime.workspace_request(env, "/v1/remote/files", json!({
-                "id": env.runtime_id.as_deref().unwrap_or(&env.id), "root": "/", "path": path,
-                "operation": operation, "offset": offset, "length": length, "readOnly": true,
-            })).await,
+            Source::Guest(runtime, env) => {
+                // This computer's own copy out may read the sandbox's own volumes (a setup's
+                // backup reads one); an agent older than that refuses the field, so it is asked
+                // again without it and answers as before.
+                let mut request = json!({
+                    "id": env.runtime_id.as_deref().unwrap_or(&env.id), "root": "/", "path": path,
+                    "operation": operation, "offset": offset, "length": length, "readOnly": true, "volumes": true,
+                });
+                match runtime.workspace_request(env, "/v1/remote/files", request.clone()).await {
+                    Err(error) if error.contains("invalid file request") => {
+                        if let Some(fields) = request.as_object_mut() {
+                            fields.remove("volumes");
+                        }
+                        runtime.workspace_request(env, "/v1/remote/files", request).await
+                    }
+                    answer => answer,
+                }
+            }
             #[cfg(test)]
             Source::Fake(tree) => {
                 let node = tree.get(path).ok_or("No such file")?;

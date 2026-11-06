@@ -1,0 +1,434 @@
+{
+  "formatVersion": 2,
+  "instance": "dev-workspace",
+  "template": {
+    "name": "dev-workspace",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.local_only",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Run on this computer only",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "data.sync",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Sync",
+      "permissions": [
+        "Read only the folders you grant."
+      ]
+    },
+    {
+      "id": "data.folders",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Selected folders",
+      "permissions": [
+        "Read only the folders you grant."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "tools.builtin",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Built-in AI tools",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    }
+  ],
+  "inputs": {
+    "access": "quick",
+    "cpu": "4",
+    "image": "node:22.11-bookworm",
+    "memory_gb": "8",
+    "storage_gb": "40",
+    "tools": "codex,claude"
+  },
+  "secrets": {},
+  "bindings": {
+    "project": "/example/folder",
+    "reference": "/example/folder"
+  },
+  "resources": [
+    {
+      "id": "dev",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": true,
+        "cpu": 4.0,
+        "depends_on": [],
+        "environment": {},
+        "files": [],
+        "gpu": false,
+        "image": "node:22.11-bookworm",
+        "internet": true,
+        "memory": 8,
+        "pc_access": [
+          {
+            "binding": "reference",
+            "path": "/example/folder",
+            "read_only": true,
+            "target": "/reference"
+          }
+        ],
+        "permissions": {
+          "edit": true,
+          "pc": true
+        },
+        "ports": [
+          3000
+        ],
+        "restart": "unless-stopped",
+        "secrets": {},
+        "storage": 40,
+        "sync": [
+          {
+            "binding": "project",
+            "conflicts": "keep_both",
+            "continuous": true,
+            "path": "/example/folder",
+            "read_only": false,
+            "target": "/workspace"
+          }
+        ],
+        "tools": [
+          {
+            "name": "codex",
+            "signin": true,
+            "source": "built-in",
+            "spec": "codex"
+          },
+          {
+            "name": "claude",
+            "signin": true,
+            "source": "built-in",
+            "spec": "claude"
+          }
+        ],
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "home",
+            "target": "/root"
+          }
+        ],
+        "working_dir": "/workspace"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "public_dev",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "dev"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "quick",
+        "port": 3000,
+        "target": {
+          "resource": "dev"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    },
+    {
+      "id": "storage",
+      "kind": "volume",
+      "title": "volume",
+      "capability": "data.volumes",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "shared": false,
+        "size_gb": 40.0
+      },
+      "outputs": [
+        "id",
+        "name"
+      ]
+    }
+  ],
+  "order": [
+    "dev",
+    "public_dev",
+    "storage"
+  ],
+  "steps": [
+    {
+      "title": "Open a terminal in the sandbox",
+      "detail": "Your project is at /workspace. Edit it here or on your computer; both stay in step.",
+      "command": "yougori terminal {{env.dev}}"
+    },
+    {
+      "title": "Sign in to your tools there",
+      "detail": "Each tool signs in inside the sandbox, not on this computer."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "workspace",
+      "label": "Your project inside the sandbox",
+      "value": "/workspace",
+      "private": false
+    },
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{env.dev}}",
+      "private": false
+    },
+    {
+      "key": "address",
+      "label": "App address",
+      "value": "{{public.dev}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "files",
+    "logs",
+    "api"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "dev",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "public_dev",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      },
+      {
+        "id": "storage",
+        "kind": "volume",
+        "title": "volume",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "node:22.11-bookworm"
+      },
+      {
+        "kind": "tool",
+        "name": "codex",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "claude",
+        "from": "built in"
+      }
+    ],
+    "permissions": [
+      "dev can read /example/folder, the folder you chose for reference, and nothing else on this computer.",
+      "dev keeps a copy of /example/folder, the folder you chose for project, in /workspace, and changes sync both ways while the setup runs. A file changed in both places keeps both versions: the sandbox's is saved beside yours as a conflict copy. You agree to the sandbox changing your files again when the setup is applied.",
+      "Run on this computer only: Run containers on this computer.",
+      "Sync: Read only the folders you grant.",
+      "Selected folders: Read only the folders you grant.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Built-in AI tools: Run containers on this computer.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "dev can read /example/folder on this computer.",
+      "dev can change files in /example/folder on this computer.",
+      "Makes dev:3000 reachable from the internet."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 4.0,
+      "memoryGb": 8.0,
+      "storageGb": 40.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "image",
+        "question": "Which container image should the sandbox run?",
+        "answer": "node:22.11-bookworm",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "tools",
+        "question": "Which coding tools should it install?",
+        "answer": "codex,claude",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores for the sandbox",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory for the sandbox, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the sandbox, in GB",
+        "answer": "40",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "access",
+        "question": "How should port 3000 in the sandbox be reachable?",
+        "answer": "quick",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [
+      {
+        "environment": "dev",
+        "path": "/example/folder",
+        "target": "/reference",
+        "readOnly": true,
+        "binding": "reference"
+      },
+      {
+        "environment": "dev",
+        "path": "/example/folder",
+        "target": "/workspace",
+        "readOnly": false,
+        "binding": "project",
+        "sync": true
+      }
+    ],
+    "public": [
+      {
+        "resource": "dev",
+        "port": 3000,
+        "access": "quick"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "f4dce178ed43d154fc73f34f3000b040cadb92c46d50f72cb8294252d0434ad3"
+}

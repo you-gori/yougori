@@ -1,0 +1,379 @@
+{
+  "aliases": [
+    "neo grid",
+    "closed neo grid",
+    "model grid",
+    "company grid",
+    "model serving"
+  ],
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "grid.join",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "grid.reuse_compute",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "grid.availability",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "grid.cloud_compute",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "models.local",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "models.team",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.lan",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "grid_workers",
+      "id": "mode",
+      "question": "What do you want to do?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "grid_name",
+      "question": "What is the company or team called?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "coordinator_address",
+      "question": "What is this computer's private network address?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "reach",
+      "question": "Where can computers join the grid from?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    },
+    {
+      "group": "people_access",
+      "id": "grid_password",
+      "question": "Choose the company password computers use to join",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "model",
+      "question": "Which model should the grid serve first?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "quantization",
+      "question": "Which size of it?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "placement",
+      "question": "Which computers run it?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "percent",
+      "question": "What share of those computers should run it, in percent?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "availability",
+      "question": "When may a computer serve?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "idle_after_minutes",
+      "question": "After how many quiet minutes?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "automation_recovery",
+      "id": "schedule",
+      "question": "Only in these hours?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "app_key",
+      "question": "Create an API key for your apps now?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "website_api",
+      "id": "app_key_name",
+      "question": "Name of the app that will use this key",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "ai_team",
+      "question": "Also offer this model as a team that splits one request across several computers?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "ai_models",
+      "id": "team_name",
+      "question": "Name of the team",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "team_strategy",
+      "question": "How should the team work?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "team_computers",
+      "question": "How many computers may work on one request?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "ai_models",
+      "id": "team_rounds",
+      "question": "How many rounds?",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "invite",
+      "question": "Paste the invite from the grid's admin",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "grid_workers",
+      "id": "join_password",
+      "question": "The grid's company password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "company",
+      "kind": "grid",
+      "summary": {
+        "access": "{{inputs.reach}}",
+        "address": "{{inputs.coordinator_address}}",
+        "coordinator": "this_computer",
+        "domain": "{{inputs.domain}}",
+        "mode": "create",
+        "name": "{{inputs.grid_name}}",
+        "profile": "neo_grid",
+        "secrets": "join_password"
+      },
+      "when": [
+        "mode is one of [\"create\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "company"
+      ],
+      "id": "computers",
+      "kind": "compute_pool",
+      "summary": {
+        "availability": "{{inputs.availability}}",
+        "gpu": "optional",
+        "grid": "resource:company",
+        "idle_after_minutes": "{{inputs.idle_after_minutes}}",
+        "local_user_first": true,
+        "schedule": "{{inputs.schedule}}",
+        "source": "any"
+      },
+      "when": [
+        "mode is one of [\"create\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "computers"
+      ],
+      "id": "first_model",
+      "kind": "model_service",
+      "summary": {
+        "capability": "models.local",
+        "compute": "resource:computers",
+        "model": "{{inputs.model}}",
+        "placement": "{{inputs.placement}}",
+        "quantization": "{{inputs.quantization}}",
+        "share_percent": "{{inputs.percent}}"
+      },
+      "when": [
+        "mode is one of [\"create\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "membership",
+      "kind": "grid",
+      "summary": {
+        "coordinator": "remote",
+        "member": "computer",
+        "mode": "join",
+        "profile": "neo_grid",
+        "secrets": "invitation, join_password"
+      },
+      "when": [
+        "mode is one of [\"join\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "computers",
+        "first_model"
+      ],
+      "id": "team",
+      "kind": "model_service",
+      "summary": {
+        "capability": "models.team",
+        "compute": "resource:computers",
+        "model": "swarm/{{inputs.team_name}}"
+      },
+      "when": [
+        "mode is one of [\"create\"]",
+        "ai_team is one of [\"yes\"]"
+      ]
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Connect an app",
+    "Add more computers",
+    "Check what this computer serves"
+  ],
+  "subtitle": "Serve models across your computers.",
+  "tools": [],
+  "totals": {
+    "cpu": 0,
+    "environments": 0,
+    "gpu": "optional",
+    "memoryGb": 0,
+    "storageGb": 0
+  },
+  "warnings": [
+    "company starts a grid that other computers can join.",
+    "Uses an NVIDIA GPU when this computer has one."
+  ]
+}

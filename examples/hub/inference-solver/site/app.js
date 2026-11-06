@@ -1,0 +1,451 @@
+/* No framework, build step, third-party scripts, or template-supplied HTML. */
+"use strict";
+const $ = selector => document.querySelector(selector);
+let session, harnesses = [], categories = [], models = [], authMode = "signin", viewGeneration = 0, returnTo = "harnesses";
+const AUTH_ROUTES = ["signin", "signup", "join"];
+const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ready = model => model.state === "ready";
+const friendly = model => model.upstream.split("/").pop();
+const nowLabel = value => value ? new Date(value * 1000).toLocaleString() : "Not checked";
+function installCommand(name, address = location) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name) || !/^https?:\/\/[A-Za-z0-9.\-:\[\]]+$/.test(address.origin)) {
+    throw new Error("This installation address is invalid.");
+  }
+  return name === "node" ? `yougori inference connect "${address.origin}"`
+    : `yougori inference run ${name} --server "${address.origin}"`;
+}
+const PROTOCOLS = {chat_completions: "Chat Completions", responses: "Responses", messages: "Messages", google: "Gemini", mcp: "MCP", custom: "Custom adapter"};
+const CATEGORIES = {};
+const STATES = {ready: "Available", stale: "Stale", unavailable: "Unavailable", checking: "Checking"};
+const PLACES = {local: "Local host", neocloud: "Rented cloud GPU", mixed: "Local hosts and rented cloud GPUs"};
+// A model is published once; each connected computer or model server serving it is a replica.
+const servedBy = m => m.replicas?.length ? `${m.replicas.length} ${m.replicas.length === 1 ? "server" : "servers"}` : "";
+const cacheHits = m => Number.isFinite(m.cache?.hit_rate) ? `${Math.round(m.cache.hit_rate * 1000) / 10}% cached input` : "";
+const CENSORSHIP = {censored: "Censored", uncensored: "Uncensored"};
+const named = (names, value) => Object.hasOwn(names || {}, value) ? names[value] : String(value);
+const byName = name => (a, b) => name(a).localeCompare(name(b), undefined, {sensitivity: "base", numeric: true});
+const catalogState = {};
+let redrawModels = null;
+const DEFAULT_ACCENT = "#0b1f4d";
+// Earlier designs saved their own default blues as the accent; they now show as this design's blue.
+const accentOf = value => ["#350aff", "#164bdf", "#0151af", "#2f6fef", "#2563eb", "#190301"].includes(value) ? DEFAULT_ACCENT : value;
+
+function closeMenu() {
+  $("#menu").classList.remove("open"); $("#menu-toggle").setAttribute("aria-expanded", "false"); $("#nav-panel").inert = true;
+}
+function currentRoute() {
+  const hash = location.hash.slice(1), slash = hash.indexOf("/");
+  if (slash < 0) return [hash || "harnesses", ""];
+  try { return [hash.slice(0, slash), decodeURIComponent(hash.slice(slash + 1))]; }
+  catch { return [hash.slice(0, slash), ""]; }
+}
+function paintNavigation() {
+  const signedIn = !!session?.user, [current] = currentRoute();
+  const links = [...document.querySelectorAll("#nav a, #signin-link, #signup-link")].filter(a => !a.hidden);
+  $("#menu-links").replaceChildren(...links.map(link => {
+    const copy = link.cloneNode(true); copy.removeAttribute("id"); copy.className = "nav-link";
+    copy.addEventListener("click", event => {
+      event.preventDefault(); const next = copy.hash; closeMenu();
+      if(location.hash === next) route(); else location.hash = next;
+    }); return copy;
+  }));
+  $("#menu-signout").hidden = !signedIn;
+  $("#account-email").textContent = session?.user?.email || (session?.mode === "public" ? "Public inference" : "Private inference");
+  const gated = !signedIn && ["signin", "join", "connect", "keys", "usage", "admin"].includes(current);
+  const active = links.find(a => a.hash === "#" + (gated ? "signin" : current)) || links[0];
+  document.querySelectorAll('#nav a, #signin-link, #signup-link, #menu-links a').forEach(a => {
+    if (a.hash === active?.hash) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  });
+}
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+function themeLabel() {
+  const dark = (document.documentElement.dataset.theme || (darkQuery.matches ? "dark" : "light")) === "dark";
+  document.querySelectorAll("[data-theme-toggle]").forEach(button => {
+    button.textContent = dark ? "Light mode" : "Dark mode";
+    button.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+  });
+}
+document.querySelectorAll("[data-theme-toggle]").forEach(button => button.addEventListener("click", () => {
+  const dark = (document.documentElement.dataset.theme || (darkQuery.matches ? "dark" : "light")) === "dark";
+  const theme = dark ? "light" : "dark"; document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem("theme", theme); } catch { /* This visit still uses the chosen theme. */ }
+  themeLabel();
+}));
+darkQuery.addEventListener("change", themeLabel); themeLabel();
+$("#menu-toggle").addEventListener("click", () => {
+  const open = $("#menu").classList.toggle("open"); $("#menu-toggle").setAttribute("aria-expanded", String(open)); $("#nav-panel").inert = !open;
+});
+document.addEventListener("keydown", event => { if(event.key === "Escape" && $("#menu").classList.contains("open")) { closeMenu(); $("#menu-toggle").focus(); } });
+document.addEventListener("click", event => { if (!$("#menu").contains(event.target)) closeMenu(); });
+document.addEventListener("keydown", event => {
+  if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey || $("#dialog").open || event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  const search = $("#catalog-search");
+  if (search && !search.closest("[hidden]")) { event.preventDefault(); search.focus(); }
+});
+$("#menu-signout").addEventListener("click", () => $("#signout").click());
+// Main buttons end in an arrow inside a circle. The full label stays the accessible name.
+function pill(button) {
+  if (button.querySelector(":scope > .pill-arrow")) return;
+  const label = button.textContent.trim();
+  button.setAttribute("aria-label", label);
+  button.innerHTML = `<span>${esc(label.replace(/\s*[↗→]$/, ""))}</span><i class="pill-arrow" aria-hidden="true">→</i>`;
+}
+const pills = () => document.querySelectorAll(".primary").forEach(pill);
+new MutationObserver(pills).observe(document.body, {childList: true, subtree: true});
+pills();
+
+async function api(path, body) {
+  const response = await fetch(path, {method: body === undefined ? "GET" : "POST", credentials: "same-origin",
+    headers: {"Content-Type":"application/json", ...(body !== undefined && session?.user ? {"X-CSRF-Token":session.user.csrf} : {})},
+    ...(body !== undefined ? {body: JSON.stringify(body)} : {})});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error?.message || "The request could not be completed.");
+  return data;
+}
+function notice(message) { $("#notice").textContent = message; }
+async function copy(text, button) {
+  try { await navigator.clipboard.writeText(text); button.textContent = "Copied"; }
+  catch { notice("Select the text and copy it. Clipboard access is unavailable in this browser."); }
+}
+function modal(title, html, kicker = "Inference Solver") {
+  $("#dialog-title").textContent = title; $("#dialog-kicker").textContent = kicker;
+  $("#dialog-body").innerHTML = html; $("#dialog").showModal();
+}
+function formAction(selector, action) {
+  $(selector).addEventListener("submit", async event => {
+    event.preventDefault(); const form = event.currentTarget, button = form.querySelector('[type="submit"]');
+    const error = form.querySelector('[role="alert"]'); if(error) error.textContent = "";
+    button.disabled = true;
+    try { await action(Object.fromEntries(new FormData(form)), form); }
+    catch (problem) { if(error) error.textContent = problem.message; else notice(problem.message); }
+    finally { button.disabled = false; }
+  });
+}
+function empty(title, text, button = "") {
+  return `<div class="empty"><h3>${esc(title)}</h3><p>${esc(text)}</p>${button}</div>`;
+}
+function bindCopies(root = document) {
+  root.querySelectorAll("[data-copy]").forEach(button => button.addEventListener("click", () => copy(button.dataset.copy, button)));
+}
+function header(title, description, actions = "") {
+  $("#section-title").textContent = title; $("#section-description").textContent = description;
+  $("#section-actions").innerHTML = actions;
+}
+function panel(title, body, side = "") {
+  return `<section class="panel"><div class="panel-heading"><h2>${esc(title)}</h2>${side}</div><div class="panel-body">${body}</div></section>`;
+}
+function facts(rows) {
+  return `<dl class="facts">${rows.filter(([, value]) => value).map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>`;
+}
+
+async function loadSession() {
+  session = await api("/api/session"); document.title = session.site.name;
+  $("#brand").textContent = session.site.name; $("#footer-name").textContent = session.site.name; $("#tagline").textContent = session.site.tagline;
+  // CSSOM assignment of a validated six-digit color, never an inline HTML fragment.
+  document.documentElement.style.setProperty("--blue", accentOf(session.site.accent));
+  const signedIn = !!session.user;
+  document.querySelectorAll("[data-member-only]").forEach(link => { link.hidden = !signedIn; });
+  $("#signin-link").hidden = signedIn;
+  $("#signup-link").hidden = signedIn || session.mode !== "public";
+  $("#signout").hidden = !signedIn;
+  $("#admin-link").hidden = !session.user?.admin;
+  closeMenu(); paintNavigation();
+  const [catalog, discovered] = await Promise.all([api("/api/harnesses"), api("/api/models")]);
+  harnesses = catalog.harnesses; models = discovered.models;
+  categories = catalog.categories || [];
+  for (const category of categories) CATEGORIES[category.id] = category.label;
+  await route();
+}
+
+// Tools and models share one catalog: optional filters, search and sort above a list with one row per entry.
+// Each row links to its own page. Search, sort and filter survive refreshes and navigation.
+// With `menu`, the filters become one dropdown of checkboxes and any number can be chosen; otherwise
+// they are pill buttons and one at a time can be chosen.
+function catalog({key, one, noun, items, filters = [], menu = null, sorts, text, row, grid = false, note = ""}) {
+  const state = catalogState[key] ||= {search: "", sort: sorts[0][0], filter: "", chosen: [], scroll: 0};
+  const dot = f => `<i class="filter-dot" data-color="${esc(f.color || "")}" aria-hidden="true"></i>`;
+  const picker = !filters.length ? "" : menu
+    ? `<div class="filter" id="${key}-filter"><button type="button" class="filter-button" id="${key}-filter-button" aria-expanded="false" aria-controls="${key}-filter-menu"><span class="filter-dots"></span><span class="filter-summary"></span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="filter-menu" id="${key}-filter-menu" role="group" aria-label="${esc(menu.label)}" hidden>${filters.map(f => `<label class="filter-option" data-color="${esc(f.color || "")}"><input type="checkbox" value="${esc(f.id)}">${dot(f)}<span class="filter-name">${esc(f.label)}</span><span class="filter-count"></span></label>`).join("")}<button type="button" class="text-button filter-clear">Show all</button></div></div>`
+    : `<div class="toggles" role="group" aria-label="Filter ${noun}">${filters.map(f => `<button type="button" class="toggle" data-filter="${f.id}" aria-pressed="false">${esc(f.label)} <span class="toggle-count"></span></button>`).join("")}</div>`;
+  $("#view").innerHTML = `<div class="catalog"><div class="toolbar">${picker}<div class="search-box"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m11 11 3.5 3.5" stroke="currentColor" stroke-width="1.6"/></svg><input type="search" id="catalog-search" aria-label="Search ${noun}" placeholder="Search ${noun}" autocomplete="off"><kbd aria-hidden="true">/</kbd></div><label class="sort">Sort<select id="catalog-sort" aria-label="Sort ${noun}">${sorts.map(([value, name]) => `<option value="${value}">${esc(name)}</option>`).join("")}</select></label></div><p class="count" id="catalog-count" aria-live="polite"></p><div class="${grid ? "entries grid" : "entries list"}" id="${key}-list"></div>${note}</div>`;
+  const search = $("#catalog-search"), sort = $("#catalog-sort"), list = $(`#${key}-list`), count = $("#catalog-count");
+  const toggles = [...document.querySelectorAll("#view [data-filter]")];
+  const paint = root => root.querySelectorAll("[data-color]").forEach(node => {
+    if (/^#[0-9a-f]{6}$/i.test(node.dataset.color)) node.style.setProperty("--category-blue", node.dataset.color);
+  });
+  paint($("#view .toolbar"));
+  const amount = n => `${n} ${n === 1 ? one : noun}`;
+  search.value = state.search; sort.value = state.sort;
+  const draw = () => {
+    const all = items(), words = state.search.trim().toLowerCase();
+    const chosen = filters.filter(f => menu ? state.chosen.includes(f.id) : f.id === state.filter);
+    for (const button of toggles) {
+      const filter = filters.find(f => f.id === button.dataset.filter);
+      button.setAttribute("aria-pressed", String(chosen.includes(filter)));
+      button.querySelector(".toggle-count").textContent = all.filter(filter.test).length;
+    }
+    if (menu) {
+      for (const box of document.querySelectorAll(`#${key}-filter-menu input`)) {
+        const filter = filters.find(f => f.id === box.value);
+        box.checked = chosen.includes(filter);
+        box.closest("label").querySelector(".filter-count").textContent = all.filter(filter.test).length;
+      }
+      const summary = !chosen.length ? menu.all : chosen.length === 1 ? chosen[0].label : `${chosen.length} selected`;
+      $(`#${key}-filter .filter-summary`).textContent = summary;
+      $(`#${key}-filter-button`).setAttribute("aria-label", `${menu.label}: ${summary}`);
+      $(`#${key}-filter .filter-dots`).innerHTML = chosen.map(dot).join("");
+      paint($(`#${key}-filter .filter-dots`));
+      $(`#${key}-filter .filter-clear`).hidden = !chosen.length;
+    }
+    const shown = all.filter(item => (!chosen.length || chosen.some(f => f.test(item))) && (!words || text(item).toLowerCase().includes(words)));
+    shown.sort(sorts.find(([value]) => value === state.sort)[2]);
+    count.textContent = shown.length === all.length ? amount(all.length) : `${shown.length} of ${amount(all.length)}`;
+    list.innerHTML = shown.map(row).join("") || empty(`No ${noun} found`, "Try another name or filter.");
+    list.querySelectorAll("[data-category]").forEach(card => {
+      const color = categories.find(c => c.id === card.dataset.category)?.color;
+      if (/^#[0-9a-f]{6}$/i.test(color || "")) card.style.setProperty("--category-blue", color);
+    });
+    bindCopies(list);
+    return list.isConnected;
+  };
+  // A second press on the chosen filter shows everything again.
+  for (const button of toggles) button.addEventListener("click", () => { state.filter = state.filter === button.dataset.filter ? "" : button.dataset.filter; draw(); });
+  if (menu) {
+    // The list stays open while boxes are ticked; a click elsewhere, Tab away or Escape closes it.
+    const wrap = $(`#${key}-filter`), button = $(`#${key}-filter-button`), panel = $(`#${key}-filter-menu`);
+    const show = open => { panel.hidden = !open; button.setAttribute("aria-expanded", String(open)); };
+    button.addEventListener("click", () => show(panel.hidden));
+    panel.addEventListener("change", () => { state.chosen = [...panel.querySelectorAll("input:checked")].map(box => box.value); draw(); });
+    panel.querySelector(".filter-clear").addEventListener("click", () => { state.chosen = []; draw(); show(false); button.focus(); });
+    wrap.addEventListener("keydown", event => { if (event.key === "Escape" && !panel.hidden) { event.stopPropagation(); show(false); button.focus(); } });
+    wrap.addEventListener("focusout", event => { if (event.relatedTarget && !wrap.contains(event.relatedTarget)) show(false); });
+    const outside = event => {
+      if (!wrap.isConnected) document.removeEventListener("pointerdown", outside);
+      else if (!wrap.contains(event.target)) show(false);
+    };
+    document.addEventListener("pointerdown", outside);
+  }
+  search.addEventListener("input", () => { state.search = search.value; draw(); });
+  sort.addEventListener("change", () => { state.sort = sort.value; draw(); });
+  // Coming back from an entry's page returns to the same place in the list.
+  list.addEventListener("click", event => { if (event.target.closest(".entry-open")) state.scroll = scrollY; });
+  draw();
+  if (state.scroll) { scrollTo(0, state.scroll); state.scroll = 0; }
+  return draw;
+}
+const pageLink = (key, id) => `#${key}/${encodeURIComponent(id)}`;
+function missing(key, text) {
+  const tools = key === "harnesses";
+  header("Not found", text, `<a class="secondary" href="#${key}">← ${tools ? "All tools" : "All models"}</a>`);
+  $("#view").innerHTML = empty("Not found", text);
+}
+// Tools show as cards: the mark and state, the name and description, then the pinned version and the action.
+function harnessRow(h) {
+  const available = !!h.setup?.available;
+  const facts = [["Category", named(CATEGORIES, h.category)], ["Interface", h.interface], ["API format", named(PROTOCOLS, h.protocol)]];
+  return `<article class="entry"><div class="entry-head"><h3 class="entry-name"><a class="entry-open" href="${esc(pageLink("harnesses", h.id))}" data-harness="${esc(h.id)}">${esc(h.name)}</a></h3><span class="tag${available ? " ready" : ""}">${available ? "Ready" : "In preparation"}</span></div><p class="entry-text">${esc(h.description)}</p><dl class="entry-facts">${facts.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl><p class="entry-meta"><span>${available ? `Pinned <span class="mono">${esc(h.setup.version)}</span>` : "Setup not available yet"}</span><span class="entry-more" aria-hidden="true">${available ? "Install" : "Learn more"}</span></p></article>`;
+}
+function renderHarnesses() {
+  header("Tools for your models", "Connect the tools you know to the models you control.");
+  catalog({key: "harnesses", one: "tool", noun: "tools", items: () => harnesses, grid: true,
+    filters: categories.map(c => ({id: c.id, label: c.label, color: c.color, test: h => h.category === c.id})),
+    menu: {label: "Category", all: "All categories"},
+    sorts: [
+      ["ready", "Ready first", (a, b) => Number(!!b.setup?.available) - Number(!!a.setup?.available)],
+      ["name", "Name A–Z", byName(h => h.name)],
+      ["name-desc", "Name Z–A", (a, b) => byName(h => h.name)(b, a)],
+    ],
+    text: h => [h.name, h.description, h.interface, h.category].join(" "),
+    row: harnessRow,
+    note: '<p class="hint catalog-note">Blue terminals. Your models. Isolated setups connect only to this server; browsing, external APIs, and package downloads are blocked while a tool runs.</p>',
+  });
+  $("#harnesses-list").addEventListener("click", event => {
+    const card = event.target.closest("[data-harness]");
+    if(card) { event.preventDefault(); renderHarness(card.dataset.harness); }
+  });
+}
+function renderHarness(id) {
+  const h = harnesses.find(h => h.id === id);
+  if (!h) return missing("harnesses", "This tool is not in the catalog.");
+  const available = !!h.setup?.available, listed = models.filter(ready).length;
+  let main;
+  if (available) {
+    const install = installCommand(h.id);
+    main = panel("Install and start", `<ol class="setup-steps install-steps"><li><strong>Install Yougori.</strong> ${esc(h.name)} runs in a Yougori Sandbox VM on your computer. <a class="text-button" id="get-yougori" href="https://yougori.com/#download" target="_blank" rel="noopener noreferrer">Download Yougori ↗</a> Already installed? Go to step 2.</li><li><strong>Run this command</strong> in a new terminal. Before the VM starts, Yougori asks what ${esc(h.name)} may use: a project folder (copied in; changes come back only after your review), what it can reach (only this inference, sites you choose, or the whole internet as well), and CPU and memory. <strong>${esc(h.name)} starts automatically after installation.</strong> Keep the terminal open.<pre class="code" id="guide-code">${esc(install)}</pre><button class="primary" id="guide-copy" data-copy="${esc(install)}">Copy install command</button><p class="hint" id="not-recognized">If the terminal says <code>yougori</code> is not recognized, do step 1, then open a new terminal.</p></li><li><strong>Approve the code.</strong> On first use the terminal shows a link and a code: sign in here, enter the code and approve. The terminal then continues by itself. <a class="text-button" href="#connect" id="setup-account">Enter your connection code →</a></li></ol><p class="hint">No API key to create or copy.${h.id==='shannon'?' Shannon opens its command prompt. Type check to verify the model connection, help for commands, or exit to close it.':''}</p>${listed?'':'<p class="error">No models are ready. The administrator must connect a model before you can use this harness.</p>'}`)
+      + panel("Open it again", `<p>Run the same Yougori command next time:</p><div class="install-command"><pre class="code" id="launch-code">${esc(install)}</pre><button class="secondary" data-copy="${esc(install)}">Copy start command</button></div><p class="hint">Yougori asks its questions again each time: add <code>--yes</code> to keep the defaults, or <code>--workspace "C:\\path\\to\\project"</code> to name the project folder. The VM works on a copy; review and promote changes in Yougori. It runs until you exit or stop it.</p>`)
+        + `<details class="install-details"><summary>Requirements and source</summary><p class="hint">Yougori manages the private runtime on Windows. By default the VM reaches only this server; when you start it, Yougori asks whether it may also reach sites you choose or the whole internet. Linux source requires Python and a supported Yougori VM backend. macOS is not supported yet.</p><a class="text-button" id="harness-download" href="/api/harness-download/${encodeURIComponent(h.id)}" download>Download source setup ↓</a></details>`;
+  } else {
+    main = panel("In preparation", `<div class="small-banner">${esc(h.setup?.reason || "This tool needs an isolated launch adapter before it can be used here.")}</div><p class="hint">There is no unrestricted fallback. This setup will become available when it can run inside the same server-only boundary.</p>`);
+  }
+  const about = facts([["Status", available ? "Ready to install" : "In preparation"], ["Category", named(CATEGORIES, h.category)], ["Interface", h.interface], ["API format", named(PROTOCOLS, h.protocol)], ["Pinned version", h.setup?.version], ["Connected server", location.host]])
+    + (available ? `<div class="small-banner">Blue terminal, connected to ${esc(location.host)}. External runtime network access is blocked.</div>` : "")
+    + `<a class="text-button" href="${esc(h.source)}" target="_blank" rel="noopener noreferrer">Official project ↗</a>`;
+  $("#harness-install-inline")?.remove();
+  const installation = document.createElement("section");
+  installation.id = "harness-install-inline";
+  installation.className = "stack harness-install";
+  installation.innerHTML = `<div class="install-heading"><div><h2>${esc(h.name)}</h2><p>${esc(h.description)}</p></div><button type="button" class="text-button" id="close-installation">Close</button></div>${main}<details class="install-details"><summary>About ${esc(h.name)}</summary>${about}</details>`;
+  $("#view").append(installation);
+  $("#close-installation").addEventListener("click", () => installation.remove());
+  bindCopies(installation);
+  installation.scrollIntoView({block: "start"});
+}
+
+function renderDeviceConnect() {
+  header("Connect your harness", "Enter the code displayed in your terminal.");
+  $("#view").innerHTML = `<form id="device-code-form" class="box stack device-connect"><label>Connection code<input name="user_code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" placeholder="ABCD-EFGH" required></label><p class="hint">Only enter a code from a harness you just started yourself.</p><p class="error" role="alert"></p><button class="primary" type="submit">Continue</button></form>`;
+  formAction("#device-code-form", async data => {
+    const request = await api("/api/device/inspect", data);
+    $("#view").innerHTML = `<form id="device-approve-form" class="box stack device-connect"><h2>Connect ${esc(request.name)}?</h2><p>This connects the CLI to your account, <strong>${esc(session.user.email)}</strong>, for inference with this server's models. It does not grant administrator access.</p><p class="hint">Code: <strong>${esc(data.user_code.toUpperCase())}</strong>. You can revoke the connection in API keys.</p><p class="error" role="alert"></p><div class="device-actions"><button class="primary" type="submit">Allow connection</button><button class="secondary" id="device-deny" type="button">Deny</button></div></form>`;
+    const decide = async approve => {
+      await api("/api/device/decide", {...data, approve});
+      $("#view").innerHTML = empty(approve ? "You're connected" : "Connection denied", approve ? "Return to your terminal. It will continue automatically; you can close this browser tab." : "No access was granted. You can close this tab.");
+    };
+    formAction("#device-approve-form", () => decide(true));
+    $("#device-deny").addEventListener("click", async event => {
+      const button = event.currentTarget; button.disabled = true;
+      try { await decide(false); } catch(error) { $("#device-approve-form .error").textContent = error.message; }
+      finally { button.disabled = false; }
+    });
+  });
+}
+function modelRow(m) {
+  const meta = [esc(named(CENSORSHIP, m.censorship)), `<span class="model-id">${esc(m.id)}</span>`, esc((m.protocols || []).map(p => named(PROTOCOLS, p)).join(", ")), esc(servedBy(m)), esc(cacheHits(m))].filter(Boolean).join(" · ");
+  return `<article class="entry"><div class="entry-head"><h3 class="entry-name"><a class="entry-open" href="${esc(pageLink("models", m.id))}" data-model="${esc(m.id)}">${esc(friendly(m))}</a></h3><span class="tag${ready(m) ? " ready" : ""}">${esc(named(STATES, m.state))}</span><button type="button" class="text-button entry-action" data-copy="${esc(m.id)}" aria-label="Copy model ID ${esc(m.id)}">Copy ID</button></div><p class="entry-text mono">${esc(m.upstream)}</p><p class="entry-meta">${meta}</p></article>`;
+}
+function renderModels() {
+  header("One API for every model", "Models appear automatically when their connected server reports them.", session.user?.admin ? '<button class="primary" id="connect-model">Connect a model server ↗</button>' : "");
+  $("#connect-model")?.addEventListener("click",connectDialog);
+  redrawModels = null;
+  if (!models.length) {
+    $("#view").innerHTML = empty("Your first model starts here.",session.user?.admin ? "Connect an existing Yougori, vLLM, or llama.cpp model server. Its models will appear here without renting hardware or downloading weights again." : "Your administrator has not connected a model server yet.");
+    return;
+  }
+  redrawModels = catalog({key: "models", one: "model", noun: "models", items: () => models,
+    filters: [
+      {id: "censored", label: "Censored", test: m => m.censorship !== "uncensored"},
+      {id: "uncensored", label: "Uncensored", test: m => m.censorship === "uncensored"},
+    ],
+    sorts: [
+      ["ready", "Available first", (a, b) => Number(ready(b)) - Number(ready(a)) || byName(friendly)(a, b)],
+      ["name", "Name A–Z", byName(friendly)],
+      ["name-desc", "Name Z–A", (a, b) => byName(friendly)(b, a)],
+    ],
+    text: m => [m.id, m.upstream, m.source].join(" "),
+    row: modelRow,
+    note: `<p class="hint catalog-note">Availability confirms the server's catalog, not that weights are resident or a GPU is healthy. Inference uses the server's own loading and queue behavior.</p>`,
+  });
+}
+function renderModel(id) {
+  const m = models.find(m => m.id === id);
+  if (!m) return missing("models", "This model is not connected.");
+  header(friendly(m), m.upstream, '<a class="secondary" href="#models">← All models</a>');
+  const request = `POST ${location.origin}/v1/chat/completions\nAuthorization: Bearer YOUR_API_KEY\nContent-Type: application/json\n\n` + JSON.stringify({model: m.id, messages: [{role: "user", content: "Hello"}]}, null, 2);
+  const labelled = m.censorship_source === "administrator";
+  const priced = m.price?.input_microusd_per_million || m.price?.output_microusd_per_million;
+  const cachedPrice = priced && m.price.cached_microusd_per_million !== m.price.input_microusd_per_million ? " / " + dollars(m.price.cached_microusd_per_million) + " cached input" : "";
+  const replicas = (m.replicas || []).map(r => `${r.name} (${named(STATES, r.state)})`).join(", ");
+  const about = facts([["Model ID", m.id], ["Price", priced ? dollars(m.price.input_microusd_per_million) + " input" + cachedPrice + " / " + dollars(m.price.output_microusd_per_million) + " output per 1M tokens" : "Free"], ["Status", named(STATES, m.state)], ["Cache · 24 hours", cacheHits(m) ? cacheHits(m) + ", " + m.cache.requests + " requests" : ""], ["Content", `${named(CENSORSHIP, m.censorship)}, ${labelled ? "set by the administrator" : "detected from the name"}`], ["Served by", replicas], ["Runs on", m.place && named(PLACES, m.place)], ["Last checked", m.checked && nowLabel(m.checked)]]);
+  const label = session.user?.admin ? panel("Content label", `<form id="censorship-form" class="stack"><p class="hint">Automatic marks a model uncensored when its name says so, for example “uncensored” or “abliterated”.</p><label>Label<select name="censorship"><option value="automatic">Automatic, from the name</option><option value="censored">Censored</option><option value="uncensored">Uncensored</option></select></label><p class="error" role="alert"></p><div><button class="primary" type="submit">Save label ↗</button></div></form>`) : "";
+  const keys = session.user ? '<a class="text-button" href="#keys">Create a personal API key</a>' : '<a class="text-button" href="#signin">Sign in to create a personal API key</a>';
+  $("#view").innerHTML = `<div class="detail"><div class="detail-main">${panel("Request", `<pre class="code">${esc(request)}</pre><button class="primary" data-copy="${esc(m.id)}">Copy model ID</button><p class="hint">${keys} and use it in place of YOUR_API_KEY. Availability confirms the server's catalog, not that weights are resident or a GPU is healthy.</p>`)}</div><div class="detail-side">${panel("About", about)}${label}</div></div>`;
+  bindCopies($("#view"));
+  if (label) {
+    $("#censorship-form select").value = labelled ? m.censorship : "automatic";
+    formAction("#censorship-form", async data => { await api("/api/admin/models/censorship", {id: m.id, censorship: data.censorship}); models = (await api("/api/models")).models; notice("Content label saved."); await route(); });
+  }
+  scrollTo(0, 0);
+}
+async function renderKeys(generation) {
+  const result = await api("/api/keys"); if(generation !== viewGeneration) return;
+  header("API keys", "Create individual keys for your tools. Keys are shown once and can be revoked at any time.", '<button class="primary" id="new-key">Create API key ↗</button>');
+  $("#new-key").addEventListener("click",keyDialog);
+  $("#view").innerHTML = result.keys.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Models</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${result.keys.map(k=>`<tr><td>${esc(k.label)}</td><td>${esc(k.scopes.includes("*")?"All current and future models":k.scopes.length+" selected")}</td><td>${esc(nowLabel(k.created))}</td><td>${k.revoked?"Revoked":"Active"}</td><td>${k.revoked?"":`<button class="text-button" data-revoke="${esc(k.id)}">Revoke</button>`}</td></tr>`).join("")}</tbody></table></div>` : empty("Connect your first tool.", "Create an API key to use this service from a harness or your own application.");
+  document.querySelectorAll("[data-revoke]").forEach(b=>b.addEventListener("click",()=>confirmAction("Revoke this key?","Tools using it will lose access immediately.",async()=>{await api("/api/keys/revoke",{id:b.dataset.revoke});await route();})));
+}
+function reveal(title, value, explanation) {
+  modal(title,`<div class="stack"><p class="hint">${esc(explanation)}</p><pre class="code secret">${esc(value)}</pre><button class="primary" id="copy-secret">Copy ↗</button></div>`);
+  $("#copy-secret").addEventListener("click",e=>copy(value,e.currentTarget));
+}
+function keyDialog() {
+  modal("Create an API key",`<form id="key-form" class="stack"><label>Key name<input name="label" placeholder="My coding tool" required maxlength="60"></label><label>Access<select name="access" id="key-access"><option value="all">All current and future models</option><option value="selected">Selected models only</option></select></label><div id="scope-list" class="scope-list" hidden>${models.map(m=>`<label class="check"><input type="checkbox" name="model" value="${esc(m.id)}">${esc(friendly(m))}</label>`).join("")}</div><p class="error" role="alert"></p><button class="primary" type="submit">Create key ↗</button></form>`);
+  $("#key-access").addEventListener("change",e=>{$("#scope-list").hidden=e.target.value==="all";});
+  formAction("#key-form",async(data,form)=>{const r=await api("/api/keys",{label:data.label,scopes:data.access==="all"?["*"]:new FormData(form).getAll("model")});$("#dialog").close();await route();reveal("Save your API key",r.key,"This is the only time the full key is shown. Store it privately; only its hash is retained by the service.");});
+}
+async function renderUsage(generation) {
+  const r = await api("/api/usage"); if(generation !== viewGeneration) return;
+  header("Usage", "Your last 100 requests. Token counts come from the model server; missing counts stay unknown. Cached input is the part of the prompt the model server reused from earlier turns.");
+  $("#view").innerHTML = r.requests.length ? `<div class="table-wrap"><table><thead><tr><th>Model</th><th>Time</th><th>Duration</th><th>Input (cached) / output tokens</th><th>Cost (USD)</th><th>Status</th></tr></thead><tbody>${r.requests.map(x=>`<tr><td>${esc(x.model)}</td><td>${esc(nowLabel(x.started))}</td><td>${(x.duration_ms/1000).toFixed(2)} s</td><td>${x.input_tokens??"—"}${Number.isInteger(x.cached_tokens) ? ` (${x.cached_tokens})` : ""} / ${x.output_tokens??"—"}</td><td>${dollars(x.cost_microusd)}${x.billing_state === "unbilled" ? " · Unbilled" : ""}</td><td>${esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : empty("A clear view of every request.", "Requests made with your API keys will appear here. Prompts and generated content are not stored.");
+  await renderCredits();
+  if(session.user?.admin) await renderControlPanel();
+}
+function confirmAction(title, text, action) {
+  modal(title,`<form id="confirm-form" class="stack"><p class="hint">${esc(text)}</p><p class="error" role="alert"></p><button type="submit" class="primary">Confirm</button></form>`);
+  formAction("#confirm-form",async()=>{await action();$("#dialog").close();});
+}
+function connectDialog() {
+  if(!$("#compute-setup")) { location.hash = "admin"; return; }
+  $("#compute-setup .panel")?.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+async function renderAdmin(generation) {
+  if(!session.user.admin){location.hash="harnesses";return;}
+  const data=await api("/api/admin/overview"); if(generation !== viewGeneration) return;
+  header("Admin", "Manage your website, model connections, and the people who can use them.");
+  $("#view").innerHTML=`<div class="metrics"><div class="metric"><strong>${data.counts.users}</strong><span>Team members</span></div><div class="metric"><strong>${models.length}</strong><span>Discovered models</span></div><div class="metric"><strong>${data.counts.completed}</strong><span>Completed requests</span></div></div><div class="admin-grid" id="admin-grid"><section class="panel"><div class="panel-heading"><h3>Model servers</h3><button class="text-button" id="add-endpoint">Connect ↗</button></div><div class="panel-body"><div>${data.endpoints.length?data.endpoints.map(e=>`<div class="source"><div><strong>${esc(e.name)}</strong><p>${esc(e.url.startsWith("compute://") ? "Connected by Yougori" : e.url)}</p><span class="badge ${e.state==="ready"?"ready":""}">${esc(e.state)}</span><p>${esc(e.detail)}<br>Checked ${esc(nowLabel(e.checked))}</p></div>${e.url.startsWith("compute://") ? "" : `<button class="text-button" data-disconnect="${esc(e.id)}">Disconnect</button>`}</div>`).join(""):'<p class="hint">No model servers connected. Add one to publish its models to your team.</p>'}</div><button class="secondary panel-end" id="refresh-models">Refresh catalog</button></div></section><section class="panel"><div class="panel-heading"><h3>Invite your team</h3><span class="badge">${session.mode === "public" ? "Optional invitations" : "Invitation-only"}</span></div><form id="invite-form" class="panel-body"><p class="hint">Invitations are tied to an email address and expire after 24 hours.</p><label>Email address<input name="email" type="email" required></label><label class="check"><input name="admin" type="checkbox">Invite as administrator</label><p class="error" role="alert"></p><button class="primary panel-end" type="submit">Create invitation ↗</button></form></section><section class="panel"><div class="panel-heading"><h3>Website identity</h3><span class="badge">Live settings</span></div><form id="branding-form" class="panel-body"><label>Website name<input name="name" maxlength="80" required value="${esc(session.site.name)}"></label><label>Tagline<input name="tagline" maxlength="200" value="${esc(session.site.tagline)}"></label><label>Accent color<select name="accent"><option value="${DEFAULT_ACCENT}">Navy</option><option value="#244e48">Forest green</option><option value="#68449c">Deep violet</option><option value="#17202a">Graphite</option></select></label><p class="error" role="alert"></p><div class="panel-end"><button class="primary" type="submit">Save identity ↗</button></div></form></section></div><p class="hint">Cloud rentals use the provider account on the website server. Review ongoing compute and storage charges before renting.</p>`;
+  await showCompute();
+  $("#branding-form select").value=accentOf(session.site.accent);
+  $("#add-endpoint").addEventListener("click",connectDialog);
+  $("#refresh-models").addEventListener("click",async e=>{e.currentTarget.disabled=true;try{await api("/api/admin/refresh",{});models=(await api("/api/models")).models;await route();}catch(problem){notice(problem.message);e.currentTarget.disabled=false;}});
+  document.querySelectorAll("[data-disconnect]").forEach(b=>b.addEventListener("click",()=>confirmAction("Disconnect this server?","This removes its models from the service. The server keeps running and its infrastructure billing is unchanged.",async()=>{await api("/api/admin/endpoints/remove",{id:b.dataset.disconnect});models=(await api("/api/models")).models;await route();})));
+  formAction("#invite-form",async d=>{const r=await api("/api/admin/invitations",{...d,admin:d.admin === "on"});$('#invitation-result')?.remove();const result=document.createElement('div');result.id='invitation-result';result.className='stack';result.innerHTML=`<p class="hint">Invitation for ${esc(r.email)}. Expires in 24 hours. Share this code privately.</p><pre class="code secret">${esc(r.invitation)}</pre><button class="secondary" type="button" data-copy="${esc(r.invitation)}">Copy invitation</button>`;$('#invite-form').append(result);bindCopies(result);});
+  formAction("#branding-form",async d=>{await api("/api/admin/site",d);await loadSession();notice("Website identity saved.");});
+}
+async function route() {
+  if(!session) return;
+  if($("#dialog").open) $("#dialog").close();
+  if(AUTH_ROUTES.includes(currentRoute()[0]) && session.user) history.replaceState(null, "", "#" + returnTo);
+  const [name, item] = currentRoute(), generation = ++viewGeneration;
+  const needsLogin = !session.user && [...AUTH_ROUTES, "connect", "contribute", "keys", "usage", "admin"].includes(name);
+  $("#auth").hidden = !needsLogin; $("#workspace").hidden = needsLogin;
+  paintNavigation();
+  if(needsLogin) {
+    if(!AUTH_ROUTES.includes(name)) returnTo = location.hash.slice(1);
+    renderAuth(AUTH_ROUTES.includes(name) ? name : "signin");
+    return;
+  }
+  if(name === "models" || name === "harnesses" || name === "sandboxes") returnTo = location.hash.slice(1) || "harnesses";
+  try {
+    if(name==="sandboxes")await renderSandboxes();else if(name==="contribute")renderContributor();else if(name==="connect")renderDeviceConnect();else if(name==="models")item?renderModel(item):renderModels();else if(name==="keys")await renderKeys(generation);else if(name==="usage")await renderUsage(generation);else if(name==="admin")await renderAdmin(generation);else {renderHarnesses();if(name==="harnesses"&&item){history.replaceState(null,"","#harnesses");renderHarness(item);}}
+  } catch(problem){notice(problem.message);}
+}
+$("#dialog-close").addEventListener("click",()=>$("#dialog").close());
+$("#dialog").addEventListener("close",()=>{if(!$("#dialog").open)$("#dialog-body").replaceChildren();});
+function renderAuth(mode) {
+  if(mode === "signup" && session.mode !== "public") mode = "join";
+  authMode = mode;
+  const creating = mode !== "signin", invited = mode === "join";
+  $("#invitation-field").hidden = !invited;
+  $("#invitation-field input").required = invited;
+  $("#invitation-field input").disabled = !invited;
+  $("#auth-title").textContent = creating ? "Create your account" : "Welcome back";
+  $("#auth-window-title").textContent = invited ? "Accept your invitation" : creating ? "Sign up with your email and password." : session.mode === "private" ? "Invitation-only inference. Sign in to continue." : "Sign in";
+  $("#auth-submit").textContent = creating ? "Create account ↗" : "Sign in ↗";
+  $("#auth-toggle").textContent = creating ? "Already have an account? Sign in" : "Don't have an account? Sign up";
+  $("#auth-toggle").hidden = !creating && session.mode !== "public";
+  $("#auth-invitation").hidden = invited;
+  $("#password-hint").hidden = !creating;
+  const password = $("#login-form input[name=password]");
+  password.autocomplete = creating ? "new-password" : "current-password";
+  password.minLength = creating ? 12 : 1;
+  password.setAttribute("aria-describedby", "password-hint");
+  $("#auth-error").textContent = "";
+}
+$("#auth-toggle").addEventListener("click",()=>{location.hash = authMode === "signin" ? "signup" : "signin";});
+$("#auth-invitation").addEventListener("click",()=>{location.hash = "join";});
+formAction("#login-form",async data=>{await api(authMode === "signin" ? "/api/login" : authMode === "join" ? "/api/join" : "/api/signup",data);$("#login-form").reset();await loadSession();});
+$("#signout").addEventListener("click",async()=>{try{await api("/api/logout",{});viewGeneration++;Object.keys(catalogState).forEach(key=>delete catalogState[key]);$("#dialog").close();$("#view").replaceChildren();notice("");history.replaceState(null,"","#harnesses");await loadSession();}catch(problem){notice(problem.message);}});
+window.addEventListener("hashchange",route);
+loadSession().catch(problem=>notice(problem.message));
+setInterval(async()=>{if(!session||document.hidden||$("#dialog").open)return;try{models=(await api("/api/models")).models;if(location.hash==="#models"&&!(models.length&&redrawModels?.()))renderModels();}catch{/* Keep the last view; never mark stale data as newly observed. */}},15000);

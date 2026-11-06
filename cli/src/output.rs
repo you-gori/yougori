@@ -1130,9 +1130,39 @@ pub fn model_status(status: &Value, color: bool) -> String {
         ("GPU", status["gpu"].as_str().unwrap_or("").into()),
         ("Context", status["context"].as_u64().map(|n| format!("{n} tokens")).unwrap_or_default()),
         ("Precision", status["precision"].as_str().unwrap_or("").into()),
+        ("GPU grant", admission(&status["admission"])),
+        ("Load", load_stages(&status["load"])),
         ("Error", status["error"].as_str().unwrap_or("").into()),
     ], color));
     output
+}
+
+/// The profile and the bytes host admission reserves for the model; empty on the one-resident path.
+fn admission(admission: &Value) -> String {
+    let Some(profile) = admission["profile"].as_str() else { return String::new() };
+    let gib = admission["bytes"].as_f64().unwrap_or(0.0) / 1073741824.0;
+    match profile {
+        "local-single-vllm-v1" => "at least 90% of the GPU (vLLM)".into(),
+        "local-single-llama-cpp-v1" => format!("{gib:.1} GB reserved (llama.cpp)"),
+        _ => format!("{gib:.1} GB reserved"),
+    }
+}
+
+/// The load's time and its three longest stages (host time, stages may nest), as the runner
+/// reports them; empty when it reports none.
+fn load_stages(load: &Value) -> String {
+    let Some(elapsed) = load["elapsedMs"].as_f64() else { return String::new() };
+    let mut stages: Vec<(&String, f64)> = load["stages"].as_object().into_iter().flatten()
+        .filter_map(|(name, ms)| ms.as_f64().map(|ms| (name, ms))).collect();
+    stages.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let longest = stages.iter().take(3).map(|(name, ms)| format!("{} {:.1} s", name.replace('_', " "), ms / 1000.0)).collect::<Vec<_>>().join(", ");
+    let lead = if load["inProgress"] == true {
+        let open = load["open"].as_array().and_then(|open| open.last()).and_then(Value::as_str).map(|name| format!(", now {}", name.replace('_', " "))).unwrap_or_default();
+        format!("loading for {:.1} s{open}", elapsed / 1000.0)
+    } else {
+        format!("{} after {:.1} s", if load["outcome"] == "ok" { "loaded" } else { "failed" }, elapsed / 1000.0)
+    };
+    if longest.is_empty() { lead } else { format!("{lead} ({longest})") }
 }
 
 /// `yougori model access ENV`: the API addresses and key.
@@ -1466,6 +1496,12 @@ mod views {
     }
     #[test]
     fn model_views_read_in_words() {
+        let loaded = model_status(&json!({"status":"ready","model":"m","load":{"inProgress":false,"outcome":"ok","elapsedMs":293100.0,"stages":{"download":282000.0,"weight_load":3200.0,"dependencies":1.0,"import":4000.0}}}), false);
+        assert!(loaded.contains("loaded after 293.1 s (download 282.0 s, import 4.0 s, weight load 3.2 s)"), "{loaded}");
+        let gguf = model_status(&json!({"status":"ready","model":"m","admission":{"profile":"local-single-llama-cpp-v1","bytes":1424976384u64}}), false);
+        assert!(gguf.contains("1.3 GB reserved (llama.cpp)"), "{gguf}");
+        let loading = model_status(&json!({"status":"downloading","model":"m","load":{"inProgress":true,"elapsedMs":1500.0,"open":["download"],"stages":{}}}), false);
+        assert!(loading.contains("loading for 1.5 s, now download"), "{loading}");
         let status = model_status(&json!({"status":"freeing_memory","model":"TinyLlama/test","error":null,"download":{"receivedBytes":512,"totalBytes":1024}}), false);
         assert!(status.contains("freeing memory") && status.contains("50%"), "{status}");
         let access = model_access(&json!({"model":"TinyLlama/test","apiKey":"yk-1","apiUrl":"http://127.0.0.1:8000","publicUrl":null}), false);

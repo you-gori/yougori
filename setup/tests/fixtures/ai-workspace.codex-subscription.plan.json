@@ -1,0 +1,254 @@
+{
+  "formatVersion": 2,
+  "instance": "ai-workspace",
+  "template": {
+    "name": "ai-workspace",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "tools.builtin",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Built-in AI tools",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.provider_access",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Provider access",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "codex_access": "subscription",
+    "codex_signin_source": "new",
+    "cpu": "2",
+    "memory_gb": "4",
+    "storage_gb": "20",
+    "tools": "codex"
+  },
+  "secrets": {},
+  "bindings": {},
+  "resources": [
+    {
+      "id": "workspace",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "sleep",
+          "infinity"
+        ],
+        "cpu": 2.0,
+        "depends_on": [],
+        "environment": {},
+        "files": [],
+        "gpu": false,
+        "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+        "internet": true,
+        "memory": 4,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [],
+        "restart": "",
+        "secrets": {},
+        "storage": 20,
+        "tools": [
+          {
+            "copy_credentials": false,
+            "name": "codex",
+            "signin": true,
+            "source": "built-in",
+            "spec": "codex"
+          }
+        ],
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "work",
+            "target": "/workspace"
+          }
+        ],
+        "working_dir": "/workspace"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    }
+  ],
+  "order": [
+    "workspace"
+  ],
+  "steps": [
+    {
+      "title": "Open Codex",
+      "command": "yougori codex --environment {{env.workspace}}"
+    },
+    {
+      "title": "Share the sandbox with a teammate",
+      "detail": "Open a terminal, press Ctrl+G and choose Share this environment. A teammate with control can use everything in the sandbox, including your signed-in tools.",
+      "command": "yougori terminal {{env.workspace}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{outputs.workspace.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "workspace",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
+      },
+      {
+        "kind": "tool",
+        "name": "codex",
+        "from": "built in"
+      }
+    ],
+    "permissions": [
+      "Built-in AI tools: Run containers on this computer.",
+      "Provider access: Open a sign-in to a provider you choose.",
+      "Persistent volumes: Reserve storage on a drive you choose."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 2.0,
+      "memoryGb": 4.0,
+      "storageGb": 20.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "tools",
+        "question": "Which AI tools do you want in the sandbox?",
+        "answer": "codex",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "codex_access",
+        "question": "How should Codex reach its models?",
+        "answer": "subscription",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "codex_signin_source",
+        "question": "Which ChatGPT sign-in should Codex use?",
+        "answer": "new",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores for the sandbox",
+        "answer": "2",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory for the sandbox, in GB",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the sandbox, in whole GB",
+        "answer": "20",
+        "secret": false,
+        "group": "files_data"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "f035f0d608885ae1293d2669001dc547aff5a9aec09fc4f7452137f7493dced1"
+}

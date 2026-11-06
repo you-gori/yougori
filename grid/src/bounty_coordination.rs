@@ -44,7 +44,7 @@ fn text<'a>(v: &'a Value, key: &str, max: usize) -> Result<&'a str, String> {
         .filter(|s| !s.trim().is_empty() && s.len() <= max)
         .ok_or_else(|| format!("invalid_request: {key} is required (at most {max} bytes)"))
 }
-fn allowed(c: &Coordination, member: &str, digest: &Value) -> bool {
+pub(super) fn allowed(c: &Coordination, member: &str, digest: &Value) -> bool {
     c.sessions.get(member).is_some_and(|s| {
         s.state == "running" && s.until > now() && digest.as_str() == Some(s.digest.as_str())
     })

@@ -1,0 +1,8 @@
+{
+  "recipient": "sam",
+  "recipient_name": "Sam Example",
+  "permission": "view",
+  "folder": "/workspace",
+  "expires_hours": 24,
+  "access": "quick"
+}

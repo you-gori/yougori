@@ -1,7 +1,7 @@
 //! An agent's requests: sent at once when a rule allows it (within its hourly limit), waiting for
 //! an approver when a rule says so or the limit is spent, and refused otherwise. The answer waits
 //! here until the person's computer collects it, once.
-use super::{admin, change_record, find_credential, lock, new_id, note, now, text, Live, Refusal, Shared, WAIT};
+use super::{admin, find_credential, lock, new_id, note, now, text, Live, Refusal, Shared, WAIT};
 use crate::access::{
     activity::Entry,
     forward::{self, Outgoing},
@@ -21,6 +21,21 @@ const MAX_OPEN_PER_PERSON: usize = 16;
 const MAX_REQUESTS: usize = 512;
 /// A request carrying the largest body, base64-encoded, with room for the rest.
 pub(super) const LARGE: usize = forward::MAX_BODY / 3 * 4 + 64 * 1024;
+/// The word the ID of a rule made by an approval for some hours begins with. Any other rule's path
+/// also covers the paths beneath it; one of these counts only for exactly the path its request
+/// named, because that one request is what the approver saw.
+const APPROVAL: &str = "approval";
+
+/// Whether an approval for some hours made this rule.
+fn made_by_an_approval(rule: &Rule) -> bool {
+    rule.id.strip_prefix(APPROVAL).is_some_and(|rest| rest.starts_with('-'))
+}
+
+/// Whether `path` is the very path an approval's rule names, read the way every rule reads a path
+/// (encoded letters decoded, any case), with a closing slash making no difference.
+fn exactly(path: &str, approved: &str) -> bool {
+    policy::canonical(path).trim_end_matches('/') == policy::canonical(approved).trim_end_matches('/')
+}
 
 pub(super) enum Work {
     Use(Outgoing),
@@ -60,8 +75,9 @@ pub(super) struct Pending {
     credential: String,
     credential_name: String,
     work: Work,
-    /// The asking rule's path, which an approval for some hours widens to.
-    ask_path: String,
+    /// The hourly limit an approval for some hours keeps: the tightest limit among the allow rules
+    /// this request ran past, or none when a rule says an approver decides.
+    limit: Option<u32>,
     /// Why it waits: a rule says so, or an allow rule's hourly limit is spent.
     why: String,
     created_at: i64,
@@ -210,7 +226,14 @@ pub(super) async fn use_credential(shared: &Arc<Shared>, person: &Person, body: 
         let record = lock(&shared.record);
         let credential = find_credential(&record, text(&body, "credential").unwrap_or_default()).cloned().ok_or_else(|| Refusal::missing("No such company credential; list_company_access shows the ones you may use"))?;
         let verdict = if credential.destinations.iter().any(|place| forward::within(&target, place)) {
-            policy::evaluate(&record.rules, person, &credential, &method, &target.path, now())
+            // A rule an approval made counts only for exactly its own path, not the ones beneath.
+            let beyond = |rule: &Rule| made_by_an_approval(rule) && !exactly(&target.path, &rule.path);
+            if record.rules.iter().any(beyond) {
+                let narrowed: Vec<Rule> = record.rules.iter().filter(|rule| !beyond(rule)).cloned().collect();
+                policy::evaluate(&narrowed, person, &credential, &method, &target.path, now())
+            } else {
+                policy::evaluate(&record.rules, person, &credential, &method, &target.path, now())
+            }
         } else {
             Verdict::Refused(format!("{} may only be sent to {}", credential.name, credential.destinations.join(", ")))
         };
@@ -224,16 +247,16 @@ pub(super) async fn use_credential(shared: &Arc<Shared>, person: &Person, body: 
     let outgoing = Outgoing { method: method.clone(), target: target.clone(), headers, body: payload };
     let entry = |outcome: String| Entry { at: now(), person: person.username.clone(), agent: agent.clone(), computer: computer.clone(), action: "use".into(), credential: credential.name.clone(), target: format!("{method} {}", target.shown()), outcome, ..Entry::default() };
     let at = now();
-    let (ask_path, waiting, why) = match verdict {
+    let (limit, waiting, why) = match verdict {
         Verdict::Refused(reason) => {
             shared.log(entry(format!("refused: {reason}")));
             return Err(Refusal::forbidden(reason));
         }
         Verdict::Allow { limits } => match within_limits(shared, &person.id, &limits, at) {
-            Some(()) => (String::new(), false, String::new()),
-            None => (limits.first().map(|limit| limit.path.clone()).unwrap_or_default(), true, format!("past the hourly limit of {} uses", limits.iter().map(|limit| limit.per_hour).max().unwrap_or_default())),
+            Some(()) => (None, false, String::new()),
+            None => (limits.iter().map(|limit| limit.per_hour).min(), true, format!("past the hourly limit of {} uses", limits.iter().map(|limit| limit.per_hour).max().unwrap_or_default())),
         },
-        Verdict::Ask { path } => (path, true, "a rule says an approver decides".into()),
+        Verdict::Ask { .. } => (None, true, "a rule says an approver decides".into()),
     };
     let id = new_id("req");
     add(shared, Pending {
@@ -245,7 +268,7 @@ pub(super) async fn use_credential(shared: &Arc<Shared>, person: &Person, body: 
         credential: credential.id.clone(),
         credential_name: credential.name.clone(),
         work: Work::Use(outgoing),
-        ask_path,
+        limit,
         why: why.clone(),
         created_at: at,
         deadline: at + WAIT,
@@ -293,7 +316,7 @@ pub(super) fn reveal(shared: &Arc<Shared>, person: &Person, body: Value) -> Resu
         credential: credential.id.clone(),
         credential_name: credential.name.clone(),
         work: Work::Reveal { reason },
-        ask_path: String::new(),
+        limit: None,
         why: if credential.kind.mints() { "to receive a short-lived token".into() } else { "to see the value itself".into() },
         created_at: at,
         deadline: at + WAIT,
@@ -307,7 +330,8 @@ pub(super) fn reveal(shared: &Arc<Shared>, person: &Person, body: Value) -> Resu
 }
 
 /// An approver's answer to a waiting request: approve once, approve for some hours (a rule for
-/// that person, method and path that lapses by itself), or deny.
+/// that person, method, destination and exact path that lapses by itself, keeping the hourly
+/// limit the request ran past), or deny.
 pub(super) fn decide(shared: &Arc<Shared>, actor: &Person, body: &Value) -> Result<Value, Refusal> {
     let id = text(body, "request").unwrap_or_default().to_owned();
     let approve = body.get("approve").and_then(Value::as_bool).ok_or_else(|| Refusal::bad("Say approve true or false"))?;
@@ -318,8 +342,8 @@ pub(super) fn decide(shared: &Arc<Shared>, actor: &Person, body: &Value) -> Resu
     let reason = note(text(body, "reason"), 200);
     let at = now();
     // Checked and decided under one lock, so two approvers cannot both decide.
-    let (log, extra_rule, reveal, message) = {
-        let record = lock(&shared.record);
+    let (log, reveal, message) = {
+        let mut record = lock(&shared.record);
         let mut live = lock(&shared.live);
         let request = live.requests.get_mut(&id).ok_or_else(|| Refusal::missing("That request is gone: it was decided, collected or it expired"))?;
         if !request.waiting() || request.deadline <= at {
@@ -328,8 +352,8 @@ pub(super) fn decide(shared: &Arc<Shared>, actor: &Person, body: &Value) -> Resu
         if !admin::may_decide(&record, actor, &request.person) {
             return Err(Refusal::forbidden(if actor.permission.decides() { "Someone else approves your own requests" } else { "Only approvers and admins decide requests" }));
         }
-        request.decided_by = Some(actor.username.clone());
         if !approve {
+            request.decided_by = Some(actor.username.clone());
             let log = request.entry(at, "deny", format!("denied by {}{}", actor.username, if reason.is_empty() { String::new() } else { format!(": {reason}") }));
             request.state = State::Denied(if reason.is_empty() { format!("{} denied it", actor.username) } else { format!("{} denied it: {reason}", actor.username) });
             request.finished_at = Some(at);
@@ -338,35 +362,27 @@ pub(super) fn decide(shared: &Arc<Shared>, actor: &Person, body: &Value) -> Resu
             shared.log(log);
             return Ok(json!({"request": id, "state": "denied", "message": "Denied"}));
         }
-        let mut message = "Approved once".to_owned();
-        let mut extra_rule = None;
-        if let (Some(until), Work::Use(outgoing)) = (until, &request.work) {
-            extra_rule = Some(Rule {
-                id: new_id("rule"),
-                credential: request.credential.clone(),
-                who: Who::Person(request.person.clone()),
-                methods: vec![outgoing.method.clone()],
-                path: request.ask_path.clone(),
-                decision: Decision::Allow,
-                reveal: false,
-                expires_at: Some(until),
-                limit: None,
-                note: format!("Approved by {} from request {}", actor.username, request.id),
-                created_at: at,
-                created_by: actor.username.clone(),
-            });
-            message = format!("Approved; {} may {} {} without asking until the approval lapses", request.username, outgoing.method, request.credential_name);
-        }
-        let log = request.entry(at, "approve", format!("approved by {}{}", actor.username, if extra_rule.is_some() { " for a while" } else { " once" }));
+        // An approval for some hours becomes a rule, which is worked out and saved before the
+        // request moves on. One that cannot be made as narrow as the request, or cannot be saved,
+        // is refused while the request still waits, undecided, exactly as it was.
+        let (for_a_while, message) = match (until, &request.work) {
+            (Some(until), Work::Use(outgoing)) => {
+                let (rule, message) = standing_approval(&record, request, outgoing, actor, until, at)?;
+                let mut next = record.clone();
+                next.rules.push(rule);
+                super::save(&shared.path, &next).map_err(|why| {
+                    Refusal(StatusCode::INTERNAL_SERVER_ERROR, "storage", format!("The approval could not be saved ({why}), so nothing changed and the request still waits. Try again, or approve it once."))
+                })?;
+                *record = next;
+                (true, message)
+            }
+            _ => (false, "Approved once".to_owned()),
+        };
+        request.decided_by = Some(actor.username.clone());
+        let log = request.entry(at, "approve", format!("approved by {}{}", actor.username, if for_a_while { " for a while" } else { " once" }));
         request.state = State::Running;
-        (log, extra_rule, matches!(request.work, Work::Reveal { .. }), message)
+        (log, matches!(request.work, Work::Reveal { .. }), message)
     };
-    if let Some(rule) = extra_rule {
-        change_record(shared, |record| {
-            record.rules.push(rule);
-            Ok(())
-        })?;
-    }
     shared.log(log);
     if reveal {
         tokio::spawn(hand_out(shared.clone(), id.clone()));
@@ -374,6 +390,70 @@ pub(super) fn decide(shared: &Arc<Shared>, actor: &Person, body: &Value) -> Resu
         tokio::spawn(run(shared.clone(), id.clone(), None));
     }
     Ok(json!({"request": id, "state": "running", "message": message}))
+}
+
+/// The rule an approval for some hours makes, with what the approver is told, or why none can be
+/// made.
+///
+/// A rule names no destination and its path covers the paths beneath it, so this one is held to
+/// the request it came from: its method, its own path and nothing beneath it (`APPROVAL`), and the
+/// hourly limit the request ran past, if that is why it waited. When a rule cannot be held that
+/// narrow it is refused, the request keeps waiting, and the approver can still approve it once:
+/// a request for the root path, a path a rule cannot name exactly, or a credential that may also
+/// go to another address where the same path would be let through.
+fn standing_approval(record: &super::Record, request: &Pending, outgoing: &Outgoing, actor: &Person, until: i64, at: i64) -> Result<(Rule, String), Refusal> {
+    let refuse = |why: &str| Refusal::bad(format!("{why}, so this request cannot be approved for some hours. Approve it once instead."));
+    // The same ceiling an admin's own rules meet.
+    if record.rules.len() >= policy::MAX_RULES {
+        return Err(Refusal::bad(format!(
+            "This Access Grid already holds the most rules it keeps ({}), so this request cannot be approved for some hours. Approve it once instead, or remove rules that are no longer needed.",
+            policy::MAX_RULES
+        )));
+    }
+    let target = &outgoing.target;
+    let path = match policy::rule_path(&target.path) {
+        Ok(path) if path.is_empty() => return Err(refuse("This request is for the root path, and a rule for it would cover every path")),
+        Ok(path) => path,
+        Err(_) => return Err(refuse("A rule cannot name this request's path exactly")),
+    };
+    let person = record.people.iter().find(|person| person.id == request.person).ok_or_else(|| Refusal::missing("The person who asked was removed"))?;
+    let credential = record.credentials.iter().find(|credential| credential.id == request.credential).ok_or_else(|| Refusal::missing("The credential was removed"))?;
+    let rule = Rule {
+        id: new_id(APPROVAL),
+        credential: credential.id.clone(),
+        who: Who::Person(person.id.clone()),
+        methods: vec![outgoing.method.clone()],
+        path,
+        decision: Decision::Allow,
+        reveal: false,
+        expires_at: Some(until),
+        limit: request.limit,
+        note: format!("Approved by {} from request {}, for that path only", actor.username, request.id),
+        created_at: at,
+        created_by: actor.username.clone(),
+    };
+    // The rule has to let through the very request it came from, read both ways servers read a
+    // path, or it is not the approval that was asked for: a path with `;parameters` is not. When
+    // it lapses is a separate matter, so it is asked without the lapse.
+    let timeless = Rule { expires_at: None, ..rule.clone() };
+    let lets_it_through = exactly(&target.path, &rule.path) && matches!(policy::evaluate(std::slice::from_ref(&timeless), person, credential, &outgoing.method, &target.path, at), Verdict::Allow { .. });
+    if !lets_it_through {
+        return Err(refuse("This request's path is read differently by different servers"));
+    }
+    // A rule goes with every destination of its credential. Where another address would take the
+    // same path, the approval would reach further than the request did.
+    let elsewhere = credential.destinations.iter().any(|place| match forward::target(place) {
+        Ok(place) => (place.https, place.host.as_str(), place.port) != (target.https, target.host.as_str(), target.port) && policy::within_path(&rule.path, &place.path),
+        Err(_) => true,
+    });
+    if elsewhere {
+        return Err(refuse(&format!("{} may also be sent to another address, where the same path would be let through", credential.name)));
+    }
+    let message = match rule.limit {
+        Some(per_hour) => format!("Approved; {} may {} {} with {} without asking, up to {per_hour} times an hour, until the approval lapses", request.username, outgoing.method, target.shown(), request.credential_name),
+        None => format!("Approved; {} may {} {} with {} without asking until the approval lapses", request.username, outgoing.method, target.shown(), request.credential_name),
+    };
+    Ok((rule, message))
 }
 
 /// The credential and person a request names, if both are still there.
@@ -473,4 +553,68 @@ pub(super) fn collect(shared: &Shared, person: &Person, id: &str) -> Result<Valu
         State::Waiting | State::Running => {}
     }
     Ok(view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn person(id: &str, permission: &str) -> Person {
+        serde_json::from_value(json!({"id": id, "username": id, "name": id, "permission": permission, "salt": "", "keyHash": "", "createdAt": 0})).unwrap()
+    }
+
+    /// A grid holding `rules` rules about one credential, which may go to `destinations`.
+    fn grid(destinations: &[&str], rules: usize) -> super::super::Record {
+        serde_json::from_value(json!({
+            "version": 1, "id": "access-test", "company": "Acme", "address": "10.0.0.5", "port": 7465, "certificate": "", "createdAt": 0, "owner": "owner",
+            "people": [person("ada", "member"), person("bob", "approver")],
+            "credentials": [{"id": "credential-1", "name": "Echo", "kind": "bearer", "destinations": destinations, "sealed": "", "createdAt": 0, "createdBy": "owner", "updatedAt": 0}],
+            "rules": (0..rules).map(|n| json!({"id": format!("rule-{n}"), "credential": "credential-1", "who": "everyone", "decision": "ask", "createdAt": 0, "createdBy": "owner"})).collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
+
+    /// Ada's request, waiting because a rule says an approver decides.
+    fn waiting_for(url: &str) -> Pending {
+        Pending {
+            id: "req-1".into(),
+            person: "ada".into(),
+            username: "ada".into(),
+            agent: String::new(),
+            computer: String::new(),
+            credential: "credential-1".into(),
+            credential_name: "Echo".into(),
+            work: Work::Use(Outgoing { method: "POST".into(), target: forward::target(url).unwrap(), headers: Vec::new(), body: Vec::new() }),
+            limit: None,
+            why: "a rule says an approver decides".into(),
+            created_at: 0,
+            deadline: WAIT,
+            finished_at: None,
+            decided_by: None,
+            state: State::Waiting,
+        }
+    }
+
+    /// PROVES that an approval for some hours meets the same ceiling an admin's own rules meet:
+    /// a grid already holding the most rules it keeps refuses one, in words that say what to do
+    /// instead, and a grid with room for one more makes it.
+    ///
+    /// DOES NOT PROVE what `decide` does with the refusal; the request staying undecided is the
+    /// end-to-end test's business, over a real hub.
+    #[test]
+    fn a_full_grid_refuses_an_approval_for_some_hours_and_one_with_room_makes_it() {
+        let request = waiting_for("https://api.example.com/repos/acme");
+        let Work::Use(outgoing) = &request.work else { unreachable!("a use was made above") };
+        let bob = person("bob", "approver");
+
+        let full = grid(&["https://api.example.com"], policy::MAX_RULES);
+        let refused = standing_approval(&full, &request, outgoing, &bob, 3_600, 0).expect_err("a full grid refuses the approval");
+        assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+        assert!(refused.2.contains(&format!("the most rules it keeps ({})", policy::MAX_RULES)) && refused.2.contains("Approve it once instead"), "{}", refused.2);
+
+        let room = grid(&["https://api.example.com"], policy::MAX_RULES - 1);
+        let (rule, _) = standing_approval(&room, &request, outgoing, &bob, 3_600, 0).ok().expect("room for one more rule is enough");
+        assert_eq!((rule.path.as_str(), rule.methods.clone(), rule.limit), ("/repos/acme", vec!["POST".to_owned()], None));
+        assert!(made_by_an_approval(&rule), "{}", rule.id);
+    }
 }

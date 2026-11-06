@@ -10,6 +10,7 @@ use super::{
 };
 use crate::manifest;
 use serde::{Deserialize, Serialize};
+use yougori_setup::{limits, text};
 use serde_json::Value;
 use serde_yaml_ng::Value as Yaml;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,12 +19,8 @@ pub const TEMPLATE_FILE: &str = "yougori-template.yaml";
 pub const TOOL_FILE: &str = "yougori-tool.yaml";
 pub const MODELS_FILE: &str = "yougori-models.yaml";
 
-pub const LICENSES: &[&str] = &[
-    "MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "CC0-1.0", "Zlib",
-    "BSL-1.0", "MPL-2.0", "EPL-2.0", "EUPL-1.2", "Artistic-2.0", "LGPL-2.1-only", "LGPL-2.1-or-later",
-    "LGPL-3.0-only", "LGPL-3.0-or-later", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later",
-    "AGPL-3.0-only", "AGPL-3.0-or-later",
-];
+/// The licences the Hub accepts: the shared crate's list.
+pub const LICENSES: &[&str] = yougori_setup::format::LICENSES;
 
 pub const PLATFORMS: &[&str] = &["windows-x86_64", "windows-aarch64", "macos-x86_64", "macos-aarch64", "linux-x86_64", "linux-aarch64"];
 
@@ -240,6 +237,16 @@ pub struct Output {
     pub value: Option<String>,
 }
 
+/// A tool's file as the one tool format reads and checks it (`yougori_setup::format::Tool`,
+/// docs/hub.md section 4): every rule a tool file follows lives there, including the portable
+/// metadata a tool may declare (`access`, `inputs`, `outputs`), which a review shows and nothing
+/// grants.
+pub type ToolFile = yougori_setup::format::Tool;
+
+/// The installer's view of a checked tool file: exactly what `tools::runner`, `fingerprint`,
+/// `install` and `open_command` read (its name, version, install lines, check, command, sign-in,
+/// needs and service). Built from a [`ToolFile`] by [`tool`] or `From`, never checked on its own:
+/// the engine builds the same view (`setups::hub_tools::installer`) for the tools it installs.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
@@ -325,11 +332,63 @@ impl Tool {
     pub fn gpu(&self) -> &str {
         self.needs.as_ref().and_then(|n| n.gpu.as_deref()).unwrap_or("none")
     }
-    /// The manifest the Hub stores: the parsed file as JSON, always with its kind.
+    /// The manifest the Hub stores: the parsed file as JSON, always with its kind. A view's
+    /// manifest holds the installer's fields only; a [`ToolFile`]'s holds everything it declares.
     pub fn manifest(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
         value["kind"] = "tool".into();
         value
+    }
+}
+
+impl Tool {
+    /// The memory the tool needs, in GB, when it says: the shared crate's reading.
+    pub fn memory_gb(&self) -> Option<f64> {
+        ToolFile::from(self).memory_gb()
+    }
+}
+
+/// The view as a tool file that declares nothing, for the shared crate's readings of its fields.
+impl From<&Tool> for ToolFile {
+    fn from(view: &Tool) -> ToolFile {
+        ToolFile {
+            kind: view.kind.clone(),
+            name: view.name.clone(),
+            title: view.title.clone(),
+            summary: view.summary.clone(),
+            version: view.version.clone(),
+            license: view.license.clone(),
+            topics: view.topics.clone(),
+            changelog: view.changelog.clone(),
+            command: view.command.clone(),
+            install: view.install.clone(),
+            check: view.check.clone(),
+            signin: view.signin.as_ref().map(|s| yougori_setup::format::Signin { method: s.method.clone(), command: s.command.clone(), variable: s.variable.clone() }),
+            needs: view.needs.as_ref().map(|n| yougori_setup::format::Needs { gpu: n.gpu.clone(), memory: n.memory.clone(), internet: n.internet }),
+            service: view.service.as_ref().map(|s| yougori_setup::format::Service { command: s.command.clone(), port: s.port }),
+            ..ToolFile::default()
+        }
+    }
+}
+
+impl From<&ToolFile> for Tool {
+    fn from(file: &ToolFile) -> Tool {
+        Tool {
+            kind: file.kind.clone(),
+            name: file.name.clone(),
+            title: file.title.clone(),
+            summary: file.summary.clone(),
+            version: file.version.clone(),
+            license: file.license.clone(),
+            topics: file.topics.clone(),
+            changelog: file.changelog.clone(),
+            command: file.command.clone(),
+            install: file.install.clone(),
+            check: file.check.clone(),
+            signin: file.signin.as_ref().map(|s| Signin { method: s.method.clone(), command: s.command.clone(), variable: s.variable.clone() }),
+            needs: file.needs.as_ref().map(|n| Needs { gpu: n.gpu.clone(), memory: n.memory.clone(), internet: n.internet }),
+            service: file.service.as_ref().map(|s| Service { command: s.command.clone(), port: s.port }),
+        }
     }
 }
 
@@ -609,15 +668,18 @@ impl Folder {
     }
 }
 
-/// One line of plain text: no control characters and nothing invisible that could make it read
-/// as something else (bidi controls, zero-width characters).
-fn one_line(text: &str) -> bool {
-    !text.chars().any(|c| c.is_control() || unicode::hidden(c))
-}
+/// One line of plain text, as the shared crate reads it: no control characters and nothing
+/// invisible that could make it read as something else.
+use yougori_setup::text::one_line;
 
 /// Text the Hub shows as typed, by the website's rules: trimmed, at most `max` characters as it
 /// counts them (UTF-16 units), no control characters, on one line unless `lines`, and nothing
 /// invisible or stacked accents.
+///
+/// v1-only copy: the shared crate's `hub_text` is private to it (its format 2 checks call it
+/// through `template`), so the format 1 template path keeps these words here, on the shared
+/// character rules. The trim is the CLI's `js_trim` (JavaScript's exact whitespace set, as the
+/// website trims), where the shared `text::js_trim` takes Rust's wider `is_whitespace`.
 fn hub_text(problems: &mut Vec<String>, value: Option<&str>, field: &str, max: usize, lines: bool, missing: Option<String>) {
     let text = value.map(unicode::js_trim).unwrap_or_default();
     if text.is_empty() {
@@ -627,10 +689,10 @@ fn hub_text(problems: &mut Vec<String>, value: Option<&str>, field: &str, max: u
     if unicode::utf16_len(text) > max {
         problems.push(format!("{field} is longer than {max} characters."));
     }
-    if text.chars().any(unicode::control) || (!lines && text.contains(['\r', '\n', '\t'])) {
+    if text.chars().any(text::control) || (!lines && text.contains(['\r', '\n', '\t'])) {
         problems.push(if lines { format!("{field} contains control characters. Write it in plain text.") } else { format!("{field} must be one line, without tabs or control characters.") });
     }
-    if text.chars().any(unicode::hidden) || unicode::stacked_marks(text) {
+    if text.chars().any(text::invisible) || text::stacked_marks(text) {
         problems.push(format!("{field} contains invisible characters or stacked accents. Write it in plain text."));
     }
 }
@@ -643,29 +705,12 @@ pub fn text_problems(value: &str, field: &str, max: usize, lines: bool) -> Vec<S
     problems
 }
 
-/// Whether `word` stands on its own in `text`, as `\bWORD\b` with `i` reads it (ASCII letters).
-fn whole_word(text: &str, word: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let joins = |byte: Option<&u8>| byte.is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
-    lower.match_indices(word).any(|(at, _)| !joins(at.checked_sub(1).and_then(|before| bytes.get(before))) && !joins(bytes.get(at + word.len())))
-}
-
 /// Only Yougori shows the Verified badge: a title or summary may not imitate it with the word
-/// verified, check marks, or (in a title) the word official. `title_field` names where the title
-/// comes from: the title, or the name when there is none.
-pub fn badge_words(title: &str, title_field: &str, summary: &str) -> Vec<String> {
-    let mut problems = Vec::new();
-    for (field, text, title) in [(title_field, title, true), ("summary", summary, false)] {
-        let checks = text.chars().any(|c| matches!(c, '\u{2611}' | '\u{2705}' | '\u{2713}' | '\u{2714}' | '\u{1F5F8}'));
-        if checks || whole_word(text, "verified") || (title && whole_word(text, "official")) {
-            problems.push(format!("Only Yougori shows the Verified badge; leave that word{} and check marks out of the {field}.", if title { " (and \"official\")" } else { "" }));
-        }
-    }
-    problems
-}
+/// verified, check marks, or (in a title) the word official. The shared crate's rule and words.
+pub use yougori_setup::format::badge_words;
 
-/// Problems with a field: missing, too long or more than one line.
+/// Problems with a field: missing, too long or more than one line. v1-only copy: the shared
+/// crate's `text_field` is private to it; same words, same `one_line`.
 fn text_field(problems: &mut Vec<String>, value: Option<&str>, field: &str, max: usize, missing: Option<String>) {
     match value.map(str::trim) {
         None | Some("") => {
@@ -679,12 +724,18 @@ fn text_field(problems: &mut Vec<String>, value: Option<&str>, field: &str, max:
     }
 }
 
+/// A Hub topic. v1-only copy: the shared crate's `topic` is private to it; the same rule.
 fn topic(text: &str) -> bool {
     !text.is_empty() && text.len() <= 32 && text.as_bytes()[0].is_ascii_alphanumeric()
         && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// The name, title, summary, version, licence, topics and changelog every item has.
+/// The name, title, summary, version, licence, topics and changelog every item has, for the
+/// format 1 template path (a tool file is checked by the shared crate's `tool`, which has its
+/// own `metadata`). v1-only copy: the shared crate's `metadata` is private to it; the bounds,
+/// the licence list, the name rule and the badge words are the shared crate's. One difference
+/// stays: the version problem quotes the value (`refs::parse_version`, as every CLI version
+/// message does), where the shared crate shows it bare.
 #[allow(clippy::too_many_arguments)]
 fn metadata(problems: &mut Vec<String>, kind: &str, file: &str, declared: Option<&str>, name: Option<&str>, title: Option<&str>, summary: Option<&str>, version: Option<&str>, license: Option<&str>, topics: &[String], changelog: Option<&str>) {
     if declared.is_some_and(|declared| declared != kind) {
@@ -695,8 +746,8 @@ fn metadata(problems: &mut Vec<String>, kind: &str, file: &str, declared: Option
         Some(name) if !refs::valid_name(name) => problems.push(format!("name {} is not a Hub name: use {}.", scan::shown(name), refs::NAME_RULE)),
         Some(_) => {}
     }
-    hub_text(problems, title, "title", 80, false, None);
-    hub_text(problems, summary, "summary", 200, false, Some(format!("Add summary: one line of at most 200 characters about what the {kind} does.")));
+    hub_text(problems, title, "title", limits::TITLE_CHARS.max, false, None);
+    hub_text(problems, summary, "summary", limits::SUMMARY_CHARS.max, false, Some(format!("Add summary: one line of at most {} characters about what the {kind} does.", limits::SUMMARY_CHARS.max)));
     let named = title.filter(|title| !unicode::js_trim(title).is_empty());
     let shown_title = named.or(name).unwrap_or_default();
     problems.extend(badge_words(shown_title, if named.is_some() { "title" } else { "name (the title when there is none)" }, summary.unwrap_or_default()));
@@ -714,99 +765,37 @@ fn metadata(problems: &mut Vec<String>, kind: &str, file: &str, declared: Option
         Some(_) => {}
     }
     // The website counts each topic once.
-    if topics.iter().collect::<BTreeSet<_>>().len() > 10 {
-        problems.push("Use at most 10 topics.".into());
+    if topics.iter().collect::<BTreeSet<_>>().len() > limits::TOPICS.max {
+        problems.push(format!("Use at most {} topics.", limits::TOPICS.max));
     }
     for item in topics.iter().filter(|item| !topic(item)) {
         problems.push(format!("topic {}: use lowercase words with dashes, such as ai or website.", scan::shown(item)));
     }
-    hub_text(problems, changelog, "changelog", 4000, true, None);
+    hub_text(problems, changelog, "changelog", limits::CHANGELOG_CHARS.max, true, None);
 }
 
 fn parse_yaml<T: serde::de::DeserializeOwned>(files: &Files, path: &str) -> Result<T, String> {
     let bytes = files.get(path).ok_or_else(|| format!("{path} is missing."))?;
     let text = scan::text(bytes).ok_or_else(|| format!("{path} must be UTF-8 text."))?;
-    serde_yaml_ng::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("{path} is not valid: {e}"))
+    yougori_setup::format::read_yaml(text).map_err(|e| format!("{path} is not valid: {e}"))
 }
 
-/// A single shell line for a tool: not empty, one line, at most 4096 characters.
-fn shell_line(problems: &mut Vec<String>, value: Option<&str>, field: &str, required: bool) {
-    match value {
-        None | Some("") if required => problems.push(format!("Add {field}: one shell line.")),
-        None | Some("") => {}
-        Some(line) if line.chars().count() > 4096 => problems.push(format!("{field} is longer than 4096 characters.")),
-        Some(line) if line.contains(['\n', '\r', '\0']) => problems.push(format!("{field} must be a single shell line.")),
-        // The review shows every line as written: nothing may hide or reorder what it runs.
-        Some(line) if line.chars().any(|c| unicode::control(c) || unicode::hidden(c)) => problems.push(format!("{field} contains invisible or control characters. Write it in plain text.")),
-        Some(_) => {}
-    }
+/// A tool folder's file, read and checked by the one tool format (`yougori_setup::format::tool`):
+/// `prefix` is where it sits in `files` (empty for the folder itself). What a command shows or
+/// uploads reads this, so a tool's declared access, inputs and outputs are there; what it
+/// installs reads [`tool`].
+pub fn tool_file(files: &Files, prefix: &str) -> Result<ToolFile, Vec<String>> {
+    yougori_setup::format::tool(files, prefix)
 }
 
-/// A tool folder: `prefix` is where it sits in `files` (empty for the folder itself).
+/// A tool folder in the installer's form, checked exactly as [`tool_file`] checks it.
 pub fn tool(files: &Files, prefix: &str) -> Result<Tool, Vec<String>> {
-    let path = if prefix.is_empty() { TOOL_FILE.to_owned() } else { format!("{prefix}/{TOOL_FILE}") };
-    let tool: Tool = parse_yaml(files, &path).map_err(|e| vec![e])?;
-    let mut problems = Vec::new();
-    metadata(&mut problems, "tool", TOOL_FILE, tool.kind.as_deref(), tool.name.as_deref(), tool.title.as_deref(), tool.summary.as_deref(), tool.version.as_deref(), tool.license.as_deref(), &tool.topics, tool.changelog.as_deref());
-    shell_line(&mut problems, tool.command.as_deref(), "command", true);
-    shell_line(&mut problems, tool.check.as_deref(), "check", true);
-    if tool.install.len() > 32 {
-        problems.push("install has more than 32 lines.".into());
-    }
-    for (index, line) in tool.install.iter().enumerate() {
-        shell_line(&mut problems, Some(line.as_str()), &format!("install line {}", index + 1), true);
-    }
-    if let Some(signin) = &tool.signin {
-        let method = signin.method.as_deref().unwrap_or("none");
-        match method {
-            "none" | "browser" | "device" | "api-key" => {}
-            other => problems.push(format!("signin.method {} is not a sign-in method. Use none, browser, device or api-key.", scan::shown(other))),
-        }
-        if matches!(method, "browser" | "device") {
-            shell_line(&mut problems, signin.command.as_deref(), "signin.command", true);
-        } else if signin.command.is_some() {
-            problems.push("signin.command works only with method: browser or device.".into());
-        }
-        match (method, signin.variable.as_deref()) {
-            ("api-key", None) => problems.push("Add signin.variable: the environment variable the API key goes into, such as OPENAI_API_KEY.".into()),
-            ("api-key", Some(variable)) if !variable_name(variable) => problems.push(format!("signin.variable {} is not an environment variable name.", scan::shown(variable))),
-            ("api-key", Some(_)) => {}
-            (_, Some(_)) => problems.push("signin.variable works only with method: api-key.".into()),
-            _ => {}
-        }
-    }
-    if let Some(needs) = &tool.needs {
-        if needs.gpu.as_deref().is_some_and(|gpu| !matches!(gpu, "none" | "optional" | "required")) {
-            problems.push("needs.gpu must be none, optional or required.".into());
-        }
-        if let Some(memory) = &needs.memory {
-            if manifest::gib(&Value::String(memory.clone())).or_else(|_| manifest::gib(&serde_json::json!(memory.parse::<f64>().unwrap_or(-1.0)))).map_or(true, |gb| gb > 1024.0) {
-                problems.push(format!("needs.memory {} is not a size such as 4GB.", scan::shown(memory)));
-            }
-        }
-    }
-    if let Some(service) = &tool.service {
-        shell_line(&mut problems, service.command.as_deref(), "service.command", true);
-        if service.port.is_none_or(|port| port == 0) {
-            problems.push("service.port must be a port from 1 to 65535.".into());
-        }
-    }
-    if problems.is_empty() { Ok(tool) } else { Err(problems) }
+    tool_file(files, prefix).map(|file| Tool::from(&file))
 }
 
 /// Whether an environment can receive secrets as variables (a tool's API key, a secret input).
 pub fn key_ready(environment: &manifest::Environment) -> bool {
     matches!(environment.kind.as_str(), "container" | "gpu") || (environment.kind == "microvm" && !environment.image.is_empty())
-}
-
-/// The memory a tool needs, in GB, when it says.
-pub fn tool_memory(tool: &Tool) -> Option<f64> {
-    let memory = tool.needs.as_ref()?.memory.as_deref()?;
-    manifest::gib(&Value::String(memory.into())).ok().or_else(|| memory.parse::<f64>().ok().filter(|n| *n > 0.0))
-}
-
-fn variable_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 256 && name.bytes().enumerate().all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
 }
 
 /// A path inside the template written as `./site` or `site/`: the plain relative form, or why not.
@@ -1084,7 +1073,7 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
         }
         Some(Some(text)) => text.trim_start_matches('\u{feff}').to_owned(),
     };
-    let project: manifest::Project = match serde_yaml_ng::from_str(&project_text) {
+    let project: manifest::Project = match yougori_setup::format::read_yaml(&project_text) {
         Ok(project) => project,
         Err(error) => {
             problems.push(format!("{project_path} is not a valid project: {error}"));
@@ -1118,7 +1107,7 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
         public: template.public.iter().filter_map(|p| p.environment.clone()).collect(),
     };
     // Placeholders in the project.
-    match serde_yaml_ng::from_str::<Yaml>(&project_text).map_err(|e| e.to_string()).and_then(|tree| render::strings(&tree)) {
+    match yougori_setup::format::read_yaml::<Yaml>(&project_text).and_then(|tree| render::strings(&tree)) {
         Ok(strings) => {
             for (text, place) in strings {
                 if let Err(error) = render::check(&text, place, &known) {
@@ -1191,7 +1180,7 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
                 }
                 match tool(files, &folder) {
                     Ok(tool) => {
-                        let gb = tool_memory(&tool);
+                        let gb = tool.memory_gb();
                         let memory = manifest::gib(&spec_environment.memory).ok();
                         if let (Some(needed), Some(has)) = (gb, memory) {
                             if needed > has {
@@ -1252,6 +1241,10 @@ pub fn template(files: &Files) -> Result<Folder, Vec<String>> {
             if !questions.iter().any(|q| q.id == *id && q.kind == Kind::Choice
                 && q.choices.len() == 2 && q.choices.iter().all(|c| matches!(c.value.as_str(), "computer" | "new"))) {
                 problems.push(format!("tool_options: {key}: signin_source must name a choice input with exactly computer and new options."));
+            } else if questions.iter().any(|q| q.id == *id && q.default.as_deref() == Some("computer")) {
+                // Copying this computer's sign-in is the runner's own choice; --yes takes defaults,
+                // so a default of computer would copy it without anyone choosing that.
+                problems.push(format!("tool_options: {key}: the sign-in source input {id} cannot default to computer: copying this computer's sign-in is the person's choice at setup. Use default: new, or no default."));
             }
         }
         use_.signin_source = options.signin_source.clone();
@@ -1671,6 +1664,20 @@ connections: [web -> paid]
     }
 
     #[test]
+    fn a_sign_in_copy_is_never_a_default() {
+        let with = |default: &str| {
+            let input = format!("  - id: codex_source\n    question: Which sign-in should Codex use?\n    type: choice\n    choices:\n      - {{value: computer, label: Copy my sign-in}}\n      - {{value: new, label: Sign in fresh}}\n{default}  - id: openai_key\n");
+            let options = "tool_options:\n  paid/codex:\n    signin: true\n    signin_source: codex_source\npublic:\n";
+            let template = TEMPLATE.replacen("  - id: openai_key\n", &input, 1).replacen("public:\n", options, 1);
+            problems(&[(TEMPLATE_FILE, &template)])
+        };
+        let defaulted = with("    default: computer\n");
+        assert!(defaulted.contains("cannot default to computer"), "{defaulted}");
+        assert_eq!(with("    default: new\n"), "", "a default of a fresh sign-in copies nothing");
+        assert_eq!(with(""), "");
+    }
+
+    #[test]
     fn answers_are_checked_and_normalised() {
         let checked = template(&folder(&[])).unwrap();
         let [access, domain, email, secret] = &checked.questions[..] else { panic!() };
@@ -1690,5 +1697,73 @@ connections: [web -> paid]
         assert!(number.answer("9", None).unwrap_err().contains("from 1 to 8"));
         let yesno = Question { kind: Kind::YesNo, ..access.clone() };
         assert_eq!(yesno.answer("Y", None).unwrap(), "yes");
+    }
+
+    /// PINS every word the v1 metadata checks say, so the helpers under them can be taken from the
+    /// shared crate without a message changing: these are what `template check` and `tool check`
+    /// have always said.
+    #[test]
+    fn v1_metadata_words_are_pinned() {
+        let said = |kind: &str, file: &str, declared: Option<&str>, name: Option<&str>, title: Option<&str>, summary: Option<&str>, version: Option<&str>, license: Option<&str>, topics: &[&str], changelog: Option<&str>| {
+            let mut problems = Vec::new();
+            let topics: Vec<String> = topics.iter().map(|t| t.to_string()).collect();
+            metadata(&mut problems, kind, file, declared, name, title, summary, version, license, &topics, changelog);
+            problems
+        };
+        assert!(said("template", TEMPLATE_FILE, Some("template"), Some("my-api"), Some("My API"), Some("An API."), Some("1.0.0"), Some("MIT"), &["ai", "api"], Some("First.")).is_empty());
+        let eleven: Vec<&str> = vec!["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"];
+        assert_eq!(
+            said("tool", TOOL_FILE, Some("template"), None, Some(&"t".repeat(81)), None, None, None, &eleven, Some("x\u{1}y")),
+            [
+                "kind in yougori-tool.yaml must be tool (templates use yougori-template.yaml, tools yougori-tool.yaml).",
+                "Add name: the tool's Hub name, using lowercase letters, digits, - or _, starting with a letter or digit, at most 64 characters.",
+                "title is longer than 80 characters.",
+                "Add summary: one line of at most 200 characters about what the tool does.",
+                "Add version: MAJOR.MINOR.PATCH such as 1.0.0.",
+                "Add license: an open-source licence such as MIT or Apache-2.0. Everything on the Hub is open source.",
+                "Use at most 10 topics.",
+                "changelog contains control characters. Write it in plain text.",
+            ]
+        );
+        assert_eq!(
+            said("template", TEMPLATE_FILE, None, Some("My API"), Some("The official verified \u{2705} API"), Some("Verified\tby us"), Some("1.0"), Some("WTFPL"), &["AI", "web-site"], Some(&"c".repeat(4001))),
+            [
+                "name My API is not a Hub name: use lowercase letters, digits, - or _, starting with a letter or digit, at most 64 characters.",
+                "summary must be one line, without tabs or control characters.",
+                "Only Yougori shows the Verified badge; leave that word (and \"official\") and check marks out of the title.",
+                "Only Yougori shows the Verified badge; leave that word and check marks out of the summary.",
+                "version: \"1.0\" is not a version. Use MAJOR.MINOR.PATCH such as 1.0.0, optionally with -beta.1.",
+                &format!("license WTFPL is not an accepted open-source licence. Use one of: {}.", LICENSES.join(", ")),
+                "topic AI: use lowercase words with dashes, such as ai or website.",
+                "changelog is longer than 4000 characters.",
+            ]
+        );
+        // The title falls back to the name, and the badge words name where it came from.
+        assert_eq!(said("tool", TOOL_FILE, None, Some("verified-tool"), None, Some("Fine."), Some("1.0.0"), Some("MIT"), &[], None), ["Only Yougori shows the Verified badge; leave that word (and \"official\") and check marks out of the name (the title when there is none)."]);
+        // Invisible characters and stacked accents, as the Hub text rule says them.
+        assert_eq!(said("tool", TOOL_FILE, None, Some("x"), Some("Zero\u{200b}width"), Some("a\u{301}\u{301}\u{301}"), Some("1.0.0"), Some("MIT"), &[], None), [
+            "title contains invisible characters or stacked accents. Write it in plain text.",
+            "summary contains invisible characters or stacked accents. Write it in plain text.",
+        ]);
+        // Trimming counts as JavaScript trims: a byte-order mark alone is an empty summary.
+        assert_eq!(said("tool", TOOL_FILE, None, Some("x"), None, Some("\u{feff} "), Some("1.0.0"), Some("MIT"), &[], None), ["Add summary: one line of at most 200 characters about what the tool does."]);
+
+        let mut problems = Vec::new();
+        text_field(&mut problems, None, "step 1: title", 120, Some("step 1: add title.".into()));
+        text_field(&mut problems, Some(&"t".repeat(121)), "step 1: title", 120, None);
+        text_field(&mut problems, Some("a\nb"), "step 1: command", 500, None);
+        text_field(&mut problems, Some("  fine  "), "step 1: command", 500, None);
+        assert_eq!(problems, ["step 1: add title.", "step 1: title is longer than 120 characters.", "step 1: command must be one line."]);
+        assert_eq!(text_problems("x\u{202e}y", "--details", 2000, true), ["--details contains invisible characters or stacked accents. Write it in plain text."]);
+        assert!(one_line("plain text") && !one_line("a\u{ad}b") && !one_line("a\tb"));
+        assert!(topic("web-site") && !topic("Web") && !topic("-x") && !topic(&"a".repeat(33)));
+
+        // The memory a tool needs, as the review and the host check read it.
+        let memory = |needs: &str| tool(&files(&[(TOOL_FILE, &format!("name: t\nsummary: T.\nversion: 1.0.0\nlicense: MIT\ncommand: t\ncheck: t\n{needs}"))]), "").map(|tool| tool.memory_gb());
+        assert_eq!(memory("needs: {memory: 4GB}\n").unwrap(), Some(4.0));
+        assert_eq!(memory("needs: {memory: 512MB}\n").unwrap(), Some(0.5));
+        assert_eq!(memory("needs: {memory: 2}\n").unwrap(), Some(2.0));
+        assert_eq!(memory("").unwrap(), None);
+        assert!(memory("needs: {memory: lots}\n").is_err());
     }
 }

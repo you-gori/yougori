@@ -315,6 +315,20 @@ pub async fn capture(words: &[String], output: Option<&str>, interactive: bool) 
     if words.is_empty() {
         return Err("Usage: yougori template capture ENV... [--output FOLDER]. Name the running environments to turn into a template.".into());
     }
+    if words.iter().any(|word| word.starts_with("exe-")) {
+        if words.iter().any(|word| !word.starts_with("exe-")) {
+            return Err("Select only Sandbox VM ids for a code-authored template. See yougori sandbox status.".into());
+        }
+        crate::client::start(None).await?;
+        let folder = std::env::current_dir().map_err(|e| e.to_string())?.join(output.unwrap_or("my-template"));
+        let name = folder.file_name().and_then(|s| s.to_str()).unwrap_or("my-template");
+        let preview = super::run::wait(interactive, "Reading VM setup declarations and connections",
+            crate::public::call("sandbox_vm", json!({"action":"template","operation":"preview","sandboxes":words,"name":name}))).await?;
+        let exported = crate::public::call("sandbox_vm", json!({"action":"template","operation":"export","sandboxes":words,"name":name,
+            "folder":folder,"digest":preview["digest"]})).await?;
+        return Ok(json!({"captured":words,"folder":exported["folder"],"files":exported["files"],"leftOut":exported["omitted"],
+            "next":[format!("yougori template run {}", shell_words::quote(&folder.to_string_lossy()))]}));
+    }
     let gathered = async {
         crate::client::start(None).await?;
         let state = crate::public::call("get_platform_state", json!({})).await?;

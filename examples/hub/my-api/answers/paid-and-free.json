@@ -1,0 +1,9 @@
+{
+  "admin_account": "create",
+  "admin_email": "owner@example.com",
+  "providers": "codex,kilo,ollama",
+  "codex_access": "api",
+  "kilo_scope": "free",
+  "site_name": "Example Models",
+  "web_access": "quick"
+}

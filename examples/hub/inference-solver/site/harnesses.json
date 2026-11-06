@@ -1,0 +1,212 @@
+[
+  {
+    "id": "deepseek",
+    "name": "DeepSeek Harness",
+    "mark": "DS",
+    "category": "coding",
+    "interface": "Web / CLI launcher",
+    "description": "An extensible workspace built around plugins.",
+    "source": "https://github.com/deepseek-ai/deepseek-harness",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "mark": "OC",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "A flexible coding workspace for the models you choose.",
+    "source": "https://github.com/anomalyco/opencode",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "codex",
+    "name": "Codex CLI",
+    "mark": "CX",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "Terminal coding, codebase editing, and testing.",
+    "source": "https://developers.openai.com/codex/cli",
+    "protocol": "responses"
+  },
+  {
+    "id": "pi",
+    "name": "Pi",
+    "mark": "π",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "A compact agent toolkit you can make your own.",
+    "source": "https://github.com/earendil-works/pi",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "gemini",
+    "name": "Gemini CLI",
+    "mark": "GM",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "Google's terminal agent for supported enterprise workflows.",
+    "source": "https://github.com/google-gemini/gemini-cli",
+    "protocol": "google"
+  },
+  {
+    "id": "openhands",
+    "name": "OpenHands",
+    "mark": "OH",
+    "category": "coding",
+    "interface": "Web / agent runtime",
+    "description": "A workspace for agents and software engineering tasks.",
+    "source": "https://github.com/OpenHands/OpenHands",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "cline",
+    "name": "Cline",
+    "mark": "CL",
+    "category": "coding",
+    "interface": "CLI / editor",
+    "description": "An agent in your terminal or your preferred editor.",
+    "source": "https://github.com/cline/cline",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "interpreter",
+    "name": "Open Interpreter",
+    "mark": "OI",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "A coding agent built to work with open models.",
+    "source": "https://github.com/openinterpreter/openinterpreter",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "goose",
+    "name": "Goose",
+    "mark": "GS",
+    "category": "coding",
+    "interface": "CLI / desktop",
+    "description": "An extensible agent for code and everyday workflows.",
+    "source": "https://github.com/aaif-goose/goose",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "aider",
+    "name": "Aider",
+    "mark": "AI",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "Git-aware pair programming in your terminal.",
+    "source": "https://aider.chat/docs/install.html",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "qwen",
+    "name": "Qwen Code",
+    "mark": "QW",
+    "category": "coding",
+    "interface": "CLI / editor",
+    "description": "A coding workspace with multiple model protocols.",
+    "source": "https://github.com/QwenLM/qwen-code",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "kilo",
+    "name": "Kilo Code",
+    "mark": "KL",
+    "category": "coding",
+    "interface": "CLI / editor",
+    "description": "Bring your model service into an agentic coding workflow.",
+    "source": "https://github.com/kilo-org/kilocode",
+    "protocol": "chat_completions"
+  },
+  {
+    "id": "grok",
+    "name": "Grok Build",
+    "mark": "GB",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "A terminal agent with custom model configuration.",
+    "source": "https://docs.x.ai/build/overview",
+    "protocol": "custom"
+  },
+  {
+    "id": "swe",
+    "name": "SWE-agent",
+    "mark": "SW",
+    "category": "coding",
+    "interface": "CLI / job runtime",
+    "description": "An agent for structured software engineering tasks.",
+    "source": "https://github.com/SWE-agent/SWE-agent",
+    "protocol": "custom"
+  },
+  {
+    "id": "plandex",
+    "name": "Plandex",
+    "mark": "PL",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "Plan and execute changes across larger projects.",
+    "source": "https://github.com/plandex-ai/plandex",
+    "protocol": "custom"
+  },
+  {
+    "id": "strix",
+    "name": "Strix",
+    "mark": "SX",
+    "category": "security",
+    "interface": "Terminal",
+    "description": "Security testing and remediation for authorized applications.",
+    "source": "https://github.com/usestrix/strix",
+    "protocol": "custom"
+  },
+  {
+    "id": "shannon",
+    "name": "Shannon",
+    "mark": "SH",
+    "category": "security",
+    "interface": "CLI / runtime",
+    "description": "Source-informed testing for web applications and APIs.",
+    "source": "https://github.com/KeygraphHQ/shannon",
+    "protocol": "custom"
+  },
+  {
+    "id": "pentagi",
+    "name": "PentAGI",
+    "mark": "PA",
+    "category": "security",
+    "interface": "Terminal",
+    "description": "A multi-agent workspace for authorized security assessments.",
+    "source": "https://github.com/vxcontrol/pentagi",
+    "protocol": "custom"
+  },
+  {
+    "id": "pentestgpt",
+    "name": "PentestGPT",
+    "mark": "PG",
+    "category": "security",
+    "interface": "CLI / runtime",
+    "description": "Structured workflows for security testing and research.",
+    "source": "https://github.com/GreyDGL/PentestGPT",
+    "protocol": "custom"
+  },
+  {
+    "id": "hexstrike",
+    "name": "HexStrike AI",
+    "mark": "HX",
+    "category": "security",
+    "interface": "Terminal / MCP",
+    "description": "Connect authorized security tools to a compatible agent.",
+    "source": "https://github.com/0x4m4/hexstrike-ai",
+    "protocol": "mcp"
+  },
+  {
+    "id": "claude",
+    "name": "Claude Code",
+    "mark": "CC",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "Anthropic's official coding client.",
+    "source": "https://code.claude.com/docs/en/overview",
+    "protocol": "messages"
+  }
+]

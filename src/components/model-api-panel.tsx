@@ -232,7 +232,7 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
       </> : <p className="model-hint">Examples appear here once an address is on.</p>}
       <ul className="model-api-notes">
         <li>Endpoint: <code>POST /chat/completions</code>. Fields: <code>model</code>, <code>messages</code> (system, user and assistant text), <code>max_tokens</code> (up to {streaming ? "4096" : "2048"}), <code>temperature</code> (0–2){streaming ? <>, <code>stream</code></> : null}. Tools, images and other fields are rejected.</li>
-        <li>The GPU answers one request at a time; a busy model replies 429, so wait and retry.</li>
+        <li>Updated GGUF and vLLM runners generate several requests together; up to 128 more wait in order. A full queue returns 429; a wait over five minutes returns 504. Set your client timeout to cover waiting and generation.</li>
         {streaming ? null : <li>This model was started by an older Yougori, so replies don't stream. Run it again from Hugging Face for streaming and longer replies.</li>}
         <li>Anyone with the public link and your key can use your GPU. Turn the public link off when you're done.</li>
       </ul>

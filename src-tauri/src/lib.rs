@@ -45,24 +45,61 @@ mod grid_neocloud;
 mod rented_gpu;
 /// One door onto all four grids (see docs/grid-core/0002-one-namespace.md).
 mod grids;
-/// What this computer already measures, handed to a realm through Grid Core's probe seam.
-mod grid_hardware;
 /// Whether the grids on this computer are healthy, for an operator and for a monitoring agent.
 mod grid_observe;
 mod swarm;
 mod model_registry;
 mod template_hub;
+/// Setups: the engine-owned registry and operation journal behind My setups.
+mod setups;
 mod file_export;
 mod ignore_rules;
 mod vault;
 mod vault_gateway;
 mod vault_setup;
-/// The operating system's credential vault, as Grid Core's broker asks for it.
-mod core_vault;
 mod accessgrid;
 #[cfg(target_os = "windows")]
 mod vault_notifications;
 mod store;
+/// Shared contracts of the combined GPU memory and VM sandbox plan (CORE-01–CORE-08),
+/// consumed by later packages (docs/combined-plan-agent-rollout.md). Until they are,
+/// the re-exported API reads as unused here.
+#[allow(dead_code, unused_imports)]
+mod foundation;
+#[cfg(feature = "release-tools")]
+pub mod release_tools;
+/// Model memory planning from the GPU part of the same plan, sections 1–3.2.
+#[allow(dead_code, unused_imports)]
+mod model_memory;
+/// Offline conformance for the model-serving dialects (S9, BENCH-03).
+#[allow(dead_code, unused_imports)]
+mod serving_protocol;
+/// The VM sandbox contract from the VM part of the same plan (Tier 0, library only).
+/// The restricted VM sandbox path: the VM service composed over the real Windows host ports,
+/// the pinned guest artifacts and the host ledger, behind the `sandbox_vm` automation method.
+mod sandbox_vm;
+#[allow(dead_code, unused_imports)]
+mod sandbox_contract;
+/// The VM sandbox runtime layer from the VM part of the same plan: backend contract,
+/// lifecycle, audit and update trust (Tier 0, library only).
+#[allow(dead_code, unused_imports)]
+mod sandbox;
+/// Production CORE-01 evidence about this computer (S01): bounded host queries, host-probe
+/// adapters and the evidence service behind the `host_evidence` automation method. Its
+/// runtime-binding API waits for the model runner (G03), so part of it reads as unused here.
+#[allow(dead_code, unused_imports)]
+mod host_evidence;
+/// CORE-08 trust roots (S08): status and reload of the owner's trust-root file.
+mod trust_roots;
+/// CORE-02 catalog (S02); its model-file entry waits for the runner (G04).
+#[allow(dead_code)]
+mod catalog_service;
+/// CORE-03 host ledger history export (S03): its journal setting and the `ledger_history` method.
+mod ledger_history;
+/// The CORE-07 product contract filled from the plan's typed sources (S07): conversions from
+/// model, sandbox and setup types into `foundation::product`. Its consumers are U01–U05.
+#[allow(dead_code, unused_imports)]
+mod product_views;
 #[cfg(all(test, target_os = "windows", not(feature = "engine-only")))]
 mod window_smoke_tests;
 
@@ -168,6 +205,60 @@ pub(crate) const ENGINE_ONLY: bool = cfg!(feature = "engine-only");
 
 /// Bundled resources (runtime, vault broker, CLI). The standalone engine keeps them beside its
 /// executable on every system, unlike the app bundles' platform-specific resource folders.
+/// Runtime acceptance (`acceptance` feature, never in a release build): a disposable engine keeps
+/// its data in YOUGORI_ACCEPTANCE_DATA_DIR and holds a single-instance lock of that folder's own,
+/// so it runs beside the installed engine without touching its state. Without the feature there is
+/// no override: the data folder is this user's app data folder, as always.
+pub(crate) mod acceptance {
+    #[cfg(feature = "acceptance")]
+    pub(crate) fn data_directory() -> Option<std::path::PathBuf> {
+        std::env::var_os("YOUGORI_ACCEPTANCE_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .filter(|folder| folder.is_absolute())
+    }
+
+    #[cfg(not(feature = "acceptance"))]
+    pub(crate) fn data_directory() -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// The runtime folder a disposable acceptance engine runs instead of the bundled one, from
+    /// YOUGORI_ACCEPTANCE_RUNTIME_DIR; it is verified against its own checksum lists as usual.
+    #[cfg(feature = "acceptance")]
+    pub(crate) fn runtime_directory() -> Option<std::path::PathBuf> {
+        std::env::var_os("YOUGORI_ACCEPTANCE_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .filter(|folder| folder.is_absolute())
+    }
+
+    #[cfg(not(feature = "acceptance"))]
+    pub(crate) fn runtime_directory() -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// This app's own data folder: the acceptance one for a disposable engine, the app's otherwise.
+    pub(crate) fn app_data(app: &crate::AppHandle) -> Result<std::path::PathBuf, String> {
+        use tauri::Manager;
+        match data_directory() {
+            Some(folder) => Ok(folder),
+            None => app.path().app_data_dir().map_err(|e| e.to_string()),
+        }
+    }
+
+    /// What sets this engine's single-instance lock and its deployment-secrets vault entries apart:
+    /// nothing for the installed engine, and the acceptance data folder for a disposable one.
+    pub(crate) fn lock_suffix() -> String {
+        match data_directory() {
+            Some(folder) => {
+                use sha2::Digest;
+                let digest = sha2::Sha256::digest(folder.to_string_lossy().to_lowercase().as_bytes());
+                format!(".acceptance.{}", digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect::<String>())
+            }
+            None => String::new(),
+        }
+    }
+}
+
 pub(crate) fn resource_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     if ENGINE_ONLY {
         let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
@@ -403,6 +494,11 @@ fn install_async_runtime() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The sandbox executor and the confined guest relay are this binary in a hidden mode:
+    // they take no instance lock, no runtime and no window.
+    if let Some(code) = sandbox_vm::hidden_mode() {
+        std::process::exit(code);
+    }
     install_async_runtime();
     let headless = ENGINE_ONLY || std::env::args().any(|argument| argument == "--headless");
     // Acquire before constructing WebView/Tauri state so a duplicate launch exits
@@ -456,8 +552,18 @@ pub fn run() {
             // Tauri panics on a setup error and release builds abort without a
             // console, so record and show the reason before returning it.
             let outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let app_directory = app.path().app_data_dir()?;
+            let app_directory = match acceptance::data_directory() {
+                Some(directory) => directory,
+                None => app.path().app_data_dir()?,
+            };
             migrate_legacy_app_data(&app_directory)?;
+            // The trust-root service keeps its revocation floor here; hand it over before
+            // anything can open the service.
+            trust_roots::use_data_folder(&app_directory);
+            // The catalog's default root and the ledger history's default journal live here
+            // too, unless their settings say otherwise.
+            catalog_service::use_data_folder(&app_directory);
+            ledger_history::use_data_folder(&app_directory);
             let resource_directory = resource_dir(app.handle()).map_err(std::io::Error::other)?;
             let store = PlatformStore::load(app_directory.join("platform-state.json"))
                 .map_err(std::io::Error::other)?;
@@ -664,8 +770,14 @@ pub fn run() {
             swarm::rented::start(app.handle());
             deskgrid::start(app.handle());
             desks::uploads::start_cleanup(app.handle());
+            // The helper rollout journal (G08) is opened before the scheduler, which records the
+            // end of every runner it sees stopped; a refusal is reported and Yougori still starts.
+            if let Err(error) = model_runner::helpers::open(&app_directory) {
+                eprintln!("Model helper rollout journal unavailable: {error}");
+            }
             model_runner::optimizer::start(app.handle());
             accessgrid::start(app.handle());
+            setups::start(app.handle());
             let workspace_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let shutdown=automation::shutdown_signal(&workspace_app);
@@ -775,6 +887,8 @@ pub fn run() {
             model_registry::model_registry_request,
             template_hub::open_hub_console,
             template_hub::hub_instances,
+            template_hub::hub_builtin_templates,
+            template_hub::hub_save_template_draft,
             model_registry::model_registry_connect,
             model_registry::model_registry_pause,
             model_registry::model_registry_upload,
@@ -821,6 +935,9 @@ pub fn run() {
             commands::update_environment_gpu,
             runtime::gpu::get_shared_gpu_settings,
             runtime::cuda::get_cuda_runtime_status,
+            runtime::doctor::sandbox_doctor,
+            sandbox_vm::sandbox_vm,
+            host_evidence::host_evidence,
             runtime::cuda::install_cuda_runtime,
             runtime::cuda::verify_environment_cuda,
             runtime::gpu::set_shared_gpu_selection,
@@ -935,6 +1052,28 @@ pub fn run() {
             workspace::open_workspace_url,
             workspace::open_service_window,
             guest_keyboard::set_guest_keyboard_capture,
+            setups::commands::setup_capabilities,
+            setups::commands::setup_validate,
+            setups::commands::setup_plan,
+            setups::commands::setup_apply,
+            setups::commands::setup_list,
+            setups::commands::setup_get,
+            setups::commands::setup_permissions,
+            setups::commands::setup_operation,
+            setups::commands::setup_cancel,
+            setups::commands::setup_action,
+            setups::commands::setup_backups,
+            setups::commands::setup_backup_verify,
+            setups::commands::setup_backup_restore,
+            setups::commands::setup_backup_now,
+            setups::commands::setup_artifacts,
+            setups::commands::setup_artifact_save,
+            setups::commands::setup_job_logs,
+            setups::commands::setup_job_settle,
+            setups::commands::setup_sandbox_logs,
+            setups::commands::setup_usage,
+            setups::commands::setup_reveal,
+            setups::commands::setup_telemetry,
         ])
         .build(context);
     let app = match app {

@@ -1,0 +1,67 @@
+format_version: 2
+kind: template
+name: operations-dashboard
+title: Operations Dashboard
+subtitle: A private, read-only board of how your setups are doing, on this computer only.
+summary: Keeps the readings that yougori setup telemetry produces and serves them on this computer, so every setup's state, health, resources, operations and backups are in one place. Nothing is sent anywhere.
+version: 1.0.0
+license: MIT
+topics: [operations, monitoring, health, dashboard, telemetry, read-only]
+aliases: [operations dashboard, ops dashboard, setup health, status board]
+changelog: First version. A private viewer for the read-only operations reading, with a volume for the readings it keeps and no internet, no publication and no notifications.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: none
+
+capabilities:
+  - {id: run.service, selection: required}
+  - {id: data.volumes, selection: required}
+
+inputs:
+  - id: keep_readings
+    question: How many readings should the board keep?
+    hint: Each reading is one small JSON file. The oldest beyond this are deleted by the housekeeping command in the README; nothing is deleted for you behind your back.
+    type: number
+    min: 1
+    max: 500
+    default: 30
+    group: automation_recovery
+  - id: viewer_port
+    question: Which port on this computer should the board answer on?
+    hint: Only this computer can reach it. The board is never published, so this port is not open to anyone else.
+    type: number
+    min: 1024
+    max: 65535
+    default: 8477
+    group: website_api
+  - id: viewer_memory_gb
+    question: Memory for the board, in GB
+    hint: It serves small files and nothing else; the default is plenty.
+    type: number
+    min: 0.25
+    max: 4
+    default: 0.5
+    group: grid_workers
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [storage, files, logs, diagram]
+
+steps:
+  - title: Take a reading
+    detail: Writes a reading of every setup you can list into the board's folder. It shows states, health, counts, durations and resource ids only — no names, paths, addresses or secrets. Nothing is sent anywhere.
+    command: yougori setup telemetry --format json
+  - title: Open the board
+    detail: The readings are listed newest last. Open the file you want; it is plain JSON.
+    command: yougori open {{instance}}
+  - title: Read one setup on its own
+    detail: The same reading for a single setup, when you want to look at one thing rather than the whole list.
+    command: yougori setup telemetry SETUP
+
+outputs:
+  - {key: board, label: Board sandbox, value: "{{outputs.board.name}}"}
+  - {key: readings, label: Readings volume, value: "{{outputs.readings.name}}"}

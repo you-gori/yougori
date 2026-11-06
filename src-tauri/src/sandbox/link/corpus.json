@@ -1,0 +1,2029 @@
+{
+  "format": "yougori-link-corpus/v2",
+  "protocol_version": 3,
+  "secret_hex": "05121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98",
+  "vm_hex": "7128e9939fe4488875e7ae9dd1393ce59240fc57d463f3145b2504ab8c7489ea",
+  "boot_generation": 7,
+  "connection_hex": "636f727075732d636f6e6e2d30303031",
+  "challenge_hex": "59474c4b03000c00000000000000000000000001000000000000000700000013636f727075732d636f6e6e2d30303031010010636f727075732d636f6e6e2d30303031b2301344f24f3a1be53d062ae47829ca2768aab5a53f33c0544be7d8f216f7c6",
+  "cases": [
+    {
+      "name": "hello",
+      "kind": "valid",
+      "notes": "the first guest frame, after the host's challenge: version 3, agent build, no claims",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "hello-with-claims",
+      "kind": "valid",
+      "notes": "claimed VM and boot that agree with the binding are accepted but never used as identity",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000055636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a8740300207128e9939fe4488875e7ae9dd1393ce59240fc57d463f3145b2504ab8c7489ea040008000000000000000738b63c933dd96281b0726cebf5040adc92b22595ed5efd39ad1ddfbbea33e590"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "ping",
+      "kind": "valid",
+      "notes": "liveness",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000200000000000000070000000b636f727075732d636f6e6e2d30303031010008000000000000002a2595babe45bd555f1c39bd4bcd183f6ccd80a2803d2a1ead86dd421a5d069dee"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "pong",
+      "kind": "valid",
+      "notes": "answer to a host ping",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300040000000000000000000000000200000000000000070000000b636f727075732d636f6e6e2d3030303101000800000000000000072c6bc15bbebcd0d5b8923aa0e93e4f9ab4d10a1dad56c915aab2b91ae4f0d719"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "init-report",
+      "kind": "valid",
+      "notes": "a guest report with a claimed VM that agrees",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000700000000000000000000000002000000000000000700000041636f727075732d636f6e6e2d3030303101000102020001010300136368616e6e656c2065737461626c69736865640400207128e9939fe4488875e7ae9dd1393ce59240fc57d463f3145b2504ab8c7489ea24868601e96abdd0546b0cc49620805db1a05992903286f20ee4957288c9d1ff"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "probe-result",
+      "kind": "valid",
+      "notes": "a guest report",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000800000000000000000000000002000000000000000700000019636f727075732d636f6e6e2d3030303101000f736563636f6d702d70726f66696c6502000101030000db5bbbeed94eed029d5875627671a3ba8cae5b0cd58631644b54580d5aafabed"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "all-probes-passed",
+      "kind": "valid",
+      "notes": "a guest report; it satisfies no host-only requirement",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000900000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d303030310100040000000c6c0ffb5dc926f910e63e339e0762b1fdeda62b26f6f9711b8bf257e40204c21d"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "window-update",
+      "kind": "valid",
+      "notes": "credit for host-to-guest terminal data, which is flow-controlled per channel",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03010b00000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d30303031010004000010006dae0958d9ad0bf2f50567e9607a302e27edf8f076f36df6b0f86b82b28f32e7"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-window-update",
+      "kind": "valid",
+      "notes": "credit for host-to-guest data on one egress stream: version 3 flow-controls the ingress and egress channels per stream",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041800000000010000000000000003000000000000000700000007636f727075732d636f6e6e2d303030310100040000100098ae7fe1c16b0b8b17fa9533c5be9ff89b0c7d1dbfe7849f046e34ea4b751690"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-window-update-after-both-ends",
+      "kind": "valid",
+      "notes": "credit that crossed the stream's finish is dropped without a refusal",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "end_of_stream",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041400000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031efe6a0aba041048cff505db838545cea289a4e1124ab37660b4da426761f34ee"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041800000000010000000000000004000000000000000700000007636f727075732d636f6e6e2d30303031010004000010006bb342f475afb4bbc58a303f0a399af3e1805018c909c56fc1cdbeca36e837ca"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-open",
+      "kind": "valid",
+      "notes": "a destination name, never an address",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-two-streams",
+      "kind": "valid",
+      "notes": "guest stream ids rise",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000003000000000000000300000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d6172797d8db66b9da731da550f4314123062119ef6a4c9714580bfef5faf2a7a5995fa"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-data",
+      "kind": "valid",
+      "notes": "data after the host accepted the open",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041300000000010000000000000003000000000000000700000013636f727075732d636f6e6e2d30303031010010474554202f20485454502f312e310d0a107b6aaf96d4d15ba86f8a976dfe32ef1abcfae4cabc9a514be004dab89b9a5c"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-end-of-stream",
+      "kind": "valid",
+      "notes": "half-close by the guest",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041400000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031efe6a0aba041048cff505db838545cea289a4e1124ab37660b4da426761f34ee"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-both-ends",
+      "kind": "valid",
+      "notes": "the host ended first, then the guest",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "end_of_stream",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041400000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031efe6a0aba041048cff505db838545cea289a4e1124ab37660b4da426761f34ee"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-cancel",
+      "kind": "valid",
+      "notes": "cancel by the guest",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041500000000010000000000000003000000000000000700000004636f727075732d636f6e6e2d3030303101000101efa9fbc49b7ce48bad843146d265f5264e3e14ff67bcf36bb5da0b668f98f5d8"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "file-open",
+      "kind": "valid",
+      "notes": "a grant handle and one entry name, never a path",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0302100000000001000000000000000200000000000000070000001b636f727075732d636f6e6e2d3030303101000800000000000000070200096e6f7465732e7478740300010113c33b74d433a01a4ad81aa824bd1fbdbad70cb7dd30906cc5865a1022872486"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "file-host-opened-data",
+      "kind": "valid",
+      "notes": "a host-opened file stream the guest accepted",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_file",
+            "stream": 2,
+            "grant": 9,
+            "entry": "out.bin",
+            "mode": "write"
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03021100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d30303031b3ce07f74b55f8d0deabb40fc1846ae8b0e3ea630be140b292182d803140518e"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03021300000000020000000000000003000000000000000700000007636f727075732d636f6e6e2d30303031010004000102037216c4efee4abfcdbd718905fea59311f9463971fffa44ab3d5bb72ff2f3e971"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "terminal-opened-data",
+      "kind": "valid",
+      "notes": "a host-opened terminal",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_terminal",
+            "stream": 2,
+            "columns": 80,
+            "rows": 24
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d303030314c0277d206c510ed024970a78caecfd8a3bf435041ab1e50ad218ace96feecb2"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011300000000020000000000000003000000000000000700000005636f727075732d636f6e6e2d303030310100022420eb02d7a407777e54966ccf9cb3c92f8e90d8b490eaf87b3d0e2d80763533f22f"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "terminal-exit",
+      "kind": "valid",
+      "notes": "the exit is a guest report",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_terminal",
+            "stream": 2,
+            "columns": 80,
+            "rows": 24
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d303030314c0277d206c510ed024970a78caecfd8a3bf435041ab1e50ad218ace96feecb2"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011700000000020000000000000003000000000000000700000007636f727075732d636f6e6e2d30303031010004000000009fec7677e8d80a7003c06f59b0e97b2719cc0d89cac78194ae39b6c9464efb62"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "terminal-open-refused",
+      "kind": "valid",
+      "notes": "the guest refuses a host open",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_terminal",
+            "stream": 2,
+            "columns": 80,
+            "rows": 24
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011200000000020000000000000002000000000000000700000004636f727075732d636f6e6e2d3030303101000102677832c13b5a11cc534cd67b34afe800611883175a9377afd258c733f419df45"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "ingress-opened-data",
+      "kind": "valid",
+      "notes": "a host-opened ingress stream",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_ingress",
+            "stream": 2,
+            "listener": "web"
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03031100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d30303031c9b2e708127bc2c5ae4929fd1a8bd14a40bdd1c9b4e6b6aafb28754f705f4333"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03031300000000020000000000000003000000000000000700000014636f727075732d636f6e6e2d30303031010011485454502f312e3120323030204f4b0d0ac2d4f0bcb9421a9dc57e10d9889f900572dee868276f4c98e7e9f61ccf156f8e"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "open"
+      }
+    },
+    {
+      "name": "close",
+      "kind": "valid",
+      "notes": "orderly close by the guest",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000a00000000000000000000000002000000000000000700000004636f727075732d636f6e6e2d303030310100010175ffa5621b8e2116700fde717e04b5018cc832a97d5d71decb2c881b5bf7a5f5"
+        }
+      ],
+      "expect": {
+        "outcome": "accepted",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "bad-magic",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "58474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.bad_magic",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "unsupported-version",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b04000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.unsupported_version",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "version-2",
+      "kind": "hostile",
+      "notes": "a hello framed as protocol version 2, whose ingress and egress windows were per channel",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b02000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.unsupported_version",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "retired-version",
+      "kind": "hostile",
+      "notes": "a hello framed as protocol version 1, bound to the boot only",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0100010000000000000000000000000100000000000000070000002701000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874df19a063f705475ea153f394b0a814197b86323afba7ff09adcd878160eb3525"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.retired_version",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "unknown-channel",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03090100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.unknown_channel",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "reserved-flags",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000180000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.reserved_flags",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "oversized",
+      "kind": "hostile",
+      "notes": "the header announces more than the frame limit",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300010000000000000000000000000100000000000000070000ffc1636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "framing.oversized",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "bad-tag",
+      "kind": "hostile",
+      "notes": "one flipped tag bit",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d8"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unauthenticated",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "stale-generation",
+      "kind": "hostile",
+      "notes": "bound to the previous boot; the key differs too",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000600000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a8743e1d6da268c543107d8d1ffc0242da10291df4af26d634594dedbd344e607c3d"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stale_generation",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "future-generation",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000800000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874a83bfd5b537b76daf84ae01187f37ab170e08044440f7edca8c6bff93bfd554d"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stale_generation",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-from-earlier-connection",
+      "kind": "hostile",
+      "notes": "a hello recorded on an earlier connection of the boot",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303001000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874e0aea9e5b534bc254b4bf7c5942bf77fbb355c6c0a65b59e05a781d2d7359c06"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stale_connection",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-unchallenged",
+      "kind": "hostile",
+      "notes": "a hello that ignores the challenge",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b030001000000000000000000000000010000000000000007000000270000000000000000000000000000000001000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874798c93b4c7b57496438a6e0cbe98f0035fed35e54938e9360de88814cdbb6053"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stale_connection",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-moved-to-this-connection",
+      "kind": "hostile",
+      "notes": "an earlier connection's hello with this connection written over its field; the tag covers the field",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874e0aea9e5b534bc254b4bf7c5942bf77fbb355c6c0a65b59e05a781d2d7359c06"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unauthenticated",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "ping-from-earlier-connection",
+      "kind": "hostile",
+      "notes": "the next frame of an earlier connection, after this connection's hello",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000200000000000000070000000b636f727075732d636f6e6e2d303030300100080000000000000001a84abcbfda90aba903e62c3f4001fb18023a193036e5536844dc96bc34627be4"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stale_connection",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "window-update-from-earlier-connection",
+      "kind": "hostile",
+      "notes": "an acknowledgment of credit recorded on an earlier connection",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03010b00000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d30303030010004000010004dfbf9d7ff02ded67c0250e8859c1a2654d8e0ca6ce046e050d3248ee7a95397"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stale_connection",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "guest-challenge",
+      "kind": "hostile",
+      "notes": "host-only operation",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000c00000000000000000000000002000000000000000700000013636f727075732d636f6e6e2d30303031010010636f727075732d636f6e6e2d3030303074238408f2b2c0b864eba502b2741b5a91b9dc7eac8bf426dc36a400a53d31ab"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "replayed-sequence",
+      "kind": "hostile",
+      "notes": "the hello again with sequence 1",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "sequence.replayed",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "sequence-zero",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000000000000000000070000000b636f727075732d636f6e6e2d303030310100080000000000000001590bab5deebf780a2a999ec6e51b7275ab883e9aa86e071387ff50dc3a98f57a"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "sequence.replayed",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "reordered-sequence",
+      "kind": "hostile",
+      "notes": "sequence 3 where 2 was expected",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000300000000000000070000000b636f727075732d636f6e6e2d303030310100080000000000000001375dc063badb6f950bb88fbb7f4798a3286c93fb7b75a4f385b53767de594391"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "sequence.reordered",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "guest-revoke",
+      "kind": "hostile",
+      "notes": "host-only operation",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300050000000000000000000000000200000000000000070000000f636f727075732d636f6e6e2d30303031010001010200080000000000000001f719787b392f2f662616650b177ee8aeeca1acf9ca8889f4a1570593f3b7ba32"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-welcome",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000200000000000000000000000002000000000000000700000012636f727075732d636f6e6e2d30303031010001010200040000000103000400000001197a530c54bd634197219b7f626c7a55ac2d638242875191813beb79bd5fdd92"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-shutdown",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000600000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d30303031010004000000008b95246ed4fb5a1bcb4d779f2053bcb5b060838f62d58abfc1ec9ee93643f8f7"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-open-terminal",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0301100000000001000000000000000200000000000000070000000a636f727075732d636f6e6e2d3030303101000200010200020001e1c2a01c111fea5a921d7191c29056ff45acf72124e1bb9343467bc5d6809920"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-open-ingress",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03031000000000010000000000000002000000000000000700000004636f727075732d636f6e6e2d30303031010001780f82be865c2fc1a2fea64133fb0fd4b07d9db03c19de99de1ac7d3c12a09a665"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-resize",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0301160000000001000000000000000200000000000000070000000a636f727075732d636f6e6e2d30303031010002000102000200017296921260a0d246f2c22b0ad1b46639a49b4d22ac9813d609832ff3eb20a96c"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "unknown-operation",
+      "kind": "hostile",
+      "notes": "code 0x7f",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03007f00000000000000000000000002000000000000000700000000636f727075732d636f6e6e2d3030303102e41547b49656b11408ebf9ed8897c7b8f7b609741d36eb9505fbb6e5b6e681"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unknown_operation",
+        "link": "open"
+      }
+    },
+    {
+      "name": "data-on-control",
+      "kind": "hostile",
+      "notes": "a stream operation on the control channel",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03001300000000010000000000000002000000000000000700000000636f727075732d636f6e6e2d30303031de1753f96ea6aab29b23d798ee0a7e442273343a647cb9e54eef60a1b9bdc021"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unknown_operation",
+        "link": "open"
+      }
+    },
+    {
+      "name": "window-update-on-egress",
+      "kind": "hostile",
+      "notes": "the egress channel is credited per stream; channel credit does not exist there",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03040b00000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d3030303101000400001000eb4282b5738418cdbc3b475ce0488efa137926f04b8ddc18a67494f7325e1fa6"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unknown_operation",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-window-update-on-terminal",
+      "kind": "hostile",
+      "notes": "the terminal channel is credited as a whole",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_terminal",
+            "stream": 2,
+            "columns": 80,
+            "rows": 24
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d303030314c0277d206c510ed024970a78caecfd8a3bf435041ab1e50ad218ace96feecb2"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011800000000020000000000000003000000000000000700000007636f727075732d636f6e6e2d30303031010004000010004846ab2aaf9f2593ba7f283f2434f709b10195c770e8336704901c5c44e1513a"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unknown_operation",
+        "link": "open"
+      }
+    },
+    {
+      "name": "hello-twice",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000002000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874cc679c6843b9c9b0dfd37cf4d4633e9c12ee656c0ef4e19eaef4203620efea89"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "handshake_repeated",
+        "link": "open"
+      }
+    },
+    {
+      "name": "ping-before-hello",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000100000000000000070000000b636f727075732d636f6e6e2d30303031010008000000000000000156c542b73be0ccfa9551b2ee651e76174e4281c7f50177cc1bc03b10a768dc91"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "handshake_incomplete",
+        "link": "open"
+      }
+    },
+    {
+      "name": "hello-version-1",
+      "kind": "hostile",
+      "notes": "a version 2 frame whose hello claims version 1",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000101020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874ff11b1aa60bd486d216de032cbc081cbfc86f03c662dec5e94f1e5c9c8a0ff20"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unsupported_guest_version",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-version-2",
+      "kind": "hostile",
+      "notes": "a version 3 frame whose hello claims version 2",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000102020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a87416b6aa7691f69be40d42eee32389399caa3c0e1a583c42a75a2bfbda9484c7f5"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unsupported_guest_version",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-version-4",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000104020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874b11ec3d3ad594d38007993945839f8adbbc7b4025addff6d6090405d300a3c9c"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "unsupported_guest_version",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-claims-other-vm",
+      "kind": "hostile",
+      "notes": "a guest-supplied VM id is never identity",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300010000000000000000000000000100000000000000070000004a636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a8740300204d4652038ea8a8fcdc843173d221c1e2c36a59323ae716e0344cef947fe2e012a6acc28a585062ee6d008aca11e85c1459965a3c77fb26a13384aa2926ca0aaa"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "claimed_identity_disagrees",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-claims-other-boot",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000032636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a8740400080000000000000006933ff3581d3e133a98443dc61dbd01cfbc011f4367cfadeaa8cb117d6d748a47"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "claimed_identity_disagrees",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "init-report-claims-other-vm",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000700000000000000000000000002000000000000000700000041636f727075732d636f6e6e2d3030303101000102020001010300136368616e6e656c2065737461626c69736865640400204d4652038ea8a8fcdc843173d221c1e2c36a59323ae716e0344cef947fe2e012f1746e0a586883d27a1d5efd696c112290f5b18f7f576bd62ae365a4a6732de8"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "claimed_identity_disagrees",
+        "link": "closed"
+      }
+    },
+    {
+      "name": "hello-unknown-field",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300010000000000000000000000000100000000000000070000002b636f727075732d636f6e6e2d30303031010001010200207128e9939fe4488875e7ae9dd1393ce59240fc57d463f3145b2504ab8c7489ea05000101cf7f23ddca95f8a00d6edb1f0caad8bc80c0111d1b3279c5bcc8e00878ed606c"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.unknown_field",
+        "link": "open"
+      }
+    },
+    {
+      "name": "duplicate-field",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700000016636f727075732d636f6e6e2d30303031010008000000000000000101000800000000000000010e21658d326cbc1fa7fb38536f4bd50c2e48bcb10b3bb9cb4f81ac56f9b4362e"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.duplicate_field",
+        "link": "open"
+      }
+    },
+    {
+      "name": "unknown-field",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000200000000000000070000000f636f727075732d636f6e6e2d30303031010008000000000000000102000101a9249e815fc2cf9c23a03b0b071ff68ec11249ade404edb7eeac835c760d3425"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.unknown_field",
+        "link": "open"
+      }
+    },
+    {
+      "name": "missing-field",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700000000636f727075732d636f6e6e2d303030312c541eaba8705fc70fbe15e176c02a61c52db2e0746c243ec507b0ed1f8a276c"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.missing_field",
+        "link": "open"
+      }
+    },
+    {
+      "name": "truncated-value",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700000005636f727075732d636f6e6e2d303030310100080102c55666d12f7499974e0a5eca71951d4011953f29fd84dd9a32eab8018192ce81"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.truncated_value",
+        "link": "open"
+      }
+    },
+    {
+      "name": "truncated-header",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700000002636f727075732d636f6e6e2d303030310100db8d7822021bba55709641511ce53c0e40ce7ab8618b23590b9d4dcbdb20136b"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.truncated_header",
+        "link": "open"
+      }
+    },
+    {
+      "name": "wrong-length",
+      "kind": "hostile",
+      "notes": "a four-byte nonce",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d303030310100040000000174c8d66fc06b6735a83c2e2c87a4c0f8493db94bcb6801b76247ef9850ea23c7"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.wrong_length",
+        "link": "open"
+      }
+    },
+    {
+      "name": "file-entry-is-a-path",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0302100000000001000000000000000200000000000000070000001f636f727075732d636f6e6e2d30303031010008000000000000000702000d2e2e2f6574632f7061737377640300010134353bcf740a7f2d13e8c7bd8999ef11da147494ae43cdf7f9d40b472f6debe4"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.not_name",
+        "link": "open"
+      }
+    },
+    {
+      "name": "egress-destination-is-a-url",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041000000000010000000000000002000000000000000700000017636f727075732d636f6e6e2d30303031010014687474703a2f2f6576696c2e6578616d706c652fc17dff28939085d460475d4a69610792103c1dd7839f01b07b8a777664dff6fe"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.not_name",
+        "link": "open"
+      }
+    },
+    {
+      "name": "detail-too-long",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000700000000000000000000000002000000000000000700000137636f727075732d636f6e6e2d30303031010001010200010103012c787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878dc58e87699ce9044c3372ff7609f4304e14f203f05764c321231f7df9fc76a1c"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.too_long",
+        "link": "open"
+      }
+    },
+    {
+      "name": "invalid-outcome",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300080000000000000000000000000200000000000000070000000b636f727075732d636f6e6e2d303030310100017002000109030000bb3a6f3387afdaf92fb50c1234dcf26c6e8f2b355e98dcc2e0d43d07b6023be3"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.invalid_value",
+        "link": "open"
+      }
+    },
+    {
+      "name": "detail-not-text",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300080000000000000000000000000200000000000000070000000e636f727075732d636f6e6e2d303030310100017002000101030003610062caab2dd7038e1e32d86563f64429cafa85edec99ef45b6655523fb9b45dfe181"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.not_text",
+        "link": "open"
+      }
+    },
+    {
+      "name": "nested-payload",
+      "kind": "hostile",
+      "notes": "the nonce field holds a payload; the parser reads one level and refuses the length",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700000137636f727075732d636f6e6e2d3030303101013401013101012e01012b01012801012501012201011f01011c01011901011601011301011001010d01010a0101070101040101010100fe0100fb0100f80100f50100f20100ef0100ec0100e90100e60100e30100e00100dd0100da0100d70100d40100d10100ce0100cb0100c80100c50100c20100bf0100bc0100b90100b60100b30100b00100ad0100aa0100a70100a40100a101009e01009b01009801009501009201008f01008c01008901008601008301008001007d01007a01007701007401007101006e01006b01006801006501006201005f01005c01005901005601005301005001004d01004a01004701004401004101003e01003b01003801003501003201002f01002c01002901002601002301002001001d01001a01001701001401001101000e01000b010008000000000000000170a1ce4101995050aa499246ab153b8cce0bb44e36df936b2063d087fcdc3159"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "payload.wrong_length",
+        "link": "open"
+      }
+    },
+    {
+      "name": "message-too-large",
+      "kind": "hostile",
+      "notes": "5 000 bytes on the control channel",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000300000000000000000000000002000000000000000700001396636f727075732d636f6e6e2d303030310100080000000000000001021388000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000031cc690ed270523c49925caa6477df37f72b4aba25eab65e74b4ab1be06f9265"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "message_too_large",
+        "link": "open"
+      }
+    },
+    {
+      "name": "ping-with-stream",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000001000000000000000200000000000000070000000b636f727075732d636f6e6e2d303030310100080000000000000001d1a539320f7769751a1e385366374f0ce2388bc1da88fc7818551615152855c9"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_id_forbidden",
+        "link": "open"
+      }
+    },
+    {
+      "name": "open-stream-zero",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000000000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d617279b937f0ed40aab559359530e98e9c5a64feb280285db2943630c9c911a52129ba"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_id_required",
+        "link": "open"
+      }
+    },
+    {
+      "name": "even-guest-stream",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000002000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d6172797b2573c41fe9ef44b3e785c7f1ae52c4a5f66212145d73edc89d72fd7aba9385"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_parity",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-id-not-increasing",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000003000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d617279f6bf6b6b46513c4049cb85ffc666c49108b2793783965b1817efdc8900093b6f"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000300000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d617279a6db57aa9989f9da106c1d87ae2c081f2cdfd4314c5ff1e8506843a331ab377f"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_id_not_increasing",
+        "link": "open"
+      }
+    },
+    {
+      "name": "data-on-unopened-stream",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041300000000010000000000000002000000000000000700000004636f727075732d636f6e6e2d3030303101000178740088beb7fb72d89460207e6a962be3c1b1a61f1ee32539cfaf7b0750cb2330"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_not_open",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-window-update-on-unopened-stream",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041800000000010000000000000002000000000000000700000007636f727075732d636f6e6e2d3030303101000400001000a0f24f66957b987d6158c23b76997d8148e04af539cf7187f8b317f9cad33bd5"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_not_open",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-window-update-without-stream",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041800000000000000000000000002000000000000000700000007636f727075732d636f6e6e2d303030310100040000100072eba3fb9aece66cddce09998cb249600efec676ac1b0cc9a95bd6d259082ace"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_id_required",
+        "link": "open"
+      }
+    },
+    {
+      "name": "stream-window-update-after-cancel",
+      "kind": "hostile",
+      "notes": "credit in flight when the guest cancelled: refused without charge to the budget",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041500000000010000000000000003000000000000000700000004636f727075732d636f6e6e2d3030303101000101efa9fbc49b7ce48bad843146d265f5264e3e14ff67bcf36bb5da0b668f98f5d8"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041800000000010000000000000004000000000000000700000007636f727075732d636f6e6e2d30303031010004000010006bb342f475afb4bbc58a303f0a399af3e1805018c909c56fc1cdbeca36e837ca"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_cancelled",
+        "link": "open"
+      }
+    },
+    {
+      "name": "data-before-host-opened",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041300000000010000000000000003000000000000000700000004636f727075732d636f6e6e2d3030303101000178f9ec64a957dbac7ab474c1c98046390e4823e0b0e13ca270123557e70818b38c"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_not_open",
+        "link": "open"
+      }
+    },
+    {
+      "name": "data-after-end-of-stream",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041400000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031efe6a0aba041048cff505db838545cea289a4e1124ab37660b4da426761f34ee"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041300000000010000000000000004000000000000000700000004636f727075732d636f6e6e2d3030303101000178c516a8753569f43f075f67288d18b365a0c5454bef8850d4fe7325d863f93133"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "half_closed",
+        "link": "open"
+      }
+    },
+    {
+      "name": "end-of-stream-twice",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041400000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031efe6a0aba041048cff505db838545cea289a4e1124ab37660b4da426761f34ee"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041400000000010000000000000004000000000000000700000000636f727075732d636f6e6e2d30303031ed995f0a9d280ed3041689c0f6ef6c88e10fe1c4602f873d854c6dfb5f6897b3"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "half_closed",
+        "link": "open"
+      }
+    },
+    {
+      "name": "data-after-cancel",
+      "kind": "hostile",
+      "notes": "refused without charge to the budget",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "opened",
+            "channel": "egress",
+            "stream": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041500000000010000000000000003000000000000000700000004636f727075732d636f6e6e2d3030303101000101efa9fbc49b7ce48bad843146d265f5264e3e14ff67bcf36bb5da0b668f98f5d8"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041300000000010000000000000004000000000000000700000004636f727075732d636f6e6e2d3030303101000178c516a8753569f43f075f67288d18b365a0c5454bef8850d4fe7325d863f93133"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_cancelled",
+        "link": "open"
+      }
+    },
+    {
+      "name": "data-after-host-cancel",
+      "kind": "hostile",
+      "notes": "output in flight when the host cancelled: refused without charge to the budget, counted against the window and credited straight back",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_terminal",
+            "stream": 2,
+            "columns": 80,
+            "rows": 24
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d303030314c0277d206c510ed024970a78caecfd8a3bf435041ab1e50ad218ace96feecb2"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "cancel",
+            "channel": "terminal",
+            "stream": 2,
+            "cause": "quota_exceeded"
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0301130000000002000000000000000300000000000000070000000e636f727075732d636f6e6e2d3030303101000b6c617465206f7574707574ebf86a3dc1f4b5038209781ef712643b7fc71cae07342ecad0221d7b85bb94e7"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_cancelled",
+        "link": "open"
+      }
+    },
+    {
+      "name": "opened-twice",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "host",
+          "action": {
+            "action": "open_terminal",
+            "stream": 2,
+            "columns": 1,
+            "rows": 1
+          }
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011100000000020000000000000002000000000000000700000000636f727075732d636f6e6e2d303030314c0277d206c510ed024970a78caecfd8a3bf435041ab1e50ad218ace96feecb2"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011100000000020000000000000003000000000000000700000000636f727075732d636f6e6e2d303030315751483626a89099f7864e8abb14dfca20607c27812256965e909840ae54d6e4"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_not_opening",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-answers-its-own-open",
+      "kind": "hostile",
+      "notes": "the file channel opens both ways; the opener never answers",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0302100000000001000000000000000200000000000000070000001b636f727075732d636f6e6e2d3030303101000800000000000000070200096e6f7465732e7478740300010113c33b74d433a01a4ad81aa824bd1fbdbad70cb7dd30906cc5865a1022872486"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03021100000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031ee10eca1478f9749d85212d1d2f26cf9182063459ca9d2c5f68c1e16f6ef251f"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_not_opening",
+        "link": "open"
+      }
+    },
+    {
+      "name": "guest-answers-egress-open",
+      "kind": "hostile",
+      "notes": "on egress only the host answers",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0304100000000001000000000000000200000000000000070000000e636f727075732d636f6e6e2d3030303101000b6170692d7072696d61727916a914e5673769d397bbafa4f81071c5060be7f37f926b791fab612c41ffdfe0"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03041100000000010000000000000003000000000000000700000000636f727075732d636f6e6e2d30303031159fe2d534649efda1c0e3de796a78ae245d066887a5f91d7a12dc84c9ce8bf8"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "wrong_direction",
+        "link": "open"
+      }
+    },
+    {
+      "name": "exit-on-unopened-terminal",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03011700000000020000000000000002000000000000000700000007636f727075732d636f6e6e2d30303031010004000000014230a4b7dbd1468611b96ccc168da64477f693630b01dd2f6c5b7a4e7da6b252"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "stream_not_open",
+        "link": "open"
+      }
+    },
+    {
+      "name": "frame-after-close",
+      "kind": "hostile",
+      "notes": "",
+      "steps": [
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000100000000000000000000000001000000000000000700000027636f727075732d636f6e6e2d3030303101000103020020f8d0178d25af9e4b0d4a616a939d462125402904cf33f40630f1cefd01f9a874461d366b411f6b63cdf94af466849737e3e87040ad3bea67d13861bbd4a545d9"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b03000a00000000000000000000000002000000000000000700000004636f727075732d636f6e6e2d303030310100010175ffa5621b8e2116700fde717e04b5018cc832a97d5d71decb2c881b5bf7a5f5"
+        },
+        {
+          "kind": "guest",
+          "frame_hex": "59474c4b0300030000000000000000000000000300000000000000070000000b636f727075732d636f6e6e2d303030310100080000000000000001375dc063badb6f950bb88fbb7f4798a3286c93fb7b75a4f385b53767de594391"
+        }
+      ],
+      "expect": {
+        "outcome": "refused",
+        "reason": "link_already_closed",
+        "link": "closed"
+      }
+    }
+  ]
+}

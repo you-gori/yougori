@@ -1,0 +1,227 @@
+{
+  "formatVersion": 2,
+  "instance": "model-server",
+  "template": {
+    "name": "model-server",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "models.local",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Local models",
+      "permissions": [
+        "Serve models from this computer."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.private",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "gpu": "optional",
+    "memory_gb": "8",
+    "model": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+    "quantization": "Q8_0"
+  },
+  "secrets": {},
+  "bindings": {},
+  "resources": [
+    {
+      "id": "model",
+      "kind": "model_service",
+      "title": "model service",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "api": {
+          "keys": 0,
+          "protocol": "openai"
+        },
+        "gpu": "optional",
+        "memory_gb": 8.0,
+        "model": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+        "quantization": "Q8_0",
+        "replicas": 1
+      },
+      "outputs": [
+        "id",
+        "endpoint",
+        "model",
+        "first_key"
+      ]
+    }
+  ],
+  "order": [
+    "model"
+  ],
+  "steps": [
+    {
+      "title": "See the API address and key",
+      "detail": "Apps call the address with the key as a bearer token. The key stays in this computer's credential store; this command shows it again whenever you need it.",
+      "command": "yougori model access {{outputs.model.id}}"
+    },
+    {
+      "title": "Chat with it",
+      "command": "yougori model chat {{outputs.model.id}}"
+    },
+    {
+      "title": "Share it on Yougori Network",
+      "detail": "Optional. From the setup's API view, share it free or paid with your Yougori account. Prompts then pass through the Network and the computer serving them."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "model",
+      "label": "Model",
+      "value": "{{outputs.model.model}}",
+      "private": false
+    },
+    {
+      "key": "endpoint",
+      "label": "API address",
+      "value": "{{outputs.model.endpoint}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "models",
+    "api",
+    "usage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "model",
+        "kind": "model_service",
+        "title": "model service",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "model",
+        "name": "hf.co/Qwen/Qwen3-0.6B-GGUF"
+      }
+    ],
+    "permissions": [
+      "Local models: Serve models from this computer.",
+      "A website or API: Run containers on this computer.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "model",
+        "question": "Which model should it run?",
+        "answer": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "quantization",
+        "question": "Which size of it? (GGUF models only)",
+        "answer": "Q8_0",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "gpu",
+        "question": "Should it use this computer's GPU?",
+        "answer": "optional",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory for the model, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "76759bb6aec90903f112ddc61ae55938b61b2b0bacedd8c96f3b841841ee398f"
+}

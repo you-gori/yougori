@@ -1,0 +1,242 @@
+format_version: 2
+kind: template
+name: neo-grid
+title: Neo Grid
+subtitle: Serve models across your computers.
+summary: Run open models on the computers you already have and give your apps one private, OpenAI-compatible API with keys.
+version: 1.0.0
+license: MIT
+topics: [grid, models, gpu, api, inference]
+aliases: [neo grid, closed neo grid, model grid, company grid, model serving]
+profile: neo_grid
+changelog: First version as a template. Creates a Neo Grid with its first model, or adds this computer to one.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: optional
+
+capabilities:
+  - {id: grid.create, selection: required, when: {mode: create}}
+  - {id: grid.join, selection: required, when: {mode: join}}
+  - {id: grid.reuse_compute, selection: default}
+  - {id: grid.availability, selection: default, when: {mode: create}}
+  - {id: grid.cloud_compute, selection: optional, when: {mode: create}}
+  - {id: models.local, selection: required, when: {mode: create}}
+  - {id: models.team, selection: optional, when: {mode: create}}
+  - {id: web.service, selection: required, when: {mode: create}}
+  - {id: web.lan, selection: optional, when: {mode: create}}
+  - {id: web.quick_link, selection: optional, when: {mode: create}}
+  - {id: web.domain, selection: optional, when: {mode: create}}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: mode
+    question: What do you want to do?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: create, label: "Create a Neo Grid", hint: "This computer runs the grid."}
+      - {value: join, label: "Add this computer to a grid", hint: "Serve models for a grid someone else runs."}
+    default: create
+
+  # Create: the grid itself.
+  - id: grid_name
+    question: What is the company or team called?
+    hint: Shown to every computer that joins. Up to 64 characters.
+    type: text
+    pattern: "^.{1,64}$"
+    group: grid_workers
+    when: {mode: create}
+  - id: coordinator_address
+    question: What is this computer's private network address?
+    hint: An address on your LAN or VPN, such as 192.168.1.20. Yougori suggests one; computers and apps reach the grid here.
+    type: text
+    pattern: "^[0-9A-Fa-f.:]{2,45}$"
+    group: grid_workers
+    when: {mode: create}
+  - id: reach
+    question: Where can computers join the grid from?
+    hint: Apps always call the API on this computer's network address. A link or domain lets computers elsewhere join.
+    type: choice
+    group: website_api
+    choices:
+      - {value: lan, label: "This network only", hint: "Computers on your LAN or VPN."}
+      - {value: quick, label: "A quick public link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "My own domain", hint: "A domain you saved with yougori domain add."}
+    default: lan
+    when: {mode: create}
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {mode: create, reach: domain}
+  - id: grid_password
+    question: Choose the company password computers use to join
+    hint: At least 10 characters.
+    type: secret
+    min_length: 10
+    group: people_access
+    when: {mode: create}
+
+  # Create: the first model.
+  - id: model
+    question: Which model should the grid serve first?
+    hint: A GGUF model as hf.co/OWNER/MODEL, or a Yougori model as yg/PUBLISHER/MODEL.
+    type: text
+    pattern: '^(hf\.co|yg)/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    group: ai_models
+    when: {mode: create}
+  - id: quantization
+    question: Which size of it?
+    hint: A GGUF quantization such as Q4_K_M. Leave empty and Yougori picks the largest that fits each computer.
+    type: text
+    required: false
+    pattern: "^[A-Za-z0-9_.-]{0,32}$"
+    group: ai_models
+    when: {mode: create}
+  - id: placement
+    question: Which computers run it?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: remaining, label: "Computers not running another model", hint: "The usual choice for the first model."}
+      - {value: all, label: "Every computer in the grid"}
+    default: remaining
+    when: {mode: create}
+  - id: percent
+    question: What share of those computers should run it, in percent?
+    type: number
+    min: 1
+    max: 100
+    default: 100
+    group: grid_workers
+    when: {mode: create}
+  - id: availability
+    question: When may a computer serve?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: idle, label: "Only while nobody is using it", hint: "The person at the computer always comes first."}
+      - {value: always, label: "Whenever it is on"}
+    default: idle
+    when: {mode: create}
+  - id: idle_after_minutes
+    question: After how many quiet minutes?
+    hint: A computer serves once nobody has used its keyboard or mouse for this long.
+    type: number
+    min: 1
+    max: 1440
+    default: 10
+    group: grid_workers
+    when: {mode: create, availability: idle}
+  - id: schedule
+    question: Only in these hours?
+    hint: Leave empty for any time, or write windows such as "Mon-Fri 18:00-08:00; Sat,Sun" in each computer's local time.
+    type: text
+    required: false
+    pattern: "^[A-Za-z0-9 ,:;-]{0,200}$"
+    group: automation_recovery
+    when: {mode: create}
+
+  # Create: access for apps.
+  - id: app_key
+    question: Create an API key for your apps now?
+    hint: The key is shown once when setup finishes. You can add more keys later.
+    type: yesno
+    default: true
+    group: website_api
+    when: {mode: create}
+  - id: app_key_name
+    question: Name of the app that will use this key
+    hint: Usage is counted per key under this name.
+    type: text
+    pattern: "^.{1,64}$"
+    default: My app
+    group: website_api
+    when: {mode: create, app_key: "yes"}
+
+  # Create: optional AI team.
+  - id: ai_team
+    question: Also offer this model as a team that splits one request across several computers?
+    hint: Apps call it as the model swarm/NAME. You can add teams with other models later.
+    type: yesno
+    default: false
+    group: ai_models
+    when: {mode: create}
+  - id: team_name
+    question: Name of the team
+    hint: 1 to 40 lowercase letters, digits and dashes. Apps call swarm/NAME.
+    type: text
+    pattern: "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+    default: team
+    group: ai_models
+    when: {mode: create, ai_team: "yes"}
+  - id: team_strategy
+    question: How should the team work?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: plan, label: "Split into tasks", hint: "The lead splits the request into tasks, the workers solve them, the lead combines the results."}
+      - {value: mixture, label: "Combine answers", hint: "Every worker answers and the lead writes one answer from them."}
+    default: plan
+    when: {mode: create, ai_team: "yes"}
+  - id: team_computers
+    question: How many computers may work on one request?
+    type: number
+    min: 1
+    max: 32
+    default: 5
+    group: ai_models
+    when: {mode: create, ai_team: "yes"}
+  - id: team_rounds
+    question: How many rounds?
+    hint: 1 to 3 rounds when splitting into tasks, 1 or 2 layers when combining answers.
+    type: number
+    min: 1
+    max: 3
+    default: 1
+    group: ai_models
+    when: {mode: create, ai_team: "yes"}
+
+  # Join: this computer serves models for another grid.
+  - id: invite
+    question: Paste the invite from the grid's admin
+    hint: It starts with grid-invite:.
+    type: secret
+    group: grid_workers
+    when: {mode: join}
+  - id: join_password
+    question: The grid's company password
+    type: secret
+    group: grid_workers
+    when: {mode: join}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [computers, models, teams, api, keys, usage, queues, costs, logs]
+
+steps:
+  - title: Connect an app
+    detail: Point any OpenAI-compatible client at the API address below with the key shown when setup finished, and make it trust the coordinator certificate from the API access view. Ask for the model by the name the Models view shows.
+    when: {mode: create}
+  - title: Add more computers
+    detail: On another computer, run this template with "Add this computer to a grid" and paste the invite from the Computers view.
+    when: {mode: create}
+  - title: Check what this computer serves
+    detail: The grid's admin assigns models. This computer serves only when it is idle and inside the grid's schedule, and stops when you come back.
+    when: {mode: join}
+
+outputs:
+  - {key: grid_name, label: Grid, value: "{{outputs.company.name}}", when: {mode: create}}
+  - {key: grid_page, label: Grid page, value: "{{outputs.company.page}}", when: {mode: create}}
+  - {key: join_address, label: Where computers join, value: "{{outputs.company.join_address}}", when: {mode: create}}
+  - {key: api_base, label: API address, value: "{{outputs.first_model.endpoint}}", when: {mode: create}}
+  - {key: model, label: Model name for apps, value: "{{outputs.first_model.model}}", when: {mode: create}}
+  - {key: api_key, label: API key (shown once), value: "{{outputs.first_model.first_key}}", private: true, when: {mode: create, app_key: "yes"}}
+  - {key: team_model, label: Team model name, value: "{{outputs.team.model}}", when: {mode: create, ai_team: "yes"}}
+  - {key: invite, label: Grid invite, value: "{{outputs.company.invitation}}", private: true, when: {mode: create}}
+  - {key: joined_grid, label: Grid, value: "{{outputs.membership.name}}", when: {mode: join}}

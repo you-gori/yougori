@@ -1,0 +1,83 @@
+{
+  "contract_version": 2,
+  "subject": {
+    "kind": "sandbox",
+    "id": "coder"
+  },
+  "shown_at": {
+    "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+    "at": 2000001000,
+    "configuration": "ad2eeb2c62c77a270abb87f2900500596964121208c2db0fb539fe0b4d9342db"
+  },
+  "grants": {
+    "execution": "exe-coder",
+    "epoch": 1,
+    "authority": {
+      "epoch": 1,
+      "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+      "expires_at": 3600000001000
+    },
+    "standing": "in_force",
+    "grants": [
+      {
+        "grant": "02452b836208254d7c077c9dd4220033de0911d7d5135f1d3456d8202d37a6a6",
+        "scope": {
+          "scope": "unrecorded"
+        },
+        "leases": 0,
+        "status": {
+          "status": "revoked",
+          "at": 1000001000,
+          "cancelled_leases": 0,
+          "activations": 0
+        },
+        "text": "grant 02452b836208, whose scope this run did not record: revoked at 1000001000 ns and never honoured under this execution again; 0 lease(s) cancelled; 0 model activation(s) admit no request again; the authorization epoch and every other grant stay in force"
+      },
+      {
+        "grant": "3941aac26bebebe7377d9a27562978006da001dd8de074ba602c2a39807d2d46",
+        "scope": {
+          "scope": "network",
+          "network": {
+            "grant": "named_route",
+            "route": "db9e0da2fd9956cf7e8f60b69fe6c810c6ad5afd9e63ca0a7c3ee2c550fc1053"
+          }
+        },
+        "leases": 0,
+        "status": {
+          "status": "held"
+        },
+        "text": "network route db9e0da2fd99: held under the authority in force; it is checked again at every use, and a grant states what is allowed, not that anything enforces it"
+      },
+      {
+        "grant": "4f48a02e2501a4924db183ef9ba7046b06b5a95fb29a1bcfc8076a2f71f0b3d5",
+        "scope": {
+          "scope": "issued"
+        },
+        "leases": 1,
+        "status": {
+          "status": "held"
+        },
+        "text": "grant 4f48a02e2501 for work under this execution (1 lease in force depends on it): held under the authority in force; it is checked again at every use, and a grant states what is allowed, not that anything enforces it"
+      },
+      {
+        "grant": "68e965c2b55dac6b2d973279fb6dfcae8740fde7edec943f2e90be63caff5a07",
+        "scope": {
+          "scope": "network",
+          "network": {
+            "grant": "named_route",
+            "route": "abfe08750e564e97ac70484311add5697aa1ef2f78f1c4eabbb0d905c09278e0"
+          }
+        },
+        "leases": 0,
+        "status": {
+          "status": "revoked",
+          "at": 1000001000,
+          "cancelled_leases": 1,
+          "stop_by": 6000001000,
+          "activations": 0
+        },
+        "text": "network route abfe08750e56: revoked at 1000001000 ns and never honoured under this execution again; 1 lease(s) cancelled, to stop by 6000001000 ns; 0 model activation(s) admit no request again; the authorization epoch and every other grant stay in force"
+      }
+    ]
+  }
+}

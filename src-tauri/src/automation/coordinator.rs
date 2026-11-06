@@ -83,6 +83,14 @@ pub(super) fn resources(method: &str, params: &Value, mutating: bool) -> Vec<Str
     if !mutating {
         return Vec::new();
     }
+    // The restricted VM sandboxes hold their own authority: the service's lifecycle
+    // supervisor, its leases and the host ledger arbitrate every launch, command, stop and
+    // revocation, and a stop or a cancel must reach a sandbox while a command runs. Under
+    // the method-wide feature lease every call waited for the running command's job (a
+    // status poll took 120 s in the acceptance run of 30 October 2026).
+    if method == "sandbox_vm" {
+        return Vec::new();
+    }
     let mut ids = BTreeSet::new();
     fn collect(value: &Value, ids: &mut BTreeSet<String>) {
         if let Some(object) = value.as_object() {

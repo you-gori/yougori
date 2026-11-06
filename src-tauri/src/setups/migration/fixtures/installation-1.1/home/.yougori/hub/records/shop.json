@@ -1,0 +1,39 @@
+{
+  "instance": "shop",
+  "origin": "hub",
+  "item": "example/shop",
+  "template": "shop",
+  "title": "Shop",
+  "version": "1.2.0",
+  "digest": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+  "verified": false,
+  "project": "yougori.yaml",
+  "answers": {
+    "site_title": "Shop"
+  },
+  "secrets": [
+    "admin_password"
+  ],
+  "allowPcAccess": false,
+  "withoutGpu": false,
+  "environments": {
+    "web": "env-fixture-shop-web"
+  },
+  "create": {
+    "status": ""
+  },
+  "tools": {},
+  "signins": {},
+  "public": [],
+  "steps": [],
+  "outputs": [],
+  "files": {},
+  "review": null,
+  "counted": false,
+  "phase": "stopped",
+  "names": {},
+  "keys": [],
+  "projectKeys": [],
+  "createdAt": 1760000600,
+  "updatedAt": 1760000660
+}

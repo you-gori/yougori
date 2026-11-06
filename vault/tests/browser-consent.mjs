@@ -20,7 +20,7 @@ test('OAuth consent POST returns to the registered callback without leaking cook
   const callbackUrl = `${callbackOrigin}/callback?code=fixture&state=private-fixture`
   const csp = source.match(/let policy = format!\("([^"]+)"\)/)?.[1]?.replace('{callback_origin}', callbackOrigin)
   assert.ok(csp, 'Use the actual consent redirect policy')
-  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || 'msedge' })
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || 'msedge', chromiumSandbox: true })
   try {
     const context = await browser.newContext()
     const page = await context.newPage()

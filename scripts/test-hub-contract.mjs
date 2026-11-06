@@ -1,4 +1,6 @@
-// Runs the CLI contract test against the website's actual Hub server with disposable data.
+// Runs the CLI contract tests against the website's actual Hub server with disposable data: the
+// seeded hello-site download, search and clone counting, then the CLI publishing its real reviews
+// in both formats (hello-site 1.0.1 as format 1, host-my-app as format 2) and reading them back.
 // Usage from any directory: node scripts/test-hub-contract.mjs PATH/TO/YougoriWebsite
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
@@ -70,8 +72,9 @@ try {
   })
   await call(`/api/hub/uploads/${upload.upload.id}/files`, { files: files.map(([path, bytes]) => ({ path, content: bytes.toString('base64') })) })
   await call(`/api/hub/uploads/${upload.upload.id}/finish`, {})
-  const child = spawn('cargo', ['test', '--manifest-path', 'cli/Cargo.toml', '--test', 'hub_contract', '--', '--ignored'], {
-    cwd: repository, env: { ...process.env, YOUGORI_HUB_CONTRACT_URL: base }, stdio: 'inherit', windowsHide: true,
+  // One test at a time: the second test publishes to the same disposable server and reads back.
+  const child = spawn('cargo', ['test', '--manifest-path', 'cli/Cargo.toml', '--test', 'hub_contract', '--', '--ignored', '--test-threads=1'], {
+    cwd: repository, env: { ...process.env, YOUGORI_HUB_CONTRACT_URL: base, YOUGORI_HUB_CONTRACT_TOKEN: token }, stdio: 'inherit', windowsHide: true,
   })
   const [code, signal] = await once(child, 'exit')
   if (signal) console.error(`The contract test stopped with ${signal}`)

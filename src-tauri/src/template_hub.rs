@@ -213,6 +213,196 @@ pub async fn hub_instances() -> Result<Value, String> {
     Ok(json!({"instances": read_instances(&home()?.join(".yougori").join("hub").join("instances"))}))
 }
 
+/// First-party templates shipped with the app. This only locates source; the
+/// shared builder still reviews permissions, inputs and costs before starting.
+#[tauri::command]
+pub async fn hub_builtin_templates(app: AppHandle) -> Result<Value, String> {
+    let mut roots = vec![crate::resource_dir(&app)?.join("templates")];
+    if cfg!(yougori_source_runtime) {
+        roots.insert(0, Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub"));
+    }
+    Ok(builtin_templates(&roots))
+}
+
+fn builtin_templates(roots: &[PathBuf]) -> Value {
+    let items: Vec<Value> = [("inference-solver", "Create my inference")].into_iter().filter_map(|(id,title)| {
+        roots.iter().find_map(|root| {
+            let folder = root.join(id).canonicalize().ok()?;
+            folder.join("yougori-template.yaml").is_file().then(|| json!({"id":id,"title":title,"folder":plain_path(&folder)}))
+        })
+    }).collect();
+    json!({"templates":items})
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    #[test]
+    fn only_available_first_party_templates_are_offered() {
+        let root=tempfile::tempdir().unwrap();
+        assert_eq!(super::builtin_templates(&[root.path().to_owned()])["templates"],serde_json::json!([]));
+        let folder=root.path().join("inference-solver");std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("yougori-template.yaml"),"format_version: 2\n").unwrap();
+        let value=super::builtin_templates(&[root.path().to_owned()]);
+        assert_eq!(value["templates"][0]["id"],"inference-solver");
+        assert!(std::path::Path::new(value["templates"][0]["folder"].as_str().unwrap()).is_absolute());
+    }
+}
+
+const TEMPLATE_FILE: &str = "yougori-template.yaml";
+const PROJECT_FILE: &str = "yougori.yaml";
+const README_FILE: &str = "README.md";
+const DRAFT_FILES: [&str; 3] = [TEMPLATE_FILE, PROJECT_FILE, README_FILE];
+const MAX_DRAFT_FILE: usize = 512 * 1024;
+
+/// A template the builder made, to be written into a folder the person chose. The template text
+/// is the source the engine wrote for the draft; the project file is there when the draft has one.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TemplateDraftRequest {
+    folder: String,
+    template: String,
+    #[serde(default)]
+    project: Option<String>,
+    /// One line for the README it starts with, when the folder has none yet.
+    #[serde(default)]
+    summary: Option<String>,
+    /// Files the builder makes beside these, by name (`draft::EXTRA_FILES`).
+    #[serde(default)]
+    files: std::collections::BTreeMap<String, String>,
+}
+
+/// LF line endings and one final newline, so the files read the same on every computer.
+fn lf(text: &str) -> String {
+    let mut text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n");
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// The top-level `name:` of a template, which says which template a folder holds.
+fn template_name(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let value = line.strip_prefix("name:")?.trim();
+        let value = value.split(" #").next().unwrap_or(value).trim().trim_matches(|c| c == '"' || c == '\'');
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+/// Writes one file by writing a new file beside it and moving that over it. The new file is
+/// created fresh, so nothing that already sits at its name is opened, and a move replaces a
+/// link rather than writing through it.
+fn write_new(folder: &Path, name: &str, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_nanos()).unwrap_or(0);
+    let temporary = folder.join(format!(".{name}.{}-{stamp}.tmp", std::process::id()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.sync_all()));
+    if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, folder.join(name))) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("Could not write {name}: {error}"));
+    }
+    Ok(())
+}
+
+fn readme(title: &str, summary: Option<&str>) -> String {
+    let summary = summary.map(str::trim).filter(|line| !line.is_empty()).unwrap_or("Say here what this template sets up and who it is for.");
+    format!(
+        "# {title}\n\n{summary}\n\n## Before you publish\n\nCheck it from the builder, or run `yougori template check .` in this folder, then read what it would create.\n"
+    )
+}
+
+/// Writes the builder's draft into `folder`: the template, its project file and a README to start
+/// from. The folder must be empty, or hold this same template from an earlier save, and nothing
+/// else; links are never followed, nothing is written outside it, and a README somebody already
+/// edited is kept.
+pub(crate) fn save_template_draft(request: &TemplateDraftRequest) -> Result<Value, String> {
+    let folder = Path::new(request.folder.trim());
+    if !folder.is_absolute() {
+        return Err("Choose the folder to save the template in".into());
+    }
+    let metadata = std::fs::symlink_metadata(folder).map_err(|_| "This folder no longer exists. Choose it again.".to_owned())?;
+    if metadata.file_type().is_symlink() {
+        return Err("This folder is a link to another place. Choose the real folder instead.".into());
+    }
+    if !metadata.is_dir() {
+        return Err("Choose a folder, not a file".into());
+    }
+    for (name, text) in [(TEMPLATE_FILE, Some(&request.template)), (PROJECT_FILE, request.project.as_ref())] {
+        if text.is_some_and(|text| text.len() > MAX_DRAFT_FILE) {
+            return Err(format!("{name} is larger than {} KB. Make the template smaller, then save it again.", MAX_DRAFT_FILE / 1024));
+        }
+    }
+    // Only the files the builder itself makes beside these, by their fixed names.
+    for (name, text) in &request.files {
+        if !yougori_setup::draft::EXTRA_FILES.contains(&name.as_str()) {
+            return Err(format!("{} isn't a file the builder makes, so it isn't saved.", yougori_setup::text::shown(name)));
+        }
+        if text.len() > MAX_DRAFT_FILE {
+            return Err(format!("{name} is larger than {} KB.", MAX_DRAFT_FILE / 1024));
+        }
+    }
+    let template = lf(&request.template);
+    yougori_setup::format::format_version(&template).map_err(|problem| format!("The template could not be saved: {}", problem.message))?;
+    let name = template_name(&template).ok_or("The template has no name yet. Give it one, then save it again.")?;
+    let project = request.project.as_deref().map(lf);
+    if let Some(project) = &project {
+        yougori_setup::format::format_version(project).map_err(|problem| format!("The project file could not be saved: {}", problem.message))?;
+    }
+
+    // Only this draft's own files may already be here, as plain files, and only when they are
+    // this same template.
+    let mut present = Vec::new();
+    for entry in std::fs::read_dir(folder).map_err(|error| format!("Could not read this folder: {error}"))?.flatten() {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        let kind = std::fs::symlink_metadata(entry.path()).map_err(|error| format!("Could not read {entry_name}: {error}"))?;
+        if !DRAFT_FILES.contains(&entry_name.as_str()) && !yougori_setup::draft::EXTRA_FILES.contains(&entry_name.as_str()) {
+            return Err("This folder already has other files in it. Choose an empty folder, or the folder this template was saved in before.".into());
+        }
+        if kind.file_type().is_symlink() || !kind.is_file() {
+            return Err(format!("{entry_name} in this folder is a link or a folder, so it is not written over. Choose another folder."));
+        }
+        present.push(entry_name);
+    }
+    if !present.is_empty() {
+        let existing = std::fs::read(folder.join(TEMPLATE_FILE)).ok().filter(|bytes| bytes.len() <= MAX_DRAFT_FILE);
+        let same = existing.and_then(|bytes| template_name(&String::from_utf8_lossy(&bytes))).is_some_and(|existing| existing == name);
+        if !same {
+            return Err("This folder holds another template. Choose an empty folder, or the one this template was saved in before.".into());
+        }
+    }
+
+    let mut written = vec![TEMPLATE_FILE];
+    write_new(folder, TEMPLATE_FILE, &template)?;
+    if let Some(project) = &project {
+        write_new(folder, PROJECT_FILE, project)?;
+        written.push(PROJECT_FILE);
+    }
+    for (name, text) in &request.files {
+        write_new(folder, name, &lf(text))?;
+        written.push(yougori_setup::draft::EXTRA_FILES.iter().find(|known| **known == name.as_str()).copied().unwrap_or_default());
+    }
+    let kept_readme = present.iter().any(|file| file == README_FILE);
+    if !kept_readme {
+        let title = template.lines().find_map(|line| line.strip_prefix("title:")).map(|title| title.trim().trim_matches(|c| c == '"' || c == '\'').to_owned()).filter(|title| !title.is_empty()).unwrap_or_else(|| name.clone());
+        write_new(folder, README_FILE, &readme(&title, request.summary.as_deref()))?;
+        written.push(README_FILE);
+    }
+    let canonical = folder.canonicalize().map_err(|error| format!("Could not read this folder: {error}"))?;
+    Ok(json!({ "folder": plain_path(&canonical), "name": name, "written": written, "keptReadme": kept_readme }))
+}
+
+/// Saves the template the builder made into a folder chosen with the system's folder picker.
+#[tauri::command]
+pub async fn hub_save_template_draft(request: TemplateDraftRequest) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || save_template_draft(&request))
+        .await
+        .map_err(|error| format!("Saving the template stopped: {error}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +472,105 @@ mod tests {
         let names: Vec<_> = read_instances(root.path()).iter().map(|value| value["name"].as_str().unwrap().to_owned()).collect();
         assert_eq!(names, ["new", "old"]);
         assert!(read_instances(&root.path().join("missing")).is_empty());
+    }
+
+    fn draft(folder: &Path, template: &str) -> TemplateDraftRequest {
+        TemplateDraftRequest {
+            folder: folder.to_string_lossy().into_owned(),
+            template: template.into(),
+            project: Some("format_version: 2\r\nproject: office-desks\r\nresources: {}".into()),
+            summary: Some("Desks for the office team.".into()),
+            files: Default::default(),
+        }
+    }
+
+    const DESKS: &str = "format_version: 2\r\nname: office-desks\r\ntitle: \"Office desks\"\r\nversion: 0.1.0\r\n";
+
+    #[test]
+    fn a_draft_is_saved_into_an_empty_folder_with_lf_endings_and_a_readme() {
+        let root = tempfile::tempdir().unwrap();
+        let saved = save_template_draft(&draft(root.path(), DESKS)).unwrap();
+        assert_eq!(saved["written"], json!(["yougori-template.yaml", "yougori.yaml", "README.md"]));
+        assert_eq!(saved["name"], "office-desks");
+        assert_eq!(saved["keptReadme"], false);
+        let template = std::fs::read_to_string(root.path().join(TEMPLATE_FILE)).unwrap();
+        assert_eq!(template, "format_version: 2\nname: office-desks\ntitle: \"Office desks\"\nversion: 0.1.0\n");
+        assert!(!std::fs::read_to_string(root.path().join(PROJECT_FILE)).unwrap().contains('\r'));
+        let readme = std::fs::read_to_string(root.path().join(README_FILE)).unwrap();
+        assert!(readme.starts_with("# Office desks\n\nDesks for the office team.\n"));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 3, "no temporary file is left behind");
+    }
+
+    #[test]
+    fn saving_the_same_template_again_updates_it_and_keeps_an_edited_readme() {
+        let root = tempfile::tempdir().unwrap();
+        save_template_draft(&draft(root.path(), DESKS)).unwrap();
+        std::fs::write(root.path().join(README_FILE), "# Mine\n").unwrap();
+        let again = save_template_draft(&draft(root.path(), &DESKS.replace("0.1.0", "0.2.0"))).unwrap();
+        assert_eq!(again["keptReadme"], true);
+        assert_eq!(again["written"], json!(["yougori-template.yaml", "yougori.yaml"]));
+        assert!(std::fs::read_to_string(root.path().join(TEMPLATE_FILE)).unwrap().contains("version: 0.2.0"));
+        assert_eq!(std::fs::read_to_string(root.path().join(README_FILE)).unwrap(), "# Mine\n");
+    }
+
+    #[test]
+    fn a_folder_with_other_files_or_another_template_is_refused_and_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("notes.txt"), "keep me").unwrap();
+        assert!(save_template_draft(&draft(root.path(), DESKS)).unwrap_err().contains("other files"));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join(TEMPLATE_FILE), "format_version: 2\nname: someone-else\n").unwrap();
+        assert!(save_template_draft(&draft(other.path(), DESKS)).unwrap_err().contains("another template"));
+        assert!(std::fs::read_to_string(other.path().join(TEMPLATE_FILE)).unwrap().contains("someone-else"));
+
+        let readme_only = tempfile::tempdir().unwrap();
+        std::fs::write(readme_only.path().join(README_FILE), "# Someone's notes\n").unwrap();
+        assert!(save_template_draft(&draft(readme_only.path(), DESKS)).is_err());
+    }
+
+    #[test]
+    fn a_template_that_is_not_one_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(save_template_draft(&draft(root.path(), "format_version: 3\nname: x\n")).unwrap_err().contains("newer Yougori"));
+        assert!(save_template_draft(&draft(root.path(), "- a list\n- not a template\n")).is_err());
+        assert!(save_template_draft(&draft(root.path(), "format_version: 2\ntitle: No name\n")).unwrap_err().contains("no name"));
+        assert!(save_template_draft(&draft(root.path(), &format!("format_version: 2\nname: big\nnote: {}\n", "x".repeat(MAX_DRAFT_FILE)))).unwrap_err().contains("larger"));
+        assert!(save_template_draft(&draft(Path::new("relative/folder"), DESKS)).is_err());
+        assert!(save_template_draft(&draft(&root.path().join("missing"), DESKS)).is_err());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn links_are_never_followed() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("outside.yaml");
+        std::fs::write(&outside, "name: office-desks\n").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, root.path().join(TEMPLATE_FILE)).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, root.path().join(TEMPLATE_FILE)).is_ok();
+        if linked {
+            assert!(save_template_draft(&draft(root.path(), DESKS)).unwrap_err().contains("link"));
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "name: office-desks\n");
+        }
+        let folder_link = elsewhere.path().join("link-to-root");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(root.path(), &folder_link).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(root.path(), &folder_link).is_ok();
+        if linked {
+            assert!(save_template_draft(&draft(&folder_link, DESKS)).unwrap_err().contains("link"));
+        }
+    }
+
+    #[test]
+    fn the_template_name_is_read_from_its_top_level_line() {
+        assert_eq!(template_name("format_version: 2\nname: office-desks # the slug\n").as_deref(), Some("office-desks"));
+        assert_eq!(template_name("name: \"quoted\"\n").as_deref(), Some("quoted"));
+        assert_eq!(template_name("inputs:\n  - name: nested\n"), None);
+        assert_eq!(lf("a\r\nb\rc"), "a\nb\nc\n");
     }
 }

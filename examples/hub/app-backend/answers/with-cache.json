@@ -1,0 +1,9 @@
+{
+  "image": "ghcr.io/example/hello-app:1.0.0",
+  "health_path": "/",
+  "app_cpu": 1,
+  "app_memory_gb": 1,
+  "db_storage_gb": 20,
+  "cache": true,
+  "access": "none"
+}

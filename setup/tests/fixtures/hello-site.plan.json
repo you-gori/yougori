@@ -1,0 +1,215 @@
+{
+  "formatVersion": 2,
+  "instance": "hello",
+  "template": {
+    "name": "hello-site",
+    "version": "1.0.0",
+    "formatVersion": 1
+  },
+  "requires": {
+    "yougori": "1.1.0",
+    "gpu": "none",
+    "platforms": []
+  },
+  "capabilities": [],
+  "inputs": {
+    "access": "quick",
+    "site_title": "Hi there"
+  },
+  "secrets": {},
+  "bindings": {},
+  "resources": [
+    {
+      "id": "web",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "python",
+          "server.py"
+        ],
+        "cpu": 1.0,
+        "depends_on": [],
+        "environment": {
+          "SITE_TITLE": "Hi there"
+        },
+        "files": [
+          {
+            "source": "./site",
+            "target": "/app"
+          }
+        ],
+        "gpu": false,
+        "health": {
+          "path": "/",
+          "port": 8080
+        },
+        "image": "python:3.12-slim",
+        "internet": true,
+        "memory": "1GB",
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8080
+        ],
+        "restart": "always",
+        "secrets": {},
+        "storage": "6GB",
+        "tools": [
+          {
+            "folder": "tools/httpie",
+            "name": "httpie",
+            "signin": false,
+            "source": "bundled",
+            "spec": "tools/httpie",
+            "version": "1.0.0"
+          }
+        ],
+        "type": "container",
+        "volumes": [],
+        "working_dir": "/app"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "public_web",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "web"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "quick",
+        "port": 8080,
+        "target": {
+          "resource": "web"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    }
+  ],
+  "order": [
+    "web",
+    "public_web"
+  ],
+  "steps": [
+    {
+      "title": "Check the site from inside its sandbox",
+      "detail": "Opens a shell in the website's sandbox. Try http localhost:8080, then type exit.",
+      "command": "yougori terminal {{env.web}}"
+    }
+  ],
+  "outputs": [
+    {
+      "label": "Website",
+      "value": "{{public.web}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [],
+  "review": {
+    "creates": [
+      {
+        "id": "web",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "public_web",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "python:3.12-slim"
+      },
+      {
+        "kind": "installer",
+        "name": "https://pypi.org",
+        "from": "httpie"
+      }
+    ],
+    "permissions": [],
+    "costs": [],
+    "warnings": [
+      "Makes web:8080 reachable from the internet.",
+      "Installs software from https://pypi.org."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 1.0,
+      "memoryGb": 1.0,
+      "storageGb": 6.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "site_title",
+        "question": "What should the page say?",
+        "answer": "Hi there",
+        "secret": false
+      },
+      {
+        "id": "access",
+        "question": "Where should the website be reachable?",
+        "answer": "quick",
+        "secret": false
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "web",
+        "port": 8080,
+        "access": "quick"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [],
+    "installs": [
+      {
+        "resource": "web",
+        "tool": "httpie",
+        "commands": [
+          "python3 -m pip install --user --disable-pip-version-check httpie==3.2.4"
+        ],
+        "check": "http --version"
+      }
+    ]
+  },
+  "digest": "ffb1ff641f3e7e2ca8d4afc017f624b0b4c8299bd83c4505cbd1063e06f2aaf6"
+}

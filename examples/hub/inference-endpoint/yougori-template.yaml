@@ -1,0 +1,119 @@
+format_version: 2
+kind: template
+name: inference-endpoint
+title: Inference Endpoint
+subtitle: One open model behind an OpenAI-compatible endpoint with your own key.
+summary: Serve a Hugging Face model with vLLM on this computer's NVIDIA GPU, protected by your API key, on this computer only or through a quick link or your own domain.
+version: 1.0.0
+license: MIT
+topics: [ai, models, api, gpu, vllm]
+aliases: [inference endpoint, vllm, model endpoint, openai compatible endpoint, llm api]
+changelog: First version. Serves one Hugging Face model with the vLLM build Yougori pins, behind your API key.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64]
+  gpu: required
+
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: web.health, selection: optional}
+  - {id: web.private, selection: default}
+  - {id: web.quick_link, selection: optional}
+  - {id: web.domain, selection: optional}
+  - {id: data.volumes, selection: default}
+  - {id: run.service, selection: required}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: model
+    question: Which Hugging Face model should it serve?
+    hint: OWNER/MODEL with safetensors weights and an architecture vLLM supports, such as Qwen/Qwen3-8B.
+    type: text
+    pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$'
+    group: ai_models
+  - id: api_key
+    question: Choose the API key apps must send
+    hint: At least 32 characters. Apps send it as a bearer token; keep it out of source code.
+    type: secret
+    min_length: 32
+    group: website_api
+  - id: hf_token
+    question: Hugging Face token (only for gated or private models)
+    type: secret
+    required: false
+    group: ai_models
+  - id: max_model_len
+    question: Longest conversation, in tokens
+    hint: Longer contexts need more GPU memory.
+    type: choice
+    group: ai_models
+    choices:
+      - {value: "4096", label: "4,096"}
+      - {value: "8192", label: "8,192"}
+      - {value: "16384", label: "16,384"}
+      - {value: "32768", label: "32,768"}
+    default: "8192"
+  - id: max_concurrent
+    question: How many requests may run at once?
+    type: choice
+    group: grid_workers
+    choices:
+      - {value: "8", label: "8"}
+      - {value: "16", label: "16"}
+      - {value: "32", label: "32"}
+      - {value: "64", label: "64"}
+    default: "16"
+  - id: cpu
+    question: Processor cores
+    type: number
+    min: 2
+    max: 64
+    default: 8
+    group: grid_workers
+  - id: memory_gb
+    question: Memory, in GB
+    type: number
+    min: 8
+    max: 512
+    default: 32
+    group: grid_workers
+  - id: storage_gb
+    question: Disk for the model files, in whole GB
+    hint: Room for the model's weights plus the server image.
+    type: number
+    min: 30
+    max: 4096
+    default: 100
+    group: files_data
+  - id: access
+    question: Who can reach the endpoint?
+    type: choice
+    group: website_api
+    choices:
+      - {value: none, label: "Only this computer"}
+      - {value: quick, label: "Apps anywhere, through a quick link", hint: "A free HTTPS link. It can change after a restart."}
+      - {value: domain, label: "Apps anywhere, through my own domain", hint: "A domain you saved with yougori domain add."}
+    default: none
+  - id: domain
+    question: Which saved domain?
+    type: domain
+    group: website_api
+    when: {access: domain}
+
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [publications, storage, logs]
+
+steps:
+  - title: Watch it load
+    detail: The first start downloads the model and can take a while. The endpoint is ready once its health check answers.
+    command: yougori logs {{env.server}}
+  - title: Call it
+    detail: "Send POST /v1/chat/completions to the address below with Authorization: Bearer YOUR_KEY and the model name you chose."
+
+outputs:
+  - {key: address, label: Endpoint address, value: "{{outputs.endpoint.url}}"}
+  - {key: sandbox, label: Sandbox, value: "{{outputs.server.name}}"}

@@ -1,0 +1,316 @@
+{
+  "schema_version": 3,
+  "attempt": {
+    "bench": "BENCH-01",
+    "variant": "load-8",
+    "execution": "exe-bench-run-1",
+    "operation": "op-golden-1",
+    "role": {
+      "kind": "initial"
+    },
+    "burst": 2,
+    "deadline_nanos": {
+      "status": "measured",
+      "value": 2000000000
+    }
+  },
+  "scenario": {
+    "clock": "serving"
+  },
+  "substrate": {
+    "kind": "fake_time_controlled"
+  },
+  "build": {
+    "plan": "3a4035a17174718199848c725feabd3f96ae9b6e2c3bf10b9924f8d8cde580f8",
+    "runner_build": "28c9f5949ea0b464adfca1d3118c8cef89a3fdf61fc4b0e11d35247ab0bc9595",
+    "runner_version": "1.1.2"
+  },
+  "execution_category": "shared_kernel_gpu_runtime",
+  "model": {
+    "status": "measured",
+    "value": {
+      "revision": {
+        "kind": "commit",
+        "hash": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "licenses": [
+        "Apache-2.0"
+      ],
+      "weights": "b3e191d00f5e149690f87a50ace90b532e9f6e9b268fb32c6ad700af4b25e6c4",
+      "tokenizer": "6c2b7ed87ae542b9f915e278650d339000edc0e9544e4af2d0f0361c2d8434bc",
+      "chat_template": "1b47fcd12f15c58fa305f2b65d5cf8db010d9c55b32c95c274c55eb419a76e02"
+    }
+  },
+  "precision": {
+    "status": "measured",
+    "value": {
+      "weight_dtype": "bf16",
+      "quantization": "none",
+      "kv_cache_dtype": "bf16"
+    }
+  },
+  "engine": {
+    "status": "measured",
+    "value": {
+      "name": "vllm",
+      "version": "0.29.0"
+    }
+  },
+  "host": {
+    "os": "linux",
+    "os_version": "6.6.87.2-microsoft-standard-WSL2",
+    "cpu": {
+      "model": "amd-ryzen-9-7950x",
+      "logical_cores": 32
+    },
+    "host_memory_bytes": 68719476736,
+    "gpus": {
+      "status": "measured",
+      "value": [
+        {
+          "model": "nvidia-geforce-rtx-4090",
+          "memory_bytes": 25757220864
+        }
+      ]
+    },
+    "gpu_driver": {
+      "status": "measured",
+      "value": "560.94"
+    },
+    "gpu_power_clock": {
+      "status": "not_measured",
+      "reason": "instrument_unavailable"
+    },
+    "power_source": {
+      "status": "measured",
+      "value": "ac"
+    },
+    "displays_on_gpu": {
+      "status": "measured",
+      "value": 1
+    }
+  },
+  "workload": {
+    "status": "measured",
+    "value": {
+      "fixture": {
+        "id": "code-fixture-1",
+        "digest": "74d4f3c06f26dba69b749397c634339d3d2d7c76186ee7172980d32b8372a2d4",
+        "disclosure": "permitted_synthetic"
+      },
+      "family": "tool",
+      "input_tokens": 1024,
+      "max_output_tokens": 256,
+      "sampling": {
+        "temperature": "0.5",
+        "top_p": {
+          "status": "measured",
+          "value": "0.75"
+        },
+        "top_k": {
+          "status": "not_measured",
+          "reason": "unsupported_by_backend"
+        },
+        "seed": {
+          "status": "measured",
+          "value": 42
+        }
+      },
+      "tool_schema": {
+        "status": "measured",
+        "value": {
+          "id": "tool-schema-1",
+          "digest": "c16844f58fc98dfce6c86e3e110b05058fb8222018594fbcf47ce27eacea8f90",
+          "disclosure": "approved_fixture"
+        }
+      },
+      "paired": true,
+      "cold_test_nonce": {
+        "kind": "not_used"
+      }
+    }
+  },
+  "client": {
+    "name": "yougori-bench-client",
+    "version": "1.1.2",
+    "region": "local",
+    "placement": {
+      "kind": "same_host"
+    }
+  },
+  "load": {
+    "concurrent_requests": 8,
+    "arrival": {
+      "kind": "sequential"
+    }
+  },
+  "state": {
+    "status": "measured",
+    "value": {
+      "temperature": "warm",
+      "model_at_arrival": "asleep",
+      "cache_tier": "host_memory",
+      "prefill": "fresh",
+      "cold_provenance": "not_cold"
+    }
+  },
+  "launch": {
+    "image": "4a3127cac0bd33eabef7059f1148194afae094a1f9413a847e32c05956e905a0",
+    "backend": "wsl2-cuda"
+  },
+  "price": {
+    "status": "measured",
+    "value": {
+      "usd_per_unit": "0.5",
+      "unit": "gpu_hour",
+      "source": "owner-electricity-rate",
+      "provenance": {
+        "kind": "owner_declared_rate"
+      },
+      "observed_at": "2026-10-27T00:00:00Z"
+    }
+  },
+  "measurements": {
+    "output_tokens": {
+      "status": "measured",
+      "value": 3
+    },
+    "prefill_tokens_per_second": {
+      "status": "measured",
+      "value": "2048.0"
+    },
+    "aggregate_decode_tokens_per_second": {
+      "status": "measured",
+      "value": "320.0"
+    },
+    "speculative": {
+      "status": "not_measured",
+      "reason": "not_applicable"
+    },
+    "peak_gpu_memory_bytes": {
+      "status": "measured",
+      "value": 21474836480
+    },
+    "retained_gpu_memory_bytes": {
+      "status": "measured",
+      "value": 17179869184
+    },
+    "peak_host_memory_bytes": {
+      "status": "not_measured",
+      "reason": "not_recorded"
+    },
+    "retained_host_memory_bytes": {
+      "status": "not_measured",
+      "reason": "not_recorded"
+    },
+    "peak_pinned_host_memory_bytes": {
+      "status": "not_measured",
+      "reason": "not_recorded"
+    },
+    "transferred_bytes": {
+      "status": "not_measured",
+      "reason": "not_recorded"
+    },
+    "storage_read_bytes": {
+      "status": "not_measured",
+      "reason": "not_recorded"
+    },
+    "energy_joules": {
+      "status": "not_measured",
+      "reason": "instrument_unavailable"
+    },
+    "offload": {
+      "status": "measured",
+      "value": "no_offload"
+    },
+    "first_run": {
+      "status": "not_measured",
+      "reason": "not_applicable"
+    },
+    "owner_return": {
+      "status": "not_measured",
+      "reason": "not_applicable"
+    },
+    "reasoning": {
+      "status": "not_measured",
+      "reason": "not_applicable"
+    }
+  },
+  "events": [
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 0,
+      "at_nanos": 5000000000,
+      "event": {
+        "kind": "request_accepted"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 1,
+      "at_nanos": 5001000000,
+      "event": {
+        "kind": "wake_started"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 2,
+      "at_nanos": 5002000000,
+      "event": {
+        "kind": "request_dequeued"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 3,
+      "at_nanos": 5302000000,
+      "event": {
+        "kind": "wake_completed"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 4,
+      "at_nanos": 5342000000,
+      "event": {
+        "kind": "token_emitted"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 5,
+      "at_nanos": 5362000000,
+      "event": {
+        "kind": "token_emitted"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 6,
+      "at_nanos": 5387000000,
+      "event": {
+        "kind": "token_emitted"
+      }
+    },
+    {
+      "operation": "op-golden-1",
+      "clock": "host-monotonic",
+      "sequence": 7,
+      "at_nanos": 5388000000,
+      "event": {
+        "kind": "request_completed"
+      }
+    }
+  ],
+  "outcome": {
+    "result": "succeeded"
+  }
+}

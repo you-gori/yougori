@@ -1,0 +1,185 @@
+{
+  "aliases": [
+    "model collection",
+    "several models",
+    "multiple models",
+    "model library",
+    "local models"
+  ],
+  "capabilities": [
+    {
+      "id": "models.local",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "ai_models",
+      "id": "model_one",
+      "question": "First model",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "quant_one",
+      "question": "Size of the first model (GGUF only)",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "model_two",
+      "question": "Second model",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "quant_two",
+      "question": "Size of the second model (GGUF only)",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "third",
+      "question": "Add a third model?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "ai_models",
+      "id": "model_three",
+      "question": "Third model",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "quant_three",
+      "question": "Size of the third model (GGUF only)",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "grid_workers",
+      "id": "gpu",
+      "question": "Should the models use this computer's GPU?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory for each model, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    }
+  ],
+  "pcAccess": [],
+  "public": [],
+  "requires": {
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "first",
+      "kind": "model_service",
+      "summary": {
+        "gpu": "{{inputs.gpu}}",
+        "memory_gb": "{{inputs.memory_gb}}",
+        "model": "{{inputs.model_one}}",
+        "quantization": "{{inputs.quant_one}}"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "second",
+      "kind": "model_service",
+      "summary": {
+        "gpu": "{{inputs.gpu}}",
+        "memory_gb": "{{inputs.memory_gb}}",
+        "model": "{{inputs.model_two}}",
+        "quantization": "{{inputs.quant_two}}"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "third",
+      "kind": "model_service",
+      "summary": {
+        "gpu": "{{inputs.gpu}}",
+        "memory_gb": "{{inputs.memory_gb}}",
+        "model": "{{inputs.model_three}}",
+        "quantization": "{{inputs.quant_three}}"
+      },
+      "when": [
+        "third is one of [\"yes\"]"
+      ]
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Keep one model ready",
+    "Free the GPU sooner",
+    "See each model's address and key"
+  ],
+  "subtitle": "Several open models on this computer, taking turns on its GPU.",
+  "tools": [],
+  "totals": {
+    "cpu": 0,
+    "environments": 0,
+    "gpu": "optional",
+    "memoryGb": 0,
+    "storageGb": 0
+  },
+  "warnings": [
+    "Uses an NVIDIA GPU when this computer has one."
+  ]
+}

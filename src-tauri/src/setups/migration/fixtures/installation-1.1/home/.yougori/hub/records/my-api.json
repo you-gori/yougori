@@ -1,0 +1,39 @@
+{
+  "instance": "my-api",
+  "origin": "hub",
+  "item": "example/my-api",
+  "template": "my-api",
+  "title": "My API",
+  "version": "1.6.0",
+  "digest": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+  "verified": false,
+  "project": "yougori.yaml",
+  "answers": {
+    "site_title": "My API"
+  },
+  "secrets": [
+    "admin_password"
+  ],
+  "allowPcAccess": false,
+  "withoutGpu": false,
+  "environments": {
+    "web": "env-fixture-my-api-web"
+  },
+  "create": {
+    "status": ""
+  },
+  "tools": {},
+  "signins": {},
+  "public": [],
+  "steps": [],
+  "outputs": [],
+  "files": {},
+  "review": null,
+  "counted": false,
+  "phase": "ready",
+  "names": {},
+  "keys": [],
+  "projectKeys": [],
+  "createdAt": 1760000500,
+  "updatedAt": 1760000560
+}

@@ -1,0 +1,487 @@
+{
+  "aliases": [
+    "my api",
+    "model api",
+    "sell models",
+    "api reseller",
+    "ai api website"
+  ],
+  "capabilities": [
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.health",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.private_connections",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "tools.builtin",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "tools.provider_access",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [
+    {
+      "from": "web",
+      "resource": "web_to_models",
+      "to": "models"
+    }
+  ],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 4,
+      "gpu": true,
+      "image": "python:3.12-slim",
+      "internet": true,
+      "memoryGb": 8,
+      "name": "models",
+      "pcAccess": [],
+      "ports": [],
+      "secretSources": [
+        "ANTHROPIC_API_KEY from the question anthropic_key",
+        "BRIDGE_KEY from the question bridge_key",
+        "GEMINI_API_KEY from the question gemini_key",
+        "KILO_API_KEY from the question kilo_key",
+        "OPENAI_API_KEY from the question openai_key",
+        "OPENCODE_API_KEY from the question opencode_key"
+      ],
+      "secrets": [
+        "ANTHROPIC_API_KEY",
+        "BRIDGE_KEY",
+        "GEMINI_API_KEY",
+        "KILO_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENCODE_API_KEY"
+      ],
+      "storageGb": 60,
+      "tools": [
+        "codex",
+        "gemini",
+        "ollama",
+        "opencode",
+        "kilo"
+      ],
+      "type": "container",
+      "writablePcFolders": false
+    },
+    {
+      "cpu": 2,
+      "gpu": false,
+      "image": "python:3.12-slim",
+      "internet": true,
+      "memoryGb": 2,
+      "name": "web",
+      "pcAccess": [],
+      "ports": [
+        3000
+      ],
+      "secretSources": [
+        "ADMIN_BOOTSTRAP_PASSWORD from the question admin_password",
+        "BRIDGE_KEY from the question bridge_key"
+      ],
+      "secrets": [
+        "ADMIN_BOOTSTRAP_PASSWORD",
+        "BRIDGE_KEY"
+      ],
+      "storageGb": 10,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "people_access",
+      "id": "admin_account",
+      "question": "Set up the website admin account",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_email",
+      "question": "Admin sign-in email",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_password",
+      "question": "Create the admin password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "providers",
+      "question": "Which tools and model providers do you want to add?",
+      "required": true,
+      "secret": false,
+      "type": "multichoice"
+    },
+    {
+      "group": "ai_models",
+      "id": "codex_access",
+      "question": "How do you want to connect Codex?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "codex_signin_source",
+      "question": "How do you want to sign in to Codex?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "openai_key",
+      "question": "Enter your OpenAI API key",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "anthropic_key",
+      "question": "Enter your Anthropic API key",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_access",
+      "question": "How do you want to connect Gemini?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_signin_source",
+      "question": "How do you want to sign in to Gemini?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_key",
+      "question": "Enter your Google AI Studio API key",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_scope",
+      "question": "Which models do you want from OpenCode?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_access",
+      "question": "How do you want to connect paid access for OpenCode?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_signin_source",
+      "question": "How do you want to sign in to OpenCode?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "opencode_key",
+      "question": "Enter your OpenCode gateway API key",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_scope",
+      "question": "Which models do you want from Kilo Code?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_access",
+      "question": "How do you want to connect paid access for Kilo Code?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_signin_source",
+      "question": "How do you want to sign in to Kilo Code?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "kilo_key",
+      "question": "Enter your Kilo Code gateway API key",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "website_api",
+      "id": "bridge_key",
+      "question": "Choose a private bridge secret",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "website_api",
+      "id": "site_name",
+      "question": "What should the website be called?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "web_access",
+      "question": "Who can open your website?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "web_domain",
+      "question": "Which domain should the website use?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "web",
+      "input": "web_access",
+      "port": 3000,
+      "resource": "site"
+    }
+  ],
+  "requires": {
+    "gpu": "optional",
+    "platforms": [],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "models",
+      "kind": "environment",
+      "summary": {
+        "command": "python, -u, /app/start-models.py",
+        "cpu": 4,
+        "gpu": true,
+        "image": "python:3.12-slim",
+        "memory": "8GB",
+        "restart": "unless-stopped",
+        "secrets": "BRIDGE_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, KILO_API_KEY, OPENCODE_API_KEY",
+        "storage": "60GB",
+        "type": "container"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "web"
+      ],
+      "id": "site",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.web_access}}",
+        "domain": "{{inputs.web_domain}}",
+        "port": 3000,
+        "target": "resource:web"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "web",
+      "kind": "environment",
+      "summary": {
+        "command": "python, /app/site/server.py",
+        "cpu": 2,
+        "image": "python:3.12-slim",
+        "memory": "2GB",
+        "ports": "3000",
+        "restart": "unless-stopped",
+        "secrets": "ADMIN_BOOTSTRAP_PASSWORD, BRIDGE_KEY",
+        "storage": "10GB",
+        "type": "container",
+        "working_dir": "/"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "models",
+        "web"
+      ],
+      "id": "web_to_models",
+      "kind": "connection",
+      "summary": {
+        "direction": "one_way",
+        "from": "resource:web",
+        "ports": "8080, 8081, 11434",
+        "to": "resource:models"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Sign in to the website as admin",
+    "Attach the wallet that receives the payments",
+    "Pull a local model",
+    "Choose free models in OpenCode",
+    "Choose free models in Kilo",
+    "Check the model prices"
+  ],
+  "subtitle": "Your model API in two sandboxes: one website and one for all your models.",
+  "tools": [
+    {
+      "environment": "models",
+      "name": "codex",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "codex_signin_source",
+      "source": "built-in",
+      "when": [
+        "providers contains any of [\"codex\"]",
+        "codex_access is one of [\"subscription\",\"both\"]"
+      ]
+    },
+    {
+      "environment": "models",
+      "name": "gemini",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "gemini_signin_source",
+      "source": "built-in",
+      "when": [
+        "providers contains any of [\"gemini\"]",
+        "gemini_access is one of [\"subscription\",\"both\"]"
+      ]
+    },
+    {
+      "environment": "models",
+      "name": "ollama",
+      "source": "built-in",
+      "when": [
+        "providers contains any of [\"ollama\"]"
+      ]
+    },
+    {
+      "environment": "models",
+      "name": "opencode",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "opencode_signin_source",
+      "signinWhen": [
+        "opencode_scope is one of [\"all\"]",
+        "opencode_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "providers contains any of [\"opencode\"]"
+      ]
+    },
+    {
+      "environment": "models",
+      "name": "kilo",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "kilo_signin_source",
+      "signinWhen": [
+        "kilo_scope is one of [\"all\"]",
+        "kilo_access is one of [\"subscription\",\"both\"]"
+      ],
+      "source": "built-in",
+      "when": [
+        "providers contains any of [\"kilo\"]"
+      ]
+    }
+  ],
+  "totals": {
+    "cpu": 6,
+    "environments": 2,
+    "gpu": "optional",
+    "memoryGb": 10,
+    "storageGb": 70
+  },
+  "warnings": [
+    "Makes web:3000 reachable from the internet.",
+    "May copy this computer's sign-in for codex into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for gemini into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for opencode into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for kilo into its sandbox, only if you choose so during setup.",
+    "Uses an NVIDIA GPU when this computer has one."
+  ]
+}

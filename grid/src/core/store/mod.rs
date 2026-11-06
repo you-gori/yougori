@@ -209,12 +209,19 @@ impl Store {
     /// changes no row, no version and no answer the realm gives, and
     /// `taking_a_copy_leaves_the_realm_holding_exactly_what_it_held` is the test that says which
     /// of those two is claimed.
-    pub fn copy_of(from: &Path, to: &Path) -> Result<(), String> {
+    ///
+    /// The realm's job artifacts travel with the copy, into the folder beside it, each checked
+    /// against its checksum where it landed (`core::jobs::carry_artifacts`); what comes back is
+    /// what travelled. A copy that cannot carry one of them is removed rather than kept.
+    pub fn copy_of(from: &Path, to: &Path) -> Result<super::jobs::Carried, String> {
         if !from.exists() {
             return Err("There is no grid on this computer by that name".into());
         }
         if to.exists() {
             return Err("There is already a file where that copy would go".into());
+        }
+        if super::jobs::artifact_folder(to).exists() {
+            return Err("There is already a folder where that copy's job artifacts would go".into());
         }
         if let Some(folder) = to.parent() {
             if !folder.as_os_str().is_empty() {
@@ -223,10 +230,10 @@ impl Store {
         }
         room::enough_for(to, std::fs::metadata(from).map(|about| about.len()).unwrap_or(0), "for a copy of this grid")?;
         let connection = Connection::open(from).map_err(|error| trouble("open the grid", error))?;
-        connection
-            .execute("VACUUM INTO ?1", params![to.to_string_lossy()])
-            .map(|_| ())
-            .map_err(|error| trouble("take a copy of the grid", error))
+        connection.execute("VACUUM INTO ?1", params![to.to_string_lossy()]).map_err(|error| trouble("take a copy of the grid", error))?;
+        super::jobs::carry_artifacts(from, to).inspect_err(|_| {
+            let _ = std::fs::remove_file(to);
+        })
     }
 
     fn connect(path: &Path) -> Result<Store, String> {
@@ -275,6 +282,12 @@ impl Store {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The one connection, for `core::jobs`, which keeps its own tables in this database and writes
+    /// a job attempt's reservation into the realm's ledger in the same change as the attempt.
+    pub(in crate::core) fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     /// The version this database is at.
@@ -3861,9 +3874,17 @@ impl Store {
     /// survives a crash and a bad write, and it does not survive a bad migration, because it would
     /// be migrated the same way. It is also plain readable SQLite, exactly as the realm's own file
     /// is, so wherever it is written is as sensitive as the realm's folder.
+    ///
+    /// The realm's job artifacts are kept beside it rather than in it, so they travel with the copy
+    /// into the folder beside the copy, each checked against its checksum where it landed. A copy
+    /// that cannot carry one of them is removed rather than kept, because its records would name
+    /// files that are not there.
     pub fn copy_to(&self, path: &Path) -> Result<(), String> {
         if path.exists() {
             return Err("There is already a file where that copy would go".into());
+        }
+        if super::jobs::artifact_folder(path).exists() {
+            return Err("There is already a folder where that copy's job artifacts would go".into());
         }
         if let Some(folder) = path.parent() {
             if !folder.as_os_str().is_empty() {
@@ -3874,10 +3895,10 @@ impl Store {
         // `upgrade_with_a_copy` is the only way back out of a version that has none. Half a copy
         // is worse than no copy, because it looks like one.
         room::enough_for(path, std::fs::metadata(&self.path).map(|about| about.len()).unwrap_or(0), "for a copy of this grid")?;
-        self.connection
-            .execute("VACUUM INTO ?1", params![path.to_string_lossy()])
-            .map(|_| ())
-            .map_err(|error| trouble("take a copy of the grid", error))
+        self.connection.execute("VACUUM INTO ?1", params![path.to_string_lossy()]).map_err(|error| trouble("take a copy of the grid", error))?;
+        super::jobs::carry_artifacts(&self.path, path).map(|_| ()).inspect_err(|_| {
+            let _ = std::fs::remove_file(path);
+        })
     }
 
     // ---- What a bridge's import created ----
@@ -4906,6 +4927,11 @@ pub struct Backup {
     #[serde(default)]
     pub record_seal: String,
     pub record: Record,
+    /// What this backup does not carry, said in words whenever there is anything to say, so that a
+    /// realm restored from it is not taken for the whole realm. A statement about the record rather
+    /// than part of it, so it is not sealed, and absent from the file when there is nothing to say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left_out: Vec<String>,
 }
 
 fn first() -> u32 {
@@ -4950,6 +4976,7 @@ pub fn backup(record: &Record, reference: &KeyReference, key: &str, now: i64) ->
         key_version: reference.version,
         record_seal: seal_of(now, &reference.id, reference.version, record, key),
         record: record.clone(),
+        left_out: Vec::new(),
     }
 }
 

@@ -106,6 +106,8 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
     try {
       const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined, folder || undefined, backend, memory ? Number(memory) : undefined)
       setSelected(result.id); setView(result.sourceOnly ? "network" : "chat")
+      // A folder served through the engine's catalog says what the import did; the folder itself is never written.
+      if (result.catalog?.state === "catalog") toastManager.add({ title: result.catalog.copied ? "Model files published in the catalog" : "Model files already in the catalog", description: `${result.catalog.files ?? 0} files, ${((result.catalog.bytes ?? 0) / 1e9).toFixed(2)} GB${result.catalog.copied ? ", copied once from the folder, which stays as it was." : ", nothing copied again."}` })
       if (sharing !== "off") {
         try { await marketApi.share(result.id, sharing, closedWeights); setView("network") }
         catch (reason) { toastManager.add({ title: "Model is running; sharing needs attention", description: String(reason), type: "error" }); setError(String(reason)); setView("network") }

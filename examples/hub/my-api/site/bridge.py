@@ -69,7 +69,7 @@ def free_model(item):
 
 
 def catalogue(mode):
-    models, status = [], {}
+    models, status, throttled = [], {}, []
     names = ("openai", "anthropic", "google") if mode == "paid" else ("kilo", "opencode")
     for provider in names:
         if not selected({"openai": "codex", "anthropic": "claude", "google": "gemini"}.get(provider, provider)):
@@ -120,9 +120,12 @@ def catalogue(mode):
         except Failure as error:
             models = [model for model in models if model["provider"] != provider]
             status[provider] = str(error)
+            if error.code == "rate_limit":
+                # Throttled, not gone: the website keeps this provider's last models listed.
+                throttled.append(provider)
     if mode == "free" and selected("opencode") and os.environ.get("OPENCODE_SCOPE", "free") != "all":
         status["opencode"] = "Free chat models require the OpenCode client; use its terminal. Not exported as an API."
-    return {"object": "list", "data": models, "status": status}
+    return {"object": "list", "data": models, "status": status, "throttled": throttled}
 
 
 def completion(mode, data):
@@ -133,9 +136,9 @@ def completion(mode, data):
         raise Failure(400, "Send a model and text messages.")
     model = next((item for item in catalogue(mode)["data"] if item["id"] == data.get("model")), None)
     if model is None:
-        raise Failure(404, "Model is unavailable; refresh the catalogue.")
+        raise Failure(404, "Model is unavailable; refresh the catalogue.", "model_unavailable")
     if data.get("_yougori_free_only") and not model["free"]:
-        raise Failure(409, "This model is no longer free. Refresh the catalogue and set a selling price.")
+        raise Failure(409, "This model is no longer free. Refresh the catalogue and set a selling price.", "no_longer_free")
     provider, name = model["provider"], model["upstream"]
     # Rechecking the free catalogue before every call prevents a formerly-free model
     # from silently becoming a paid fallback. No provider fallback is performed.
@@ -222,6 +225,6 @@ if __name__ == "__main__":
     if len(os.environ.get("BRIDGE_KEY", "")) < 16:
         raise SystemExit("Set BRIDGE_KEY to at least 16 characters through a Hub secret.")
     exit_on_stop()
-    server = Server(("0.0.0.0", 8080), Handler)
+    server = Server(("0.0.0.0", int(os.environ.get("BRIDGE_PORT", "8080"))), Handler)
     server.mode = os.environ.get("BRIDGE_MODE", "paid")
     server.serve_forever()

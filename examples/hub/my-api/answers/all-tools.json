@@ -1,0 +1,13 @@
+{
+  "admin_account": "create",
+  "admin_email": "owner@example.com",
+  "providers": "codex,claude,gemini,opencode,kilo,ollama",
+  "codex_access": "subscription",
+  "codex_signin_source": "computer",
+  "gemini_access": "both",
+  "gemini_signin_source": "new",
+  "opencode_scope": "free",
+  "kilo_scope": "free",
+  "site_name": "Example Models",
+  "web_access": "quick"
+}

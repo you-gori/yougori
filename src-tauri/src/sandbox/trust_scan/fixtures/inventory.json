@@ -1,0 +1,23 @@
+[
+  {
+    "component": "runtime",
+    "version": "fixture-runtime-0.1.0",
+    "content_key": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "complete_for": ["crates_io"],
+    "packages": [
+      {"ecosystem": "crates_io", "name": "smallvec", "version": "1.6.0"},
+      {"ecosystem": "crates_io", "name": "fixture-codec", "version": "2.1.0"},
+      {"ecosystem": "crates_io", "name": "serde", "version": "1.0.210"}
+    ]
+  },
+  {
+    "component": "guest_image",
+    "version": "fixture-image-2026.10",
+    "content_key": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "complete_for": ["debian"],
+    "packages": [
+      {"ecosystem": "debian", "name": "libssl3", "version": "3.0.15-1~deb12u1"},
+      {"ecosystem": "debian", "name": "zlib1g", "version": "1:1.2.13.dfsg-1"}
+    ]
+  }
+]

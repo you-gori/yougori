@@ -1,0 +1,17 @@
+{
+  "mode": "create",
+  "grid_name": "Example Team",
+  "coordinator_address": "192.168.1.20",
+  "reach": "lan",
+  "admin_username": "alex.admin",
+  "admin_name": "Alex Example",
+  "require_two_step": true,
+  "first_credential": true,
+  "credential_name": "example-api",
+  "credential_kind": "header",
+  "credential_field": "X-Api-Key",
+  "credential_destination": "https://api.example.com/v1",
+  "rule_decision": "ask",
+  "rule_methods": "get,post",
+  "rule_path": "/v1/reports"
+}

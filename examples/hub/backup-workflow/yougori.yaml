@@ -1,0 +1,70 @@
+format_version: 2
+project: backup-workflow
+
+resources:
+  # Your app's data. Everything under data_path in the app sandbox lives here, and this is what
+  # is backed up. The backup fields are read by the engine's scheduler, which keeps the times in
+  # UTC and works them out in the zone named below.
+  app-data:
+    kind: volume
+    spec:
+      backup_schedule: "{{inputs.backup_schedule}}"
+      backup_timezone: "{{inputs.backup_timezone}}"
+      backup_keep: "{{inputs.backup_keep}}"
+      backup_consistency: "{{inputs.backup_consistency}}"
+      backup_missed: "{{inputs.backup_missed}}"
+      backup_overlap: "{{inputs.backup_overlap}}"
+      backup_retries: "{{inputs.backup_retries}}"
+      # The volume is read and restored through the small sandbox below, never through the app:
+      # with backup_consistency: stop the app is stopped while its data is copied.
+      backup_through: {resource: backup}
+
+  # Your app, with its data on the volume.
+  app:
+    kind: environment
+    spec:
+      type: container
+      image: "{{inputs.image}}"
+      cpu: "{{inputs.app_cpu}}"
+      memory: "{{inputs.app_memory_gb}}"
+      storage: 10
+      ports: [8080]
+      environment:
+        PORT: "8080"
+        DATA_PATH: "{{inputs.data_path}}"
+      volumes:
+        - {source: app-data, target: "{{inputs.data_path}}"}
+      restart: always
+      health:
+        port: 8080
+        path: "{{inputs.health_path}}"
+        wait_seconds: 180
+
+  # A small sandbox that mounts the same volume and does nothing else. Yougori reads the backup
+  # out of it and puts a restore back through it, so the app can be stopped for a quiet copy
+  # while this one stays up. It runs no service and is not published.
+  backup:
+    kind: environment
+    spec:
+      type: container
+      image: docker.io/library/alpine:3.21
+      cpu: 0.5
+      memory: 0.5
+      storage: 2
+      command: [sh, -c, "while true; do sleep 3600; done"]
+      volumes:
+        - {source: app-data, target: "{{inputs.data_path}}"}
+      restart: always
+      internet: false
+
+  web:
+    kind: service_publication
+    when: {access: [quick, domain]}
+    spec:
+      target: {resource: app}
+      port: 8080
+      access: "{{inputs.access}}"
+      domain: "{{inputs.domain}}"
+      health:
+        path: "{{inputs.health_path}}"
+        expected_status: 200

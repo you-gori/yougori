@@ -60,7 +60,13 @@ pub struct Pattern(Node);
 const MAX_LENGTH: usize = 500;
 const MAX_DEPTH: usize = 20;
 const MAX_REPEAT: u32 = 1000;
+/// How many times nested counts may make something repeat in all, as `(a{100}){100}` would.
+const MAX_REPEAT_IN_ALL: u64 = 10_000;
 const STEPS: u32 = 1_000_000;
+/// How deeply matching may nest. Each step of a match calls the next (about 1 KB of stack a step
+/// in a debug build), so matching runs on a thread of its own with room for this many.
+const MAX_NESTING: u32 = 6_000;
+const MATCH_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 struct Parser<'a> {
     text: &'a [char],
@@ -180,6 +186,11 @@ impl Parser<'_> {
         if min > MAX_REPEAT || max.is_some_and(|max| max > MAX_REPEAT) {
             return Err(format!("The pattern repeats something more than {MAX_REPEAT} times."));
         }
+        // Each repetition must run its minimum even when it matches nothing, so the minimums of
+        // counts inside counts multiply.
+        if repeats_in_all(&atom, u64::from(min.max(1))) > MAX_REPEAT_IN_ALL {
+            return Err(format!("The pattern repeats something more than {MAX_REPEAT_IN_ALL} times in all, through counts inside counts."));
+        }
         if matches!(atom, Node::Start | Node::End) {
             return Err("The pattern repeats ^ or $.".into());
         }
@@ -275,8 +286,21 @@ impl Pattern {
     /// Whether the pattern is found in `input`, as JavaScript's `test` answers; an error when
     /// the answer is too costly to decide.
     pub fn matches(&self, input: &str) -> Result<bool, String> {
+        // Whatever thread asks, however small its stack, matching gets the stack it is bounded for.
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("pattern".into())
+                .stack_size(MATCH_STACK_BYTES)
+                .spawn_scoped(scope, || self.search(input))
+                .map_err(|_| "This answer could not be checked against the question's pattern just now. Try again.".to_owned())?
+                .join()
+                .map_err(|_| "This answer could not be checked against the question's pattern.".to_owned())?
+        })
+    }
+
+    fn search(&self, input: &str) -> Result<bool, String> {
         let chars: Vec<char> = input.chars().collect();
-        let matcher = Matcher { input: &chars, steps: Cell::new(STEPS) };
+        let matcher = Matcher { input: &chars, steps: Cell::new(STEPS), nesting: Cell::new(0) };
         for start in 0..=chars.len() {
             if matcher.node(&self.0, start, &mut |_| true) {
                 return Ok(true);
@@ -289,9 +313,19 @@ impl Pattern {
     }
 }
 
+/// The most times anything inside `node` must repeat, with `outer` the count around it.
+fn repeats_in_all(node: &Node, outer: u64) -> u64 {
+    match node {
+        Node::Repeat(inner, min, _) => repeats_in_all(inner, outer.saturating_mul(u64::from((*min).max(1)))),
+        Node::Concat(nodes) | Node::Alt(nodes) => nodes.iter().map(|node| repeats_in_all(node, outer)).max().unwrap_or(outer),
+        _ => outer,
+    }
+}
+
 struct Matcher<'a> {
     input: &'a [char],
     steps: Cell<u32>,
+    nesting: Cell<u32>,
 }
 
 impl Matcher<'_> {
@@ -304,6 +338,17 @@ impl Matcher<'_> {
         if !self.tick() {
             return false;
         }
+        // Too deep to go on safely: stop, and the answer is reported as too complex to check.
+        if self.nesting.get() >= MAX_NESTING {
+            self.steps.set(0);
+            return false;
+        }
+        self.nesting.set(self.nesting.get() + 1);
+        let found = self.step(node, at, next);
+        self.nesting.set(self.nesting.get() - 1);
+        found
+    }
+    fn step(&self, node: &Node, at: usize, next: &mut dyn FnMut(usize) -> bool) -> bool {
         let here = self.input.get(at).copied();
         match node {
             Node::Empty => next(at),
@@ -394,5 +439,41 @@ mod tests {
         assert!(outcome.is_err() || outcome == Ok(false));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         assert_eq!(Pattern::parse("^(a*)*$").unwrap().matches("aaa"), Ok(true), "empty repetitions stop");
+    }
+
+    #[test]
+    fn nested_counts_cannot_exhaust_the_stack() {
+        // The reported crash: a million empty repetitions, one inside the other.
+        for pattern in ["((){1000}){1000}", "(a{100}){101}", "((a{10}){10}){101}", "(x|(y{200}){60})"] {
+            let error = Pattern::parse(pattern).unwrap_err();
+            assert!(error.contains("in all"), "{pattern}: {error}");
+        }
+        for pattern in [r"(\d{1,3}\.){3}\d{1,3}", r"([a-z0-9]{1,63}\.){1,10}", "((){100}){100}"] {
+            assert!(Pattern::parse(pattern).is_ok(), "{pattern}");
+        }
+        // Whatever gets past the parser, matching stops before the stack runs out, even when asked
+        // from a thread with a small stack.
+        let deep = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let long = "a".repeat(500);
+                let found = [
+                    Pattern::parse("((){100}){100}").unwrap().matches(""),
+                    Pattern::parse("^(a|b)*$").unwrap().matches(&long),
+                    Pattern::parse("^(((a)))+$").unwrap().matches(&long),
+                    Pattern::parse("^[a-z]+$").unwrap().matches(&long),
+                    Pattern::parse("^((a|b)|(c|d))*$").unwrap().matches(&long),
+                ];
+                found.map(|outcome| outcome.is_ok() || outcome.unwrap_err().contains("too long or too complex"))
+            })
+            .unwrap()
+            .join()
+            .expect("matching stays within the stack");
+        assert!(found_all(&deep), "{deep:?}");
+        assert_eq!(Pattern::parse("^[a-z]+$").unwrap().matches(&"a".repeat(500)), Ok(true), "a full-length answer still matches");
+    }
+
+    fn found_all(outcomes: &[bool]) -> bool {
+        outcomes.iter().all(|ok| *ok)
     }
 }

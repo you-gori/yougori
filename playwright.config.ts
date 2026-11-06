@@ -26,7 +26,9 @@ export default defineConfig({
   projects: [
     {
       name: "desktop-chrome",
-      use: { ...devices["Desktop Chrome"], channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || "chromium", viewport: { width: 1440, height: 920 } },
+      // Installed Chrome keeps itself patched; Playwright's bundled Chromium lags
+      // behind and runs unsandboxed unless chromiumSandbox is set.
+      use: { ...devices["Desktop Chrome"], channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || "chrome", launchOptions: { chromiumSandbox: true }, viewport: { width: 1440, height: 920 } },
     },
   ],
 })

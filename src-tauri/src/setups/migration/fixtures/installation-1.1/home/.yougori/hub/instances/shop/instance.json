@@ -1,0 +1,27 @@
+{
+  "createdAt": 1760000600,
+  "digest": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+  "environments": {
+    "web": "env-fixture-shop-web"
+  },
+  "failed": null,
+  "folder": null,
+  "inputs": [
+    "site_title",
+    "admin_password"
+  ],
+  "kind": "template",
+  "name": "shop",
+  "next": "yougori template continue shop",
+  "outputs": [],
+  "public": {},
+  "ref": "example/shop",
+  "schema": 1,
+  "source": "hub",
+  "state": "stopped",
+  "steps": [],
+  "title": "Shop",
+  "updatedAt": 1760000660,
+  "verified": false,
+  "version": "1.2.0"
+}

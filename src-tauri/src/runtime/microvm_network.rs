@@ -15,6 +15,13 @@ use tokio::{
 #[path = "host_addresses.rs"]
 mod host_address_inventory;
 
+/// Every IPv4 address this host holds now (the inventory the microVM network judges flows
+/// against), for the sandbox executor's destination policy: no route may reach the host's
+/// own addresses. An empty or unreadable inventory is an error, never an empty list.
+pub(crate) fn host_ipv4_addresses() -> Result<std::collections::HashSet<[u8; 4]>, String> {
+    host_address_inventory::ipv4_addresses()
+}
+
 const ADDRESS_LEASE: Duration = Duration::from_secs(1);
 const MAX_INTERNET_FLOWS: usize = 4096;
 const MAX_ADDRESS_LOOKUPS_PER_SECOND: u32 = 256;

@@ -2,10 +2,10 @@
 
 # Yougori
 
-### Publish models. Serve inference. Build with AI. Go live.
+### Whole setups, from one template.
 
-Serve models through Neo Grid, publish your model files, build in shared AI sandboxes,<br>
-and put your apps online from your local project. Use the CLI or App, with access you control.
+A template describes a complete setup: its sandboxes, AI tools, models, data and public links.<br>
+Run one with a single command, or make your own and share it on the Hub. Use the CLI or App.
 
 <br>
 
@@ -13,7 +13,7 @@ and put your apps online from your local project. Use the CLI or App, with acces
 [![Platforms](https://img.shields.io/badge/Windows%20·%20Ubuntu%20·%20macOS-1f2937?style=for-the-badge)](#run-from-source)
 [![Version](https://img.shields.io/badge/version-1.1.1-1f2937?style=for-the-badge)](package.json)
 
-**[Website](https://yougori.com/)** &nbsp;·&nbsp; **[Discord](https://discord.gg/Eqhf4Hq3AG)** &nbsp;·&nbsp; **[X](https://x.com/withYougori)** &nbsp;·&nbsp; **[Run from source](#run-from-source)**
+**[Website](https://yougori.com/)** &nbsp;·&nbsp; **[Hub](https://yougori.com/hub)** &nbsp;·&nbsp; **[Discord](https://discord.gg/Eqhf4Hq3AG)** &nbsp;·&nbsp; **[X](https://x.com/withYougori)** &nbsp;·&nbsp; **[Run from source](#run-from-source)**
 
 <br>
 
@@ -24,98 +24,72 @@ and put your apps online from your local project. Use the CLI or App, with acces
 
 <br>
 
-## Six main features
+## Run a template
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### Neo Grid — Serve your models
-
-Host supported AI models on your GPU and make them available through Yougori Chat and its API. Offer free inference with `--nowfree`, or use `--now` for supported paid inference with USDC earnings. On free inference, optionally enable `--listen` to record conversations on your provider and understand how people use your model.
-
-</td>
-<td width="50%" valign="top">
-
-### AI Model Publishing — Share your models
-
-Upload LLMs created in the EU and Horizon Europe-associated countries to Yougori, with model cards, versions and licenses. Yougori stores and serves the files using lossless compression and resumable, checksum-verified transfers. Browse models on the homepage or in the dedicated model library. Running an inference provider is optional and separate from publishing files.
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### Shared AI Sandboxes — Build together
-
-Run AI coding tools in isolated environments, keep their files and share access to the workspace. Launch tools such as Codex and Claude directly in your terminal with `yougori codex` or `yougori claude`. Choose the folders, connections and recipient permissions, then publish the apps you build to a public URL or your own domain.
-
-</td>
-<td valign="top">
-
-### Instant App Publishing — Put your project online
-
-Set up your project once, then run `npm run yougori` to start its development command inside a Yougori environment. Sync your project files and choose access for yourself, your local network, a public link or your own domain. Keep the running app's logs and links in your terminal.
-
-</td>
-</tr>
-<tr>
-<td colspan="2" valign="top">
-
-### Closed Neo Grid — Your company's idle GPUs
-
-Run a private grid on your company network. The admin runs `yougori create grid` and answers a few questions; each company computer runs `yougori join grid` and pastes the invite with the company password. Computers outside the office can join through a Cloudflare Tunnel that relays only the grid's own encrypted traffic. The admin then decides which models run, on what share of the computers, in which hours and after how long without keyboard or mouse input; computers serve only while their person is away and hand the GPU back when they return. Company apps call an OpenAI-compatible API on the hub with keys the admin creates. Prompts stay on the company network: nothing passes through yougori.com and nothing is recorded.
-
-[Admin guide](docs/closed-neo-grid.md)
-
-</td>
-</tr>
-<tr>
-<td colspan="2" valign="top">
-
-### Swarm Mining — Authorized AI bounty research
-
-Run `yougori start bounty` to prepare a supported Hugging Face GGUF model and a private local OpenCode worker. Publishers submit their source, written authorization, offline scope and USDC reward promise on [the bounty page](https://yougori.com/swarm/bounties). The service owner reviews each exact source and terms version before it is listed. Participants choose a bounty and explicitly accept its terms before testing. Agents coordinate recorded attempts; you can guide your own agent privately, and the publisher can read the disclosed shared coordination for their bounty. The publisher reviews qualifying reports and pays the winner directly outside Yougori. Rewards are promises, not verified or guaranteed funding.
-
-[Explore Swarm Mining](https://yougori.com/swarm) · [Submit a bounty](https://yougori.com/swarm/company/new) · [Workflow and commands](docs/swarm-mining.md) · [Responsible use rules](docs/swarm-responsible-use.txt)
-
-</td>
-</tr>
-</table>
-
-Containers, VMs, connected cloud servers, Neocloud GPUs and Personal Vault MCP support these workflows. Yougori uses USDC for supported paid inference and has no cryptocurrency of its own.
-
-<br>
-
-## Start in your project
-
-Open a terminal in your project folder and run:
+A template is a folder: a `yougori-template.yaml` that says what the setup is and what it asks, a
+normal `yougori.yaml` project, and the app's own files. Run one from the Hub:
 
 ```bash
-cd my-project
-yougori
+yougori run hub/PUBLISHER/NAME
 ```
 
-Yougori opens a guided menu and adds shortcuts to supported Node.js projects. Choose the project launch option, or run `yougori launch` directly. Pick your resources, file sync and who can open your app: just you, your local network, a public link or your own domain.
+Yougori downloads the version, checks every file against its checksum, shows what it will create
+and what it may do on your computer, asks its questions, and only then builds it. Pin a version
+with `@VERSION` (`hub/acme/my-api@1.2.0`) to run exactly that one.
 
-When asked how to run your project, choose **`npm run dev`** if that is your project's development command. Yougori installs dependencies and runs it inside the environment, with logs and links in your terminal.
+Nothing on the Hub is checked by Yougori. Only templates uploaded by the Yougori owner account
+carry the **Verified** badge; read a community template's files before you run it.
 
-Next time, start from the same folder:
+The templates Yougori maintains are in [`examples/hub`](examples/hub). Run one from its folder:
 
 ```bash
-npm run yougori
+yougori template run ./examples/hub/hello-site
 ```
 
-Your setup is saved. Yougori syncs once when starting. Setup recommends **Continuously** for project folders below 2.5 GB and **On demand** for folders of 2.5 GB or more; your saved choice remains selected when editing settings. Press `y` when switching where you work: **Sync to container** sends computer changes; **Sync to this computer** brings container changes home when two-way sync is enabled. Your chosen conflict priority applies. Press `t` to open a terminal inside the environment, or `q` / Ctrl+C to stop the project container and keep its files. On-demand sessions do not sync again when quitting.
+Hello site runs on every release. The others use the newer template format and need Yougori 1.2.0
+or newer; an older Yougori says so and creates nothing.
+
+| Template | What it sets up |
+| --- | --- |
+| Hello site | A one-page website in a container, online through a quick link or your own domain |
+| AI Workspace | A sandbox with the AI coding tools you pick, each signed in your way, and a folder that keeps your files |
+| Agent Tools | A coding agent in its own sandbox, with the tools and folders you choose |
+| Dev Workspace | Your project folder kept in step with a sandbox, both ways |
+| Host My App | A web app or API from its container image, shared through a quick link or your own domain |
+| App Backend | Your app beside PostgreSQL and, if you want, Redis, with their data on volumes |
+| Model Server | An open model on your GPU or processor, behind a private OpenAI-compatible API |
+| Model Collection | Two or three open models on one computer, loaded as they are asked |
+| Inference Endpoint | A Hugging Face model served with vLLM on your NVIDIA GPU |
+| GPU Lab | JupyterLab with PyTorch and CUDA on your NVIDIA GPU |
+| Shared Workspace | One of your sandboxes shared with one person, through a private link and their own password |
+| Backup Workflow | Your app with its data on a volume, backed up on a schedule you choose |
+| Operations Dashboard | Every setup's state, health and backups in one place, kept on your computer |
+| My API | A model API website with accounts, keys and prepaid credits |
+
+Each running copy is an instance with its own name:
 
 | What you want to do | Command |
 | --- | --- |
-| Change resources, access or file sync | `npm run yougori-change` |
-| Run on a connected Linux cloud server | `npm run yougori-cloud` |
-| Run a supported Python project after registering it with `yougori` | `python yougori` |
-| Open the guided menu | `yougori` |
+| List your instances | `yougori template list` |
+| See how one is doing | `yougori template status INSTANCE` |
+| Finish one that stopped partway | `yougori template continue INSTANCE` |
+| Move it to a newer version | `yougori template update INSTANCE` |
+| Stop it, keeping its data | `yougori template down INSTANCE` |
+| Remove it | `yougori template rm INSTANCE --yes` |
 
-Cloud launch asks which connected server to use. That server needs Docker Engine access for its project containers. Local projects use Yougori's own runtime.
+## Make your own
+
+```bash
+yougori template new my-template      # Start a template folder
+yougori template check                # Validate it and see exactly what it would create
+yougori template publish              # Upload it to the Hub as a new version
+```
+
+`yougori template capture ENV` turns sandboxes you already have into a template, leaving out
+disks, sign-ins, secret values and anything else personal. `check` and `publish` refuse keys,
+passwords, live invitations and anyone's own details. Everything on the Hub is public, open source
+and free. The formats, every command and the review a template gets are in [the Hub
+reference](docs/hub.md).
 
 ## Run a model. Make it yours.
 
@@ -150,6 +124,12 @@ Use the model's environment name or ID in place of `ENV` below. `yougori ps` lis
 
 Stopping a model on Neocloud leaves its pod billable. Manage the pod separately in the Neocloud menu.
 
+To share your own model files, upload them to the model library with model cards, versions and licenses; see [Model publishing](docs/model-publishing.md).
+
+## AI tools in your terminal
+
+Run AI coding tools in isolated sandboxes that keep their files. Launch them directly with `yougori codex` or `yougori claude`, choose the folders and connections they get, and share the sandbox with someone at the permission level you choose. See [Tool containers](docs/tool-containers.md) and [Remote sharing](docs/remote-sharing.txt).
+
 ## Give agents access you approve
 
 Personal Vault MCP keeps credentials and personal information in an encrypted vault on your computer. Your agent requests what it needs; you review the request and approve access.
@@ -171,12 +151,6 @@ For an MCP client that supports local stdio servers, use:
 
 The client must be able to find `yougori` on its PATH. The MCP Vault menu can generate settings with the full executable path. For connection options and approval behavior, see [Personal Vault](docs/personal-vault.txt).
 
-### Company credentials: Access Grid
-
-Access Grid keeps a company's API keys and tokens on one trusted computer. People sign in from their own computers with their own passwords, two-step codes or the company's identity provider, and rules decide who may use which credential, for which requests, how often, and when an approver must agree first. Agents connect with `yougori access mcp` and ask the grid to send a request; the grid adds the credential itself and returns the answer with the value hidden, so the key never reaches the agent or its model provider. OAuth, GitHub App and AWS credentials only ever go out as short-lived tokens or signatures. Every use and decision goes into a tamper-evident log.
-
-Open **Access Grid** in the app's sidebar to host one or sign in, or see `yougori access --help` and [Access Grid](docs/access-grid.md).
-
 ## Keep the rest within reach
 
 Use the guided menu to create containers and VMs, manage Neocloud compute, share folders and set up connections. These commands are useful when you already know what you want:
@@ -192,7 +166,7 @@ yougori help                     # Full command reference
 
 For projects with several services, describe the environments and connections in [`yougori.yaml`](examples/yougori.yaml). Run `yougori up --dry-run` to preview, `yougori up` to start, and `yougori down` to stop them without deleting their volumes.
 
-More detail: [projects, cloud launch and models](docs/projects-and-models.txt).
+More detail: [projects and models](docs/projects-and-models.txt).
 
 <br>
 
@@ -259,10 +233,10 @@ npm run desktop:dev
 
 | | |
 | --- | --- |
+| [Hub: templates and tools](docs/hub.md) | Running, making and publishing templates; the formats and every command |
 | [Projects, CLI and models](docs/projects-and-models.txt) | Every command, `yougori.yaml` fields and the model runner |
 | [Neocloud](docs/neocloud.md) | Renting GPUs, pods, serverless endpoints and volumes |
 | [Model publishing](docs/model-publishing.md) | Model pages, downloads, open and closed weights |
-| [Closed Neo Grid](docs/closed-neo-grid.md) | A company grid on idle office computers: joining, plans, app keys, security |
 | [Tool containers](docs/tool-containers.md) | AI tools running directly in your terminal |
 | [Remote sharing](docs/remote-sharing.txt) | Tunnels, domains, recipients and permission levels |
 | [Personal Vault](docs/personal-vault.txt) | Encrypted credential broker for agents |

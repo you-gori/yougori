@@ -1,6 +1,6 @@
 [package]
 name = "yougori"
-version = "1.1.2"
+version = "1.2.0"
 description = "A local environment platform"
 authors = ["Yougori"]
 license = "AGPL-3.0-only"
@@ -17,6 +17,12 @@ default = ["desktop"]
 desktop = ["tauri/wry", "tauri/tray-icon", "tauri/common-controls-v6", "tauri/x11", "tauri/dbus"]
 # The standalone background engine (../engine, `yougori-engine`): no WebView, windows or tray.
 engine-only = ["tauri/test"]
+# Runtime acceptance only (scripts/acceptance): a disposable engine keeps its data in
+# YOUGORI_ACCEPTANCE_DATA_DIR and answers on YOUGORI_ACCEPTANCE_ENDPOINT, so it runs beside the
+# installed engine without touching its state. Never enabled by a release build.
+acceptance = ["yougori-cli/acceptance"]
+# Explicit maintainer utility; private-key handling is absent from ordinary builds.
+release-tools = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -26,6 +32,7 @@ serde_json = "1"
 yougori-vault = { path = "../vault" }
 yougori-cli = { path = "../cli" }
 yougori-grid = { path = "../grid" }
+yougori-setup = { path = "../setup" }
 portable-pty = "0.9"
 yougori-cuda-runtime = { package = "yougori-cuda", path = "../runtime/cuda/host" }
 tauri = { version = "2", default-features = false, features = ["compression", "dynamic-acl"] }
@@ -37,7 +44,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 iana-time-zone = "0.1.65"
 sysinfo = "0.37"
-thiserror = "2"
 sha2 = "0.10"
 scrypt = { version = "0.11", default-features = false }
 futures-util = { version = "0.3", features = ["sink"] }
@@ -46,6 +52,8 @@ similar = "2.7"
 cap-std = "3.4"
 rcgen = "0.14.7"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-platform-verifier = "0.7"
+ring = "0.17"
 crc32fast = "1.5"
 hex = "0.4"
 base64 = "0.22"
@@ -60,6 +68,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 object_store = { version = "0.14.1", features = ["aws", "azure", "gcp"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 url = "2"
+httparse = "1.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "cookies"] }
 tokio-util = { version = "0.7", features = ["io", "io-util", "rt"] }
 smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp"] }
@@ -69,19 +78,29 @@ tauri-plugin-notification = "2"
 webview2-com = "0.38.2"
 windows = { version = "0.61", features = ["Win32_System_Com"] }
 windows-sys = { version = "0.61", features = [
+  "Win32_System_HostComputeSystem",
+  "Win32_System_HostComputeNetwork",
+  "Win32_System_Com",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_System_LibraryLoader",
   "Win32_System_SystemInformation",
+  "Win32_System_WindowsProgramming",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Security_Isolation",
   "Win32_System_JobObjects",
   "Win32_System_Performance",
   "Win32_System_Threading",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Power",
   "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Wdk_Foundation",
+  "Wdk_Storage_FileSystem",
   "Win32_NetworkManagement_IpHelper",
   "Win32_NetworkManagement_Ndis",
   "Win32_Networking_WinSock",
@@ -89,6 +108,28 @@ windows-sys = { version = "0.61", features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Development builds (the owner's engine runs one) optimize third-party crates: they hash, open,
+# copy and serve every model byte (sha2, cap-std, tokio, serde_json), and unoptimized they made a
+# local model import many times slower than a release build's. Local crates stay unoptimized so
+# edits recompile quickly. Release builds are unchanged.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.yougori-cli]
+opt-level = 0
+
+[profile.dev.package.yougori-grid]
+opt-level = 0
+
+[profile.dev.package.yougori-setup]
+opt-level = 0
+
+[profile.dev.package.yougori-vault]
+opt-level = 0
+
+[profile.dev.package.yougori-cuda]
+opt-level = 0
 
 [profile.release]
 codegen-units = 1

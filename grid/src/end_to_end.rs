@@ -491,6 +491,16 @@ async fn a_computer_joins_a_closed_bounty_fetches_the_source_and_reports_a_findi
     let member = bounty::member_join(&read, PASSWORD, "Design laptop", "windows", "hf.co/acme/model-GGUF").await.unwrap();
     assert_eq!((member.bounty_name.as_str(), member.bounty_title.as_str(), member.fingerprint.as_str()), ("Acme", "Review checkout", fingerprint.as_str()));
 
+    // Joining is not accepting: until the computer accepts this exact bounty, the source and
+    // findings routes refuse its member token, as the agent routes do.
+    assert!(member.source().await.err().unwrap().contains("Accept this exact bounty"));
+    assert!(member.report("Too early", "Sent before the terms were accepted", "low").await.err().unwrap().contains("Accept this exact bounty"));
+    assert_eq!(hub.status()["findings"], json!([]), "a refused finding is not recorded");
+    let policy = member.agent("GET", "/api/swarm/agent/offer", None).await.unwrap()["policy"].clone();
+    member.agent("POST", "/api/swarm/agent/accept", Some(&json!({"confirmed": true, "termsDigest": policy["termsDigest"], "budgetMinutes": 30, "reportPolicy": "review", "deferUntilReady": true, "idempotencyKey": "accept"}))).await.unwrap();
+    assert!(member.source().await.is_err(), "accepted but still preparing is not working yet");
+    member.agent("POST", "/api/swarm/agent/activate", Some(&json!({"idempotencyKey": "activate"}))).await.unwrap();
+
     // The source downloads and is checked; the worker checks in and reports what it found.
     let source = member.source().await.unwrap();
     assert_eq!((source.title.as_str(), source.files.len()), ("Review checkout", 1));
@@ -1188,6 +1198,49 @@ async fn two_step_sign_in_needs_the_code_once_the_person_turns_it_on() {
 /// token — could enrol their own phone, confirm it with their own code, and own the second factor
 /// on that account from then on. The factor two-step adds is a thing the person holds, and a
 /// sign-in that could replace it without it added nothing at all.
+/// PROVES a Sandbox Grid that requires two-step sign-in lets a person without it sign in only to
+/// turn it on: nothing that opens a desk is handed out and nothing else is done, an
+/// administrator's actions included, until two-step is on and they sign in with a code. Lifting
+/// the rule gives them back what they had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_grid_that_requires_two_step_lets_a_person_in_only_to_turn_it_on() {
+    use crate::invite::Invite;
+    const ROOT: &str = "root's own password";
+    let folder = tempfile::tempdir().unwrap();
+    let (hub, events) = start_hub(folder.path()).await;
+    let the_invite = Invite { company: "Acme".into(), address: HubAddress::Direct(hub.address()), fingerprint: net::fingerprint(&hub.record().certificate).unwrap() };
+    let salt = password::new_salt();
+    let key = password::derive(ROOT, &salt).unwrap();
+    let root = hub.add_person("root", "Root", &salt, &key, None).unwrap();
+    hub.enterprise(json!({"action": "personUpdate", "id": root["id"], "adminRole": "administrator"})).unwrap();
+    hub.enterprise(json!({"action": "twoStepRequire", "required": true})).unwrap();
+
+    let session = member::person_login(&the_invite, "root", ROOT, None).await.unwrap();
+    let portal = session.session.manage(json!({"action": "portal"})).await.unwrap();
+    assert_eq!(portal["twoStepRequired"], true);
+    let refused = session.session.manage(json!({"action": "status"})).await.unwrap_err();
+    assert!(refused.contains("requires two-step sign-in"), "an administrator too: {refused}");
+    assert!(session.session.manage(json!({"action": "personAdd", "username": "eve", "name": "Eve", "salt": "s", "key": "k"})).await.is_err());
+
+    // Turning it on is the one thing they may do.
+    let secret = session.session.manage(json!({"action": "mfaEnroll"})).await.unwrap()["secret"].as_str().unwrap().to_owned();
+    let code = |at: i64| crate::totp::code_at(&secret, at).unwrap();
+    session.session.manage(json!({"action": "mfaConfirm", "code": code(crate::now())})).await.unwrap();
+    let again = member::person_login(&the_invite, "root", ROOT, Some(&code(crate::now() + crate::totp::STEP))).await.unwrap();
+    assert_eq!(again.session.manage(json!({"action": "portal"})).await.unwrap()["twoStepRequired"], false);
+    assert!(again.session.manage(json!({"action": "status"})).await.is_ok(), "with two-step on, they are an administrator again");
+
+    // Someone without it, with the rule lifted, is back to what they had.
+    let bob_salt = password::new_salt();
+    let bob_key = password::derive("bob's own password", &bob_salt).unwrap();
+    hub.add_person("bob", "Bob", &bob_salt, &bob_key, None).unwrap();
+    let bob = member::person_login(&the_invite, "bob", "bob's own password", None).await.unwrap();
+    assert_eq!(bob.session.manage(json!({"action": "portal"})).await.unwrap()["twoStepRequired"], true);
+    hub.enterprise(json!({"action": "twoStepRequire", "required": false})).unwrap();
+    assert_eq!(bob.session.manage(json!({"action": "portal"})).await.unwrap()["twoStepRequired"], false);
+    assert!(events.lock().unwrap().contains(&"grid.two_step.required"), "the rule is audited");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_step_cannot_be_moved_to_another_authenticator_without_the_one_it_is_on() {
     use crate::invite::Invite;

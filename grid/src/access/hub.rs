@@ -187,14 +187,23 @@ fn save(path: &Path, record: &Record) -> Result<(), String> {
     Ok(())
 }
 
-/// The activity log beside the record.
+/// The activity log, in the record's own folder. Each Access Grid on a computer has a folder of
+/// its own (`instances::Layout`), so two grids never write one log.
 pub fn activity_path(path: &Path) -> PathBuf {
-    path.with_file_name("access-activity.jsonl")
+    path.parent().unwrap_or_else(|| Path::new("")).join(super::instances::ACTIVITY_FILE)
 }
 
 /// Puts a backup's record and activity log at `path`, at `address` when it moves to another
 /// computer. The keys it holds go to the OS vault, which the caller does.
 pub fn install(path: &Path, contents: &backup::Contents, address: Option<IpAddr>) -> Result<Record, String> {
+    install_with(path, contents, address, None)
+}
+
+/// `install`, on `ports` (the hub's own and its tunnel entry's) when given: an Access Grid
+/// restored beside another one takes the ports this computer gave it rather than the ones it had
+/// where the backup was made, which another grid here may hold. A tunnel port is only kept for a
+/// grid that had one.
+pub fn install_with(path: &Path, contents: &backup::Contents, address: Option<IpAddr>, ports: Option<(u16, u16)>) -> Result<Record, String> {
     if path.exists() {
         return Err("This computer already runs an Access Grid; delete it first".into());
     }
@@ -204,6 +213,13 @@ pub fn install(path: &Path, contents: &backup::Contents, address: Option<IpAddr>
             return Err("Use this computer's private LAN or VPN address".into());
         }
         record.address = address;
+    }
+    if let Some((port, tunnel)) = ports {
+        if port < 1024 || tunnel < 1024 || port == tunnel {
+            return Err("Choose a port between 1024 and 65535, other than the tunnel's".into());
+        }
+        record.port = port;
+        record.tunnel_port = record.tunnel_port.map(|_| tunnel);
     }
     record.closing = None;
     save(path, &record)?;

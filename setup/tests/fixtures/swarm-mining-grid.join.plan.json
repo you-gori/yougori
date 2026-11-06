@@ -1,0 +1,511 @@
+{
+  "formatVersion": 2,
+  "instance": "swarm-mining-grid",
+  "template": {
+    "name": "swarm-mining-grid",
+    "version": "0.1.0",
+    "formatVersion": 2,
+    "profile": "swarm_mining_grid"
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Create a grid",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.join",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Join a grid",
+      "permissions": []
+    },
+    {
+      "id": "research.source",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Review source in a sandbox",
+      "permissions": [
+        "Run authorised research in an isolated realm."
+      ]
+    },
+    {
+      "id": "models.local",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Local models",
+      "permissions": [
+        "Serve models from this computer."
+      ]
+    },
+    {
+      "id": "data.artifacts",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Artifacts",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "budget_minutes": "60",
+    "evidence_gb": "10",
+    "mode": "join",
+    "model": "hf.co/example/review-model",
+    "model_memory_gb": "16",
+    "report_policy": "review",
+    "sandbox_disk_gb": "20",
+    "worker_cpu": "4",
+    "worker_memory_gb": "8",
+    "worker_name": "Review worker"
+  },
+  "secrets": {
+    "invitation": "hub-swarm-mining-grid-invitation",
+    "join_password": "hub-swarm-mining-grid-join_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "evidence",
+      "kind": "artifact_store",
+      "title": "artifact store",
+      "capability": "data.artifacts",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "ask"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "setup",
+        "max_gb": 10.0
+      },
+      "outputs": [
+        "id",
+        "path"
+      ]
+    },
+    {
+      "id": "membership",
+      "kind": "grid",
+      "title": "grid",
+      "capability": "grid.join",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "ask"
+      },
+      "placement": "coordinated by another computer",
+      "spec": {
+        "access": "lan",
+        "coordinator": "remote",
+        "member": "computer",
+        "mode": "join",
+        "profile": "swarm_mining_grid",
+        "secrets": {
+          "invitation": "hub-swarm-mining-grid-invitation",
+          "join_password": "hub-swarm-mining-grid-join_password"
+        }
+      },
+      "outputs": [
+        "realm_id",
+        "join_address",
+        "name",
+        "page",
+        "invitation"
+      ]
+    },
+    {
+      "id": "joined_computers",
+      "kind": "compute_pool",
+      "title": "compute pool",
+      "dependsOn": [
+        "membership"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "ask"
+      },
+      "placement": "this computer",
+      "spec": {
+        "availability": "always",
+        "gpu": "optional",
+        "grid": {
+          "resource": "membership"
+        },
+        "limits": {
+          "cpu": 4.0,
+          "disk_gb": 20.0,
+          "memory_gb": 8.0
+        },
+        "local_user_first": true,
+        "source": "this_computer"
+      },
+      "outputs": [
+        "id",
+        "computers"
+      ]
+    },
+    {
+      "id": "model",
+      "kind": "model_service",
+      "title": "model service",
+      "capability": "models.local",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "ask"
+      },
+      "placement": "this computer",
+      "spec": {
+        "api": {
+          "keys": 0,
+          "protocol": "openai"
+        },
+        "gpu": "none",
+        "memory_gb": 16.0,
+        "model": "hf.co/example/review-model",
+        "replicas": 1
+      },
+      "outputs": [
+        "id",
+        "endpoint",
+        "model",
+        "first_key"
+      ]
+    },
+    {
+      "id": "sandbox",
+      "kind": "environment",
+      "title": "sandbox",
+      "capability": "research.source",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "ask"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "sleep",
+          "infinity"
+        ],
+        "cpu": 4.0,
+        "depends_on": [],
+        "environment": {},
+        "files": [],
+        "gpu": false,
+        "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+        "internet": false,
+        "memory": 8,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [],
+        "restart": "",
+        "secrets": {},
+        "storage": 20,
+        "type": "container",
+        "volumes": [],
+        "working_dir": "/project"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "joined_workers",
+      "kind": "worker_group",
+      "title": "worker group",
+      "capability": "research.source",
+      "dependsOn": [
+        "joined_computers",
+        "model",
+        "sandbox"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "ask"
+      },
+      "placement": "this computer",
+      "spec": {
+        "budget": {
+          "time_minutes": 60
+        },
+        "count": 1,
+        "environment": {
+          "resource": "sandbox"
+        },
+        "limits": {
+          "cpu": 4.0,
+          "disk_gb": 20.0,
+          "memory_gb": 8.0
+        },
+        "max": 1,
+        "model": {
+          "resource": "model"
+        },
+        "name": "Review worker",
+        "pool": {
+          "resource": "joined_computers"
+        },
+        "report_policy": "review",
+        "role": "research"
+      },
+      "outputs": [
+        "id",
+        "count"
+      ]
+    }
+  ],
+  "order": [
+    "evidence",
+    "membership",
+    "joined_computers",
+    "model",
+    "sandbox",
+    "joined_workers"
+  ],
+  "steps": [
+    {
+      "title": "Read what the agents found",
+      "detail": "Findings appear as they are made. Each one says what was tried, what happened, and what it means.",
+      "command": "yougori bounty reports"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "worker",
+      "label": "Worker",
+      "value": "Review worker",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "ask"
+  },
+  "views": [
+    "workers",
+    "models",
+    "findings",
+    "attempts",
+    "reports",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "evidence",
+        "kind": "artifact_store",
+        "title": "artifact store",
+        "placement": "this computer"
+      },
+      {
+        "id": "membership",
+        "kind": "grid",
+        "title": "grid",
+        "placement": "coordinated by another computer"
+      },
+      {
+        "id": "joined_computers",
+        "kind": "compute_pool",
+        "title": "compute pool",
+        "placement": "this computer"
+      },
+      {
+        "id": "model",
+        "kind": "model_service",
+        "title": "model service",
+        "placement": "this computer"
+      },
+      {
+        "id": "sandbox",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "joined_workers",
+        "kind": "worker_group",
+        "title": "worker group",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "model",
+        "name": "hf.co/example/review-model"
+      },
+      {
+        "kind": "image",
+        "name": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
+      }
+    ],
+    "permissions": [
+      "membership joins a grid someone else coordinates, with a private invitation.",
+      "joined_workers runs 1 worker(s).",
+      "Review source in a sandbox: Run authorised research in an isolated realm.",
+      "Local models: Serve models from this computer.",
+      "Artifacts: Reserve storage on a drive you choose."
+    ],
+    "costs": [],
+    "warnings": [
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 4.0,
+      "memoryGb": 8.0,
+      "storageGb": 20.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "mode",
+        "question": "What do you want to do?",
+        "answer": "join",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "invitation",
+        "question": "The invitation you were given",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "join_password",
+        "question": "The password for that project",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "worker_name",
+        "question": "What should this worker be called?",
+        "answer": "Review worker",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "model",
+        "question": "Which model should it use?",
+        "answer": "hf.co/example/review-model",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "model_memory_gb",
+        "question": "How much memory may the model use, in GB?",
+        "answer": "16",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "worker_cpu",
+        "question": "Processor cores for the worker's sandbox",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "worker_memory_gb",
+        "question": "Memory for the worker's sandbox, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "sandbox_disk_gb",
+        "question": "Disk for the worker's sandbox, in whole GB",
+        "answer": "20",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "budget_minutes",
+        "question": "How long may it work before stopping?",
+        "answer": "60",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "evidence_gb",
+        "question": "How much room may its findings and evidence use, in GB?",
+        "answer": "10",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "report_policy",
+        "question": "What happens to a finding?",
+        "answer": "review",
+        "secret": false,
+        "group": "automation_recovery"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "ask"
+    },
+    "secrets": [
+      {
+        "resource": "membership",
+        "variable": "invitation",
+        "source": "the question invitation"
+      },
+      {
+        "resource": "membership",
+        "variable": "join_password",
+        "source": "the question join_password"
+      }
+    ]
+  },
+  "digest": "9cccdaba105c574e3a96417de6c42cdc024198f373a794a203de8956467358f1"
+}

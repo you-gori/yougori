@@ -1,0 +1,197 @@
+{
+  "format": "yougori-guest-artifacts/v1",
+  "profile": "sandbox-minimal",
+  "source_date_epoch": 1792540800,
+  "kernel_release": "6.18.58-0-virt",
+  "kernel_version": "6.18.58-0-virt (buildozer@build-3-24-x86_64) #1-Alpine SMP PREEMPT_DYNAMIC 2026-10-21 10:53:34",
+  "kernel_arguments": [
+    "panic=-1",
+    "quiet"
+  ],
+  "init": "/init in the initrd is yougori-sandbox-agent (PID 1)",
+  "agent_build": "efffc4ae185e3118c793bc78a56e50b83071f48e181d362a15038095444d0a1c",
+  "link_protocol": 3,
+  "artifacts": [
+    {
+      "name": "vmlinuz",
+      "role": "kernel",
+      "sha256": "17fbd3efd16f2e7cb1b945f06423b37399ba7d5ac8cdd3665e7f13f363500e85",
+      "content_key": "58be20e15ac890bc6399643f0e8625bca0e55c045f92e09e6117cc1bc9e405b9",
+      "bytes": 12641280,
+      "version": "6.18.58-0-virt",
+      "source": "src-tauri/resources/runtime/appliance/vmlinuz-virt, pinned in src-tauri/resources/runtime/SHA256SUMS, copied unchanged"
+    },
+    {
+      "name": "initrd",
+      "role": "initrd",
+      "sha256": "ad16632f4c54e1e22842bfb670aba903300800be62d591fe37ad72e64e463d81",
+      "content_key": "292ae0ca7feb0eba0179d504d3d5b66088623b62e92ff47697719fb060ff033a",
+      "bytes": 4226963,
+      "version": "agent 4ad4e735e268478d, modules failover net_failover virtio_net virtio_blk rng_core virtio_rng qemu_fw_cfg squashfs fuse",
+      "source": "built: newc cpio (sorted, owner 0:0, mtime SOURCE_DATE_EPOCH, renumbered inodes) of the layout in guest/README.md, gzip -n -9"
+    },
+    {
+      "name": "root.img",
+      "role": "root_image",
+      "sha256": "18c1fa8548e7e88c3700be3008d58a6d6108a8396c0fd0102059849a0776259c",
+      "content_key": "56e810e534b8ccffd411cf06508bebf6832ee0f6df139d48369ffa4ed04b1866",
+      "bytes": 3207168,
+      "version": "alpine-minirootfs 3.24.1 plus the sandbox user 1000:1000",
+      "source": "built: build/appliance-cache/alpine-minirootfs-3.24.1-x86_64.tar.gz as squashfs (xz, all-root, all-time SOURCE_DATE_EPOCH, no xattrs, 4 KiB padded); attach read-only as a raw drive"
+    },
+    {
+      "name": "config-6.18.58-0-virt",
+      "role": "kernel_configuration",
+      "sha256": "aea855e9e485bd68db9dd9a01a787f67d9a0cd10c30b3be835e916b1d25968d8",
+      "content_key": "9842f8d9ca018ea8b1e93e5af337465eea4b83b3406d1ed8c85960113c3599b4",
+      "bytes": 152061,
+      "version": "6.18.58-0-virt",
+      "source": "the kernel's own IKCONFIG, from kernel/kernel/configs.ko.gz in the module set of src-tauri/resources/runtime/appliance/appliance-base.qcow2"
+    },
+    {
+      "name": "yougori-sandbox-agent",
+      "role": "agent",
+      "sha256": "4ad4e735e268478dc8e117fcb86650d3a0d86f1178402575c99874260096fa85",
+      "content_key": "efffc4ae185e3118c793bc78a56e50b83071f48e181d362a15038095444d0a1c",
+      "bytes": 9318524,
+      "version": "go: go1.27.2",
+      "source": "built: appliance/agent/cmd/yougori-sandbox-agent, CGO_ENABLED=0 GOOS=linux GOARCH=amd64 -trimpath -buildvcs=false -ldflags='-s -w -buildid='; identical to /init; its content key is the agent build the guest's Hello carries (guest_image AgentFeatures::build)"
+    }
+  ],
+  "modules": [
+    {
+      "path": "kernel/net/core/failover.ko.gz",
+      "sha256": "bac047e6fa520bf97a4d112f9109545d4ed48a334cce98cbcd0b64a621375021",
+      "bytes": 9110
+    },
+    {
+      "path": "kernel/drivers/net/net_failover.ko.gz",
+      "sha256": "e3b9cdcbe6c6a8450c429ae22d484aa558179eb7fccd6bb787c9770f3869d227",
+      "bytes": 14293
+    },
+    {
+      "path": "kernel/drivers/net/virtio_net.ko.gz",
+      "sha256": "b5777d80eb6b750c5ca1371269db34fce7eea3cd05c9370c8be7250d536e4641",
+      "bytes": 77802
+    },
+    {
+      "path": "kernel/drivers/block/virtio_blk.ko.gz",
+      "sha256": "dc4c03b51998f275b45bf98c96d04ccfaecac76feb82020dea24400fb39bb71e",
+      "bytes": 19922
+    },
+    {
+      "path": "kernel/drivers/char/hw_random/rng-core.ko.gz",
+      "sha256": "80e01d8a13978e1a2d0b026dd1b0174fce993daa57f26a38db55e53163a2a62e",
+      "bytes": 14177
+    },
+    {
+      "path": "kernel/drivers/char/hw_random/virtio-rng.ko.gz",
+      "sha256": "074dbf2bc4f7c80fba78f1b175c821872e09e94aa12de38819b8b3dd946e6cca",
+      "bytes": 7506
+    },
+    {
+      "path": "kernel/drivers/firmware/qemu_fw_cfg.ko.gz",
+      "sha256": "d08820107a06e5db1f09c3b27b577b187f47ae60e822ccced6712a86c93bed40",
+      "bytes": 11441
+    },
+    {
+      "path": "kernel/fs/squashfs/squashfs.ko.gz",
+      "sha256": "1bcb3aa2c7e38109be228e382ceb57bb01b5fa4c9105c0cb2ad1c9149432d48c",
+      "bytes": 49659
+    },
+    {
+      "path": "kernel/fs/fuse/fuse.ko.gz",
+      "sha256": "d8373a31b041e03d9d14b7ec2b3153b72333000ccc40db301c11581eae1635e8",
+      "bytes": 148528
+    }
+  ],
+  "inputs": [
+    {
+      "path": "src-tauri/resources/runtime/appliance/vmlinuz-virt",
+      "sha256": "17fbd3efd16f2e7cb1b945f06423b37399ba7d5ac8cdd3665e7f13f363500e85",
+      "bytes": 12641280,
+      "note": "kernel"
+    },
+    {
+      "path": "src-tauri/resources/runtime/appliance/appliance-base.qcow2",
+      "sha256": "4f92209019584208c8814ca2593cec797f80580fcbc22da19588c0359cd36921",
+      "bytes": 179638272,
+      "note": "module set and kernel configuration"
+    },
+    {
+      "path": "src-tauri/resources/runtime/SHA256SUMS",
+      "sha256": "a545a22d6f6a16df873099a459ba20147cce8a41014326e3d8db9f64ed21b553",
+      "bytes": 29263,
+      "note": "pins the two above"
+    },
+    {
+      "path": "build/appliance-cache/alpine-minirootfs-3.24.1-x86_64.tar.gz",
+      "sha256": "41f73e3cf5fa919b8aa5ca6b30dc48f0da2720776d7423e2a7748211456fe081",
+      "bytes": 3698422,
+      "note": "root filesystem"
+    },
+    {
+      "path": "build/appliance-cache/alpine-minirootfs-3.24.1-x86_64.tar.gz.checksum",
+      "sha256": "b4e685e1676f2380d8983e0e3c9c067e2ce211e85cb6bc9e8be677014ffd71eb",
+      "bytes": 105,
+      "note": "pins the root filesystem"
+    },
+    {
+      "path": "guest/modules.list",
+      "sha256": "3cde56d87d29345a0e7c456f4b72f0483f4010c49437ecef3c4ce257256bf194",
+      "bytes": 870,
+      "note": "module names"
+    },
+    {
+      "path": "guest/guest_build.py",
+      "sha256": "4ce0be0b351b177f4debeca51146c953e62f729e7c6c696816b505478e98e5f4",
+      "bytes": 12865,
+      "note": "this helper"
+    },
+    {
+      "path": "scripts/build-guest.sh",
+      "sha256": "3c7d8bbf9d898ab832c69af241b35184ee277822e5ee8c48c6116603366b9df9",
+      "bytes": 8675,
+      "note": "the build"
+    },
+    {
+      "path": "appliance/agent/go.mod",
+      "sha256": "6ea42bd2c786b204e17fdb44b75259f8c26634eb3a53400377466d3f448701ea",
+      "bytes": 773,
+      "note": "agent module"
+    },
+    {
+      "path": "appliance/agent/go.sum",
+      "sha256": "72d515bd6c64960fcc2804c972f0e089346da6cc496005ebc08a14ee169a4666",
+      "bytes": 7433,
+      "note": "agent module sums"
+    },
+    {
+      "path": "appliance/agent/{link,cmd/yougori-sandbox-agent,gridkit,setupkit}",
+      "sha256": "f54b37decfe572463a8c0edb7a286501489b87db9e25a913b2b6d9c24404db51",
+      "files": 71,
+      "note": "agent sources: SHA-256 over sorted path, length and content"
+    }
+  ],
+  "toolchain": [
+    "go1.27.2 linux/amd64",
+    "gzip 1.12",
+    "cpio (GNU cpio) 2.15",
+    "mksquashfs version 4.6.1 (2023/03/25)",
+    "tar (GNU tar) 1.35",
+    "qemu-img version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+    "debugfs 1.47.0 (5-Feb-2023)",
+    "Python 3.12.3",
+    "host: Linux 6.18.54.1-microsoft-standard-WSL2 x86_64"
+  ],
+  "commands": [
+    "qemu-img convert -f qcow2 -O raw $REPO/src-tauri/resources/runtime/appliance/appliance-base.qcow2 $WORK/base.raw",
+    "debugfs -R rdump /lib/modules/6.18.58-0-virt $WORK $WORK/base.raw",
+    "python3 -I $REPO/guest/guest_build.py ikconfig $WORK/6.18.58-0-virt/kernel/kernel/configs.ko.gz $WORK/config-6.18.58-0-virt",
+    "python3 -I $REPO/guest/guest_build.py resolve $WORK/6.18.58-0-virt $REPO/guest/modules.list",
+    "env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-mod=readonly GOPROXY=off GOTOOLCHAIN=local go build -trimpath -buildvcs=false -ldflags=-s -w -buildid= -o $WORK/yougori-sandbox-agent ./cmd/yougori-sandbox-agent",
+    "(cd initrd-root && find . -mindepth 1 -printf '%P\\n' | sort | cpio -o -H newc -R 0:0 --reproducible --quiet; python3 -I guest/guest_build.py devices 1792540800) | gzip -n -9 > initrd",
+    "tar -xzf $REPO/build/appliance-cache/alpine-minirootfs-3.24.1-x86_64.tar.gz --numeric-owner -C $WORK/rootfs",
+    "env -u SOURCE_DATE_EPOCH mksquashfs $WORK/rootfs $WORK/root.img -comp xz -noappend -no-xattrs -all-root -no-progress -mkfs-time 1792540800 -all-time 1792540800"
+  ]
+}

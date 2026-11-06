@@ -3,6 +3,7 @@ import io
 import hashlib
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -141,7 +142,7 @@ class Provider(BaseHTTPRequestHandler):
         if self.path == "/tokenize":
             return self.reply(200, {"tokens": list(range(len(body["content"]) // 2))})
         if not body["stream"]:
-            return self.reply(200, {"choices": [{"message": {"content": "Hi there"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 9, "completion_tokens": 3}})
+            return self.reply(200, {"choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi there"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 9, "completion_tokens": 3}})
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
@@ -205,18 +206,107 @@ class ModelRelayTests(unittest.TestCase):
         finally:
             self.server.complete = True
 
-    def test_context_failure_releases_gpu_lock_and_busy_requests_are_rejected(self):
+    def test_context_failure_holds_nothing_and_relays_are_bounded_by_the_queue_not_the_lock(self):
         with self.assertRaisesRegex(ValueError, "context window"):
             model.generate({"messages": [{"role": "user", "content": "x" * 9000}], "max_tokens": 100}, Output(), {})
         self.assertFalse(model.GENERATION.locked())
+        # The Transformers runner's lock no longer serializes llama.cpp relays: the queue admits as
+        # many as the backend has slots (InferenceQueue), and each relay owns only its connection.
         model.GENERATION.acquire()
         try:
             meter = {}
             status, _reply = model.generate({"messages": [{"role": "user", "content": "Hello"}]}, Output(), meter)
-            self.assertEqual(status, 429)
-            self.assertEqual(meter["outcome"], "busy")
+            self.assertEqual(status, 200)
+            self.assertEqual(meter["outcome"], "ok")
         finally:
             model.GENERATION.release()
+
+
+class DownloadReaderTests(unittest.TestCase):
+    def test_normalizes_cached_names_and_drops_unused_fields(self):
+        files = {"config.json": 10, "weights.gguf": 100}
+        event = {"kind": "cached", "files": ["config.json", "config.json", "weights.gguf"], "secret": "PRIVATE"}
+        self.assertEqual(model.download_event(json.dumps(event) + "\n", files), {"kind": "cached", "bytes": 110})
+        for kind in ("transfer", "written"):
+            event = {"kind": kind, "bytes": 100, "total": "PRIVATE"}
+            self.assertEqual(model.download_event(json.dumps(event) + "\n", files), {"kind": kind, "bytes": 100})
+
+    def test_invalid_records_become_only_a_safe_failure(self):
+        records = ["PRIVATE\n", "[]\n", "null\n", '{"kind":"done","root":"/ok"}',
+                   '[' * 2000 + '0' + ']' * 2000 + '\n']
+        invalid = [{"kind": "unknown"}, {"kind": []}, {"kind": "cached", "files": ["unknown"]},
+                   {"kind": "cached", "files": [False]}, {"kind": "cached", "files": "weights"},
+                   {"kind": "done", "root": ""}, {"kind": "done", "root": None},
+                   {"kind": "done", "root": "a\x00b"},
+                   {"kind": "done", "root": "x" * (model.DOWNLOAD_ROOT_CHARS + 1)}]
+        invalid += [{"kind": kind, "bytes": amount}
+                    for kind in ("transfer", "written")
+                    for amount in (True, -1, 2**63, "1", None, 1.5, float("nan"), float("inf"))]
+        records += [json.dumps(event) + "\n" for event in invalid]
+        for record in records:
+            with self.subTest(record=record[:60]):
+                events = queue.Queue()
+                model.read_download_events(io.StringIO(record), events, threading.Event(), {})
+                self.assertEqual(events.get_nowait(), {"kind": "failed"})
+                self.assertTrue(events.empty())
+
+    def test_oversized_line_is_not_read_or_retained_in_full(self):
+        output = io.StringIO("PRIVATE" * model.DOWNLOAD_RECORD_CHARS)
+        events = queue.Queue()
+        model.read_download_events(output, events, threading.Event(), {})
+        self.assertEqual(output.tell(), model.DOWNLOAD_RECORD_CHARS + 1)
+        self.assertEqual(events.get_nowait(), {"kind": "failed"})
+        self.assertTrue(events.empty())
+
+    def test_io_failure_is_redacted(self):
+        for error in (OSError("PRIVATE"), UnicodeError("PRIVATE")):
+            events = queue.Queue()
+            model.read_download_events(Mock(readline=Mock(side_effect=error)), events, threading.Event(), {})
+            self.assertEqual(events.get_nowait(), {"kind": "failed"})
+
+    def exercise_backpressure(self, record, cancel):
+        blocked = threading.Event()
+
+        class ObservedQueue(queue.Queue):
+            def put(self, *args, **kwargs):
+                try:
+                    return super().put(*args, **kwargs)
+                except queue.Full:
+                    blocked.set()
+                    raise
+
+        events = ObservedQueue(maxsize=1)
+        events.put({"kind": "written", "bytes": 1})
+        stopped = threading.Event()
+        reader = threading.Thread(target=model.read_download_events,
+                                  args=(io.StringIO(record), events, stopped, {}), daemon=True)
+        reader.start()
+        try:
+            self.assertTrue(blocked.wait(2), "reader did not encounter backpressure")
+            if cancel:
+                stopped.set()
+            else:
+                events.get_nowait()
+                expected = json.loads(record) if record else {"kind": "exit"}
+                self.assertEqual(events.get(timeout=2), expected)
+            reader.join(2)
+            self.assertFalse(reader.is_alive(), "reader leaked after completion/cancellation")
+            if cancel:
+                self.assertEqual(events.get_nowait(), {"kind": "written", "bytes": 1})
+                self.assertTrue(events.empty())
+        finally:
+            stopped.set()
+            reader.join(2)
+
+    def test_terminal_events_survive_backpressure(self):
+        for record in ('{"kind":"done","root":"/snapshot"}\n', '{"kind":"failed"}\n', ''):
+            with self.subTest(record=record):
+                self.exercise_backpressure(record, cancel=False)
+
+    def test_cleanup_cancels_full_queue_including_eof(self):
+        for record in ('{"kind":"written","bytes":2}\n', '{"kind":"done","root":"/snapshot"}\n', ''):
+            with self.subTest(record=record):
+                self.exercise_backpressure(record, cancel=True)
 
 
 class ModelDownloadTests(unittest.TestCase):
@@ -225,7 +315,7 @@ class ModelDownloadTests(unittest.TestCase):
                         {"kind": "done", "root": "/snapshot"}],
                        [{"kind": "done", "root": "/snapshot"}]):
             process = Mock(stdin=io.StringIO(),
-                           stdout=io.StringIO("\n".join(json.dumps(event) for event in events)),
+                           stdout=io.StringIO("\n".join(json.dumps(event) for event in events) + "\n"),
                            returncode=0)
             process.poll.return_value = 0
             with self.subTest(events=events), patch.object(model.subprocess, "Popen", return_value=process) as spawn, \
@@ -236,6 +326,51 @@ class ModelDownloadTests(unittest.TestCase):
                 self.assertEqual(model.STATE["download"]["receivedBytes"], 100)
                 spawn.assert_called_once()
                 process.terminate.assert_not_called()
+
+    def test_malformed_worker_is_reaped_and_https_retry_can_finish(self):
+        worker = '''
+import json, os, sys, time
+json.load(sys.stdin)
+if os.environ.get("HF_HUB_DISABLE_XET") != "1":
+    print('{"kind":"written","bytes":"PRIVATE"}', flush=True)
+    time.sleep(30)
+else:
+    for i in range(1000):
+        print(json.dumps({"kind":"written","bytes":i}), flush=True)
+    print(json.dumps({"kind":"done","root":"/snapshot"}), flush=True)
+'''
+        processes = []
+        original_spawn = subprocess.Popen
+
+        def spawn(*args, **kwargs):
+            process = original_spawn(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        with patch.object(model, "DOWNLOAD_WORKER", worker), \
+             patch.object(model.subprocess, "Popen", side_effect=spawn), \
+             patch.object(model, "incomplete_downloads", return_value=set()):
+            self.assertEqual(model.download_snapshot("a" * 40, {"weights": 1000}), "/snapshot")
+        self.assertEqual(len(processes), 2)
+        self.assertTrue(all(process.poll() is not None for process in processes))
+        self.assertTrue(all(process.stdin.closed and process.stdout.closed for process in processes))
+        self.assertEqual(model.STATE["download"]["receivedBytes"], 1000)
+        self.assertEqual(model.STATE["download"]["transport"], "https")
+
+    def test_broken_request_pipe_still_cleans_up_and_retries(self):
+        processes = [Mock(stdin=Mock(write=Mock(side_effect=BrokenPipeError("PRIVATE"))),
+                          stdout=io.StringIO(""), returncode=1) for _ in range(2)]
+        for process in processes:
+            process.poll.return_value = None
+        with patch.object(model.subprocess, "Popen", side_effect=processes), \
+             patch.object(model, "incomplete_downloads", return_value=set()):
+            with self.assertRaisesRegex(RuntimeError, "Completed files are cached"):
+                model.download_snapshot("a" * 40, {"weights": 1000})
+        for process in processes:
+            process.terminate.assert_called_once()
+            process.wait.assert_called_once()
+            process.stdin.close.assert_called_once()
+            self.assertTrue(process.stdout.closed)
 
     def test_auto_precision_fits_large_models_without_exceeding_free_gpu_memory(self):
         gib = 1024 ** 3

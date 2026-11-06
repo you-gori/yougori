@@ -1,0 +1,29 @@
+format_version: 2
+project: operations-dashboard
+
+resources:
+  # Where the readings are kept. One small JSON file per reading, written by you with
+  # `yougori setup telemetry`; nothing writes here on its own and nothing is collected in the
+  # background. The volume is kept when the setup is stopped or removed, as data always is.
+  readings:
+    kind: volume
+
+  # The board: a plain file server over the readings folder, on this computer only. It has no
+  # internet, it is never published, and it has no way to reach the setup engine — it can only
+  # show the files you put in front of it.
+  board:
+    kind: environment
+    spec:
+      type: container
+      image: docker.io/library/python:3.13-alpine
+      cpu: 0.5
+      memory: "{{inputs.viewer_memory_gb}}"
+      storage: 2
+      command: [python, -m, http.server, "{{inputs.viewer_port}}", --directory, /readings]
+      ports: ["{{inputs.viewer_port}}"]
+      environment:
+        KEEP_READINGS: "{{inputs.keep_readings}}"
+      volumes:
+        - {source: readings, target: /readings}
+      restart: always
+      internet: false

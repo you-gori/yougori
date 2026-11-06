@@ -1,0 +1,10 @@
+{"item":"pair-01","dialect":"openai_chat_completions","reference_case":"cc-parallel-two-tools","candidate_case":"cc-parallel-two-tools"}
+{"item":"pair-02","dialect":"openai_responses","reference_case":"rs-parallel-two-tools","candidate_case":"rs-schema-violation"}
+{"item":"pair-03","dialect":"anthropic_messages","reference_case":"am-parallel-two-tools","candidate_case":"am-parallel-two-tools"}
+{"item":"pair-04","dialect":"openai_chat_completions","reference_case":"cc-parallel-two-tools","candidate_case":"cc-interleaved-fragments"}
+{"item":"pair-05","dialect":"openai_chat_completions","reference_case":"cc-text-stream","candidate_case":"cc-schema-violation"}
+{"item":"pair-06","dialect":"anthropic_messages","reference_case":"am-parallel-two-tools","candidate_case":"am-disconnect-mid-arguments"}
+{"item":"pair-07","dialect":"openai_responses","reference_case":"rs-parallel-two-tools","candidate_case":"rs-text"}
+{"item":"pair-08","dialect":"openai_chat_completions","reference_case":"cc-text-stream","candidate_case":"cc-refusal"}
+{"item":"pair-09","dialect":"anthropic_messages","reference_case":"am-text","candidate_case":"am-overloaded-error"}
+{"item":"pair-10","dialect":"openai_chat_completions","reference_case":"cc-quota-mid-stream","candidate_case":"cc-parallel-two-tools"}

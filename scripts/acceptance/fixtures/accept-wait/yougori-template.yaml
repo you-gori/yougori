@@ -1,0 +1,21 @@
+format_version: 2
+kind: template
+name: accept-wait
+title: Acceptance two-step fixture
+summary: Two disposable sandboxes, the second reading a secret, so a change cut off between them waits for that secret.
+version: 1.0.0
+license: MIT
+topics: [test]
+changelog: Acceptance fixture.
+requires:
+  yougori: 1.2.0
+  gpu: none
+capabilities:
+  - {id: web.service, selection: required}
+  - {id: run.service, selection: required}
+inputs:
+  - id: token
+    question: A token the second sandbox reads as TOKEN
+    type: secret
+    required: true
+    group: ai_models

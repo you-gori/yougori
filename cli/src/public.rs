@@ -13,14 +13,7 @@ use std::{
 
 pub const HELP: &str = r#"
 Public commands:
-  yougori                         Open the main menu; quietly add this project's shortcut
-  yougori cli                     Interactive menus: create, manage and open environment terminals
-  yougori launch [--change]        Run this project; press y to sync when switching copies
-  npm run yougori                 Run the project again; Ctrl+C stops its container
-  npm run yougori-change          Change project settings, then run it
-  npm run yougori-cloud           Select a connected cloud server and run this project there
-  yougori launch --cloud [--change]  Cloud project launch with on-demand sync and dev logs
-  python yougori [--change]       Run a Python project after its first setup
+  yougori                         Interactive terminal menu: Sandbox VMs, models, setups and settings
   yougori run [-d] [--name NAME] [-p HOST:GUEST] [-e KEY[=VALUE]] [--env-file FILE] IMAGE [COMMAND...]
   yougori create [OPTIONS] IMAGE    Create without starting
   yougori status                   Everything at a glance: environments, links, sharing, jobs
@@ -71,8 +64,14 @@ Public commands:
   yougori deployment secret delete NAME --yes  Remove a stored application secret
   yougori run hub/PUBLISHER/NAME[@VERSION] [--name INSTANCE] [--yes]  Run a template from yougori.com/hub
   yougori template run|continue|status|list|update|down|rm|new|check|capture|publish|download|info|search|fork|star|unstar|report|delete
+  yougori template capabilities|plan|configure|start|stop|logs|jobs|artifacts|usage|join|export|reveal|permissions
                                   Hub templates: whole setups as a folder; yougori template --help
   yougori tool new|check|add|list|remove|install|open|publish  Tools for sandboxes; yougori tool --help
+  yougori inference connect URL   Choose compute to contribute and connect to an inference website
+  yougori inference run HARNESS --server URL     Prepare and start a harness in a Sandbox VM
+  yougori inference install HARNESS --server URL Prepare the harness image only
+  yougori grid contribute --server URL --join-file FILE --model-url URL --model MODEL
+                                  Contribute an existing local model to a VM-hosted grid
   yougori import compose.yaml [--dry-run]
   yougori run --gpu nvidia IMAGE
   yougori run --isolation microvm IMAGE
@@ -82,23 +81,12 @@ Public commands:
   yougori model run [hf.co/OWNER/MODEL] [--neocloud [--environment ENV]] [--change] [--api] [--port 8000]
                                   Omit the model in a terminal to fill in hf.co/; Esc cancels
                                   Resources: --cpu N --memory GB --storage GB; --backend auto|cuda|metal|cpu
+                                  --runner vllm serves a native vLLM architecture on the pinned vLLM image instead of Transformers
                                   --template INSTANCE also sells it on a Hub template that takes models (My API)
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
-  yougori COMPANY --neogrid --ip HUB_IP [--password -] [--port 7460] [--name NAME] [--fingerprint SHA256]
-                                   Join a company's Closed Neo Grid; asks for the company password
-  yougori create grid              Admin: set up the company's grid; asks a few questions
-  yougori join grid                Join the company's grid; asks for the invite and the password
-  yougori grid create COMPANY --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] [--port 7460] [--hostname NAME] --yes
-                                   Admin: run the company's grid hub on this computer and join it
-  yougori grid join COMPANY --ip HUB_IP [--password -] | password [--password -] --yes
-  yougori grid                     This computer's grid: computers, plans and keys, or its assignment
-  yougori grids list               Every grid on this computer: models, desks, credentials and research
-  yougori grids status [--grid NAME] | address | new COMPANY --serve models|desks|credentials --ip THIS_PC_IP
-  yougori grids people|computers|share|models|desks|credentials|requests|research|connectors|work|log VERB [--grid NAME]
-                                   One name for the four grids; every old command keeps working
-  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]
+  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager]
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--closed-weights] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
                                    Share paid or free; --closed-weights offers chat/API without weight downloads
                                    Open weights by default. --publish is a legacy model alias for --closed-weights
@@ -113,6 +101,8 @@ Public commands:
   yougori model unshare ENV        Stop sharing; leave the model running
   yougori model auth login | status | logout  Protected Hugging Face token shared with the App
   yougori model decide ENV --file REQUEST.json|-  Typed decision probabilities
+  yougori model measure start|collect|seal|status|export|abandon ENV [--session ID]
+                                   Opt-in private observations, durable resume and labelled raw export
   yougori model stop ENV           Stop the model; a Neocloud pod stays billable
   yougori model preflight hf.co/OWNER/MODEL [--quant Q4_K_M]  Compatibility and requirements before weights
   yougori model support hf.co/OWNER/MODEL --agent claude|codex|kilo|opencode|gemini [--quant Q4_K_M] [--launch]
@@ -134,20 +124,6 @@ Public commands:
   yougori rollout advance|back --profile PROFILE --yes  One stage at a time, forwards or back
   yougori rollout retire --profile PROFILE [--keep-for-days 90] --yes | unretire --stamp STAMP --yes | forget --stamp STAMP [--force] --yes
                                    The old record is moved aside, never deleted on a timer
-  yougori access status            Access Grid: company credentials agents use without seeing them
-  yougori access signin --invite INVITE --username NAME [--code 123456] | signin --invite INVITE --sso | signout --yes
-  yougori access mcp               Connect an MCP client to your company's Access Grid
-  yougori access use CREDENTIAL URL [--method GET] | check REQUEST_ID
-  yougori access requests | approve REQUEST_ID [--hours N] | deny REQUEST_ID | log [--export FILE] [--verify]
-  yougori access password | computers | forget-computer DEVICE_ID --yes | sign-out-others --yes
-  yougori access two-step on|confirm|off  Your own two-step sign-in
-  yougori access create COMPANY --ip THIS_PC_IP --username NAME --yes | delete [--when later|now|forget] --yes | restore
-  yougori access backup --output FILE | restore-backup FILE --ip THIS_PC_IP --yes
-  yougori access add-person|set-person|person-password|reset-two-step|sign-out-person|remove-person USERNAME
-  yougori access add-credential NAME --kind bearer|header|basic|query|oauth|github-app|aws --destination URL
-  yougori access rotate-credential|remove-credential NAME
-  yougori access allow CREDENTIAL [--who team:NAME] [--ask|--never] [--limit N] | remove-rule RULE_ID --yes
-  yougori access settings --require-two-step true|false | sso --issuer URL --client-id ID [--passwordless]
   yougori remote create|connect|list|update|revoke|disconnect|remove|start|stop|files|inspect|download
                                   Remote tunnel sharing; use --file - for credentials
   yougori remote start --domain app.example.com   Share on a saved domain
@@ -1172,7 +1148,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     if let Some(result)=crate::model_registry::handle(args).await? { return Ok(result); }
     let action = args.get(1).map(String::as_str).unwrap_or("");
     if action == "optimize" {
-        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS]")?;
+        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager]")?;
         let mut params=json!({"environmentId": resolve(target).await?});
         let mut i=3;
         while i<args.len() {
@@ -1180,7 +1156,9 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 "--on"=>params["enabled"]=json!(true), "--off"=>params["enabled"]=json!(false),
                 "--pin"=>params["pinned"]=json!(true), "--unpin"=>params["pinned"]=json!(false),
                 "--idle"=>{params["idleTimeoutSeconds"]=json!(value(args,&mut i,"--idle")?.parse::<u64>().map_err(|_|"Idle seconds must be an integer")?);},
-                _=>return Err("Use --on, --off, --pin, --unpin or --idle SECONDS".into()),
+                "--parallel"=>{params["parallel"]=json!(value(args,&mut i,"--parallel")?.parse::<u64>().map_err(|_|"Parallel requests must be an integer")?);},
+                "--launch"=>{params["launch"]=json!(value(args,&mut i,"--launch")?);},
+                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N or --launch compiled|speculative|eager".into()),
             }
             i+=1;
         }
@@ -1207,6 +1185,12 @@ async fn model(args: &[String]) -> Result<Value, String> {
         let id=resolve(target).await?;
         let response=call("model_chat",json!({"environmentId":id,"messages":[{"role":"user","content":body.to_string()}],"maxTokens":1,"temperature":0.0})).await?;
         return serde_json::from_str(response["choices"][0]["message"]["content"].as_str().ok_or("Invalid decision model response")?).map_err(|_|"Invalid decision model JSON response".into());
+    }
+    if action == "measure" {
+        let (action,target,session)=crate::parse::model_measurement_args(args)?;
+        client::start(None).await?;
+        let id=resolve(&target).await?;
+        return call("model_measurement",json!({"environmentId":id,"action":action,"sessionId":session})).await;
     }
     if action == "preflight" {
         let target = args.get(2).ok_or("Supply a model")?;
@@ -1253,6 +1237,11 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 let backend = value(args, &mut i, "--backend")?;
                 if !matches!(backend.as_str(), "auto" | "cuda" | "metal" | "cpu") { return Err("--backend must be auto, cuda, metal or cpu".into()); }
                 resources.insert("backend".into(), backend.into());
+            }
+            "--runner" if action == "run" && !resources.contains_key("runner") => {
+                let runner = value(args, &mut i, "--runner")?;
+                if !matches!(runner.as_str(), "auto" | "vllm") { return Err("--runner must be vllm or auto".into()); }
+                resources.insert("runner".into(), runner.into());
             }
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
@@ -1323,7 +1312,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         name_neocloud_model(&mut env, &state, target).await?;
         call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port)})).await?
     } else if action == "run" {
-        match find_model(target).await?.filter(|_| quant.is_none() && !resources.contains_key("modelFolder") && !resources.contains_key("backend")) {
+        match find_model(target).await?.filter(|_| quant.is_none() && !resources.contains_key("modelFolder") && !resources.contains_key("backend") && !resources.contains_key("runner")) {
             Some(env) => {
                 if storage_drive.is_some() {
                     let state=call("get_platform_state",json!({})).await?;

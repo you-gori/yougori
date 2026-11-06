@@ -1,0 +1,98 @@
+format_version: 2
+project: sandbox-grid
+
+# Every resource here is served by Yougori's trusted Sandbox Grid handler. The template only
+# describes what to create; it runs no commands of its own on your computer.
+
+resources:
+  # Create: the grid this computer runs.
+  company:
+    kind: grid
+    when: {mode: create}
+    spec:
+      profile: sandbox_grid
+      mode: create
+      coordinator: this_computer
+      name: "{{inputs.grid_name}}"
+      address: "{{inputs.coordinator_address}}"
+      access: "{{inputs.reach}}"
+      domain: "{{inputs.domain}}"
+      secrets:
+        join_password: "{{secrets.grid_password}}"
+
+  # Create: this computer joins its own grid and shares part of itself. Without a custom share
+  # the limits are left out and Yougori suggests one.
+  this_computer:
+    kind: compute_pool
+    when: {mode: create}
+    spec:
+      grid: {resource: company}
+      source: this_computer
+      gpu: "{{inputs.share_gpu}}"
+      availability: "{{inputs.share_availability}}"
+      local_user_first: true
+      limits:
+        cpu: "{{inputs.share_cpu}}"
+        memory_gb: "{{inputs.share_memory_gb}}"
+        disk_gb: "{{inputs.share_disk_gb}}"
+
+  # Create: the first person's workspace.
+  workspaces:
+    kind: workspace_pool
+    when: {mode: create, first_person: "yes"}
+    capability: people.workspaces
+    spec:
+      compute: {resource: this_computer}
+      allocation: per_person
+      runtime: "{{inputs.workspace_runtime}}"
+      image: "{{inputs.workspace_image}}"
+      count: 1
+      resources:
+        cpu: "{{inputs.workspace_cpu}}"
+        memory_gb: "{{inputs.workspace_memory_gb}}"
+        disk_gb: "{{inputs.workspace_disk_gb}}"
+      gpu: "{{inputs.workspace_gpu}}"
+
+  # Create: the first person, signed in with their own password, given that workspace.
+  first_person:
+    kind: access_binding
+    when: {mode: create, first_person: "yes"}
+    spec:
+      grid: {resource: company}
+      people: team
+      roles: [member]
+      person:
+        username: "{{inputs.first_person_username}}"
+        display_name: "{{inputs.first_person_name}}"
+      workspaces: individual
+      workspace_pool: {resource: workspaces}
+      secrets:
+        password: "{{secrets.first_person_password}}"
+
+  # Join: this computer hosts workspaces for another grid.
+  membership:
+    kind: grid
+    when: {mode: join}
+    spec:
+      profile: sandbox_grid
+      mode: join
+      coordinator: remote
+      member: computer
+      secrets:
+        invitation: "{{secrets.invite}}"
+        join_password: "{{secrets.join_password}}"
+
+  # Person: sign in and open your own workspaces.
+  person_session:
+    kind: grid
+    when: {mode: person}
+    spec:
+      profile: sandbox_grid
+      mode: join
+      coordinator: remote
+      member: person
+      sign_in: password
+      username: "{{inputs.person_username}}"
+      secrets:
+        invitation: "{{secrets.person_invite}}"
+        password: "{{secrets.person_password}}"

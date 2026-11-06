@@ -98,6 +98,113 @@ pub const WARN_LEASES: usize = 200_000;
 // docs/grid-core/operations.md as a thing nothing bounds rather than given a number nothing
 // enforces.
 
+// ---- Finite jobs (`core::jobs`) ----
+//
+// Each of these is enforced at the door named beside it, and each refusal there is a sentence
+// with the number in it.
+
+/// Jobs that have not finished, across every queue in a realm: waiting, running, or asked to stop.
+///
+/// Every one of them may become a running attempt, and every running attempt is a piece of work in
+/// flight to the core, so this sits well under `MAX_UNFINISHED_WORK` and leaves room for every
+/// other profile. Enforced by `Core::submit_job`.
+pub const MAX_QUEUED_JOBS: usize = 1_024;
+
+/// Attempts one job may have, started or not. A retry policy may ask for at most this many, and a
+/// person running a job again by hand is held to it too. Enforced by `JobSpec::checked`,
+/// `Core::lease_job` and `Core::settle_job`.
+pub const MAX_ATTEMPTS_PER_JOB: u32 = 10;
+
+/// The largest single job artifact, in bytes: one gigabyte.
+///
+/// The coordinator keeps the bytes on its own disk beside the realm, so this bounds what one
+/// artifact can ask that disk to hold. Larger outputs belong in a bucket, which is a later step.
+/// Enforced by `Core::prepare_job_output` and `Core::prepare_job_checkpoint`, before a byte is sent.
+pub const MAX_ARTIFACT_BYTES: u64 = 1 << 30;
+
+/// Artifacts one attempt may send, outputs and checkpoints together. Enforced when an artifact is
+/// prepared and again when it is recorded.
+pub const MAX_ARTIFACTS_PER_ATTEMPT: usize = 32;
+
+/// Outputs one job may declare: half of what one attempt may send, so an attempt that sends every
+/// output still has room to record checkpoints. Enforced by `JobSpec::checked`.
+pub const MAX_OUTPUTS: usize = MAX_ARTIFACTS_PER_ATTEMPT / 2;
+
+/// Inputs one job may read. Enforced by `JobSpec::checked`.
+pub const MAX_INPUTS: usize = 16;
+
+/// Parts of one job's command: the program and its arguments, or an image's arguments. Enforced by
+/// `JobSpec::checked`, as are the two below.
+pub const MAX_ARGS: usize = 256;
+
+/// Bytes in one part of a job's command.
+pub const MAX_ARG_BYTES: usize = 4_096;
+
+/// Bytes in a job's whole command.
+pub const MAX_COMMAND_BYTES: usize = 64 * 1_024;
+
+/// Bytes in one job description as it arrives. Enforced by `JobSpec::from_json`.
+pub const MAX_SPEC_BYTES: usize = 256 * 1_024;
+
+/// Job queues whose admission has been set in one realm. A queue nobody has closed has no row, so
+/// this only grows when somebody closes a queue they have not closed before. Enforced by
+/// `Core::close_job_admission`.
+pub const MAX_JOB_QUEUES: usize = 256;
+
+/// The longest one attempt at a job may run: a day, the same ceiling as every other wait in a
+/// realm. Enforced by `JobSpec::checked`.
+pub const LONGEST_JOB: i64 = super::work::LONGEST_WAIT;
+
+/// The longest a job waits between attempts, however far its backoff has doubled.
+pub const MAX_BACKOFF_SECONDS: i64 = 60 * 60;
+
+/// The shortest a computer may hold an attempt between heartbeats.
+pub const MIN_LEASE_SECONDS: i64 = 30;
+
+/// The longest a computer may hold an attempt between heartbeats. Short, so a computer that has
+/// gone is noticed within minutes rather than at the job's own deadline.
+pub const MAX_LEASE_SECONDS: i64 = 15 * 60;
+
+/// How long a staged upload may go without a byte being written before the jobs sweep removes it
+/// as abandoned: an hour. An upload that is still arriving keeps its file fresh, so it is never
+/// taken from under the computer sending it.
+pub const ABANDONED_STAGING_AFTER: i64 = 60 * 60;
+
+/// How long a realm keeps a finished job's artifacts unless its administrator says otherwise:
+/// thirty days. Nothing a job that has not finished still needs is ever removed, whatever its age.
+pub const KEEP_JOB_ARTIFACTS_FOR: i64 = 30 * 24 * 60 * 60;
+
+/// How many bytes of artifacts a realm keeps unless its administrator says otherwise: twenty
+/// gigabytes, oldest removed first. Artifacts a job that has not finished still needs are kept even
+/// past this, and the sweep says the realm is over its allowance rather than removing them.
+pub const KEEP_JOB_ARTIFACT_BYTES: u64 = 20 << 30;
+
+/// The shortest a realm may be set to keep artifacts: a day, so nobody loses a job's outputs before
+/// they could have fetched them. Enforced by `Core::set_job_retention`, as are the three below.
+pub const SHORTEST_JOB_ARTIFACT_KEEP: i64 = 24 * 60 * 60;
+
+/// The longest a realm may be set to keep artifacts: a year.
+pub const LONGEST_JOB_ARTIFACT_KEEP: i64 = 365 * 24 * 60 * 60;
+
+/// The fewest bytes a realm may be set to keep: room for one artifact of the largest size.
+pub const LEAST_JOB_ARTIFACT_BYTES: u64 = MAX_ARTIFACT_BYTES;
+
+/// The most bytes a realm may be set to keep: one terabyte on the coordinator's own disk.
+pub const MOST_JOB_ARTIFACT_BYTES: u64 = 1 << 40;
+
+/// Artifacts one pass of the retention sweep removes, so a pass never takes long however much has
+/// built up; the next pass carries on.
+pub const MAX_ARTIFACTS_REMOVED_PER_PASS: usize = 512;
+
+// The job bounds hang together with each other and with the core's own, and the build stops if a
+// change to one of them ever makes that untrue.
+const _: () = assert!(MAX_QUEUED_JOBS <= MAX_UNFINISHED_WORK);
+const _: () = assert!(MAX_OUTPUTS < MAX_ARTIFACTS_PER_ATTEMPT);
+const _: () = assert!(MIN_LEASE_SECONDS < MAX_LEASE_SECONDS && MAX_LEASE_SECONDS < LONGEST_JOB);
+const _: () = assert!(SHORTEST_JOB_ARTIFACT_KEEP <= KEEP_JOB_ARTIFACTS_FOR && KEEP_JOB_ARTIFACTS_FOR <= LONGEST_JOB_ARTIFACT_KEEP);
+const _: () = assert!(LEAST_JOB_ARTIFACT_BYTES <= KEEP_JOB_ARTIFACT_BYTES && KEEP_JOB_ARTIFACT_BYTES <= MOST_JOB_ARTIFACT_BYTES);
+const _: () = assert!(SHORTEST_JOB_ARTIFACT_KEEP >= LONGEST_JOB, "a finished attempt's outputs outlive the longest attempt");
+
 /// How a limit is said to whoever reached it: the sentence names the number, so the answer to
 /// "how many may I have" is in the refusal itself.
 pub fn reached(what: &str, limit: usize) -> String {

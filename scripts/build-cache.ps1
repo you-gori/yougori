@@ -56,6 +56,8 @@ $profiles = [Collections.Generic.List[string]]::new()
 function Find-Profiles([string]$Path, [int]$Depth = 0) {
     if (!(Test-Path -LiteralPath $Path -PathType Container)) { return }
     $physical = Resolve-PhysicalPath $Path
+    # Test-Path sees a junction to a deleted folder as present; its target is not.
+    if (!(Test-Path -LiteralPath $physical -PathType Container)) { return }
     if (!($allowed | Where-Object { Test-Within $physical $_ })) {
         Write-Warning "Skipped external cache $physical. Include its parent with -CacheRoot to inspect or clean it."
         return

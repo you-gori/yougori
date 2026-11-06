@@ -1,0 +1,20 @@
+format_version: 2
+kind: template
+name: accept-borrower
+title: Acceptance borrower
+summary: A disposable sandbox that borrows a sandbox of another setup, for runtime acceptance of cross-setup connections.
+version: 1.0.0
+license: MIT
+topics: [test]
+changelog: Acceptance fixture.
+requires:
+  yougori: 1.2.0
+  gpu: none
+capabilities:
+  - {id: data.private_connections, selection: required}
+  - {id: run.service, selection: required}
+bindings:
+  - id: shared_env
+    type: resource
+    resource: environment
+    question: Which existing sandbox should this one reach?

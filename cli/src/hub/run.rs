@@ -23,16 +23,21 @@ use std::{
 use zeroize::Zeroizing;
 
 /// What a run was asked to do.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Options {
     pub source: String,
     pub name: Option<String>,
     pub inputs: Vec<(String, String)>,
+    /// `--binding ID=VALUE`: a format 2 template's installation-time bindings, for scripts (a
+    /// folder, a drive, a file, or an existing resource as SETUP/RESOURCE).
+    pub bindings: Vec<(String, String)>,
     pub inputs_file: Option<String>,
     pub secrets_stdin: bool,
     pub yes: bool,
     pub allow_pc_access: bool,
     pub dry_run: bool,
+    /// `--storage-drive DRIVE`: the drive a format 2 setup's sandboxes go on.
+    pub storage_drive: Option<String>,
 }
 
 /// What a template comes from.
@@ -42,18 +47,47 @@ pub enum Wanted {
     Folder(PathBuf),
 }
 
-/// A Hub address, or a template folder on this computer.
+/// A Hub address, a short natural name, or a template folder on this computer.
 pub fn wanted(source: &str) -> Result<Wanted, String> {
+    let path = Path::new(source);
+    wanted_among(source, path.is_dir(), path.exists())
+}
+
+/// [`wanted`], told what is on this computer rather than looking: which of a Hub address, a folder
+/// here and a short name the person meant is a decision worth being able to check on its own.
+fn wanted_among(source: &str, is_dir: bool, exists: bool) -> Result<Wanted, String> {
     let website = client::website();
     if source.starts_with("hub/") || refs::looks_like_ref(source, &website) || source.contains("yougori.com/hub/") {
         return refs::parse(source, &website).map(Wanted::Hub);
     }
     let path = Path::new(source);
-    if path.is_dir() {
+    // A short natural name such as "sandbox grid". It is read after a Hub address and, below,
+    // after a folder on this computer, so it can never take the place of either.
+    let short = super::setups::resolve_alias(source);
+    if is_dir {
+        if let Some(template) = &short {
+            // It is both. Guessing either way would be wrong half the time, so it asks, and both
+            // answers are a command the person can paste.
+            return Err(format!(
+                "{} is a folder here and also the name of a Yougori template. Say which you mean: ./{} for the folder, or {} for the template.",
+                scan::shown(source), source, template
+            ));
+        }
         return path.canonicalize().map(|path| Wanted::Folder(client::plain(path))).map_err(|e| format!("Cannot open the folder {source}: {e}"));
     }
-    if !path.exists() {
+    if let Some(template) = short {
+        return refs::parse(&template, &website).map(Wanted::Hub);
+    }
+    if !exists {
         let here = std::env::current_dir().map(|dir| client::plain(dir).display().to_string()).unwrap_or_else(|_| "this folder".into());
+        // A name people write as one word, such as my-api, is never read as a short name — that is
+        // how images and folders are named too. It is offered here instead, in the spelling that works.
+        if let Some(term) = super::setups::alias_hint(source) {
+            return Err(format!(
+                "There is no folder {} in {}. If you meant the Yougori template, its name is two words: yougori run {term:?}.",
+                scan::shown(source), scan::shown(&here)
+            ));
+        }
         return Err(format!("There is no folder {} in {}. Go to the folder that holds it first (cd), give its full path, or use hub/PUBLISHER/NAME.", scan::shown(source), scan::shown(&here)));
     }
     Err(format!("{} is not a Hub address or a template folder. Use hub/PUBLISHER/NAME, or ./FOLDER with a yougori-template.yaml.", scan::shown(source)))
@@ -96,9 +130,22 @@ impl Prepared {
     }
 }
 
-/// Downloads (or reads), verifies and checks a template and its Hub tools for a new run, and
-/// builds its review from the files. The Hub is asked first, so a removed item is refused.
-pub async fn prepare(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Prepared, String> {
+/// A template's files as downloaded or read, with what the Hub says about them, before any
+/// format is read: the same for a format 1 and a format 2 package.
+pub struct Fetched {
+    pub files: Files,
+    /// The Hub item at the version obtained, or the folder.
+    pub origin: Wanted,
+    pub version: String,
+    pub digest: String,
+    pub verified: bool,
+    pub detail: Option<Value>,
+    pub notices: Vec<String>,
+}
+
+/// Downloads (or reads) a template's files and checks every one of them against the Hub. The
+/// Hub is asked first, so a removed item is refused.
+pub async fn fetch(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Fetched, String> {
     match wanted {
         Wanted::Hub(reference) => {
             let got = client::obtain(site, cache, reference).await?;
@@ -107,7 +154,7 @@ pub async fn prepare(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Prep
             }
             let origin = Wanted::Hub(reference.at(&got.bundle.version));
             let notices = got.notice.into_iter().collect();
-            examine(site, cache, got.bundle.files, origin, got.bundle.version, got.bundle.digest, got.bundle.verified, got.detail, notices, false).await
+            Ok(Fetched { files: got.bundle.files, origin, version: got.bundle.version, digest: got.bundle.digest, verified: got.bundle.verified, detail: got.detail, notices })
         }
         Wanted::Folder(path) => {
             let collected = scan::collect(path)?;
@@ -115,9 +162,21 @@ pub async fn prepare(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Prep
                 return Err(format!("{} has no {}. Start a template with yougori template new NAME.", path.display(), format::TEMPLATE_FILE));
             }
             let digest = scan::digest_of(&collected.files);
-            examine(site, cache, collected.files, wanted.clone(), String::new(), digest, false, None, Vec::new(), false).await
+            Ok(Fetched { files: collected.files, origin: wanted.clone(), version: String::new(), digest, verified: false, detail: None, notices: Vec::new() })
         }
     }
+}
+
+/// A fetched v1 template, checked with its Hub tools, and its review built from the files.
+async fn examine_fetched(site: &Site, cache: &Cache, fetched: Fetched) -> Result<Prepared, String> {
+    examine(site, cache, fetched.files, fetched.origin, fetched.version, fetched.digest, fetched.verified, fetched.detail, fetched.notices, false).await
+}
+
+/// Downloads (or reads), verifies and checks a v1 template and its Hub tools for a new run, and
+/// builds its review from the files.
+pub async fn prepare(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Prepared, String> {
+    let fetched = fetch(site, cache, wanted).await?;
+    examine_fetched(site, cache, fetched).await
 }
 
 /// Whether a folder instance's template folder has changed since it was made (or last updated).
@@ -347,6 +406,18 @@ fn read_limited(source: &mut dyn std::io::Read, what: &str) -> Result<Zeroizing<
         return Err(format!("{what} is larger than 1 MiB."));
     }
     Ok(bytes)
+}
+
+/// Reads a file up to the 1 MiB request cap, for inputs supplied as a file. The read runs off the
+/// command thread so Ctrl+C still works.
+pub async fn read_file_limited(path: &str, what: &'static str) -> Result<Zeroizing<Vec<u8>>, String> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut file = std::fs::File::open(&path).map_err(|e| format!("Cannot open {what} {path}: {e}"))?;
+        read_limited(&mut file, what)
+    })
+    .await
+    .map_err(|_| format!("Cannot read {what}."))?
 }
 
 /// Reads stdin away from the command's own thread, so Ctrl+C still stops a read that waits on a
@@ -1156,7 +1227,7 @@ pub fn result(state: &State, live: Option<&Value>) -> Value {
 }
 
 /// Shows the review, with the community warning above it for an unverified template or tool.
-fn show_review(prepared: &Prepared, notes: &[String]) {
+fn show_review(prepared: &Prepared, notes: &[String], full: bool) {
     let mut lines: Vec<String> = Vec::new();
     if !prepared.verified || !prepared.unverified_tools.is_empty() {
         lines.extend(super::views::unverified().into_iter().map(|l| ui::paint(&l, ui::AMBER)));
@@ -1165,10 +1236,10 @@ fn show_review(prepared: &Prepared, notes: &[String]) {
         }
         lines.push(String::new());
     }
-    lines.push(ui::bold(&format!("{} · {}", super::views::clean(prepared.folder.template.title()), prepared.label())));
+    lines.push(ui::bold(&format!("{}  v{}", super::views::clean(prepared.folder.template.title()), super::views::clean(&prepared.version))));
     lines.push(super::views::clean(prepared.folder.template.summary.as_deref().unwrap_or_default()));
     lines.push(String::new());
-    lines.extend(super::views::review(&prepared.review));
+    lines.extend(if full { super::views::review(&prepared.review) } else { super::views::overview(&prepared.review) });
     if prepared.differs {
         lines.push(String::new());
         lines.push(ui::paint("▲ The Hub page's summary differs from the files. This review was built from the files themselves.", ui::AMBER));
@@ -1203,7 +1274,7 @@ fn nothing_changed(error: String) -> String {
 /// The template's name in a folder, for the name of its instance.
 fn folder_name(path: &Path) -> String {
     std::fs::read_to_string(path.join(format::TEMPLATE_FILE)).ok()
-        .and_then(|text| serde_yaml_ng::from_str::<format::Template>(text.trim_start_matches('\u{feff}')).ok())
+        .and_then(|text| yougori_setup::format::read_yaml::<format::Template>(&text).ok())
         .and_then(|template| template.name)
         .unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "template".into()))
 }
@@ -1257,7 +1328,15 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
     }
     let site = Site::configured()?;
     let cache = Cache::standard()?;
-    let prepared = wait(interactive, "Downloading and checking the template", prepare(&site, &cache, &wanted)).await.map_err(nothing_created)?;
+    let fetched = wait(interactive, "Downloading and checking the template", fetch(&site, &cache, &wanted)).await.map_err(nothing_created)?;
+    // A format 2 package is planned and applied by the engine's setup service; a format this
+    // Yougori does not read stops here, before anything is created. v1 packages carry on as before.
+    match super::plan::format_of(&fetched.files) {
+        Ok(yougori_setup::format::FormatVersion::V2) => return super::plan::run_v2(fetched, &options, interactive).await,
+        Ok(yougori_setup::format::FormatVersion::V1) => {}
+        Err(refusal) => return Err(format!("{refusal} Nothing was created.")),
+    }
+    let prepared = wait(interactive, "Checking the template", examine_fetched(&site, &cache, fetched)).await.map_err(nothing_created)?;
     let (host, engine) = wait(interactive, "Checking this computer", host(&prepared.folder, &prepared.hub_tools, None)).await.map_err(nothing_created)?;
     let requirements = review::requirements(&prepared.folder, &prepared.hub_tools, &prepared.review, &host);
     if !requirements.stops.is_empty() {
@@ -1288,7 +1367,7 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
     let notes = requirements.notes.clone();
     if options.dry_run {
         if interactive {
-            show_review(&prepared, &notes);
+            show_review(&prepared, &notes, true);
             ui::outro(&format!("Dry run: nothing was created. Run it with yougori template run {} --name {name}", prepared.source()));
         }
         return Ok(json!({
@@ -1304,7 +1383,7 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
     let mut storage_drive: Option<String> = None;
     let pc = prepared.folder.pc_access();
     if interactive {
-        show_review(&prepared, &notes);
+        show_review(&prepared, &notes, false);
         let cancel = || crate::wire::cancelled("Cancelled. Nothing was created.");
         // Every sandbox goes on one drive, asked first as yougori launch asks it.
         let host = wait(true, "Reading this computer's drives", async {
@@ -1327,10 +1406,18 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
                     }
                 }
                 0 => Ok(false),
-                1 => match ui::select(&format!("Run {}?", prepared.label()), &[], &[ui::Choice::new("Run it", "create what the review lists"), ui::Choice::new("Cancel", "nothing is created")], 0) {
-                    Ok(0) => Ok(true),
-                    Ok(_) => return Err(cancel()),
-                    Err(error) => Err(error),
+                1 => loop {
+                    let choices = [
+                        ui::Choice::new("Start setup", "choose storage, account and providers"),
+                        ui::Choice::new("Review full details", "images, connections, permissions and install steps"),
+                        ui::Choice::new("Cancel", "nothing is created"),
+                    ];
+                    match ui::select("Ready to set up this template?", &[], &choices, 0) {
+                        Ok(0) => break Ok(true),
+                        Ok(1) => show_review(&prepared, &notes, true),
+                        Ok(_) => return Err(cancel()),
+                        Err(error) => break Err(error),
+                    }
                 },
                 2 => crate::storage::choose_drive(&host, None, needed.min(STORAGE_TO_START), true, storage_drive.as_deref(),
                         &format!("Where should {name} be stored?"),
@@ -1806,6 +1893,42 @@ fn next_steps(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_short_name_is_read_after_a_hub_address_and_after_a_folder_on_this_computer() {
+        // The order is the whole safety story: a Hub address first, then anything the person
+        // actually keeps here, and only then a name Yougori knows. Nothing of theirs is shadowed.
+        let hub = wanted_among("hub/acme/my-api", false, false).unwrap();
+        assert!(matches!(&hub, Wanted::Hub(reference) if reference.item() == "acme/my-api"), "an address is still an address");
+
+        // A short name, with nothing of that name here: the first party's own template.
+        let short = wanted_among("sandbox grid", false, false).unwrap();
+        assert!(matches!(&short, Wanted::Hub(reference) if reference.item() == "yougori/sandbox-grid"));
+        let short = wanted_among("  My   API ", false, false).unwrap();
+        assert!(matches!(&short, Wanted::Hub(reference) if reference.item() == "yougori/my-api"), "spacing and case are forgiven");
+
+        // A folder of that name here as well: it asks instead of choosing, and both answers are
+        // written out as something to paste.
+        let said = wanted_among("sandbox grid", true, true).unwrap_err();
+        assert!(said.contains("./sandbox grid"), "the folder, as a command: {said}");
+        assert!(said.contains("hub/yougori/sandbox-grid"), "the template, as a command: {said}");
+
+        // A folder that is not a short name is just a folder, as before.
+        let folder = tempfile::tempdir().unwrap();
+        let typed = folder.path().to_string_lossy().to_string();
+        assert!(matches!(wanted(&typed).unwrap(), Wanted::Folder(_)));
+
+        // A one-word spelling is never a short name - images and folders are named that way - so
+        // it is refused, and the spelling that works is offered.
+        let said = wanted_among("my-api", false, false).unwrap_err();
+        assert!(said.contains("There is no folder"), "{said}");
+        assert!(said.contains("my api"), "it should offer the name that works: {said}");
+
+        // And a name that is nothing at all still reads as it always did.
+        let said = wanted_among("not-a-thing-here", false, false).unwrap_err();
+        assert!(said.contains("hub/PUBLISHER/NAME"), "{said}");
+        assert!(!said.contains("If you meant"), "nothing to suggest: {said}");
+    }
     use super::*;
     use crate::hub::client::tests::{bundle_json, serve, Fixture};
 
@@ -1814,8 +1937,10 @@ mod tests {
         scan::collect(&root).unwrap().files
     }
 
+    /// My API 1.6.0, the last v1 version, kept as a fixture: examples/hub/my-api is the format 2
+    /// recipe now, which the shared crate reads.
     fn my_api_files() -> Files {
-        scan::collect(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub/my-api")).unwrap().files
+        scan::collect(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/my-api-1.6.0")).unwrap().files
     }
 
     #[tokio::test]

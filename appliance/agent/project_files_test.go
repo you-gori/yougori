@@ -87,6 +87,35 @@ func TestProjectActivationPreservesUnrelatedPathsAndRefusesParentEscapes(t *test
 		t.Fatal("activation escaped the selected root")
 	}
 }
+
+// The runtime makes the working directory before the files arrive: an empty folder there takes
+// the files; a folder with anything in it is kept, as any other existing path is.
+func TestProjectActivationTakesTheEmptyWorkingDirectoryButKeepsOneWithContents(t *testing.T) {
+	root, fd, first, _ := projectFixture(t)
+	if err := os.Mkdir(filepath.Join(root, "app"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := activateProjectFiles(context.Background(), fd, projectActivationRequest{Target: "/app", Destination: first})
+	if err != nil || !result["atomic"] {
+		t.Fatalf("an empty working directory did not take the files: %v", err)
+	}
+	if target, err := os.Readlink(filepath.Join(root, "app")); err != nil || target != first {
+		t.Fatalf("wrong active link: %q / %v", target, err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "work"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "work", "notes.txt"), []byte("the application's own"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activateProjectFiles(context.Background(), fd, projectActivationRequest{Target: "/work", Destination: first}); err == nil {
+		t.Fatal("a folder with contents was replaced")
+	}
+	if value, _ := os.ReadFile(filepath.Join(root, "work", "notes.txt")); string(value) != "the application's own" {
+		t.Fatal("its contents changed")
+	}
+}
+
 func TestProjectActivationCancellationAndMismatchedIdentityKeepBothSources(t *testing.T) {
 	root, fd, first, second := projectFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,0 +1,509 @@
+{
+  "formatVersion": 2,
+  "instance": "app-backend",
+  "template": {
+    "name": "app-backend",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.health",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Health check",
+      "permissions": []
+    },
+    {
+      "id": "web.private",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "data.databases",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Databases",
+      "permissions": [
+        "Run containers on this computer.",
+        "Reserve storage on a drive you choose.",
+        "Connect to a database you configure."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "data.private_connections",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Private connections",
+      "permissions": []
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "access": "quick",
+    "app_cpu": "1",
+    "app_memory_gb": "2",
+    "cache": "no",
+    "db_storage_gb": "40",
+    "health_path": "/health",
+    "image": "ghcr.io/example/hello-app:1.0.0"
+  },
+  "secrets": {
+    "db_password": "hub-app-backend-db_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "app",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "cpu": 1.0,
+        "depends_on": [],
+        "environment": {
+          "DATABASE_HOST": "db",
+          "DATABASE_NAME": "app",
+          "DATABASE_PORT": "5432",
+          "DATABASE_USER": "app",
+          "PORT": "8080",
+          "REDIS_PORT": "6379"
+        },
+        "files": [],
+        "gpu": false,
+        "health": {
+          "path": "/health",
+          "port": 8080,
+          "wait_seconds": 180
+        },
+        "image": "ghcr.io/example/hello-app:1.0.0",
+        "internet": true,
+        "memory": 2,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8080
+        ],
+        "restart": "always",
+        "secrets": {
+          "DATABASE_PASSWORD": "hub-app-backend-db_password"
+        },
+        "storage": 10,
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "app-data",
+            "target": "/data"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "db",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "cpu": 1.0,
+        "depends_on": [],
+        "environment": {
+          "PGDATA": "/var/lib/postgresql/data/pgdata",
+          "POSTGRES_DB": "app",
+          "POSTGRES_USER": "app"
+        },
+        "files": [],
+        "gpu": false,
+        "image": "docker.io/library/postgres:16.4-alpine",
+        "internet": true,
+        "memory": 1,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          5432
+        ],
+        "restart": "always",
+        "secrets": {
+          "POSTGRES_PASSWORD": "hub-app-backend-db_password"
+        },
+        "storage": 40,
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "pg-data",
+            "target": "/var/lib/postgresql/data"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "app_to_db",
+      "kind": "connection",
+      "title": "connection",
+      "dependsOn": [
+        "app",
+        "db"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "direction": "one_way",
+        "from": {
+          "resource": "app"
+        },
+        "model_request": false,
+        "ports": [
+          5432
+        ],
+        "to": {
+          "resource": "db"
+        }
+      },
+      "outputs": [
+        "id"
+      ]
+    },
+    {
+      "id": "web",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "app"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "quick",
+        "health": {
+          "expected_status": 200,
+          "path": "/health"
+        },
+        "port": 8080,
+        "target": {
+          "resource": "app"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    }
+  ],
+  "order": [
+    "app",
+    "db",
+    "app_to_db",
+    "web"
+  ],
+  "steps": [
+    {
+      "title": "Read the app's logs",
+      "detail": "If the app does not become healthy, its output usually says why, such as a database it cannot reach yet.",
+      "command": "yougori logs {{env.app}}"
+    },
+    {
+      "title": "Open a database shell",
+      "detail": "Connects to PostgreSQL from inside its own sandbox.",
+      "command": "yougori terminal {{env.db}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "address",
+      "label": "App address",
+      "value": "{{outputs.web.url}}",
+      "private": false
+    },
+    {
+      "key": "app",
+      "label": "App sandbox",
+      "value": "{{outputs.app.name}}",
+      "private": false
+    },
+    {
+      "key": "database",
+      "label": "Database sandbox",
+      "value": "{{outputs.db.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "publications",
+    "storage",
+    "logs",
+    "diagram"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "app",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "db",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "app_to_db",
+        "kind": "connection",
+        "title": "connection",
+        "placement": "this computer"
+      },
+      {
+        "id": "web",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "ghcr.io/example/hello-app:1.0.0"
+      },
+      {
+        "kind": "image",
+        "name": "docker.io/library/postgres:16.4-alpine"
+      }
+    ],
+    "permissions": [
+      "app receives the secret DATABASE_PASSWORD from the question db_password.",
+      "db receives the secret POSTGRES_PASSWORD from the question db_password.",
+      "A website or API: Run containers on this computer.",
+      "Databases: Run containers on this computer.",
+      "Databases: Reserve storage on a drive you choose.",
+      "Databases: Connect to a database you configure.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Makes app:8080 reachable from the internet."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 2,
+      "cpu": 2.0,
+      "memoryGb": 3.0,
+      "storageGb": 50.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "image",
+        "question": "Which container image runs your app?",
+        "answer": "ghcr.io/example/hello-app:1.0.0",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "health_path",
+        "question": "Which path answers 200 when the app is healthy?",
+        "answer": "/health",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "app_cpu",
+        "question": "Processor cores for the app",
+        "answer": "1",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "app_memory_gb",
+        "question": "Memory for the app, in GB",
+        "answer": "2",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "db_password",
+        "question": "Choose the database password",
+        "secret": true,
+        "group": "files_data"
+      },
+      {
+        "id": "db_storage_gb",
+        "question": "Disk for the database, in whole GB",
+        "answer": "40",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "cache",
+        "question": "Add a Redis cache?",
+        "answer": "no",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "access",
+        "question": "Who can reach the app?",
+        "answer": "quick",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "app",
+        "port": 8080,
+        "access": "quick"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "app",
+        "variable": "DATABASE_PASSWORD",
+        "source": "the question db_password"
+      },
+      {
+        "resource": "db",
+        "variable": "POSTGRES_PASSWORD",
+        "source": "the question db_password"
+      }
+    ]
+  },
+  "digest": "365f5a9e0fef0694aa7124a43208ef6e529222090dfed967a4d8f48da005793c"
+}

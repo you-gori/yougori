@@ -1,0 +1,528 @@
+{
+  "formatVersion": 2,
+  "instance": "neo-grid",
+  "template": {
+    "name": "neo-grid",
+    "version": "1.0.0",
+    "formatVersion": 2,
+    "profile": "neo_grid"
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Create a grid",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.join",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Join a grid",
+      "permissions": []
+    },
+    {
+      "id": "grid.reuse_compute",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Reuse idle computers",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.availability",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Run only when computers are idle",
+      "permissions": []
+    },
+    {
+      "id": "grid.cloud_compute",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Rent cloud computers",
+      "permissions": [
+        "Rent cloud compute, which may cost money.",
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "models.local",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Local models",
+      "permissions": [
+        "Serve models from this computer."
+      ]
+    },
+    {
+      "id": "models.team",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "A team of models",
+      "permissions": []
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.lan",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Reach it on the local network",
+      "permissions": [
+        "Open a port the computers of your local network can reach."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "ai_team": "no",
+    "app_key": "yes",
+    "app_key_name": "Support assistant",
+    "availability": "idle",
+    "coordinator_address": "192.168.1.20",
+    "grid_name": "Example Team",
+    "idle_after_minutes": "10",
+    "mode": "create",
+    "model": "hf.co/Qwen/Qwen3-8B-GGUF",
+    "percent": "100",
+    "placement": "remaining",
+    "quantization": "Q4_K_M",
+    "reach": "lan",
+    "schedule": "Mon-Fri 18:00-08:00; Sat,Sun"
+  },
+  "secrets": {
+    "grid_password": "hub-neo-grid-grid_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "company",
+      "kind": "grid",
+      "title": "grid",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "coordinated by this computer",
+      "spec": {
+        "access": "lan",
+        "address": "192.168.1.20",
+        "coordinator": "this_computer",
+        "mode": "create",
+        "name": "Example Team",
+        "profile": "neo_grid",
+        "secrets": {
+          "join_password": "hub-neo-grid-grid_password"
+        }
+      },
+      "outputs": [
+        "realm_id",
+        "join_address",
+        "name",
+        "page",
+        "invitation"
+      ]
+    },
+    {
+      "id": "computers",
+      "kind": "compute_pool",
+      "title": "compute pool",
+      "dependsOn": [
+        "company"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "any computer of the grid",
+      "spec": {
+        "availability": "idle",
+        "gpu": "optional",
+        "grid": {
+          "resource": "company"
+        },
+        "idle_after_minutes": 10,
+        "limits": {},
+        "local_user_first": true,
+        "schedule": "Mon-Fri 18:00-08:00; Sat,Sun",
+        "source": "any"
+      },
+      "outputs": [
+        "id",
+        "computers"
+      ]
+    },
+    {
+      "id": "first_model",
+      "kind": "model_service",
+      "title": "model service",
+      "capability": "models.local",
+      "dependsOn": [
+        "computers"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "any computer of the grid",
+      "spec": {
+        "api": {
+          "first_key": "Support assistant",
+          "keys": 0,
+          "protocol": "openai"
+        },
+        "compute": {
+          "resource": "computers"
+        },
+        "gpu": "none",
+        "model": "hf.co/Qwen/Qwen3-8B-GGUF",
+        "placement": "remaining",
+        "quantization": "Q4_K_M",
+        "replicas": 1,
+        "share_percent": 100
+      },
+      "outputs": [
+        "id",
+        "endpoint",
+        "model",
+        "first_key"
+      ]
+    }
+  ],
+  "order": [
+    "company",
+    "computers",
+    "first_model"
+  ],
+  "steps": [
+    {
+      "title": "Connect an app",
+      "detail": "Point any OpenAI-compatible client at the API address below with the key shown when setup finished, and make it trust the coordinator certificate from the API access view. Ask for the model by the name the Models view shows."
+    },
+    {
+      "title": "Add more computers",
+      "detail": "On another computer, run this template with \"Add this computer to a grid\" and paste the invite from the Computers view."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "grid_name",
+      "label": "Grid",
+      "value": "{{outputs.company.name}}",
+      "private": false
+    },
+    {
+      "key": "grid_page",
+      "label": "Grid page",
+      "value": "{{outputs.company.page}}",
+      "private": false
+    },
+    {
+      "key": "join_address",
+      "label": "Where computers join",
+      "value": "{{outputs.company.join_address}}",
+      "private": false
+    },
+    {
+      "key": "api_base",
+      "label": "API address",
+      "value": "{{outputs.first_model.endpoint}}",
+      "private": false
+    },
+    {
+      "key": "model",
+      "label": "Model name for apps",
+      "value": "{{outputs.first_model.model}}",
+      "private": false
+    },
+    {
+      "key": "api_key",
+      "label": "API key (shown once)",
+      "value": "{{outputs.first_model.first_key}}",
+      "private": true
+    },
+    {
+      "key": "invite",
+      "label": "Grid invite",
+      "value": "{{outputs.company.invitation}}",
+      "private": true
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "computers",
+    "models",
+    "teams",
+    "api",
+    "keys",
+    "usage",
+    "queues",
+    "costs",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "company",
+        "kind": "grid",
+        "title": "grid",
+        "placement": "coordinated by this computer"
+      },
+      {
+        "id": "computers",
+        "kind": "compute_pool",
+        "title": "compute pool",
+        "placement": "any computer of the grid"
+      },
+      {
+        "id": "first_model",
+        "kind": "model_service",
+        "title": "model service",
+        "placement": "any computer of the grid"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "model",
+        "name": "hf.co/Qwen/Qwen3-8B-GGUF"
+      }
+    ],
+    "permissions": [
+      "company starts a Neo Grid that other computers can join.",
+      "Create a grid: Enroll computers into a grid.",
+      "Reuse idle computers: Enroll computers into a grid.",
+      "Local models: Serve models from this computer.",
+      "A website or API: Run containers on this computer.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "mode",
+        "question": "What do you want to do?",
+        "answer": "create",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "grid_name",
+        "question": "What is the company or team called?",
+        "answer": "Example Team",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "coordinator_address",
+        "question": "What is this computer's private network address?",
+        "answer": "192.168.1.20",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "reach",
+        "question": "Where can computers join the grid from?",
+        "answer": "lan",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "grid_password",
+        "question": "Choose the company password computers use to join",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "model",
+        "question": "Which model should the grid serve first?",
+        "answer": "hf.co/Qwen/Qwen3-8B-GGUF",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "quantization",
+        "question": "Which size of it?",
+        "answer": "Q4_K_M",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "placement",
+        "question": "Which computers run it?",
+        "answer": "remaining",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "percent",
+        "question": "What share of those computers should run it, in percent?",
+        "answer": "100",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "availability",
+        "question": "When may a computer serve?",
+        "answer": "idle",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "idle_after_minutes",
+        "question": "After how many quiet minutes?",
+        "answer": "10",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "schedule",
+        "question": "Only in these hours?",
+        "answer": "Mon-Fri 18:00-08:00; Sat,Sun",
+        "secret": false,
+        "group": "automation_recovery"
+      },
+      {
+        "id": "app_key",
+        "question": "Create an API key for your apps now?",
+        "answer": "yes",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "app_key_name",
+        "question": "Name of the app that will use this key",
+        "answer": "Support assistant",
+        "secret": false,
+        "group": "website_api"
+      },
+      {
+        "id": "ai_team",
+        "question": "Also offer this model as a team that splits one request across several computers?",
+        "answer": "no",
+        "secret": false,
+        "group": "ai_models"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "company",
+        "variable": "join_password",
+        "source": "the question grid_password"
+      }
+    ]
+  },
+  "digest": "dd4d8bf99595086bbf6754a09986108f0c3cc7e4f10f681768d30389a916a15a"
+}

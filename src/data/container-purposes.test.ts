@@ -10,20 +10,20 @@ describe("container purposes", () => {
       expect(ociImages).toContain(image)
       expect(image).not.toBe(customOciImage)
       expect(matchesOciImage(image, purpose.label)).toBe(true)
-      expect(ociStartupCommand(image)).toBe(["database", "static-site"].includes(purpose.id) ? "" : "sleep 2147483647")
+      expect(ociStartupCommand(image)).toBe("sleep 2147483647")
     }
   })
 
   it("searches names, references, registries, categories, and purpose keywords", () => {
     const search = (query: string) => ociImages.filter(image => matchesOciImage(image, query)).map(image => image.value)
-    expect(search("  MONGOdb  ")).toContain("docker.io/library/mongo:latest")
-    expect(search("node  docker hub")).toEqual(["docker.io/library/node:alpine", "docker.io/library/node:slim"])
-    expect(search("next.js")).toContain("docker.io/library/node:slim")
-    expect(search("react website")).toContain("docker.io/library/node:alpine")
+    expect(search("  PYthon  ")).toContain("docker.io/library/python:slim")
+    expect(search("node  docker hub")).toEqual(["docker.io/library/node:lts-slim"])
+    expect(search("next.js")).toContain("docker.io/library/node:lts-slim")
+    expect(search("react website")).toContain("docker.io/library/node:lts-slim")
     expect(search("fastapi")).toContain("docker.io/library/python:slim")
-    expect(search("relational database")).toContain("docker.io/library/postgres:latest")
-    expect(search("mcr.microsoft.com/dotnet/sdk")).toContain("mcr.microsoft.com/dotnet/sdk:9.0")
-    expect(search("operating systems").length).toBeGreaterThan(10)
+    expect(search("automation")).toContain("docker.io/library/python:slim")
+    expect(search("relational database")).toEqual([])
+    expect(search("operating systems")).toHaveLength(3)
   })
 
   it("handles blank queries and no matches without losing the custom option", () => {

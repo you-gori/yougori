@@ -81,17 +81,16 @@ pub fn core_instructions(cli: &Path) -> String { generated(cli)["SKILL.md"].clon
 
 /// Each `# ` heading of the guide starts one task reference, in this order;
 /// its `## ` sections stay with it.
-const REFERENCES: [(&str, &str); 15] = [
+const REFERENCES: [(&str, &str); 14] = [
     ("engine", "Engine, setup and agent conventions"),
     ("containers", "Containers, GPU containers, microVMs and VMs"),
     ("files", "Files, volumes and changes"),
     ("deployment", "Projects and deployments"),
     ("hub", "Hub templates and tools"),
+    ("setups", "Setups: running templates on this computer"),
     ("models", "Models and the Yougori Network"),
-    ("grid", "Closed Neo Grid (company computers)"),
-    ("desks", "Sandbox Grid (desks on company computers)"),
-    ("access-grid", "Access Grid (company credentials for agents)"),
-    ("grids", "One name for the four grids"),
+    ("runners", "Model runners and GPU memory"),
+    ("grids", "Grids a template can build"),
     ("connections", "Ports, domains, connections and cloud"),
     ("access", "Commands, logs, terminals and automation"),
     ("tools", "AI tool sandboxes and teammate sharing"),
@@ -106,12 +105,20 @@ pub fn reference_topic_mapping() -> BTreeMap<&'static str, &'static str> {
     mapping.extend([
         ("lifecycle", "containers"), ("storage", "containers"),
         ("settings", "engine"), ("jobs", "engine"),
-        ("gpu", "models"), ("network", "models"), ("neogrid", "grid"),
-        ("sandbox-grid", "desks"), ("desk", "desks"), ("people", "desks"),
+        ("setup", "setups"), ("migration", "setups"), ("telemetry", "setups"), ("backups", "setups"),
+        ("gpu", "models"), ("network", "models"),
+        // The restricted VM sandbox (`yougori sandbox ...`) is described with the AI tool
+        // sandboxes it runs tools for.
+        ("sandbox", "tools"), ("vm-sandbox", "tools"), ("workspace", "tools"),
+        ("runner", "runners"), ("optimizer", "runners"), ("catalog", "runners"),
+        // The four products lost their commands; their words still answer, and all
+        // point at the one section that says so and names what replaced them.
+        ("grid", "grids"), ("neogrid", "grids"), ("desks", "grids"), ("desk", "grids"),
+        ("sandbox-grid", "grids"), ("people", "grids"), ("access-grid", "grids"),
+        ("credentials", "grids"), ("company-credentials", "grids"),
+        ("one-grid", "grids"), ("namespace", "grids"),
         ("cloud", "connections"),
         ("terminal", "access"), ("vault", "access"),
-        ("credentials", "access-grid"), ("company-credentials", "access-grid"),
-        ("one-grid", "grids"), ("namespace", "grids"),
         ("launch", "deployment"), ("remote", "tools"), ("swarm", "bounty"), ("target", "practice"),
         ("template", "hub"), ("templates", "hub"),
     ]);
@@ -442,7 +449,9 @@ mod tests {
             ("terminal",vec!["--guest-timeout","execution-output","--last-error"]),
             ("deployment",vec!["deployment status","ports preflight","deployment secret set"]),
             ("gpu",vec!["model preflight", "--nowfree", "market_status"]),
-            ("grid",vec!["--neogrid","grid add-plan","--idle-after","grid add-key","grid_status"]),
+            // The commands are gone; what the topic must still say is that they are gone and
+            // what replaced them, so an agent reading it cannot suggest one.
+            ("grid",vec!["longer have commands of their own","yougori template run","yougori schema --topic grids"]),
             ("settings",vec!["settings patch","app startup-report"]),
             ("jobs",vec!["jobs cancel","jobs result"]),
             ("files",vec!["env cancel-transfer","download on"]),
@@ -450,9 +459,10 @@ mod tests {
             ("bounty",vec!["start bounty --worker","bounty accept","Swarm Mining is not enabled"]),
             ("practice",vec!["bounty practice WORKER","Northstar Ledger","report_finding"]),
             ("tools",vec!["--share","yougori connect","remote revoke"]),
-            ("desks",vec!["desks create","add-person","parkingSet","cloudFallbackSet","ssoSet","desk login"]),
-            ("grids",vec!["grids models gpus","COMPUTER_ID","request.do","Add --format json to see the whole answer."]),
+            ("desks",vec!["Sandbox Grid (a desk for each","yougori call METHOD","Build it as a template instead"]),
+            ("grids",vec!["were removed on 2026-10-26","suggest them; they are refused","secret inputs of the"]),
             ("engine",vec!["exits 130","operation_cancelled"]),
+            ("runners",vec!["model_migration","Kolibri1ForCausalLM","capacityContext","model measure start","engine-backends"]),
         ] {
             let guide=reference(topic).unwrap();
             for feature in features { assert!(guide.contains(feature),"{topic} is missing {feature}"); }

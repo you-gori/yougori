@@ -1,10 +1,8 @@
 use yougori_cli::{client, parse, presentation, wire, GUIDE};
-#[cfg(test)]
-use yougori_cli::catalog;
 use serde_json::{json, Value};
 use std::{io::Read, path::PathBuf};
 mod output;
-mod launcher;
+mod model_run;
 
 fn input(path: &str) -> Result<Value, String> {
     let mut bytes = Vec::new();
@@ -38,43 +36,21 @@ fn install_skill(args: &[String]) -> Result<Value, String> {
     serde_json::to_value(status).map_err(|e| e.to_string())
 }
 async fn run(args: Vec<String>) -> Result<i32, String> {
+    if args.is_empty() {
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return yougori_cli::interactive::run().await;
+        }
+    }
+    // Plain `yougori` opens Home; pipes retain help instead of waiting for keyboard input.
     let mut args = if args.is_empty() {
-        vec!["cli".into()]
+        vec!["--help".into()]
     } else { args };
-    // `yougori create grid` and `yougori join grid` ask their questions one at a time.
-    if launcher::grid_setup::requested(&args) {
-        return launcher::grid_setup::run(&args).await;
+    if args.first().is_some_and(|arg| arg == "inference") {
+        return yougori_cli::inference::run(&args[1..]).await;
     }
-    // `yougori grids …` is one way of asking all four grids the same kinds of question. It is
-    // matched before `grid`, which claims any command with --neogrid anywhere in it, so neither
-    // of the two one-letter neighbours can swallow the other's words.
-    if yougori_cli::grids::requested(&args) {
-        // The questions come first, with nothing over the screen: a spinner on top of a hidden
-        // password prompt would be worse than no spinner at all.
-        match yougori_cli::grids::run::prepare(&args[1..])? {
-            yougori_cli::grids::run::Prepared::Help(text) => println!("{text}"),
-            yougori_cli::grids::run::Prepared::Ask(asked) => {
-                let value = launcher::command_progress(&args, yougori_cli::grids::run::ask(&asked)).await?;
-                let environment = std::env::var("YOUGORI_FORMAT").ok();
-                match asked.format(environment.as_deref(), output::stdout_terminal()) {
-                    yougori_cli::grids::render::Format::Words => print!("{}", presentation::text(&asked.show(&value))),
-                    yougori_cli::grids::render::Format::Json => println!("{}", wire_json(value)),
-                }
-            }
-        }
-        return Ok(0);
-    }
-    // `yougori COMPANY --neogrid …` names the company first, so it is matched before any command word.
-    if yougori_cli::grid::requested(&args) {
-        if args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")) {
-            println!("{}", yougori_cli::grid::USAGE);
-            return Ok(0);
-        }
-        // No progress spinner: the command may ask for the password first.
-        let value = yougori_cli::grid::run(&args).await?;
-        let desks = matches!(args.first().map(String::as_str), Some("desks" | "desk"));
-        if output::stdout_terminal() { println!("{}", if desks { yougori_cli::grid::render_desks(&value) } else { yougori_cli::grid::render(&value) }) } else { println!("{}", wire_json(value)) }
-        return Ok(0);
+    if args.first().is_some_and(|arg| arg == "grid") {
+        return yougori_cli::grid_contributor::run(&args[1..]).await;
     }
     // `yougori template …`, `yougori tool …` and `yougori run hub/…` are the Hub: whole setups and
     // tools shared on yougori.com. Matched before the model words, which would read `run hub/…`
@@ -123,7 +99,7 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
     if invocation.needs_model {
         use std::io::IsTerminal;
         if !std::io::stdin().is_terminal()||!std::io::stdout().is_terminal(){return Err("Supply a model ID in scripts, for example: yougori model run hf.co/OWNER/MODEL --nowfree. Leave it out in an interactive terminal to fill in hf.co/.".into());}
-        let Some(model)=launcher::prompt_model(&args)? else {return Ok(0);};
+        let Some(model)=model_run::prompt_model(&args)? else {return Ok(0);};
         args[2]=model;
     }
     // Swarm Mining owns exactly `start bounty`; explicit environment selectors
@@ -191,13 +167,8 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         println!("{}",wire_json(yougori_cli::confidential::command::run(&args[1..]).await?));
         return Ok(0);
     }
-    if args.first().is_some_and(|arg| arg == "cli")
-        && args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
-        println!("Yougori interactive CLI\n\nUsage: yougori [cli]\n\nChoose actions with arrow keys and Enter. Browse files and folders when a path is needed.\nBack returns to the previous menu or question, and so does Escape; on the main menu,\nEscape closes it. Ctrl+C stops waiting; a second Ctrl+C quits.\nExit leaves your workloads running. Requires an interactive terminal.\n\nYougori quietly adds a project shortcut in the current folder when supported. Run that shortcut when you want to start the project.\nRun yougori help to see all commands.");
-        return Ok(0);
-    }
-    if launcher::requested(&args) {
-        return launcher::run(&args).await;
+    if model_run::requested(&args) {
+        return model_run::run(&args).await;
     }
     if args.first().is_some_and(|s| s == "vault") {
         return yougori_cli::vault::run(&args[1..]).await;
@@ -211,21 +182,6 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
         }
         let value = yougori_cli::rollout::run(&args).await?;
         if output::stdout_terminal() { println!("{}", yougori_cli::rollout::render(&value)) } else { println!("{}", wire_json(value)) }
-        return Ok(0);
-    }
-    // `yougori access …` is the company's Access Grid; `access mcp` serves agents on stdio.
-    if yougori_cli::access::requested(&args) {
-        if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
-            println!("{}", yougori_cli::access::USAGE);
-            return Ok(0);
-        }
-        if args.get(1).is_some_and(|a| a == "mcp") {
-            yougori_cli::access::mcp(&args[2..]).await?;
-            return Ok(0);
-        }
-        // No progress spinner here: the command may ask for a password first; it shows its own.
-        let value = yougori_cli::access::run(&args).await?;
-        if output::stdout_terminal() { println!("{}", yougori_cli::access::render(&args, &value)) } else { println!("{}", wire_json(value)) }
         return Ok(0);
     }
     // Words after `--` belong to the guest command, never to Yougori's own help.
@@ -260,8 +216,8 @@ async fn run(args: Vec<String>) -> Result<i32, String> {
   {address}
 Code: {code}
 Waiting for approval… (Ctrl+C cancels)")).await?,
-            "logout" => launcher::command_progress(&args, yougori_cli::network::logout()).await?,
-            _ => launcher::command_progress(&args, yougori_cli::network::account()).await?,
+            "logout" => model_run::command_progress(&args, yougori_cli::network::logout()).await?,
+            _ => model_run::command_progress(&args, yougori_cli::network::account()).await?,
         };
         if output::stdout_terminal() { println!("{}", yougori_cli::network::render(&args[0], &value)) } else { println!("{}", wire_json(value)) }
         return Ok(0);
@@ -362,7 +318,7 @@ Waiting for approval… (Ctrl+C cancels)")).await?,
         } else {
             "Finishing the update; stopping now would leave Yougori broken."
         };
-        let (result, interrupted) = launcher::command_progress(&args, finishing(labels, at_stake, yougori_cli::update::committed, async {
+        let (result, interrupted) = model_run::command_progress(&args, finishing(labels, at_stake, yougori_cli::update::committed, async {
             if uninstall {
                 yougori_cli::update::uninstall(yes).await
             } else if check {
@@ -473,14 +429,14 @@ Refreshing every 2 seconds * Ctrl+C to leave
         if table { print!("{}", presentation::text(&rendered)) } else { println!("{}", wire_json(value)) }
         return Ok(0);
     }
-    if let Err(error) = launcher::storage::prepare_args(&mut args).await {
-        if error == launcher::CANCELLED { return Ok(130); }
+    if let Err(error) = yougori_cli::storage_prompt::prepare_args(&mut args).await {
+        if error == model_run::CANCELLED { return Ok(130); }
         return Err(error);
     }
     // Views read as text at a terminal; `--format json` (or a pipe) keeps the JSON exactly.
     let view_format = if is_view(&args) { take_format(&mut args)? } else { None };
     let as_text = view_format.as_deref().map_or_else(output::stdout_terminal, |format| format == "table");
-    if let Some(result) = launcher::command_progress(&args, yougori_cli::public::handle(&args)).await? {
+    if let Some(result) = model_run::command_progress(&args, yougori_cli::public::handle(&args)).await? {
         let code=exit_code(&result);
         match view_text(&args, &result, &result, output::stdout_color()).filter(|_| as_text) {
             Some(text) => print!("{}", presentation::text(&text)),
@@ -522,7 +478,7 @@ Refreshing every 2 seconds * Ctrl+C to leave
     }
     // A dry run of quit is validated by the engine like any other request.
     let quit = invocation.request.method == "app_quit" && !invocation.request.dry_run;
-    let mut result = launcher::command_progress(&args, async {
+    let mut result = model_run::command_progress(&args, async {
         let mut result = if quit {
             client::quit().await?
         } else {
@@ -718,7 +674,7 @@ async fn autostart(enable: Option<bool>, dashboard: bool) -> Result<Value, Strin
 }
 
 async fn progress<T>(args: &[String], label: &str, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
-    launcher::command_progress(args, client::waiting(label, work)).await
+    model_run::command_progress(args, client::waiting(label, work)).await
 }
 
 /// Runs an update or an uninstall with a spinner, labelled `labels.0` and then `labels.1` once
@@ -809,7 +765,7 @@ async fn wait_finishing<T>(
 fn wire_json(value: Value) -> String {
     output::json(&serde_json::to_value(wire::Response::success(value)).unwrap(), output::stdout_color())
 }
-// The launcher's async state is large and Windows gives the main thread only a
+// The command's async state is large and Windows gives the main thread only a
 // 1 MB stack, so run everything on a dedicated thread with room to spare.
 const MAIN_STACK_BYTES: usize = 64 * 1024 * 1024;
 

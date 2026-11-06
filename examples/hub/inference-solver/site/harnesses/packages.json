@@ -1,0 +1,134 @@
+{
+  "opencode": {
+    "kind": "npm",
+    "package": "opencode-ai",
+    "version": "1.19.5"
+  },
+  "kilo": {
+    "kind": "npm",
+    "package": "@kilocode/cli",
+    "version": "7.8.18"
+  },
+  "codex": {
+    "kind": "npm",
+    "package": "@openai/codex",
+    "version": "0.166.0"
+  },
+  "pi": {
+    "kind": "npm",
+    "package": "@mariozechner/pi-coding-agent",
+    "version": "0.73.1"
+  },
+  "qwen": {
+    "kind": "npm",
+    "package": "@qwen-code/qwen-code",
+    "version": "0.26.6"
+  },
+  "cline": {
+    "kind": "npm",
+    "package": "cline",
+    "version": "3.0.74"
+  },
+  "claude": {
+    "kind": "npm",
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.316"
+  },
+  "aider": {
+    "kind": "pip",
+    "package": "aider-chat",
+    "version": "0.86.2"
+  },
+  "interpreter": {
+    "kind": "pip",
+    "package": "open-interpreter",
+    "version": "0.4.3",
+    "extra": ["setuptools==80.9.0"]
+  },
+  "goose": {
+    "kind": "release",
+    "version": "1.57.0",
+    "binary": "goose",
+    "assets": {
+      "amd64": {
+        "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "10eb96cb6a159b6e1d38eeedbef6ab64cd28168aad91948f1fa5c34eefdf98e3"
+      },
+      "arm64": {
+        "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "c32605acfd560aeb2adbf17ec359cc0217e28022a7e647b35a6af5dcfca91749"
+      }
+    }
+  },
+  "deepseek": {
+    "kind": "npm",
+    "package": "@deepseek-ai/dsh",
+    "version": "0.2.1-rc.5"
+  },
+  "gemini": {
+    "kind": "npm",
+    "package": "@google/gemini-cli",
+    "version": "0.66.0"
+  },
+  "openhands": {
+    "kind": "pip",
+    "package": "openhands",
+    "version": "1.16.0"
+  },
+  "grok": {
+    "kind": "binary",
+    "version": "1.0.70",
+    "binary": "grok",
+    "assets": {"amd64": {
+      "url": "https://x.ai/cli/grok-1.0.70-linux-x86_64",
+      "sha256": "22d281c5964c5444147328096ba2a221f3f0874c6858e27c825656a80f6e58e9"
+    }}
+  },
+  "swe": {
+    "kind": "git",
+    "repository": "https://github.com/SWE-agent/SWE-agent.git",
+    "commit": "3ea751c087f32b16e039a2233dd6eefecef325d5",
+    "version": "3ea751c087f3",
+    "extra": ["tree-sitter==0.21.3", "tree-sitter-languages==1.10.2", "mcp==2.3.0"]
+  },
+  "plandex": {
+    "kind": "plandex",
+    "repository": "https://github.com/plandex-ai/plandex.git",
+    "commit": "e2d772072efadbe41d2946d97d79be55532dbab5",
+    "version": "2.2.1 / e2d772072efa"
+  },
+  "strix": {
+    "kind": "strix",
+    "package": "strix-agent",
+    "version": "1.7.0",
+    "extra": ["openai-agents==0.19.0", "litellm==1.101.0", "openai==2.53.0", "pydantic==2.13.4", "caido-sdk-client==0.2.0"],
+    "caido": {"url":"https://caido.download/releases/v0.56.0/caido-cli-v0.56.0-linux-x86_64.tar.gz", "sha256":"1bc13f1ad558cd333924890d9d09b73f1cdf6726b7855265cd4c4ddece0211d3"}
+  },
+  "shannon": {
+    "kind": "shannon",
+    "repository": "https://github.com/KeygraphHQ/shannon.git",
+    "commit": "b9744f6cecc5429333873b86a6762f1d70c54fc2",
+    "version": "b9744f6cecc5",
+    "temporal": {"url":"https://github.com/temporalio/cli/releases/download/v1.7.0/temporal_cli_1.7.0_linux_amd64.tar.gz","sha256":"8b5de72e622f4ae062d0d5d948ca398de6212d63b2f25766a1cb810a3dc2d0ed"},
+    "typst": {"url":"https://github.com/typst/typst/releases/download/v0.14.2/typst-x86_64-unknown-linux-musl.tar.xz","sha256":"a6044cbad2a954deb921167e257e120ac0a16b20339ec01121194ff9d394996d"}
+  },
+  "pentagi": {
+    "kind": "pentagi",
+    "repository": "https://github.com/vxcontrol/pentagi.git",
+    "commit": "cffed9485aa1cca70762cd08a57ac62a80406258",
+    "version": "cffed9485aa1"
+  },
+  "pentestgpt": {
+    "kind": "git",
+    "repository": "https://github.com/GreyDGL/PentestGPT.git",
+    "commit": "e8b1bb77d1ac00329675cec3b060aba971ec1ac8",
+    "version": "1.0.0 / e8b1bb77d1ac / interactive CLI"
+  },
+  "hexstrike": {
+    "kind": "hexstrike",
+    "repository": "https://github.com/0x4m4/hexstrike-ai.git",
+    "commit": "d689933ff579d839c676c82b231f8e98326c5f04",
+    "version": "6.0 / d689933ff579",
+    "requirements": ["flask==3.0.3", "requests==2.32.5", "psutil==5.9.8", "mcp==1.13.1", "pydantic==2.11.7", "httpx==0.27.2", "httpcore==1.0.7", "beautifulsoup4==4.14.2", "selenium==4.36.0", "aiohttp==3.12.15", "mitmproxy==10.4.2"]
+  }
+}

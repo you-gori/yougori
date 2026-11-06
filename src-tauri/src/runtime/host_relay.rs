@@ -111,17 +111,16 @@ async fn frame(
     id: u32,
     data: &[u8],
 ) -> Result<(), std::io::Error> {
+    // One write per frame: header and payload leave together, never as a lone 9-byte segment.
+    let mut frame = Vec::with_capacity(9 + data.len());
+    frame.push(kind);
+    frame.extend_from_slice(&id.to_be_bytes());
+    frame.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    frame.extend_from_slice(data);
     let mut writer = writer.lock().await;
-    let mut header = [0; 9];
-    header[0] = kind;
-    header[1..5].copy_from_slice(&id.to_be_bytes());
-    header[5..].copy_from_slice(&(data.len() as u32).to_be_bytes());
-    tokio::time::timeout(Duration::from_secs(30), async {
-        writer.write_all(&header).await?;
-        writer.write_all(data).await
-    })
-    .await
-    .map_err(std::io::Error::other)?
+    tokio::time::timeout(Duration::from_secs(30), writer.write_all(&frame))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 fn run(stream: TcpStream, port: u16) -> JoinHandle<()> {
@@ -160,6 +159,7 @@ fn run(stream: TcpStream, port: u16) -> JoinHandle<()> {
                     let writer = writer.clone();
                     tasks.spawn(async move {
                         if let Ok(Ok(mut target))=tokio::time::timeout(Duration::from_secs(3),TcpStream::connect(("127.0.0.1",port))).await {
+                            let _=target.set_nodelay(true);
                             let mut buffer=vec![0;65536];
                             loop {
                                 tokio::select! {

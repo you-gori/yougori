@@ -5,6 +5,7 @@
       "deb"
     ],
     "resources": {
+      "../examples/hub/inference-solver/": "templates/inference-solver/",
       "../LICENSE": "LICENSE",
       "../COPYING": "COPYING",
       "../COMMERCIAL_LICENSE.txt": "COMMERCIAL_LICENSE.txt",

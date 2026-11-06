@@ -1,0 +1,311 @@
+{
+  "formatVersion": 2,
+  "instance": "ai-workspace",
+  "template": {
+    "name": "ai-workspace",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "tools.builtin",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Built-in AI tools",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "tools.provider_access",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "ai_models",
+      "name": "Provider access",
+      "permissions": [
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "claude_access": "subscription",
+    "claude_signin_source": "new",
+    "cpu": "4",
+    "gemini_access": "api",
+    "memory_gb": "8",
+    "storage_gb": "40",
+    "tools": "claude,gemini,ollama"
+  },
+  "secrets": {
+    "gemini_api_key": "hub-ai-workspace-gemini_api_key"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "workspace",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "sleep",
+          "infinity"
+        ],
+        "cpu": 4.0,
+        "depends_on": [],
+        "environment": {},
+        "files": [],
+        "gpu": false,
+        "image": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55",
+        "internet": true,
+        "memory": 8,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [],
+        "restart": "",
+        "secrets": {
+          "GEMINI_API_KEY": "hub-ai-workspace-gemini_api_key"
+        },
+        "storage": 40,
+        "tools": [
+          {
+            "copy_credentials": false,
+            "name": "claude",
+            "signin": true,
+            "source": "built-in",
+            "spec": "claude"
+          },
+          {
+            "name": "gemini",
+            "signin": false,
+            "source": "built-in",
+            "spec": "gemini"
+          },
+          {
+            "name": "ollama",
+            "signin": false,
+            "source": "built-in",
+            "spec": "ollama"
+          }
+        ],
+        "type": "container",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "work",
+            "target": "/workspace"
+          }
+        ],
+        "working_dir": "/workspace"
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    }
+  ],
+  "order": [
+    "workspace"
+  ],
+  "steps": [
+    {
+      "title": "Open Claude Code",
+      "command": "yougori claude --environment {{env.workspace}}"
+    },
+    {
+      "title": "Open Gemini CLI",
+      "detail": "If it asks, type /auth to finish signing in.",
+      "command": "yougori gemini --environment {{env.workspace}}"
+    },
+    {
+      "title": "Start Ollama",
+      "detail": "Starts the Ollama server inside the sandbox; then run ollama pull and ollama run in its terminal.",
+      "command": "yougori ollama --environment {{env.workspace}}"
+    },
+    {
+      "title": "Share the sandbox with a teammate",
+      "detail": "Open a terminal, press Ctrl+G and choose Share this environment. A teammate with control can use everything in the sandbox, including your signed-in tools.",
+      "command": "yougori terminal {{env.workspace}}"
+    }
+  ],
+  "outputs": [
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{outputs.workspace.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "workspace",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
+      },
+      {
+        "kind": "tool",
+        "name": "claude",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "gemini",
+        "from": "built in"
+      },
+      {
+        "kind": "tool",
+        "name": "ollama",
+        "from": "built in"
+      }
+    ],
+    "permissions": [
+      "workspace receives the secret GEMINI_API_KEY from the question gemini_api_key.",
+      "Built-in AI tools: Run containers on this computer.",
+      "Provider access: Open a sign-in to a provider you choose.",
+      "Persistent volumes: Reserve storage on a drive you choose."
+    ],
+    "costs": [],
+    "warnings": [],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 4.0,
+      "memoryGb": 8.0,
+      "storageGb": 40.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "tools",
+        "question": "Which AI tools do you want in the sandbox?",
+        "answer": "claude,gemini,ollama",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "claude_access",
+        "question": "How should Claude Code reach its models?",
+        "answer": "subscription",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "claude_signin_source",
+        "question": "Which Claude sign-in should Claude Code use?",
+        "answer": "new",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "gemini_access",
+        "question": "How should Gemini CLI reach its models?",
+        "answer": "api",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "gemini_api_key",
+        "question": "Google API key for Gemini CLI",
+        "secret": true,
+        "group": "ai_models"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores for the sandbox",
+        "answer": "4",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory for the sandbox, in GB",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the sandbox, in whole GB",
+        "answer": "40",
+        "secret": false,
+        "group": "files_data"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "workspace",
+        "variable": "GEMINI_API_KEY",
+        "source": "the question gemini_api_key"
+      }
+    ]
+  },
+  "digest": "c3710401380d2b77ab63461afb3816431512b119f1139e5cbb9d2fc73b497e0b"
+}

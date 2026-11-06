@@ -10,6 +10,8 @@ import { useTopicWalkthroughModal } from "@/lib/topic-walkthrough"
 import { PreferencesVolumes } from "@/components/dialogs/preferences-volumes"
 import { ReleaseUpdateSettings } from "@/components/release-update"
 import { PreferencesStartupHealth } from "@/components/dialogs/preferences-startup-health"
+import { SandboxDoctor } from "@/components/security/doctor"
+import { HostEvidence } from "@/components/security/host-evidence"
 import "@/components/dialogs/preferences-dialog.css"
 
 export function PreferencesDialog() {
@@ -157,6 +159,17 @@ export function PreferencesDialog() {
         <PreferencesVolumes open={open} />
 
         <ReleaseUpdateSettings />
+
+        <section className="preferences-section col-span-full" aria-labelledby="preferences-evidence-title">
+          <div className="preferences-section-label">
+            <h3 id="preferences-evidence-title">VM sandbox and host evidence</h3>
+            <p>What Yougori has observed about this computer. Looking changes nothing.</p>
+          </div>
+          <div className="preferences-section-body space-y-3">
+            <SandboxDoctor />
+            <HostEvidence />
+          </div>
+        </section>
 
         {error && <p role="alert" className="preferences-error">{error}</p>}
       </DialogPanel>

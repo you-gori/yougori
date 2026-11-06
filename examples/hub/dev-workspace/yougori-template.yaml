@@ -1,0 +1,120 @@
+format_version: 2
+kind: template
+name: dev-workspace
+title: Dev Workspace
+subtitle: A development sandbox with your code synced in and out, and your tools installed.
+summary: Your project folder is kept in step with a sandbox on this computer, both ways. Edit on either side; a file changed in both places keeps both copies, never one over the other.
+version: 1.0.0
+license: MIT
+topics: [development, workspace, sync, tools]
+aliases: [dev workspace, development sandbox, code sandbox, workspace with sync]
+changelog: First version. A container sandbox with your chosen project folder synced both ways, an optional read-only reference folder, selected coding tools, and an optional quick link to the app you run inside.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: none
+
+capabilities:
+  - {id: grid.local_only, selection: required}
+  - {id: data.sync, selection: required}
+  - {id: data.folders, selection: required}
+  - {id: data.volumes, selection: required}
+  - {id: tools.builtin, selection: default}
+  - {id: web.service, selection: optional}
+  - {id: web.quick_link, selection: optional}
+  - {id: run.service, selection: required}
+
+bindings:
+  - id: project
+    type: folder
+    question: Which folder holds your project?
+    hint: Yougori keeps this folder and the sandbox's copy of it in step, both ways. Your folder is never deleted, and a file changed in both places keeps both copies.
+    read_only: false
+    mode: sync
+  - id: reference
+    type: folder
+    question: A folder the sandbox may read, if you want one
+    hint: Optional. Read only, mounted as it is, for notes or shared files the sandbox should see but never change.
+    required: false
+    mode: mount
+
+inputs:
+  - id: image
+    question: Which container image should the sandbox run?
+    hint: "Pin a version. ubuntu:24.04, node:22.11-bookworm, python:3.12-slim-bookworm and rust:1.83-bookworm all suit this well."
+    type: text
+    group: ai_models
+    pattern: '^[a-z0-9][a-z0-9._/-]{0,250}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$'
+    default: "ubuntu:24.04"
+  - id: tools
+    question: Which coding tools should it install?
+    hint: Each is installed inside the sandbox. You sign in to them there, in a terminal, when the setup is ready.
+    type: multichoice
+    group: ai_models
+    required: false
+    choices:
+      - {value: codex, label: Codex}
+      - {value: claude, label: Claude Code}
+      - {value: gemini, label: Gemini CLI}
+      - {value: opencode, label: OpenCode}
+  - id: cpu
+    question: Processor cores for the sandbox
+    type: number
+    group: grid_workers
+    min: 0.5
+    max: 32
+    default: 4
+  - id: memory_gb
+    question: Memory for the sandbox, in GB
+    type: number
+    group: grid_workers
+    min: 1
+    max: 128
+    default: 8
+  - id: storage_gb
+    question: Disk for the sandbox, in GB
+    hint: Its own disk, for the image, the tools and what they download. Your project folder does not use it.
+    type: number
+    group: files_data
+    min: 10
+    max: 2000
+    default: 40
+  - id: access
+    question: How should port 3000 in the sandbox be reachable?
+    hint: Run your app on port 3000 inside the sandbox to use this. Choose Only this computer if you do not run a web app.
+    type: choice
+    group: website_api
+    choices:
+      - {value: none, label: Only this computer}
+      - {value: quick, label: A quick link anyone with the address can open}
+    default: none
+
+tools:
+  dev: [codex, claude, gemini, opencode]
+
+tool_options:
+  dev/codex: {when: {tools: codex}, signin: true}
+  dev/claude: {when: {tools: claude}, signin: true}
+  dev/gemini: {when: {tools: gemini}, signin: true}
+  dev/opencode: {when: {tools: opencode}, signin: true}
+
+public:
+  - {environment: dev, port: 3000, access: "{{inputs.access}}"}
+
+steps:
+  - title: Open a terminal in the sandbox
+    detail: Your project is at /workspace. Edit it here or on your computer; both stay in step.
+    command: "yougori terminal {{env.dev}}"
+  - title: Sign in to your tools there
+    detail: Each tool signs in inside the sandbox, not on this computer.
+    when: {tools: [codex, claude, gemini, opencode]}
+
+outputs:
+  - {key: workspace, label: Your project inside the sandbox, value: "/workspace"}
+  - {key: sandbox, label: Sandbox, value: "{{env.dev}}"}
+  - {key: address, label: App address, value: "{{public.dev}}", when: {access: quick}}
+
+retention: {on_stop: keep, on_remove: keep}
+
+views: [files, logs, api]

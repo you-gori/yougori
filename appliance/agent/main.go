@@ -631,7 +631,16 @@ func (s *server) provision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "container was kept stopped: "+err.Error())
 		return
 	}
+	durable()
 	writeJSON(w, http.StatusCreated, map[string]any{"id": request.ID, "output": output})
+}
+
+// durable writes what the guest has made so far to its disk before the host is told it exists.
+// The host records a container as made on that answer; a machine stopped hard a moment later
+// (Yougori killed, a power cut) otherwise lost a container it had recorded, or kept its record
+// without its storage, and the next change failed on it (found cutting off a real run).
+func durable() {
+	syscall.Sync()
 }
 
 func (s *server) action(w http.ResponseWriter, r *http.Request) {
@@ -695,9 +704,11 @@ func (s *server) action(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Action == "start" || request.Action == "restart" || request.Action == "resume" {
 		if err := setContainerInternet(ctx, request.ID, request.NetworkAccess); err != nil {
-			// Short-lived images may finish before networking is attached.
+			// Short-lived images may finish before networking is attached, and one whose command
+			// fails at once is already restarting. Its choice is recorded, and the restart policy
+			// applies it each time the process runs again; its logs say why it stopped.
 			state, stateErr := run(ctx, "nerdctl", "--namespace", namespace, "inspect", "--format", "{{.State.Status}}", request.ID)
-			if stateErr == nil && strings.TrimSpace(state.Stdout) == "exited" {
+			if stateErr == nil && notRunning(state.Stdout) {
 				writeJSON(w, http.StatusOK, output)
 				return
 			}
@@ -707,6 +718,13 @@ func (s *server) action(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, output)
+}
+
+// notRunning is a container state with no process to attach a network to: one that finished or
+// failed and is waiting to be restarted, never one running or paused.
+func notRunning(status string) bool {
+	status = strings.TrimSpace(status)
+	return status != "running" && status != "paused"
 }
 
 func (s *server) deleteContainer(w http.ResponseWriter, r *http.Request) {
@@ -781,6 +799,9 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 	defer unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
+	if dropIncomplete(ctx, w, request.ID) {
+		return
+	}
 	running, err := run(ctx, "nerdctl", "--namespace", namespace, "inspect", "--format", "{{.State.Running}}", request.ID)
 	if err != nil {
 		writeCommandError(w, err)
@@ -897,6 +918,7 @@ func (s *server) configuration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "configuration saved; storage needs attention: "+err.Error())
 		return
 	}
+	durable()
 	writeJSON(w, http.StatusOK, output)
 }
 

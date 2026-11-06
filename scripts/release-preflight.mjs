@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir, realpath } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { verifyGuestSource } from "./check-guest-source.mjs"
 
 export const windowsTarget = "x86_64-pc-windows-msvc"
 export const linuxTarget = "x86_64-unknown-linux-gnu"
@@ -195,6 +196,12 @@ export async function preflight(root, env = process.env) {
   const config = await verifyVersions(root)
   if (config.bundle?.windows?.allowDowngrades !== false) throw new Error("Windows release installers must reject downgrades to older state handlers")
   const runtime = join(root, "src-tauri/resources/runtime")
+  // A present guest must match this checkout, not merely its own old checksum.
+  const guestRecord = join(runtime, "sandbox-guest/artifacts.json")
+  if (await lstat(guestRecord).catch(error => { if (error.code === "ENOENT") return null; throw error })) {
+    await verifyGuestSource(root, guestRecord)
+    await verifyRuntimeDirectory(join(runtime, "sandbox-guest"), [], ["artifacts.json", "initrd", "root.img"])
+  }
   const totals = { files: 0, bytes: 0 }
   const required = {
     qemu: ["qemu-system-x86_64.exe", "qemu-img.exe", "share/edk2-x86_64-code.fd", "share/edk2-i386-vars.fd"],

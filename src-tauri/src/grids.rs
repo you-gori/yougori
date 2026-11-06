@@ -82,10 +82,13 @@ async fn run(app: &AppHandle, method: &str, params: &Value, dry_run: bool, comma
     if known.mutating && grid.lifecycle != "open" {
         return Err(Fault::new(Code::GridNotOpen, "This grid is being deleted, so nothing more can be changed in it.").about(&grid.name));
     }
-    admissible(known, &[registry::product_of(&grid).capability()]).map_err(|fault| fault.about(&grid.name))?;
+    let product = registry::product_or_refuse(&grid)?;
+    admissible(known, &[product.capability()]).map_err(|fault| fault.about(&grid.name))?;
 
-    let product = registry::product_of(&grid);
-    let (old_method, old_params) = alias::product_call(product, noun, &verb, &request).map_err(|fault| fault.about(&grid.name))?;
+    let (old_method, mut old_params) = alias::product_call(product, noun, &verb, &request).map_err(|fault| fault.about(&grid.name))?;
+    // Which grid of that product, for a product that can hold several on one computer. Without
+    // this the handler would act on whichever one it found, which with two is a coin toss.
+    alias::aim(product, &grid.id, &mut old_params);
     // The engine's own contract for the handler this reaches, checked here rather than inside it,
     // so a rehearsal finds the same mistakes a real run would.
     let contract = yougori_cli::catalog::find(old_method).map_err(|error| Fault::new(Code::GridRefused, error))?;

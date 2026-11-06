@@ -1,3 +1,5 @@
+mod connection;
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use cap_std::fs::{Dir, OpenOptions};
 use serde::Deserialize;
@@ -24,6 +26,28 @@ pub(crate) fn protect_folder(folder: &Path) {
     YOUGORI_FOLDERS.write().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(folder.to_path_buf());
 }
 
+/// Directories the engine writes for its guests to read: the catalog's model views and the
+/// served helper bundles, read-only copies of content the catalog verified. They lie under
+/// the engine's data folder (the catalog's default root; the helper loader's served root),
+/// which [`ensure_shareable_folder`] otherwise keeps out of every guest. The catalog and the
+/// helper loader register them when they open; a folder under one is bindable to a guest and
+/// never shareable with a remote recipient.
+static ENGINE_GUEST_FOLDERS: std::sync::RwLock<std::collections::BTreeSet<PathBuf>> = std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+pub(crate) fn allow_engine_guest_folder(folder: &Path) {
+    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+    ENGINE_GUEST_FOLDERS.write().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(folder);
+}
+
+/// Whether `folder` (canonical) lies under a registered engine guest folder.
+pub(crate) fn engine_guest_folder(folder: &Path) -> bool {
+    ENGINE_GUEST_FOLDERS
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .any(|allowed| folder.starts_with(allowed))
+}
+
 /// Every folder of Yougori's own that no guest may see: those recorded and `runtime`'s storage.
 pub(crate) fn yougori_folders(runtime: &crate::runtime::RuntimeManager) -> Vec<PathBuf> {
     let mut folders = YOUGORI_FOLDERS.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
@@ -36,10 +60,15 @@ pub(crate) fn yougori_folders(runtime: &crate::runtime::RuntimeManager) -> Vec<P
 /// or contain Yougori's own data (`yougori_roots`: app state, sharing grants,
 /// tunnel and vault credentials, environment storage with VM disks) or its
 /// installed program, whose bundled components are trusted for updates. Remote
-/// recipients are also kept out of system and program folders.
+/// recipients are also kept out of system and program folders. The one exception is
+/// a guest bind of a folder under an engine guest folder ([`allow_engine_guest_folder`]):
+/// the engine's own read-only copies for its guests, under its data folder.
 pub(crate) fn ensure_shareable_folder(folder: &Path, yougori_roots: &[PathBuf], system_folders: bool) -> Result<(), String> {
     if folder.parent().is_none() {
         return Err("Choose a folder, not a whole drive".into());
+    }
+    if !system_folders && engine_guest_folder(folder) {
+        return Ok(());
     }
     let mut protected = yougori_roots.to_vec();
     if let Some(installed) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
@@ -192,6 +221,20 @@ fn info(root: &Dir, path: &Path) -> Result<Value, String> {
         json!({"name":path.file_name().unwrap_or_default().to_string_lossy(),"size":m.len(),"directory":m.is_dir(),"modified":m.modified().ok().and_then(|t|t.into_std().duration_since(UNIX_EPOCH).ok()).map(|d|d.as_secs()).unwrap_or_default()}),
     )
 }
+const MAX_READ_BYTES: usize = 256 * 1024;
+
+fn read_bytes(root: &Dir, path: &Path, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek};
+    let length = length.min(MAX_READ_BYTES as u64);
+    offset.checked_add(length).ok_or("File range overflow")?;
+    let mut file = open_file(root, path, false)?;
+    file.seek(std::io::SeekFrom::Start(offset)).map_err(file_error)?;
+    let mut bytes = vec![0; length as usize];
+    let count = file.read(&mut bytes).map_err(file_error)?;
+    bytes.truncate(count);
+    Ok(bytes)
+}
+
 fn operation(root: &Dir, read_only: bool, request: FileRequest) -> Result<Value, String> {
     let write = !matches!(request.operation.as_str(), "stat" | "list" | "read");
     if write && read_only {
@@ -215,15 +258,7 @@ fn operation(root: &Dir, read_only: bool, request: FileRequest) -> Result<Value,
             }
             Ok(json!({"entries":entries}))
         }
-        "read" => {
-            use std::io::{Read, Seek};
-            let mut file = open_file(root, path, false)?;
-            file.seek(std::io::SeekFrom::Start(request.offset))
-                .map_err(|e| e.to_string())?;
-            let mut bytes = vec![0; request.length.min(256 * 1024) as usize];
-            let n = file.read(&mut bytes).map_err(|e| e.to_string())?;
-            Ok(json!({"data":STANDARD.encode(&bytes[..n])}))
-        }
+        "read" => Ok(json!({"data":STANDARD.encode(read_bytes(root, path, request.offset, request.length)?)})),
         "replace" => {
             use std::io::{Read, Write};
             let bytes = STANDARD.decode(request.data).map_err(|e| e.to_string())?;
@@ -375,8 +410,10 @@ async fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: Vec<u8>)
     let script = script.replace("\r\n", "\n").replace('\r', "\n");
     let hash = STANDARD.encode(sha2::Sha256::digest(script.as_bytes()));
     let header=format!("HTTP/1.1 {status} Response\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'\r\nDAV: 1\r\nAllow: OPTIONS, GET, HEAD, PROPFIND\r\n\r\n",body.len());
-    let _ = stream.write_all(header.as_bytes()).await;
-    let _ = stream.write_all(&body).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        stream.write_all(header.as_bytes()).await?;
+        stream.write_all(&body).await
+    }).await;
 }
 fn escape(value: &str) -> String {
     value
@@ -478,7 +515,11 @@ impl HostFolderServer {
                                 Ok((status, reply)) => (status, reply),
                                 Err(error) => (403, serde_json::to_vec(&json!({"error": error})).unwrap_or_default()),
                             };
-                            respond(&mut socket, status, "application/json", reply).await;
+                            if refused.load(std::sync::atomic::Ordering::Acquire) {
+                                respond(&mut socket, 403, "application/json", b"{\"error\":\"This environment is locked down\"}".to_vec()).await;
+                                return;
+                            }
+                            connection::response(&mut socket, &refused, status, "application/json", &reply, false).await;
                         });
                     }
                     Some(_) = clients.join_next() => {}
@@ -515,35 +556,12 @@ impl HostFolderServer {
             let mut clients = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
-                    result=listener.accept()=>{let Ok((mut socket,_))=result else{break};let root=root.clone();let secret=secret.clone();let operation_lock=operation_lock.clone();let refused=refused.clone();if clients.len()>=64{continue}clients.spawn(async move{let Ok(Ok((header,body)))=tokio::time::timeout(std::time::Duration::from_secs(15),read_http(&mut socket)).await else{return};
-                        if refused.load(std::sync::atomic::Ordering::Acquire){respond(&mut socket,403,"application/json",b"{\"error\":\"This environment is locked down\"}".to_vec()).await;return}
-                        let mut first=header.lines().next().unwrap_or("").split_whitespace();let method=first.next().unwrap_or("");let uri=first.next().unwrap_or("");
-                        if method=="POST" && uri=="/files"{
-                            if !header.lines().any(|line|line.split_once(':').is_some_and(|(k,v)|k.eq_ignore_ascii_case("authorization")&&v.trim()==format!("Bearer {secret}"))){respond(&mut socket,403,"text/plain",b"Forbidden".to_vec()).await;return}
-                            let result=match serde_json::from_slice::<FileRequest>(&body){Ok(request)=>tokio::task::spawn_blocking(move||{let _guard=operation_lock.lock().map_err(|_|"File service unavailable")?;operation(&root,read_only,request)}).await.unwrap_or_else(|e|Err(e.to_string())),Err(e)=>Err(e.to_string())};
-                            let (status,reply)=match result{Ok(value)=>(200,value),Err(error)=>(if error=="Not found"{404}else if error.contains("already exists"){409}else{403},json!({"error":error}))};respond(&mut socket,status,"application/json",serde_json::to_vec(&reply).unwrap_or_default()).await;return
-                        }
-                        // A token-scoped read-only WebDAV/download view also works in guests without FUSE.
-                        let prefix=format!("/{secret}/");let Some(relative)=uri.strip_prefix(&prefix) else{respond(&mut socket,403,"text/plain",b"Forbidden".to_vec()).await;return};
-                        if method=="GET" && relative.is_empty(){respond(&mut socket,200,"text/html; charset=utf-8",include_str!("host_files_browser.html").replace("__READ_ONLY__",if read_only{"true"}else{"false"}).into_bytes()).await;return}
-                        let encoded = format!("path={}", relative.replace('+', "%2B"));
-                        let relative = url::form_urlencoded::parse(encoded.as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default();
-                        let relative = relative.trim_end_matches('/').to_string();
-                        let method_owned = method.to_string();
-                        let depth_zero = header.lines().any(|line| line.split_once(':').is_some_and(|(key, value)| key.eq_ignore_ascii_case("depth") && value.trim() == "0"));
-                        let view = tokio::task::spawn_blocking(move || folder_view(&root, &relative, &prefix, &method_owned, depth_zero)).await;
-                        match view {
-                            Ok(Ok(FolderView::Body(status, kind, body))) => respond(&mut socket, status, kind, body).await,
-                            Ok(Ok(FolderView::File(file, length))) => {
-                                let file = tokio::fs::File::from_std(file);
-                                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n");
-                                if socket.write_all(header.as_bytes()).await.is_ok() && method != "HEAD" {
-                                    let _ = tokio::io::copy(&mut file.take(length), &mut socket).await;
-                                }
-                            }
-                            _ => respond(&mut socket, 404, "text/plain", b"Not found".to_vec()).await,
-                        }
-                    });},
+                    result = listener.accept() => {
+                        let Ok((socket, _)) = result else { break };
+                        if clients.len() >= 64 { continue }
+                        clients.spawn(connection::serve(socket, root.clone(), read_only,
+                            secret.clone(), operation_lock.clone(), refused.clone()));
+                    }
                     _=clients.join_next(),if !clients.is_empty()=>{}
                 }
             }
@@ -620,6 +638,29 @@ mod tests {
         assert!(ensure_shareable_folder(drive, &roots, false).is_err());
         let installed = std::env::current_exe().unwrap().parent().unwrap().canonicalize().unwrap();
         assert!(ensure_shareable_folder(&installed, &roots, false).is_err());
+    }
+    #[test]
+    fn the_engines_own_guest_folders_under_its_data_are_bindable_and_never_shared_remotely() {
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().canonicalize().unwrap();
+        let app_data = base.join("app data");
+        let views = app_data.join("catalog").join("views");
+        let served = app_data.join("model-helpers").join("served");
+        for folder in [&views, &served, &app_data.join("runtime")] {
+            std::fs::create_dir_all(folder.join("one")).unwrap();
+        }
+        let roots = [app_data.clone()];
+        // Before the engine registers them, they are Yougori data like the rest.
+        assert!(ensure_shareable_folder(&views.join("one"), &roots, false).is_err());
+        allow_engine_guest_folder(&views);
+        allow_engine_guest_folder(&served);
+        // A guest may bind a folder under either; a sibling under the data folder, the data
+        // folder itself and a remote recipient are refused as before.
+        assert!(ensure_shareable_folder(&views.join("one"), &roots, false).is_ok());
+        assert!(ensure_shareable_folder(&served.join("one"), &roots, false).is_ok());
+        assert!(ensure_shareable_folder(&app_data.join("runtime").join("one"), &roots, false).is_err());
+        assert!(ensure_shareable_folder(&app_data, &roots, false).is_err());
+        assert!(ensure_shareable_folder(&views.join("one"), &roots, true).is_err());
     }
     #[cfg(unix)]
     #[tokio::test]

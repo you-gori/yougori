@@ -1,0 +1,15 @@
+format_version: 2
+project: model-server
+
+resources:
+  # One model, served by Yougori's model runner on this computer. The runner checks the model's
+  # files and this computer before downloading anything, and creates its own API key.
+  model:
+    kind: model_service
+    spec:
+      model: "{{inputs.model}}"
+      quantization: "{{inputs.quantization}}"
+      gpu: "{{inputs.gpu}}"
+      memory_gb: "{{inputs.memory_gb}}"
+      api:
+        protocol: openai

@@ -1,0 +1,31 @@
+{
+  "createdAt": 1760000500,
+  "digest": "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1",
+  "environments": {
+    "web": "env-fixture-my-api-web"
+  },
+  "failed": {
+    "message": "It did not finish.",
+    "next": "yougori template continue my-api",
+    "part": "environments"
+  },
+  "folder": null,
+  "inputs": [
+    "site_title",
+    "admin_password"
+  ],
+  "kind": "template",
+  "name": "my-api",
+  "next": "yougori template continue my-api",
+  "outputs": [],
+  "public": {},
+  "ref": "example/my-api",
+  "schema": 1,
+  "source": "hub",
+  "state": "incomplete",
+  "steps": [],
+  "title": "My API",
+  "updatedAt": 1760000560,
+  "verified": false,
+  "version": "1.6.0"
+}

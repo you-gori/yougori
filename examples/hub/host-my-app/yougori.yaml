@@ -1,0 +1,37 @@
+format_version: 2
+project: host-my-app
+
+resources:
+  # The app's container. Yougori picks a free port on this computer for its port 8080.
+  app:
+    kind: environment
+    spec:
+      type: container
+      image: "{{inputs.image}}"
+      cpu: "{{inputs.cpu}}"
+      memory: "{{inputs.memory_gb}}"
+      storage: "{{inputs.storage_gb}}"
+      ports: [8080]
+      environment:
+        PORT: "8080"
+      secrets:
+        APP_SECRET: "{{secrets.app_secret}}"
+      volumes:
+        - {source: data, target: /data}
+      restart: always
+      health:
+        port: 8080
+        path: "{{inputs.health_path}}"
+        wait_seconds: 180
+
+  # Where the app can be reached: this computer only, a quick link or your domain.
+  web:
+    kind: service_publication
+    spec:
+      target: {resource: app}
+      port: 8080
+      access: "{{inputs.access}}"
+      domain: "{{inputs.domain}}"
+      health:
+        path: "{{inputs.health_path}}"
+        expected_status: 200

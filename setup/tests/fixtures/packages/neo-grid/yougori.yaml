@@ -1,0 +1,77 @@
+format_version: 2
+project: neo-grid
+
+# Every resource here is served by Yougori's trusted Neo Grid handler. The template only
+# describes what to create; it runs no commands of its own on your computer.
+
+resources:
+  # Create: the grid this computer runs. It joins its own grid as its first computer.
+  company:
+    kind: grid
+    when: {mode: create}
+    spec:
+      profile: neo_grid
+      mode: create
+      coordinator: this_computer
+      name: "{{inputs.grid_name}}"
+      address: "{{inputs.coordinator_address}}"
+      access: "{{inputs.reach}}"
+      domain: "{{inputs.domain}}"
+      secrets:
+        join_password: "{{secrets.grid_password}}"
+
+  # Create: every computer that joins, serving only when its person is away and inside the hours.
+  computers:
+    kind: compute_pool
+    when: {mode: create}
+    spec:
+      grid: {resource: company}
+      source: any
+      gpu: optional
+      availability: "{{inputs.availability}}"
+      idle_after_minutes: "{{inputs.idle_after_minutes}}"
+      schedule: "{{inputs.schedule}}"
+      local_user_first: true
+
+  # Create: the first model plan, served through the grid's OpenAI-compatible API.
+  first_model:
+    kind: model_service
+    when: {mode: create}
+    capability: models.local
+    spec:
+      model: "{{inputs.model}}"
+      quantization: "{{inputs.quantization}}"
+      compute: {resource: computers}
+      placement: "{{inputs.placement}}"
+      share_percent: "{{inputs.percent}}"
+      api:
+        protocol: openai
+        first_key: "{{inputs.app_key_name}}"
+
+  # Create: optional team that splits one request across several computers.
+  team:
+    kind: model_service
+    when: {mode: create, ai_team: "yes"}
+    capability: models.team
+    spec:
+      model: "swarm/{{inputs.team_name}}"
+      compute: {resource: computers}
+      team:
+        strategy: "{{inputs.team_strategy}}"
+        lead: {resource: first_model}
+        workers: [{resource: first_model}]
+        computers: "{{inputs.team_computers}}"
+        rounds: "{{inputs.team_rounds}}"
+
+  # Join: this computer serves models for another grid.
+  membership:
+    kind: grid
+    when: {mode: join}
+    spec:
+      profile: neo_grid
+      mode: join
+      coordinator: remote
+      member: computer
+      secrets:
+        invitation: "{{secrets.invite}}"
+        join_password: "{{secrets.join_password}}"

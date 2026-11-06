@@ -1,0 +1,47 @@
+format_version: 2
+project: agent-tools
+
+resources:
+  # One sandbox for a coding agent. It gets exactly the tools chosen, exactly the folders chosen,
+  # and nothing else: no credential, and no reach into this computer beyond those folders.
+  agent:
+    kind: environment
+    spec:
+      image: "{{inputs.image}}"
+      cpu: "{{inputs.cpu}}"
+      memory: "{{inputs.memory_gb}}"
+      storage: "{{inputs.storage_gb}}"
+      working_dir: /workspace
+      internet: "{{inputs.internet}}"
+      automatic_start: false
+      # The sandbox's own disk, for what the tools install.
+      volumes:
+        - {source: home, target: /root}
+      # The project the agent works on: the sandbox keeps its own copy and Yougori keeps the two
+      # in step, so the owner's folder is never mounted into the sandbox.
+      sync:
+        - {binding: project, target: /workspace, when: {project_writable: "yes"}}
+      # The read-only project, and optional reading material: both mounted as they are and
+      # never written to.
+      pc_access:
+        - {binding: project_readonly, target: /workspace, when: {project_writable: "no"}}
+        - {binding: reference, target: /reference}
+      permissions: {pc: true, edit: "{{inputs.project_writable}}"}
+      # The instruction writer, run at every start so the agent's instructions always match the
+      # access this setup really has.
+      files:
+        - {source: ./rules, target: /opt/yougori-agent}
+      # What the instruction writer reports. Each one is the grant itself, not a promise about it.
+      environment:
+        AGENT_INSTRUCTIONS_PATH: /workspace/AGENTS.md
+        AGENT_TOOLS: "{{inputs.tools}}"
+        AGENT_PROJECT: /workspace
+        AGENT_PROJECT_WRITABLE: "{{inputs.project_writable}}"
+        AGENT_REFERENCE: "{{inputs.reference_path}}"
+        AGENT_INTERNET: "{{inputs.internet}}"
+      command:
+        [
+          sh,
+          -lc,
+          "sh /opt/yougori-agent/write-instructions.sh; exec sleep infinity",
+        ]

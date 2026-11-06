@@ -37,9 +37,20 @@ impl TunnelSetup {
     /// own), a domain's saved route otherwise.
     pub(crate) fn port(&self, app: &AppHandle, hub_port: u16, default: u16) -> Result<u16, String> {
         match self {
-            TunnelSetup::Quick => Ok(if hub_port == default { default + 1 } else { default }),
+            TunnelSetup::Quick => quick_port(hub_port, default, || crate::grid::instances::allocate_ports(&app.state::<PlatformStore>().data_folder("grid"), 1).map(|ports| ports[0])),
             TunnelSetup::Domain { domain } => Ok(crate::workspace::cloudflare::domain_route(&app.state::<PlatformStore>(), domain)?.1),
         }
+    }
+}
+
+/// A Quick Tunnel's entry: the product's own tunnel port, or, when the hub was given that port,
+/// one from the shared range. Never the next fixed port: 7462 is the private-project hub's, and
+/// each other fixed port belongs to a product too.
+fn quick_port(hub_port: u16, default: u16, allocate: impl FnOnce() -> Result<u16, String>) -> Result<u16, String> {
+    if hub_port == default {
+        allocate()
+    } else {
+        Ok(default)
     }
 }
 
@@ -106,15 +117,30 @@ pub(crate) fn save(path: &PathBuf, setup: &TunnelSetup) -> Result<(), String> {
     Ok(())
 }
 
-async fn start(app: &AppHandle, setup: &TunnelSetup, port: u16) -> Result<crate::workspace::cloudflare::Started, String> {
+async fn start(app: &AppHandle, setup: &TunnelSetup, port: u16, claim: u64) -> Result<crate::workspace::cloudflare::Started, String> {
     let manager = app.state::<crate::workspace::WorkspaceManager>();
     let store = app.state::<PlatformStore>();
     let domain = match setup {
         TunnelSetup::Quick => None,
         TunnelSetup::Domain { domain } => Some(domain.as_str()),
     };
-    manager.grid_tunnel(domain, port, &store).await
+    manager.grid_tunnel(domain, port, claim, &store).await
 }
+
+/// A grid tunnel's claim on its saved domain while its supervisor runs: one per supervisor, so a
+/// supervisor that replaced another for the same hub keeps the claim when the old one ends.
+struct Claim {
+    app: AppHandle,
+    token: u64,
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.app.state::<crate::workspace::WorkspaceManager>().release_grid_tunnel(self.token);
+    }
+}
+
+static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Keeps a hub's tunnel connected while the engine runs: starts `cloudflared` for the hub's
 /// tunnel entry on `port` and starts it again whenever it exits, with a growing pause after
@@ -132,11 +158,13 @@ pub(crate) fn keep(app: &AppHandle, state: &mut TunnelState, setup: TunnelSetup,
         current.error = error;
     };
     tauri::async_runtime::spawn(async move {
+        // The domain this supervisor's tunnel claimed is given back however it ends.
+        let claim = Claim { app: app.clone(), token: CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) };
         let mut pause = Duration::from_secs(5);
         loop {
             let started = tokio::select! {
                 _ = stop.cancelled() => return,
-                started = start(&app, &setup, port) => started,
+                started = start(&app, &setup, port, claim.token) => started,
             };
             match started {
                 Ok(mut started) => {

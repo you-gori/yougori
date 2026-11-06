@@ -1,0 +1,274 @@
+{
+  "formatVersion": 2,
+  "instance": "shared-workspace",
+  "template": {
+    "name": "shared-workspace",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "people.team",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "people_access",
+      "name": "Just me, or a team",
+      "permissions": []
+    },
+    {
+      "id": "people.invites",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "people_access",
+      "name": "Invites",
+      "permissions": [
+        "Invite people and set their roles."
+      ]
+    },
+    {
+      "id": "data.folders",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "files_data",
+      "name": "Selected folders",
+      "permissions": [
+        "Read only the folders you grant."
+      ]
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    }
+  ],
+  "inputs": {
+    "access": "quick",
+    "expires_hours": "24",
+    "folder": "/workspace",
+    "permission": "view",
+    "recipient": "sam",
+    "recipient_name": "Sam Example"
+  },
+  "secrets": {
+    "recipient_password": "hub-shared-workspace-recipient_password"
+  },
+  "bindings": {
+    "workspace": "example-setup/workspace"
+  },
+  "resources": [
+    {
+      "id": "recipient",
+      "kind": "access_binding",
+      "title": "people and access",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "invitations": 0,
+        "mfa": false,
+        "people": "just_me",
+        "person": {
+          "display_name": "Sam Example",
+          "username": "sam"
+        },
+        "reset": 0,
+        "secrets": {
+          "password": "hub-shared-workspace-recipient_password"
+        },
+        "share": {
+          "access": "quick",
+          "expires_hours": 24,
+          "folder": "/workspace",
+          "permission": "view",
+          "target": {
+            "binding": "workspace"
+          }
+        },
+        "workspaces": "individual"
+      },
+      "outputs": [
+        "id",
+        "join_method",
+        "page",
+        "invitation"
+      ]
+    }
+  ],
+  "order": [
+    "recipient"
+  ],
+  "steps": [
+    {
+      "title": "Send them the link",
+      "detail": "Send the link below and their username in one message, and the password in another. They run yougori connect with the link and their username, then type the password."
+    },
+    {
+      "title": "Revoke access",
+      "detail": "Remove this setup, or use Revoke in the People view. Their sessions close at once; your sandbox keeps running."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "share_link",
+      "label": "Link for the person",
+      "value": "{{outputs.recipient.join_method}}",
+      "private": true
+    },
+    {
+      "key": "page",
+      "label": "Share page",
+      "value": "{{outputs.recipient.page}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "people",
+    "files",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "recipient",
+        "kind": "access_binding",
+        "title": "people and access",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [],
+    "permissions": [
+      "recipient shares workspace with one person (view) for 24 hours.",
+      "A website or API: Run containers on this computer.",
+      "A quick public link: Open a public web address for this setup."
+    ],
+    "costs": [],
+    "warnings": [
+      "Makes workspace reachable from the internet for the person it is shared with."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "none"
+    },
+    "questions": [
+      {
+        "id": "recipient",
+        "question": "Username for the person",
+        "answer": "sam",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "recipient_name",
+        "question": "Their name, as you will see it",
+        "answer": "Sam Example",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "recipient_password",
+        "question": "Their password",
+        "secret": true,
+        "group": "people_access"
+      },
+      {
+        "id": "permission",
+        "question": "What may they do?",
+        "answer": "view",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "folder",
+        "question": "Which folder inside the sandbox?",
+        "answer": "/workspace",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "expires_hours",
+        "question": "For how many hours?",
+        "answer": "24",
+        "secret": false,
+        "group": "people_access"
+      },
+      {
+        "id": "access",
+        "question": "How will they reach it?",
+        "answer": "quick",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "workspace",
+        "port": 0,
+        "access": "quick"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": []
+  },
+  "digest": "abf908036b1792394fa0d6bbc1a2e41f0a8ed14a9b4643aa457fa1c0358d75ef"
+}

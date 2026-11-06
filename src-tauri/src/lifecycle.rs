@@ -87,15 +87,44 @@ pub struct StartupReport {
 /// Diagnostics are persisted, so strip URLs (which may carry bearer secrets)
 /// and bound their size. Credentials and request bodies never enter the report.
 pub(crate) fn safe_diagnostic(error: &str) -> String {
-    let mut mask_next = false;
+    // After a key written as one (`token:`, `password =`, `Authorization:`) or a `Bearer` scheme,
+    // the next word is always a value and always masked. After the bare word (a question named
+    // `token` in "token needs an answer"), the next word is masked too unless it is one of a few
+    // plain words a sentence goes on with, so a message about a secret stays readable while
+    // anything that might be its value is not shown.
+    const SENTENCE: &[&str] = &[
+        "a", "an", "and", "are", "as", "at", "be", "by", "can", "can't", "could", "does", "doesn't", "for", "from", "given", "has", "have", "in", "is", "isn't",
+        "it", "missing", "must", "needed", "needs", "not", "of", "on", "or", "required", "that", "the", "this", "to", "was", "wasn't", "will", "with",
+        "again", "answer", "but", "here", "if", "its", "nothing", "now", "only", "question", "so", "value", "when", "which", "yet", "you", "your",
+        "after", "because", "before", "into", "since", "then", "until", "while",
+    ];
+    #[derive(PartialEq)]
+    enum Next { Shown, Masked, Unless }
+    let mut next = Next::Shown;
     error.split_whitespace().map(|word| {
         let lower = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '=').to_ascii_lowercase();
         let inline = lower.split_once(['=', ':']).is_some_and(|(_, value)| !value.is_empty());
         // Quoted JSON keys (`"access_token":"…"`) keep their quotes until trimmed here.
         let key = lower.split(['=', ':']).next().unwrap_or_default().trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_');
         let sensitive = ["bearer", "password", "secret", "token", "authorization", "api_key", "apikey", "access_token", "refresh_token", "client_secret", "private_key"].contains(&key);
-        let replacement = if mask_next || word.contains("://") || (sensitive && inline) { "[credential redacted]" } else { word };
-        mask_next = sensitive && !inline;
+        let plain = SENTENCE.contains(&word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')']).to_ascii_lowercase().as_str());
+        let masked = match next {
+            Next::Masked => true,
+            Next::Unless => !plain,
+            Next::Shown => false,
+        };
+        let replacement = if masked || word.contains("://") || (sensitive && inline) { "[credential redacted]" } else { word };
+        // `password = value`: the separator on its own carries the mask on to the value.
+        let separator = !word.is_empty() && word.chars().all(|c| c == '=' || c == ':');
+        next = if separator && next != Next::Shown {
+            Next::Masked
+        } else if !sensitive || inline {
+            Next::Shown
+        } else if key == "bearer" || word.trim_end_matches(['"', '\'']).ends_with([':', '=']) {
+            Next::Masked
+        } else {
+            Next::Unless
+        };
         replacement
     }).collect::<Vec<_>>().join(" ").chars().take(1000).collect()
 }
@@ -659,6 +688,15 @@ mod tests {
             assert!(value.starts_with("refresh failed "), "{value}");
         }
         assert_eq!(safe_diagnostic(r#"{"status":"stale"}"#), r#"{"status":"stale"}"#);
+        // A secret question is spoken of in plain words; anything that may be its value is not.
+        let question = "token needs an answer: A token the sandbox reads as TOKEN Nothing was created.";
+        assert_eq!(safe_diagnostic(question), question);
+        assert_eq!(safe_diagnostic("The password is required."), "The password is required.");
+        let waiting = "second needs the value of token before it can be created.";
+        assert_eq!(safe_diagnostic(&safe_diagnostic(waiting)), waiting, "scrubbing twice changes nothing more");
+        for leaked in ["invalid token ghp_leak1", "wrong password hunter2", "secret leakvalue", "token: leaky", "password = leaky", "Bearer leaky"] {
+            assert!(!safe_diagnostic(leaked).contains("leak"), "{leaked} -> {}", safe_diagnostic(leaked));
+        }
     }
 
     #[tokio::test]

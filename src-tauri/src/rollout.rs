@@ -101,7 +101,7 @@ pub(crate) async fn rollout(app: AppHandle, params: &Value) -> Result<Value, Str
 
     match verb.as_str() {
         "status" => {
-            let standing = stages::Rollout::read(&state).unwrap_or_else(|_| stages::Rollout::new(now));
+            let standing = read_standing(&state, now)?;
             Ok(said(standing.describe(), serde_json::to_value(&standing).map_err(|error| error.to_string())?))
         }
         "survey" => {
@@ -179,15 +179,7 @@ pub(crate) async fn rollout(app: AppHandle, params: &Value) -> Result<Value, Str
         }
         "advance" | "back" => {
             let profile = profile_named(&request)?;
-            let mut standing = stages::Rollout::read(&state).unwrap_or_else(|_| stages::Rollout::new(now));
-            let line = if verb == "advance" {
-                let stage = standing.advance(profile, now)?;
-                format!("{} is at the {} stage. It changed {}, and it is undone by: {}", profile.word(), stage.word(), stage.changed(), stage.undone_by())
-            } else {
-                let (stage, undo) = standing.go_back(profile, now)?;
-                format!("{} is back at the {} stage. What still has to be undone by hand: {undo}", profile.word(), stage.word())
-            };
-            standing.save(&state)?;
+            let (line, standing) = step(&state, profile, verb == "advance", now)?;
             Ok(said(line, serde_json::to_value(&standing).map_err(|error| error.to_string())?))
         }
         "retire" => {
@@ -200,7 +192,11 @@ pub(crate) async fn rollout(app: AppHandle, params: &Value) -> Result<Value, Str
             // practice it is the second and third that refuse; without this the verb that moves
             // the file obeyed none of them, and `yougori rollout retire --profile research --yes`
             // would take the record out from under a running host that had never left the freeze.
-            let standing = stages::Rollout::read(&state).unwrap_or_else(|_| stages::Rollout::new(now));
+            // A recorded cutover is not enough either, because no product reads the rollout's
+            // file: the stage machine refuses the retire stage while the product is still served
+            // from its record, which in this build is every product, and `stages::retire` refuses
+            // the move on its own as well.
+            let standing = read_standing(&state, now)?;
             let moved = may_retire(&standing, profile, now)?;
             // One product per stamped folder, so two retires in the same second cannot land in
             // one. The grid crate refuses that anyway; this is so nobody meets the refusal.
@@ -218,11 +214,12 @@ pub(crate) async fn rollout(app: AppHandle, params: &Value) -> Result<Value, Str
             let stamp = operations.join("retired").join(stamp_name(request["stamp"].as_str().unwrap_or_default())?);
             let retired = stages::retired(&stamp)?;
             let product = Product::from_word(&retired.product).ok_or("That retired record names a product this build does not know")?;
-            let back = stages::unretire(&stamp, &record_of(&app, product))?;
             // Putting the record back puts the stage back with it. Leaving the stage at retire
             // while the record is where the product reads it is the same disagreement the retire
-            // arm exists to close, in the other direction.
-            let mut standing = stages::Rollout::read(&state).unwrap_or_else(|_| stages::Rollout::new(now));
+            // arm exists to close, in the other direction. So the rollout is read before the
+            // record moves: one this build cannot read refuses the whole verb, and nothing moves.
+            let mut standing = read_standing(&state, now)?;
+            let back = stages::unretire(&stamp, &record_of(&app, product))?;
             let mut line = format!("{}'s record is back at {}", product.name(), back.display());
             if let Some(profile) = Profile::all().iter().copied().find(|profile| profile.product() == product) {
                 if standing.state(profile).is_some_and(|state| state.stage == stages::Stage::Retire) {
@@ -243,13 +240,43 @@ pub(crate) async fn rollout(app: AppHandle, params: &Value) -> Result<Value, Str
     }
 }
 
+/// Where the rollout stands, read from its own file.
+///
+/// Only a file that is not there starts a fresh rollout, with every profile at the freeze, which
+/// is where a computer that never began one stands. A file that is there and cannot be read,
+/// whether it is damaged or was written by a newer Yougori, is refused in the reader's own words
+/// and left exactly as it is. Starting afresh in its place, as this door once did, let the next
+/// `advance` write a fresh rollout over the only record of how far this computer had come.
+fn read_standing(state: &Path, now: i64) -> Result<stages::Rollout, String> {
+    match std::fs::symlink_metadata(state) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(stages::Rollout::new(now)),
+        _ => stages::Rollout::read(state).map_err(|why| format!("{why}. Nothing was changed: {} is left exactly as it was.", state.display())),
+    }
+}
+
+/// Moves one profile on, or back, by one stage and writes the rollout down, or says why not.
+/// A rollout that cannot be read is refused before anything is written.
+fn step(state: &Path, profile: Profile, forward: bool, now: i64) -> Result<(String, stages::Rollout), String> {
+    let mut standing = read_standing(state, now)?;
+    let line = if forward {
+        let stage = standing.advance(profile, now)?;
+        format!("{} is at the {} stage. It changed {}, and it is undone by: {}", profile.word(), stage.word(), stage.changed(), stage.undone_by())
+    } else {
+        let (stage, undo) = standing.go_back(profile, now)?;
+        format!("{} is back at the {} stage. What still has to be undone by hand: {undo}", profile.word(), stage.word())
+    };
+    standing.save(state)?;
+    Ok((line, standing))
+}
+
 /// Where the rollout would stand if this profile's record were moved aside now, or why it may not
 /// be.
 ///
 /// The stage machine answers, rather than a second set of rules here: `advance` is where the order
-/// of the four products, the refusal of a product with no bridge, and the retention after a
-/// cutover all live. The move is judged on a copy and the copy is handed back, so nothing is
-/// recorded until the file has actually moved and a refusal leaves the rollout exactly as it was.
+/// of the four products, the refusal of a product with no bridge, the refusal of a product still
+/// served from its record, and the retention after a cutover all live. The move is judged on a
+/// copy and the copy is handed back, so nothing is recorded until the file has actually moved and
+/// a refusal leaves the rollout exactly as it was.
 fn may_retire(standing: &stages::Rollout, profile: Profile, now: i64) -> Result<stages::Rollout, String> {
     let mut moved = standing.clone();
     let stage = moved.advance(profile, now)?;
@@ -347,12 +374,14 @@ mod tests {
 
     /// PROVES that the verb which moves a product's live record aside goes through the stage
     /// machine: a profile that has not reached the cutover is refused, a profile whose turn it is
-    /// not can never satisfy it, and a refusal leaves the recorded stage where it was.
+    /// not can never satisfy it, a recorded cutover is refused too however long ago it was,
+    /// because no product is served from a realm in this build, and a refusal leaves the recorded
+    /// stage where it was.
     ///
     /// DOES NOT PROVE anything about what a running hub does when its record moves. Nothing here
     /// starts one. What this closes is that the check happened at all: before it, a fresh install
     /// could delete `grid/hub.json` from under a serving hub while the rollout file still said
-    /// the profile was at the freeze.
+    /// the profile was at the freeze, and later a cutover that was only written down could.
     #[test]
     fn a_record_is_not_moved_aside_before_its_product_has_cut_over() {
         let now = 1_700_000_000;
@@ -370,16 +399,57 @@ mod tests {
         let refused = may_retire(&out_of_turn, Profile::Research, now).unwrap_err();
         assert!(refused.contains("moves before research"), "{refused}");
 
-        // And a profile that has cut over and whose retention has run out may.
+        // And a profile whose cutover is written down is refused as well, before and after its
+        // retention, because no product reads the rollout's file: the record is still the live one.
         let mut cut_over = stages::Rollout::new(now);
         while cut_over.state(Profile::Models).unwrap().stage < stages::Stage::Cutover {
             cut_over.advance(Profile::Models, now).unwrap();
         }
         let after = now + i64::from(stages::KEEP_DAYS) * 86_400 + 1;
-        assert!(may_retire(&cut_over, Profile::Models, now).is_err(), "not while the old record's retention is still running");
-        let moved = may_retire(&cut_over, Profile::Models, after).unwrap();
-        assert_eq!(moved.state(Profile::Models).unwrap().stage, stages::Stage::Retire);
-        assert_eq!(cut_over.state(Profile::Models).unwrap().stage, stages::Stage::Cutover, "and the rollout is only recorded once the file has moved");
+        for at in [now, after] {
+            let refused = may_retire(&cut_over, Profile::Models, at).unwrap_err();
+            assert!(refused.contains("is still served from this record"), "{refused}");
+        }
+        assert_eq!(cut_over.state(Profile::Models).unwrap().stage, stages::Stage::Cutover, "and a refusal records nothing");
+    }
+
+    /// PROVES that a rollout file this build cannot read, from a newer Yougori or damaged, is
+    /// reported as unreadable and never written over: `advance` and `back` are refused in the
+    /// reader's own words and the file keeps exactly the bytes it had. Only a file that is not
+    /// there starts afresh, and then the step is written down.
+    ///
+    /// DOES NOT PROVE the same of retire and unretire by running them: they need the running app
+    /// to find the products' records. Both read the rollout through `read_standing` before
+    /// anything moves, as `status` does.
+    #[test]
+    fn a_rollout_that_cannot_be_read_is_reported_and_never_written_over() {
+        let now = 1_700_000_000;
+        let folder = tempfile::tempdir().unwrap();
+        let state = folder.path().join("operations").join("rollout.json");
+
+        // Not there at all: a fresh rollout, and the first step is written down.
+        assert!(read_standing(&state, now).unwrap().profiles.iter().all(|profile| profile.stage == stages::Stage::Freeze));
+        let (line, standing) = step(&state, Profile::Models, true, now).unwrap();
+        assert!(line.starts_with("models is at the survey stage"), "{line}");
+        assert_eq!(stages::Rollout::read(&state).unwrap(), standing);
+
+        let mut newer = serde_json::to_value(&standing).unwrap();
+        newer["rollout"] = json!(stages::VERSION + 1);
+        for (what, bytes) in [("newer", serde_json::to_vec(&newer).unwrap()), ("damaged", b"{\"rollout\": 1, \"profiles\": [".to_vec())] {
+            std::fs::write(&state, &bytes).unwrap();
+            let unreadable = read_standing(&state, now).unwrap_err();
+            assert!(unreadable.contains("Nothing was changed"), "{what}: {unreadable}");
+            if what == "newer" {
+                assert!(unreadable.contains("newer Yougori") && unreadable.contains("update Yougori"), "{unreadable}");
+            } else {
+                assert!(unreadable.contains("damaged") && unreadable.contains("put back a copy you trust"), "{unreadable}");
+            }
+            for forward in [true, false] {
+                let refused = step(&state, Profile::Models, forward, now + 60).unwrap_err();
+                assert_eq!(refused, unreadable, "{what}: the step is refused because the file cannot be read");
+            }
+            assert_eq!(std::fs::read(&state).unwrap(), bytes, "{what}: the file keeps exactly the bytes it had");
+        }
     }
 
     /// PROVES that every product this door knows has a record name, and that the core's own

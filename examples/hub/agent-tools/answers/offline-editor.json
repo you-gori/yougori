@@ -1,0 +1,10 @@
+{
+  "image": "python:3.12-slim-bookworm",
+  "tools": ["opencode"],
+  "project_writable": true,
+  "reference_path": "/reference",
+  "internet": false,
+  "cpu": 2,
+  "memory_gb": 4,
+  "storage_gb": 20
+}

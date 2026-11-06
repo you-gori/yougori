@@ -1,0 +1,49 @@
+{
+  "results": [
+    {
+      "source": {"path": "fixture/runtime/Cargo.lock", "type": "lockfile"},
+      "packages": [
+        {
+          "package": {"name": "smallvec", "version": "1.6.0", "ecosystem": "crates.io"},
+          "vulnerabilities": [
+            {
+              "schema_version": "1.4.0",
+              "id": "RUSTSEC-2021-0003",
+              "published": "2021-01-08T12:00:00Z",
+              "aliases": ["CVE-2021-25900"],
+              "summary": "Buffer overflow in SmallVec::insert_many",
+              "details": "Deliberately vulnerable fixture entry.",
+              "affected": [
+                {
+                  "package": {"ecosystem": "crates.io", "name": "smallvec", "purl": "pkg:cargo/smallvec"},
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {"introduced": "0.6.3"},
+                        {"fixed": "0.6.14"},
+                        {"introduced": "1.0.0"},
+                        {"fixed": "1.6.1"}
+                      ]
+                    }
+                  ],
+                  "ecosystem_specific": {"affects": {"functions": ["smallvec::SmallVec::insert_many"]}}
+                }
+              ],
+              "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+              "database_specific": {"license": "CC0-1.0"}
+            }
+          ],
+          "groups": [
+            {
+              "ids": ["RUSTSEC-2021-0003"],
+              "aliases": ["CVE-2021-25900", "RUSTSEC-2021-0003"],
+              "max_severity": "9.8"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "experimental_config": {"licenses": {"summary": false, "allowlist": null}}
+}

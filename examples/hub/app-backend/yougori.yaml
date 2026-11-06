@@ -1,0 +1,95 @@
+format_version: 2
+project: app-backend
+
+resources:
+  # Your app. It finds the database at host db and, with a cache, Redis at host cache.
+  app:
+    kind: environment
+    spec:
+      type: container
+      image: "{{inputs.image}}"
+      cpu: "{{inputs.app_cpu}}"
+      memory: "{{inputs.app_memory_gb}}"
+      storage: 10
+      ports: [8080]
+      environment:
+        PORT: "8080"
+        DATABASE_HOST: db
+        DATABASE_PORT: "5432"
+        DATABASE_NAME: app
+        DATABASE_USER: app
+        REDIS_HOST: "{{inputs.cache_host}}"
+        REDIS_PORT: "6379"
+      secrets:
+        DATABASE_PASSWORD: "{{secrets.db_password}}"
+      volumes:
+        - {source: app-data, target: /data}
+      restart: always
+      health:
+        port: 8080
+        path: "{{inputs.health_path}}"
+        wait_seconds: 180
+
+  # PostgreSQL 16.4 with its data on a volume. No port leaves the computer.
+  db:
+    kind: environment
+    spec:
+      type: container
+      image: docker.io/library/postgres:16.4-alpine
+      cpu: 1
+      memory: 1
+      storage: "{{inputs.db_storage_gb}}"
+      environment:
+        POSTGRES_DB: app
+        POSTGRES_USER: app
+        PGDATA: /var/lib/postgresql/data/pgdata
+      secrets:
+        POSTGRES_PASSWORD: "{{secrets.db_password}}"
+      volumes:
+        - {source: pg-data, target: /var/lib/postgresql/data}
+      ports: [5432]
+      restart: always
+
+  # Optional Redis 7.4.1, with its data on a volume.
+  cache:
+    kind: environment
+    when: {cache: "yes"}
+    spec:
+      type: container
+      image: docker.io/library/redis:7.4.1-alpine
+      cpu: 0.5
+      memory: 0.5
+      storage: 2
+      command: [redis-server, --appendonly, "yes", --dir, /data]
+      volumes:
+        - {source: redis-data, target: /data}
+      ports: [6379]
+      restart: always
+
+  # One-way: the app reaches the database and the cache. They cannot reach the app or each other.
+  app_to_db:
+    kind: connection
+    spec:
+      from: {resource: app}
+      to: {resource: db}
+      ports: [5432]
+      direction: one_way
+  app_to_cache:
+    kind: connection
+    when: {cache: "yes"}
+    spec:
+      from: {resource: app}
+      to: {resource: cache}
+      ports: [6379]
+      direction: one_way
+
+  web:
+    kind: service_publication
+    spec:
+      target: {resource: app}
+      port: 8080
+      access: "{{inputs.access}}"
+      domain: "{{inputs.domain}}"
+      health:
+        path: "{{inputs.health_path}}"
+        expected_status: 200

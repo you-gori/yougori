@@ -3,19 +3,14 @@ import { ociImages, ociRegistryLabel, type OciImageOption } from "@/data/oci-ima
 // These are base-image shortcuts, not preinstalled projects or multi-service stacks.
 export const containerPurposes = [
   {
-    id: "website", label: "Website", image: "docker.io/library/node:alpine",
+    id: "website", label: "Website", image: "docker.io/library/node:lts-slim",
     description: "Node.js for building a frontend with tools such as React, Vue, or Vite.",
     keywords: "frontend javascript typescript react vue vite angular svelte",
   },
   {
-    id: "saas", label: "SaaS", image: "docker.io/library/node:slim",
+    id: "saas", label: "SaaS", image: "docker.io/library/node:lts-slim",
     description: "Node.js on Debian for a full-stack app. Add your framework and connect a separate database as needed.",
     keywords: "fullstack full-stack next nextjs next.js nuxt subscription dashboard",
-  },
-  {
-    id: "database", label: "Database", image: "docker.io/library/mongo:latest",
-    description: "MongoDB with its default database service. Search the image picker for other databases.",
-    keywords: "database documents mongodb storage nosql",
   },
   {
     id: "api", label: "API", image: "docker.io/library/python:slim",
@@ -23,12 +18,7 @@ export const containerPurposes = [
     keywords: "backend rest fastapi flask django server",
   },
   {
-    id: "static-site", label: "Static site", image: "docker.io/library/nginx:alpine",
-    description: "Nginx starts a web server for your HTML, CSS, and built frontend files.",
-    keywords: "website static html css landing page web server hosting",
-  },
-  {
-    id: "automation", label: "Automation", image: "docker.io/library/python:alpine",
+    id: "automation", label: "Automation", image: "docker.io/library/python:slim",
     description: "A compact Python workspace for scripts, bots, and background jobs.",
     keywords: "script scripting bot jobs task automation python",
   },

@@ -40,7 +40,7 @@ python scripts/prepare-public-source.test.py
 cargo test --manifest-path cli/Cargo.toml --lib closed_bounty::
 cargo test --manifest-path grid/Cargo.toml --lib bounty
 cargo test --manifest-path src-tauri/Cargo.toml --lib distribution_tests
-npx vitest run src/components/closed-bounty-distribution.test.tsx src/lib/distribution.test.ts
+npx vitest run src/lib/distribution.test.ts
 npm run lint
 npm run build
 npm run check:native

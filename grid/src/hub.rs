@@ -4,6 +4,7 @@
 //! each to an idle member computer and relays the member's streamed reply. Prompts pass through
 //! memory only and are never stored or logged.
 mod enterprise;
+pub mod jobs;
 use crate::{
     desks::{self, Capacity, Desk, DeskReport, DeskSpec, DeskState, HostView, Person, Share},
     digest, is_token, label, model_key, model_name,
@@ -580,6 +581,9 @@ struct Shared {
     credentials: Mutex<HashMap<String, Value>>,
     /// The identity provider's discovery document and signing keys, fetched by the hub itself.
     sso: Mutex<SsoCache>,
+    /// The grid's finite-jobs queue, once a setup has turned it on. Off until then, and every
+    /// path under `/grid/v1/queue/` says so plainly rather than pretending the door is missing.
+    jobs: Mutex<Option<Arc<jobs::Service>>>,
     /// Taken before `live` when both are needed; saved to disk while held.
     record: Mutex<Record>,
     live: Mutex<Live>,
@@ -859,6 +863,7 @@ impl Hub {
             parking: Mutex::new(None),
             credentials: Mutex::new(HashMap::new()),
             sso: Mutex::new(SsoCache::default()),
+            jobs: Mutex::new(None),
             record: Mutex::new(record),
             live: Mutex::new(Live::default()),
             work: Notify::new(),
@@ -886,6 +891,17 @@ impl Hub {
     }
 
     pub fn enterprise(&self, request: Value) -> Result<Value, String> { enterprise::manage(&self.shared, None, request) }
+
+    /// Turns the grid's finite-jobs queue on, over the realm given. Off until a setup does this,
+    /// and off again when it is removed: nothing under `/grid/v1/queue/` answers meanwhile.
+    pub fn serve_jobs(&self, service: Option<Arc<jobs::Service>>) {
+        *lock(&self.shared.jobs) = service;
+    }
+
+    /// The jobs queue this grid is serving, for a setup that needs to tie a computer to it.
+    pub fn jobs(&self) -> Option<Arc<jobs::Service>> {
+        lock(&self.shared.jobs).clone()
+    }
 
     /// A membership made ahead of time for a computer the hub itself creates (a cloud one): the
     /// token goes to that computer over SSH, so it never needs the company password. Returns
@@ -1561,6 +1577,16 @@ async fn route(shared: Arc<Shared>, peer: IpAddr, request: Request<Incoming>) ->
                     work(&shared, &member, request).await
                 }
                 "/grid/v1/leave" => leave(&shared, &member),
+                _ if path.starts_with("/grid/v1/queue/") => {
+                    let service = {
+                        let held = lock(&shared.jobs);
+                        held.clone()
+                    };
+                    match service {
+                        Some(service) => jobs::route(&service, &member, &path["/grid/v1/queue/".len()..], request).await,
+                        None => error(StatusCode::NOT_FOUND, "jobs_off", "This grid does not run finite jobs. Apply a setup that turns them on first."),
+                    }
+                }
                 _ => match path.strip_prefix("/grid/v1/jobs/").and_then(|rest| rest.split_once('/')) {
                     Some((job, "accept")) => accept_job(&shared, &member, job),
                     Some((job, "release")) => release_job(&shared, &member, job),
@@ -1913,8 +1939,10 @@ fn reclaim_desks(record: &mut Record) -> bool {
     changed
 }
 
-/// Every member as placement sees it.
+/// Every member as placement sees it. A computer left out by the admin, or not one of the
+/// computers the grid was told to use only (`computersOnly`), takes no new desk.
 fn host_views(record: &Record, live: &Live) -> Vec<HostView> {
+    let picked = |member: &MemberRecord| record.enterprise.only_computers.as_ref().is_none_or(|names| names.iter().any(|name| name.eq_ignore_ascii_case(&member.name)));
     record
         .members
         .iter()
@@ -1924,7 +1952,7 @@ fn host_views(record: &Record, live: &Live) -> Vec<HostView> {
             HostView {
                 id: member.id.clone(),
                 online: presence.is_some_and(|presence| presence.seen.elapsed() < ONLINE),
-                excluded: member.excluded,
+                excluded: member.excluded || !picked(member),
                 going_away: capacity.as_ref().is_some_and(|capacity| capacity.going_away.is_some()),
                 capacity,
                 share: member.share.clone(),
@@ -2066,9 +2094,17 @@ fn issue_session(shared: &Shared, record: &mut Record, index: usize, peer: IpAdd
         (shared.events)("grid.person.refused", json!({"personId": person.id, "address": peer.to_string(), "full": true}));
         return Err(error(StatusCode::TOO_MANY_REQUESTS, "sessions_full", "Too many active sign-ins; wait for a session to expire"));
     }
-    live.sessions.insert(digest("desk-session", &session_token), enterprise::Session { person: person.id.clone(), key_hash: person.key_hash.clone(), expires });
+    live.sessions.insert(digest("desk-session", &session_token), enterprise::Session { person: person.id.clone(), key_hash: person.key_hash.clone(), expires, sso });
     (shared.events)("grid.person.signed_in", json!({"personId": person.id, "address": peer.to_string(), "sso": sso}));
-    Ok(json!({"personId": person.id, "name": person.name, "username": person.username, "grid": {"id": record.id, "name": record.name}, "desks": desks, "sessionToken": session_token, "sessionExpiresAt": expires, "adminRole": person.admin_role, "mfa": person.totp.is_some()}))
+    // A person the grid requires two-step of, who has not turned it on, is signed in only to do
+    // that: their desks are listed, but nothing that opens one is handed out.
+    let owed = enterprise::two_step_owed(record, &person.id, sso);
+    let desks = if owed {
+        desks.into_iter().map(|mut desk| { desk.as_object_mut().map(|desk| desk.remove("invitation")); desk }).collect()
+    } else {
+        desks
+    };
+    Ok(json!({"personId": person.id, "name": person.name, "username": person.username, "grid": {"id": record.id, "name": record.name}, "desks": desks, "sessionToken": session_token, "sessionExpiresAt": expires, "adminRole": person.admin_role, "mfa": person.totp.is_some(), "twoStepRequired": owed}))
 }
 
 const DISCOVERY_FOR: Duration = Duration::from_secs(24 * 60 * 60);
@@ -2336,10 +2372,13 @@ async fn open_relay(shared: &Arc<Shared>, request: Request<Incoming>) -> Respons
     let hash = digest("desk-session", &token);
     let host = {
         let mut live = lock(&shared.live);
-        let Some(session) = live.sessions.get(&hash).filter(|session| session.expires > now()).map(|session| session.person.clone()) else {
+        let Some((session, sso)) = live.sessions.get(&hash).filter(|session| session.expires > now()).map(|session| (session.person.clone(), session.sso)) else {
             return error(StatusCode::UNAUTHORIZED, "unauthorized", "Sign in again; this session expired or was revoked");
         };
         let record = lock(&shared.record);
+        if enterprise::two_step_owed(&record, &session, sso) {
+            return error(StatusCode::FORBIDDEN, "two_step_required", enterprise::TWO_STEP_OWED);
+        }
         // The person must still own this desk, the desk must be ready, and its computer must be
         // the one holding the connection. None of that is taken from the request.
         let Some(found) = record.desks.iter().find(|entry| entry.id == desk && entry.person.as_deref() == Some(session.as_str()) && entry.state == DeskState::Ready) else {
@@ -2839,6 +2878,14 @@ impl harness::Ask for HubAsk {
     }
 }
 
+/// The caller's cap on a team's final answer, from `max_tokens` or `max_completion_tokens`, passed
+/// on as asked. The harness caps it at what a grid model writes in one reply
+/// (`harness::SERVER_MAX_TOKENS`) and its trace says so, so that cap and its note are in one
+/// place; capping it here as well would hide the note from the caller.
+fn asked_tokens(body: &serde_json::Map<String, Value>) -> Option<u32> {
+    body.get("max_tokens").or_else(|| body.get("max_completion_tokens")).and_then(Value::as_u64).map(|tokens| u32::try_from(tokens).unwrap_or(u32::MAX).max(1))
+}
+
 /// An app called `swarm/NAME`: the harness runs its team and answers as one chat completion.
 /// A streaming caller gets keep-alive comments while the team works, then the answer.
 async fn swarm(shared: &Arc<Shared>, key: String, name: &str, body: serde_json::Map<String, Value>) -> Response<Body> {
@@ -2854,7 +2901,7 @@ async fn swarm(shared: &Arc<Shared>, key: String, name: &str, body: serde_json::
         return error(StatusCode::BAD_REQUEST, "invalid_request_error", "A swarm harness answers in plain text; response_format is not supported");
     }
     // The caller's output cap applies to the final answer; the team's inner steps keep their own.
-    let final_tokens = body.get("max_tokens").or_else(|| body.get("max_completion_tokens")).and_then(Value::as_u64).map(|tokens| tokens.clamp(1, 32_768) as u32);
+    let final_tokens = asked_tokens(&body);
     {
         let live = lock(&shared.live);
         if live.key_load(&key) >= MAX_PER_KEY {
@@ -3111,6 +3158,23 @@ mod tests {
     }
     fn plan(id: &str, percent: u8) -> Plan {
         Plan { id: id.into(), model: "Acme/Chat".into(), quant: None, percent, policy: IdlePolicy::default(), created_at: 0, target: Target::All }
+    }
+    /// PROVES a Sandbox Grid told to use only some computers places desks on those alone: every
+    /// other computer is left out of placement by its name, whatever its case, including one that
+    /// joins later, and lifting the rule lets any computer with room take desks again.
+    #[test]
+    fn only_the_named_computers_take_desks() {
+        let mut record = record(&[true, true, true]);
+        let live = Live::default();
+        let left_out = |record: &Record| host_views(record, &live).iter().filter(|host| host.excluded).map(|host| host.id.clone()).collect::<Vec<_>>();
+        assert!(left_out(&record).is_empty(), "no rule, no computer is left out");
+        record.enterprise.only_computers = Some(vec!["computer 1".into()]);
+        assert_eq!(left_out(&record), ["m0", "m2"]);
+        record.members.push(MemberRecord { id: "m3".into(), name: "Later".into(), ..record.members[0].clone() });
+        assert_eq!(left_out(&record), ["m0", "m2", "m3"], "a computer that joins later is left out too");
+        record.members[0].excluded = true;
+        record.enterprise.only_computers = None;
+        assert_eq!(left_out(&record), ["m0"], "lifted, only what the admin left out by hand stays out");
     }
     fn plans_of(record: &Record) -> Vec<Option<&str>> {
         record.members.iter().map(|member| member.plan.as_deref()).collect()
@@ -3403,6 +3467,37 @@ mod tests {
         body.push(br#""completion_tokens":2}}"#);
         assert_eq!(body.finish(), (4, 2));
     }
+
+    /// PROVES that a caller's cap on a team's answer reaches the harness as asked, so the one cap
+    /// on a grid model's answer, `harness::SERVER_MAX_TOKENS`, applies there and the trace tells
+    /// the caller.
+    ///
+    /// The hub clamped the cap to 32,768 first, a number of its own beside the harness's: a caller
+    /// who asked for 100,000 read that they had asked for 32,768. Clamping it here to the
+    /// harness's cap instead would leave the harness nothing to say.
+    #[tokio::test]
+    async fn a_callers_cap_on_a_teams_answer_reaches_the_harness_as_asked() {
+        let asked = |body: Value| asked_tokens(body.as_object().unwrap());
+        assert_eq!(asked(json!({"max_tokens": 300})), Some(300));
+        assert_eq!(asked(json!({"max_completion_tokens": 300})), Some(300));
+        assert_eq!(asked(json!({"max_tokens": 300, "max_completion_tokens": 900})), Some(300), "max_tokens is read first");
+        assert_eq!(asked(json!({"max_tokens": harness::SERVER_MAX_TOKENS + 1})), Some(harness::SERVER_MAX_TOKENS + 1), "past the cap too, for the harness to cap and say so");
+        assert_eq!(asked(json!({"max_tokens": u64::MAX})), Some(u32::MAX), "too large for a u32 is the most one holds, never a small number");
+        assert_eq!(asked(json!({"max_tokens": 0})), Some(1));
+        assert_eq!(asked(json!({"messages": []})), None, "no cap: the answer may be as long as a grid model writes");
+
+        // Every model answers with the number of tokens it was asked for.
+        struct Echo;
+        impl harness::Ask for Echo {
+            fn ask<'a>(&'a self, _model: &'a str, request: Value) -> BoxFuture<'a, Result<harness::Answer, String>> {
+                Box::pin(async move { Ok::<_, String>(harness::Answer { text: request["max_tokens"].to_string(), ..Default::default() }) })
+            }
+        }
+        let team = Harness::new("team", harness::Strategy::Mixture, "acme/lead", &["acme/worker".to_owned()], 1, 1, 1).unwrap();
+        let run = harness::run_with(&team, &Echo, &[json!({"role": "user", "content": "Price it"})], asked(json!({"max_tokens": 100_000}))).await.unwrap();
+        assert_eq!(run.answer, harness::SERVER_MAX_TOKENS.to_string(), "the answer is capped at what a grid model writes");
+        assert!(run.trace["note"].as_str().unwrap().contains("100,000"), "the trace says what the caller asked for: {}", run.trace);
+    }
     #[test]
     fn records_refuse_public_addresses_and_duplicates() {
         let folder = tempfile::tempdir().unwrap();
@@ -3523,9 +3618,9 @@ mod tests {
             crate::enterprise::AdminRole::User | crate::enterprise::AdminRole::Auditor | crate::enterprise::AdminRole::Operator | crate::enterprise::AdminRole::Administrator => {}
         }
 
-        let crate::enterprise::Enterprise { images, roles, connections, audit, computer_limit, parking, cloud_fallback, sso, provisioning } = crate::enterprise::Enterprise::default();
+        let crate::enterprise::Enterprise { images, roles, connections, audit, computer_limit, parking, cloud_fallback, sso, provisioning, only_computers, require_two_step } = crate::enterprise::Enterprise::default();
         assert!(images.is_empty() && roles.is_empty() && connections.is_empty() && audit.is_empty() && provisioning.is_empty());
-        assert!(computer_limit.is_none() && parking.is_none() && cloud_fallback.is_none() && sso.is_none());
+        assert!(computer_limit.is_none() && parking.is_none() && cloud_fallback.is_none() && sso.is_none() && only_computers.is_none() && !require_two_step);
 
         let image: crate::enterprise::Image = serde_json::from_value(json!({
             "id": "image-1", "name": "Ubuntu", "version": "24.04", "description": "", "applications": [],

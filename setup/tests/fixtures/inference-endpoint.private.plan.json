@@ -1,0 +1,394 @@
+{
+  "formatVersion": 2,
+  "instance": "inference-endpoint",
+  "template": {
+    "name": "inference-endpoint",
+    "version": "1.0.0",
+    "formatVersion": 2
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "required",
+    "platforms": [
+      "windows-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.health",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Health check",
+      "permissions": []
+    },
+    {
+      "id": "web.private",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "website_api",
+      "name": "Keep it to this computer",
+      "permissions": []
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "data.volumes",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "files_data",
+      "name": "Persistent volumes",
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "access": "none",
+    "cpu": "8",
+    "max_concurrent": "16",
+    "max_model_len": "8192",
+    "memory_gb": "32",
+    "model": "Qwen/Qwen3-0.6B",
+    "storage_gb": "60"
+  },
+  "secrets": {
+    "api_key": "hub-inference-endpoint-api_key",
+    "hf_token": "hub-inference-endpoint-hf_token"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "server",
+      "kind": "environment",
+      "title": "sandbox",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "automatic_start": false,
+        "command": [
+          "serve",
+          "Qwen/Qwen3-0.6B",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000",
+          "--max-model-len",
+          "8192",
+          "--max-num-seqs",
+          "16"
+        ],
+        "cpu": 8.0,
+        "depends_on": [],
+        "entrypoint": [
+          "python3",
+          "-m",
+          "vllm.entrypoints.cli.main"
+        ],
+        "environment": {
+          "HF_HOME": "/models"
+        },
+        "files": [],
+        "gpu": false,
+        "health": {
+          "path": "/health",
+          "port": 8000,
+          "wait_seconds": 600
+        },
+        "image": "docker.io/vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+        "internet": true,
+        "memory": 32,
+        "pc_access": [],
+        "permissions": {
+          "edit": false,
+          "pc": false
+        },
+        "ports": [
+          8000
+        ],
+        "restart": "",
+        "secrets": {
+          "HF_TOKEN": "hub-inference-endpoint-hf_token",
+          "VLLM_API_KEY": "hub-inference-endpoint-api_key"
+        },
+        "storage": 60,
+        "type": "gpu",
+        "volumes": [
+          {
+            "bind": false,
+            "read_only": false,
+            "source": "models",
+            "target": "/models"
+          }
+        ]
+      },
+      "outputs": [
+        "name",
+        "address"
+      ]
+    },
+    {
+      "id": "endpoint",
+      "kind": "service_publication",
+      "title": "public address",
+      "dependsOn": [
+        "server"
+      ],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "this computer",
+      "spec": {
+        "access": "none",
+        "health": {
+          "expected_status": 200,
+          "path": "/health"
+        },
+        "port": 8000,
+        "target": {
+          "resource": "server"
+        }
+      },
+      "outputs": [
+        "url",
+        "port"
+      ]
+    }
+  ],
+  "order": [
+    "server",
+    "endpoint"
+  ],
+  "steps": [
+    {
+      "title": "Watch it load",
+      "detail": "The first start downloads the model and can take a while. The endpoint is ready once its health check answers.",
+      "command": "yougori logs {{env.server}}"
+    },
+    {
+      "title": "Call it",
+      "detail": "Send POST /v1/chat/completions to the address below with Authorization: Bearer YOUR_KEY and the model name you chose."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "address",
+      "label": "Endpoint address",
+      "value": "{{outputs.endpoint.url}}",
+      "private": false
+    },
+    {
+      "key": "sandbox",
+      "label": "Sandbox",
+      "value": "{{outputs.server.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "publications",
+    "storage",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "server",
+        "kind": "environment",
+        "title": "sandbox",
+        "placement": "this computer"
+      },
+      {
+        "id": "endpoint",
+        "kind": "service_publication",
+        "title": "public address",
+        "placement": "this computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [
+      {
+        "kind": "image",
+        "name": "docker.io/vllm/vllm-openai@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1"
+      }
+    ],
+    "permissions": [
+      "server uses the NVIDIA GPU.",
+      "server receives the secret HF_TOKEN from the question hf_token.",
+      "server receives the secret VLLM_API_KEY from the question api_key.",
+      "A website or API: Run containers on this computer.",
+      "Persistent volumes: Reserve storage on a drive you choose.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Needs an NVIDIA GPU."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 1,
+      "cpu": 8.0,
+      "memoryGb": 32.0,
+      "storageGb": 60.0,
+      "gpu": "required"
+    },
+    "questions": [
+      {
+        "id": "model",
+        "question": "Which Hugging Face model should it serve?",
+        "answer": "Qwen/Qwen3-0.6B",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "api_key",
+        "question": "Choose the API key apps must send",
+        "secret": true,
+        "group": "website_api"
+      },
+      {
+        "id": "hf_token",
+        "question": "Hugging Face token (only for gated or private models)",
+        "secret": true,
+        "group": "ai_models"
+      },
+      {
+        "id": "max_model_len",
+        "question": "Longest conversation, in tokens",
+        "answer": "8192",
+        "secret": false,
+        "group": "ai_models"
+      },
+      {
+        "id": "max_concurrent",
+        "question": "How many requests may run at once?",
+        "answer": "16",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "cpu",
+        "question": "Processor cores",
+        "answer": "8",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "memory_gb",
+        "question": "Memory, in GB",
+        "answer": "32",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "storage_gb",
+        "question": "Disk for the model files, in whole GB",
+        "answer": "60",
+        "secret": false,
+        "group": "files_data"
+      },
+      {
+        "id": "access",
+        "question": "Who can reach the endpoint?",
+        "answer": "none",
+        "secret": false,
+        "group": "website_api"
+      }
+    ],
+    "pcAccess": [],
+    "public": [
+      {
+        "resource": "server",
+        "port": 8000,
+        "access": "none"
+      }
+    ],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "server",
+        "variable": "HF_TOKEN",
+        "source": "the question hf_token"
+      },
+      {
+        "resource": "server",
+        "variable": "VLLM_API_KEY",
+        "source": "the question api_key"
+      }
+    ]
+  },
+  "digest": "b3e19bcd2e2741cf83c5952844fd07ad7997360bc3822449fee224b05bf78d1e"
+}

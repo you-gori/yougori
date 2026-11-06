@@ -7,6 +7,9 @@ import string
 import types
 import zlib
 from collections import deque
+from contextlib import contextmanager
+from functools import wraps
+import copy
 import importlib.metadata
 import json
 import hashlib
@@ -18,9 +21,10 @@ import secrets
 import stat
 import shutil
 import signal
+import select
+import socket
 import subprocess
 import sys
-import tarfile
 import threading
 import time
 import urllib.request
@@ -65,7 +69,13 @@ def agent_arguments():
     return ["--enable-auto-tool-choice", "--tool-call-parser", TOOL_PARSER] if FORMAT == "vllm" and TOOL_PARSER else []
 STATE = {"status": "installing", "model": MODEL, "error": None}
 GENERATION = threading.Lock()
-REQUESTS = threading.BoundedSemaphore(8)
+# Bound both retained requests and HTTP threads; leave room for health/control traffic.
+REQUEST_QUEUE_LIMIT = 128
+REQUEST_QUEUE_SECONDS = 300
+# Cells a shared llama.cpp KV pool reservation adds to the prompt and max_tokens it counts.
+RESERVE_MARGIN_TOKENS = 16
+MAX_CONNECTIONS = REQUEST_QUEUE_LIMIT + 33
+REQUESTS = threading.BoundedSemaphore(MAX_CONNECTIONS)
 TOKENIZER = NETWORK = TORCH = None
 PROCESSOR = CLEF = None
 DECISION_MODEL = MODEL in ("Cloudflare/clef", "superagent-ai/security-one-27b")
@@ -73,22 +83,781 @@ if DECISION_MODEL:
     STATE.update(task="structured-decision", api="systemone", stream=True)
 MODEL_DEPENDENCIES = {"transformers": "5.18.0", "accelerate": "1.15.0", "huggingface-hub": "1.33.0"}
 CACHE = os.environ.get("HF_HOME", "/root/.cache/huggingface")
-# A pinned llama.cpp release built for CUDA 12.8, plus the CUDA runtime it links against.
-LLAMA_BUILD = "b11425"
-LLAMA_ARCHIVES = (
-    ("llama-b11425-bin-ubuntu-cuda-12.8-x64.tar.gz", "ff7f7134ee3677bddf9ead356a1bc8b9cbc479d2b1e26b9e0d6753a5401e632b", 171642941),
-    ("cudart-llama-b11425-bin-ubuntu-cuda-12.8-x64.tar.gz", "efe82ad6fea3820fef207e7cf73748760de3dcf604c1aaa9aa01d4c1ec2f79cb", 594377568),
-)
-LLAMA_CPU_ARCHIVES = (
-    ("llama-b11425-bin-ubuntu-x64.tar.gz", "6a47856d08ecc4030b2fa8b8bf761c96d142d689567f69a0f75e42de430dc34c", 17682320),
-)
-LLAMA = {"port": 8001, "key": secrets.token_hex(24), "context": 0}
-VLLM_VERSION = "0.29.0"
-KOLIBRI_WHEEL = ("aleph_alpha_inference-1.0.0-py3-none-any.whl",
-    "https://files.pythonhosted.org/packages/b0/d7/1eda35b6ee0293f2a52d7a653cf5a4d54c93f21e2e359fe70a7e7b87a851/aleph_alpha_inference-1.0.0-py3-none-any.whl",
-    "5a0ca118e67924f10c4f9c04dd64bef117007a17dd820233a8841b9cb8d6f211", 13392)
+# The backend launch's facts (engine_backends): slots, their shared KV pool and why a parallel
+# launch fell back to one slot, kept here so the helper shadow compares one consistent copy.
+LLAMA = {"port": 8001, "key": secrets.token_hex(24), "context": 0, "slots": 1, "pool": 0, "servingFallback": None}
 ENGINE_PROCESS = None
+MODEL_LOAD_LOCK = threading.Lock()
+# GPU-W01: the Transformers reload memo, and the Hugging Face metadata that pinned the last snapshot.
+TRANSFORMERS_PREPARED = None
+SNAPSHOT_METADATA = None
 BASE_TEMPLATE = "{% for message in messages %}{{ message['role'] + ': ' + message['content'] + '\\n' }}{% endfor %}{% if add_generation_prompt %}{{ 'assistant:' }}{% endif %}"
+
+
+class RunnerJournal:
+    """Opt-in, fsynced observation window; never infer missing attempts or outcomes."""
+    MAX_BYTES = 8 * 1024 * 1024
+    MAX_RECORD = 8192
+    MAX_EVENTS = 8192
+    MAX_ACTIVE = 4096
+
+    def __init__(self, root, session_id):
+        self.lock = threading.RLock()
+        self.session_id = session_id if isinstance(session_id, str) and re.fullmatch(r"[a-f0-9]{32}", session_id) else None
+        self.instance_id = None
+        self.path = None
+        self.status, self.loss = "recording", False
+        self.offsets, self.active, self.instances, self.starts, self.finishes = [], {}, set(), {}, {}
+        self.bytes = 0
+        self.sealed = False
+        if self.session_id is None:
+            self.degrade()
+            return
+        try:
+            directory = os.path.join(root, "yougori-measurements")
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            self.path = os.path.join(directory, self.session_id + ".jsonl")
+            if os.path.exists(self.path):
+                self.scan()
+                # Even a present seal might precede an fsync failure. A new runner
+                # never claims a prior process's session window was complete.
+                self.degrade()
+                return
+            with os.scandir(directory) as entries:
+                count = 0
+                for index, entry in enumerate(entries):
+                    if index >= 512:
+                        raise ValueError("Journal directory limit")
+                    count += int(entry.name.endswith(".jsonl"))
+                if count >= 4:
+                    raise ValueError("Journal session limit")
+            header = self.encode({"version": 1, "sessionId": self.session_id})
+            with open(self.path, "xb") as file:
+                if file.write(header) != len(header):
+                    raise OSError("Incomplete journal header")
+                file.flush()
+                os.fsync(file.fileno())
+            self.bytes = len(header)
+        except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+            self.degrade()
+
+    @classmethod
+    def configured(cls):
+        session = os.environ.get("YOUGORI_MEASUREMENT_SESSION")
+        return None if session is None else cls(CACHE, session)
+
+    def degrade(self):
+        self.status, self.loss = "degraded", True
+
+    @staticmethod
+    def encode(value):
+        return (json.dumps(value, ensure_ascii=True, separators=(",", ":"), allow_nan=False) + "\n").encode("ascii")
+
+    @staticmethod
+    def object_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate observation field")
+            result[key] = value
+        return result
+
+    @classmethod
+    def decode(cls, line):
+        if not line.endswith(b"\n") or len(line) > cls.MAX_RECORD:
+            raise ValueError("Invalid observation record")
+        return json.loads(line.decode("utf-8"), object_pairs_hook=cls.object_fields)
+
+    @staticmethod
+    def integer(value, minimum=0):
+        return type(value) is int and minimum <= value <= 2**53 - 1
+
+    @staticmethod
+    def duration(value):
+        return type(value) in (int, float) and 0 <= value <= 10**15 and math.isfinite(value)
+
+    def validate(self, event):
+        if (not isinstance(event, dict) or not self.integer(event.get("sequence"), 1)
+                or event["sequence"] != len(self.offsets) + 1
+                or not isinstance(event.get("instanceId"), str)
+                or not re.fullmatch(r"[a-f0-9]{32}", event["instanceId"])):
+            raise ValueError("Invalid observation identity")
+        kind, instance = event.get("event"), event["instanceId"]
+        basic = {"sequence", "event", "instanceId"}
+        if self.sealed:
+            raise ValueError("Observation after seal")
+        if kind == "instance":
+            if set(event) != basic or instance in self.instances:
+                raise ValueError("Invalid observation instance")
+        elif kind == "start":
+            if (set(event) != basic | {"attemptId", "kind"} or instance not in self.instances
+                    or not self.integer(event.get("attemptId"), 1)
+                    or event["attemptId"] != self.starts.get(instance, 0) + 1
+                    or event.get("kind") not in ("load", "request") or len(self.active) >= self.MAX_ACTIVE):
+                raise ValueError("Invalid attempt start")
+        elif kind == "finish":
+            record = event.get("record")
+            if (set(event) != basic | {"attemptId", "record"} or not self.integer(event.get("attemptId"), 1)
+                    or not isinstance(record, dict)
+                    or set(record) - {"boundaries", "tokens", "demandLoad", "backend"} != {"id", "kind", "outcome", "elapsedMs", "firstOutputMs", "stages", "completionSequence"}
+                    or not self.integer(record.get("id"), 1) or record.get("kind") not in ("load", "request")
+                    or record.get("id") != event["attemptId"]
+                    or (instance, event["attemptId"]) not in self.active
+                    or self.active.get((instance, event["attemptId"])) != record.get("kind")
+                    or record.get("outcome") not in RunnerTimings.OUTCOMES
+                    or not self.duration(record.get("elapsedMs"))
+                    or record.get("firstOutputMs") is not None and not self.duration(record["firstOutputMs"])
+                    or not self.integer(record.get("completionSequence"), 1)
+                    or record["completionSequence"] != self.finishes.get(instance, 0) + 1
+                    or not isinstance(record.get("stages"), dict)
+                    or not set(record["stages"]) <= RunnerTimings.STAGES):
+                raise ValueError("Invalid attempt result")
+            if "boundaries" in record:
+                RunnerTimings.validate_boundaries(record)
+            if "tokens" in record:
+                RunnerTimings.validate_tokens(record)
+            if "demandLoad" in record:
+                RunnerTimings.validate_demand_load(record)
+            if "backend" in record:
+                RunnerTimings.validate_backend(record)
+            for sample in record["stages"].values():
+                if (not isinstance(sample, dict) or set(sample) != {"calls", "failedCalls", "elapsedMs"}
+                        or not self.integer(sample.get("calls"), 1) or not self.integer(sample.get("failedCalls"))
+                        or sample["failedCalls"] > sample["calls"] or not self.duration(sample.get("elapsedMs"))):
+                    raise ValueError("Invalid observation span")
+        elif kind == "seal":
+            if set(event) != basic or instance not in self.instances or self.active:
+                raise ValueError("Invalid observation seal")
+        else:
+            raise ValueError("Invalid observation event")
+
+    def remember(self, event, line):
+        self.offsets.append((self.bytes, len(line), hashlib.sha256(line).digest()))
+        self.bytes += len(line)
+        instance = event["instanceId"]
+        if event["event"] == "instance":
+            self.instances.add(instance)
+        elif event["event"] == "start":
+            self.starts[instance] = event["attemptId"]
+            self.active[(instance, event["attemptId"])] = event["kind"]
+        elif event["event"] == "finish":
+            self.finishes[instance] = event["record"]["completionSequence"]
+            del self.active[(instance, event["attemptId"])]
+        elif event["event"] == "seal":
+            self.sealed = True
+            self.status = "sealed"
+
+    def scan(self):
+        with open(self.path, "rb") as file:
+            header = file.readline(self.MAX_RECORD + 1)
+            value = self.decode(header)
+            if not isinstance(value, dict) or type(value.get("version")) is not int or value != {"version": 1, "sessionId": self.session_id}:
+                raise ValueError("Invalid journal header")
+            self.bytes = len(header)
+            while True:
+                line = file.readline(self.MAX_RECORD + 1)
+                if not line:
+                    break
+                if self.bytes + len(line) > self.MAX_BYTES or len(self.offsets) >= self.MAX_EVENTS:
+                    raise ValueError("Journal limit")
+                event = self.decode(line)
+                self.validate(event)
+                self.remember(event, line)
+
+    def append(self, event):
+        with self.lock:
+            if self.status != "recording":
+                return False
+            try:
+                event = {"sequence": len(self.offsets) + 1, "instanceId": self.instance_id, **event}
+                self.validate(event)
+                line = self.encode(event)
+                if (len(line) > self.MAX_RECORD or len(self.offsets) >= self.MAX_EVENTS
+                        or self.bytes + len(line) > self.MAX_BYTES or os.path.getsize(self.path) != self.bytes):
+                    raise ValueError("Journal limit or change")
+                with open(self.path, "ab") as file:
+                    if file.write(line) != len(line):
+                        raise OSError("Incomplete observation write")
+                    file.flush()
+                    os.fsync(file.fileno())
+                self.remember(event, line)
+                return True
+            except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
+                self.degrade()
+                return False
+
+    def attach(self, instance):
+        with self.lock:
+            self.instance_id = instance
+            self.append({"event": "instance"})
+
+    def seal(self, session):
+        with self.lock:
+            if session != self.session_id or self.loss or self.status == "degraded" or self.active:
+                return False
+            return self.status == "sealed" or self.append({"event": "seal"})
+
+    def replay(self, after=0, limit=64):
+        with self.lock:
+            rows = []
+            try:
+                if self.path is None:
+                    raise ValueError("Journal changed")
+                if os.path.getsize(self.path) != self.bytes:
+                    self.degrade()
+                with open(self.path, "rb") as file:
+                    for offset, size, digest in self.offsets[after:after + limit]:
+                        file.seek(offset)
+                        line = file.read(size)
+                        if hashlib.sha256(line).digest() != digest:
+                            raise ValueError("Journal changed")
+                        rows.append(self.decode(line))
+            except (OSError, ValueError, UnicodeError, RecursionError):
+                self.degrade()
+                rows = []
+            loss = self.loss or after > len(self.offsets)
+            next_after = rows[-1]["sequence"] if rows else after
+            return {"version": 1, "scope": "session_window", "clock": "process_monotonic", "units": "milliseconds",
+                    "sessionId": self.session_id, "instanceId": self.instance_id, "status": self.status,
+                    "firstSequence": 1, "nextSequence": len(self.offsets) + 1,
+                    "after": after, "nextAfter": next_after, "hasMore": next_after < len(self.offsets),
+                    "loss": loss, "complete": self.status == "sealed" and not loss and not self.active,
+                    "inflight": len(self.active),
+                    "interrupted": sum(instance != self.instance_id for instance, _ in self.active), "records": rows}
+
+
+class RunnerTimings:
+    """Bounded raw observations for GPU-W00; never a benchmark or isolation verdict.
+
+    Each thread owns its current run. Only completed numeric records cross into
+    the shared ring. Names are fixed here, so paths, prompts, errors and keys
+    cannot become metric labels. Durations are host elapsed time, not CUDA time.
+    """
+    STAGES = frozenset(("dependencies", "checkpoint", "snapshot", "download", "import",
+                        "weight_verification", "weight_hash", "runtime_artifact",
+                        "weight_load", "admission_wait", "engine_start_to_ready", "native_ready_wait",
+                        "request_validation", "model_wait", "prompt_preparation", "generation",
+                        "engine_wake", "weight_reload"))
+    # G01: a request's prefill, scheduler queue and decode on the backend's own clock, as the
+    # backend reported them: vLLM's per-request histograms (their growth across exactly this
+    # request), llama.cpp's reply timings, or the Transformers runner's first generated token.
+    BACKEND_SOURCES = ("vllm-metrics-delta", "llama-cpp-timings", "transformers-first-token")
+    OUTCOMES = frozenset(("ok", "cancelled", "busy", "invalid", "error"))
+
+    def __init__(self, clock=None, limit=64, journal=None):
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 256:
+            raise ValueError("Invalid timing history limit")
+        self.clock = clock or time.monotonic_ns
+        # Opaque observation namespace, never a credential or a workload identity.
+        self.instance_id = secrets.token_hex(16)
+        self.local = threading.local()
+        self.lock = threading.Lock()
+        self.recent = deque(maxlen=limit)
+        self.started = self.completed = 0
+        self.latest_load = None  # One process-local generation, never an unbounded join table.
+        self.latest_wake = None  # The id of the latest load when it woke a sleeping engine.
+        self.loading = self.last_load = None  # load_view: the load running, else the last one.
+        self.journal = journal
+        if self.journal is not None:
+            self.journal.attach(self.instance_id)
+
+    @contextmanager
+    def run(self, kind):
+        if kind not in ("load", "request"):
+            raise ValueError("Unknown timing run")
+        start = self.clock()
+        with self.lock:
+            self.started += 1
+            ident = self.started
+            if self.journal is not None:
+                self.journal.append({"event": "start", "attemptId": ident, "kind": kind})
+        previous = getattr(self.local, "current", None)
+        run = {"id": ident, "kind": kind, "start": start, "outcome": "error", "stages": {}, "firstOutputMs": None}
+        self.local.current = run
+        if kind == "load":
+            with self.lock:
+                self.loading = run
+        try:
+            yield run
+        except BaseException:
+            run["outcome"] = "error"
+            raise
+        finally:
+            record = {"id": ident, "kind": kind,
+                      "outcome": run["outcome"] if run["outcome"] in self.OUTCOMES else "error",
+                      "elapsedMs": self.elapsed(start), "firstOutputMs": run["firstOutputMs"],
+                      "stages": run["stages"]}
+            if "boundaries" in run:
+                record["boundaries"] = run["boundaries"].copy()
+            if "demandLoad" in run:
+                record["demandLoad"] = run["demandLoad"].copy()
+            if "tokens" in run:
+                record["tokens"] = copy.deepcopy(run["tokens"])
+                if record["outcome"] != "ok":
+                    record["tokens"]["complete"] = False
+            if "backend" in run and record["outcome"] == "ok":
+                record["backend"] = dict(run["backend"])
+            self.local.current = previous
+            with self.lock:
+                self.completed += 1
+                # Start IDs can finish out of order. Only this sequence is a
+                # cursor for completed records and detects an evicted delivery.
+                record["completionSequence"] = self.completed
+                self.recent.append(record)
+                if kind == "load":
+                    self.loading, self.last_load = None, record
+                if self.journal is not None:
+                    self.journal.append({"event": "finish", "attemptId": ident, "record": record})
+
+    def elapsed(self, start):
+        return round(max(0, self.clock() - start) / 1_000_000, 6)
+
+    def load_started(self, run):
+        with self.lock:
+            self.latest_load = (run["id"], run["start"], None) if (
+                self.journal is not None and self.journal.status == "recording") else None
+
+    def load_finished(self, run, ready):
+        with self.lock:
+            if self.latest_load is not None and self.latest_load[0] == run["id"]:
+                self.latest_load = (run["id"], run["start"], self.clock()) if ready else None
+                self.latest_wake = run["id"] if ready and "engine_wake" in run["stages"] else None
+
+    def invalidate_load(self):
+        with self.lock:
+            self.latest_load = None
+
+    def capture_demand_load(self):
+        """Called while the GPU state lock confirms ready; only a completed load
+        entirely inside this accepted request can become its demand-load interval.
+        Concurrent waiters may observe the same load; this is not exclusive cost.
+        """
+        run = getattr(self.local, "current", None)
+        if (run is None or run["kind"] != "request" or "demandLoad" in run
+                or "boundaries" not in run):
+            return
+        with self.lock:
+            load = self.latest_load
+            if self.journal is None or self.journal.status != "recording" or load is None or load[2] is None:
+                return
+        ident, start, end = load
+        if start < run["start"] or end < start or end > self.clock():
+            return
+        start_ms, end_ms = (round((at - run["start"]) / 1_000_000, 6) for at in (start, end))
+        if start_ms < run["boundaries"]["acceptedMs"]:
+            return  # Loading already in progress on arrival cannot be re-timed to arrival.
+        # A load that woke a sleeping engine is a retained-process wake, not a load from scratch.
+        source = "runner-wake-call" if self.latest_wake == ident else "runner-load-call"
+        run["demandLoad"] = {"version": 1, "source": source, "loadAttemptId": ident,
+                             "startedMs": start_ms, "readyMs": end_ms}
+
+    @staticmethod
+    def validate_demand_load(record):
+        load, b = record["demandLoad"], record.get("boundaries", {})
+        if (record["kind"] != "request" or not isinstance(load, dict)
+                or set(load) != {"version", "source", "loadAttemptId", "startedMs", "readyMs"}
+                or type(load["version"]) is not int or load["version"] != 1
+                or load["source"] not in ("runner-load-call", "runner-wake-call")
+                or not RunnerJournal.integer(load["loadAttemptId"], minimum=1)
+                or load["loadAttemptId"] == record["id"]
+                or not RunnerJournal.duration(load["startedMs"]) or not RunnerJournal.duration(load["readyMs"])
+                or b.get("acceptedMs") is None
+                or not b["acceptedMs"] <= load["startedMs"] <= load["readyMs"] <= record["elapsedMs"]
+                or b.get("admittedMs") is not None and load["readyMs"] > b["admittedMs"]):
+            raise ValueError("Invalid demand load observations")
+
+    @contextmanager
+    def stage(self, name):
+        if name not in self.STAGES:
+            raise ValueError("Unknown timing stage")
+        run = getattr(self.local, "current", None)
+        span = {"failed": False}
+        if run is None:
+            yield span
+            return
+        start = self.clock()
+        run.setdefault("open", []).append(name)
+        try:
+            yield span
+        except BaseException:
+            span["failed"] = True
+            raise
+        finally:
+            run["open"].remove(name)
+            sample = run["stages"].setdefault(name, {"calls": 0, "failedCalls": 0, "elapsedMs": 0})
+            sample["calls"] += 1
+            sample["failedCalls"] += int(span["failed"])
+            sample["elapsedMs"] = round(sample["elapsedMs"] + self.elapsed(start), 6)
+
+    def load_view(self):
+        """The load in progress (its finished stages and the ones open), else the last load:
+        stage names and host milliseconds only, for model_status (`load`)."""
+        with self.lock:
+            run, record = self.loading, self.last_load
+            if run is not None:
+                view = {"inProgress": True, "elapsedMs": self.elapsed(run["start"]),
+                        "open": list(run.get("open", ()))}
+                stages = dict(run["stages"])
+            elif record is not None:
+                view = {"inProgress": False, "outcome": record["outcome"], "elapsedMs": record["elapsedMs"]}
+                stages = record["stages"]
+            else:
+                return {"inProgress": False}
+        view["stages"] = {name: sample["elapsedMs"] for name, sample in stages.items()}
+        return view
+
+    def first_output(self):
+        run = getattr(self.local, "current", None)
+        if run is not None and run["firstOutputMs"] is None:
+            run["firstOutputMs"] = self.elapsed(run["start"])
+
+    def boundary(self, name):
+        """Wrapper boundaries, not upstream scheduler or device/token clocks."""
+        if name not in ("acceptedMs", "admittedMs", "completedMs"):
+            raise ValueError("Unknown request boundary")
+        run = getattr(self.local, "current", None)
+        if run is None:
+            return
+        if name == "acceptedMs":
+            run.setdefault("boundaries", {"version": 1, "acceptedMs": self.elapsed(run["start"]),
+                                         "admittedMs": None, "completedMs": None})
+        elif "boundaries" in run:
+            boundaries = run["boundaries"]
+            if name == "completedMs" and boundaries["admittedMs"] is None:
+                return
+            if boundaries[name] is None:
+                boundaries[name] = self.elapsed(run["start"])
+
+    @staticmethod
+    def validate_boundaries(record):
+        b = record["boundaries"]
+        if (record["kind"] != "request" or not isinstance(b, dict)
+                or set(b) != {"version", "acceptedMs", "admittedMs", "completedMs"}
+                or type(b["version"]) is not int or b["version"] != 1
+                or not RunnerJournal.duration(b["acceptedMs"])):
+            raise ValueError("Invalid request boundaries")
+        previous = b["acceptedMs"]
+        for name in ("admittedMs", "completedMs"):
+            value = b[name]
+            if value is not None:
+                if previous is None or not RunnerJournal.duration(value) or value < previous:
+                    raise ValueError("Invalid request boundary order")
+            previous = value
+        if (any(value is not None and value > record["elapsedMs"] for name, value in b.items() if name != "version")
+                or b["completedMs"] is not None and record["outcome"] != "ok"
+                or record["firstOutputMs"] is not None and
+                   (b["admittedMs"] is None or record["firstOutputMs"] < b["admittedMs"]
+                    or b["completedMs"] is not None and record["firstOutputMs"] > b["completedMs"])):
+            raise ValueError("Inconsistent request boundaries")
+
+    def snapshot(self):
+        with self.lock:
+            return {"clock": "process_monotonic", "units": "milliseconds",
+                    "instanceId": self.instance_id,
+                    "started": self.started, "completed": self.completed,
+                    "active": self.started - self.completed,
+                    "retained": len(self.recent), "evicted": self.completed - len(self.recent),
+                    "retainedIds": [record["id"] for record in self.recent],
+                    "recent": copy.deepcopy(list(self.recent))}
+
+    def measuring(self):
+        """Whether the current request was admitted inside a durable measurement window: only
+        then is extra backend work done for it (token traces, backend clocks)."""
+        run = getattr(self.local, "current", None)
+        return (run is not None and run["kind"] == "request" and self.journal is not None
+                and self.journal.status == "recording" and run.get("boundaries", {}).get("admittedMs") is not None)
+
+    def backend(self, observation):
+        """Records what the backend reported of the current request (BACKEND_SOURCES); an
+        observation that does not hold together is dropped, never repaired."""
+        run = getattr(self.local, "current", None)
+        if run is None or not self.measuring():
+            return
+        try:
+            self.validate_backend({"kind": run["kind"], "backend": observation})
+        except (ValueError, TypeError, KeyError):
+            return
+        run["backend"] = dict(observation)
+
+    @staticmethod
+    def validate_backend(record):
+        o = record["backend"]
+        counts = ("promptTokens", "cachedTokens", "outputTokens")
+        spans = ("queueMs", "prefillMs", "decodeMs")
+        if (record["kind"] != "request" or not isinstance(o, dict) or set(o) != {"version", "source", *counts, *spans}
+                or type(o["version"]) is not int or o["version"] != 1 or o["source"] not in RunnerTimings.BACKEND_SOURCES
+                or any(o[name] is not None and not RunnerJournal.integer(o[name]) for name in counts)
+                or any(o[name] is not None and not RunnerJournal.duration(o[name]) for name in spans)
+                or o["cachedTokens"] is not None and (o["promptTokens"] is None or o["cachedTokens"] > o["promptTokens"])
+                or o["prefillMs"] is None or o["promptTokens"] is None):
+            raise ValueError("Invalid backend observations")
+
+    def token_trace(self, source="openai-logprobs-flush"):
+        # Only explicit durable measurement windows request extra backend work.
+        if not self.measuring():
+            return None
+        run = getattr(self.local, "current", None)
+        trace = TokenEmissionTrace(self, run, source)
+        run["tokens"] = trace.record
+        return trace
+
+    @staticmethod
+    def validate_tokens(record):
+        t, b = record["tokens"], record.get("boundaries", {})
+        if (record["kind"] != "request" or not isinstance(t, dict)
+                or set(t) != {"version", "source", "complete", "emittedMs", "outputTokens"}
+                or type(t["version"]) is not int or t["version"] != 1
+                or t["source"] not in TokenEmissionTrace.SOURCES or type(t["complete"]) is not bool
+                or not isinstance(t["emittedMs"], list) or len(t["emittedMs"]) > 256
+                or t["outputTokens"] is not None and not RunnerJournal.integer(t["outputTokens"])
+                or b.get("admittedMs") is None):
+            raise ValueError("Invalid token observations")
+        previous = b["admittedMs"]
+        for at in t["emittedMs"]:
+            if not RunnerJournal.duration(at) or at < previous or at > record["elapsedMs"]:
+                raise ValueError("Invalid token observation order")
+            previous = at
+        if (b.get("completedMs") is not None and previous > b["completedMs"]
+                or t["complete"] and (record["outcome"] != "ok" or b.get("completedMs") is None
+                    or not t["emittedMs"] or t["outputTokens"] != len(t["emittedMs"]))):
+            raise ValueError("Inconsistent token observations")
+
+    def journal_snapshot(self, after=0, limit=64):
+        if type(after) is not int or not 0 <= after <= 2**53 - 1 or type(limit) is not int or not 1 <= limit <= 128:
+            raise ValueError("Invalid journal cursor")
+        with self.lock:
+            if self.journal is not None:
+                return {"journal": self.journal.replay(after, limit)}
+            return {"journal": {"version": 1, "scope": "session_window", "clock": "process_monotonic", "units": "milliseconds",
+                                "sessionId": None, "instanceId": self.instance_id, "status": "disabled",
+                                "firstSequence": 1, "nextSequence": 1, "after": after, "nextAfter": after,
+                                "hasMore": False, "loss": False, "complete": False,
+                                "inflight": 0, "interrupted": 0, "records": []}}
+
+    def start_journal(self, session_id):
+        if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
+            return False
+        with self.lock:
+            if self.journal is not None:
+                return self.journal.session_id == session_id and self.journal.status == "recording"
+            if self.started != self.completed:
+                return False
+            journal = RunnerJournal(CACHE, session_id)
+            if journal.status != "recording":
+                return False
+            instance = secrets.token_hex(16)
+            journal.attach(instance)
+            if journal.status != "recording":
+                return False
+            # No run can cross this reset: run entry and completion own this lock.
+            self.instance_id, self.started, self.completed = instance, 0, 0
+            self.recent.clear()
+            self.latest_load = None
+            self.journal = journal
+            return True
+
+    def abandon_journal(self, session_id):
+        with self.lock:
+            if self.journal is None:
+                return True
+            if self.journal.session_id != session_id or self.started != self.completed:
+                return False
+            # Keep its file as incomplete evidence. Never append a fictitious seal.
+            self.journal = None
+            self.latest_load = None
+            return True
+
+    def release_journal(self, session_id):
+        with self.lock:
+            if self.journal is None:
+                return True  # Idempotent recovery after a lost release response.
+            if (self.journal.session_id != session_id or self.journal.status != "sealed"
+                    or self.started != self.completed):
+                return False
+            # Only the owner can release this sealed copy after collecting it.
+            try:
+                os.unlink(self.journal.path)
+            except FileNotFoundError:
+                pass
+            self.journal = None
+            self.latest_load = None
+            return True
+
+    def seal_journal(self, session_id):
+        with self.lock:
+            if (self.journal is None or not isinstance(session_id, str)
+                    or not re.fullmatch(r"[a-f0-9]{32}", session_id)):
+                return False
+            if self.journal.status != "sealed" and self.started != self.completed:
+                return False
+            return self.journal.seal(session_id)
+
+
+class TokenEmissionTrace:
+    """Bounded client-flush clocks, never device-generation clocks or token text.
+
+    Two sources: an upstream OpenAI stream whose logprobs carry each token's bytes, matched
+    against the content flushed (`observe`), and the Transformers streamer, which says how
+    many generated tokens each text piece it queued stands for (`flush`): every token crossed
+    the client flush of the piece that carried it, a token without text (the end of sequence)
+    the flush of the finishing chunk. A vLLM stream sends its end of sequence without text,
+    after the text in its last chunk or in a chunk of its own: such tokens are taken only at the
+    end of a stream that stopped on its own (at most two), crossing that chunk's flush or the
+    finishing chunk's (`close`)."""
+    SOURCES = ("openai-logprobs-flush", "transformers-streamer-flush")
+
+    def __init__(self, timings, run, source="openai-logprobs-flush"):
+        if source not in self.SOURCES:
+            raise ValueError("Unknown token emission source")
+        self.timings, self.start = timings, run["start"]
+        self.valid, self.stopped, self.finish_reason, self.unshown, self.pending = True, False, None, 0, 0
+        self.record = {"version": 1, "source": source, "complete": False,
+                       "emittedMs": [], "outputTokens": None}
+
+    def flush(self, count, flushed_at):
+        """`count` generated tokens crossed one successful client flush at `flushed_at`."""
+        if not self.valid:
+            return
+        if (type(count) is not int or count < 0 or flushed_at is None
+                or len(self.record["emittedMs"]) + count > 256):
+            self.valid = False
+            return
+        self.record["emittedMs"].extend([flushed_at] * count)
+
+    def total(self, completion_tokens):
+        """The tokens the generation produced, against which `finish` checks the flushes."""
+        if not RunnerJournal.integer(completion_tokens) or self.record["outputTokens"] is not None:
+            self.valid = False
+            return
+        self.record["outputTokens"] = completion_tokens
+
+    def observe(self, event, forwarded, flushed_at=None):
+        if not self.valid:
+            return
+        try:
+            choices = event.get("choices") or []
+            if len(choices) > 1:
+                raise ValueError()
+            if choices:
+                choice = choices[0]
+                if choice.get("index", 0) != 0:
+                    raise ValueError()
+                delta = choice.get("delta") or {}
+                # Tool/reasoning/filtering paths do not have a proven byte map.
+                if any(value for key, value in delta.items() if key not in ("role", "content")):
+                    raise ValueError()
+                content = delta.get("content") or ""
+                tokens = (choice.get("logprobs") or {}).get("content") or []
+                if not isinstance(tokens, list) or len(tokens) + len(self.record["emittedMs"]) > 256:
+                    raise ValueError()
+                pieces = []
+                for token in tokens:
+                    data = token.get("bytes")
+                    if (not isinstance(data, list) or not data
+                            or any(type(byte) is not int or not 0 <= byte <= 255 for byte in data)):
+                        raise ValueError()
+                    pieces.append(bytes(data))
+                if content and self.stopped:
+                    raise ValueError()  # no text follows a token the text did not show
+                if content:
+                    if not isinstance(content, str) or not tokens or not forwarded or flushed_at is None:
+                        raise ValueError()
+                    text, shown = content.encode("utf-8"), 0
+                    for count, piece in enumerate(pieces, 1):
+                        shown += len(piece)
+                        if shown >= len(text):
+                            break
+                    if shown != len(text) or b"".join(pieces[:count]) != text:
+                        raise ValueError()
+                    self.unshown += len(pieces) - count
+                    self.stopped = count < len(pieces)
+                    # All tokens in this chunk crossed the same successful flush.
+                    self.record["emittedMs"].extend([flushed_at] * len(tokens))
+                elif tokens:
+                    # Tokens without text in a chunk of their own: the finishing chunk's flush.
+                    self.unshown += len(tokens)
+                    self.pending += len(tokens)
+                    self.stopped = True
+                if self.unshown > 2:
+                    raise ValueError()
+                self.finish_reason = choice.get("finish_reason") or self.finish_reason
+            usage = event.get("usage")
+            if usage is not None:
+                total = usage.get("completion_tokens")
+                if not RunnerJournal.integer(total) or self.record["outputTokens"] is not None:
+                    raise ValueError()
+                self.record["outputTokens"] = total
+        except (ValueError, TypeError, AttributeError, UnicodeError):
+            self.valid = False
+
+    def close(self, flushed_at):
+        """The finishing chunk crossed its flush at `flushed_at`; so did the tokens without text
+        in chunks of their own, and the one end of generation llama.cpp counts but never streams."""
+        if not self.valid:
+            return
+        unseen = (self.record["outputTokens"] or 0) - len(self.record["emittedMs"]) - self.pending
+        if unseen == 1 and self.finish_reason == "stop" and self.unshown < 2 and FORMAT == "gguf":
+            self.pending, self.unshown = self.pending + 1, self.unshown + 1
+        if self.pending:
+            if flushed_at is None:
+                self.valid = False
+                return
+            self.record["emittedMs"].extend([flushed_at] * self.pending)
+            self.pending = 0
+
+    def finish(self, success):
+        self.record["complete"] = bool(success and self.valid and self.record["emittedMs"] and not self.pending
+                                       and self.record["outputTokens"] == len(self.record["emittedMs"])
+                                       and (not self.stopped or self.finish_reason == "stop"))
+
+
+RUNNER_TIMINGS = RunnerTimings(journal=RunnerJournal.configured())
+
+
+def timed_stage(name, rejects_false=False):
+    def decorate(function):
+        @wraps(function)
+        def measured(*args, **kwargs):
+            with RUNNER_TIMINGS.stage(name) as span:
+                value = function(*args, **kwargs)
+                if rejects_false and value is False:
+                    span["failed"] = True
+                return value
+        return measured
+    return decorate
+
+
+def timed_load(function):
+    @wraps(function)
+    def measured(*args, **kwargs):
+        with RUNNER_TIMINGS.run("load") as run:
+            RUNNER_TIMINGS.load_started(run)
+            try:
+                value = function(*args, **kwargs)
+                run["outcome"] = "ok" if STATE.get("status") == "ready" else "error"
+                return value
+            finally:
+                RUNNER_TIMINGS.load_finished(run, run["outcome"] == "ok")
+    return measured
+
+
+def single_model_load(function):
+    """One load owner per runner; duplicate notifications cannot clear its state."""
+    @wraps(function)
+    def owned(*args, **kwargs):
+        if not MODEL_LOAD_LOCK.acquire(blocking=False):
+            return
+        try:
+            return function(*args, **kwargs)
+        finally:
+            # Release the load owner before publishing GPU_LOADING=False. A new
+            # scheduler grant must never be consumed by a departing load owner.
+            with GPU_LOCK:
+                MODEL_LOAD_LOCK.release()
+                gpu_after_load()
+    return owned
+
+
 # Usage contains counters only. Free providers may explicitly enable a separate --listen log.
 USAGE_PATH = os.path.join(CACHE, "yougori-usage.json")
 USAGE_LOCK = threading.Lock()
@@ -167,6 +936,58 @@ except Exception:
 '''
 
 
+DOWNLOAD_RECORD_CHARS = 1024 * 1024
+DOWNLOAD_ROOT_CHARS = 32768
+
+
+def download_event(line, files):
+    """Normalize a bounded worker record before retaining it in the queue."""
+    if len(line) > DOWNLOAD_RECORD_CHARS or not line.endswith("\n"):
+        raise ValueError("Invalid download record")
+    event = json.loads(line)
+    if not isinstance(event, dict):
+        raise ValueError("Invalid download record")
+    kind = event.get("kind")
+    if kind == "cached":
+        names = event.get("files")
+        if not isinstance(names, list) or any(not isinstance(name, str) or name not in files for name in names):
+            raise ValueError("Invalid download record")
+        return {"kind": kind, "bytes": sum(files[name] for name in set(names))}
+    if kind in ("transfer", "written"):
+        amount = event.get("bytes")
+        if type(amount) is not int or not 0 <= amount <= 2**63 - 1:
+            raise ValueError("Invalid download record")
+        return {"kind": kind, "bytes": amount}
+    if kind == "done":
+        root = event.get("root")
+        if not isinstance(root, str) or not root or len(root) > DOWNLOAD_ROOT_CHARS or "\x00" in root:
+            raise ValueError("Invalid download record")
+        return {"kind": kind, "root": root}
+    if kind == "failed":
+        return {"kind": kind}
+    raise ValueError("Invalid download record")
+
+
+def read_download_events(output, destination, stopped, files):
+    """Backpressure never drops terminal events; cleanup cancels queue waits."""
+    while not stopped.is_set():
+        try:
+            line = output.readline(DOWNLOAD_RECORD_CHARS + 1)
+            event = download_event(line, files) if line else {"kind": "exit"}
+        except (ValueError, OSError, UnicodeError, RecursionError):
+            # Worker errors may contain credentials or signed URLs.
+            event = {"kind": "failed"}
+        while not stopped.is_set():
+            try:
+                destination.put(event, timeout=0.1)
+                break
+            except queue.Full:
+                continue
+        if event["kind"] in ("done", "failed", "exit"):
+            return
+
+
+@timed_stage("download")
 def download_snapshot(revision, files):
     """Bounded-memory downloads, byte progress, and an HTTPS retry after a stall."""
     total = sum(files.values())
@@ -179,23 +1000,18 @@ def download_snapshot(revision, files):
         process = subprocess.Popen([sys.executable, "-u", "-c", DOWNLOAD_WORKER],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, env=environment)
-        process.stdin.write(json.dumps({"model": MODEL, "revision": revision, "files": list(files), "restart_partial": bool(attempt)}))
-        process.stdin.close()
         events = queue.Queue(maxsize=128)
-        def read_events(output, destination):
-            for line in output:
-                try:
-                    destination.put(json.loads(line), timeout=1)
-                except (ValueError, queue.Full):
-                    pass
-            destination.put({"kind": "exit"})
-        reader = threading.Thread(target=read_events, args=(process.stdout, events), daemon=True)
+        stopped = threading.Event()
+        reader = threading.Thread(target=read_download_events,
+                                  args=(process.stdout, events, stopped, files), daemon=True)
         reader.start()
         last_progress = time.monotonic()
         samples = deque([(last_progress, 0)], maxlen=128)
         cached = transfer = written = 0
         root = None
         try:
+            process.stdin.write(json.dumps({"model": MODEL, "revision": revision, "files": list(files), "restart_partial": bool(attempt)}))
+            process.stdin.close()
             while True:
                 try:
                     event = events.get(timeout=1)
@@ -204,7 +1020,7 @@ def download_snapshot(revision, files):
                 now = time.monotonic()
                 kind = event.get("kind")
                 if kind == "cached":
-                    available = sum(files.get(name, 0) for name in event["files"])
+                    available = event["bytes"]
                     if available > cached:
                         last_progress = now
                     cached = available
@@ -221,7 +1037,7 @@ def download_snapshot(revision, files):
                     # A completed download is not stalled, even when startup
                     # or cache discovery used most of the inactivity window.
                     break
-                elif kind == "exit":
+                elif kind in ("failed", "exit"):
                     break
                 received = min(total, cached + written)
                 rate_bytes = max(transfer, written)
@@ -234,7 +1050,11 @@ def download_snapshot(revision, files):
                 STATE["download"] = progress
                 if now - last_progress >= DOWNLOAD_STALL_SECONDS:
                     break
+        except OSError:
+            # A worker that exits before reading its request takes the same retry path.
+            pass
         finally:
+            stopped.set()
             if root:
                 try:
                     process.wait(timeout=5)
@@ -249,6 +1069,10 @@ def download_snapshot(revision, files):
                     process.wait(timeout=5)
             reader.join(timeout=2)
             process.stdout.close()
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
         if root and process.returncode == 0:
             STATE["download"] = {**STATE["download"], "receivedBytes": total}
             return root
@@ -459,11 +1283,49 @@ def record_usage(source, outcome, prompt_tokens=0, completion_tokens=0, seconds=
         save_usage()
 
 
+class ServingAgreementError(Exception):
+    def __init__(self, code, message, status=400):
+        super().__init__(message)
+        self.code, self.message, self.status = code, message, status
+
+
+def serving_offer(headers):
+    """Read only our two bounded, single-valued negotiation fields after authentication."""
+    versions = headers.get_all("X-Yougori-Serving-Protocol", [])
+    features = headers.get_all("X-Yougori-Serving-Features", [])
+    if not versions and not features:
+        return None  # Existing OpenAI clients send no Yougori-specific headers.
+    if len(versions) != 1 or len(features) != 1:
+        raise ServingAgreementError("yougori_serving_request", "Send one serving version and feature selection")
+    if versions != ["1"]:
+        raise ServingAgreementError("yougori_serving_version", "This runner accepts serving protocol 1", 412)
+    if features[0] not in ("stream", "stream,tools", "json", "json,tools"):
+        raise ServingAgreementError("yougori_serving_features", "Unsupported serving feature selection", 412)
+    return features[0]
+
+
+def serving_selection(body, offered):
+    """A route agreement is not evidence that a particular model calls tools correctly."""
+    if not isinstance(body, dict):
+        raise ValueError("Invalid chat body")
+    messages = body.get("messages", [])
+    has_tools = "tools" in body or (isinstance(messages, list) and any(
+        isinstance(message, dict) and (message.get("role") == "tool" or "tool_calls" in message)
+        for message in messages))
+    selected = ("stream" if body.get("stream") is True else "json") + (",tools" if has_tools else "")
+    if offered is not None:
+        if selected != offered:
+            raise ServingAgreementError("yougori_serving_request", "Serving features do not match the request body")
+        if has_tools and not tools_enabled():
+            raise ServingAgreementError("yougori_serving_features", "This runner is not configured for tool-aware chat", 412)
+    return selected
+
+
 def validate_chat(body):
     # "truncate" is a Yougori extension: drop the oldest turns instead of failing when the context is full.
     if not isinstance(body, dict) or set(body) - {"model", "messages", "max_tokens", "temperature", "stream", "truncate", "tools", "tool_choice", "parallel_tool_calls", "stream_options", "max_completion_tokens", "top_p", "stop"}:
         raise ValueError("Use model, messages, max_tokens, temperature, stream and truncate")
-    if body.get("model", MODEL) != MODEL:
+    if body.get("model", MODEL) != MODEL and body.get("model") not in globals().get("ADAPTERS", {}):
         raise ValueError("This endpoint serves " + MODEL)
     stream, truncate = body.get("stream", False), body.get("truncate", False)
     if type(stream) is not bool or type(truncate) is not bool:
@@ -550,6 +1412,7 @@ def validate_chat(body):
     return messages, tokens, temperature, stream, truncate
 
 
+@timed_stage("checkpoint")
 def checkpoint():
     """Inspect metadata before downloading weights; never substitute a chat backbone for a custom head."""
     from huggingface_hub import HfApi
@@ -577,64 +1440,264 @@ def checkpoint():
     return config, revision
 
 
+@timed_stage("weight_hash", rejects_false=True)
 def verify_file(path, expected, progress=False):
     """True when the file matches its pinned SHA-256 (64 hex) or Git blob SHA-1 (40 hex)."""
+    if not isinstance(expected, str) or not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", expected):
+        return False
+    try:
+        path_info = os.stat(path)
+        if not stat.S_ISREG(path_info.st_mode):
+            return False
+        with open(path, "rb") as file:
+            before = os.fstat(file.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                return False
+            path_stamp = verification_stamp(path_info, expected)
+            stamp = verification_stamp(before, expected)
+            # Windows Python may expose creation time through stat().st_ctime
+            # and change time through fstat().st_ctime. Compare each API against
+            # itself; device/inode/size/mtime must agree across the two APIs.
+            if path_stamp[:5] != stamp[:5]:
+                return False
+            digest = artifact_digest(expected, before.st_size)
+            checked = 0
+            # Never chase a concurrently growing file to an unbounded EOF.
+            while checked < before.st_size:
+                chunk = file.read(min(4 * 1024 * 1024, before.st_size - checked))
+                if not chunk:
+                    return False
+                digest.update(chunk)
+                checked += len(chunk)
+                if progress:
+                    STATE["verification"] = {"checkedBytes": checked, "totalBytes": before.st_size}
+            if file.read(1):
+                return False
+            if stamp != verification_stamp(os.fstat(file.fileno()), expected) or path_stamp != verification_stamp(os.stat(path), expected):
+                return False
+        return secrets.compare_digest(digest.hexdigest(), expected.lower())
+    except OSError:
+        return False
+
+
+def artifact_digest(expected, size):
+    """The hash a pinned identity names: SHA-256 (64 hex) or a Git blob SHA-1 (40 hex)."""
     digest = hashlib.sha256() if len(expected) == 64 else hashlib.sha1()
     if len(expected) == 40:
-        digest.update(("blob " + str(os.path.getsize(path)) + "\0").encode())
-    with open(path, "rb") as file:
-        checked = 0
-        while True:
-            chunk = file.read(4 * 1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-            checked += len(chunk)
-            if progress:
-                STATE["verification"] = {"checkedBytes": checked, "totalBytes": os.path.getsize(path)}
-    return secrets.compare_digest(digest.hexdigest(), expected)
+        digest.update(("blob " + str(size) + "\0").encode())
+    return digest
 
 
+def verification_stamp(info, expected):
+    """Versioned local cache hint, including the identity of the verified file."""
+    return [2, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, expected]
+
+
+@timed_stage("weight_verification", rejects_false=True)
 def verified_weight(path, expected, size=None):
     """Hash new/changed weights; unchanged, already verified files start quickly."""
     path = os.path.realpath(path)
-    stat = os.stat(path)
-    stamp = [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, expected]
-    if size is not None and stat.st_size != size:
+    if not isinstance(expected, str) or not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", expected):
+        return False
+    expected = expected.lower()
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    stamp = verification_stamp(info, expected)
+    if not stat.S_ISREG(info.st_mode) or size is not None and info.st_size != size:
         return False
     record_path = os.path.join(CACHE, "yougori-verified.json")
     try:
         with open(record_path, encoding="utf-8") as file:
-            record = json.load(file)
+            encoded = file.read(2 * 1024 * 1024 + 1)
+        record = json.loads(encoded) if len(encoded) <= 2 * 1024 * 1024 else {}
         if not isinstance(record, dict):
             record = {}
-    except (OSError, ValueError):
+        record = {key: value for key, value in record.items()
+                  if isinstance(key, str) and len(key) <= 32768
+                  and isinstance(value, list) and len(value) == 7 and value[0] == 2
+                  and all(type(number) is int for number in value[1:6])
+                  and isinstance(value[6], str) and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", value[6])}
+    except (OSError, ValueError, RecursionError):
         record = {}
     if record.get(path) == stamp:
-        return True
-    STATE.update(status="verifying", verification={"checkedBytes": 0, "totalBytes": stat.st_size})
+        try:
+            return verification_stamp(os.stat(path), expected) == stamp
+        except OSError:
+            return False
+    STATE.update(status="verifying", verification={"checkedBytes": 0, "totalBytes": info.st_size})
     if not verify_file(path, expected, progress=True):
         return False
+    try:
+        if verification_stamp(os.stat(path), expected) != stamp:
+            return False
+    except OSError:
+        return False
+    record.pop(path, None)
     record[path] = stamp
-    with open(record_path + ".tmp", "w", encoding="utf-8") as file:
-        json.dump(record, file)
-    os.replace(record_path + ".tmp", record_path)
+    record = dict(list(record.items())[-1024:])
+    encoded = json.dumps(record, separators=(",", ":"))
+    if len(encoded) > 2 * 1024 * 1024:
+        encoded = json.dumps({path: stamp}, separators=(",", ":"))
+    temporary = record_path + "." + secrets.token_hex(16) + ".tmp"
+    created = False
+    try:
+        with open(temporary, "x", encoding="utf-8") as file:
+            created = True
+            file.write(encoded)
+        os.replace(temporary, record_path)
+    except OSError:
+        # This cache is an optimization; successful verification does not depend
+        # on writable cache metadata. Concurrent writers may lose hints, not proof.
+        pass
+    finally:
+        if created:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
     return True
+
+
+# G08: the helper loader. The engine binds the pinned helper bundles it opened through the
+# catalog read-only at HELPERS_ROOT and names each one in YOUGORI_HELPERS, a JSON object of
+# helper name to {"entry": "<path under HELPERS_ROOT>", "pin": "<pin id>"}. A helper named there
+# is read from its file, never from the injected source; one not named keeps source injection.
+# The file must be under HELPERS_ROOT (a bind the engine made), and nothing else is read. What
+# served each helper is reported in the health (`helpers`), so the engine's rollout records and
+# the status say the truth about this runner, not what was asked of it.
+HELPERS_ROOT = os.environ.get("YOUGORI_HELPERS_ROOT") or "/yougori-helpers"
+HELPERS_SERVED = {}
+
+
+def bundled_helpers():
+    """The helpers YOUGORI_HELPERS names, validated; a malformed value refuses every bundle."""
+    raw = os.environ.get("YOUGORI_HELPERS", "")
+    if not raw:
+        return {}
+    try:
+        named = json.loads(raw)
+    except ValueError:
+        raise RuntimeError("YOUGORI_HELPERS is not JSON; this runner loads no helper bundle") from None
+    if not isinstance(named, dict) or len(named) > 16:
+        raise RuntimeError("YOUGORI_HELPERS is not an object of at most 16 helpers")
+    for name, entry in named.items():
+        if (not isinstance(name, str) or not isinstance(entry, dict) or not isinstance(entry.get("entry"), str)
+                or not isinstance(entry.get("pin"), str) or set(entry) - {"entry", "pin"}):
+            raise RuntimeError("YOUGORI_HELPERS names a helper without its entry and pin")
+    return named
+
+
+def helper_bytes(name, injected):
+    """The source of helper `name`: the pinned bundle's entry file when YOUGORI_HELPERS names it,
+    else `injected` (the compressed, base64 source the workload carries), decoded. Records how
+    the helper was served."""
+    entry = bundled_helpers().get(name)
+    if entry is not None:
+        path = os.path.realpath(entry["entry"])
+        root = os.path.realpath(HELPERS_ROOT)
+        if os.path.commonpath([path, root]) != root:
+            raise RuntimeError("The helper " + name + " names a file outside " + HELPERS_ROOT + "; refused")
+        with open(path, "rb") as handle:
+            source = handle.read(16 * 1024 * 1024 + 1)
+        if len(source) > 16 * 1024 * 1024:
+            raise RuntimeError("The helper " + name + "'s file is larger than 16 MiB; refused")
+        HELPERS_SERVED[name] = {"served": "bundle", "pin": entry["pin"], "sha256": hashlib.sha256(source).hexdigest()}
+        return source
+    if not injected:
+        raise RuntimeError("This build is missing the bundled helper " + name + ". Update Yougori.")
+    source = zlib.decompress(base64.b64decode(injected))
+    HELPERS_SERVED[name] = {"served": "source_injection", "sha256": hashlib.sha256(source).hexdigest()}
+    return source
+
+
+# G08, the shadow stage: a candidate the rollout proposed runs beside the helper that serves
+# and never serves (YOUGORI_HELPERS_SHADOW). The engine writes its shadow runner beside the
+# candidates at SHADOW_RUNNER (helper_shadow.py), read only by a runner that shadows, so the
+# source every runner carries does not grow; /health reports what it showed (`helperShadow`).
+SHADOW_RUNNER = "shadow/yougori-shadow.py"
+SHADOW = {}
+
+
+def shadow_attach(name, source, base=None):
+    """Runs helper `name`'s shadow candidate beside the serving helper just executed into
+    `source` (`base`: the names from before it); never raises, never changes what serves."""
+    if not os.environ.get("YOUGORI_HELPERS_SHADOW"):
+        return
+    try:
+        if "attach" not in SHADOW:
+            root = os.path.realpath(HELPERS_ROOT)
+            path = os.path.realpath(os.path.join(root, SHADOW_RUNNER))
+            if os.path.commonpath([path, root]) != root:
+                raise RuntimeError("the shadow runner is outside " + HELPERS_ROOT)
+            with open(path, "rb") as handle:
+                exec(compile(handle.read(1 << 20), "yougori-shadow", "exec"), SHADOW)
+        SHADOW["attach"](name, source, base, HELPERS_ROOT)
+    except Exception as error:  # a shadow that cannot run is reported, never served
+        SHADOW["error"] = type(error).__name__ + ": " + str(error)[:200]
+
+
+def shadow_snapshot():
+    if "snapshot" in SHADOW:
+        return SHADOW["snapshot"]()
+    return {"runner": {"loadError": SHADOW["error"]}} if "error" in SHADOW else {}
 
 
 def registry_snapshot():
     """Load the application's bundled verifier without growing the startup command."""
-    source = zlib.decompress(base64.b64decode(os.environ["YOUGORI_REGISTRY_SOURCE"]))
-    if hashlib.sha256(source).hexdigest() != "bedf3069cc49a6be9262a7648b3abdd55a7d90ff7175b99b14ee17ca161c603b":
-        raise RuntimeError("Bundled registry verifier failed integrity verification")
+    source = helper_bytes("registry-verifier", os.environ.get("YOUGORI_REGISTRY_SOURCE"))
+    # A bundle's integrity is the catalog's (re-hashed against its pin at every open); the
+    # injected source is checked against the digest the engine ships.
+    if HELPERS_SERVED["registry-verifier"]["served"] == "source_injection":
+        if hashlib.sha256(source).hexdigest() != "150bbfd9fa213f2e554d28d030eadc86972d25405e05a143718cfe74eebcafc6":
+            raise RuntimeError("Bundled registry verifier failed integrity verification")
+    base = dict(globals())
     exec(compile(source, "yougori-registry-verifier", "exec"), globals())
+    shadow_attach("registry-verifier", globals(), base)
     return registry_snapshot()
 
 
+# G04 (GPU-W01; plan appendix A.3 and C). A local folder or registry version reaches the
+# runner through the read-only /yougori-model bind, a FUSE share measured at a few MB/s.
+# An environment the engine made with its own model volume (YOUGORI_MODEL_IMPORT=1) imports
+# it into that volume once; every load and reload then reads only the copy. The bind is an
+# import source, never a hot-path read source. Older environments read the bind as before.
+IMPORT_BUFFER = 8 * 1024 * 1024
+# Free space kept beyond the model's own bytes: the records, file system metadata and the
+# runner's other files in the same volume.
+IMPORT_HEADROOM = 512 * 1024 * 1024
+IMPORT_RECORD_LIMIT = 4096
+# (MODEL_PATH, MODEL_REVISION, root, ((name, digest, size), ...)) of the copy in use.
+MODEL_IMPORTED = None
+
+
+def begin_local_load():
+    """Starts one load attempt of a local folder or registry model (review finding R5): the bundled
+    verifier's memo (REGISTRY_VERIFIED, read by verified_snapshot) is dropped, so this attempt
+    verifies the files again however the earlier load ended, and the memo then covers only the
+    calls of this attempt. Returns whether an earlier attempt had verified this path and revision."""
+    global REGISTRY_VERIFIED
+    remembered = bool(MODEL_PATH and REGISTRY_VERIFIED and REGISTRY_VERIFIED[:2] == (MODEL_PATH, MODEL_REVISION))
+    REGISTRY_VERIFIED = None
+    return remembered
+
+
+@timed_stage("snapshot")
 def verified_snapshot(revision):
     """Download directly into the persistent guest cache and verify pinned weight identities."""
+    global SNAPSHOT_METADATA
     if MODEL_PATH:
+        # The verifier's memo covers this load attempt only (begin_local_load): a path and
+        # revision remembered from an earlier load are not a content proof (review finding R5,
+        # docs/manager-work-split/reviewer-findings.md), since the host can edit or replace the
+        # mounted files while the model is unloaded and a read-only bind only stops writes from
+        # inside. So every load runs the bundled verifier again: the copy imported into this
+        # model's own volume passes its cheap check (stamps of files only this runner wrote),
+        # the mount is hashed again against its manifest, and a changed or missing file refuses
+        # before anything is read from it or started.
         return REGISTRY_VERIFIED[2] if REGISTRY_VERIFIED and REGISTRY_VERIFIED[:2] == (MODEL_PATH, MODEL_REVISION) else registry_snapshot()
+    SNAPSHOT_METADATA = None
     from huggingface_hub import HfApi, hf_hub_download
     metadata = HfApi().model_info(MODEL, revision=revision, files_metadata=True, timeout=30)
     if metadata.sha != revision:
@@ -668,9 +1731,12 @@ def verified_snapshot(revision):
     if not verified:
         raise RuntimeError("No verified safetensors weights were found")
     print("Verified " + str(verified) + " safetensors weight files in persistent guest storage at revision " + revision + ".", flush=True)
+    # The metadata that pinned these files, for the Transformers reload memo (GPU-W01).
+    SNAPSHOT_METADATA = (MODEL, revision, root, metadata)
     return root
 
 
+@timed_stage("dependencies")
 def install(required):
     needed = []
     for package, version in required.items():
@@ -701,23 +1767,41 @@ def load_transformers():
         raise RuntimeError("CUDA is unavailable. Check the GPU runtime and NVIDIA driver in Yougori.")
     TORCH = torch
     gpu_count = torch.cuda.device_count()
-    print("Checking model compatibility...", flush=True)
-    config, revision = checkpoint()
-    verified_snapshot(revision)
+    begin_local_load()
+    prepared = prepared_transformers_source()
+    STATE["sourceReused"] = prepared is not None
+    if prepared is None:
+        print("Checking model compatibility...", flush=True)
+        config, revision = checkpoint()
+        root = verified_snapshot(revision)
+        weight_bytes = STATE.get("download", {}).get("totalBytes", 0)
+        remember_transformers_source(root, config, revision, weight_bytes)
+    else:
+        # Diagnostic only: the files were rechecked, never a claim of retained GPU state.
+        root, config, revision, weight_bytes = prepared
+        if MODEL_PATH:
+            STATE["source"] = "imported-cached"
+        print("Reusing this runner's verified model files; no download, Hugging Face request or import is needed.", flush=True)
+    # A local folder or registry version loads from the verified root: the copy imported into
+    # this model's volume, or the read-only mount in an environment made before imports.
+    source = root if MODEL_PATH else MODEL
     print("Downloading tokenizer for " + MODEL + "...", flush=True)
-    TOKENIZER = AutoTokenizer.from_pretrained(MODEL_PATH or MODEL, revision=None if MODEL_PATH else revision, trust_remote_code=False, local_files_only=True)
+    TOKENIZER = AutoTokenizer.from_pretrained(source, revision=None if MODEL_PATH else revision, trust_remote_code=False, local_files_only=True)
     gpu_before_load()
+    # Under the engine's Transformers admission profile: the grant's cap at original precision.
+    gpu_cap_memory(torch, gpu_count)
     STATE["status"] = "loading"
     print("Downloading model weights and loading onto the GPU (cached files are reused)...", flush=True)
-    options = inference_options(STATE.get("download", {}).get("totalBytes", 0), gpu_count)
-    NETWORK = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH or MODEL, config=config, revision=None if MODEL_PATH else revision, trust_remote_code=False, use_safetensors=True,
-        local_files_only=True,
-        dtype="auto",
-        device_map="balanced" if gpu_count > 1 else {"": 0},
-        attn_implementation="eager",
-        **options,
-    ).eval()
+    options = inference_options(weight_bytes, gpu_count)
+    with RUNNER_TIMINGS.stage("weight_load"):
+        NETWORK = AutoModelForCausalLM.from_pretrained(
+            source, config=config, revision=None if MODEL_PATH else revision, trust_remote_code=False, use_safetensors=True,
+            local_files_only=True,
+            dtype="auto",
+            device_map="balanced" if gpu_count > 1 else {"": 0},
+            attn_implementation="eager",
+            **options,
+        ).eval()
     gpu_name = torch.cuda.get_device_name(0)
     STATE.update(status="ready", gpu=f"{gpu_count} × {gpu_name}" if gpu_count > 1 else gpu_name,
                  gpuCount=gpu_count, context=context_window(), stream=True, weightsVerified=True, revision=revision, runner="transformers")
@@ -772,93 +1856,77 @@ def load_clef():
         raise RuntimeError("CUDA is unavailable. Check the NVIDIA driver and GPU runtime.")
     TORCH = torch
     STATE.update(status="downloading", task="structured-decision", api="systemone")
+    begin_local_load()
     _config, revision = checkpoint()
     root = verified_snapshot(revision)
-    source = globals().get("__YOUGORI_CLEF_SOURCE__") or os.environ.get("YOUGORI_CLEF_SOURCE")
-    if not source:
-        raise RuntimeError("This build is missing the bundled Clef decision adapter. Update Yougori.")
+    source = helper_bytes("clef-adapter", globals().get("__YOUGORI_CLEF_SOURCE__") or os.environ.get("YOUGORI_CLEF_SOURCE"))
     CLEF = types.ModuleType("yougori_clef")
     sys.modules[CLEF.__name__] = CLEF
-    exec(compile(zlib.decompress(base64.b64decode(source)), "bundled-clef-adapter", "exec"), CLEF.__dict__)
+    exec(compile(source, "bundled-clef-adapter", "exec"), CLEF.__dict__)
     gpu_before_load()
     options = inference_options(STATE.get("download", {}).get("totalBytes", 0), 1)
     STATE["status"] = "loading"
-    NETWORK, PROCESSOR = CLEF.load_release_model(root, local_files_only=True, trust_remote_code=False,
-        use_safetensors=True, attn_implementation="eager", **options)
+    with RUNNER_TIMINGS.stage("weight_load"):
+        NETWORK, PROCESSOR = CLEF.load_release_model(root, local_files_only=True, trust_remote_code=False,
+            use_safetensors=True, attn_implementation="eager", **options)
     TOKENIZER = PROCESSOR.tokenizer
     STATE.update(status="ready", gpu=torch.cuda.get_device_name(0), gpuCount=1, context=16384,
         stream=True, weightsVerified=True, revision=revision, runner="clef", task="structured-decision", api="systemone")
 
 
-def download(url, path, size, expected):
-    """Streams a pinned release archive to disk and checks its size and SHA-256."""
-    digest, received = hashlib.sha256(), 0
-    with urllib.request.urlopen(url, timeout=60) as response, open(path, "wb") as file:
-        while True:
-            chunk = response.read(4 * 1024 * 1024)
-            if not chunk:
-                break
-            received += len(chunk)
-            if received > size:
-                raise RuntimeError("The llama.cpp download is larger than its pinned size")
-            digest.update(chunk)
-            file.write(chunk)
-    if received != size or not secrets.compare_digest(digest.hexdigest(), expected):
-        raise RuntimeError("The llama.cpp download failed checksum verification")
-
-
-def llama_server():
-    """The pinned llama.cpp server with its CUDA runtime beside it, kept in persistent model storage."""
-    cpu_only = os.environ.get("YOUGORI_MODEL_CPU") == "1"
-    root = os.path.join(CACHE, "yougori-llama.cpp", LLAMA_BUILD + ("-cpu" if cpu_only else ""))
-    folder = os.path.join(root, "llama-" + LLAMA_BUILD)
-    binary = os.path.join(folder, "llama-server")
-    marker = os.path.join(root, "verified")
-    if os.path.isfile(binary) and os.path.isfile(marker):
-        return binary
-    shutil.rmtree(root, ignore_errors=True)
-    os.makedirs(root)
-    for name, expected, size in (LLAMA_CPU_ARCHIVES if cpu_only else LLAMA_ARCHIVES):
-        print("Downloading " + name + " (" + str(size // 1048576) + " MB)...", flush=True)
-        path = os.path.join(root, name)
-        download("https://github.com/ggml-org/llama.cpp/releases/download/" + LLAMA_BUILD + "/" + name, path, size, expected)
-        with tarfile.open(path) as archive:
-            archive.extractall(root, filter="data")
-        os.remove(path)
-    runtime = os.path.join(root, "cudart-llama-" + LLAMA_BUILD + "-bin-ubuntu-cuda-12.8-x64")
-    # The binaries load the CUDA runtime from their own folder ($ORIGIN).
-    if not cpu_only:
-        for library in os.listdir(runtime):
-            shutil.move(os.path.join(runtime, library), os.path.join(folder, library))
-        os.rmdir(runtime)
-    os.chmod(binary, 0o755)
-    with open(marker, "w", encoding="utf-8") as file:
-        file.write(LLAMA_BUILD)
-    return binary
-
-
-def verified_gguf():
-    """Downloads the pinned GGUF file(s) and checks their SHA-256 once per file version."""
-    files = json.loads(os.environ["YOUGORI_MODEL_FILES"])
-    STATE["modelFile"] = files[0]["name"]
-    root = registry_snapshot() if MODEL_PATH else download_snapshot(MODEL_REVISION, {item["name"]: item["size"] for item in files})
-    paths = []
-    for item in files:
-        print("Downloading " + item["name"] + " (" + str(item["size"] // 1048576) + " MB; cached files are reused)...", flush=True)
-        path = os.path.join(root, item["name"])
-        if not verified_weight(path, item["sha256"], item["size"]):
-            raise RuntimeError("A downloaded GGUF file failed checksum verification; do not load this checkpoint")
-        paths.append(path)
-    print("Verified " + str(len(paths)) + " GGUF file(s) at revision " + str(MODEL_REVISION) + ".", flush=True)
-    return paths[0]
-
-
-def llama(path, body=None, timeout=30):
-    """One request to the private llama.cpp server inside this container."""
+def llama(path, body=None, timeout=30, caller=None, holder=None):
+    """One request to the private llama.cpp server inside this container. With a caller (a
+    non-streaming relay, which sends nothing until the whole reply exists), a caller who
+    disconnects before the reply begins ends the request: closing the backend connection stops
+    that generation and frees its slot. With a holder (a dict), the connection and its socket
+    are put there and left open on those two errors: their owner closes them (release_when_closed)."""
     connection = http.client.HTTPConnection(LLAMA.get("host", "127.0.0.1"), LLAMA["port"], timeout=timeout)
+    if holder is not None:
+        holder["connection"] = connection
     data = None if body is None else json.dumps(body).encode("utf-8")
     connection.request("GET" if body is None else "POST", path, data, {"Authorization": "Bearer " + LLAMA["key"], "Content-Type": "application/json"})
+    if holder is not None:
+        # A closing response takes this socket over (getresponse() clears connection.sock).
+        holder["sock"] = connection.sock
+    end, watched = time.monotonic() + timeout, getattr(caller, "connection", None)
+    while caller is not None and not select.select([connection.sock], [], [], 0.25)[0]:
+        if watched is not None and select.select([watched], [], [], 0)[0] and watched.recv(1, socket.MSG_PEEK) == b"":
+            if holder is None:
+                connection.close()
+            raise ConnectionAbortedError("Caller disconnected during generation")
+        if time.monotonic() > end:
+            if holder is None:
+                connection.close()
+            raise TimeoutError("Model generation exceeded its time limit")
     return connection, connection.getresponse()
+
+
+def release_when_closed(held, tokens, deadline):
+    """Returns an abandoned request's cells of the shared KV pool once llama.cpp has ended it:
+    the relay half-closes its connection (llama.cpp takes that as a closed caller and stops the
+    request), then reads until llama.cpp closes its end, or until the request's own deadline.
+    `held` keeps the connection, its socket and any response alive until then."""
+    try:
+        sock = held.get("sock")
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            while time.monotonic() < deadline:
+                if select.select([sock], [], [], min(1.0, max(0.0, deadline - time.monotonic())))[0] and not sock.recv(65536):
+                    break
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            for name in ("response", "connection"):
+                if held.get(name) is not None:
+                    held[name].close()
+        except OSError:
+            pass
+        finally:
+            INFERENCE_QUEUE.unreserve(tokens)
 
 
 def llama_json(path, body=None, timeout=30):
@@ -872,160 +1940,36 @@ def llama_json(path, body=None, timeout=30):
     return value
 
 
-def llama_cuda_devices(binary, environment):
-    """Query the backend directly; diagnostic log wording/verbosity is not an API."""
-    try:
-        result = subprocess.run([binary, "--list-devices"], env=environment, capture_output=True,
-                                text=True, errors="replace", timeout=30, check=True)
-    except (OSError, subprocess.SubprocessError):
-        raise RuntimeError("llama.cpp could not query CUDA devices. Check the GPU runtime and NVIDIA driver in Yougori.") from None
-    devices = dict(re.findall(r"^\s*(CUDA\d+):\s+(.+?)\s+\(\d+ MiB,.*\)\s*$", result.stdout, re.MULTILINE))
-    if not devices:
-        raise RuntimeError("llama.cpp found no CUDA GPU. Check the GPU runtime and NVIDIA driver in Yougori.")
-    return devices
+# The llama.cpp and vLLM loaders (model_runner/engine_backends.py, the engine-backends helper),
+# carried by GGUF and vLLM runners only and executed into this namespace before their first load.
+# Injected source must match the digest this server ships (a bundle's integrity is the catalog's,
+# re-hashed against its pin at every open); a server run from a source tree reads the file beside it.
+BACKENDS_SHA256 = "e8f4a879c1dec430c2fba625a2df2f98fad627e14f15aba5ed38068ee45bafd1"
 
 
-def llama_threads():
-    """CPU threads that fit this sandbox's CPU quota. By default llama.cpp starts one
-    busy-polling thread per host core; inside a two-core quota they are throttled so
-    hard that a GPU runner generates a few tokens per second while the GPU sits idle."""
-    try:
-        return max(1, min(64, int(os.environ["YOUGORI_MODEL_CPU_THREADS"])))
-    except (KeyError, ValueError):
-        pass
-    try:
-        with open("/sys/fs/cgroup/cpu.max") as handle:
-            quota, period = handle.read().split()[:2]
-        if quota != "max":
-            return max(1, min(64, math.ceil(int(quota) / int(period))))
-    except (OSError, ValueError):
-        pass
-    return max(1, min(64, os.cpu_count() or 2))
+def load_backends():
+    if "load_vllm" in globals():
+        return
+    injected = globals().get("__YOUGORI_BACKENDS_SOURCE__") or os.environ.get("YOUGORI_BACKENDS_SOURCE")
+    beside = os.path.join(os.path.dirname(os.path.abspath(globals().get("__file__") or os.sep)), "model_runner", "engine_backends.py")
+    if not injected and "engine-backends" not in bundled_helpers() and "__file__" in globals() and os.path.isfile(beside):
+        with open(beside, "rb") as handle:
+            source = handle.read()
+    else:
+        source = helper_bytes("engine-backends", injected)
+        if HELPERS_SERVED["engine-backends"]["served"] == "source_injection" and hashlib.sha256(source).hexdigest() != BACKENDS_SHA256:
+            raise RuntimeError("Bundled engine backends failed integrity verification")
+    base = dict(globals())
+    exec(compile(source, "yougori-engine-backends", "exec"), globals())
+    shadow_attach("engine-backends", globals(), base)
 
 
-def llama_cpu_options():
-    threads = str(llama_threads())
-    # Polling threads also consume a constrained container's CPU budget.
-    options = ["--threads", threads, "--threads-batch", threads, "--poll", "0", "--poll-batch", "0"]
-    return (["-ngl", "0"] if os.environ.get("YOUGORI_MODEL_CPU") == "1" else []) + options
+class BackendRefusal(ValueError):
+    """An adapter or KV operation this runner's launch does not do, with why (answered 409)."""
 
 
-def model_memory_events():
-    """Numeric cgroup counters only; never retain prompts or native stderr."""
-    try:
-        with open("/sys/fs/cgroup/memory.events") as handle:
-            return {key: int(value) for key, value in (line.split() for line in handle)}
-    except (OSError, ValueError):
-        return {}
-
-
-def llama_exit_error(returncode, before):
-    after = model_memory_events()
-    if after.get("oom_kill", 0) > before.get("oom_kill", 0):
-        limit = ""
-        try:
-            with open("/sys/fs/cgroup/memory.max") as handle:
-                limit = " (" + format(int(handle.read().strip()) / 1073741824, ".1f") + " GiB limit)"
-        except (OSError, ValueError):
-            pass
-        return "Linux killed llama.cpp because the model container ran out of system RAM" + limit + ". Increase this model's RAM allocation in Resources, then restart it. GPU memory is a separate limit."
-    return "llama.cpp stopped unexpectedly (exit code " + str(returncode) + "). Restart this model."
-
-
-def load_gguf():
-    if os.environ.get("YOUGORI_NATIVE_BACKEND"):
-        return load_native_gguf()
-    if not any(os.path.exists(os.path.join(folder, "libgomp.so.1")) for folder in ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu")):
-        print("Installing the OpenMP runtime used by llama.cpp...", flush=True)
-        quiet = {"stdout": subprocess.DEVNULL, "env": {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}}
-        subprocess.run(["apt-get", "update"], check=True, timeout=900, **quiet)
-        subprocess.run(["apt-get", "install", "-y", "--no-install-recommends", "libgomp1"], check=True, timeout=900, **quiet)
-    install({"huggingface-hub": MODEL_DEPENDENCIES["huggingface-hub"]})
-    STATE["status"] = "downloading"
-    binary = llama_server()
-    model = verified_gguf()
-    gpu_before_load()
-    STATE["status"] = "loading"
-    cpu_only = os.environ.get("YOUGORI_MODEL_CPU") == "1"
-    print("Loading " + MODEL + " on " + ("CPU" if cpu_only else "GPU") + " with llama.cpp " + LLAMA_BUILD + "...", flush=True)
-    environment = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
-    environment["LD_LIBRARY_PATH"] = os.path.dirname(binary) + (":" + environment["LD_LIBRARY_PATH"] if environment.get("LD_LIBRARY_PATH") else "")
-    devices = {} if cpu_only else llama_cuda_devices(binary, environment)
-    global ENGINE_PROCESS
-    memory_before = model_memory_events()
-    process = ENGINE_PROCESS = subprocess.Popen(
-        [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
-         "--no-webui", "-np", "1", "-c", "32768", "--jinja", "--reasoning-format", "none", "--device", ",".join(devices) if devices else "none", *llama_cpu_options()],
-        env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
-
-    def logs():
-        for line in process.stderr:
-            # Native diagnostics may include prompt text. Drain stderr without
-            # retaining or forwarding it to workload logs or health responses.
-            pass
-    threading.Thread(target=logs, daemon=True).start()
-    deadline = time.monotonic() + 3600
-    while True:
-        if process.poll() is not None:
-            raise RuntimeError(llama_exit_error(process.returncode, memory_before))
-        try:
-            connection, response = llama("/health", timeout=5)
-            response.read()
-            connection.close()
-            if response.status == 200:
-                break
-        except OSError:
-            pass
-        if time.monotonic() > deadline:
-            raise RuntimeError("llama.cpp did not finish loading the model within an hour")
-        time.sleep(2)
-    settings = llama_json("/props").get("default_generation_settings") or {}
-    LLAMA["context"] = int(settings.get("n_ctx") or 4096)
-
-    def watch():
-        returncode = process.wait()
-        if ENGINE_PROCESS is process:
-            STATE.update(status="error", error=llama_exit_error(returncode, memory_before))
-    threading.Thread(target=watch, daemon=True).start()
-    first_device = next(iter(devices.values()), "CPU")
-    gpu = (str(len(devices)) + " × " + first_device) if len(devices) > 1 else first_device
-    STATE.update(status="ready", gpu=gpu, gpuCount=len(devices), context=LLAMA["context"], stream=True, toolCalling=True, weightsVerified=True,
-                 revision=MODEL_REVISION, runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
-
-
-def load_native_gguf():
-    """The owner verified weights before starting the private host service.
-
-    Keep the ordinary publisher, usage, recording, tools and API authorization
-    in this sandbox. No arbitrary host address or executable is accepted here.
-    """
-    backend = os.environ["YOUGORI_NATIVE_BACKEND"]
-    key = os.environ.get("YOUGORI_NATIVE_TOKEN", "")
-    port = int(os.environ.get("YOUGORI_NATIVE_PORT", "0"))
-    if backend not in ("metal", "cpu") or not 0 < port < 65536 or len(key) != 64 or any(c not in string.hexdigits for c in key):
-        raise RuntimeError("Invalid native model connection")
-    LLAMA.update(host="10.0.2.2", port=port, key=key)
-    # Validate the read-only mount too, preserving publication integrity.
-    verified_gguf()
-    STATE["status"] = "loading"
-    deadline = time.monotonic() + 3600
-    while True:
-        try:
-            llama_json("/health")
-            break
-        except (OSError, ValueError, http.client.HTTPException):
-            if time.monotonic() > deadline:
-                raise RuntimeError("Native model did not become ready within an hour") from None
-            time.sleep(2)
-    settings = llama_json("/props").get("default_generation_settings") or {}
-    LLAMA["context"] = int(settings.get("n_ctx") or 4096)
-    STATE.update(status="ready", gpu="Apple Metal" if backend == "metal" else "Native Mac CPU",
-                 gpuCount=int(backend == "metal"), backend=backend, native=True,
-                 unifiedMemory=backend == "metal", context=LLAMA["context"], stream=True,
-                 toolCalling=True, weightsVerified=True, revision=MODEL_REVISION,
-                 runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
-
-
+@single_model_load
+@timed_load
 def load_model():
     try:
         if FORMAT == "source":
@@ -1033,6 +1977,8 @@ def load_model():
             return
         print("Checking model dependencies...", flush=True)
         threading.Thread(target=report_loading, daemon=True).start()
+        if FORMAT in ("gguf", "vllm"):
+            load_backends()
         if FORMAT == "gguf":
             load_gguf()
         elif FORMAT == "vllm":
@@ -1052,119 +1998,133 @@ def load_model():
             detail = detail.replace(os.environ["HF_TOKEN"], "[redacted]")
         STATE.update(status="error", error=detail[:2000])
         print("Model could not load: " + detail[:2000], file=sys.stderr, flush=True)
-    finally:
-        gpu_after_load()
 
 
-def vllm_hardware(config, weight_bytes, cuda):
-    """Every MoE expert stays resident. Check before downloading weights; no implicit CPU offload."""
-    count = cuda.device_count() if cuda.is_available() else 0
-    required = (weight_bytes / 1073741824 + 2) / 0.90
-    if not count or any(cuda.get_device_capability(i) < (7, 5) for i in range(count)):
-        raise RuntimeError("vLLM needs CUDA GPUs with compute capability 7.5 or newer")
-    available = count * min(cuda.mem_get_info(i)[0] for i in range(count)) / 1073741824
-    if not weight_bytes or available < required:
-        raise RuntimeError("This checkpoint needs approximately {:.0f} GB of free GPU memory; {:.1f} GB is available. All MoE experts must fit, including inactive experts. No model weights were downloaded.".format(required, available))
-    heads = int(config.get("num_attention_heads") or 1)
-    kv_heads = int(config.get("num_key_value_heads") or heads)
-    if heads % count or (kv_heads % count and count % kv_heads):
-        raise RuntimeError("This model's attention heads cannot be split across the available GPU count")
-    return count
+def source_inventory(root):
+    """Bounded snapshot membership; HF file symlinks are allowed, directory links are not."""
+    pending, names, entries = [""], [], 0
+    while pending:
+        relative = pending.pop()
+        with os.scandir(os.path.join(root, relative)) as directory:
+            for item in directory:
+                entries += 1
+                if entries > 4096:
+                    raise ValueError("Snapshot inventory limit")
+                name = (relative + "/" if relative else "") + item.name
+                if len(name) > 1024 or "\\" in name:
+                    raise ValueError("Snapshot name limit")
+                if item.is_dir(follow_symlinks=False):
+                    pending.append(name)
+                elif item.is_file():
+                    names.append(name)
+                else:
+                    raise ValueError("Unsupported snapshot entry")
+    return tuple(sorted(names))
 
 
-def kolibri_plugin():
-    """Install only the reviewed, checksum-pinned wheel; keep the image's torch/vLLM unchanged."""
+def pinned_source_files(metadata, root):
+    """(names, files): every file under a Hugging Face snapshot root with the digest and size its
+    metadata pins, or None when the metadata cannot pin all of them (the cold path stays)."""
     try:
-        if importlib.metadata.version("aleph-alpha-inference") == "1.0.0": return
-    except importlib.metadata.PackageNotFoundError:
-        pass
-    name, url, sha, size = KOLIBRI_WHEEL
-    folder = os.path.join(CACHE, "yougori-vllm-plugin")
-    os.makedirs(folder, exist_ok=True)
-    wheel = os.path.join(folder, name)
-    download(url, wheel, size, sha)
-    environment = {k:v for k,v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-index", wheel],
-                   env=environment, check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        names = source_inventory(root)
+        siblings = metadata.siblings or []
+        if (metadata.sha != MODEL_REVISION or len(siblings) > 16384
+                or not names or "config.json" not in names):
+            return None
+        by_name = {item.rfilename: item for item in siblings}
+        if len(by_name) != len(siblings):
+            return None
+        files = []
+        for name in names:
+            item = by_name.get(name)
+            if item is None:
+                return None
+            lfs = getattr(item, "lfs", None)
+            digest = (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)) or getattr(item, "blob_id", None)
+            size = getattr(item, "size", None)
+            if (not isinstance(digest, str) or not re.fullmatch(r"(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})", digest)
+                    or type(size) is not int or not 0 <= size <= 2**63 - 1):
+                return None  # Older/incomplete metadata keeps the existing cold path.
+            files.append((name, digest.lower(), size))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return names, tuple(files)
 
 
-def load_vllm():
-    global ENGINE_PROCESS
-    if os.environ.get("YOUGORI_INSTALL_VLLM") == "1": install({"vllm": VLLM_VERSION})
-    if importlib.metadata.version("vllm") != VLLM_VERSION:
-        raise RuntimeError("Use Yougori's pinned vLLM runtime image (vLLM " + VLLM_VERSION + ")")
-    import torch
-    from huggingface_hub import HfApi, hf_hub_download
-    metadata = HfApi().model_info(MODEL, revision=MODEL_REVISION, files_metadata=True, timeout=30)
-    revision = metadata.sha
-    if not MODEL_REVISION or revision != MODEL_REVISION or not re.fullmatch(r"[a-fA-F0-9]{40}", revision):
-        raise RuntimeError("vLLM requires the exact immutable revision approved by preflight")
-    with open(hf_hub_download(MODEL, "config.json", revision=revision), encoding="utf-8") as file:
-        config = json.load(file)
-    kolibri = config.get("model_type") == "kolibri1"
-    if kolibri:
-        if "Kolibri1ForCausalLM" not in config.get("architectures", []): raise RuntimeError("Unknown Kolibri implementation")
-        kolibri_plugin()
+def unchanged_source(root, names, files):
+    """True while `root` holds exactly `names` and each file matches its pinned digest. The
+    stamps of verified_weight make an unchanged file a stat, never a rehash."""
+    try:
+        if source_inventory(root) != names:
+            return False
+        for name, digest, size in files:
+            if not verified_weight(os.path.join(root, name), digest, size):
+                return False
+        return source_inventory(root) == names
+    except (OSError, ValueError):
+        return False
+
+
+def transformers_source_key():
+    return (MODEL, MODEL_REVISION, MODEL_PATH, os.path.realpath(CACHE))
+
+
+def transformers_source_reuse():
+    """YOUGORI_TRANSFORMERS_SOURCE_REUSE=0 turns the reload memo off, as for vLLM."""
+    return os.environ.get("YOUGORI_TRANSFORMERS_SOURCE_REUSE", "1") != "0"
+
+
+def remember_transformers_source(root, config, revision, weight_bytes):
+    """GPU-W01: after a verified load, the pinned revision, root, configuration and verified
+    files, so a reload in this process makes no Hugging Face call, starts no download worker
+    and repeats no import check. Process-local, like VLLM_PREPARED; anything unpinned or not
+    verified leaves today's path in place."""
+    global TRANSFORMERS_PREPARED
+    TRANSFORMERS_PREPARED = None
+    if not transformers_source_reuse() or revision != MODEL_REVISION:
+        return
+    if MODEL_PATH:
+        # Only the copy imported into this model's volume: a FUSE mount's stamps cannot stand
+        # for its bytes, so an environment without the import keeps rechecking the mount.
+        imported = MODEL_IMPORTED
+        if imported is None or imported[:3] != (MODEL_PATH, MODEL_REVISION, root):
+            return
+        files = imported[3]
+        names = tuple(sorted(name for name, _digest, _size in files))
     else:
-        # Built-in registry only. vLLM's Transformers/remote-code fallback is never enabled.
-        from vllm.model_executor.models.registry import ModelRegistry
-        if not set(config.get("architectures", [])) & set(ModelRegistry.get_supported_archs()):
-            raise RuntimeError("No native implementation exists in the pinned vLLM runtime")
-    if {"joint_head_config.json", "joint_head.safetensors"} <= {s.rfilename for s in metadata.siblings or []}:
-        raise RuntimeError("A custom prediction head needs a reviewed decision adapter")
-    weights = [s for s in metadata.siblings or [] if s.rfilename.endswith(".safetensors")]
-    size = sum((getattr(s, "size", None) or (s.lfs.get("size") if isinstance(getattr(s,"lfs",None),dict) else getattr(getattr(s,"lfs",None),"size",0)) or 0) for s in weights)
-    gpu_before_load()
-    count = vllm_hardware(config, size, torch.cuda)
-    root = verified_snapshot(revision)
-    template = None
-    tokenizer_config = os.path.join(root, "tokenizer_config.json")
-    if os.path.isfile(tokenizer_config):
-        with open(tokenizer_config, encoding="utf-8") as file: template = json.load(file).get("chat_template")
-    STATE["chatTemplate"] = bool(template) or os.path.isfile(os.path.join(root, "chat_template.jinja"))
-    if not STATE["chatTemplate"]:
-        STATE["chatWarning"] = "This is a base checkpoint without a chat template. Use an instruction-tuned checkpoint for assistant chat."
-    STATE["status"] = "loading"
-    LLAMA["context"] = min(int(config.get("max_position_embeddings") or 4096), 32768)
-    args = [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", root,
-        "--served-model-name", MODEL, "--host", "127.0.0.1", "--port", str(LLAMA["port"]),
-        "--model-impl", "vllm", "--load-format", "safetensors", "--max-model-len", str(LLAMA["context"]),
-        "--tensor-parallel-size", str(count), "--distributed-executor-backend", "mp", "--gpu-memory-utilization", "0.90",
-        "--max-num-seqs", "1", "--enforce-eager", "--generation-config", "vllm", "--disable-log-stats"]
-    if kolibri: args += ["--reasoning-parser", "kolibri1"]
-    args += agent_arguments()
-    if kolibri and (config.get("quantization_config") or {}).get("quant_method") == "fp8": args += ["--kv-cache-dtype", "fp8"]
-    environment = {k:v for k,v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
-    environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", VLLM_NO_USAGE_STATS="1",
-                       VLLM_PLUGINS="aleph_alpha_inference" if kolibri else "", VLLM_API_KEY=LLAMA["key"])
-    # Native engine diagnostics can contain caller content. Never forward them to workload logs.
-    process = ENGINE_PROCESS = subprocess.Popen(args, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        saved = SNAPSHOT_METADATA
+        if (saved is None or saved[:3] != (MODEL, revision, root) or not isinstance(MODEL_REVISION, str)
+                or not re.fullmatch(r"[a-fA-F0-9]{40}", MODEL_REVISION)):
+            return
+        pinned = pinned_source_files(saved[3], root)
+        if pinned is None:
+            return
+        names, files = pinned
     try:
-        deadline = time.monotonic() + 3600
-        while True:
-            if process.poll() is not None: raise RuntimeError("vLLM stopped while loading. Check GPU memory, driver and checkpoint compatibility.")
-            try:
-                connection, response = llama("/health", timeout=5)
-                response.read(); connection.close()
-                if response.status == 200: break
-            except OSError: pass
-            if time.monotonic() >= deadline: raise RuntimeError("vLLM did not finish loading within an hour")
-            time.sleep(2)
-    except BaseException:
-        process.terminate()
-        try: process.wait(timeout=5)
-        except subprocess.TimeoutExpired: process.kill(); process.wait()
-        raise
-    def watch():
-        process.wait()
-        if ENGINE_PROCESS is process:
-            STATE.update(status="error", error="vLLM stopped unexpectedly. Restart this model.")
-    threading.Thread(target=watch, daemon=True).start()
-    gpu = torch.cuda.get_device_name(0)
-    quant = (config.get("quantization_config") or {}).get("quant_method")
-    STATE.update(status="ready", gpu=(str(count) + " × " + gpu) if count > 1 else gpu, gpuCount=count,
-        context=LLAMA["context"], stream=True, weightsVerified=True, revision=revision, runner="vllm", **({"toolCalling": True} if TOOL_PARSER else {}),
-        quant=str(quant).upper() if quant else None, precision=str(config.get("dtype") or config.get("torch_dtype") or "auto"))
+        remembered = copy.deepcopy(config)
+    except (TypeError, ValueError, AttributeError, RecursionError, copy.Error):
+        return
+    # Every loader input, configuration and tokenizer files included, matches its pin.
+    if unchanged_source(root, names, files):
+        TRANSFORMERS_PREPARED = (transformers_source_key(), os.path.abspath(root), names, files,
+                                 remembered, revision, weight_bytes)
+
+
+def prepared_transformers_source():
+    """The remembered source after its stamps are rechecked, or None; any change refuses."""
+    global TRANSFORMERS_PREPARED
+    saved = TRANSFORMERS_PREPARED
+    if not transformers_source_reuse() or saved is None:
+        return None
+    key, root, names, files, config, revision, weight_bytes = saved
+    if key != transformers_source_key():
+        TRANSFORMERS_PREPARED = None
+        return None
+    with RUNNER_TIMINGS.stage("snapshot"):
+        if not unchanged_source(root, names, files):
+            TRANSFORMERS_PREPARED = None
+            raise RuntimeError("Prepared model source changed or is incomplete. Restore the pinned files before reloading.")
+    return root, copy.deepcopy(config), revision, weight_bytes
 
 
 def report_loading():
@@ -1185,11 +2145,35 @@ def report_loading():
             print("Model startup: " + STATE["status"] + detail + " (" + str(int(time.monotonic() - started)) + "s elapsed)", flush=True)
 
 
+def runner_capabilities():
+    """What this runner's pinned launch does and does not support, for the product surfaces (G06,
+    U02): the facts of the launch as this runner knows them, not CORE-01 evidence (which needs a
+    host-side observation of the exact release; host_evidence lists both capabilities as uncovered).
+    Each entry says whether the operation is supported here and why not, so a refusal is actionable.
+    """
+    if FORMAT == "source":
+        return {}
+    if FORMAT in ("vllm", "gguf"):
+        return backend_capabilities() if "backend_capabilities" in globals() else {}
+    context = GPU_CAPACITY_CONTEXT
+    return {
+        "kvGrowth": {"supported": False, "detail": "The Transformers runner's cache grows per generated token inside its grant" + (" (the grant covers " + str(context) + " tokens)" if context else "") + "; it is not mapped in increments the host ledger could reclaim."},
+        "adapters": {"supported": False, "detail": "The Transformers runner loads no unmerged adapters (LoRA); only the checkpoint's own weights are served."},
+        "kvReuse": {"supported": False, "detail": "The Transformers runner keeps no KV between requests; every prompt is processed in full."},
+        "concurrency": {"supported": False, "slots": 1, "detail": "The Transformers runner generates one request at a time; more wait in order (requestQueue)."},
+    }
+
+
 def context_window():
     if MODEL == "Cloudflare/clef":
         return 16384
     config = getattr(NETWORK.config, "text_config", None) or NETWORK.config
-    return min(getattr(config, "max_position_embeddings", None) or 4096, 32768)
+    window = min(getattr(config, "max_position_embeddings", None) or 4096, 32768)
+    # Under the engine's Transformers admission profile the grant covers a context
+    # (gpu_optimizer.py, gpu_cap_memory): fit() refuses or truncates a longer conversation
+    # with that window named, instead of running the prefill past the grant.
+    covered = globals().get("GPU_CAPACITY_CONTEXT")
+    return min(window, covered) if covered else window
 
 
 def fold_system(messages):
@@ -1214,6 +2198,7 @@ def render(messages):
         return TOKENIZER.apply_chat_template(rest, tokenize=False, add_generation_prompt=True)
 
 
+@timed_stage("prompt_preparation")
 def prepare(messages, count, truncate):
     """Tokenize the conversation, dropping the oldest turns when truncate is set. Returns (inputs, tokens, dropped)."""
     def measure(messages):
@@ -1224,6 +2209,7 @@ def prepare(messages, count, truncate):
     return inputs.to("cuda"), tokens, dropped
 
 
+@timed_stage("prompt_preparation")
 def prepare_gguf(messages, count, truncate, tools=None):
     """Counts prompt tokens with llama.cpp's own template and tokenizer. Returns (messages to send, tokens, dropped)."""
     def measure(messages):
@@ -1234,22 +2220,50 @@ def prepare_gguf(messages, count, truncate, tools=None):
             tokens = llama_json("/tokenize", request)["count"]
             if type(tokens) is not int or tokens <= 0: raise ValueError("vLLM returned invalid prompt usage")
             return messages, tokens
+        # The completion's own template inputs (generate_gguf), so the count is its prompt's.
+        extra = {**({"tools": tools} if tools else {}), **({"chat_template_kwargs": {"enable_thinking": False}} if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else {})}
         try:
-            prompt = llama_json("/apply-template", {"messages": messages, **({"tools": tools} if tools else {})})["prompt"]
+            prompt = llama_json("/apply-template", {"messages": messages, **extra})["prompt"]
         except ValueError:
             folded = fold_system(messages)
             if folded is None:
                 raise
-            messages, prompt = folded, llama_json("/apply-template", {"messages": folded, **({"tools": tools} if tools else {})})["prompt"]
+            messages, prompt = folded, llama_json("/apply-template", {"messages": folded, **extra})["prompt"]
         return messages, len(llama_json("/tokenize", {"content": prompt, "add_special": True})["tokens"])
     return fit(messages, count, truncate, LLAMA["context"], measure)
+
+
+class ContextRefusal(ValueError):
+    """A conversation or max_tokens the model's context window cannot hold. The reply it becomes
+    carries the code yougori_context_window and the runner's own integers (the window, the prompt's
+    tokens, max_tokens, and the context the GPU grant covers when one does), never caller text, so
+    the engine can say what to shorten (docs: combined plan G03, GPU-T16; the generic 400 stays for
+    every other ValueError, since tokenizers and model libraries can echo the input)."""
+
+    def __init__(self, message, context, tokens=None, count=None):
+        super().__init__(message)
+        self.context, self.tokens, self.count = context, tokens, count
+
+    def body(self):
+        detail = {"code": "yougori_context_window", "message": str(self), "context": self.context}
+        if self.tokens is not None:
+            detail["promptTokens"] = self.tokens
+        if self.count is not None:
+            detail["maxTokens"] = self.count
+        if GPU_CAPACITY_CONTEXT is not None and self.context == context_window():
+            detail["grantContext"] = GPU_CAPACITY_CONTEXT
+        return {"error": detail}
+
+
+# The bounded reply when the GPU runs out of memory during a request: the model stays loaded.
+GPU_MEMORY_REFUSAL = {"code": "yougori_gpu_memory", "message": "Not enough GPU memory. Shorten the conversation or choose a smaller model."}
 
 
 def fit(messages, count, truncate, context, measure):
     """Measures the conversation, dropping the oldest turns when truncate is set. Returns (measured, tokens, dropped)."""
     dropped = 0
     if count >= context:
-        raise ValueError("max_tokens must be below this model's " + str(context) + "-token context window")
+        raise ContextRefusal("max_tokens must be below this model's " + str(context) + "-token context window", context, count=count)
     messages = list(messages)
     while True:
         measured, tokens = measure(messages)
@@ -1257,7 +2271,7 @@ def fit(messages, count, truncate, context, measure):
             return measured, tokens, dropped
         turns = [i for i, m in enumerate(messages) if m["role"] != "system"]
         if not truncate or len(turns) <= 1:
-            raise ValueError("Conversation exceeds this model's " + str(context) + "-token context window; shorten it or reduce max_tokens")
+            raise ContextRefusal("Conversation exceeds this model's " + str(context) + "-token context window; shorten it or reduce max_tokens", context, tokens=tokens, count=count)
         # Remove the oldest turn and anything before the next user message so roles still alternate.
         del messages[turns[0]]
         dropped += 1
@@ -1325,6 +2339,27 @@ def completion_id():
     return "chatcmpl-" + secrets.token_hex(12)
 
 
+def backend_cached(usage, timings, prompt_tokens):
+    """Prompt tokens the backend reused from its prefix cache instead of computing them, at most
+    the prompt: vLLM's usage.prompt_tokens_details.cached_tokens (its launch enables the details,
+    and it leaves them out when nothing was reused) or llama.cpp's timings.cache_n. None when the
+    backend says nothing, so a reply never claims a cache use that was not measured."""
+    details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+    value = details.get("cached_tokens") if isinstance(details, dict) else None
+    if value is None and isinstance(timings, dict):
+        value = timings.get("cache_n")
+    if value is None and FORMAT == "vllm":
+        value = 0
+    if type(value) is not int or value < 0:
+        return None
+    return min(value, prompt_tokens)
+
+
+def cache_details(cached):
+    """The OpenAI usage field for prompt tokens served from the cache, when the backend reported them."""
+    return {"prompt_tokens_details": {"cached_tokens": cached}} if cached is not None else {}
+
+
 class GenerationTimeout(RuntimeError):
     """Only server-created, credential-free timeout messages may reach the API."""
 
@@ -1364,14 +2399,21 @@ def non_streaming_output(inputs, kwargs, meter, operation=None):
 
 
 def generate_gguf(body, handler, meter):
-    """generate() for llama.cpp: the same validation, single-generation lock, limits and reply shape."""
+    """generate() for llama.cpp and vLLM: the same validation, limits and reply shape. The queue
+    admits as many requests as the backend has slots, and a shared llama.cpp KV pool is reserved
+    per request (InferenceQueue.reserve); each relay owns only its own backend connection."""
     messages, count, temperature, stream, truncate = validate_chat(body)
     meter["stream"] = stream
-    if not GENERATION.acquire(blocking=False):
-        meter["outcome"] = "busy"
-        return 429, {"error": {"message": "The GPU is busy with another response; retry shortly"}}
+    reserved, pooled, backend = 0, INFERENCE_QUEUE.pool > 0, {}
     try:
+        if not pooled:
+            RUNNER_TIMINGS.boundary("admittedMs")
         messages, input_tokens, dropped = prepare_gguf(messages, count, truncate, body.get("tools"))
+        if pooled:
+            # Admitted once its cells are reserved; counting them needs the prompt's tokens.
+            with RUNNER_TIMINGS.stage("model_wait"):
+                reserved = INFERENCE_QUEUE.reserve(handler, input_tokens + count)
+            RUNNER_TIMINGS.boundary("admittedMs")
         meter["prompt_tokens"] = input_tokens
         extra = {"truncated_messages": dropped, "context_window": LLAMA["context"]} if truncate else {}
         limit = STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS
@@ -1380,7 +2422,7 @@ def generate_gguf(body, handler, meter):
             if key in body:
                 request[key] = body[key]
         if FORMAT == "vllm":
-            request.update(model=MODEL, chat_template_kwargs={"enable_thinking":False})
+            request.update(model=vllm_model(body), chat_template_kwargs={"enable_thinking":False})
             if STATE.get("chatTemplate") is False: request.update(chat_template=BASE_TEMPLATE, stop=["\nuser:", "\nUser:", "\nassistant:", "\nAssistant:"])
         else:
             request["t_max_predict_ms"] = limit * 1000
@@ -1388,7 +2430,13 @@ def generate_gguf(body, handler, meter):
                 request["chat_template_kwargs"] = {"enable_thinking": False}
         if stream:
             request["stream_options"] = {"include_usage": True}
-        connection, response = llama("/v1/chat/completions", request, timeout=limit + 30)
+        trace = RUNNER_TIMINGS.token_trace() if stream else None
+        if trace is not None:
+            # llama.cpp streams per-token entries only when asked for an alternative.
+            request.update(logprobs=True, top_logprobs=1 if FORMAT == "gguf" else 0)
+        observed = backend_observation_start() if RUNNER_TIMINGS.measuring() else None
+        connection, response = llama("/v1/chat/completions", request, timeout=limit + 30, caller=None if stream else handler, holder=backend)
+        backend.update(connection=connection, response=response)
         try:
             if response.status != 200:
                 try:
@@ -1399,25 +2447,60 @@ def generate_gguf(body, handler, meter):
                 meter["outcome"] = "invalid" if response.status == 400 else "error"
                 return (400 if response.status == 400 else 500), {"error": {"message": detail}}
             if stream:
-                stream_gguf(handler, response, input_tokens, count, extra, meter)
+                stream_gguf(handler, response, input_tokens, count, extra, meter, trace, served=request.get("model", MODEL))
+                timings = meter.pop("_timings", None)
+                if observed is not None and meter.get("outcome") == "ok":
+                    backend_observation_finish(observed, timings)
                 return None
-            value = json.loads(response.read(8 * 1024 * 1024))
-            choice = value["choices"][0]
+            raw = response.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                raise RuntimeError("Oversized backend reply")
+            value = json.loads(raw)
+            choices = value.get("choices") if isinstance(value, dict) else None
+            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict) or "error" in value:
+                raise RuntimeError("Invalid backend choices")
+            choice = choices[0]
+            message = choice.get("message")
+            if (choice.get("index") != 0 or type(choice.get("index")) is not int
+                    or not isinstance(message, dict) or message.get("role") != "assistant"
+                    or not isinstance(choice.get("finish_reason"), str) or not choice["finish_reason"]
+                    or message.get("content") is not None and not isinstance(message["content"], str)):
+                raise RuntimeError("Invalid backend completion")
+            # Preserve terminal/refusal/tool semantics for host validation; never invent stop.
+            message = {key: message[key] for key in ("role", "content", "tool_calls", "function_call", "refusal", "reasoning_content") if key in message}
             generated = int((value.get("usage") or {}).get("completion_tokens") or 0)
             meter.update(outcome="ok", completion_tokens=generated)
-            return 200, {"id": completion_id(), "object": "chat.completion", "created": int(time.time()), "model": MODEL,
-                         "choices": [{"index": 0, "message": {"role": "assistant", "content": (choice.get("message") or {}).get("content") or "", **({"tool_calls": choice["message"]["tool_calls"]} if (choice.get("message") or {}).get("tool_calls") else {})}, "finish_reason": choice.get("finish_reason") or "stop"}],
-                         "usage": {"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **extra}}
+            if observed is not None:
+                backend_observation_finish(observed, value.get("timings"))
+            cached = backend_cached(value.get("usage"), value.get("timings"), input_tokens)
+            # The reply names what served it: an attached adapter vLLM answered under, or the model.
+            return 200, {"id": completion_id(), "object": "chat.completion", "created": int(time.time()), "model": request.get("model", MODEL),
+                         "choices": [{"index": 0, "message": message, "finish_reason": choice["finish_reason"]}],
+                         "usage": {"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **cache_details(cached), **extra}}
         finally:
-            connection.close()
+            if not reserved or meter.get("outcome") in ("ok", "invalid"):
+                backend.clear()
+                connection.close()
     except TimeoutError:
         meter["outcome"] = "error"
         return 504, {"error": {"message": "Model generation exceeded its time limit; shorten the conversation or choose a smaller response."}}
     finally:
-        GENERATION.release()
+        # Still held here: a relay that ended early, or a request llama() itself gave up on.
+        held = dict(backend)
+        backend.clear()
+        if reserved and meter.get("outcome") not in ("ok", "invalid"):
+            # llama.cpp keeps generating for an abandoned relay until it sees the connection
+            # closed: the cells stay counted until llama.cpp has closed its end.
+            deadline = time.monotonic() + (STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS) + 30
+            threading.Thread(target=release_when_closed, args=(held, reserved, deadline), daemon=True).start()
+        else:
+            if held.get("connection") is not None:
+                held["connection"].close()
+            if reserved:
+                INFERENCE_QUEUE.unreserve(reserved)
 
 
-def stream_gguf(handler, response, input_tokens, count, extra, meter):
+def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None, served=MODEL):
     """Relays llama.cpp's stream as this server's own chunks; closing it stops generation."""
     ident, created = completion_id(), int(time.time())
     handler.send_response(200)
@@ -1426,19 +2509,23 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter):
     handler.send_header("Connection", "close")
     handler.end_headers()
 
+    flushed_at = None
     def send(value):
+        nonlocal flushed_at
         try:
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode("utf-8")
             handler.wfile.write(b"data: " + data + b"\n\n")
             handler.wfile.flush()
+            if trace is not None:
+                flushed_at = RUNNER_TIMINGS.elapsed(trace.start)
             return True
         except OSError:
             return False
 
     def chunk(delta, finish=None, **more):
-        return {"id": ident, "object": "chat.completion.chunk", "created": created, "model": MODEL, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **more}
+        return {"id": ident, "object": "chat.completion.chunk", "created": created, "model": served, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **more}
 
-    generated, finish, failed = 0, None, None
+    generated, finish, failed, usage, timings = 0, None, None, None, None
     deadline = time.monotonic() + STREAM_MAX_SECONDS
     if not send(chunk({"role": "assistant", "content": ""})):
         meter["outcome"] = "cancelled"
@@ -1462,15 +2549,23 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter):
                 failed = str(event["error"].get("message") or "Generation failed")[:500]
                 break
             choices = event.get("choices") or []
+            forwarded = {}
             if choices:
                 delta = choices[0].get("delta") or {}
                 forwarded = {key: delta[key] for key in ("content", "tool_calls") if delta.get(key)}
                 if forwarded and not send(chunk(forwarded)):
                     meter.update(outcome="cancelled", completion_tokens=generated)
                     return
+                if forwarded:
+                    RUNNER_TIMINGS.first_output()
                 finish = choices[0].get("finish_reason") or finish
+            if trace is not None:
+                trace.observe(event, bool(forwarded), flushed_at if forwarded else None)
             if event.get("usage"):
+                usage = event["usage"]
                 generated = int(event["usage"].get("completion_tokens") or generated)
+            if isinstance(event.get("timings"), dict):
+                timings = meter["_timings"] = event["timings"]
     except (OSError, ValueError):
         failed = "The model stopped responding; try again or shorten the conversation"
     meter["completion_tokens"] = generated
@@ -1480,9 +2575,17 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter):
         send({"error": {"message": failed}})
     else:
         meter["outcome"] = "ok"
-        send(chunk({}, finish or ("length" if generated >= count else "stop"),
-                   usage={"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **extra}))
-    send(b"[DONE]")
+        cached = backend_cached(usage, timings, input_tokens)
+        if not send(chunk({}, finish or ("length" if generated >= count else "stop"),
+                          usage={"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **cache_details(cached), **extra})):
+            meter["outcome"] = "cancelled"
+            return
+        if trace is not None:
+            trace.close(flushed_at)
+    if not send(b"[DONE]") and meter["outcome"] == "ok":
+        meter["outcome"] = "cancelled"
+    if trace is not None:
+        trace.finish(meter["outcome"] == "ok")
 
 
 def validate_decision(body):
@@ -1574,6 +2677,7 @@ def generate_decision(body, meter):
         meter["outcome"] = "busy"
         return 429, {"error": {"message": "The GPU is busy; retry shortly"}}
     try:
+        RUNNER_TIMINGS.boundary("admittedMs")
         operation = (lambda: CLEF.systemone(NETWORK, PROCESSOR, body, max_length=16384)) if MODEL == "Cloudflare/clef" else (lambda: security_decision(body))
         result = non_streaming_output({}, {}, meter, operation=operation)
         meter.update(outcome="ok", prompt_tokens=result["usage"]["input_tokens"], completion_tokens=0)
@@ -1616,6 +2720,7 @@ def generate(body, handler, meter):
             handler.end_headers()
             handler.wfile.write(b"data: " + json.dumps(chunk, ensure_ascii=False).encode("utf-8") + b"\n\ndata: [DONE]\n\n")
             handler.wfile.flush()
+            RUNNER_TIMINGS.first_output()
             return None
         return 200, {"id": ident, "object": "chat.completion", "created": created, "model": MODEL,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": usage}
@@ -1624,6 +2729,7 @@ def generate(body, handler, meter):
         meter["outcome"] = "busy"
         return 429, {"error": {"message": "The GPU is busy with another response; retry shortly"}}
     try:
+        RUNNER_TIMINGS.boundary("admittedMs")
         inputs, input_tokens, dropped = prepare(messages, count, truncate)
         meter["prompt_tokens"] = input_tokens
         pad = TOKENIZER.pad_token_id if TOKENIZER.pad_token_id is not None else TOKENIZER.eos_token_id
@@ -1636,9 +2742,12 @@ def generate(body, handler, meter):
         if stream:
             stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter)
             return None
-        output = non_streaming_output(inputs, kwargs, meter)
+        first = FirstToken() if RUNNER_TIMINGS.measuring() else None
+        output = non_streaming_output(inputs, {**kwargs, "streamer": first} if first else kwargs, meter)
         generated = output[0, input_tokens:]
         meter.update(outcome="ok", completion_tokens=len(generated))
+        if first is not None:
+            first.record(input_tokens, len(generated))
         content = TOKENIZER.decode(generated, skip_special_tokens=True)
         if base_chat():
             content = BASE_TURN.split(content, maxsplit=1)[0].rstrip()
@@ -1651,7 +2760,7 @@ def generate(body, handler, meter):
     except TORCH.cuda.OutOfMemoryError:
         TORCH.cuda.empty_cache()
         meter["outcome"] = "error"
-        return 507, {"error": {"message": "Not enough GPU memory. Shorten the conversation or choose a smaller model."}}
+        return 507, {"error": dict(GPU_MEMORY_REFUSAL)}
     finally:
         # A stalled GPU worker cannot safely be killed from another Python thread.
         # Its finalizer owns this lock until it actually stops; the HTTP worker can
@@ -1660,15 +2769,63 @@ def generate(body, handler, meter):
             GENERATION.release()
 
 
+class FirstToken:
+    """The Transformers runner's prefill as it can observe it (G01): from the generate call to
+    the first generated tokens it hands its streamer, whose copy to the host waited for the
+    device; the rest of the call is decode. No prefix cache exists in this runner."""
+    def __init__(self):
+        self.calls, self.started, self.first, self.ended = 0, time.monotonic_ns(), None, None
+
+    def put(self, value):
+        self.calls += 1
+        if self.calls == 2:
+            self.first = time.monotonic_ns()
+
+    def end(self):
+        self.ended = time.monotonic_ns()
+
+    def record(self, prompt, output):
+        if self.first is None or self.ended is None:
+            return
+        RUNNER_TIMINGS.backend({"version": 1, "source": "transformers-first-token", "promptTokens": prompt, "cachedTokens": 0,
+                                "queueMs": None, "prefillMs": round((self.first - self.started) / 1e6, 6),
+                                "decodeMs": round((self.ended - self.first) / 1e6, 6), "outputTokens": output})
+
+
+def counting_streamer(base):
+    """`base` (Transformers' TextIteratorStreamer) that also queues, before each text piece, how
+    many generated tokens the piece stands for (G01: the Transformers token trace). The
+    streamer queues one piece per generated token it is given (often empty, until a word is
+    complete) and one more when it ends, so the counts and the pieces stay in one order."""
+    class Counting(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.counts, self.first = deque(), FirstToken()
+
+        def put(self, value):
+            self.first.put(value)
+            if not (getattr(self, "skip_prompt", False) and getattr(self, "next_tokens_are_prompt", False)):
+                shape = getattr(value, "shape", None)
+                self.counts.append(int(shape[-1]) if shape else 1)
+            super().put(value)
+
+        def end(self):
+            self.first.end()
+            self.counts.append(0)
+            super().end()
+    return Counting
+
+
 def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
     from transformers import StoppingCriteriaList, TextIteratorStreamer
     stop, finished, ownership, result = threading.Event(), threading.Event(), threading.Lock(), {}
     detached = False
-    streamer = TextIteratorStreamer(TOKENIZER, skip_prompt=True, skip_special_tokens=True, timeout=STREAM_POLL_SECONDS)
+    streamer = counting_streamer(TextIteratorStreamer)(TOKENIZER, skip_prompt=True, skip_special_tokens=True, timeout=STREAM_POLL_SECONDS)
 
     def work():
         try:
             with TORCH.inference_mode():
+                streamer.first = FirstToken()
                 result["output"] = NETWORK.generate(**inputs, **kwargs, streamer=streamer, stopping_criteria=criteria(stop, input_tokens))
         except BaseException as error:
             result["error"] = error
@@ -1688,14 +2845,19 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
 
     disconnected = False
     base_filter = BaseReplyFilter() if base_chat() else None
+    # A base model's filter holds text back, so its pieces have no exact token map.
+    trace = RUNNER_TIMINGS.token_trace("transformers-streamer-flush") if base_filter is None else None
+    flushed_at, pending = None, 0
     def send(value):
-        nonlocal disconnected
+        nonlocal disconnected, flushed_at
         if disconnected:
             return
         try:
             data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode("utf-8")
             handler.wfile.write(b"data: " + data + b"\n\n")
             handler.wfile.flush()
+            if trace is not None:
+                flushed_at = RUNNER_TIMINGS.elapsed(trace.start)
         except OSError:
             disconnected = True
             stop.set()  # The client disconnected; generation stops at the next token.
@@ -1720,10 +2882,20 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
             continue
         except StopIteration:
             break
+        if trace is not None:
+            if streamer.counts:
+                pending += streamer.counts.popleft()
+            else:
+                trace.valid = False
         if text:
             text = base_filter.push(text) if base_filter else text
             if text:
                 send(chunk({"content": text}))
+                if not disconnected:
+                    RUNNER_TIMINGS.first_output()
+                    if trace is not None:
+                        trace.flush(pending, flushed_at)
+                        pending = 0
             if base_filter and base_filter.done:
                 stop.set()
     thread.join(STREAM_CANCEL_GRACE_SECONDS)
@@ -1744,7 +2916,7 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
     if error is not None:
         if isinstance(error, TORCH.cuda.OutOfMemoryError):
             TORCH.cuda.empty_cache()
-            send({"error": {"message": "Not enough GPU memory. Shorten the conversation or choose a smaller model."}})
+            send({"error": dict(GPU_MEMORY_REFUSAL)})
         else:
             send({"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})
     else:
@@ -1752,10 +2924,148 @@ def stream_reply(handler, inputs, input_tokens, count, kwargs, extra, meter):
             text = base_filter.push("", final=True)
             if text:
                 send(chunk({"content": text}))
+                if not disconnected:
+                    RUNNER_TIMINGS.first_output()
         generated = result["output"].shape[-1] - input_tokens
+        if RUNNER_TIMINGS.measuring() and not disconnected:
+            streamer.first.record(input_tokens, generated)
         finish = "stop" if generated < count else "length"
         send(chunk({}, finish, usage={"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **extra}))
+        if trace is not None and not disconnected:
+            # Tokens without text (the end of sequence) crossed the finishing chunk's flush.
+            trace.flush(pending, flushed_at)
+            trace.total(generated)
     send(b"[DONE]")
+    if disconnected and meter["outcome"] == "ok":
+        meter["outcome"] = "cancelled"
+    if trace is not None:
+        trace.finish(meter["outcome"] == "ok" and not disconnected)
+
+
+class QueueRefusal(Exception):
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status, self.code = status, code
+
+
+def serving_slots():
+    """Requests the backend serves at once (G02): llama.cpp slots sharing one KV pool or vLLM
+    sequences, YOUGORI_MODEL_PARALLEL (1-16; GGUF 4, vLLM 8 by default). The Transformers runner,
+    decision models and the native host service generate one request at a time."""
+    if FORMAT not in ("gguf", "vllm") or DECISION_MODEL or os.environ.get("YOUGORI_NATIVE_BACKEND"):
+        return 1
+    value = os.environ.get("YOUGORI_MODEL_PARALLEL", "")
+    return int(value) if re.fullmatch(r"[1-9]|1[0-6]", value) else 4 if FORMAT == "gguf" else 8
+
+
+class InferenceQueue:
+    """FIFO admission before model preparation. Waiting never allocates GPU tensors.
+
+    At most `slots` requests are admitted at once. When llama.cpp's slots share one KV pool of
+    `pool` cells, an admitted request also reserves its prompt plus max_tokens before it reaches
+    the backend, first come first served (reserve): llama.cpp ends every active request when the
+    pool overflows, so admission never lets it. A one-slot Transformers runner keeps its
+    generation lock authoritative: an abandoned generation that has not stopped still owns it.
+    """
+    def __init__(self, limit=REQUEST_QUEUE_LIMIT, timeout=REQUEST_QUEUE_SECONDS, slots=1):
+        self.limit, self.timeout, self.slots, self.pool = limit, timeout, slots, 0
+        self.changed = threading.Condition()
+        self.waiters, self.active, self.reserving, self.reserved, self.drain = deque(), 0, deque(), 0, None
+
+    def snapshot(self):
+        with self.changed:
+            return {"active": self.active, "waiting": len(self.waiters), "slots": self.slots,
+                    "capacity": self.limit, "timeoutSeconds": self.timeout,
+                    **({"poolTokens": self.pool, "reservedTokens": self.reserved} if self.pool else {})}
+
+    def wait(self, handler, deadline, ready):
+        """Caller holds self.changed: returns once ready(), refusing a disconnect, an error or the deadline."""
+        while not ready():
+            # Poll EOF without consuming request data. A cancelled caller must not
+            # later spend GPU time or keep a place ahead of connected callers.
+            readable, _, _ = select.select([handler.connection], [], [], 0)
+            if readable and handler.connection.recv(1, socket.MSG_PEEK) == b"":
+                raise ConnectionAbortedError("Caller disconnected while waiting")
+            if STATE.get("status") == "error":
+                raise QueueRefusal(503, "model_unavailable", "The model is unavailable. Check its status before retrying.")
+            if time.monotonic() >= deadline:
+                raise QueueRefusal(504, "model_queue_timeout", "The model request waited too long. Retry later or request a shorter response.")
+            self.changed.wait(timeout=min(0.1, max(0, deadline - time.monotonic())))
+
+    def enter(self, line, handler, ready):
+        ticket = object()
+        line.append(ticket)
+        try:
+            self.wait(handler, handler.queue_deadline, lambda: line[0] is ticket and ready())
+            line.popleft()
+            self.changed.notify_all()
+        except BaseException:
+            line.remove(ticket)
+            self.changed.notify_all()
+            raise
+
+    def acquire(self, handler):
+        handler.queue_deadline = time.monotonic() + self.timeout
+        with self.changed:
+            if len(self.waiters) >= self.limit:
+                raise QueueRefusal(429, "model_queue_full", "The model request queue is full. Retry later.")
+            self.enter(self.waiters, handler, lambda: self.drain is None and self.active < self.slots)
+            self.active += 1
+
+    def release(self):
+        with self.changed:
+            self.active -= 1
+            self.changed.notify_all()
+
+    def reserve(self, handler, tokens):
+        """Reserves an admitted request's cells of the shared KV pool (its prompt and max_tokens
+        and a margin, never more than the pool), within a queue timeout of its own: the time the
+        model took to load does not count against it."""
+        if not self.pool:
+            return 0
+        tokens = min(self.pool, tokens + RESERVE_MARGIN_TOKENS)
+        handler.queue_deadline = time.monotonic() + self.timeout
+        with self.changed:
+            self.enter(self.reserving, handler, lambda: self.reserved + tokens <= self.pool)
+            self.reserved += tokens
+            return tokens
+
+    def unreserve(self, tokens):
+        with self.changed:
+            self.reserved -= tokens
+            self.changed.notify_all()
+
+    def serve(self, slots, pool=0):
+        """What the backend's launch serves: its slots and their shared KV pool (one slot and no
+        pool while a launch starts, since it may fall back to one)."""
+        with self.changed:
+            self.slots, self.pool = slots, pool
+            self.changed.notify_all()
+
+    @contextmanager
+    def exclusive(self, seconds=60):
+        """The owner's operation on the whole backend (KV reset): nothing new is admitted, the
+        admitted requests finish, then it runs alone."""
+        with self.changed:
+            if self.drain is not None:
+                raise QueueRefusal(409, "model_busy", "Another owner operation is running on this model. Retry shortly.")
+            self.drain, deadline = object(), time.monotonic() + seconds
+            while self.active:
+                if time.monotonic() >= deadline:
+                    self.drain = None
+                    self.changed.notify_all()
+                    raise QueueRefusal(409, "model_busy", "The model is still answering requests. Retry when it is idle.")
+                self.changed.wait(timeout=0.1)
+        try:
+            yield
+        finally:
+            with self.changed:
+                self.drain = None
+                self.changed.notify_all()
+
+
+# One request at a time until a llama.cpp or vLLM launch reports how many it serves (serve()).
+INFERENCE_QUEUE = InferenceQueue()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1767,11 +3077,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # Never log prompts or credentials.
 
+    def end_headers(self):
+        # Centralized here so native relays, Transformers streams and JSON failures
+        # agree. No acknowledgement is copied from an upstream inference backend.
+        if getattr(self, "serving_authenticated", False):
+            self.send_header("X-Yougori-Serving-Protocol", "1")
+            if getattr(self, "serving_selected", ""):
+                self.send_header("X-Yougori-Serving-Features", self.serving_selected)
+        super().end_headers()
+
     def reply(self, status, value):
         data = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if status in (429, 503, 504):
+            self.send_header("Retry-After", "1")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Connection", "close")
@@ -1791,8 +3112,40 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authorized():
             return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if self.path == "/v1/diagnostics/load":
+            if not self.admin_authorized():
+                return self.reply(403, {"error": {"message": "Only the local Yougori engine can read model diagnostics"}})
+            return self.reply(200, RUNNER_TIMINGS.load_view())
+        if self.path.split("?", 1)[0] == "/v1/diagnostics/timings":
+            if not self.admin_authorized():
+                return self.reply(403, {"error": {"message": "Only the local Yougori engine can read model diagnostics"}})
+            if "?" not in self.path:
+                return self.reply(200, RUNNER_TIMINGS.snapshot())
+            try:
+                query = self.path.split("?", 1)[1]
+                if len(query) > 128:
+                    raise ValueError("Invalid diagnostics query")
+                fields = urllib.parse.parse_qs(query, strict_parsing=True, max_num_fields=3)
+                if set(fields) - {"journal", "after", "limit"} or fields.get("journal") != ["1"] or any(len(values) != 1 for values in fields.values()):
+                    raise ValueError("Invalid diagnostics query")
+                after, limit = fields.get("after", ["0"])[0], fields.get("limit", ["64"])[0]
+                if not re.fullmatch(r"[0-9]{1,16}", after) or not re.fullmatch(r"[0-9]{1,3}", limit):
+                    raise ValueError("Invalid diagnostics query")
+                return self.reply(200, RUNNER_TIMINGS.journal_snapshot(int(after), int(limit)))
+            except (ValueError, TypeError):
+                return self.reply(400, {"error": {"message": "Invalid diagnostics cursor"}})
         if self.path == "/health":
-            return self.reply(200, {**STATE, "listen": listen_snapshot(), "optimizer": gpu_snapshot()})
+            # Expiry can change queued/freeing_memory to idle. Capture the
+            # admission fields after refresh under the same state lock.
+            with GPU_LOCK:
+                optimizer = gpu_snapshot()
+                health = {**STATE, "optimizer": optimizer}
+            health["requestQueue"] = INFERENCE_QUEUE.snapshot()
+            health["listen"] = listen_snapshot()
+            health["capabilities"] = runner_capabilities()
+            health["helpers"] = dict(HELPERS_SERVED)
+            health["helperShadow"] = shadow_snapshot()
+            return self.reply(200, health)
         if self.path == "/v1/models":
             return self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "local"}]})
         if self.path == "/v1/usage":
@@ -1810,6 +3163,55 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/chat/completions":
                 record_usage(source, "rejected")
             return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if self.path == "/v1/diagnostics/timings":
+            if not self.admin_authorized():
+                return self.reply(403, {"error": {"message": "Only the local Yougori engine can manage model observations"}})
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 256 or self.headers.get("Transfer-Encoding"):
+                    raise ValueError("Invalid observation command")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict) or set(body) != {"action", "sessionId"} or body["action"] not in ("start", "seal", "release", "abandon"):
+                    raise ValueError("Invalid observation command")
+                if not isinstance(body["sessionId"], str) or not re.fullmatch(r"[a-f0-9]{32}", body["sessionId"]):
+                    raise ValueError("Invalid observation session")
+                action = {"start": RUNNER_TIMINGS.start_journal, "seal": RUNNER_TIMINGS.seal_journal,
+                          "release": RUNNER_TIMINGS.release_journal, "abandon": RUNNER_TIMINGS.abandon_journal}[body["action"]]
+                if not action(body["sessionId"]):
+                    return self.reply(409, {"error": {"message": "Observation session conflicts, is active, or cannot complete; collect the current session first"}})
+                return self.reply(200, RUNNER_TIMINGS.journal_snapshot())
+            except (ValueError, TypeError, OSError):
+                return self.reply(400, {"error": {"message": "Invalid observation command"}})
+        if self.path in ("/v1/yougori/adapters", "/v1/yougori/kv"):
+            if not self.admin_authorized():
+                return self.reply(403, {"error": {"message": "Only the local Yougori engine can change this model's adapters or KV cache"}})
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 1024 or self.headers.get("Transfer-Encoding"):
+                    raise ValueError("Invalid adapter or KV request")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("Invalid adapter or KV request")
+                if "backend_command" not in globals():
+                    return self.reply(409, {"error": {"message": "The Transformers runner serves no adapters and keeps no KV between requests"}})
+                route = self.path.rsplit("/", 1)[1]
+                if route == "kv":
+                    # Refusals and no-ops answer at once (kv_check); every slot is erased while
+                    # none is busy: admitted requests finish first.
+                    answer = kv_check(body)
+                    if answer is None:
+                        with INFERENCE_QUEUE.exclusive():
+                            answer = backend_command(route, body)
+                    return self.reply(200, answer)
+                return self.reply(200, backend_command(route, body))
+            except QueueRefusal as error:
+                return self.reply(error.status, {"error": {"code": error.code, "message": str(error)}})
+            except BackendRefusal as refusal:
+                return self.reply(409, {"error": {"message": str(refusal)}})
+            except (ValueError, TypeError, KeyError):
+                return self.reply(400, {"error": {"message": "Invalid adapter or KV request"}})
+            except Exception as error:  # the backend or Hugging Face failed; only the kind is named
+                return self.reply(502, {"error": {"message": "The adapter or KV operation failed (" + type(error).__name__ + ")."}})
         if gpu_route(self):
             return
         if self.path in ("/v1/listen/config", "/v1/usage/reset") and not self.admin_authorized():
@@ -1834,47 +3236,89 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": {"message": "Endpoint not found"}})
         if self.path == "/v1/systemone" and not DECISION_MODEL:
             return self.reply(404, {"error": {"message": "This model serves chat; /v1/systemone requires a decision model"}})
-        started, meter = time.monotonic(), {"outcome": "error"}
-        body, capture, original_writer = None, None, self.wfile
-        entered = False
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= (262144 if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else 65536) or self.headers.get("Transfer-Encoding"):
-                raise ValueError("Send a JSON body of at most 64 KiB with Content-Length")
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise ValueError("Incomplete request")
-            body = json.loads(raw)
-            if self.path == "/v1/systemone": validate_decision(body)
-            else: validate_chat(body)
-            entered = gpu_enter(self)
-            if not entered:
-                return self.reply(503, {"error": {"message": STATE.get("error") or "Model preparation timed out"}})
-            capture = ListenCapture(original_writer)
-            self.wfile = capture
-            reply = generate_decision(body, meter) if self.path == "/v1/systemone" else generate(body, self, meter)
-            if reply is not None:
-                self.reply(*reply)
-        except (ValueError, TypeError):
-            meter["outcome"] = "invalid"
-            # Tokenizers and model libraries can echo the input in exceptions.
-            self.reply(400, {"error": {"message": "Invalid model request. Check message roles, content, context length and generation settings."}})
-        except Exception:
-            meter["outcome"] = "error"
-            self.reply(500, {"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})
-        finally:
-            self.wfile = original_writer
-            if entered: gpu_leave()
-            seconds = time.monotonic() - started
-            if capture is not None:
-                record_listen(capture, body, source, self.path, meter, seconds)
-            record_usage(source, meter["outcome"], meter.get("prompt_tokens", 0), meter.get("completion_tokens", 0), time.monotonic() - started, meter.get("stream", False))
+        self.serving_authenticated = self.path == "/v1/chat/completions"
+        self.serving_selected = ""
+        with RUNNER_TIMINGS.run("request") as timing:
+            started, meter = time.monotonic(), {"outcome": "error"}
+            body, capture, original_writer = None, None, self.wfile
+            entered = queued = False
+            try:
+                with RUNNER_TIMINGS.stage("request_validation"):
+                    offered = serving_offer(self.headers) if self.serving_authenticated else None
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= (262144 if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else 65536) or self.headers.get("Transfer-Encoding"):
+                        raise ValueError("Send a JSON body of at most 64 KiB with Content-Length")
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        raise ValueError("Incomplete request")
+                    body = json.loads(raw)
+                    if self.path == "/v1/systemone": validate_decision(body)
+                    else:
+                        selected = serving_selection(body, offered)
+                        validate_chat(body)
+                        self.serving_selected = selected
+                RUNNER_TIMINGS.boundary("acceptedMs")
+                with RUNNER_TIMINGS.stage("model_wait") as wait_span:
+                    INFERENCE_QUEUE.acquire(self)
+                    queued = True
+                    entered = gpu_enter(self)
+                    wait_span["failed"] = not entered
+                if not entered:
+                    return self.reply(503, {"error": {"message": STATE.get("error") or "Model preparation timed out"}})
+                capture = ListenCapture(original_writer)
+                self.wfile = capture
+                with RUNNER_TIMINGS.stage("generation") as generation_span:
+                    reply = generate_decision(body, meter) if self.path == "/v1/systemone" else generate(body, self, meter)
+                    generation_span["failed"] = meter["outcome"] != "ok"
+                if reply is not None:
+                    self.reply(*reply)
+                if meter["outcome"] == "ok":
+                    self.wfile.flush()
+                    RUNNER_TIMINGS.boundary("completedMs")
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                meter["outcome"] = "cancelled"
+            except QueueRefusal as error:
+                meter["outcome"] = "busy" if error.status == 429 else "error"
+                self.reply(error.status, {"error": {"code": error.code, "message": str(error)}})
+            except ServingAgreementError as error:
+                meter["outcome"] = "invalid"
+                self.reply(error.status, {"error": {"code": error.code, "message": error.message}})
+            except ContextRefusal as error:
+                meter["outcome"] = "invalid"
+                self.reply(400, error.body())
+            except (ValueError, TypeError):
+                meter["outcome"] = "invalid"
+                # Tokenizers and model libraries can echo the input in exceptions.
+                self.reply(400, {"error": {"message": "Invalid model request. Check message roles, content, context length and generation settings."}})
+            except Exception:
+                meter["outcome"] = "error"
+                self.reply(500, {"error": {"message": "Generation failed. Check the model's compatibility and available GPU memory."}})
+            finally:
+                self.wfile = original_writer
+                if entered: gpu_leave()
+                if queued: INFERENCE_QUEUE.release()
+                timing["outcome"] = meter["outcome"]
+                seconds = time.monotonic() - started
+                if capture is not None:
+                    record_listen(capture, body, source, self.path, meter, seconds)
+                record_usage(source, meter["outcome"], meter.get("prompt_tokens", 0), meter.get("completion_tokens", 0), time.monotonic() - started, meter.get("stream", False))
 
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = MAX_CONNECTIONS
     def process_request(self, request, address):
         if not REQUESTS.acquire(blocking=False):
+            # The accept loop must never block on an overloaded client's socket. This
+            # small response normally fits the fresh send buffer; otherwise close it.
+            data = b'{"error":{"code":"model_connections_full","message":"Model connection capacity is full. Retry later."}}'
+            try:
+                request.setblocking(False)
+                request.send(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: "
+                             + str(len(data)).encode("ascii")
+                             + b"\r\nRetry-After: 1\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n" + data)
+            except OSError:
+                pass
             self.shutdown_request(request)
             return
         try:
@@ -1898,16 +3342,29 @@ def stop(*_):
 
 # The packaged helper is injected by the engine. Source imports use the same helper.
 _gpu_source = globals().get("__YOUGORI_GPU_SOURCE__") or os.environ.get("YOUGORI_GPU_SOURCE")
-if _gpu_source:
-    exec(compile(zlib.decompress(base64.b64decode(_gpu_source)), "yougori-gpu-optimizer", "exec"))
+if _gpu_source or "gpu-optimizer" in bundled_helpers():
+    _base = dict(globals())
+    exec(compile(helper_bytes("gpu-optimizer", _gpu_source), "yougori-gpu-optimizer", "exec"))
+    shadow_attach("gpu-optimizer", globals(), _base)
+    del _base
 else:
     from pathlib import Path
     exec(compile(Path(__file__).with_name("model_runner").joinpath("gpu_optimizer.py").read_text(encoding="utf-8"), "yougori-gpu-optimizer", "exec"))
 
-if os.environ.get("YOUGORI_PUBLISHER_SOURCE") or globals().get("__YOUGORI_PUBLISHER_SOURCE__"):
-    exec(compile(zlib.decompress(base64.b64decode(os.environ.get("YOUGORI_PUBLISHER_SOURCE") or __YOUGORI_PUBLISHER_SOURCE__)), "yougori-publisher", "exec"))
+gpu_before_load = timed_stage("admission_wait")(gpu_before_load)
+if "__file__" in globals() and os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_runner", "engine_backends.py")):
+    load_backends()
+
+if os.environ.get("YOUGORI_PUBLISHER_SOURCE") or globals().get("__YOUGORI_PUBLISHER_SOURCE__") or "publisher-routes" in bundled_helpers():
+    exec(compile(helper_bytes("publisher-routes", os.environ.get("YOUGORI_PUBLISHER_SOURCE") or globals().get("__YOUGORI_PUBLISHER_SOURCE__")), "yougori-publisher", "exec"))
 
 if __name__ == "__main__":
+    _own = os.path.realpath(__file__) if "__file__" in globals() else ""
+    if _own.startswith(os.path.realpath(HELPERS_ROOT) + os.sep):
+        _entry = bundled_helpers().get("model-server") or {}
+        HELPERS_SERVED["model-server"] = {"served": "bundle", "pin": _entry.get("pin"), "path": _own}
+    else:
+        HELPERS_SERVED.setdefault("model-server", {"served": "source_injection"})
     # As the container's first process the server would ignore stop signals it does not handle,
     # making every stop wait for the runtime to kill it.
     signal.signal(signal.SIGTERM, stop)

@@ -1,0 +1,52 @@
+{
+  "at": 1793752167,
+  "read_only": true,
+  "networks": {
+    "ethereum": {
+      "ok": true,
+      "chain_id": 1,
+      "token_decimals": 6,
+      "finalized_block": 26337801,
+      "invoice_calldata_simulated": true
+    },
+    "base": {
+      "ok": true,
+      "chain_id": 8453,
+      "token_decimals": 6,
+      "finalized_block": 53480809,
+      "invoice_calldata_simulated": true
+    },
+    "arbitrum": {
+      "ok": true,
+      "chain_id": 42161,
+      "token_decimals": 6,
+      "finalized_block": 521020061,
+      "invoice_calldata_simulated": true
+    },
+    "polygon": {
+      "ok": true,
+      "chain_id": 137,
+      "token_decimals": 6,
+      "finalized_block": 96697804,
+      "invoice_calldata_simulated": true
+    },
+    "bsc": {
+      "ok": true,
+      "chain_id": 56,
+      "token_decimals": 18,
+      "finalized_block": 131529020,
+      "invoice_calldata_simulated": true
+    },
+    "solana": {
+      "ok": true,
+      "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      "token_decimals": 6,
+      "finalized_slot": 465100561
+    },
+    "tron": {
+      "ok": true,
+      "genesis": "00000000000000001ebf88508a03865c71d452e25f4d51194196a1d22b6653dc",
+      "solidified_block": 87692826
+    }
+  }
+}

@@ -40,16 +40,18 @@ fn exclusive_mutex(name: &str, running: &str) -> Result<isize, String> {
 
 impl InstanceLock {
     pub fn acquire() -> Result<Self, String> {
+        // Empty for the installed engine; a disposable acceptance engine locks its own folder.
+        let suffix = crate::acceptance::lock_suffix();
         #[cfg(target_os = "windows")]
         {
             let current = exclusive_mutex(
-                "Local\\Yougori.Runtime.Singleton.v1",
+                &format!("Local\\Yougori.Runtime.Singleton.v1{suffix}"),
                 "Yougori is already running. Use the existing window before starting another instance.",
             )?;
             // Earlier engines held a differently named mutex. Hold it as well so an
             // older engine that is still running can never own these disks.
             match exclusive_mutex(
-                yougori_cli::legacy_names::WINDOWS_SINGLETON_MUTEX,
+                &format!("{}{suffix}", yougori_cli::legacy_names::WINDOWS_SINGLETON_MUTEX),
                 "An older Yougori engine is still running. Close it before starting this version.",
             ) {
                 Ok(previous) => Ok(Self { handles: vec![current, previous] }),
@@ -82,7 +84,7 @@ impl InstanceLock {
                 || parent.uid() != unsafe { libc::geteuid() } || parent.mode() & 0o077 != 0 {
                 return Err("The previous Yougori runtime directory is not private to this user.".into());
             }
-            let previous_path = previous_directory.join("runtime.lock");
+            let previous_path = previous_directory.join(format!("runtime{suffix}.lock"));
             let previous_file = std::fs::OpenOptions::new().read(true).write(true)
                 .create(true).truncate(false).mode(0o600)
                 .open(&previous_path).map_err(|e| e.to_string())?;
@@ -105,7 +107,7 @@ impl InstanceLock {
                 .create(true)
                 .truncate(false)
                 .mode(0o600)
-                .open(directory.join("runtime.lock"))
+                .open(directory.join(format!("runtime{suffix}.lock")))
                 .map_err(|e| e.to_string())?;
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
                 return Err("Yougori is already running or its runtime lock is unavailable. Use the existing engine.".into());

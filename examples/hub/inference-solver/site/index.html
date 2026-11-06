@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f8fe">
+  <title>Inference Solver</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+  <script src="/compute-ui.js" defer></script>
+  <script src="/infrastructure-ui.js" defer></script>
+  <script src="/payments-ui.js" defer></script>
+  <script src="/sandboxes-ui.js" defer></script>
+  <script src="/control-ui.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="#harnesses" class="brand" id="brand">Inference Solver</a>
+      <div class="quick">
+        <nav aria-label="Main navigation" id="nav">
+          <a href="#harnesses">Harnesses</a><a href="#models">Models</a><a href="#sandboxes">Sandboxes</a><a href="#keys" data-member-only hidden>API keys</a><a href="#usage" data-member-only hidden>Usage</a><a href="#admin" id="admin-link" hidden>Admin</a>
+        </nav>
+        <div class="actions">
+          <button class="plain" data-theme-toggle type="button">Theme</button>
+          <button class="plain" id="signout" hidden>Sign out</button>
+          <a class="outline small" href="#signin" id="signin-link">Sign in</a>
+          <a class="primary bright small" href="#signup" id="signup-link" hidden>Sign up</a>
+        </div>
+      </div>
+      <div class="nav" id="menu">
+        <button class="secondary small" id="menu-toggle" aria-label="Menu" aria-expanded="false" aria-controls="nav-panel">Menu</button>
+        <div class="nav-panel" id="nav-panel" inert>
+          <nav class="nav-links" id="menu-links" aria-label="Site menu"></nav>
+          <div class="nav-small"><span id="account-email">Private inference</span><button class="plain" data-theme-toggle type="button">Theme</button><button class="plain" id="menu-signout" hidden>Sign out</button></div>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main id="content" tabindex="-1">
+    <div id="notice" role="status" aria-live="polite"></div>
+    <section id="auth" class="auth" hidden>
+      <h1 id="auth-title">Welcome back</h1>
+      <form id="login-form" class="box stack">
+        <p class="muted" id="auth-window-title">Sign in</p>
+        <label>Email<input name="email" type="email" autocomplete="username" required maxlength="254" placeholder="you@example.com"></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1024" placeholder="Your password"></label>
+        <p id="password-hint" class="muted" hidden>Use at least 12 characters.</p>
+        <label id="invitation-field" hidden>Invitation code<input name="invitation" autocomplete="off"></label>
+        <p id="auth-error" class="error" role="alert"></p>
+        <div><button class="primary" type="submit" id="auth-submit">Sign in ↗</button></div>
+      </form>
+      <button class="text-button" type="button" id="auth-toggle" hidden>Don't have an account? Sign up</button>
+      <button class="text-button" type="button" id="auth-invitation">I have an invitation</button>
+    </section>
+    <section id="workspace" hidden>
+      <div class="page-head">
+        <div><h1 id="section-title">Harnesses</h1><p id="section-description" class="muted"></p></div>
+        <div id="section-actions"></div>
+      </div>
+      <div id="view"></div>
+    </section>
+    <noscript>This site needs JavaScript to show your tools, models and API keys.</noscript>
+  </main>
+  <footer class="foot"><div class="foot-inner">
+    <div><p class="foot-name" id="footer-name">Inference Solver</p><p id="tagline">Your models. Your infrastructure. Your rules.</p></div>
+    <a href="https://yougori.com" rel="noopener noreferrer" target="_blank">Built with Yougori ↗</a>
+  </div></footer>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div class="modal-top"><span class="muted" id="dialog-kicker">Inference Solver</span><button class="plain" id="dialog-close" aria-label="Close dialog">×</button></div><div class="modal-body"><h2 id="dialog-title"></h2><div id="dialog-body"></div></div></dialog>
+</body>
+</html>

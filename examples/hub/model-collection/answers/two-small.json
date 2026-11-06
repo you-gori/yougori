@@ -1,0 +1,9 @@
+{
+  "model_one": "hf.co/Qwen/Qwen3-0.6B-GGUF",
+  "quant_one": "Q8_0",
+  "model_two": "hf.co/Qwen/Qwen3-1.7B-GGUF",
+  "quant_two": "Q4_K_M",
+  "third": false,
+  "gpu": "optional",
+  "memory_gb": 8
+}

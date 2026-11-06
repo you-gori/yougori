@@ -44,6 +44,10 @@ pub const KEEP_DAYS: u32 = 90;
 /// The shortest retention this will accept at all.
 pub const LEAST_KEEP_DAYS: u32 = 30;
 
+/// What a file in a backup is when it is one of a realm's job artifacts. The bytes are kept beside
+/// the realm rather than in it, so they are copied, checked and put back as files of their own.
+const JOB_ARTIFACT: &str = "a job artifact";
+
 /// One file in a backup.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,7 +144,8 @@ pub fn take(sources: &Sources, into: &Path, app_version: &str, stage: &str, keep
         if let Some(folder) = to.parent() {
             std::fs::create_dir_all(folder).map_err(|error| format!("Cannot open the folder for the backup: {error}"))?;
         }
-        super::super::store::Store::copy_of(realm, &to)?;
+        let carried = super::super::store::Store::copy_of(realm, &to)?;
+        let beside = artifacts_inside(&inside);
         let bytes = std::fs::read(&to).map_err(|error| format!("Cannot read the copy that was just taken: {error}"))?;
         let copy = super::super::store::Store::open_for_reading(&to).ok();
         let reads = copy.as_ref().is_some_and(|copy| copy.version().is_ok());
@@ -153,6 +158,20 @@ pub fn take(sources: &Sources, into: &Path, app_version: &str, stage: &str, keep
             shape: Some("a realm's database".to_owned()),
             reads,
         });
+        // The realm's job artifacts came with the copy, each already hashed again where it landed.
+        // They are named here so that `verify` checks them and `restore` puts them back; a realm
+        // put back without them would hold records naming files that are not there.
+        for (sha256, size) in &carried.artifacts {
+            files.push(Kept {
+                path: format!("{beside}/{sha256}"),
+                sha256: sha256.clone(),
+                bytes: *size,
+                product: Product::Core.word().to_owned(),
+                record_version: None,
+                shape: Some(JOB_ARTIFACT.to_owned()),
+                reads: true,
+            });
+        }
         // Named from the copy rather than from the register. The register leaves the realm's own
         // identifier as a placeholder, because it differs on every computer, and nobody can prove
         // a placeholder present in a vault; a manifest that asked for one would fail the runbook
@@ -266,6 +285,16 @@ pub fn verify(stamp: &Path) -> Result<Manifest, String> {
     let mut wrong = Vec::new();
     for file in &manifest.files {
         let path = stamp.join(&file.path);
+        // A job artifact can be a gigabyte, so it is hashed in pieces rather than read whole, and it
+        // is bytes rather than a record, so there is no loader to ask.
+        if file.shape.as_deref() == Some(JOB_ARTIFACT) {
+            match digest_of(&path) {
+                None => wrong.push(format!("{} is not there", file.path)),
+                Some((digest, size)) if digest != file.sha256 || size != file.bytes => wrong.push(format!("{} is not the file that was backed up", file.path)),
+                Some(_) => {}
+            }
+            continue;
+        }
         let Ok(bytes) = std::fs::read(&path) else {
             wrong.push(format!("{} is not there", file.path));
             continue;
@@ -310,5 +339,66 @@ pub fn restore(stamp: &Path, product: Product, to: &Path) -> Result<PathBuf, Str
         std::fs::create_dir_all(folder).map_err(|error| format!("Cannot open the folder for the record: {error}"))?;
     }
     std::fs::copy(stamp.join(&file.path), to).map_err(|error| format!("Cannot put the record back: {error}"))?;
+    if product == Product::Core {
+        if let Err(trouble) = put_back_artifacts(stamp, &manifest, &file.path, to) {
+            let _ = std::fs::remove_file(to);
+            return Err(trouble);
+        }
+    }
     Ok(to.to_owned())
+}
+
+/// Where a realm's job artifacts sit inside a backup, for the realm copied to `inside`.
+fn artifacts_inside(inside: &str) -> String {
+    let path = crate::core::jobs::artifact_folder(Path::new(inside));
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Puts a realm's job artifacts back beside the realm restored from `inside`, each checked against
+/// the manifest where it landed. A realm whose records name artifacts that did not come back whole
+/// is not left behind looking restored: the caller removes it, and this removes what it put back.
+fn put_back_artifacts(stamp: &Path, manifest: &Manifest, inside: &str, to: &Path) -> Result<usize, String> {
+    let prefix = format!("{}/", artifacts_inside(inside));
+    let theirs: Vec<&Kept> = manifest.files.iter().filter(|file| file.shape.as_deref() == Some(JOB_ARTIFACT) && file.path.starts_with(&prefix)).collect();
+    if theirs.is_empty() {
+        return Ok(0);
+    }
+    let folder = crate::core::jobs::artifact_folder(to);
+    if folder.exists() {
+        return Err("There is already a folder where the restored realm's job artifacts would go; move it out of the way before putting the realm back".into());
+    }
+    std::fs::create_dir_all(&folder).map_err(|error| format!("Cannot open the folder for the realm's job artifacts: {error}"))?;
+    for file in &theirs {
+        let name = &file.path[prefix.len()..];
+        let landed = if name.len() == 64 && name.bytes().all(|letter| matches!(letter, b'0'..=b'9' | b'a'..=b'f')) {
+            let target = folder.join(name);
+            std::fs::copy(stamp.join(&file.path), &target).ok().and_then(|_| digest_of(&target))
+        } else {
+            None
+        };
+        if !landed.is_some_and(|(digest, size)| digest == file.sha256 && size == file.bytes) {
+            let _ = std::fs::remove_dir_all(&folder);
+            return Err(format!("{} did not come back as it was backed up, so the realm was not put back", file.path));
+        }
+    }
+    Ok(theirs.len())
+}
+
+/// The SHA-256 of a file and its size, read in pieces rather than whole.
+fn digest_of(path: &Path) -> Option<(String, u64)> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    Some((hex::encode(hasher.finalize()), size))
 }

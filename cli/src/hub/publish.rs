@@ -5,7 +5,7 @@
 //! the day's 20.
 use super::{
     client,
-    format::{self, Folder, Tool},
+    format::{self, Tool},
     refs::{self, Ref},
     review,
     scan::{self, Files},
@@ -37,6 +37,8 @@ pub struct Upload {
     pub name: String,
     pub version: String,
     pub license: String,
+    /// The package's format: 1, or 2 for a format 2 template.
+    pub format: u64,
     pub body: Value,
     pub files: Files,
     pub review: Value,
@@ -121,46 +123,130 @@ fn file_list(files: &Files) -> Vec<Value> {
     files.iter().map(|(path, bytes)| json!({"path": path, "bytes": bytes.len(), "sha256": scan::sha256_hex(bytes)})).collect()
 }
 
-/// Reads, checks and scans a template folder for upload.
-pub fn template(folder: &Path) -> Result<(Upload, Folder), String> {
+/// Reads, checks and scans a template folder for upload, in either format. A format 2 package is
+/// checked by the shared crate and gets its format 2 review, with every pinned component fetched
+/// from the Hub and checked first so the review lists what they grant too; a format this Yougori
+/// does not read is refused before anything else.
+/// A format 1 template's defaults and fixed sandbox values that are someone's own details.
+fn personal_v1(checked: &format::Folder) -> Vec<String> {
+    let defaults = checked.questions.iter().filter_map(|question| Some((question.id.clone(), question.default.clone()?))).collect::<Vec<_>>();
+    let fixed = checked
+        .project
+        .environments
+        .iter()
+        .flat_map(|(name, environment)| environment.environment.iter().map(move |(key, value)| (format!("{}: {name}: environment: {key}", checked.project_path), value.clone())))
+        .collect::<Vec<_>>();
+    super::personal::problems(&defaults, &fixed, super::personal::this_computer().as_deref())
+}
+
+/// A format 2 template's defaults and fixed sandbox values that are someone's own details: the
+/// question defaults, and each sandbox's environment values as written. The engine's export runs
+/// the same reading over a recipe before it is written.
+pub fn personal_v2(checked: &yougori_setup::format::Checked) -> Vec<String> {
+    let defaults = checked.questions.iter().filter_map(|question| Some((question.id.clone(), question.default.clone()?))).collect::<Vec<_>>();
+    let sandboxes = checked
+        .environments
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.clone()))
+        .chain(checked.resources.values().filter(|resource| resource.kind == yougori_setup::resource::Kind::Environment).map(|resource| (resource.id.clone(), resource.spec.clone())));
+    let mut fixed = Vec::new();
+    for (name, spec) in sandboxes {
+        for (key, value) in spec.get("environment").and_then(serde_yaml_ng::Value::as_mapping).into_iter().flatten() {
+            if let (Some(key), Some(value)) = (key.as_str(), value.as_str()) {
+                fixed.push((format!("{}: {name}: environment: {key}", checked.project_path), value.to_owned()));
+            }
+        }
+    }
+    super::personal::problems(&defaults, &fixed, super::personal::this_computer().as_deref())
+}
+
+pub async fn template(folder: &Path) -> Result<(Upload, yougori_setup::format::FormatVersion), String> {
     let collected = scan::collect(folder)?;
     if !collected.files.contains_key(format::TEMPLATE_FILE) {
         return Err(format!("{} has no {}. Start one with yougori template new NAME, or turn running sandboxes into one with yougori template capture ENV.", folder.display(), format::TEMPLATE_FILE));
     }
-    let checked = format::template(&collected.files).map_err(|problems| tools::list("This template", &problems))?;
-    let publishing = format::publishing_problems(&checked);
-    if !publishing.is_empty() {
-        return Err(tools::list("This template", &publishing));
-    }
-    let findings = scan::scan(&collected.files);
-    if !findings.refused.is_empty() {
-        return Err(tools::list("This template's folder", &findings.refused));
-    }
-    let notices: Vec<String> = findings.wallet_notice().into_iter().collect();
-    let review = review::template(&checked, &notices, &Default::default());
-    let template = &checked.template;
+    let version = super::plan::format_of(&collected.files)?;
+    let digest = scan::digest_of(&collected.files);
+    let (meta, review) = match version {
+        yougori_setup::format::FormatVersion::V1 => {
+            let checked = format::template(&collected.files).map_err(|problems| tools::list("This template", &problems))?;
+            let mut publishing = format::publishing_problems(&checked);
+            publishing.extend(personal_v1(&checked));
+            if !publishing.is_empty() {
+                return Err(tools::list("This template", &publishing));
+            }
+            let t = &checked.template;
+            let findings = scan::scan_upload(&collected.files, format::TEMPLATE_FILE, &[("title", Some(t.title())), ("summary", t.summary.as_deref()), ("changelog", t.changelog.as_deref())]);
+            if !findings.refused.is_empty() {
+                return Err(tools::list("This template's folder", &findings.refused));
+            }
+            let notices: Vec<String> = findings.wallet_notice().into_iter().collect();
+            let review = review::template(&checked, &notices, &Default::default());
+            let t = &checked.template;
+            (Meta { name: t.name().into(), version: t.version().into(), title: t.title().into(), summary: t.summary.clone(), license: t.license.clone(), topics: t.topics.clone(), changelog: t.changelog.clone(), manifest: t.manifest() }, review)
+        }
+        yougori_setup::format::FormatVersion::V2 => {
+            let checked = super::plan::check_files(&collected.files).map_err(|problems| super::plan::problems_text("This template", &problems))?;
+            let mut publishing = super::plan::publishing_problems(&checked);
+            publishing.extend(personal_v2(&checked));
+            if !publishing.is_empty() {
+                return Err(tools::list("This template", &publishing));
+            }
+            let t = &checked.template;
+            let findings = scan::scan_upload(&collected.files, format::TEMPLATE_FILE, &[("title", Some(t.title())), ("summary", t.summary.as_deref()), ("changelog", t.changelog.as_deref()), ("subtitle", t.subtitle.as_deref())]);
+            if !findings.refused.is_empty() {
+                return Err(tools::list("This template's folder", &findings.refused));
+            }
+            let notices: Vec<String> = findings.wallet_notice().into_iter().collect();
+            let package = if checked.template.imports.is_empty() {
+                yougori_setup::plan::Package { checked: checked.clone(), components: BTreeMap::new(), item: None, digest: Some(digest) }
+            } else {
+                let site = client::Site::configured()?;
+                let cache = client::Cache::standard()?;
+                super::components::package(&site, &cache, &collected.files, None, Some(digest)).await.map_err(|problems| super::plan::problems_text("This template's imports", &problems))?
+            };
+            let review = review::template_v2(&package, &notices).map_err(|error| format!("This template can't be published yet. {error}"))?;
+            let t = &checked.template;
+            (Meta { name: t.name().into(), version: t.version().into(), title: t.title().into(), summary: t.summary.clone(), license: t.license.clone(), topics: t.topics.clone(), changelog: t.changelog.clone(), manifest: t.manifest() }, review)
+        }
+    };
     let body = json!({
-        "kind": "template", "name": template.name(), "version": template.version(), "title": template.title(),
-        "summary": template.summary, "license": template.license, "topics": template.topics, "changelog": template.changelog,
-        "manifest": template.manifest(), "review": review, "files": file_list(&collected.files),
+        "kind": "template", "name": meta.name, "version": meta.version, "title": meta.title,
+        "summary": meta.summary, "license": meta.license, "topics": meta.topics, "changelog": meta.changelog,
+        "manifest": meta.manifest, "review": review, "files": file_list(&collected.files),
     });
-    Ok((Upload { kind: "template", name: template.name().into(), version: template.version().into(), license: template.license.clone().unwrap_or_default(), body, files: collected.files, review }, checked))
+    let format = match version { yougori_setup::format::FormatVersion::V1 => 1, yougori_setup::format::FormatVersion::V2 => 2 };
+    Ok((Upload { kind: "template", name: meta.name, version: meta.version, license: meta.license.unwrap_or_default(), format, body, files: collected.files, review }, version))
+}
+
+/// The metadata an upload carries, the same for both formats.
+struct Meta {
+    name: String,
+    version: String,
+    title: String,
+    summary: Option<String>,
+    license: Option<String>,
+    topics: Vec<String>,
+    changelog: Option<String>,
+    manifest: Value,
 }
 
 /// Reads, checks and scans a tool folder for upload.
 pub fn tool(folder: &Path) -> Result<(Upload, Tool), String> {
-    let (tool, files, findings) = tools::read_folder(folder)?;
+    let (file, files, findings) = tools::read_file(folder)?;
     if !findings.refused.is_empty() {
         return Err(tools::list("This tool's folder", &findings.refused));
     }
     let notices: Vec<String> = findings.wallet_notice().into_iter().collect();
-    let review = review::tool(&tool, &notices);
+    // Reviewed as the shared file, so the page shows declared access; uploaded as the view.
+    let review = review::tool_file(&file, &notices);
+    let tool = Tool::from(&file);
     let body = json!({
         "kind": "tool", "name": tool.name(), "version": tool.version(), "title": tool.title(),
         "summary": tool.summary, "license": tool.license, "topics": tool.topics, "changelog": tool.changelog,
         "manifest": tool.manifest(), "review": review, "files": file_list(&files),
     });
-    Ok((Upload { kind: "tool", name: tool.name().into(), version: tool.version().into(), license: tool.license.clone().unwrap_or_default(), body, files, review }, tool))
+    Ok((Upload { kind: "tool", name: tool.name().into(), version: tool.version().into(), license: tool.license.clone().unwrap_or_default(), format: 1, body, files, review }, tool))
 }
 
 fn json_size(value: &Value) -> usize {
@@ -180,6 +266,15 @@ pub fn preflight(upload: &Upload) -> Result<(), String> {
     }
     if let Some(kind) = top_level(text, "kind").filter(|kind| kind != upload.kind) {
         return Err(format!("{marker} says kind: {}, but this is a {}.", scan::shown(&kind), upload.kind));
+    }
+    if !format::LICENSES.contains(&upload.license.as_str()) {
+        return Err(format!("Add license: an open-source licence the Hub accepts ({}). Everything on the Hub is open source. Nothing was uploaded.", format::LICENSES.join(", ")));
+    }
+    // The Hub reads format_version from the same one line it reads name and version from.
+    match (upload.format, top_level(text, "format_version").as_deref()) {
+        (1, None) | (1, Some("1")) | (2, Some("2")) => {}
+        (1, Some(other)) => return Err(format!("{marker} must leave out format_version, or say format_version: 1 on one line of its own at the top, as the Hub reads it; it says {}. Nothing was uploaded.", scan::shown(other))),
+        (format, _) => return Err(format!("{marker} must say format_version: {format} on exactly one line of its own at the top (not indented, not inside {{...}}), as the Hub reads it. Nothing was uploaded.")),
     }
     let manifest = json_size(&upload.body["manifest"]);
     if manifest > MANIFEST_BYTES {
@@ -369,7 +464,20 @@ struct ThroughEngine;
 
 impl Transport for ThroughEngine {
     async fn call(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
-        client::account(path, body).await
+        client::account(path, body).await.map_err(|error| website_words(&error))
+    }
+}
+
+/// The website's own words in an error the engine relays, without the label the engine's queue
+/// puts around it (`model_registry_request: … (job job-…)`). The upload's rules (`gone`,
+/// `transient`, `resend_from`) read the website's words from the start; with the label on, none
+/// of them ever matched, so an upload the website no longer had was never started again (found
+/// publishing through a real engine).
+fn website_words(error: &str) -> String {
+    let said = error.strip_prefix("model_registry_request: ").unwrap_or(error);
+    match said.rfind(" (job job-") {
+        Some(at) if said.ends_with(')') => said[..at].to_owned(),
+        _ => said.to_owned(),
     }
 }
 
@@ -527,7 +635,7 @@ async fn send<T: Transport>(transport: &T, uploads: &Uploads, upload: &Upload, i
 /// `template publish` and `tool publish`.
 pub async fn publish(kind: &str, folder: &str, yes: bool, chosen: Option<&str>, interactive: bool) -> Result<Value, String> {
     let path = Path::new(folder);
-    let mut upload = if kind == "tool" { tool(path)?.0 } else { template(path)?.0 };
+    let mut upload = if kind == "tool" { tool(path)?.0 } else { template(path).await?.0 };
     preflight(&upload)?;
     let bytes: u64 = upload.files.values().map(|b| b.len() as u64).sum();
     let me = if interactive { ui::busy("Checking your Yougori account", me()).await? } else { me().await? };
@@ -633,11 +741,59 @@ pub async fn fork(reference: &Ref, name: Option<&str>, chosen: Option<&str>, int
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_engines_label_is_taken_off_so_the_upload_rules_read_the_websites_words() {
+        let relayed = |said: &str| format!("model_registry_request: {said} (job job-d4e281c7dc4943199e0eadca03b2d8a7)");
+        assert!(super::gone(&super::website_words(&relayed("This upload does not exist. Start the upload again."))));
+        assert!(super::transient(&super::website_words(&relayed("Cannot reach the Yougori Network at http://127.0.0.1:8799: error sending request"))));
+        assert_eq!(super::resend_from(&super::website_words(&relayed("Send app/big.bin from byte 1048576."))), Some(("app/big.bin".to_owned(), 1_048_576)));
+        assert_eq!(super::website_words("Version 1.0.0 is not higher than the latest version 1.0.0."), "Version 1.0.0 is not higher than the latest version 1.0.0.", "words without the label are left as they are");
+    }
+
     use super::*;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
     };
+
+    /// PROVES that every example template can still be published: none of their defaults or fixed
+    /// sandbox values is taken for someone's own details. And that a default that is one is refused,
+    /// naming the question, before anything is uploaded.
+    #[test]
+    fn the_examples_carry_no_personal_defaults_and_one_that_does_is_refused() {
+        let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub");
+        let mut checked_any = 0;
+        for entry in std::fs::read_dir(&examples).unwrap() {
+            let folder = entry.unwrap().path();
+            let Ok(collected) = scan::collect(&folder) else { continue };
+            if super::super::plan::format_of(&collected.files) != Ok(yougori_setup::format::FormatVersion::V2) {
+                continue;
+            }
+            let Ok(checked) = super::super::plan::check_files(&collected.files) else { continue };
+            assert_eq!(personal_v2(&checked), Vec::<String>::new(), "{}", folder.display());
+            checked_any += 1;
+        }
+        assert!(checked_any >= 4, "the grid examples were read");
+        let folder = examples.join("host-my-app");
+        let mut files = scan::collect(&folder).unwrap().files;
+        let text = String::from_utf8(files[yougori_setup::format::TEMPLATE_FILE].clone()).unwrap();
+        let edited = text.replacen("default: /
+", "default: /
+", 1).replacen("    default: 1
+", "    default: 1
+", 1);
+        let personal = edited.replacen("  - id: health_path
+", "  - id: owner_email
+    question: Who looks after it?
+    type: text
+    default: dana@acme.io
+    group: website_api
+  - id: health_path
+", 1);
+        files.insert(yougori_setup::format::TEMPLATE_FILE.to_owned(), personal.into_bytes());
+        let checked = super::super::plan::check_files(&files).unwrap_or_else(|problems| panic!("{}", super::super::plan::problems_text("the edited example", &problems)));
+        assert_eq!(personal_v2(&checked), ["inputs: owner_email: its default looks like an email address. A public template can't carry someone's own details; leave the default out so each person answers it."]);
+    }
 
     #[test]
     fn batches_stay_under_the_cap_and_keep_every_file() {
@@ -709,7 +865,7 @@ mod tests {
     fn upload_of(files: Files) -> Upload {
         let review = json!({"format": 1, "warnings": []});
         let body = json!({"kind": "template", "name": "shop", "version": "1.0.0", "title": "Shop", "summary": "A shop.", "license": "MIT", "manifest": {"name": "shop"}, "review": review, "files": file_list(&files)});
-        Upload { kind: "template", name: "shop".into(), version: "1.0.0".into(), license: "MIT".into(), body, files, review }
+        Upload { kind: "template", name: "shop".into(), version: "1.0.0".into(), license: "MIT".into(), format: 1, body, files, review }
     }
 
     #[test]
@@ -911,8 +1067,8 @@ mod tests {
         assert!(report_details("look \u{202e}here").unwrap_err().contains("invisible characters"));
     }
 
-    #[test]
-    fn a_template_folder_becomes_an_upload_document() {
+    #[tokio::test]
+    async fn a_template_folder_becomes_an_upload_document() {
         let root = tempfile::tempdir().unwrap();
         let write = |path: &str, text: &str| {
             let path = root.path().join(path);
@@ -923,7 +1079,7 @@ mod tests {
         write("yougori.yaml", "project: shop\nenvironments:\n  web:\n    image: nginx:1.27\n");
         write("README.md", "# Shop\n");
         write("node_modules/x/index.js", "skipped");
-        let (upload, _) = template(root.path()).unwrap();
+        let (upload, _) = template(root.path()).await.unwrap();
         assert_eq!(upload.body["kind"], "template");
         assert_eq!(upload.body["manifest"]["name"], "shop");
         assert_eq!(upload.body["manifest"]["kind"], "template");
@@ -932,11 +1088,11 @@ mod tests {
         assert_eq!(upload.body["review"]["totals"]["environments"], 1);
         assert!(preflight(&upload).is_ok());
         write(".env", "TOKEN=abc\n");
-        let refused = template(root.path()).err().unwrap();
+        let refused = template(root.path()).await.err().unwrap();
         assert!(refused.contains(".env: environment files with values are never published"), "{refused}");
         std::fs::remove_file(root.path().join(".env")).unwrap();
         write("app.js", "const key = 'sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z';\n");
-        assert!(template(root.path()).err().unwrap().contains("app.js line 1: looks like an OpenAI or Anthropic API key"));
+        assert!(template(root.path()).await.err().unwrap().contains("app.js line 1: looks like an OpenAI or Anthropic API key"));
     }
 
     #[test]

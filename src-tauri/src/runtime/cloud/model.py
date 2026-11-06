@@ -13,6 +13,9 @@ import urllib.error
 import urllib.request
 
 children = {}
+# G08 remote delivery: what one model run may carry of helper bundles.
+HELPER_FILES, HELPER_BYTES = 64, 32 * 1024 * 1024
+HELPER_PATH = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}(/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}){0,7}')
 # vLLM tool-call parsers for agent tool calling: only Swarm workers on a rented GPU ask for one.
 TOOL_PARSERS = ('hermes', 'qwen3_coder', 'llama3_json', 'openai', 'gemma4')
 
@@ -43,6 +46,77 @@ def running(root):
     except (OSError, ValueError, KeyError):
         pass
     return None
+
+
+def helper_delivery(root, delivery):
+    """Writes the helper bundles the engine delivered under a fresh `helpers` directory after
+    checking every file's SHA-256 and the bounds, removing an earlier delivery; returns the
+    variables that name them for the runner. No delivery removes an earlier one."""
+    import shutil
+    target = root / 'helpers'
+    staging = root / 'helpers.new'
+    if staging.is_symlink() or target.is_symlink():
+        raise ValueError('Invalid helpers directory')
+    shutil.rmtree(staging, ignore_errors=True)
+    if delivery is None:
+        shutil.rmtree(target, ignore_errors=True)
+        return {}
+    if not isinstance(delivery, dict) or set(delivery) != {'files', 'named', 'shadow'}:
+        raise ValueError('Invalid helper delivery')
+    files, named, shadow = delivery['files'], delivery['named'], delivery['shadow']
+    if not isinstance(files, list) or not 1 <= len(files) <= HELPER_FILES:
+        raise ValueError('Invalid helper delivery')
+    staging.mkdir(mode=0o700)
+    try:
+        variables = write_delivery(staging, target, files, named, shadow)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(target, ignore_errors=True)
+    os.rename(staging, target)
+    variables['YOUGORI_HELPERS_ROOT'] = str(target)
+    return variables
+
+
+def write_delivery(staging, target, files, named, shadow):
+    """Checks and writes `files` under `staging`; the variables naming `named` and `shadow`
+    under `target`, where `staging` becomes the delivery."""
+    import base64, hashlib
+    written, total = set(), 0
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {'path', 'data', 'sha256'}:
+            raise ValueError('Invalid helper file')
+        path = item['path']
+        if not isinstance(path, str) or not HELPER_PATH.fullmatch(path) or '..' in path.split('/') or path in written:
+            raise ValueError('Invalid helper file path')
+        try:
+            data = base64.b64decode(item['data'], validate=True)
+        except (TypeError, ValueError):
+            raise ValueError('Invalid helper file') from None
+        total += len(data)
+        if total > HELPER_BYTES:
+            raise ValueError('The helper delivery is larger than a model run carries')
+        if not isinstance(item['sha256'], str) or hashlib.sha256(data).hexdigest() != item['sha256']:
+            raise ValueError('A delivered helper file failed its checksum; nothing was installed')
+        destination = staging / path
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open(destination, 'xb', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
+            file.write(data)
+        written.add(path)
+    variables = {}
+    for name, entries in (('YOUGORI_HELPERS', named), ('YOUGORI_HELPERS_SHADOW', shadow)):
+        if not isinstance(entries, dict) or len(entries) > 16:
+            raise ValueError('Invalid helper delivery')
+        resolved = {}
+        for helper, entry in entries.items():
+            if (not isinstance(helper, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', helper) or not isinstance(entry, dict)
+                    or set(entry) != {'entry', 'pin'} or entry['entry'] not in written
+                    or not isinstance(entry['pin'], str) or not re.fullmatch(r'[a-f0-9]{64}', entry['pin'])):
+                raise ValueError('Invalid helper entry')
+            resolved[helper] = {'entry': str(target / entry['entry']), 'pin': entry['pin']}
+        if resolved:
+            variables[name] = json.dumps(resolved)
+    return variables
 
 
 def request(action, body):
@@ -142,7 +216,8 @@ def request(action, body):
         admin_token = body.get('adminToken')
         if admin_token is not None and (not isinstance(admin_token, str) or not re.fullmatch(r'[a-f0-9]{64}', admin_token)):
             raise ValueError('Invalid model configuration')
-        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format, **({'toolParser': tool_parser} if tool_parser else {})}))]:
+        helpers = helper_delivery(root, body.get('helpers'))
+        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format, **({'toolParser': tool_parser} if tool_parser else {}), **({'helpers': helpers} if helpers else {})}))]:
             path = root / name
             with open(path, 'w', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
                 file.write(data)
@@ -167,6 +242,7 @@ if config.get('adminToken'):
     os.environ['YOUGORI_MODEL_ADMIN_TOKEN']=config['adminToken']
 if config.get('toolParser'):
     os.environ['YOUGORI_TOOL_PARSER']=config['toolParser']
+os.environ.update(config.get('helpers') or {})
 (root / 'cache').mkdir(exist_ok=True)
 os.execv(str(python), [str(python), '-u', str(root / 'server.py')])
 '''

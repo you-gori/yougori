@@ -9,7 +9,7 @@ const {chromium} = require('@playwright/test');
   const result = spawnSync('python', ['-B', '-c', 'import sys,json;sys.path.insert(0,sys.argv[1]);import pages;print(json.dumps({"html":pages.shell("Fixture"),"js":pages.SCRIPT,"css":pages.CSS,"theme":pages.THEME_SCRIPT}))', site], {encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
   const assets = JSON.parse(result.stdout);
-  const browser = await chromium.launch({headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'chromium'});
+  const browser = await chromium.launch({headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome', chromiumSandbox: true});
   try {
     const page = await browser.newPage({viewport: {width: 1400, height: 900}});
     const errors = [];
@@ -93,7 +93,7 @@ const {chromium} = require('@playwright/test');
     // that is confirmed raises the balance without a reload.
     await page.locator('.hero-cta .bubble', {hasText: 'Create API key'}).click();
     await page.getByRole('heading', {name: 'API keys', exact: true}).waitFor();
-    await page.getByText('Waiting for payment', {exact: true}).waitFor();
+    await page.getByText('Waiting for the owner', {exact: true}).waitFor();
     assert.ok(await page.locator('.win-title', {hasText: 'Add USDT'}).count(), 'top-up lives on the keys page');
     paid = true;
     await page.getByText('Payment received. 25.00 USDT added to your balance.', {exact: true}).waitFor({timeout: 10000});

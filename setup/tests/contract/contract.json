@@ -1,0 +1,348 @@
+{
+  "contractVersion": 1,
+  "operationStates": [
+    "planned",
+    "awaiting_input",
+    "applying",
+    "cancelling",
+    "completed",
+    "failed",
+    "unknown"
+  ],
+  "instanceStates": [
+    "draft",
+    "creating",
+    "running",
+    "stopped",
+    "updating",
+    "removing",
+    "retained",
+    "removed"
+  ],
+  "capabilityHealth": [
+    "ready",
+    "starting",
+    "needs_sign_in",
+    "waiting_for_computer",
+    "degraded",
+    "failed",
+    "unsupported"
+  ],
+  "severities": [
+    "error",
+    "warning",
+    "info"
+  ],
+  "setupActions": [
+    "start",
+    "stop",
+    "remove",
+    "detach",
+    "pause_admission",
+    "release_compute",
+    "delete_data"
+  ],
+  "gridProfiles": [
+    "neo_grid",
+    "sandbox_grid",
+    "access_grid",
+    "swarm_mining_grid",
+    "generic"
+  ],
+  "resourceObserved": [
+    "unknown",
+    "missing",
+    "present",
+    "running",
+    "stopped"
+  ],
+  "resourceCost": [
+    "free",
+    "unknown",
+    "accruing",
+    "stopped",
+    "shutdown_unconfirmed"
+  ],
+  "resourceKinds": [
+    "environment",
+    "grid",
+    "compute_pool",
+    "worker_group",
+    "model_service",
+    "workspace_pool",
+    "access_binding",
+    "credential_broker",
+    "service_publication",
+    "volume",
+    "connection",
+    "job",
+    "artifact_store",
+    "vm_sandbox"
+  ],
+  "capabilityGroups": [
+    "grid_workers",
+    "ai_models",
+    "website_api",
+    "people_access",
+    "files_data",
+    "automation_recovery"
+  ],
+  "sampleDiagnostic": {
+    "code": "capability_not_enableable",
+    "message": "This capability is planned and cannot be enabled yet.",
+    "field": "capabilities.run.schedule",
+    "severity": "error",
+    "retryable": false,
+    "nextActions": [
+      {
+        "kind": "choose_supported_option",
+        "field": "capabilities.run.schedule"
+      }
+    ]
+  },
+  "sampleSetupDetail": {
+    "summary": {
+      "setupId": "stp_sample",
+      "name": "Example setup",
+      "source": {
+        "kind": "hub",
+        "publisher": "you-gori",
+        "name": "sandbox-grid",
+        "version": "1.0.0"
+      },
+      "state": "running",
+      "profile": "sandbox_grid",
+      "adoptedLegacy": false,
+      "health": "ready",
+      "createdAt": 1760000000
+    },
+    "revision": 3,
+    "capabilities": [
+      {
+        "id": "people.workspaces",
+        "health": "ready"
+      }
+    ],
+    "resources": [
+      {
+        "resourceId": "rsc_pool",
+        "kind": "workspace_pool",
+        "owned": true,
+        "label": "Workspaces",
+        "observed": "running",
+        "cost": "free",
+        "retainedData": true
+      }
+    ],
+    "outputs": [
+      {
+        "key": "workspace_url",
+        "label": "Workspace link",
+        "value": "https://example.invalid/workspace"
+      }
+    ],
+    "actions": [
+      "stop",
+      "remove"
+    ],
+    "views": [
+      "workspaces",
+      "logs"
+    ]
+  },
+  "samplePlanResponse": {
+    "setupId": "setup-sample",
+    "baseRevision": 0,
+    "digest": "d9f76d8644450f1c4e68b18c29e37ee3305bfb693f4a68e5f05c3fffc6a9158d",
+    "review": {
+      "creates": [
+        {
+          "id": "workspaces",
+          "kind": "workspace_pool",
+          "title": "Workspaces",
+          "placement": "This computer"
+        }
+      ],
+      "borrows": [],
+      "downloads": [],
+      "permissions": [
+        "Reserve storage on a drive you choose."
+      ],
+      "costs": [],
+      "warnings": [],
+      "notes": [],
+      "totals": {
+        "environments": 0,
+        "cpu": 0.0,
+        "memoryGb": 0.0,
+        "storageGb": 0.0,
+        "gpu": ""
+      },
+      "questions": [],
+      "pcAccess": [],
+      "public": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "secrets": []
+    },
+    "plan": {
+      "formatVersion": 2,
+      "instance": "example-setup",
+      "template": {
+        "name": "sandbox-grid",
+        "version": "1.0.0",
+        "formatVersion": 2,
+        "item": "you-gori/sandbox-grid",
+        "profile": "sandbox_grid"
+      },
+      "requires": {
+        "yougori": "1.2.0",
+        "gpu": "none",
+        "platforms": [
+          "windows-x86_64",
+          "linux-x86_64"
+        ]
+      },
+      "capabilities": [
+        {
+          "id": "people.workspaces",
+          "selection": "individual",
+          "locked": false,
+          "applies": true,
+          "enabled": true,
+          "group": "people_access",
+          "name": "Workspaces",
+          "permissions": []
+        }
+      ],
+      "inputs": {},
+      "secrets": {},
+      "bindings": {},
+      "resources": [
+        {
+          "id": "workspaces",
+          "kind": "workspace_pool",
+          "title": "Workspaces",
+          "capability": "people.workspaces",
+          "dependsOn": [],
+          "retention": {
+            "onStop": "keep",
+            "onRemove": "keep"
+          },
+          "placement": "This computer",
+          "spec": {
+            "depends_on": [],
+            "max_seats": 10
+          },
+          "outputs": [
+            "workspace_url"
+          ]
+        }
+      ],
+      "order": [
+        "workspaces"
+      ],
+      "steps": [],
+      "outputs": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "views": [],
+      "review": {
+        "creates": [
+          {
+            "id": "workspaces",
+            "kind": "workspace_pool",
+            "title": "Workspaces",
+            "placement": "This computer"
+          }
+        ],
+        "borrows": [],
+        "downloads": [],
+        "permissions": [
+          "Reserve storage on a drive you choose."
+        ],
+        "costs": [],
+        "warnings": [],
+        "notes": [],
+        "totals": {
+          "environments": 0,
+          "cpu": 0.0,
+          "memoryGb": 0.0,
+          "storageGb": 0.0,
+          "gpu": ""
+        },
+        "questions": [],
+        "pcAccess": [],
+        "public": [],
+        "retention": {
+          "onStop": "keep",
+          "onRemove": "keep"
+        },
+        "secrets": []
+      },
+      "digest": "d9f76d8644450f1c4e68b18c29e37ee3305bfb693f4a68e5f05c3fffc6a9158d"
+    }
+  },
+  "sampleSourceRefs": [
+    {
+      "kind": "local_folder",
+      "path": "./my-template"
+    },
+    {
+      "kind": "hub",
+      "publisher": "you-gori",
+      "name": "sandbox-grid",
+      "version": "1.0.0"
+    },
+    {
+      "kind": "installed_setup",
+      "setupId": "setup-sample"
+    }
+  ],
+  "sampleNextActions": [
+    {
+      "kind": "sign_in",
+      "provider": "github"
+    },
+    {
+      "kind": "provide_input",
+      "field": "inputs.port"
+    },
+    {
+      "kind": "choose_supported_option",
+      "field": "capabilities.models.local"
+    },
+    {
+      "kind": "retry"
+    },
+    {
+      "kind": "continue",
+      "operation": "op-1"
+    },
+    {
+      "kind": "reconcile",
+      "operation": "op-1"
+    },
+    {
+      "kind": "cancel",
+      "operation": "op-1"
+    },
+    {
+      "kind": "review"
+    },
+    {
+      "kind": "add_computer"
+    },
+    {
+      "kind": "view_logs"
+    },
+    {
+      "kind": "open_docs",
+      "topic": "grids"
+    }
+  ]
+}

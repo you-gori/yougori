@@ -1,0 +1,44 @@
+FROM docker.io/library/node:22-bookworm-slim AS node
+FROM docker.io/library/python:3.12-slim-trixie
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && useradd --create-home --uid 1000 node \
+    && apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man
+ARG HARNESS
+RUN if [ "$HARNESS" = plandex ]; then apt-get update && apt-get install -y --no-install-recommends golang-go build-essential libstdc++6 postgresql-17 && rm -rf /var/lib/apt/lists/*; fi
+RUN if [ "$HARNESS" = pentagi ]; then apt-get update && apt-get install -y --no-install-recommends golang-go postgresql-17 postgresql-17-pgvector && rm -rf /var/lib/apt/lists/*; fi
+RUN if [ "$HARNESS" = shannon ]; then apt-get update && apt-get install -y --no-install-recommends chromium && mkdir -p /opt/solver/tool && mv /usr/lib/chromium /opt/solver/tool/chromium && ln -s /opt/solver/tool/chromium /usr/lib/chromium && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man; fi
+WORKDIR /opt/solver
+COPY installer.py install_shannon.py install_pentagi.py pentagi_vm.go pentagi_vm_test.go packages.json ./
+RUN mkdir -p /workspace /work /home/node/.config && chown -R node:node /workspace /work /home/node /opt/solver
+ARG HARNESS
+ARG TOOL_SPEC
+ENV TOOL_SPEC=$TOOL_SPEC
+ENV HOME=/home/node
+USER 1000:1000
+RUN python3 installer.py "$HARNESS" \
+    && printf '%s' "$HARNESS" > harness-name \
+    && tar -czf tool.tar.gz tool $(test ! -d source || printf source) \
+    && rm -rf tool source /home/node/.cache
+COPY relay.py transport.py blue.py profiles.py runtime.py vm_guest.py vm_package.py vm_tunnel.py hexstrike_cli.py plandex_cli.py strix_cli.py shannon_cli.py pentagi_cli.py ./
+USER 0:0
+RUN if [ "$HARNESS" = plandex ]; then apt-get purge -y golang-go golang-1.24-go golang-1.24-src golang-src build-essential gcc g++ make && apt-get autoremove -y && rm -rf /usr/share/doc /usr/share/man /var/lib/postgresql /home/node/go /usr/share/i18n /var/lib/dpkg /usr/lib/postgresql/17/lib/bitcode; fi
+RUN if [ "$HARNESS" = pentagi ]; then apt-get purge -y golang-go golang-1.24-go golang-1.24-src golang-src && apt-get autoremove -y && rm -rf /usr/share/doc /usr/share/man /var/lib/postgresql /home/node/go /usr/share/i18n /var/lib/dpkg /usr/lib/postgresql/17/lib/bitcode; fi
+# The runtime has no package-manager/network access. Remove build-only files and
+# privileged OS helpers before Yougori imports this unprivileged workload.
+RUN find / -xdev -perm /6000 -exec chmod a-s {} + \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+       /usr/local/lib/python3.12/ensurepip /usr/local/lib/python3.12/idlelib \
+       /usr/local/lib/python3.12/tkinter /usr/local/lib/python3.12/site-packages/pip \
+       /home/node/.npm /home/node/.cache /home/node/.local/share/pnpm/store /usr/local/include/python3.12
+USER 1000:1000
+WORKDIR /workspace
+USER 0:0
+# Python-only tools do not need the Node build runtime.
+RUN if [ "$HARNESS" = strix ] || [ "$HARNESS" = pentagi ]; then rm -f /usr/local/bin/node; fi
+RUN if [ "$HARNESS" = pentagi ]; then rmdir /work && ln -s /home/node/pentagi-work /work; fi
+USER 1000:1000
+ENTRYPOINT ["/usr/local/bin/python3", "/opt/solver/vm_guest.py"]

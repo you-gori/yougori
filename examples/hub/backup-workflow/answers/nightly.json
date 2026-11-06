@@ -1,0 +1,15 @@
+{
+  "image": "ghcr.io/example/notes-app:1.2.0",
+  "data_path": "/data",
+  "app_cpu": 1,
+  "app_memory_gb": 1,
+  "backup_schedule": "daily 02:00",
+  "backup_timezone": "local",
+  "backup_keep": 7,
+  "backup_consistency": "stop",
+  "backup_missed": "run_once",
+  "backup_overlap": "skip",
+  "backup_retries": 2,
+  "access": "none",
+  "health_path": "/"
+}

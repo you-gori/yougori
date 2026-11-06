@@ -8,11 +8,12 @@ import {
 import { customOciImage, ociImageGroups, ociRegistryLabel, type OciImageGroup, type OciImageOption } from "@/data/oci-images"
 import { matchesOciImage } from "@/data/container-purposes"
 
-export function OciImagePicker({ value, onChange, disabled, groups = ociImageGroups }: {
+export function OciImagePicker({ value, onChange, disabled, groups = ociImageGroups, onOpen }: {
   value: OciImageOption
   onChange(image: OciImageOption): void
   disabled: boolean
   groups?: OciImageGroup[]
+  onOpen?(): void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
@@ -23,7 +24,7 @@ export function OciImagePicker({ value, onChange, disabled, groups = ociImageGro
       inputValue={query} onInputValueChange={setQuery}
       itemToStringLabel={image => image.label} itemToStringValue={image => image.value}
       items={groups} value={value} open={open}
-      onOpenChange={nextOpen => { setOpen(nextOpen); if (nextOpen) setQuery("") }}
+      onOpenChange={nextOpen => { setOpen(nextOpen); if (nextOpen) { setQuery(""); onOpen?.() } }}
       onValueChange={image => { if (image) onChange(image) }}
     >
       <ComboboxTrigger
@@ -33,7 +34,7 @@ export function OciImagePicker({ value, onChange, disabled, groups = ociImageGro
         <SearchIcon aria-hidden="true" />
         <span className="creation-selected-image">
           <span>{value.label}</span>
-          <span>{value === customOciImage ? "Your own registry reference" : value.value}</span>
+          <span>{value.displayReference ?? (value === customOciImage ? "Your own image" : value.builtin ? value.description : value.value)}</span>
         </span>
         <ChevronDownIcon aria-hidden="true" className="creation-image-chevron" />
       </ComboboxTrigger>
@@ -53,14 +54,14 @@ export function OciImagePicker({ value, onChange, disabled, groups = ociImageGro
               <ComboboxGroupLabel className="px-3 text-foreground">{group.value}</ComboboxGroupLabel>
               <ComboboxCollection>
                 {(image: OciImageOption) => (
-                  <ComboboxItem key={image.value} value={image}>
+                  <ComboboxItem key={image.value} value={image} disabled={image.disabled}>
                     <span className="creation-image-result">
                       <span className="creation-image-result-heading">
                         <span>{image.label}</span>
-                        <span>{image === customOciImage ? "Any registry" : ociRegistryLabel(image.value)}</span>
+                        <span>{image.badge ?? (image === customOciImage ? "Any registry" : image.builtin ? "Built in" : ociRegistryLabel(image.value))}</span>
                       </span>
-                      <span className="creation-image-reference">{image === customOciImage ? image.description : image.value}</span>
-                      {image !== customOciImage ? <span className="creation-image-description">{image.description}</span> : null}
+                      <span className="creation-image-reference">{image.displayReference ?? (image === customOciImage || image.builtin ? image.description : image.value)}</span>
+                      {image !== customOciImage && !image.builtin ? <span className="creation-image-description">{image.description}</span> : null}
                     </span>
                   </ComboboxItem>
                 )}

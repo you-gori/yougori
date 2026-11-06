@@ -310,6 +310,15 @@ pub struct Enterprise {
     /// Sign-in through the company's identity provider, when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sso: Option<Sso>,
+    /// When set, only the computers by these names take desks: every other computer, including
+    /// one that joins later, is left out of placement. Unset, any computer with room does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_computers: Option<Vec<String>>,
+    /// When set, a person reaches no desk and changes nothing until two-step sign-in is on for
+    /// them, unless they signed in through the company's identity provider. Until then a sign-in
+    /// lets them turn it on and nothing else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_two_step: bool,
     /// What connectors were asked to do, latest last; bounded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provisioning: Vec<Provisioning>,
@@ -321,7 +330,7 @@ pub fn authorize(role: AdminRole, action: &str) -> Result<(), String> {
         AdminRole::Auditor => action == "status",
         AdminRole::Operator => matches!(
             action,
-            "status" | "deskOrder" | "deskAssign" | "deskRetry" | "computerShare" | "connectionProvision" | "connectionRevoke" | "connectionTest"
+            "status" | "deskOrder" | "deskAssign" | "deskRetry" | "computerShare" | "computersOnly" | "connectionProvision" | "connectionRevoke" | "connectionTest"
         ),
         AdminRole::User => false,
     };

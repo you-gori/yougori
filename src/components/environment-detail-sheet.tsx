@@ -1,7 +1,7 @@
 import { RemoteEnvironmentDetails } from "@/components/remote-environment-details"
 import { EnvironmentChanges } from "@/components/environment-changes"
 import { ModelWorkspace } from "@/components/model-workspace"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   AlertDialog,
   AlertDialogClose,
@@ -46,10 +46,11 @@ import { CloudEnvironmentDetails } from "@/components/cloud-environment-details"
 import { ImportedFilesDrives } from "@/components/imported-files-drives"
 import { ContainerStartupCommand } from "@/components/container-startup-command"
 
-export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvironment }: {
+export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvironment, setupActions }: {
   environmentId: string | null
   onOpenChange(open: boolean): void
   onOpenEnvironment(environmentId: string): void
+  setupActions?: ReactNode
 }) {
   const { state, environmentActions, setEnvironmentStatus, deleteEnvironment, deleteSnapshot, restoreSnapshot, setConnectionActive, deleteConnection, updateEnvironmentGpu } = usePlatform()
   const environment = state?.environments.find((item) => item.id === environmentId)
@@ -74,8 +75,8 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
   useEffect(() => { setActionError(""); setDeleteOpen(false); setOpeningFromHere(false); setStartupDraft(null) }, [environmentId])
 
   if (!state || !environment) return null
-  if (environment.runtime.startsWith("shared://tunnel/")) return <RemoteEnvironmentDetails key={environment.id} environment={environment} onOpenChange={onOpenChange} onOpenEnvironment={onOpenEnvironment} />
-  if (environment.kind === "cloud") return <CloudEnvironmentDetails key={environment.id} environment={environment} onOpenChange={onOpenChange} onOpenEnvironment={onOpenEnvironment} />
+  if (environment.runtime.startsWith("shared://tunnel/")) return <RemoteEnvironmentDetails key={environment.id} environment={environment} onOpenChange={onOpenChange} onOpenEnvironment={onOpenEnvironment} setupActions={setupActions} />
+  if (environment.kind === "cloud") return <CloudEnvironmentDetails key={environment.id} environment={environment} onOpenChange={onOpenChange} onOpenEnvironment={onOpenEnvironment} setupActions={setupActions} />
   const isComputerBranch = environment.kind === "computerBranch" || environment.provider === "nativeSandbox"
   const busy = Boolean(localAction) || Boolean(action) || deleting || environment.status === "provisioning"
   const activeConnections = connections.filter(connection => connection.active).length
@@ -140,6 +141,7 @@ export function EnvironmentDetailSheet({ environmentId, onOpenChange, onOpenEnvi
             <ResourcePolicyEditor key={environment.id} environment={environment} saveTarget={policySaveTarget} startupDraft={environment.kind === "container" ? startupDraft : null} onStartupSaved={() => setStartupDraft(null)} />
           </section>
           <div className="inspector-column inspector-access">
+              {setupActions}
               <section className="inspector-section" aria-label="Local backups">
                 <div className="inspector-section-heading"><h3 className="inspector-section-title">Local backups</h3></div>
                 <p className="inspector-description">Save a portable copy to your PC, or load a backup as a new environment.</p>

@@ -384,7 +384,14 @@ pub async fn environment_changes(
         .workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?
         .binds
     {
-        folders.insert(bind.source);
+        // Yougori's own guest folders (catalog views, served helpers) are not the person's
+        // folders: they get no baseline at bind time and are not scanned here either.
+        let own = std::path::Path::new(&bind.source)
+            .canonicalize()
+            .is_ok_and(|root| crate::host_files::engine_guest_folder(&root));
+        if !own {
+            folders.insert(bind.source);
+        }
     }
     let folders = folder_keys(folders);
     let location = path(&runtime, &environment_id)?;

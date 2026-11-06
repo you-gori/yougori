@@ -279,6 +279,7 @@ mod tests {
             verifier: "hash".into(),
             revoked: false,
             acknowledge_existing_access: true,
+            stamp: None,
         };
         manager.db.lock().await.grants.push(grant.clone());
         assert!(active_grant(&manager, &token, "share-test", "env-test")

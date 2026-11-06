@@ -82,11 +82,11 @@
   },
   {
     "name": "ca-certificates",
-    "version": "20260909-r0",
+    "version": "20261020-r0",
     "architecture": "x86_64",
     "license": "MPL-2.0 AND MIT",
     "origin": "ca-certificates",
-    "revision": "eb7078df3a16d666e8f7723f94bb92e00d4b9236",
+    "revision": "e78f5987166c6ffbe23f6472e2e8f040298fe2da",
     "url": "https://www.mozilla.org/en-US/about/governance/policies/security-group/certs/"
   },
   {
@@ -370,11 +370,11 @@
   },
   {
     "name": "linux-virt",
-    "version": "6.18.55-r0",
+    "version": "6.18.58-r0",
     "architecture": "x86_64",
     "license": "GPL-2.0-only",
     "origin": "linux-lts",
-    "revision": "52fae6d7d56f3958f32e5bf9121a7536524b9ef4",
+    "revision": "5fe63f789de75f6a71001cf2de771f922bedd0d2",
     "url": "https://www.kernel.org"
   },
   {

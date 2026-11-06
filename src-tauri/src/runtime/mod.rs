@@ -5,6 +5,7 @@ pub(crate) mod cloud;
 pub(crate) mod cuda;
 mod host_relay;
 mod microvm_network;
+pub(crate) use microvm_network::host_ipv4_addresses;
 mod qmp_socket;
 #[cfg(test)]
 mod cuda_tests;
@@ -18,6 +19,7 @@ mod native_sandbox;
 mod native_model;
 mod guest_job;
 pub(crate) mod recovery;
+pub(crate) mod doctor;
 mod shutdown;
 #[cfg(test)]
 mod container_smoke_tests;
@@ -35,6 +37,7 @@ pub(crate) mod storage;
 mod volumes;
 pub(crate) mod named_volumes;
 mod workload;
+pub(crate) use workload::WorkloadOptionsLease;
 mod container_storage;
 mod storage_reclaim;
 
@@ -104,6 +107,13 @@ impl Drop for PerfSpan {
             );
         }
     }
+}
+
+/// The bundled runtime directory (`runtime/` with `appliance`, `qemu-secure`, `qemu` and
+/// `sandbox-guest`) as the engine finds it beside its resources, or the acceptance
+/// override; nothing is verified here.
+pub(crate) fn bundled_runtime_root(resource_directory: &Path) -> Result<PathBuf, String> {
+    RuntimeLayout::discover(resource_directory).map(|layout| layout.root)
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +417,11 @@ impl RuntimeLayout {
                 0,
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/runtime"),
             );
+        }
+        // A disposable acceptance engine may run a runtime folder of its own (a candidate
+        // appliance, say); no other build has this override.
+        if let Some(directory) = crate::acceptance::runtime_directory() {
+            candidates = vec![directory];
         }
         Self::from_candidates(resource_directory, candidates)
     }

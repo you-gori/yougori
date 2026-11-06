@@ -1,0 +1,3321 @@
+//! Launcher presentation. Everything the launcher shows goes through one painter: finished
+//! lines scroll normally, so the dev server's log stays in scrollback, and a live block under
+//! them (the wordmark, spinners, prompts, the usage footer) is erased and redrawn in place.
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal,
+};
+use crate::presentation;
+use std::{
+    collections::VecDeque,
+    io::{self, IsTerminal, Write},
+    sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex, Once, OnceLock},
+    time::{Duration, Instant},
+};
+
+pub const CANCELLED: &str =
+    "Cancelled. Work Yougori already started keeps running; check it with yougori ps.";
+const RESET: &str = "\x1b[0m";
+const TICK: Duration = Duration::from_millis(70);
+const BANNER: Duration = Duration::from_millis(650);
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+pub fn spinner(tick: usize) -> char {
+    if presentation::ascii() { ['|', '/', '-', '\\'][tick % 4] }
+    else { SPINNER[tick % SPINNER.len()] }
+}
+static CTRL_C: AtomicBool = AtomicBool::new(false);
+
+/// What a prompt returns when the person chose Back or pressed Esc in a [`Wizard`] step that
+/// can go back. Wizards consume it, so it never reaches the terminal.
+pub const BACK: &str = "\u{1}yougori back";
+/// Whether open prompts offer Back: set for each [`Wizard`] step after the first one asked.
+static BACK_OFFERED: AtomicBool = AtomicBool::new(false);
+/// Prompts hold this while they read keys, so an [`Interrupts`] watcher never takes their keys.
+static INPUT: Mutex<()> = Mutex::new(());
+/// Prompts open or about to open. The watcher stays away from the keyboard meanwhile, so a
+/// prompt never waits for it.
+static PROMPTS: AtomicUsize = AtomicUsize::new(0);
+/// The flags of the [`Interrupts`] watchers that are running, newest last. Each watcher
+/// removes only its own entry, so watchers that end out of order never leave a stale one.
+static WATCHED: Mutex<Vec<(u64, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+static WATCHES: AtomicUsize = AtomicUsize::new(0);
+/// Temporary files and folders removed even when a second Ctrl+C quits at once.
+static LEFT_BEHIND: Mutex<Vec<(u64, std::path::PathBuf)>> = Mutex::new(Vec::new());
+static LEFT_BEHIND_IDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Keeps `path` (a temporary file or folder) from being left behind when the person quits at
+/// once with a second Ctrl+C. Ordinary endings remove it as before; dropping the guard forgets it.
+pub fn remove_on_quit(path: &std::path::Path) -> RemoveOnQuit {
+    let id = LEFT_BEHIND_IDS.fetch_add(1, Ordering::SeqCst) as u64;
+    LEFT_BEHIND.lock().unwrap_or_else(|p| p.into_inner()).push((id, path.to_owned()));
+    RemoveOnQuit(id)
+}
+pub struct RemoveOnQuit(u64);
+impl Drop for RemoveOnQuit {
+    fn drop(&mut self) {
+        LEFT_BEHIND.lock().unwrap_or_else(|p| p.into_inner()).retain(|(id, _)| *id != self.0);
+    }
+}
+fn remove_left_behind() {
+    remove_registered(|_| true);
+}
+/// Removes the registered paths `only` picks and forgets them; the rest stay registered.
+fn remove_registered(only: impl Fn(&std::path::Path) -> bool) {
+    let picked: Vec<std::path::PathBuf> = {
+        let mut registered = LEFT_BEHIND.lock().unwrap_or_else(|p| p.into_inner());
+        let (picked, kept): (Vec<_>, Vec<_>) = registered.drain(..).partition(|(_, path)| only(path));
+        *registered = kept;
+        picked.into_iter().map(|(_, path)| path).collect()
+    };
+    for path in picked {
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+/// How long [`busy`] waits before showing its spinner, so quick answers do not flash one.
+const QUICK: Duration = Duration::from_millis(150);
+
+fn is_ctrl_c(key: KeyEvent) -> bool {
+    key.kind != KeyEventKind::Release && key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+/// Tells a new Ctrl+C from the same one held down, so key repeat never counts as the second
+/// press that quits at once. Where key releases are reported (Windows), a press is new after
+/// a release. Elsewhere it is new after a pause, at least a second after the first press:
+/// the first repeat of a held key comes after a similar pause.
+#[derive(Debug, Default)]
+pub struct Presses {
+    first: Option<Instant>,
+    last: Option<Instant>,
+    released: bool,
+    releases_reported: bool,
+}
+
+impl Presses {
+    /// Starts as if Ctrl+C were held when the flag it guards is already set, so a press still
+    /// repeating from before does not count.
+    pub fn new(already_pressed: bool) -> Self {
+        let now = already_pressed.then(Instant::now);
+        Self { first: now, last: now, ..Self::default() }
+    }
+    /// Records a Ctrl+C press; true when it is a new press after an earlier one.
+    pub fn press(&mut self, now: Instant) -> bool {
+        let new = match (self.first, self.last) {
+            (Some(first), Some(last)) => {
+                self.released
+                    || (!self.releases_reported
+                        && now.saturating_duration_since(last) >= Duration::from_millis(150)
+                        && now.saturating_duration_since(first) >= Duration::from_secs(1))
+            }
+            _ => false,
+        };
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+        self.released = false;
+        new
+    }
+    pub fn release(&mut self) {
+        self.releases_reported = true;
+        self.released = self.first.is_some();
+    }
+}
+
+pub fn note_interrupt(key: KeyEvent) {
+    if is_ctrl_c(key) {
+        CTRL_C.store(true, Ordering::Relaxed);
+    }
+}
+pub fn interrupt_pending() -> bool { CTRL_C.load(Ordering::Relaxed) }
+pub fn take_interrupt() -> bool { CTRL_C.swap(false, Ordering::Relaxed) }
+
+thread_local! { static HOLDING_INPUT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+struct InputLock { _guard: Option<std::sync::MutexGuard<'static, ()>> }
+fn input_lock() -> InputLock {
+    PROMPTS.fetch_add(1, Ordering::SeqCst);
+    HOLDING_INPUT.with(|held| {
+        let guard = (held.get() == 0).then(|| INPUT.lock().unwrap_or_else(|p| p.into_inner()));
+        held.set(held.get() + 1);
+        InputLock { _guard: guard }
+    })
+}
+impl Drop for InputLock {
+    fn drop(&mut self) {
+        HOLDING_INPUT.with(|held| held.set(held.get().saturating_sub(1)));
+        PROMPTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Keys typed before a question appeared must not answer it, such as an Enter pressed while
+/// a step was still working. A Ctrl+C typed meanwhile still cancels where cancelling is allowed.
+fn drop_typed_ahead(allow_cancel: bool) -> Result<(), String> {
+    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
+        if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
+            if allow_cancel && is_ctrl_c(key) {
+                note_interrupt(key);
+                return Err(CANCELLED.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Setup questions asked one after another, where any question after the first offers Back.
+/// Each step reports whether it asked something; Back returns to the last step that did, so
+/// questions skipped by earlier answers are skipped again. A wizard run inside another wizard's
+/// step offers Back on its first question too, which returns to the outer wizard.
+///
+/// ```ignore
+/// let mut steps = ui::Wizard::new();
+/// loop {
+///     let asked = match steps.step() {
+///         0 => ask_name(&mut setup).map(|_| true),
+///         1 if setup.custom => ask_port(&mut setup).map(|_| true),
+///         1 => Ok(false),
+///         _ => break,
+///     };
+///     steps.next(asked)?;
+/// }
+/// ```
+pub struct Wizard {
+    asked: Vec<usize>,
+    at: usize,
+    outer: bool,
+}
+
+impl Wizard {
+    pub fn new() -> Self {
+        Self { asked: Vec::new(), at: 0, outer: BACK_OFFERED.load(Ordering::Relaxed) }
+    }
+    /// The step to run now. Its prompts offer Back when there is somewhere to go back to.
+    pub fn step(&self) -> usize {
+        BACK_OFFERED.store(self.outer || !self.asked.is_empty(), Ordering::Relaxed);
+        self.at
+    }
+    /// Moves on after a step: `Ok(true)` when it asked something, `Ok(false)` when it was
+    /// skipped. Back from the first asked step leaves this wizard with [`BACK`].
+    pub fn next(&mut self, outcome: Result<bool, String>) -> Result<(), String> {
+        match outcome {
+            Ok(asked) => {
+                if asked {
+                    self.asked.push(self.at);
+                }
+                self.at += 1;
+                Ok(())
+            }
+            Err(error) if error == BACK => match self.asked.pop() {
+                Some(previous) => {
+                    self.at = previous;
+                    Ok(())
+                }
+                None => Err(error),
+            },
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Default for Wizard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Wizard {
+    fn drop(&mut self) {
+        BACK_OFFERED.store(self.outer, Ordering::Relaxed);
+    }
+}
+
+/// Runs prompts that must not offer Back, such as a choice that already has its own way back.
+pub fn without_back<T>(prompts: impl FnOnce() -> T) -> T {
+    let offered = BACK_OFFERED.swap(false, Ordering::Relaxed);
+    let result = prompts();
+    BACK_OFFERED.store(offered, Ordering::Relaxed);
+    result
+}
+
+/// Offers Back in the prompts `ask` opens, for a question asked straight from a menu.
+///
+/// A menu is somewhere to go back to, but a single question asked after one is not inside a
+/// [`Wizard`], so nothing was offering Back and Escape there returned [`CANCELLED`] — which
+/// means leave, so pressing it dropped the person out of the launcher instead of returning them
+/// to the menu they had just come from. Restores whatever was offered before, so a wizard opened
+/// inside this is unaffected.
+pub fn with_back<T>(ask: impl FnOnce() -> T) -> T {
+    let offered = BACK_OFFERED.swap(true, Ordering::Relaxed);
+    let result = ask();
+    BACK_OFFERED.store(offered, Ordering::Relaxed);
+    result
+}
+
+/// Offers Back for as long as it is alive, and puts back whatever was offered before when it is
+/// dropped.
+///
+/// [`with_back`] cannot do this job. It takes a closure, so it cannot be held across an `.await`,
+/// and its restore is an ordinary statement after the call: when the work returns early with `?`
+/// that statement never runs, the flag stays on, and the next question that should have had no
+/// way back offers a Back that goes nowhere. Dropping is what makes putting it back certain.
+pub struct Offering {
+    outer: bool,
+}
+
+impl Offering {
+    pub fn new() -> Self {
+        Self { outer: BACK_OFFERED.swap(true, Ordering::Relaxed) }
+    }
+}
+
+impl Default for Offering {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Offering {
+    fn drop(&mut self) {
+        BACK_OFFERED.store(self.outer, Ordering::Relaxed);
+    }
+}
+
+/// While alive, reads keys whenever no prompt is open: Ctrl+C sets `flag`, a second Ctrl+C
+/// quits at once with [`force_exit`], and other keys are dropped so they neither echo into the
+/// live display nor answer a later prompt. Prompts opened meanwhile still get every key.
+pub struct Interrupts {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    registration: u64,
+    _raw: Option<Raw>,
+}
+
+impl Interrupts {
+    pub fn watch(flag: Arc<AtomicBool>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let registration = WATCHES.fetch_add(1, Ordering::SeqCst) as u64;
+        WATCHED.lock().unwrap_or_else(|p| p.into_inner()).push((registration, flag.clone()));
+        if !caps().live || !io::stdin().is_terminal() {
+            return Self { stop, thread: None, registration, _raw: None };
+        }
+        let raw = Raw::on().ok();
+        let thread = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                let mut presses = Presses::new(flag.load(Ordering::SeqCst));
+                while !stop.load(Ordering::Relaxed) {
+                    if PROMPTS.load(Ordering::SeqCst) > 0 {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    // Hold the keyboard only for one short poll, then let a prompt take it.
+                    let read = {
+                        let _input = INPUT.lock().unwrap_or_else(|p| p.into_inner());
+                        match event::poll(Duration::from_millis(10)) {
+                            Ok(true) if PROMPTS.load(Ordering::SeqCst) == 0 => Some(event::read()),
+                            _ => None,
+                        }
+                    };
+                    match read {
+                        Some(Ok(Event::Key(key))) if is_ctrl_c(key) => {
+                            note_interrupt(key);
+                            let new = presses.press(Instant::now());
+                            if flag.swap(true, Ordering::SeqCst) && new {
+                                force_exit();
+                            }
+                        }
+                        Some(Ok(Event::Key(key)))
+                            if key.kind == KeyEventKind::Release && key.code == KeyCode::Char('c') =>
+                        {
+                            presses.release();
+                        }
+                        Some(Ok(Event::Resize(..))) => refresh(),
+                        _ => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        });
+        Self { stop, thread: Some(thread), registration, _raw: raw }
+    }
+}
+
+/// The flag of the watcher that is running now, if any.
+fn watched() -> Option<Arc<AtomicBool>> {
+    WATCHED.lock().unwrap_or_else(|p| p.into_inner()).last().map(|(_, flag)| flag.clone())
+}
+
+impl Drop for Interrupts {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        WATCHED.lock().unwrap_or_else(|p| p.into_inner()).retain(|(id, _)| *id != self.registration);
+    }
+}
+
+/// Quits right away after a second Ctrl+C, restoring the terminal. Work the engine already
+/// accepted keeps going there.
+pub fn force_exit() -> ! {
+    with(|p, out| {
+        p.items.clear();
+        p.held.clear();
+        p.paused = false;
+        p.erase(out);
+        if !p.line_start {
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b"\x1b[?25h");
+        p.cursor_hidden = false;
+        out.extend_from_slice(presentation::text(&format!(
+            "{}  {}\r\n",
+            paint("■", RED),
+            "Stopped. Work Yougori already started keeps running; check it with yougori ps."
+        )).as_bytes());
+    });
+    let _ = terminal::disable_raw_mode();
+    remove_left_behind();
+    std::process::exit(130)
+}
+
+/// Shows `label` with a spinner while `work` runs, once it takes a moment; the step leaves no
+/// line behind. Keys typed meanwhile are dropped, and Ctrl+C stops waiting with [`CANCELLED`]
+/// (the engine may still finish a request it already received). Inside an [`Interrupts`]
+/// watch, a new Ctrl+C there counts; one pressed before this wait does not, so cleanup runs.
+pub async fn busy<T>(label: &str, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    /// The spinner leaves no line, even when an outer wait that stopped drops this one.
+    struct Spinner(Option<Task>);
+    impl Drop for Spinner {
+        fn drop(&mut self) {
+            if let Some(task) = self.0.take() {
+                task.clear();
+            }
+        }
+    }
+    let mut work = std::pin::pin!(work);
+    let mut borrowed = watched();
+    let mut armed = borrowed.as_ref().is_none_or(|flag| !flag.load(Ordering::Relaxed));
+    let own_flag = Arc::new(AtomicBool::new(false));
+    // Read keys from the start: in a cooked console an early Ctrl+C would otherwise end the
+    // process instead of stopping this wait. Only the spinner waits for a moment.
+    let mut own = borrowed.is_none().then(|| Interrupts::watch(own_flag.clone()));
+    let started = Instant::now();
+    let mut spinner = Spinner(None);
+    let result = loop {
+        let cancelled = match &borrowed {
+            Some(flag) => armed && flag.load(Ordering::Relaxed),
+            None => own_flag.load(Ordering::Relaxed),
+        };
+        if cancelled {
+            break Err(CANCELLED.to_owned());
+        }
+        if spinner.0.is_none() && started.elapsed() >= QUICK {
+            spinner.0 = Some(task(label));
+        }
+        // Someone must read Ctrl+C while the spinner shows: the watch this wait borrowed, as
+        // long as it runs (an inner wait may have started it and ended), a watch that started
+        // meanwhile (an outer wait's), or one of its own.
+        if spinner.0.is_some() && own.is_none() && !borrowed.as_ref().is_some_and(registered) {
+            match watched() {
+                Some(flag) => {
+                    armed = !flag.load(Ordering::Relaxed);
+                    borrowed = Some(flag);
+                }
+                None => {
+                    borrowed = None;
+                    own = Some(Interrupts::watch(own_flag.clone()));
+                }
+            }
+        }
+        tokio::select! {
+            result = &mut work => break result,
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+    };
+    drop(own);
+    drop(spinner);
+    result
+}
+
+/// Whether the watch with this flag still runs.
+fn registered(flag: &Arc<AtomicBool>) -> bool {
+    WATCHED.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|(_, now)| Arc::ptr_eq(now, flag))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rgb(pub u8, pub u8, pub u8);
+pub const BLUE: Rgb = Rgb(0x28, 0x6e, 0xea);
+pub const SKY: Rgb = Rgb(0x38, 0xbd, 0xf8);
+const CYAN: Rgb = Rgb(0x67, 0xe8, 0xf9);
+pub const GREEN: Rgb = Rgb(0x4a, 0xde, 0x80);
+const MINT: Rgb = Rgb(0xbb, 0xf7, 0xd0);
+pub const AMBER: Rgb = Rgb(0xfb, 0xbf, 0x24);
+pub const RED: Rgb = Rgb(0xf8, 0x71, 0x71);
+pub const GRAY: Rgb = Rgb(0x71, 0x71, 0x7a);
+
+struct Caps {
+    live: bool,
+    color: bool,
+    truecolor: bool,
+    animate: bool,
+}
+
+/// An app-opened Hub window has its own real console. It must not inherit the
+/// non-interactive TERM/NO_COLOR policy of the shell that started the desktop.
+/// Redirected output still never receives cursor control or color.
+fn console_decoration(vt: bool, terminal: bool, dumb: bool, color: bool, owned: bool) -> (bool, bool) {
+    let live = vt && terminal && (!dumb || owned);
+    (live, live && (color || owned))
+}
+
+fn caps() -> &'static Caps {
+    static CAPS: OnceLock<Caps> = OnceLock::new();
+    CAPS.get_or_init(|| {
+        #[cfg(windows)]
+        let vt = crossterm::ansi_support::supports_ansi();
+        #[cfg(not(windows))]
+        let vt = true;
+        let var = |name: &str| std::env::var(name).unwrap_or_default();
+        let (live, color) = console_decoration(vt, io::stdout().is_terminal(), var("TERM") == "dumb",
+            presentation::stdout_color(), crate::hub::console());
+        let truecolor = color
+            && (matches!(var("COLORTERM").as_str(), "truecolor" | "24bit")
+                || !var("WT_SESSION").is_empty()
+                || matches!(
+                    var("TERM_PROGRAM").as_str(),
+                    "vscode" | "WezTerm" | "iTerm.app" | "ghostty"
+                ));
+        let animate = live && var("CI").is_empty() && var("YOUGORI_NO_ANIMATION").is_empty();
+        Caps {
+            live,
+            color,
+            truecolor,
+            animate,
+        }
+    })
+}
+
+pub fn color() -> bool {
+    caps().color
+}
+
+pub fn can_prompt() -> bool {
+    caps().live
+}
+
+fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let c = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
+    Rgb(c(a.0, b.0), c(a.1, b.1), c(a.2, b.2))
+}
+
+/// Green while there is headroom, amber when busy, red near the limit.
+fn level(fraction: f64) -> Rgb {
+    if fraction < 0.5 {
+        GREEN
+    } else if fraction < 0.8 {
+        mix(GREEN, AMBER, (fraction - 0.5) / 0.3)
+    } else {
+        mix(AMBER, RED, (fraction - 0.8) / 0.2)
+    }
+}
+
+fn fg(c: Rgb) -> String {
+    let caps = caps();
+    if !caps.color {
+        String::new()
+    } else if caps.truecolor {
+        format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+    } else {
+        let q = |v: u8| (u16::from(v) * 5 + 127) / 255;
+        format!("\x1b[38;5;{}m", 16 + 36 * q(c.0) + 6 * q(c.1) + q(c.2))
+    }
+}
+
+pub fn paint(text: &str, c: Rgb) -> String {
+    if caps().color {
+        format!("{}{text}{RESET}", fg(c))
+    } else {
+        text.to_owned()
+    }
+}
+
+pub fn bold(text: &str) -> String {
+    if caps().color {
+        format!("\x1b[1m{text}{RESET}")
+    } else {
+        text.to_owned()
+    }
+}
+
+pub fn muted(text: &str) -> String {
+    paint(text, GRAY)
+}
+
+pub fn italic(text: &str) -> String {
+    if caps().color {
+        format!("[3m{text}[23m")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// A band of light that runs across text while work is in progress.
+pub fn shimmer(text: &str, elapsed: Duration) -> String {
+    if !caps().color || !caps().animate {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let span = chars.len() as f64 + 14.0;
+    let head = (elapsed.as_secs_f64() * 24.0) % span - 7.0;
+    let mut out = String::new();
+    for (i, c) in chars.iter().enumerate() {
+        let glow = (1.0 - (i as f64 - head).abs() / 5.0).max(0.0);
+        if glow > 0.0 {
+            out.push_str(&fg(mix(SKY, CYAN, glow)));
+        } else {
+            out.push_str("\x1b[39m");
+        }
+        out.push(*c);
+    }
+    out.push_str(RESET);
+    out
+}
+
+pub fn clock(elapsed: Duration) -> String {
+    let s = elapsed.as_secs();
+    if s < 10 {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    } else if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m {:02}s", s / 60, s % 60)
+    } else {
+        format!("{}h {:02}m", s / 3600, s % 3600 / 60)
+    }
+}
+
+pub fn bytes(bytes: u64) -> String {
+    match bytes {
+        0..1024 => format!("{bytes} B"),
+        1024..1_048_576 => format!("{:.0} KB", bytes as f64 / 1024.0),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.1} GB", bytes as f64 / 1_073_741_824.0),
+    }
+}
+
+pub fn size_gb(gb: f64) -> String {
+    if gb < 1.0 {
+        format!("{:.0} MB", gb * 1024.0)
+    } else {
+        format!("{gb:.1} GB")
+    }
+}
+
+fn char_width(c: char) -> usize {
+    match c as u32 {
+        0..=0x1f | 0x7f..=0x9f | 0x300..=0x36f | 0x200b..=0x200f => 0,
+        0x1100..=0x115f
+        | 0x2e80..=0x303e
+        | 0x3041..=0x33ff
+        | 0x3400..=0x4dbf
+        | 0x4e00..=0x9fff
+        | 0xa000..=0xa4cf
+        | 0xac00..=0xd7a3
+        | 0xf900..=0xfaff
+        | 0xfe30..=0xfe4f
+        | 0xff00..=0xff60
+        | 0xffe0..=0xffe6
+        | 0x1f300..=0x1f64f
+        | 0x1f900..=0x1f9ff
+        | 0x20000..=0x3fffd => 2,
+        _ => 1,
+    }
+}
+
+/// Bytes in the escape sequence at the start of `s`, which begins with ESC.
+fn escape_len(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    match bytes.get(1) {
+        Some(b'[') => bytes[2..]
+            .iter()
+            .position(|b| (0x40..=0x7e).contains(b))
+            .map_or(bytes.len(), |i| i + 3),
+        Some(b']') => {
+            for i in 2..bytes.len() {
+                if bytes[i] == 7 { return i + 1; }
+                if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') { return i + 2; }
+            }
+            bytes.len()
+        }
+        Some(b) if b.is_ascii() => 2,
+        _ => 1,
+    }
+}
+
+/// Columns the text occupies, ignoring escape sequences.
+pub fn width(s: &str) -> usize {
+    let s = presentation::text(s);
+    display_width(&s)
+}
+
+fn display_width(s: &str) -> usize {
+    let mut total = 0;
+    let mut i = 0;
+    while i < s.len() {
+        if s.as_bytes()[i] == 0x1b {
+            i += escape_len(&s[i..]);
+            continue;
+        }
+        let c = s[i..].chars().next().unwrap();
+        total += char_width(c);
+        i += c.len_utf8();
+    }
+    total
+}
+
+/// Cuts text to `max` columns so a live line can never wrap.
+fn fit(s: &str, max: usize) -> String {
+    fit_mode(s, max, presentation::ascii())
+}
+
+fn fit_mode(s: &str, max: usize, ascii: bool) -> String {
+    let s = presentation::text_mode(s, ascii);
+    let s = s.as_ref();
+    if display_width(s) <= max {
+        return s.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let suffix = if ascii { &"..."[..max.min(3)] } else { "…" };
+    let reserve = suffix.len().min(if ascii { 3 } else { 1 });
+    let mut used = 0;
+    let mut i = 0;
+    let mut hyperlink = false;
+    while i < s.len() {
+        if s.as_bytes()[i] == 0x1b {
+            let n = escape_len(&s[i..]);
+            let escape = &s[i..i + n];
+            if escape.starts_with("\x1b]8;;") {
+                hyperlink = !matches!(escape, "\x1b]8;;\x1b\\" | "\x1b]8;;\x07");
+            }
+            out.push_str(&s[i..i + n]);
+            i += n;
+            continue;
+        }
+        let c = s[i..].chars().next().unwrap();
+        let w = char_width(c);
+        if used + w + reserve > max {
+            break;
+        }
+        out.push(c);
+        used += w;
+        i += c.len_utf8();
+    }
+    out.push_str(suffix);
+    if hyperlink { out.push_str("\x1b]8;;\x1b\\"); }
+    if caps().color {
+        out.push_str(RESET);
+    }
+    out
+}
+
+fn pad(s: &str, columns: usize) -> String {
+    format!("{s}{}", " ".repeat(columns.saturating_sub(width(s))))
+}
+
+fn hyperlink(label: &str, url: &str, enabled: bool) -> String {
+    // Only our validated HTTP(S) links may emit OSC; guest escape sequences
+    // are still filtered by Stream before they reach the painter.
+    let valid = !url.chars().any(char::is_control)
+        && reqwest::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+    let label = paint(label, SKY);
+    if enabled && valid {
+        format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+    } else { label }
+}
+
+fn link_row(label: &str, url: &str, columns: usize, enabled: bool) -> String {
+    let prefix = format!(" {}  ", muted(label));
+    let available = columns.saturating_sub(1 + width(&prefix));
+    // Never display a clipped HTTP address that terminals might auto-link.
+    let display = if width(url) <= available { url.to_owned() }
+        else if enabled { fit("Open link", available) }
+        else { fit("press u for URL", available) };
+    format!("{prefix}{}", hyperlink(&display, url, enabled))
+}
+
+/// Whether output leaves the cursor at the start of an empty line, so the live block can be
+/// drawn below it. Colours and erasing after the newline do not move the cursor.
+fn line_start(bytes: &[u8], before: bool) -> bool {
+    let mut end = bytes.len();
+    while end > 0 {
+        match bytes[end - 1] {
+            b'\n' => return true,
+            b'm' | b'K' | b'J' | b'h' | b'l' => {
+                let Some(esc) = bytes[..end].iter().rposition(|b| *b == 0x1b) else {
+                    return false;
+                };
+                let body = &bytes[esc + 1..end - 1];
+                if body.first() != Some(&b'[')
+                    || !body[1..]
+                        .iter()
+                        .all(|b| b.is_ascii_digit() || matches!(b, b';' | b'?'))
+                {
+                    return false;
+                }
+                end = esc;
+            }
+            _ => return false,
+        }
+    }
+    before
+}
+
+fn size() -> (usize, usize) {
+    terminal::size()
+        .map(|(c, r)| (usize::from(c).max(20), usize::from(r).max(6)))
+        .unwrap_or((80, 24))
+}
+
+struct TaskState {
+    text: String,
+    detail: String,
+    started: Instant,
+    progress: Option<CopyProgress>,
+    loading: bool,
+}
+
+struct CopyProgress {
+    label: String,
+    bytes: Option<(u64, u64)>,
+    unit: Option<String>,
+    started: Instant,
+    initial: u64,
+}
+
+impl CopyProgress {
+    fn measurement(value: &serde_json::Value) -> Self {
+        let phase = value["phase"].as_str().unwrap_or("");
+        let label = match phase {
+            "scanning" => value["scannedEntries"].as_u64().map_or_else(
+                || "Counting files".into(), |n| format!("Counting files · {n} entries")),
+            "preparing" => "Preparing archive".into(),
+            "copying" => "Transferring archive".into(),
+            "finishing" => "Finishing copy in the environment".into(),
+            _ => "Preparing copy".into(),
+        };
+        let bytes = if matches!(phase, "preparing" | "copying") {
+            value["totalBytes"].as_u64().filter(|total| *total > 0)
+                .zip(value["completedBytes"].as_u64())
+                .map(|(total, done)| (done.min(total), total))
+        } else { None };
+        let initial = bytes.map_or(0, |(done, _)| done);
+        Self { label, bytes, unit: None, started: Instant::now(), initial }
+    }
+
+    fn estimate_at(&self, now: Instant) -> Option<Duration> {
+        let (done, total) = self.bytes?;
+        let elapsed = now.saturating_duration_since(self.started);
+        let advanced = done.saturating_sub(self.initial);
+        if advanced == 0 || done >= total || elapsed < Duration::from_secs(1) { return None; }
+        Some(Duration::from_secs_f64((elapsed.as_secs_f64() * (total - done) as f64 / advanced as f64).min(315_360_000.0)))
+    }
+
+    fn lines(&self, columns: usize) -> Vec<String> {
+        let prefix = format!("{}  ", muted("│"));
+        let available = columns.saturating_sub(4);
+        let mut lines = vec![format!("{prefix}{}", fit(&muted(&self.label), available))];
+        if let Some((done, total)) = self.bytes {
+            // Integer arithmetic avoids overflow and premature 100% on very large copies.
+            let percent = (u128::from(done) * 100 / u128::from(total)) as usize;
+            let cells = available.saturating_sub(9).clamp(3, 28);
+            let filled = (u128::from(done) * cells as u128 / u128::from(total)) as usize;
+            lines.push(format!("{prefix}[{}{}] {percent:3}%",
+                paint(&"█".repeat(filled), SKY), muted(&"░".repeat(cells - filled))));
+            let count_unit = self.unit.as_deref().filter(|unit| *unit != "bytes");
+            let completed = if let Some(unit) = count_unit { format!("{done} / {total} {unit} done") } else { format!("{} / {} done", bytes(done), bytes(total)) };
+            let remaining = if let Some(unit) = count_unit { format!("{} {unit} left", total - done) } else { format!("{} left", bytes(total - done)) };
+            let detail = format!("{completed} · {remaining}");
+            if width(&detail) <= available {
+                lines.push(format!("{prefix}{}", muted(&detail)));
+            } else {
+                for detail in [completed, remaining] {
+                    for (row, _) in wrap(&detail, available) {
+                        lines.push(format!("{prefix}{}", muted(&row)));
+                    }
+                }
+            }
+            if done < total {
+                let estimate = self.estimate_at(Instant::now()).map_or_else(
+                    || "Estimating time remaining…".into(),
+                    |remaining| format!("About {} left in this step", clock(remaining)));
+                for (row, _) in wrap(&estimate, available) { lines.push(format!("{prefix}{}", muted(&row))); }
+            }
+        }
+        lines
+    }
+}
+
+enum Item {
+    Banner {
+        started: Instant,
+        title: String,
+        tagline: String,
+    },
+    Task(TaskState),
+    Lines(Vec<String>),
+    Dash(Box<Dash>),
+    /// Drawn from the caller's own state on every tick; see [`scene`].
+    Scene(Box<dyn Fn(usize, usize, Instant) -> Vec<String> + Send>),
+}
+
+struct Painter {
+    items: Vec<(u64, Item)>,
+    next: u64,
+    /// Finished lines waiting for the wordmark animation, shown under it meanwhile.
+    held: Vec<String>,
+    /// Columns of each live line on screen.
+    drawn: Vec<usize>,
+    last: Vec<String>,
+    line_start: bool,
+    cursor_hidden: bool,
+    paused: bool,
+    tick: usize,
+}
+
+static PAINTER: Mutex<Painter> = Mutex::new(Painter {
+    items: Vec::new(),
+    next: 1,
+    held: Vec::new(),
+    drawn: Vec::new(),
+    last: Vec::new(),
+    line_start: true,
+    cursor_hidden: false,
+    paused: false,
+    tick: 0,
+});
+
+fn with<R>(f: impl FnOnce(&mut Painter, &mut Vec<u8>) -> R) -> R {
+    let mut painter = PAINTER.lock().unwrap_or_else(|p| p.into_inner());
+    let mut out = Vec::new();
+    let result = f(&mut painter, &mut out);
+    if !out.is_empty() {
+        let mut stdout = io::stdout().lock();
+        let _ = stdout.write_all(&out);
+        let _ = stdout.flush();
+    }
+    result
+}
+
+impl Painter {
+    fn erase(&mut self, out: &mut Vec<u8>) {
+        let columns = size().0;
+        let rows: usize = self.drawn.iter().map(|w| (*w).max(1).div_ceil(columns)).sum();
+        if rows > 0 {
+            out.push(b'\r');
+            if rows > 1 {
+                out.extend_from_slice(format!("\x1b[{}A", rows - 1).as_bytes());
+            }
+            out.extend_from_slice(b"\x1b[J");
+        }
+        self.drawn.clear();
+        self.last.clear();
+    }
+
+    fn render(&self, columns: usize, rows: usize) -> Vec<String> {
+        let now = Instant::now();
+        let mut lines = Vec::new();
+        // The footer always sits at the bottom, under anything opened after it.
+        let (footers, others): (Vec<_>, Vec<_>) = self
+            .items
+            .iter()
+            .partition(|(_, item)| matches!(item, Item::Dash(_)));
+        for (_, item) in others.into_iter().chain(footers) {
+            match item {
+                Item::Banner {
+                    started,
+                    title,
+                    tagline,
+                } => {
+                    lines.extend(banner_lines(Some(now - *started), title, tagline));
+                    lines.extend(self.held.iter().cloned());
+                }
+                Item::Task(task) => {
+                    lines.push(task_line(task, self.tick, now));
+                    if task.loading { lines.push(loading_line(self.tick, columns)); }
+                    if let Some(progress) = &task.progress { lines.extend(progress.lines(columns)); }
+                }
+                Item::Lines(item) => lines.extend(item.iter().cloned()),
+                Item::Dash(dash) => lines.extend(dash.render(columns, self.tick, now)),
+                Item::Scene(scene) => lines.extend(scene(columns, rows, now)),
+            }
+        }
+        lines
+    }
+
+    fn draw(&mut self, out: &mut Vec<u8>) {
+        if self.paused || !caps().live {
+            return;
+        }
+        let (columns, rows) = size();
+        let mut lines = if self.line_start {
+            self.render(columns, rows)
+        } else {
+            Vec::new()
+        };
+        // Lines scrolled above the screen could not be erased again.
+        if lines.len() >= rows {
+            lines.drain(..lines.len() + 1 - rows);
+        }
+        let lines: Vec<String> = lines.iter().map(|l| fit(l, columns - 1)).collect();
+        if lines == self.last && !lines.is_empty() {
+            return;
+        }
+        out.extend_from_slice(b"\x1b[?2026h");
+        self.erase(out);
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                out.extend_from_slice(b"\r\n");
+            }
+            out.extend_from_slice(line.as_bytes());
+        }
+        self.drawn = lines.iter().map(|l| width(l)).collect();
+        self.last = lines;
+        if !self.drawn.is_empty() {
+            // Dev servers may show the cursor again; the footer should not blink.
+            out.extend_from_slice(b"\x1b[?25l");
+            self.cursor_hidden = true;
+        } else if self.cursor_hidden {
+            out.extend_from_slice(b"\x1b[?25h");
+            self.cursor_hidden = false;
+        }
+        out.extend_from_slice(b"\x1b[?2026l");
+    }
+
+    fn commit(&mut self, out: &mut Vec<u8>, bytes: &[u8]) {
+        if caps().live {
+            self.erase(out);
+        }
+        out.extend_from_slice(bytes);
+        self.line_start = line_start(bytes, self.line_start);
+        self.draw(out);
+    }
+
+    fn lines(&mut self, out: &mut Vec<u8>, lines: Vec<String>) {
+        if self
+            .items
+            .iter()
+            .any(|(_, item)| matches!(item, Item::Banner { .. }))
+        {
+            self.held.extend(lines);
+            self.draw(out);
+            return;
+        }
+        // A dev server may have left its line open; ours start on their own.
+        let mut text = if self.line_start {
+            String::new()
+        } else {
+            "\r\n".to_owned()
+        };
+        for line in lines {
+            text.push_str(&presentation::text(&line));
+            text.push_str("\r\n");
+        }
+        self.commit(out, text.as_bytes());
+    }
+
+    /// Ends the wordmark animation and writes it, with the lines held under it, to the log.
+    fn settle(&mut self, out: &mut Vec<u8>) {
+        let Some(at) = self
+            .items
+            .iter()
+            .position(|(_, item)| matches!(item, Item::Banner { .. }))
+        else {
+            return;
+        };
+        let (_, Item::Banner { title, tagline, .. }) = self.items.remove(at) else {
+            unreachable!()
+        };
+        let mut lines = banner_lines(None, &title, &tagline);
+        lines.append(&mut self.held);
+        self.lines(out, lines);
+    }
+
+    fn animate(&mut self, out: &mut Vec<u8>) {
+        if self.items.is_empty() || self.paused {
+            return;
+        }
+        self.tick = self.tick.wrapping_add(1);
+        for (_, item) in &mut self.items {
+            if let Item::Dash(dash) = item {
+                dash.step();
+            }
+        }
+        if self.items.iter().any(
+            |(_, item)| matches!(item, Item::Banner { started, .. } if started.elapsed() >= BANNER),
+        ) {
+            self.settle(out);
+        }
+        self.draw(out);
+    }
+}
+
+fn ticker() {
+    static START: Once = Once::new();
+    if caps().animate {
+        START.call_once(|| {
+            std::thread::spawn(|| loop {
+                std::thread::sleep(TICK);
+                with(|painter, out| painter.animate(out));
+            });
+        });
+    }
+}
+
+fn add(item: Item) -> u64 {
+    ticker();
+    with(|p, out| {
+        let id = p.next;
+        p.next += 1;
+        p.items.push((id, item));
+        p.draw(out);
+        id
+    })
+}
+
+fn update(id: u64, f: impl FnOnce(&mut Item)) {
+    with(|p, out| {
+        if let Some((_, item)) = p.items.iter_mut().find(|(i, _)| *i == id) {
+            f(item);
+        }
+        p.draw(out);
+    })
+}
+
+/// The animation tick paints the latest measurement. Avoid thousands of console
+/// redraws when a cached inventory advances faster than a person can see.
+fn update_progress(id: u64, f: impl FnOnce(&mut Item)) {
+    with(|p, out| {
+        if let Some((_, item)) = p.items.iter_mut().find(|(i, _)| *i == id) { f(item); }
+        if !caps().animate { p.draw(out); }
+    });
+}
+
+fn finish(id: u64, lines: Vec<String>) {
+    with(|p, out| {
+        p.items.retain(|(i, _)| *i != id);
+        if lines.is_empty() {
+            p.draw(out);
+        } else {
+            p.lines(out, lines);
+        }
+    })
+}
+
+/// Dev server output, written as it arrives.
+pub fn write(bytes: &[u8]) {
+    if !bytes.is_empty() {
+        with(|p, out| {
+            p.settle(out);
+            p.commit(out, bytes);
+        })
+    }
+}
+
+pub fn line(text: &str) {
+    with(|p, out| p.lines(out, vec![text.to_owned()]))
+}
+
+/// Several finished lines at once, drawn in one go under the earlier ones.
+pub fn lines(lines: Vec<String>) {
+    if !lines.is_empty() {
+        with(|p, out| p.lines(out, lines))
+    }
+}
+
+fn rail() -> String {
+    muted("│")
+}
+
+pub fn gap() {
+    line(&rail());
+}
+
+pub fn intro(title: &str, detail: &str) {
+    with(|p, out| {
+        p.lines(
+            out,
+            vec![
+                format!("{}  {}  {}", muted("┌"), bold(title), muted(detail)),
+                rail(),
+            ],
+        )
+    })
+}
+
+pub fn step(text: &str) {
+    line(&format!("{}  {text}", paint("◇", GREEN)));
+}
+
+pub fn info(text: &str) {
+    line(&format!("{}  {}", rail(), muted(text)));
+}
+
+pub fn warn(text: &str) {
+    line(&format!("{}  {}", paint("▲", AMBER), paint(text, AMBER)));
+}
+
+pub fn outro(text: &str) {
+    line(&format!("{}  {text}", muted("└")));
+}
+
+/// Clears the screen and scrollback, keeping the live block.
+pub fn clear() {
+    with(|p, out| {
+        p.erase(out);
+        out.extend_from_slice(b"\x1b[2J\x1b[3J\x1b[H");
+        p.line_start = true;
+        p.draw(out);
+    })
+}
+
+/// Redraws after the terminal changed size.
+pub fn refresh() {
+    with(|p, out| {
+        p.erase(out);
+        p.draw(out);
+    })
+}
+
+/// Whether the live block is showing. While a dev server leaves a line open (a question it is
+/// asking, for example) the block steps aside and keys belong to the dev server.
+pub fn footer_visible() -> bool {
+    with(|p, _| p.line_start && !p.drawn.is_empty())
+}
+
+/// Hands the whole screen to something else, such as a private alternate-screen view.
+pub fn pause(paused: bool) {
+    with(|p, out| {
+        if paused {
+            p.erase(out);
+            if p.cursor_hidden {
+                out.extend_from_slice(b"\x1b[?25h");
+                p.cursor_hidden = false;
+            }
+            p.paused = true;
+        } else {
+            p.paused = false;
+            p.draw(out);
+        }
+    })
+}
+
+/// Temporarily show activity while a menu command owns the output. Drop before
+/// that command prints its result, including on errors or cancelled futures.
+pub struct CommandActivity(Option<Task>);
+
+impl CommandActivity {
+    pub fn start(label: &str) -> Self {
+        let paused = with(|p, _| p.paused);
+        if !paused {
+            return Self(None);
+        }
+        let task = task(label);
+        pause(false);
+        Self(Some(task))
+    }
+}
+
+impl Drop for CommandActivity {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.clear();
+            pause(true);
+        }
+    }
+}
+
+pub async fn command_activity<T>(label: &str, work: impl std::future::Future<Output = T>) -> T {
+    let _activity = CommandActivity::start(label);
+    work.await
+}
+
+/// Guest output owns the terminal while this guard is alive. Host menus can
+/// temporarily resume the same painter without leaving an animation behind.
+pub struct Paused(bool);
+impl Paused {
+    pub fn new() -> Self {
+        let previous = with(|p, _| p.paused);
+        pause(true);
+        Self(previous)
+    }
+}
+impl Drop for Paused {
+    fn drop(&mut self) { pause(self.0); }
+}
+
+pub struct Visible(bool);
+impl Visible {
+    pub fn new() -> Self {
+        let previous = with(|p, _| p.paused);
+        pause(false);
+        Self(previous)
+    }
+}
+impl Drop for Visible {
+    fn drop(&mut self) { pause(self.0); }
+}
+
+static START: OnceLock<Instant> = OnceLock::new();
+
+/// Time since the launcher started, for "ready in" messages.
+pub fn since_start() -> Duration {
+    START.get_or_init(Instant::now).elapsed()
+}
+
+/// Shows the animated wordmark and restores the terminal when dropped.
+pub struct Session;
+
+impl Session {
+    pub fn start(title: &str, tagline: &str) -> Self {
+        START.get_or_init(Instant::now);
+        crate::client::QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+        let item = Item::Banner {
+            started: Instant::now(),
+            title: title.into(),
+            tagline: tagline.into(),
+        };
+        add(item);
+        if !caps().animate {
+            with(|p, out| p.settle(out));
+        }
+        Session
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        with(|p, out| {
+            p.settle(out);
+            p.items.clear();
+            p.paused = false;
+            p.erase(out);
+            if p.cursor_hidden {
+                out.extend_from_slice(b"\x1b[?25h");
+                p.cursor_hidden = false;
+            }
+        });
+    }
+}
+
+// A 5-pixel font drawn with half blocks: three rows of text.
+const GLYPHS: [[&str; 5]; 7] = [
+    ["#...#", ".#.#.", "..#..", "..#..", "..#.."],
+    [".##.", "#..#", "#..#", "#..#", ".##."],
+    ["#..#", "#..#", "#..#", "#..#", ".##."],
+    [".###", "#...", "#.##", "#..#", ".###"],
+    [".##.", "#..#", "#..#", "#..#", ".##."],
+    ["###.", "#..#", "###.", "#.#.", "#..#"],
+    ["###", ".#.", ".#.", ".#.", "###"],
+];
+
+fn wordmark() -> Vec<Vec<char>> {
+    let mut pixels = vec![String::new(); 5];
+    for (i, glyph) in GLYPHS.iter().enumerate() {
+        for (row, bits) in glyph.iter().enumerate() {
+            if i > 0 {
+                pixels[row].push('.');
+            }
+            pixels[row].push_str(bits);
+        }
+    }
+    let on = |row: usize, x: usize| row < 5 && pixels[row].as_bytes()[x] == b'#';
+    (0..3)
+        .map(|row| {
+            (0..pixels[0].len())
+                .map(|x| match (on(row * 2, x), on(row * 2 + 1, x)) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    _ => ' ',
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The wordmark, revealed by a sweep of light while `elapsed` is set; still once it is not.
+fn banner_lines(elapsed: Option<Duration>, title: &str, tagline: &str) -> Vec<String> {
+    banner_lines_mode(elapsed, title, tagline, presentation::ascii())
+}
+
+fn banner_lines_mode(elapsed: Option<Duration>, title: &str, tagline: &str, ascii: bool) -> Vec<String> {
+    if ascii {
+        return vec![String::new(), format!("  {}  {}  v{}", bold("YOUGORI"), title, env!("CARGO_PKG_VERSION")),
+            format!("  {}", muted(tagline)), String::new()];
+    }
+    let rows = wordmark();
+    let columns = rows[0].len();
+    let progress = elapsed.map(|e| (e.as_secs_f64() / BANNER.as_secs_f64()).min(1.0));
+    let sweep = progress.map(|p| p * (columns as f64 + 14.0) - 6.0);
+    let mut lines = vec![String::new()];
+    for (r, row) in rows.iter().enumerate() {
+        let mut line = String::from("  ");
+        for (x, ch) in row.iter().enumerate() {
+            let x = x as f64;
+            let (visible, glow) = match sweep {
+                Some(s) => (x <= s + 1.0, (-(x - s).powi(2) / 12.0).exp()),
+                None => (true, 0.0),
+            };
+            if !visible || *ch == ' ' {
+                line.push(' ');
+                continue;
+            }
+            line.push_str(&fg(mix(mix(BLUE, SKY, x / columns as f64), CYAN, glow)));
+            line.push(*ch);
+        }
+        if caps().color {
+            line.push_str(RESET);
+        }
+        if progress.is_none_or(|p| p > 0.55) {
+            match r {
+                1 => line.push_str(&format!(
+                    "    {}  {}",
+                    bold(title),
+                    muted(&format!("v{}", env!("CARGO_PKG_VERSION")))
+                )),
+                2 => line.push_str(&format!("    {}", muted(tagline))),
+                _ => {}
+            }
+        }
+        lines.push(line);
+    }
+    lines.push(String::new());
+    lines
+}
+
+fn task_line(task: &TaskState, tick: usize, now: Instant) -> String {
+    let elapsed = now - task.started;
+    let mut line = format!(
+        "{}  {}",
+        paint(&spinner(tick).to_string(), SKY),
+        shimmer(&task.text, elapsed)
+    );
+    if !task.detail.is_empty() {
+        line.push_str(&format!("  {}", muted(&task.detail)));
+    }
+    if elapsed >= Duration::from_secs(1) {
+        line.push_str(&format!("  {}", muted(&clock(elapsed))));
+    }
+    line
+}
+
+fn loading_line(tick: usize, columns: usize) -> String {
+    let cells = columns.saturating_sub(7).clamp(3, 28);
+    let segment = cells.min(5);
+    let travel = cells - segment;
+    let step = (tick / 2) % (2 * travel).max(1);
+    let at = if step <= travel { step } else { 2 * travel - step };
+    format!("{}  [{}{}{}]", muted("│"), muted(&"░".repeat(at)),
+        paint(&"█".repeat(segment), SKY), muted(&"░".repeat(cells - at - segment)))
+}
+
+/// A step in progress. Dropped without `done`, it is shown as failed.
+pub struct Task {
+    id: u64,
+    text: String,
+    started: Instant,
+    open: bool,
+}
+
+pub fn task(text: &str) -> Task {
+    let started = Instant::now();
+    let id = add(Item::Task(TaskState {
+        text: text.into(),
+        detail: String::new(),
+        started,
+        progress: None,
+        loading: false,
+    }));
+    Task {
+        id,
+        text: text.into(),
+        started,
+        open: true,
+    }
+}
+
+/// Indeterminate work: keep moving without inventing a percentage or ETA.
+pub fn loading_task(text: &str) -> Task {
+    let task = task(text);
+    update(task.id, |item| { if let Item::Task(state) = item { state.loading = true; } });
+    task
+}
+
+impl Task {
+    pub fn set(&mut self, text: &str) {
+        self.text = text.into();
+        update(self.id, |item| {
+            if let Item::Task(task) = item {
+                task.text = text.into();
+                task.progress = None;
+            }
+        });
+    }
+
+    pub fn detail(&self, detail: &str) {
+        update_progress(self.id, |item| {
+            if let Item::Task(task) = item {
+                task.detail = detail.into();
+            }
+        });
+    }
+
+    pub fn copy_progress(&self, measurement: &serde_json::Value) {
+        update_progress(self.id, |item| {
+            if let Item::Task(task) = item {
+                let mut next = CopyProgress::measurement(measurement);
+                if let Some(previous) = &task.progress {
+                    if previous.label == next.label && previous.unit == next.unit { next.started = previous.started; next.initial = previous.initial; }
+                }
+                task.progress = Some(next);
+            }
+        });
+    }
+
+    pub fn copy_status(&self, label: &str) {
+        update_progress(self.id, |item| {
+            if let Item::Task(task) = item {
+                task.progress = Some(CopyProgress { label: label.into(), bytes: None, unit: None, started: Instant::now(), initial: 0 });
+            }
+        });
+    }
+
+    pub fn progress(&self, label: &str, done: u64, total: u64, unit: &str) {
+        update_progress(self.id, |item| {
+            if let Item::Task(task) = item {
+                let previous = task.progress.as_ref().filter(|p| p.label == label && p.unit.as_deref() == Some(unit)
+                    && p.bytes.is_some_and(|(old, count)| old <= done && count == total));
+                let started = previous.map_or_else(Instant::now, |p| p.started);
+                let initial = previous.map_or(done, |p| p.initial);
+                task.progress = Some(CopyProgress { label: label.into(), bytes: (total > 0).then_some((done.min(total), total)), unit: Some(unit.into()), started, initial });
+            }
+        });
+    }
+
+    pub fn database_progress(&self, measurement: &serde_json::Value, side: &str) {
+        let label = match measurement["phase"].as_str() {
+            Some("index") => format!("Reading {side} database records"),
+            Some("validate") => format!("Checking {side} records before commit"),
+            Some("apply") => format!("Applying {side} database changes"),
+            _ => return,
+        };
+        if let (Some(done), Some(total)) = (measurement["done"].as_u64(), measurement["total"].as_u64()) {
+            self.progress(&label, done, total, "records");
+        }
+    }
+
+    pub fn done(mut self, text: &str) {
+        self.open = false;
+        let elapsed = self.started.elapsed();
+        let time = if elapsed >= Duration::from_millis(100) {
+            format!("  {}", muted(&clock(elapsed)))
+        } else {
+            String::new()
+        };
+        finish(
+            self.id,
+            vec![format!("{}  {text}{time}", paint("◇", GREEN))],
+        );
+    }
+
+    pub fn fail(mut self, text: &str) {
+        self.open = false;
+        finish(self.id, vec![format!("{}  {text}", paint("■", RED))]);
+    }
+
+    /// Ends the step without leaving a line.
+    pub fn clear(mut self) {
+        self.open = false;
+        finish(self.id, Vec::new());
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+}
+
+/// Lines redrawn in place above the footer until dropped, such as a message being typed.
+pub struct Block {
+    id: u64,
+}
+
+pub fn block() -> Block {
+    Block {
+        id: add(Item::Lines(Vec::new())),
+    }
+}
+
+impl Block {
+    pub fn set(&self, lines: Vec<String>) {
+        update(self.id, |item| *item = Item::Lines(lines));
+    }
+}
+
+impl Drop for Block {
+    fn drop(&mut self) {
+        finish(self.id, Vec::new());
+    }
+}
+
+/// A live view painted by `render(columns, rows, now)` on every animation tick, under the
+/// finished lines. `render` runs with the painter locked, so it must not call this module.
+pub struct Scene {
+    id: u64,
+}
+
+pub fn scene(render: impl Fn(usize, usize, Instant) -> Vec<String> + Send + 'static) -> Scene {
+    Scene {
+        id: add(Item::Scene(Box::new(render))),
+    }
+}
+
+impl Scene {
+    /// Paints the latest state now instead of at the next tick.
+    pub fn redraw(&self) {
+        update(self.id, |_| {});
+    }
+}
+
+impl Drop for Scene {
+    fn drop(&mut self) {
+        finish(self.id, Vec::new());
+    }
+}
+
+/// Whether live views may move: off in CI and with YOUGORI_NO_ANIMATION.
+pub fn animate() -> bool {
+    caps().animate
+}
+
+/// Cuts text to `max` columns, keeping colours intact.
+pub fn clip(text: &str, max: usize) -> String {
+    fit(text, max)
+}
+
+/// Greedy word wrap of one paragraph. Each row comes with the bytes of `text` it used,
+/// including the space it broke at, so text can be committed row by row as it arrives.
+pub fn wrap(text: &str, columns: usize) -> Vec<(String, usize)> {
+    let columns = columns.max(8);
+    let mut rows = Vec::new();
+    let mut start = 0;
+    loop {
+        let rest = &text[start..];
+        if width(rest) <= columns {
+            rows.push((rest.to_owned(), rest.len()));
+            return rows;
+        }
+        let mut used = 0;
+        let mut space = None;
+        let mut cut = rest.len();
+        for (i, c) in rest.char_indices() {
+            let w = char_width(c);
+            if used + w > columns {
+                cut = i;
+                break;
+            }
+            if c == ' ' {
+                space = Some(i);
+            }
+            used += w;
+        }
+        let (end, next) = match space {
+            Some(at) if at > 0 => (at, at + 1),
+            // A word longer than the row is split; a row always takes at least one character.
+            _ if cut == 0 => {
+                let first = rest.chars().next().map_or(rest.len(), char::len_utf8);
+                (first, first)
+            }
+            _ => (cut, cut),
+        };
+        rows.push((rest[..end].to_owned(), next));
+        start += next;
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        if self.open {
+            finish(
+                self.id,
+                vec![format!("{}  {}", paint("■", RED), self.text)],
+            );
+        }
+    }
+}
+
+/// Keys arrive one at a time while this lives.
+pub struct Raw(bool);
+
+impl Raw {
+    pub fn on() -> Result<Self, String> {
+        let already = terminal::is_raw_mode_enabled().unwrap_or(false);
+        if !already {
+            terminal::enable_raw_mode().map_err(|e| e.to_string())?;
+        }
+        Ok(Self(already))
+    }
+}
+
+impl Drop for Raw {
+    fn drop(&mut self) {
+        if !self.0 {
+            let _ = terminal::disable_raw_mode();
+        }
+    }
+}
+
+fn read_key() -> Result<KeyEvent, String> {
+    read_key_with_cancel(true)
+}
+
+fn read_key_with_cancel(allow_cancel: bool) -> Result<KeyEvent, String> {
+    let back = back_offered(allow_cancel);
+    loop {
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if let Some(leave) = leaves_prompt(key, allow_cancel, back) {
+                    note_interrupt(key);
+                    return Err(leave.into());
+                }
+                return Ok(key);
+            }
+            Event::Resize(..) => refresh(),
+            _ => {}
+        }
+    }
+}
+
+fn cancels_prompt(key: KeyEvent, allow_cancel: bool) -> bool {
+    allow_cancel && (key.code == KeyCode::Esc ||
+        (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)))
+}
+
+/// Whether this prompt offers Back. Prompts that cannot be cancelled cannot go back either.
+fn back_offered(allow_cancel: bool) -> bool {
+    allow_cancel && BACK_OFFERED.load(Ordering::Relaxed)
+}
+
+/// How a key leaves an open prompt: Esc goes back where Back is offered and cancels
+/// elsewhere; Ctrl+C always cancels.
+fn leaves_prompt(key: KeyEvent, allow_cancel: bool, back: bool) -> Option<&'static str> {
+    if !cancels_prompt(key, allow_cancel) {
+        return None;
+    }
+    Some(if back && key.code == KeyCode::Esc { BACK } else { CANCELLED })
+}
+
+/// The key hint for leaving a prompt.
+fn leave_hint(back: bool) -> &'static str {
+    if back { "esc back" } else { "esc cancel" }
+}
+
+fn asking(question: &str) -> String {
+    format!("{}  {}", paint("◆", SKY), bold(question))
+}
+
+fn open_rail() -> String {
+    paint("│", SKY)
+}
+
+fn keys_hint(hint: &str) -> String {
+    format!("{}  {}", paint("└", SKY), muted(hint))
+}
+
+fn answered(question: &str, answer: &str) -> Vec<String> {
+    vec![
+        format!("{}  {question}", paint("◇", GREEN)),
+        format!("{}  {}", rail(), muted(answer)),
+        rail(),
+    ]
+}
+
+fn cancelled(question: &str) -> Vec<String> {
+    vec![
+        format!("{}  {question}", paint("■", RED)),
+        format!("{}  {}", rail(), muted("cancelled")),
+    ]
+}
+
+/// What a left prompt leaves on screen. Going back leaves nothing: the earlier question
+/// is asked again below.
+fn left(question: &str, error: &str) -> Vec<String> {
+    if error == BACK { Vec::new() } else { cancelled(question) }
+}
+
+pub struct Choice {
+    pub label: String,
+    pub hint: String,
+    pub enabled: bool,
+    pub recommended: bool,
+}
+
+impl Choice {
+    pub fn new(label: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            hint: hint.into(),
+            enabled: true,
+            recommended: false,
+        }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    pub fn recommended(mut self, recommended: bool) -> Self {
+        self.recommended = recommended;
+        self
+    }
+}
+
+fn choice_line(choice: &Choice, selected: bool, label_width: usize, columns: usize) -> String {
+    let label = pad(&choice.label, label_width);
+    if !choice.enabled {
+        return format!("{}  {}", open_rail(), muted(&format!("{} {}  {}", if selected { "›" } else { "○" }, label, choice.hint)));
+    }
+    let mark = if selected { paint("●", GREEN) } else { muted("○") };
+    if choice.recommended {
+        let prefix = format!("{}  {mark} ", open_rail());
+        let badge = "(Recommended)";
+        let room = columns.saturating_sub(width(&prefix) + width(badge) + 3);
+        let text = format!("{}  {}", paint(&label, SKY), muted(&choice.hint));
+        return format!("{prefix}{}  {}", pad(&fit(&text, room), room), paint(badge, SKY));
+    }
+    format!("{}  {mark} {}  {}", open_rail(), if selected { bold(&label) } else { label }, muted(&choice.hint))
+}
+
+pub fn select(
+    question: &str,
+    note: &[String],
+    choices: &[Choice],
+    initial: usize,
+) -> Result<usize, String> {
+    select_with_cancel(question, note, choices, initial, true)
+}
+
+/// Shutdown requires an explicit Enter. Repeated Ctrl+C or Escape leaves the choice open.
+pub fn select_required(question: &str, note: &[String], choices: &[Choice]) -> Result<usize, String> {
+    select_with_cancel(question, note, choices, 0, false)
+}
+
+fn checklist_key(at: &mut usize, choices: &[Choice], checked: &mut [bool], back: bool, key: KeyEvent) -> Option<Result<Vec<usize>, String>> {
+    if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::CONTROL) { return None; }
+    if key.code == KeyCode::Char(' ') && *at < choices.len() {
+        if choices[*at].enabled { checked[*at] = !checked[*at]; }
+        return None;
+    }
+    if key.code == KeyCode::Enter {
+        if back && *at == choices.len() + 1 { return Some(Err(BACK.into())); }
+        return Some(Ok(checked.iter().enumerate().filter_map(|(i, yes)| (*yes && choices[i].enabled).then_some(i)).collect()));
+    }
+    selection_key(at, choices.len() + 1 + usize::from(back), key);
+    None
+}
+
+/// Space toggles a checkbox; Enter confirms the entire selection. Escape/Back behaves like
+/// other wizard questions. Disabled choices can never be submitted.
+pub fn multiselect(question: &str, note: &[String], choices: &[Choice], initial: &[usize], required: bool) -> Result<Vec<usize>, String> {
+    if choices.is_empty() { return Err("There is nothing to choose from.".into()); }
+    let _input = input_lock();
+    let raw = Raw::on()?;
+    let id = add(Item::Lines(Vec::new()));
+    let back = back_offered(true);
+    let mut checked: Vec<bool> = choices.iter().enumerate().map(|(i, c)| c.enabled && initial.contains(&i)).collect();
+    let mut at: usize = 0;
+    let count = choices.len() + 1 + usize::from(back);
+    let mut problem = String::new();
+    let mut early = drop_typed_ahead(true).err();
+    let result = loop {
+        if let Some(error) = early.take() { break Err(error); }
+        let window = size().1.saturating_sub(note.len() + 8).clamp(3, count.max(3)).min(count);
+        let first = (at + 1).saturating_sub(window);
+        let mut lines = vec![asking(question)];
+        lines.extend(note.iter().map(|text| format!("{}  {}", open_rail(), muted(text))));
+        for i in first..(first + window) {
+            let label = if i < choices.len() {
+                format!("{} {}  {}", if checked[i] { "[x]" } else { "[ ]" }, choices[i].label, choices[i].hint)
+            } else if i == choices.len() { "Continue".into() } else { "Back".into() };
+            let text = if i < choices.len() && !choices[i].enabled { muted(&label) } else if i == at { bold(&label) } else { label };
+            lines.push(format!("{}  {} {}", open_rail(), if i == at { "›" } else { " " }, text));
+        }
+        if !problem.is_empty() { lines.push(format!("{}  {}", open_rail(), &problem)); }
+        lines.push(keys_hint(&format!("↑↓ move · space check · enter continue · {}", leave_hint(back))));
+        update(id, |item| *item = Item::Lines(lines));
+        match read_key_with_cancel(true) {
+            Err(error) => break Err(error),
+            Ok(key) => if let Some(answer) = checklist_key(&mut at, choices, &mut checked, back, key) {
+                if answer.as_ref().is_ok_and(|items| required && items.is_empty()) {
+                    problem = "Select at least one option.".into();
+                } else { break answer; }
+            },
+        }
+    };
+    drop(raw);
+    finish(id, match &result {
+        Ok(items) => answered(question, &if items.is_empty() { "None".into() } else { items.iter().map(|i| choices[*i].label.as_str()).collect::<Vec<_>>().join(", ") }),
+        Err(error) => left(question, error),
+    });
+    result
+}
+
+fn selection_key(at: &mut usize, count: usize, key: KeyEvent) -> Option<usize> {
+    if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') => *at = (*at + count - 1) % count,
+        KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => *at = (*at + 1) % count,
+        KeyCode::Home => *at = 0,
+        KeyCode::End => *at = count - 1,
+        KeyCode::Enter => return Some(*at),
+        _ => {}
+    }
+    None
+}
+
+/// The Back row a list shows under its choices when its step can go back.
+fn back_choice() -> Choice {
+    Choice::new("Back", "previous question")
+}
+
+/// Whether a list adds the Back row: only where Back is offered, and never next to a
+/// choice of its own that is already called Back.
+fn adds_back_row(choices: &[Choice], back: bool) -> bool {
+    back && !choices.iter().any(|choice| choice.label.eq_ignore_ascii_case("back"))
+}
+
+/// The answer a key gives in a list whose last row is Back when `back_row` is set.
+fn list_key(at: &mut usize, choices: &[Choice], back_row: bool, key: KeyEvent) -> Option<Result<usize, String>> {
+    let selected = selection_key(at, choices.len() + usize::from(back_row), key)?;
+    if selected == choices.len() {
+        return Some(Err(BACK.into()));
+    }
+    choices[selected].enabled.then_some(Ok(selected))
+}
+
+fn select_with_cancel(
+    question: &str,
+    note: &[String],
+    choices: &[Choice],
+    initial: usize,
+    allow_cancel: bool,
+) -> Result<usize, String> {
+    if !choices.iter().any(|choice| choice.enabled) {
+        return Err("There is nothing to choose from.".into());
+    }
+    let _input = input_lock();
+    let raw = Raw::on()?;
+    let id = add(Item::Lines(Vec::new()));
+    let back = back_offered(allow_cancel);
+    let back_row = adds_back_row(choices, back).then(back_choice);
+    let count = choices.len() + usize::from(back_row.is_some());
+    let mut at = initial.min(choices.len() - 1);
+    if !choices[at].enabled {
+        at = choices.iter().position(|choice| choice.enabled).unwrap();
+    }
+    let label_width = choices
+        .iter()
+        .chain(back_row.as_ref())
+        .map(|c| width(&c.label))
+        .max()
+        .unwrap_or(0)
+        .min(36);
+    let hint = if allow_cancel { format!("↑↓ move · enter select · {}", leave_hint(back)) } else { "↑↓ move · enter select".into() };
+    let mut early = drop_typed_ahead(allow_cancel).err();
+    let result = loop {
+        if let Some(error) = early.take() {
+            break Err(error);
+        }
+        let window = size()
+            .1
+            .saturating_sub(note.len() + 7)
+            .clamp(3, count.max(3))
+            .min(count);
+        let first = (at + 1).saturating_sub(window);
+        let mut lines = vec![asking(question)];
+        for text in note {
+            lines.push(format!("{}  {}", open_rail(), muted(text)));
+        }
+        if !note.is_empty() {
+            lines.push(open_rail());
+        }
+        for (i, choice) in choices.iter().chain(back_row.as_ref()).enumerate().skip(first).take(window) {
+            lines.push(choice_line(choice, i == at, label_width, size().0));
+        }
+        if count > window {
+            lines.push(format!(
+                "{}  {}",
+                open_rail(),
+                muted(&format!("{} of {count}", at + 1))
+            ));
+        }
+        lines.push(keys_hint(&hint));
+        update(id, |item| *item = Item::Lines(lines));
+        match read_key_with_cancel(allow_cancel) {
+            Err(e) => break Err(e),
+            Ok(key) => if let Some(selected) = list_key(&mut at, choices, back_row.is_some(), key) {
+                break selected;
+            },
+        }
+    };
+    drop(raw);
+    finish(
+        id,
+        match &result {
+            Ok(i) => answered(question, &choices[*i].label),
+            Err(error) => left(question, error),
+        },
+    );
+    result
+}
+
+/// A line of text. An empty entry takes `default`; `check` turns the entry into the answer or
+/// explains what is wrong with it.
+pub fn input(
+    question: &str,
+    default: &str,
+    secret: bool,
+    check: &dyn Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    input_with_initial(question,&[],default,secret,"",check)
+}
+pub fn input_prefilled(question:&str,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    input_with_initial(question,&[],"",false,initial,check)
+}
+/// [`input_prefilled`] with explanatory lines under the question.
+pub fn input_noted(question:&str,note:&[String],initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    input_with_initial(question,note,"",false,initial,check)
+}
+fn input_with_initial(question:&str,note:&[String],default:&str,secret:bool,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    let _input = input_lock();
+    let raw = Raw::on()?;
+    let back = back_offered(true);
+    let id = add(Item::Lines(Vec::new()));
+    let caret = if caps().color { "\x1b[7m \x1b[27m" } else { "_" };
+    let mut value = zeroize::Zeroizing::new(initial.to_owned());
+    let mut problem = String::new();
+    let mut early = drop_typed_ahead(true).err();
+    let result = loop {
+        if let Some(error) = early.take() {
+            break Err(error);
+        }
+        let room = size().0.saturating_sub(12);
+        let shown = if value.is_empty() {
+            format!("{caret}{}", muted(default))
+        } else if secret {
+            let count = value.chars().count();
+            format!(
+                "{}{caret}  {}",
+                "•".repeat(count.min(24)),
+                muted(&format!("{count} characters"))
+            )
+        } else {
+            let chars: Vec<char> = value.chars().collect();
+            let tail: String = chars[chars.len().saturating_sub(room)..].iter().collect();
+            format!("{tail}{caret}")
+        };
+        let mut lines = vec![asking(question)];
+        for text in note {
+            lines.push(format!("{}  {}", open_rail(), muted(text)));
+        }
+        lines.push(format!("{}  {shown}", open_rail()));
+        if !problem.is_empty() {
+            lines.push(format!("{}  {}", paint("▲", AMBER), paint(&problem, AMBER)));
+        }
+        lines.push(keys_hint(&format!("{} · {}", if default.is_empty() {
+            "enter confirm"
+        } else {
+            "enter confirm (empty keeps the default)"
+        }, leave_hint(back))));
+        update(id, |item| *item = Item::Lines(lines));
+        match read_key() {
+            Err(e) => break Err(e),
+            Ok(key) => match key.code {
+                KeyCode::Enter => {
+                    let entry = input_entry(value.as_str(), default, secret);
+                    match check(entry) {
+                        Ok(answer) => break Ok(answer),
+                        Err(e) => problem = e,
+                    }
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    value.clear()
+                }
+                KeyCode::Char(c) if !c.is_control() && value.len() < 16384 => {
+                    value.push(c);
+                    problem.clear();
+                }
+                _ => {}
+            },
+        }
+    };
+    drop(raw);
+    finish(
+        id,
+        match &result {
+            Ok(answer) if secret => answered(question, &format!("{} characters", answer.chars().count())),
+            Ok(answer) => answered(question, answer),
+            Err(error) => left(question, error),
+        },
+    );
+    result
+}
+
+pub struct Slider {
+    pub label: &'static str,
+    pub unit: &'static str,
+    pub value: u32,
+    pub min: u32,
+    pub max: u32,
+    pub default: u32,
+}
+
+fn input_entry<'a>(value: &'a str, default: &'a str, secret: bool) -> &'a str {
+    if secret {
+        if value.is_empty() { default } else { value }
+    } else {
+        if value.trim().is_empty() { default } else { value.trim() }
+    }
+}
+
+fn gauge(fraction: f64, cells: usize, color: Rgb) -> String {
+    let filled = fraction.clamp(0.0, 1.0) * cells as f64;
+    let full = (filled.floor() as usize).min(cells);
+    let half = full < cells && filled - full as f64 >= 0.5;
+    let mut out = paint(&"━".repeat(full), color);
+    if half {
+        out.push_str(&paint("╸", color));
+    }
+    out.push_str(&muted(&"─".repeat(cells - full - usize::from(half))));
+    out
+}
+
+pub fn sliders(question: &str, note: &str, sliders: &mut [Slider]) -> Result<(), String> {
+    let _input = input_lock();
+    let raw = Raw::on()?;
+    let back = back_offered(true);
+    let id = add(Item::Lines(Vec::new()));
+    let mut row = 0;
+    let mut typed = String::new();
+    let mut early = drop_typed_ahead(true).err();
+    let result = loop {
+        if let Some(error) = early.take() {
+            break Err(error);
+        }
+        let mut lines = vec![asking(question)];
+        for (i, s) in sliders.iter().enumerate() {
+            let span = f64::from(s.max.saturating_sub(s.min).max(1));
+            let fraction = f64::from(s.value.saturating_sub(s.min)) / span;
+            let unit = if s.value == 1 { s.unit.trim_end_matches('s') } else { s.unit };
+            let value = format!("{} {unit}", s.value);
+            let range = format!("{}–{}", s.min, s.max);
+            let default = if s.value == s.default { "  default" } else { "" };
+            lines.push(if i == row {
+                format!(
+                    "{}  {} {}  {}  {}  {}{}",
+                    open_rail(),
+                    paint("›", SKY),
+                    bold(&pad(s.label, 8)),
+                    gauge(fraction, 24, SKY),
+                    paint(&pad(&value, 9), SKY),
+                    muted(&range),
+                    muted(default)
+                )
+            } else {
+                format!(
+                    "{}    {}  {}  {}  {}{}",
+                    open_rail(),
+                    pad(s.label, 8),
+                    gauge(fraction, 24, GRAY),
+                    pad(&value, 9),
+                    muted(&range),
+                    muted(default)
+                )
+            });
+        }
+        if !note.is_empty() {
+            lines.push(format!("{}  {}", open_rail(), muted(note)));
+        }
+        lines.push(keys_hint(&format!(
+            "↑↓ choose · ←→ adjust (shift ×10) · type a number · d defaults · enter confirm · {}",
+            leave_hint(back)
+        )));
+        update(id, |item| *item = Item::Lines(lines));
+        let key = match read_key() {
+            Err(e) => break Err(e),
+            Ok(key) => key,
+        };
+        let step = if key.modifiers.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+        let s = &mut sliders[row];
+        match key.code {
+            KeyCode::Up | KeyCode::BackTab => {
+                row = (row + sliders.len() - 1) % sliders.len();
+                typed.clear();
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                row = (row + 1) % sliders.len();
+                typed.clear();
+            }
+            KeyCode::Left => s.value = s.value.saturating_sub(step).max(s.min),
+            KeyCode::Right => s.value = s.value.saturating_add(step).min(s.max.max(s.min)),
+            KeyCode::PageDown => s.value = s.value.saturating_sub(10).max(s.min),
+            KeyCode::PageUp => s.value = s.value.saturating_add(10).min(s.max.max(s.min)),
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                typed.push(c);
+                if let Ok(n) = typed.parse::<u32>() {
+                    s.value = n.clamp(s.min, s.max.max(s.min));
+                }
+                if typed.len() >= 5 {
+                    typed.clear();
+                }
+            }
+            KeyCode::Backspace => {
+                typed.pop();
+                if let Ok(n) = typed.parse::<u32>() {
+                    s.value = n.clamp(s.min, s.max.max(s.min));
+                }
+            }
+            KeyCode::Char('d' | 'D') => {
+                for s in sliders.iter_mut() {
+                    s.value = s.default;
+                }
+                typed.clear();
+            }
+            KeyCode::Enter => break Ok(()),
+            _ => {}
+        }
+    };
+    drop(raw);
+    let summary = sliders
+        .iter()
+        .map(|s| format!("{} {} {}", s.label, s.value, s.unit))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    finish(
+        id,
+        match &result {
+            Ok(()) => answered(question, &summary),
+            Err(error) => left(question, error),
+        },
+    );
+    result
+}
+
+#[derive(Default)]
+struct Meter {
+    target: f64,
+    shown: f64,
+    history: VecDeque<f64>,
+    known: bool,
+}
+
+impl Meter {
+    fn push(&mut self, fraction: f64) {
+        let fraction = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if !self.known {
+            self.shown = fraction;
+            self.known = true;
+        }
+        self.target = fraction;
+        self.history.push_back(fraction);
+        while self.history.len() > 240 {
+            self.history.pop_front();
+        }
+    }
+
+    fn step(&mut self) {
+        self.shown += (self.target - self.shown) * 0.25;
+    }
+
+    /// Recent samples, newest on the right; the last cell glides toward the latest sample.
+    fn spark(&self, cells: usize) -> String {
+        const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        if cells == 0 {
+            return String::new();
+        }
+        let mut values: Vec<f64> = self
+            .history
+            .iter()
+            .rev()
+            .skip(1)
+            .take(cells - 1)
+            .copied()
+            .collect();
+        values.reverse();
+        values.push(self.shown);
+        // Dots mark the time before the first sample.
+        let mut out = muted(&"·".repeat(cells - values.len()));
+        for v in values {
+            let i = ((v * 7.0).round() as usize).min(7);
+            out.push_str(&paint(&LEVELS[i].to_string(), level(v)));
+        }
+        out
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tone {
+    Busy,
+    Good,
+    Bad,
+}
+
+pub struct Sample {
+    /// Percent of one core, as container runtimes report it.
+    pub cpu_percent: f64,
+    pub cores: f64,
+    pub memory_gb: f64,
+    pub memory_limit_gb: f64,
+    /// The whole PC's GPU, for workloads with GPU access.
+    pub gpu_percent: Option<f64>,
+    pub network_mbps: Option<f64>,
+}
+
+fn shortcut_rows(keys: &[(&str, &str)], columns: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut row = String::from(" ");
+    for (key, label) in keys {
+        let item = format!("{} {}", paint(key, SKY), muted(label));
+        if width(&row) > 1 && width(&row) + 3 + width(&item) >= columns.saturating_sub(1) {
+            lines.push(row);
+            row = String::from(" ");
+        }
+        if width(&row) > 1 { row.push_str("   "); }
+        // A shell command hint can be wider than one shortcut. Keep the command
+        // and its explanation visible even in a narrow terminal.
+        if width(&item) >= columns.saturating_sub(2) {
+            for (part, _) in wrap(key, columns.saturating_sub(3)) {
+                lines.push(format!(" {}", paint(&part, SKY)));
+            }
+            for (part, _) in wrap(label, columns.saturating_sub(3)) {
+                lines.push(format!(" {}", muted(&part)));
+            }
+            row = String::from(" ");
+            continue;
+        }
+        row.push_str(&item);
+    }
+    if width(&row) > 1 { lines.push(row); }
+    lines
+}
+
+/// The live footer: status, links, animated usage and the keys that work.
+pub struct Dash {
+    name: String,
+    tone: Tone,
+    status: String,
+    since: Instant,
+    started: Instant,
+    links: Vec<(String, String)>,
+    keys: Vec<(&'static str, &'static str)>,
+    cpu: Meter,
+    memory: Meter,
+    gpu: Meter,
+    last: Option<Sample>,
+    detail: bool,
+    note: Option<(String, Instant)>,
+}
+
+impl Dash {
+    pub fn rename(&mut self, name: &str) {
+        if self.name != name {
+            self.name = name.into();
+        }
+    }
+
+    pub fn status(&mut self, tone: Tone, text: &str) {
+        if self.tone != tone || self.status != text {
+            self.tone = tone;
+            self.status = text.into();
+            self.since = Instant::now();
+        }
+    }
+
+    pub fn links(&mut self, links: Vec<(String, String)>) {
+        self.links = links;
+    }
+
+    pub fn note(&mut self, text: &str) {
+        self.note = Some((text.into(), Instant::now()));
+    }
+
+    pub fn toggle_detail(&mut self) {
+        self.detail = !self.detail;
+    }
+
+    pub fn keys(&mut self, keys: Vec<(&'static str, &'static str)>) {
+        self.keys = keys;
+    }
+
+    pub fn sample(&mut self, sample: Sample) {
+        self.cpu
+            .push(sample.cpu_percent / 100.0 / sample.cores.max(1.0));
+        self.memory.push(if sample.memory_limit_gb > 0.0 {
+            sample.memory_gb / sample.memory_limit_gb
+        } else {
+            0.0
+        });
+        if let Some(gpu) = sample.gpu_percent {
+            self.gpu.push(gpu / 100.0);
+        }
+        self.last = Some(sample);
+    }
+
+    fn step(&mut self) {
+        self.cpu.step();
+        self.memory.step();
+        self.gpu.step();
+    }
+
+    fn render(&self, columns: usize, tick: usize, now: Instant) -> Vec<String> {
+        let left = format!("{} {} ", muted("──"), bold(&self.name));
+        let right = format!(" {} {}", muted(&clock(now - self.started)), muted("──"));
+        let fill = columns.saturating_sub(1 + width(&left) + width(&right));
+        let mut lines = vec![format!("{left}{}{right}", muted(&"─".repeat(fill)))];
+        let since = now - self.since;
+        let (mark, status) = match self.tone {
+            Tone::Busy => (
+                paint(&spinner(tick).to_string(), SKY),
+                shimmer(&self.status, since),
+            ),
+            Tone::Good => {
+                let glow = mix(MINT, GREEN, since.as_secs_f64() / 1.5);
+                (paint("●", glow), paint(&self.status, glow))
+            }
+            Tone::Bad => (paint("●", RED), paint(&self.status, RED)),
+        };
+        let mut status_line = format!(" {mark} {status}");
+        if let Some((note, at)) = &self.note {
+            if now - *at < Duration::from_secs(4) {
+                status_line.push_str(&format!("   {}", muted(note)));
+            }
+        }
+        let inline_links = self.links.iter().map(|(label, url)| {
+            format!("   {} {}", muted(label), hyperlink(url, url, caps().live))
+        }).collect::<String>();
+        let separate_links = self.detail || width(&status_line) + width(&inline_links) >= columns;
+        if !separate_links { status_line.push_str(&inline_links); }
+        lines.push(status_line);
+        match (&self.last, self.detail) {
+            (None, _) => lines.push(format!(" {}", muted("measuring usage…"))),
+            (Some(sample), false) => lines.push(self.compact(sample, columns)),
+            (Some(sample), true) => lines.extend(self.expanded(sample, columns)),
+        }
+        if separate_links {
+            for (label, url) in &self.links {
+                lines.push(link_row(label, url, columns, caps().live));
+            }
+        }
+        lines.extend(shortcut_rows(&self.keys, columns));
+        lines
+    }
+
+    fn memory_text(&self, sample: &Sample) -> String {
+        let used = if sample.memory_limit_gb > 0.0 {
+            self.memory.shown * sample.memory_limit_gb
+        } else {
+            sample.memory_gb
+        };
+        if sample.memory_limit_gb > 0.0 {
+            format!("{} / {:.0} GB", size_gb(used), sample.memory_limit_gb)
+        } else {
+            size_gb(used)
+        }
+    }
+
+    fn compact(&self, sample: &Sample, columns: usize) -> String {
+        let cells = match columns {
+            120.. => 12,
+            96..=119 => 8,
+            80..=95 => 4,
+            _ => 0,
+        };
+        let cell = |meter: &Meter| {
+            if cells > 0 {
+                format!("{} ", meter.spark(cells))
+            } else {
+                String::new()
+            }
+        };
+        let mut parts = vec![
+            format!(
+                "{} {}{:.0}%",
+                muted("cpu"),
+                cell(&self.cpu),
+                self.cpu.shown * 100.0
+            ),
+            format!(
+                "{} {}{}",
+                muted("mem"),
+                cell(&self.memory),
+                self.memory_text(sample)
+            ),
+        ];
+        if sample.gpu_percent.is_some() {
+            parts.push(format!(
+                "{} {}{:.0}%",
+                muted("gpu"),
+                cell(&self.gpu),
+                self.gpu.shown * 100.0
+            ));
+        }
+        if let Some(rate) = sample.network_mbps {
+            parts.push(format!("{} ↓ {rate:.1} Mb/s", muted("net")));
+        }
+        format!(" {}", parts.join("   "))
+    }
+
+    fn expanded(&self, sample: &Sample, columns: usize) -> Vec<String> {
+        let cells = columns.saturating_sub(62).clamp(8, 60);
+        let row = |label: &str, meter: &Meter, text: String| {
+            format!(
+                " {}  {}  {}  {}  {}",
+                muted(&pad(label, 3)),
+                meter.spark(cells),
+                gauge(meter.shown, 20, level(meter.shown)),
+                pad(&format!("{:.0}%", meter.shown * 100.0), 4),
+                muted(&text)
+            )
+        };
+        let mut lines = vec![
+            row(
+                "cpu",
+                &self.cpu,
+                format!(
+                    "{:.2} of {} cores",
+                    self.cpu.shown * sample.cores.max(1.0),
+                    sample.cores.max(1.0)
+                ),
+            ),
+            row("mem", &self.memory, self.memory_text(sample)),
+        ];
+        if sample.gpu_percent.is_some() {
+            lines.push(row("gpu", &self.gpu, "whole PC".into()));
+        }
+        if let Some(rate) = sample.network_mbps {
+            lines.push(format!(" {}  ↓ {rate:.1} Mb/s", muted("net")));
+        }
+        lines
+    }
+}
+
+pub fn dash_open(name: &str, keys: Vec<(&'static str, &'static str)>) {
+    let now = Instant::now();
+    add(Item::Dash(Box::new(Dash {
+        name: name.into(),
+        tone: Tone::Busy,
+        status: "starting".into(),
+        since: now,
+        started: *START.get_or_init(Instant::now),
+        links: Vec::new(),
+        keys,
+        cpu: Meter::default(),
+        memory: Meter::default(),
+        gpu: Meter::default(),
+        last: None,
+        detail: false,
+        note: None,
+    })));
+}
+
+/// Changes the footer, if one is open.
+pub fn dash<R>(f: impl FnOnce(&mut Dash) -> R) -> Option<R> {
+    with(|p, out| {
+        let result = p.items.iter_mut().find_map(|(_, item)| match item {
+            Item::Dash(dash) => Some(dash),
+            _ => None,
+        });
+        let result = result.map(|dash| f(dash));
+        p.draw(out);
+        result
+    })
+}
+
+pub fn dash_close() {
+    with(|p, out| {
+        p.items.retain(|(_, item)| !matches!(item, Item::Dash(_)));
+        p.draw(out);
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn owned_hub_console_draws_prompts_even_when_desktop_inherited_automation_flags() {
+        assert_eq!(super::console_decoration(true, true, true, false, true), (true, true));
+        // Ordinary terminals retain their preferences. Pipes never get cursor control.
+        assert_eq!(super::console_decoration(true, true, true, false, false), (false, false));
+        assert_eq!(super::console_decoration(true, true, false, false, false), (true, false));
+        assert_eq!(super::console_decoration(true, false, true, false, true), (false, false));
+        assert_eq!(super::console_decoration(false, true, true, false, true), (false, false));
+    }
+
+    /// BACK_OFFERED is one flag for the whole process, and other tests here set it too, so this
+    /// one holds PAINTER_TESTS as they do; it still puts the flag back itself rather than leaving
+    /// a global changed for whatever runs next.
+    #[test]
+    fn back_is_put_back_whether_the_work_finishes_or_stops_early() {
+        let _painted = Painted::fresh();
+        use std::sync::atomic::Ordering;
+        let before = super::BACK_OFFERED.load(Ordering::Relaxed);
+        super::BACK_OFFERED.store(false, Ordering::Relaxed);
+
+        let finished: Result<(), String> = (|| {
+            let _offering = super::Offering::new();
+            assert!(super::BACK_OFFERED.load(Ordering::Relaxed), "Back is offered while the guard is alive");
+            Ok(())
+        })();
+        assert!(finished.is_ok());
+        assert!(!super::BACK_OFFERED.load(Ordering::Relaxed), "finishing normally put back what was offered before");
+
+        // The reason this is a Drop guard: a restore written after the call never runs here.
+        let stopped: Result<(), String> = (|| {
+            let _offering = super::Offering::new();
+            Err("stopped early".into())
+        })();
+        assert!(stopped.is_err());
+        assert!(!super::BACK_OFFERED.load(Ordering::Relaxed), "stopping early still put back what was offered before");
+
+        // Inside something that already offered Back, it stays offered rather than being cleared.
+        super::BACK_OFFERED.store(true, Ordering::Relaxed);
+        drop(super::Offering::new());
+        assert!(super::BACK_OFFERED.load(Ordering::Relaxed), "a guard nested inside an outer offer leaves it offered");
+
+        super::BACK_OFFERED.store(before, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn a_forced_quit_removes_registered_temporary_files_and_forgets_finished_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(staging.join("copy.bin"), b"partial").unwrap();
+        let finished = root.path().join("finished.tmp");
+        std::fs::write(&finished, b"kept").unwrap();
+        let _staging = super::remove_on_quit(&staging);
+        drop(super::remove_on_quit(&finished));
+        // Only this test's own paths: the registry is shared by every test running at once.
+        super::remove_registered(|path| path.starts_with(root.path()));
+        assert!(!staging.exists(), "the copy in progress goes");
+        assert!(finished.exists(), "a guard already dropped is forgotten");
+    }
+    #[test]
+    fn ascii_lines_fit_after_expanding_arrows_and_ellipsis() {
+        for columns in 0..30 {
+            let line = super::fit_mode("\x1b[32m│ Ready → environment…\x1b[0m", columns, true);
+            assert!(super::display_width(&line) <= columns, "{columns}: {line:?}");
+            assert!(line.is_ascii());
+        }
+    }
+    use super::*;
+    /// Tests that use the shared painter, the Back offer or the interrupt watcher run one at a time.
+    static PAINTER_TESTS: Mutex<()> = Mutex::new(());
+
+    /// Serialises painter tests AND gives each one a painter in its starting state, both on the way
+    /// in and on the way out.
+    ///
+    /// Taking the lock alone was not enough. The painter, the Back offer and the item counter are
+    /// process-wide, and nothing put them back: a painter test that panicked part-way left items on
+    /// the painter and `paused` wherever it got to, and because the lock is recovered from poisoning
+    /// rather than reset, the *next* painter test inherited that state and failed on an assertion
+    /// about something it never did. Which test that was depended on the order the harness happened
+    /// to run them in, so it read as one test being flaky when nothing about that test was wrong.
+    /// Resetting on both edges means a test's result says something about that test only.
+    struct Painted(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Painted {
+        fn fresh() -> Self {
+            let guard = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
+            reset_painter();
+            Self(guard)
+        }
+    }
+
+    impl Drop for Painted {
+        fn drop(&mut self) {
+            reset_painter();
+        }
+    }
+
+    /// The painter as it is before anything has drawn, matching the `PAINTER` static's own
+    /// initialiser, plus the two globals that ride along with it.
+    fn reset_painter() {
+        let mut painter = PAINTER.lock().unwrap_or_else(|p| p.into_inner());
+        painter.items.clear();
+        painter.next = 1;
+        painter.held.clear();
+        painter.drawn.clear();
+        painter.last.clear();
+        painter.line_start = true;
+        painter.cursor_hidden = false;
+        painter.paused = false;
+        painter.tick = 0;
+        drop(painter);
+        BACK_OFFERED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn recommended_badge_stays_on_the_right_when_command_and_hint_are_long() {
+        let choice = Choice::new("npm run build && npm --prefix server run start", "Builds the app, then starts its server").recommended(true);
+        for columns in [40, 60, 80, 120] {
+            for selected in [true, false] {
+                let line = choice_line(&choice, selected, 36, columns);
+                assert!(line.contains("(Recommended)"));
+                assert_eq!(width(&line), columns - 1);
+                let badge = line.find("(Recommended)").unwrap();
+                assert_eq!(width(&line[..badge]), columns - 1 - "(Recommended)".len());
+            }
+        }
+        assert!(!choice_line(&Choice::new("npm run dev", ""), false, 36, 80).contains("Recommended"));
+    }
+
+    #[test]
+    fn secret_inputs_keep_literal_whitespace_while_regular_inputs_are_trimmed() {
+        assert_eq!(input_entry("  literal password  ", "", true), "  literal password  ");
+        assert_eq!(input_entry("   ", "", true), "   ");
+        assert_eq!(input_entry("  alice  ", "", false), "alice");
+        assert_eq!(input_entry("   ", "default", false), "default");
+        assert_eq!(input_entry("", "default", true), "default");
+    }
+
+    #[test]
+    fn a_painter_test_that_panics_leaves_the_next_one_a_clean_painter() {
+        // PROVES that one painter test's failure cannot fail the next one.
+        //
+        // This is the shape of the flake: `menu_command_activity_...` pauses the painter at the
+        // top and adds items as it goes. Panic anywhere in the middle — a real failure, or an
+        // assertion that fires only under load — and the painter keeps those items and that paused
+        // flag. The lock is recovered from poisoning rather than reset, so the next painter test
+        // got them, and failed on a state it never set. The test that reported the failure was
+        // whichever one ran next, which is why it looked like it had nothing wrong with it.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _painted = Painted::fresh();
+            pause(true);
+            // Leaked rather than dropped: a panic deep in a flow can leave an item behind that no
+            // guard clears, which is the state that used to travel to the next test.
+            std::mem::forget(task("Work that never finished"));
+            BACK_OFFERED.store(true, Ordering::Relaxed);
+            panic!("as a painter test might");
+        }));
+        assert!(panicked.is_err(), "the panic should have happened");
+
+        // The next test starts as if nothing had.
+        let _painted = Painted::fresh();
+        with(|p, _| {
+            assert!(p.items.is_empty(), "items from the panicking test are gone");
+            assert!(!p.paused, "and its paused flag with them");
+            assert_eq!(p.next, 1);
+        });
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed), "and the Back offer is back to its starting state");
+    }
+
+    #[test]
+    fn menu_command_activity_survives_waits_and_cleans_up_before_output() {
+        let _painted = Painted::fresh();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().unwrap();
+        runtime.block_on(async {
+            let label = "Deleting environment";
+            let assert_active = || with(|p, _| {
+                assert!(!p.paused);
+                assert!(p.items.iter().any(|(_, item)| matches!(item,
+                    Item::Task(task) if task.text.contains("Deleting environment"))));
+            });
+            // The menu pauses its painter before dispatching a normal command.
+            pause(true);
+            for fail in [false, true] {
+                let result = command_activity(label, async {
+                    assert_active();
+                    tokio::task::yield_now().await;
+                    assert_active();
+                    if fail { Err("engine error") } else { Ok(()) }
+                }).await;
+                assert_eq!(result.is_err(), fail);
+                with(|p, _| {
+                    assert!(p.paused, "result output owns the terminal again");
+                    assert!(p.items.is_empty());
+                });
+            }
+            // Dropping a pending command must also release its animation.
+            let mut pending = Box::pin(command_activity(label, async {
+                assert_active();
+                std::future::pending::<()>().await;
+            }));
+            std::future::poll_fn(|cx| {
+                assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+                std::task::Poll::Ready(())
+            }).await;
+            drop(pending);
+            with(|p, _| {
+                assert!(p.paused);
+                assert!(p.items.is_empty());
+            });
+            pause(false);
+            // Scripted commands and screens that already show progress stay alone.
+            command_activity(label, async {
+                with(|p, _| assert!(p.items.is_empty()));
+            }).await;
+        });
+    }
+
+    #[test]
+    fn long_operation_keeps_animating_and_shows_elapsed_time() {
+        let task = TaskState {
+            text: "Deleting environment".into(),
+            detail: String::new(),
+            started: Instant::now(),
+            progress: None,
+            loading: false,
+        };
+        let now = task.started + Duration::from_secs(129);
+        let first = task_line(&task, 0, now);
+        let second = task_line(&task, 1, now);
+        assert_ne!(first, second);
+        assert!(first.contains("Deleting environment"));
+        assert!(first.contains(&clock(Duration::from_secs(129))));
+    }
+
+    #[test]
+    fn setup_loading_bar_moves_and_fits_without_inventing_progress() {
+        for columns in [20, 40, 80, 160] {
+            for tick in 0..120 {
+                let line = loading_line(tick, columns);
+                assert!(width(&line) < columns);
+                assert!(!line.contains('%'));
+                assert!(line.contains('[') && line.contains(']'));
+            }
+        }
+        assert_ne!(loading_line(0, 80), loading_line(6, 80));
+    }
+
+    #[test]
+    fn copy_bar_uses_measured_bytes_and_survives_narrow_terminals() {
+        let progress = CopyProgress::measurement(&serde_json::json!({
+            "phase":"copying", "completedBytes":4500, "totalBytes":10000
+        }));
+        for columns in [20, 40, 80, 160] {
+            let lines = progress.lines(columns);
+            assert!(lines.iter().all(|line| width(line) < columns), "{lines:?}");
+            let text = lines.join("\n");
+            assert!(text.contains("45%"));
+            assert!(text.contains(&bytes(4500)));
+            assert!(text.contains(&bytes(5500)));
+            assert!(text.contains("left"));
+        }
+        // No rounding to 100% before the last byte, even near u64::MAX.
+        let progress = CopyProgress::measurement(&serde_json::json!({
+            "phase":"preparing", "completedBytes":u64::MAX - 1, "totalBytes":u64::MAX
+        }));
+        assert!(progress.lines(80).join("\n").contains("99%"));
+        let progress = CopyProgress::measurement(&serde_json::json!({
+            "phase":"copying", "completedBytes":200, "totalBytes":100
+        }));
+        assert!(progress.lines(80).join("\n").contains("100%"));
+        assert!(progress.lines(80).join("\n").contains("0 B left"));
+    }
+
+    #[test]
+    fn scanning_empty_copies_and_finishing_do_not_invent_percentages() {
+        for value in [
+            serde_json::json!({"phase":"scanning", "scannedEntries":20007}),
+            serde_json::json!({"phase":"preparing", "completedBytes":0, "totalBytes":0}),
+            serde_json::json!({"phase":"finishing", "completedBytes":100, "totalBytes":100}),
+        ] {
+            let text = CopyProgress::measurement(&value).lines(80).join("\n");
+            assert!(!text.contains('%'));
+            assert!(!text.contains("left"));
+            assert!(!text.contains('█'));
+        }
+        assert!(CopyProgress::measurement(&serde_json::json!({"phase":"scanning", "scannedEntries":20007})).label.contains("20007"));
+    }
+
+    #[test]
+    fn sync_eta_uses_only_measured_advances_in_the_current_phase() {
+        let start = Instant::now();
+        let mut progress = CopyProgress { label: "Transferring changes".into(), bytes: Some((50, 100)),
+            unit: Some("records".into()), started: start, initial: 20 };
+        assert_eq!(progress.estimate_at(start + Duration::from_secs(3)), Some(Duration::from_secs(5)));
+        assert_eq!(progress.estimate_at(start + Duration::from_millis(100)), None);
+        for columns in [20, 40, 80] {
+            let lines = progress.lines(columns);
+            assert!(lines.iter().all(|line| width(line) < columns));
+            assert!(lines.join("\n").contains("records"));
+        }
+        progress.bytes = Some((20, 100));
+        assert_eq!(progress.estimate_at(start + Duration::from_secs(10)), None);
+        progress.bytes = Some((100, 100));
+        assert_eq!(progress.estimate_at(start + Duration::from_secs(10)), None);
+        progress.bytes = None;
+        assert_eq!(progress.estimate_at(start + Duration::from_secs(10)), None);
+    }
+
+    #[test]
+    fn disabled_choices_can_be_viewed_but_never_selected() {
+        let choices = [Choice::new("Available", ""), Choice::new("Out of stock", "").disabled(), Choice::new("Refresh", "")];
+        let mut at = 0;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Down)), None);
+        assert_eq!(at, 1);
+        assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Enter)), None);
+        list_key(&mut at, &choices, false, key(KeyCode::Down));
+        assert_eq!(list_key(&mut at, &choices, false, key(KeyCode::Enter)), Some(Ok(2)));
+    }
+
+    /// PROVES that a question asked straight from a menu offers Back, so Escape there returns to
+    /// the menu instead of leaving Yougori.
+    ///
+    /// Whether a prompt offers Back is one flag, and only a `Wizard` step set it. A single
+    /// question asked after a menu is not inside one, so the flag was false, so Escape returned
+    /// `CANCELLED` — which every caller reads as "leave" — and the person who pressed it to go
+    /// back one step found themselves out of the launcher. A menu is always somewhere to go back
+    /// to, which is what `with_back` says.
+    #[test]
+    fn a_question_asked_from_a_menu_offers_back_and_escape_returns_to_it() {
+        let _painted = Painted::fresh();
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+        // Outside, nothing is offering Back: Escape leaves.
+        BACK_OFFERED.store(false, Ordering::Relaxed);
+        assert_eq!(leaves_prompt(esc, true, back_offered(true)), Some(CANCELLED));
+
+        // Inside, Escape goes back, and the hint under the question says so.
+        with_back(|| {
+            assert!(back_offered(true));
+            assert_eq!(leaves_prompt(esc, true, back_offered(true)), Some(BACK));
+            assert_eq!(leave_hint(back_offered(true)), "esc back");
+            // Ctrl+C still leaves, whatever Escape does. The two are never the same answer.
+            assert_eq!(leaves_prompt(ctrl_c, true, back_offered(true)), Some(CANCELLED));
+        });
+
+        // And it puts back what it found, so a menu that offered nothing still offers nothing.
+        assert!(!back_offered(true));
+        assert_eq!(leaves_prompt(esc, true, back_offered(true)), Some(CANCELLED));
+
+        // Nested the other way round, each restores the other's answer.
+        with_back(|| {
+            without_back(|| assert!(!back_offered(true)));
+            assert!(back_offered(true), "without_back put back what with_back had set");
+        });
+        assert!(!back_offered(true));
+    }
+
+    #[test]
+    fn back_is_the_last_row_and_esc_goes_back_only_where_offered() {
+        let choices = [Choice::new("Recommended", ""), Choice::new("Customize", "")];
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // The Back row follows the choices, and the list wraps around it.
+        let mut at = 1;
+        assert_eq!(list_key(&mut at, &choices, true, key(KeyCode::Down)), None);
+        assert_eq!(at, 2);
+        assert_eq!(list_key(&mut at, &choices, true, key(KeyCode::Enter)), Some(Err(BACK.into())));
+        assert_eq!(list_key(&mut at, &choices, true, key(KeyCode::Down)), None);
+        assert_eq!(at, 0);
+        let mut at = 1;
+        list_key(&mut at, &choices, false, key(KeyCode::Down));
+        assert_eq!(at, 0, "no Back row without Back");
+        // A list that already has its own Back keeps only that one.
+        assert!(adds_back_row(&choices, true));
+        assert!(!adds_back_row(&choices, false));
+        assert!(!adds_back_row(&[Choice::new("Open", ""), Choice::new("Back", "")], true));
+        let escape = key(KeyCode::Esc);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(leaves_prompt(escape, true, true), Some(BACK));
+        assert_eq!(leaves_prompt(escape, true, false), Some(CANCELLED));
+        assert_eq!(leaves_prompt(ctrl_c, true, true), Some(CANCELLED));
+        assert_eq!(leaves_prompt(escape, false, true), None);
+        assert_eq!(leaves_prompt(key(KeyCode::Enter), true, true), None);
+        assert!(left("Port", BACK).is_empty(), "going back leaves no line");
+        assert!(!left("Port", CANCELLED).is_empty());
+    }
+
+    #[test]
+    fn a_held_ctrl_c_never_counts_as_the_second_press() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut presses = Presses::new(false);
+        assert!(!presses.press(at(0)), "the first press only stops");
+        // Key repeat arrives every few dozen milliseconds while the key stays down.
+        for ms in (500..2000).step_by(33) {
+            assert!(!presses.press(at(ms)), "repeat at {ms} ms");
+        }
+        // Released, then pressed again: a new press.
+        presses.release();
+        assert!(presses.press(at(2010)));
+        // Without release events, a pause tells a new press from a repeat.
+        let mut presses = Presses::new(false);
+        presses.press(at(0));
+        assert!(!presses.press(at(100)));
+        assert!(!presses.press(at(600)), "like the first repeat of a held key");
+        assert!(presses.press(at(1300)));
+        // A watch started after the first press treats a still-repeating key as held.
+        let mut armed = Presses::new(true);
+        assert!(!armed.press(Instant::now()));
+    }
+
+    #[test]
+    fn wizard_back_returns_to_the_last_asked_step_and_leaves_from_the_first() {
+        let _painted = Painted::fresh();
+        BACK_OFFERED.store(false, Ordering::Relaxed);
+        let mut steps = Wizard::new();
+        assert_eq!(steps.step(), 0);
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed), "the first question cannot go back");
+        steps.next(Ok(true)).unwrap();
+        assert_eq!(steps.step(), 1);
+        steps.next(Ok(false)).unwrap(); // skipped
+        assert_eq!(steps.step(), 2);
+        assert!(BACK_OFFERED.load(Ordering::Relaxed));
+        steps.next(Err(BACK.into())).unwrap();
+        assert_eq!(steps.step(), 0, "back skips the step that asked nothing");
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed));
+        steps.next(Ok(true)).unwrap();
+        steps.next(Ok(true)).unwrap();
+        assert_eq!(steps.step(), 2);
+        assert_eq!(steps.next(Err(CANCELLED.into())), Err(CANCELLED.into()));
+        // A wizard inside a step offers Back on its first question and hands it outward.
+        {
+            let mut inner = Wizard::new();
+            assert_eq!(inner.step(), 0);
+            assert!(BACK_OFFERED.load(Ordering::Relaxed));
+            assert_eq!(inner.next(Err(BACK.into())), Err(BACK.into()));
+        }
+        assert!(BACK_OFFERED.load(Ordering::Relaxed), "dropping the inner wizard restores the outer step");
+        assert!(!without_back(|| BACK_OFFERED.load(Ordering::Relaxed)));
+        assert!(BACK_OFFERED.load(Ordering::Relaxed));
+        drop(steps);
+        assert!(!BACK_OFFERED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn busy_runs_cleanup_after_an_earlier_interrupt_and_stops_on_a_new_one() {
+        let _painted = Painted::fresh();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+            let watch = Interrupts::watch(flag.clone());
+            assert_eq!(busy("Loading", async { Ok::<_, String>(7) }).await, Ok(7));
+            let set = flag.clone();
+            let waiting = busy("Waiting", async {
+                set.store(true, Ordering::SeqCst);
+                std::future::pending::<Result<(), String>>().await
+            });
+            assert_eq!(waiting.await, Err(CANCELLED.into()), "a new Ctrl+C stops waiting");
+            // Cleanup after that Ctrl+C still runs to the end.
+            assert_eq!(busy("Stopping", async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok::<_, String>("stopped")
+            }).await, Ok("stopped"));
+            drop(watch);
+            assert!(watched().is_none());
+            // A wait that borrowed a watch which then ended keeps Ctrl+C with a watch of its own.
+            let borrowed = Arc::new(AtomicBool::new(false));
+            let watch = Interrupts::watch(borrowed.clone());
+            let outlived = busy("Starting", async move {
+                drop(watch);
+                tokio::time::sleep(QUICK + Duration::from_millis(100)).await;
+                let own = watched().ok_or("no watch while the spinner shows")?;
+                assert!(!Arc::ptr_eq(&own, &borrowed));
+                Ok::<_, String>(())
+            });
+            assert_eq!(outlived.await, Ok(()));
+            assert!(watched().is_none(), "its own watch ends with the wait");
+            // Watches that end out of order leave no stale flag behind.
+            let (first, second) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+            let earlier = Interrupts::watch(first.clone());
+            let later = Interrupts::watch(second.clone());
+            drop(earlier);
+            assert!(watched().is_some_and(|flag| Arc::ptr_eq(&flag, &second)));
+            drop(later);
+            assert!(watched().is_none());
+        });
+    }
+
+    #[test]
+    fn stop_menu_requires_enter_even_after_ten_ctrl_c_presses() {
+        for initial in 0..3 {
+            let mut at = initial;
+            for _ in 0..10 {
+                let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+                assert!(!cancels_prompt(key, false));
+                assert_eq!(selection_key(&mut at, 3, key), None);
+                assert_eq!(at, initial);
+            }
+            let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            assert!(!cancels_prompt(escape, false));
+            assert_eq!(selection_key(&mut at, 3, escape), None);
+            assert_eq!(selection_key(&mut at, 3, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(initial));
+        }
+        assert!(cancels_prompt(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), true));
+        let mut at = 0;
+        selection_key(&mut at, 3, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(at, 1);
+    }
+
+    #[test]
+    fn live_block_waits_for_the_end_of_a_line() {
+        assert!(line_start(b"ready\r\n", false));
+        assert!(line_start(b"ready\n\x1b[0m\x1b[?25h\x1b[K", false));
+        assert!(!line_start(b"Install packages? (y/n) ", true));
+        assert!(!line_start(b"progress\r", true));
+        assert!(!line_start(b"line\n\x1b[2A", true));
+        assert!(!line_start(b"line\n\x1b[1;1H", true));
+        assert!(!line_start(b"from m", true));
+        assert!(line_start(b"\x1b[?25l", true), "no movement keeps the state");
+        assert!(!line_start(b"\x1b[0m", false));
+    }
+
+    #[test]
+    fn widths_skip_escapes_and_lines_never_wrap() {
+        assert_eq!(width("\x1b[38;2;1;2;3mabc\x1b[0m"), 3);
+        assert_eq!(width("日本"), 4);
+        let cut = fit("\x1b[1mabcdefghij\x1b[0m", 5);
+        assert_eq!(width(&cut), 5);
+        if presentation::ascii() {
+            assert!(cut.starts_with("\x1b[1mab") && cut.contains("..."));
+        } else {
+            assert!(cut.starts_with("\x1b[1mabcd") && cut.contains('…'));
+        }
+        assert_eq!(fit("short", 10), "short");
+        assert_eq!(width(&fit("日本語テキスト", 5)), 5);
+    }
+
+    #[test]
+    fn narrow_links_keep_the_full_destination_and_close_terminal_hyperlinks() {
+        let url = "https://workplace-habits-sox-example.trycloudflare.com/path?full=yes";
+        for columns in [20, 40, 80, 160] {
+            let row = link_row("public", url, columns, true);
+            assert!(row.contains(&format!("\x1b]8;;{url}\x1b\\")));
+            assert!(row.ends_with("\x1b]8;;\x1b\\"));
+            assert!(width(&row) < columns);
+        }
+        let link = hyperlink("Open public link", url, true);
+        assert_eq!(width(&link), "Open public link".len());
+        let clipped = fit(&link, 6);
+        assert_eq!(width(&clipped), 6);
+        assert!(clipped.contains(url));
+        assert!(clipped.contains(if presentation::ascii() { "...\x1b]8;;\x1b\\" } else { "…\x1b]8;;\x1b\\" }));
+        let fallback = link_row("public", url, 40, false);
+        assert!(fallback.contains("press u for URL"));
+        assert!(!fallback.contains("https://"));
+        assert!(!hyperlink("bad", "https://example.com/\x1b]evil", true).contains("\x1b]"));
+        assert!(!hyperlink("bad", "file:///private", true).contains("\x1b]"));
+    }
+
+    #[test]
+    fn wordmark_spells_the_name_in_three_rows() {
+        let rows = wordmark();
+        assert_eq!(rows.len(), 3);
+        let text: Vec<String> = rows.iter().map(|r| r.iter().collect()).collect();
+        assert_eq!(text[0].chars().count(), 34);
+        assert!(text[0].starts_with("▀▄ ▄▀ ▄▀▀▄"));
+        assert!(text[2].ends_with("▀▀▀"));
+        let still = banner_lines_mode(None, "launch", "tagline", false);
+        assert!(still[2].contains("launch") && still[3].contains("tagline"));
+        let early = banner_lines_mode(Some(Duration::ZERO), "launch", "tagline", false);
+        assert!(!early[2].contains("launch"), "text follows the sweep");
+        let ascii = banner_lines_mode(None, "launch", "tagline", true);
+        assert!(ascii.iter().all(|s| s.is_ascii()));
+        assert!(ascii[1].contains("YOUGORI") && ascii[1].contains("launch") && ascii[2].contains("tagline"));
+    }
+
+    #[test]
+    fn meters_glide_and_scroll() {
+        let mut meter = Meter::default();
+        meter.push(0.2);
+        assert_eq!(meter.shown, 0.2, "the first sample shows at once");
+        meter.push(1.0);
+        meter.step();
+        assert!(meter.shown > 0.2 && meter.shown < 1.0);
+        for _ in 0..60 {
+            meter.step();
+        }
+        assert!((meter.shown - 1.0).abs() < 0.01);
+        let spark = meter.spark(4);
+        assert_eq!(spark.chars().filter(|c| ('▁'..='█').contains(c)).count(), 2);
+        assert_eq!(spark.chars().filter(|c| *c == '·').count(), 2);
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(2048), "2 KB");
+        assert_eq!(bytes(5 * 1_048_576), "5.0 MB");
+        assert_eq!(width(&meter.spark(4)), 4);
+        assert!(gauge(0.5, 10, SKY).contains('━'));
+        assert_eq!(width(&gauge(0.55, 10, SKY)), 10);
+        assert_eq!(width(&gauge(1.5, 10, SKY)), 10);
+    }
+
+    #[test]
+    fn terminal_shortcut_and_other_controls_remain_visible_in_narrow_footers() {
+        let keys = [("t", "Open terminal"), ("o", "open"), ("p", "public"), ("u", "links"), ("r", "restart"), ("y", "Sync"), ("s", "details"), ("c", "clear"), ("q", "quit"), ("npm run yougori-change", "change settings")];
+        for columns in [30, 50, 80, 160] {
+            let rows = shortcut_rows(&keys, columns);
+            assert!(rows.iter().all(|row| width(row) < columns));
+            let visible = rows.join(" ");
+            for (_, label) in keys { assert!(visible.contains(label), "{label} at width {columns}"); }
+            assert!(visible.contains("npm run yougori-change"));
+        }
+        let rows = shortcut_rows(&[("/terminal", "Open terminal"), ("enter", "send"), ("ctrl+c", "stop options")], 30);
+        assert!(rows.iter().all(|row| width(row) < 30));
+        assert!(rows[0].contains("Open terminal"));
+    }
+
+    #[test]
+    fn footer_reports_usage_against_the_allocation() {
+        let now = Instant::now();
+        let mut dash = Dash {
+            name: "site".into(),
+            tone: Tone::Good,
+            status: "ready".into(),
+            since: now,
+            started: now,
+            links: vec![("local".into(), "http://127.0.0.1:5173".into())],
+            keys: vec![("q", "quit")],
+            cpu: Meter::default(),
+            memory: Meter::default(),
+            gpu: Meter::default(),
+            last: None,
+            detail: false,
+            note: None,
+        };
+        assert!(dash.render(100, 0, now)[2].contains("measuring"));
+        dash.sample(Sample {
+            cpu_percent: 100.0,
+            cores: 2.0,
+            memory_gb: 1.0,
+            memory_limit_gb: 4.0,
+            gpu_percent: Some(30.0),
+            network_mbps: Some(1.25),
+        });
+        let lines = dash.render(100, 0, now);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("site"));
+        assert!(lines[1].contains("http://127.0.0.1:5173"));
+        assert!(lines[2].contains("cpu") && lines[2].contains("50%"));
+        assert!(lines[2].contains("1.0 GB / 4 GB"));
+        assert!(lines[2].contains("gpu") && lines[2].contains("30%"));
+        assert!(lines[2].contains("1.2 Mb/s") || lines[2].contains("1.3 Mb/s"));
+        dash.toggle_detail();
+        let lines = dash.render(120, 0, now);
+        assert!(lines.iter().any(|l| l.contains("1.00 of 2 cores")));
+        assert!(lines.iter().any(|l| l.contains("whole PC")));
+    }
+}
+
+#[cfg(test)]
+mod checklist_tests {
+    use super::*;
+    #[test]
+    fn space_toggles_enter_confirms_and_back_preserves_the_wizard() {
+        let choices = [Choice::new("Codex", ""), Choice::new("Claude", ""), Choice::new("Unavailable", "").disabled()];
+        let mut checked = vec![false; 3];
+        let mut at = 0;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Char(' '))).is_none());
+        checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Down));
+        checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Char(' ')));
+        assert_eq!(checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Enter)), Some(Ok(vec![0,1])));
+        at = 2;
+        checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Char(' ')));
+        assert!(!checked[2]);
+        at = 4;
+        assert_eq!(checklist_key(&mut at, &choices, &mut checked, true, key(KeyCode::Enter)), Some(Err(BACK.into())));
+    }
+}
+
+/// Asks for a secret at a terminal without echoing it.
+///
+/// Moved here from the grid commands when they were removed: a template that joins something
+/// still has to take an invitation or a password without putting it on screen or in scrollback.
+/// A person types the password without it showing; `confirm` asks twice.
+pub fn hidden(prompt: &str) -> Result<String, String> {
+    use crossterm::event::{read, Event, KeyCode, KeyEventKind, KeyModifiers};
+    struct Raw;
+    impl Drop for Raw {
+        fn drop(&mut self) {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+    // Nothing appears as it is typed, which is the point and is also exactly what a terminal
+    // that has stopped responding looks like. Saying so once, before the cursor sits there, is
+    // the difference between waiting and pressing keys to see whether anything is alive.
+    eprint!("{prompt}");
+    std::io::stderr().flush().map_err(|_| "Cannot ask for the password")?;
+    crossterm::terminal::enable_raw_mode().map_err(|_| "Cannot read a hidden password in this terminal; use --password - and stdin")?;
+    let _raw = Raw;
+    let mut value = String::new();
+    loop {
+        if let Event::Key(key) = read().map_err(|_| "Cannot read the password")? {
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            match key.code {
+                KeyCode::Enter => {
+                    eprintln!("\r");
+                    return Ok(value);
+                }
+                // Leaving the prompt is a cancellation, not a failure: said calmly, exit 130.
+                KeyCode::Esc => {
+                    eprintln!("\r");
+                    return Err(crate::wire::cancelled(CANCELLED));
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    eprintln!("\r");
+                    return Err(crate::wire::cancelled(CANCELLED));
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Char(c) if !c.is_control() && value.chars().count() < 256 => value.push(c),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// One bounded line of a secret from stdin, for scripts that pipe one in rather than type it.
+/// One line from stdin, at most 1 KiB.
+pub fn stdin_line(input: &mut impl std::io::Read) -> Result<String, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    input.take(1025).read_to_end(&mut bytes).map_err(|_| "Cannot read the password from stdin")?;
+    if bytes.len() > 1024 {
+        return Err("The password input exceeds 1 KiB".into());
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "The password must be UTF-8 text")?;
+    Ok(text.lines().next().unwrap_or_default().to_owned())
+}
+
+#[cfg(test)]
+mod piped_secret_tests {
+    use super::stdin_line;
+
+    /// Carried over with `stdin_line` when the grid commands were removed: a piped secret is one
+    /// line and is bounded, so a stray file on stdin cannot be read in as a password.
+    #[test]
+    fn stdin_passwords_are_one_bounded_line() {
+        assert_eq!(stdin_line(&mut "correct horse
+ignored".as_bytes()).unwrap(), "correct horse");
+        assert!(stdin_line(&mut "x".repeat(2000).as_bytes()).is_err());
+    }
+}

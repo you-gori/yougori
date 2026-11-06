@@ -1,5 +1,60 @@
 use super::RuntimeManager;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use yougori_cli::workload::Options;
+
+static OPTIONS_RESERVATIONS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+fn write_options(path: &Path, options: &Options) -> Result<(), String> {
+    options.validate()?;
+    let root = path.parent().ok_or("workload options have no parent")?;
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let mut file = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
+    serde_json::to_writer(&mut file, options).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) struct WorkloadOptionsLease {
+    path: PathBuf,
+}
+impl WorkloadOptionsLease {
+    fn reserve(path: PathBuf) -> Result<Self, String> {
+        if !OPTIONS_RESERVATIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.clone())
+        {
+            return Err("YOUGORI_MIGRATION_CONFLICT: workload options are already reserved".into());
+        }
+        Ok(Self { path })
+    }
+    pub(crate) fn install(&self, before: &Options, after: &Options) -> Result<(), String> {
+        let _reserved = OPTIONS_RESERVATIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let current: Options =
+            serde_json::from_slice(&std::fs::read(&self.path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        if current != *before && current != *after {
+            return Err("YOUGORI_MIGRATION_CONFLICT: workload options changed; saved settings were preserved".into());
+        }
+        write_options(&self.path, after)
+    }
+}
+impl Drop for WorkloadOptionsLease {
+    fn drop(&mut self) {
+        OPTIONS_RESERVATIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.path);
+    }
+}
+
 impl RuntimeManager {
     /// Only generated model caches are owned by model deletion. Named user
     /// volumes and PC binds retain their independent lifetime. Check saved
@@ -175,7 +230,11 @@ impl RuntimeManager {
             for (index,bind) in options.binds.iter().enumerate(){
                 let root=std::path::Path::new(&bind.source).canonicalize().map_err(|e|format!("PC volume {}: {e}",bind.source))?;
                 shareable_volume(&root,self).map_err(|e|format!("PC volume {}: {e}",bind.source))?;
-                if let Err(error)=crate::changes::ensure_folder_baseline(self,id,&root).await { eprintln!("Changes baseline for {id}: {error}"); }
+                // Yougori's own guest folders (catalog views, served helpers) are not user folders
+                // whose changes are reviewed: scanning them only re-hashed model files.
+                if !crate::host_files::engine_guest_folder(&root) {
+                    if let Err(error)=crate::changes::ensure_folder_baseline(self,id,&root).await { eprintln!("Changes baseline for {id}: {error}"); }
+                }
                 if servers.len()<=index{servers.push(crate::host_files::HostFolderServer::start(root,bind.read_only).await?)}
                 let server=&servers[index];let endpoint=self.workload_folder_endpoint(id,cuda,server).await?;
                 let slot=format!("{id}-{index}");
@@ -187,15 +246,28 @@ impl RuntimeManager {
         result
     }
     pub fn save_workload_options(&self, id: &str, options: &Options) -> Result<(), String> {
-        options.validate()?;
         let root = self.environment_storage_root(id)?.join("workload-options");
-        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        let mut file = tempfile::NamedTempFile::new_in(&root).map_err(|e| e.to_string())?;
-        serde_json::to_writer(&mut file, options).map_err(|e| e.to_string())?;
-        file.as_file().sync_all().map_err(|e| e.to_string())?;
-        file.persist(root.join(format!("{id}.json")))
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        let path = root.join(format!("{id}.json"));
+        let reserved = OPTIONS_RESERVATIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if reserved.contains(&path) {
+            return Err("YOUGORI_MIGRATION_CONFLICT: workload options are being migrated; retry after migration finishes".into());
+        }
+        write_options(&path, options)
+    }
+
+    /// Excludes every options writer while migration reconciles an environment. Reads stay
+    /// available to runtime reconfiguration; no synchronous mutex is held across an await.
+    pub(crate) fn reserve_workload_options(
+        &self,
+        id: &str,
+    ) -> Result<WorkloadOptionsLease, String> {
+        WorkloadOptionsLease::reserve(
+            self.environment_storage_root(id)?
+                .join("workload-options")
+                .join(format!("{id}.json")),
+        )
     }
     pub fn workload_options(&self, id: &str) -> Result<Options, String> {
         let path = self
@@ -241,6 +313,42 @@ fn model_cache_names(options: &Options) -> Vec<String> {
 mod model_cache_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn migration_reservation_excludes_normal_writers_and_compares_expected_options() {
+        let data = tempfile::tempdir().unwrap();
+        let runtime =
+            RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), data.path()).unwrap();
+        let before = Options::default();
+        runtime
+            .save_workload_options("migration-model", &before)
+            .unwrap();
+        let lease = runtime.reserve_workload_options("migration-model").unwrap();
+        assert!(runtime.reserve_workload_options("migration-model").is_err());
+        let mut after = before.clone();
+        after.environment.insert("MIGRATED".into(), "yes".into());
+        assert!(runtime
+            .save_workload_options("migration-model", &after)
+            .unwrap_err()
+            .starts_with("YOUGORI_MIGRATION_CONFLICT"));
+        lease.install(&before, &after).unwrap();
+        assert_eq!(runtime.workload_options("migration-model").unwrap(), after);
+        lease.install(&before, &after).unwrap(); // recovery after options write
+        let mut unexpected = before.clone();
+        unexpected
+            .environment
+            .insert("USER_SETTING".into(), "preserve".into());
+        assert!(lease.install(&unexpected, &before).is_err());
+        assert_eq!(runtime.workload_options("migration-model").unwrap(), after);
+        drop(lease);
+        runtime
+            .save_workload_options("migration-model", &unexpected)
+            .unwrap();
+        assert_eq!(
+            runtime.workload_options("migration-model").unwrap(),
+            unexpected
+        );
+    }
 
     #[test]
     fn model_deletion_keeps_user_data_and_shared_or_unreadable_peer_caches() {

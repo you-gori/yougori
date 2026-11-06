@@ -1,0 +1,708 @@
+{
+  "contract_version": 2,
+  "subject": {
+    "kind": "model",
+    "id": "coder-7b"
+  },
+  "shown_at": {
+    "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+    "at": 1000001000,
+    "configuration": "ad2eeb2c62c77a270abb87f2900500596964121208c2db0fb539fe0b4d9342db"
+  },
+  "endpoint": {
+    "model": "7a907b29d59c140c2e4304e3a0a702e116b2e082fc970445a7d26619e912efd5",
+    "runner": {
+      "release": {
+        "backend": "vllm",
+        "version": "0.31.0"
+      },
+      "category": {
+        "category": "shared_kernel_gpu_runtime",
+        "label": "GPU runtime (shared kernel), not a sandbox",
+        "decision": "VM-D4",
+        "sandbox": false
+      }
+    },
+    "dialects": [
+      {
+        "dialect": "openai_chat_completions",
+        "label": "OpenAI Chat Completions",
+        "advertised": true,
+        "conformance": {
+          "run": "6ce4fe8e4636311416cb56e7791856e76c39163b054ee880e7be905b91391a9f",
+          "configuration": "34604b60997c9cb665027b1730b18c6db5a61fc52ccd5ebe3c8bb44f53844137",
+          "observed_at": 1000,
+          "cases": 28
+        },
+        "features": [
+          {
+            "feature": "request_fields",
+            "aspect": "exchange",
+            "label": "request fields accepted and honoured",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 28
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "system_context_preservation",
+            "aspect": "exchange",
+            "label": "system instructions and earlier turns kept",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 27
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "tool_schema",
+            "aspect": "tool_calling",
+            "label": "tool calls checked against their declared schemas",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 6
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "tool_choice",
+            "aspect": "tool_calling",
+            "label": "an explicit tool choice honoured",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 6
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "streaming_deltas",
+            "aspect": "streaming",
+            "label": "streamed output in the dialect's event order",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 27
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "parallel_calls",
+            "aspect": "tool_calling",
+            "label": "several tool calls in one turn",
+            "support": {
+              "value": {
+                "support": "unsupported",
+                "reason": {
+                  "reason": "declared_by_runner",
+                  "explanation": "this runner emits one call per turn"
+                }
+              },
+              "evidence": {
+                "state": "asserted",
+                "by": "declaration"
+              }
+            }
+          },
+          {
+            "feature": "finish_reason",
+            "aspect": "exchange",
+            "label": "a finish reason the dialect defines, matching the content",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 16
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "usage",
+            "aspect": "exchange",
+            "label": "token usage reported",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 2
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "token_counting",
+            "aspect": "exchange",
+            "label": "the dialect's token counting endpoint",
+            "support": {
+              "value": {
+                "support": "unsupported",
+                "reason": {
+                  "reason": "not_in_dialect"
+                }
+              },
+              "evidence": {
+                "state": "asserted",
+                "by": "declaration"
+              }
+            }
+          },
+          {
+            "feature": "errors",
+            "aspect": "exchange",
+            "label": "failures in the dialect's error shapes",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 2
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "cancellation",
+            "aspect": "streaming",
+            "label": "a cancelled request stops without running a pending tool call",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 1
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          }
+        ]
+      },
+      {
+        "dialect": "openai_responses",
+        "label": "OpenAI Responses",
+        "advertised": false,
+        "conformance": {
+          "run": "66b46d3d74356a6f16df398d74f57f2eef038a512f327925413cef97ca020ac4",
+          "configuration": "34604b60997c9cb665027b1730b18c6db5a61fc52ccd5ebe3c8bb44f53844137",
+          "observed_at": 1000,
+          "cases": 16
+        },
+        "features": [
+          {
+            "feature": "request_fields",
+            "aspect": "exchange",
+            "label": "request fields accepted and honoured",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 16
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "system_context_preservation",
+            "aspect": "exchange",
+            "label": "system instructions and earlier turns kept",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 15
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "tool_schema",
+            "aspect": "tool_calling",
+            "label": "tool calls checked against their declared schemas",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 2
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "tool_choice",
+            "aspect": "tool_calling",
+            "label": "an explicit tool choice honoured",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 1
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "streaming_deltas",
+            "aspect": "streaming",
+            "label": "streamed output in the dialect's event order",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 15
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "parallel_calls",
+            "aspect": "tool_calling",
+            "label": "several tool calls in one turn",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 1
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "finish_reason",
+            "aspect": "exchange",
+            "label": "a finish reason the dialect defines, matching the content",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 6
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "usage",
+            "aspect": "exchange",
+            "label": "token usage reported",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 2
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "token_counting",
+            "aspect": "exchange",
+            "label": "the dialect's token counting endpoint",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no OpenAI Responses conformance case exercised \"the dialect's token counting endpoint\" on this runner, so it is untested",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "errors",
+            "aspect": "exchange",
+            "label": "failures in the dialect's error shapes",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 3
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          },
+          {
+            "feature": "cancellation",
+            "aspect": "streaming",
+            "label": "a cancelled request stops without running a pending tool call",
+            "support": {
+              "value": {
+                "support": "supported",
+                "cases": 1
+              },
+              "evidence": {
+                "state": "observed",
+                "by": "host",
+                "observed_at": 1000,
+                "fresh_until": 3600000001000
+              }
+            }
+          }
+        ]
+      },
+      {
+        "dialect": "anthropic_messages",
+        "label": "Anthropic Messages",
+        "advertised": false,
+        "features": [
+          {
+            "feature": "request_fields",
+            "aspect": "exchange",
+            "label": "request fields accepted and honoured",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "system_context_preservation",
+            "aspect": "exchange",
+            "label": "system instructions and earlier turns kept",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "tool_schema",
+            "aspect": "tool_calling",
+            "label": "tool calls checked against their declared schemas",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "tool_choice",
+            "aspect": "tool_calling",
+            "label": "an explicit tool choice honoured",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "streaming_deltas",
+            "aspect": "streaming",
+            "label": "streamed output in the dialect's event order",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "parallel_calls",
+            "aspect": "tool_calling",
+            "label": "several tool calls in one turn",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "finish_reason",
+            "aspect": "exchange",
+            "label": "a finish reason the dialect defines, matching the content",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "usage",
+            "aspect": "exchange",
+            "label": "token usage reported",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "token_counting",
+            "aspect": "exchange",
+            "label": "the dialect's token counting endpoint",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "errors",
+            "aspect": "exchange",
+            "label": "failures in the dialect's error shapes",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          },
+          {
+            "feature": "cancellation",
+            "aspect": "streaming",
+            "label": "a cancelled request stops without running a pending tool call",
+            "support": {
+              "evidence": {
+                "state": "unavailable",
+                "refusal": {
+                  "code": {
+                    "domain": "evidence",
+                    "code": "evidence_missing"
+                  },
+                  "reason": "no Anthropic Messages conformance run of this model on this runner was published, so nothing about the dialect is known",
+                  "remedy": {
+                    "remedy": "evidence",
+                    "step": {
+                      "action": "run_check"
+                    }
+                  },
+                  "remedy_text": "run the check"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

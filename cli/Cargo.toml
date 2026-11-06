@@ -1,11 +1,17 @@
 [package]
 name = "yougori-cli"
-version = "1.1.2"
+version = "1.2.0"
 edition = "2021"
 description = "Local, same-user command line control for Yougori"
 license = "AGPL-3.0-only"
 publish = false
 default-run = "yougori"
+
+[features]
+# Runtime acceptance only (scripts/acceptance): the CLI, and an engine built with the same feature,
+# take their control endpoint from YOUGORI_ACCEPTANCE_ENDPOINT so a disposable engine runs beside
+# the installed one without touching it. Never enabled by a release build.
+acceptance = []
 
 [[bin]]
 name = "yougori"
@@ -21,6 +27,7 @@ path = "src/confidential/runner_main.rs"
 
 [dependencies]
 yougori-vault = { path = "../vault" }
+yougori-setup = { path = "../setup" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
@@ -35,7 +42,6 @@ sha2 = "0.10"
 tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 semver = "1"
-notify = "8"
 tokio = { version = "1", features = ["io-util", "net", "rt", "time", "signal", "macros", "sync", "process"] }
 
 [target.'cfg(windows)'.dependencies]

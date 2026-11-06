@@ -12,6 +12,7 @@ fn grant(permission: Permission) -> Grant {
         verifier: "hash".into(),
         revoked: false,
         acknowledge_existing_access: false,
+        stamp: None,
     }
 }
 #[test]
@@ -273,6 +274,7 @@ fn gateway_authentication_and_revocation_over_real_http() {
                 folder: Some(shared.path().to_str().unwrap().into()),
                 confirm_pc_files: true,
                 acknowledge_existing_access: false,
+                stamp: None,
             },
             handle.clone(),
             handle.state::<RemoteAccess>(),

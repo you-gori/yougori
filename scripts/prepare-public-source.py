@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE = b'public\n'
 REQUIRED = ('distribution.txt', 'distribution.rs', 'cli/src/lib.rs', 'grid/src/lib.rs',
             'grid/src/bounty_project.rs', 'src/lib/distribution.ts',
-            'src/components/closed-bounty-dialog.tsx', 'src-tauri/src/swarm/closed.rs')
+            'src-tauri/src/swarm/closed.rs')
 
 
 def public_source(source, destination, reference='HEAD'):

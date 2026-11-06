@@ -1,0 +1,281 @@
+{
+  "aliases": [
+    "inference solver",
+    "private inference",
+    "inference website"
+  ],
+  "capabilities": [
+    {
+      "id": "web.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.private",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.quick_link",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "web.domain",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.volumes",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "models.local",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.private_connections",
+      "locked": false,
+      "selection": "required"
+    }
+  ],
+  "connections": [
+    {
+      "from": "web",
+      "resource": "attached",
+      "to": "model"
+    }
+  ],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 2,
+      "gpu": false,
+      "image": "python:3.12-slim",
+      "internet": true,
+      "memoryGb": 1,
+      "name": "web",
+      "pcAccess": [],
+      "ports": [
+        3000
+      ],
+      "secretSources": [
+        "ADMIN_BOOTSTRAP_PASSWORD from the question admin_password"
+      ],
+      "secrets": [
+        "ADMIN_BOOTSTRAP_PASSWORD"
+      ],
+      "storageGb": 4,
+      "tools": [],
+      "type": "container",
+      "writablePcFolders": false
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "people_access",
+      "id": "account_mode",
+      "question": "Who can create an account?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_email",
+      "question": "Administrator email",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "people_access",
+      "id": "admin_password",
+      "question": "Administrator password",
+      "required": true,
+      "secret": true,
+      "type": "secret"
+    },
+    {
+      "group": "website_api",
+      "id": "site_name",
+      "question": "What should your service be called?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "web_access",
+      "question": "Where should users reach the website?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "website_api",
+      "id": "web_domain",
+      "question": "Which saved domain?",
+      "required": true,
+      "secret": false,
+      "type": "domain"
+    },
+    {
+      "group": "ai_models",
+      "id": "model_source",
+      "question": "Start a model on this computer now?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "model",
+      "question": "Which open model should it run?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "quantization",
+      "question": "Which GGUF quantization?",
+      "required": false,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "gpu",
+      "question": "Where should the model run?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "memory_gb",
+      "question": "Memory for the model in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    }
+  ],
+  "pcAccess": [],
+  "public": [
+    {
+      "access": "asked",
+      "environment": "web",
+      "input": "web_access",
+      "port": 3000,
+      "resource": "site"
+    }
+  ],
+  "requires": {
+    "gpu": "none",
+    "platforms": [],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [
+        "model",
+        "web"
+      ],
+      "id": "attached",
+      "kind": "connection",
+      "summary": {
+        "from": "resource:web",
+        "model_command": "[\"python\",\"/app/site/attached.py\"]",
+        "model_request": true,
+        "ports": "8000",
+        "to": "resource:model"
+      },
+      "when": [
+        "model_source is one of [\"local\"]"
+      ]
+    },
+    {
+      "dependsOn": [],
+      "id": "data",
+      "kind": "volume",
+      "summary": {},
+      "when": []
+    },
+    {
+      "dependsOn": [],
+      "id": "model",
+      "kind": "model_service",
+      "summary": {
+        "gpu": "{{inputs.gpu}}",
+        "memory_gb": "{{inputs.memory_gb}}",
+        "model": "{{inputs.model}}",
+        "quantization": "{{inputs.quantization}}"
+      },
+      "when": [
+        "model_source is one of [\"local\"]"
+      ]
+    },
+    {
+      "dependsOn": [
+        "web"
+      ],
+      "id": "site",
+      "kind": "service_publication",
+      "summary": {
+        "access": "{{inputs.web_access}}",
+        "domain": "{{inputs.web_domain}}",
+        "port": 3000,
+        "target": "resource:web"
+      },
+      "when": []
+    },
+    {
+      "dependsOn": [
+        "data"
+      ],
+      "id": "web",
+      "kind": "environment",
+      "summary": {
+        "command": "python, /app/site/server.py",
+        "cpu": 2,
+        "image": "python:3.12-slim",
+        "memory": "1GB",
+        "ports": "3000",
+        "restart": "unless-stopped",
+        "secrets": "ADMIN_BOOTSTRAP_PASSWORD",
+        "storage": "4GB",
+        "type": "container"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Sign in as administrator",
+    "Connect a model server"
+  ],
+  "subtitle": "Your models. Your infrastructure. Your rules.",
+  "tools": [],
+  "totals": {
+    "cpu": 2,
+    "environments": 1,
+    "gpu": "none",
+    "memoryGb": 1,
+    "storageGb": 4
+  },
+  "warnings": [
+    "Makes web:3000 reachable from the internet."
+  ]
+}

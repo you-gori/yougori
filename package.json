@@ -2,16 +2,13 @@
   "name": "yougori",
   "private": true,
   "license": "AGPL-3.0-only",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "type": "module",
   "packageManager": "npm@11.17.0",
   "engines": {
     "node": "^22.12.0 || >=24.0.0"
   },
   "scripts": {
-    "yougori": "cargo run --quiet --locked --manifest-path cli/Cargo.toml --bin yougori -- launch",
-    "yougori-change": "cargo run --quiet --locked --manifest-path cli/Cargo.toml --bin yougori -- launch --change",
-    "yougori-cloud": "cargo run --quiet --locked --manifest-path cli/Cargo.toml --bin yougori -- launch --cloud",
     "cli": "cargo run --quiet --manifest-path cli/Cargo.toml --",
     "cli:build": "cargo build --release --manifest-path cli/Cargo.toml",
     "cli:bundle": "node scripts/bundle-cli.mjs",
@@ -40,14 +37,19 @@
     "check:native": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
     "cache:report": "pwsh -NoProfile -File scripts/build-cache.ps1",
     "cache:clean": "pwsh -NoProfile -File scripts/build-cache.ps1 -Clean",
+    "disk:report": "pwsh -NoProfile -File scripts/disk-cleanup.ps1 -Compact",
+    "disk:clean": "pwsh -NoProfile -File scripts/disk-cleanup.ps1 -Clean -Compact",
+    "disk:schedule": "pwsh -NoProfile -File scripts/register-disk-cleanup.ps1",
     "test:native": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:harness": "pwsh -NoProfile -File scripts/test-bounded-test-process.ps1",
+    "test:model:offline": "python -I -B scripts/test-model-offline.py",
+    "test:model:checkpoints": "python -I -B scripts/test-model-checkpoints.py",
     "test:runtime": "cargo test --manifest-path src-tauri/Cargo.toml bundled_appliance_runs_snapshots_and_enforces_connections -- --ignored --nocapture && cargo test --manifest-path src-tauri/Cargo.toml bundled_qemu_exposes_qmp_and_vnc_websocket -- --ignored --nocapture && cargo test --manifest-path src-tauri/Cargo.toml bundled_alpine_micro_vm_exposes_qmp_without_a_display -- --ignored --nocapture",
     "test:startup": "cargo test --manifest-path src-tauri/Cargo.toml bundled_runtime_warm_verification_uses_the_metadata_cache -- --ignored --nocapture",
     "test:cuda-setup": "node --test scripts/cuda-setup.test.mjs scripts/cuda-wsl-preflight-native.test.mjs",
     "benchmark": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/benchmark-runtime.ps1",
-    "verify": "npm run lint && npm test && npm run build && npm run cli:test && npm run check:native && npm run test:native",
-    "verify:windows": "pwsh -NoProfile -File scripts/check-windows-test-prerequisites.ps1 && npm ci && npx playwright install chromium --no-shell && npm audit --audit-level=moderate && npm run release:check && npm run lint && npm test && npm run build && cargo +stable test --locked --manifest-path cli/Cargo.toml && cargo +stable test --locked --manifest-path runtime/cuda/host/Cargo.toml && cargo +stable check --locked --manifest-path src-tauri/Cargo.toml --all-targets && cargo +stable test --locked --manifest-path src-tauri/Cargo.toml --lib && npm run cli:bundle && npm run test:e2e && npm run test:harness",
+    "verify": "npm run test:model:offline && npm run lint && npm test && npm run build && npm run cli:test && npm run check:native && npm run test:native",
+    "verify:windows": "pwsh -NoProfile -File scripts/check-windows-test-prerequisites.ps1 && npm run test:model:offline && npm ci && npx playwright install chromium --no-shell && npm audit --audit-level=moderate && npm run release:check && npm run lint && npm test && npm run build && cargo +stable test --locked --manifest-path cli/Cargo.toml && cargo +stable test --locked --manifest-path runtime/cuda/host/Cargo.toml && cargo +stable check --locked --manifest-path src-tauri/Cargo.toml --all-targets && cargo +stable test --locked --manifest-path src-tauri/Cargo.toml --lib && npm run cli:bundle && npm run test:e2e && npm run test:harness",
     "runtime:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-bundled-runtime.ps1",
     "desktop:dev": "node scripts/desktop-dev.mjs",
     "desktop:dev:admin": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-desktop-dev-admin.ps1",
@@ -110,5 +112,10 @@
     "typescript-eslint": "^8.42.0",
     "vite": "^7.1.4",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.5"
+    }
   }
 }

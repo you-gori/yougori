@@ -1,0 +1,163 @@
+{
+  "contract_version": 1,
+  "subject": {
+    "kind": "model",
+    "id": "llama-3-8b"
+  },
+  "shown_at": {
+    "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+    "at": 1000,
+    "configuration": "ad2eeb2c62c77a270abb87f2900500596964121208c2db0fb539fe0b4d9342db"
+  },
+  "execution": {
+    "requested": {
+      "requirement": {
+        "requires": "explicit",
+        "allowed": [
+          "provider_container_runtime"
+        ]
+      },
+      "choices": [
+        {
+          "category": {
+            "category": "vm_sandbox",
+            "label": "VM sandbox",
+            "sandbox": true
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "runtime_not_allowed"
+            },
+            "reason": "\"VM sandbox\" is not among the runtimes this request explicitly allows: \"remote runtime (provider container), not a sandbox\"",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        },
+        {
+          "category": {
+            "category": "shared_kernel_gpu_runtime",
+            "label": "GPU runtime (shared kernel), not a sandbox",
+            "decision": "VM-D4",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "runtime_not_allowed"
+            },
+            "reason": "\"GPU runtime (shared kernel), not a sandbox\" (VM-D4) is not among the runtimes this request explicitly allows: \"remote runtime (provider container), not a sandbox\"",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        },
+        {
+          "category": {
+            "category": "provider_container_runtime",
+            "label": "remote runtime (provider container), not a sandbox",
+            "decision": "VM-D5",
+            "sandbox": false
+          },
+          "allowed": true
+        },
+        {
+          "category": {
+            "category": "host_process_model_runtime",
+            "label": "model runtime (host process, sandbox profile), not a sandbox",
+            "decision": "VM-D6",
+            "sandbox": false
+          },
+          "allowed": false,
+          "refusal": {
+            "code": {
+              "domain": "category",
+              "code": "runtime_not_allowed"
+            },
+            "reason": "\"model runtime (host process, sandbox profile), not a sandbox\" (VM-D6) is not among the runtimes this request explicitly allows: \"remote runtime (provider container), not a sandbox\"",
+            "remedy": {
+              "remedy": "evidence",
+              "step": {
+                "action": "choose_allowed_category"
+              }
+            },
+            "remedy_text": "choose a runtime of a category this request allows"
+          }
+        }
+      ]
+    },
+    "actual": {
+      "value": {
+        "category": {
+          "category": "provider_container_runtime",
+          "label": "remote runtime (provider container), not a sandbox",
+          "decision": "VM-D5",
+          "sandbox": false
+        },
+        "release": {
+          "backend": "vllm",
+          "version": "0.31.0"
+        },
+        "instance": "c92c8bae172ebf6d4df619fd7f00b09749e205cb14c9822bfecf6af458fff21d"
+      },
+      "evidence": {
+        "state": "observed",
+        "by": "provider_api",
+        "observed_at": 1000,
+        "fresh_until": 3600000001000
+      }
+    }
+  },
+  "model": {
+    "readiness": {
+      "state": "preparing",
+      "label": "Preparing"
+    },
+    "preparation": {
+      "preparation": "running",
+      "started_at": 1000
+    },
+    "residency": {
+      "gpu_extents": 0,
+      "gpu_bytes": 0,
+      "host": {
+        "bytes": 4000000000,
+        "guaranteed_resident_bytes": 0,
+        "advisory_resident_bytes": 1000000000
+      }
+    }
+  },
+  "progress": [
+    {
+      "operation": "op-load-1",
+      "phase": "queued",
+      "ended": false,
+      "update": {
+        "resource": "ff0e14a283daa0eadc58ee6ffe620a8df54911ccc7ac74d55ee9efe1f79bffb0",
+        "kind": "weights",
+        "completed_bytes": 0,
+        "total_bytes": 4000000000,
+        "committed_usable_bytes": 0,
+        "queue_reason": {
+          "reason": "gpu_memory",
+          "needed_bytes": 4000000000
+        },
+        "cancellation": {
+          "boundary": "anytime"
+        }
+      },
+      "description": "waiting for 4 GB of GPU memory"
+    }
+  ]
+}

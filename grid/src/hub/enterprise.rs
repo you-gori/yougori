@@ -99,6 +99,17 @@ pub(super) struct Session {
     pub person: String,
     pub key_hash: String,
     pub expires: i64,
+    /// Signed in through the company's identity provider, which answers for its own second factor.
+    pub sso: bool,
+}
+
+/// Said to a person this grid requires two-step sign-in of, until they turn it on.
+pub(super) const TWO_STEP_OWED: &str = "Your company requires two-step sign-in. Turn it on for your account first, then sign in again with a code from your authenticator app.";
+
+/// Whether `person` must turn two-step sign-in on before reaching a desk or changing anything:
+/// the grid requires it, they have not, and they did not sign in through the company's provider.
+pub(super) fn two_step_owed(record: &Record, person: &str, sso: bool) -> bool {
+    record.enterprise.require_two_step && !sso && record.people.iter().find(|p| p.id == person).is_some_and(|p| p.totp.is_none())
 }
 
 fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -230,7 +241,7 @@ pub(super) fn manage(
     let action = field(&value, "action")?;
     let mut stored = lock(&shared.record);
     // Resolve permission after reading the request and under the mutation lock: revocation fences queued writes.
-    let (actor, role) = if let Some(hash) = session_hash {
+    let (actor, role, owed) = if let Some(hash) = session_hash {
         let live = lock(&shared.live);
         let session = live
             .sessions
@@ -242,10 +253,15 @@ pub(super) fn manage(
             .iter()
             .find(|p| p.id == session.person && desks::same_hash(&p.key_hash, &session.key_hash))
             .ok_or("This account or password was changed; sign in again")?;
-        (person.id.clone(), person.admin_role)
+        (person.id.clone(), person.admin_role, two_step_owed(&stored, &person.id, session.sso))
     } else {
-        ("owner".into(), AdminRole::Administrator)
+        ("owner".into(), AdminRole::Administrator, false)
     };
+    // Until two-step sign-in is on for them, a person may look at their own page, sign out and
+    // turn it on. Nothing else, an administrator's actions included.
+    if owed && !matches!(action, "logout" | "portal" | "mfaEnroll" | "mfaConfirm") {
+        return Err(TWO_STEP_OWED.into());
+    }
     if action == "logout" {
         if let Some(hash) = session_hash {
             lock(&shared.live).sessions.remove(hash);
@@ -291,7 +307,7 @@ pub(super) fn manage(
                 if d.state == DeskState::Moving {
                     shown["note"] = json!("Moving your desk to another computer. Everything in it is being copied; open it again in a few minutes.");
                 }
-                if let Some((invitation, _)) = invitation {
+                if let Some((invitation, _)) = invitation.filter(|_| !owed) {
                     shown["invitation"] = invitation.clone();
                 }
                 shown
@@ -309,8 +325,9 @@ pub(super) fn manage(
                         .is_some_and(|id| c.role_ids.contains(id))
             })
             .collect::<Vec<_>>();
+        let connections = if owed { Vec::new() } else { connections };
         return Ok(
-            json!({"personId":person.id,"name":person.name,"username":person.username,"adminRole":person.admin_role,"mfa":person.totp.is_some(),"grid":{"id":stored.id,"name":stored.name},"desks":desks,"connections":connections}),
+            json!({"personId":person.id,"name":person.name,"username":person.username,"adminRole":person.admin_role,"mfa":person.totp.is_some(),"twoStepRequired":owed,"grid":{"id":stored.id,"name":stored.name},"desks":desks,"connections":connections}),
         );
     }
     // Two-step sign-in is each person's own to turn on or off; the admin may only reset it.
@@ -694,6 +711,23 @@ pub(super) fn manage(
             removed_member = Some(member.id.clone());
             json!({"id": member.id, "name": member.name, "removed": true})
         }
+        "computersOnly" => {
+            // Only the computers by these names take desks from now on; null or an empty list
+            // lets any computer with room take them again. Desks already placed stay where they are.
+            let names = match &value["names"] {
+                Value::Null => None,
+                Value::Array(names) => {
+                    let names: Vec<String> = names.iter().filter_map(Value::as_str).map(|name| name.trim().to_owned()).filter(|name| !name.is_empty()).collect();
+                    if names.len() > 64 || names.iter().any(|name| name.len() > 128 || name.chars().any(char::is_control)) {
+                        return Err("Name at most 64 computers, each in at most 128 characters".into());
+                    }
+                    (!names.is_empty()).then_some(names)
+                }
+                _ => return Err("names is a list of computer names, or null".into()),
+            };
+            next.enterprise.only_computers = names;
+            json!({"id": "computersOnly", "names": next.enterprise.only_computers})
+        }
         "computerLimit" => {
             let limit = value["limit"].as_u64();
             if !value["limit"].is_null() && limit.is_none() {
@@ -838,6 +872,10 @@ pub(super) fn manage(
             }
             json!({"id": "sso", "set": false})
         }
+        "twoStepRequire" => {
+            next.enterprise.require_two_step = value["required"].as_bool().ok_or("Say required: true or false")?;
+            json!({"id": "twoStep", "required": next.enterprise.require_two_step})
+        }
         _ => return Err("Unknown Sandbox Grid management operation".into()),
     };
     {
@@ -910,6 +948,7 @@ pub(super) fn manage(
         "deskRemove" => "grid.desk.removed",
         "computerShare" => "grid.computer.share",
         "computerRemove" => "grid.computer.removed",
+        "computersOnly" => "grid.computers.only",
         "connectionAdd" => "grid.connection.added",
         "connectionRemove" => "grid.connection.removed",
         "connectionCredential" => "grid.connection.credential",
@@ -918,6 +957,7 @@ pub(super) fn manage(
         "connectionTest" => "grid.connection.test",
         "ssoSet" => "grid.sso.set",
         "ssoClear" => "grid.sso.cleared",
+        "twoStepRequire" => "grid.two_step.required",
         "parkingSet" => "grid.parking.set",
         "parkingClear" => "grid.parking.cleared",
         "cloudFallbackSet" => "grid.cloud.set",

@@ -1,0 +1,17 @@
+{
+  "mode": "host",
+  "project_title": "Example Shop",
+  "target_kind": "source",
+  "instructions": "Look at how sign-in and the checkout handle unexpected input.",
+  "authorized_scope": "The example-shop source in this folder only. Use the test accounts in TESTING.md; never a real customer's account.",
+  "visibility": "this_computer",
+  "worker_name": "Review worker",
+  "model": "hf.co/example/review-model",
+  "model_memory_gb": 16,
+  "worker_cpu": 4,
+  "worker_memory_gb": 8,
+  "sandbox_disk_gb": 20,
+  "budget_minutes": 60,
+  "evidence_gb": 10,
+  "report_policy": "review"
+}

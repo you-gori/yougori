@@ -104,7 +104,7 @@ pub fn check_path(path: &str) -> Result<(), String> {
     if path.starts_with('/') || path.ends_with('/') {
         return Err(format!("{} is not a relative file path. Use a path inside the folder, such as app/server.js.", shown(path)));
     }
-    if path.chars().any(|c| FORBIDDEN.contains(&c) || matches!(c, '\0'..='\u{1F}' | '\u{7F}') || unicode::hidden(c)) {
+    if path.chars().any(|c| FORBIDDEN.contains(&c) || matches!(c, '\0'..='\u{1F}' | '\u{7F}') || unicode::invisible(c)) {
         return Err(format!("{} has a character some computers cannot store or show (\\ : * ? \" < > | or an invisible one). Rename it.", shown(path)));
     }
     for part in path.split('/') {
@@ -389,6 +389,8 @@ enum Class {
     Words,
     /// `[A-Za-z0-9-]`
     Slack,
+    /// `[0-9a-fA-F]`
+    Hex,
 }
 
 impl Class {
@@ -399,6 +401,7 @@ impl Class {
             Class::UpperDigits => byte.is_ascii_uppercase() || byte.is_ascii_digit(),
             Class::Words => byte.is_ascii_alphanumeric() || byte == b'_',
             Class::Slack => byte.is_ascii_alphanumeric() || byte == b'-',
+            Class::Hex => byte.is_ascii_hexdigit(),
         }
     }
 }
@@ -428,6 +431,7 @@ const TOKENS: &[Token] = &[
     Token { prefixes: &["hf_"], class: Class::Alphanumeric, min: 30, exact: false, bounded: true, what: "a Hugging Face token" },
     Token { prefixes: &["sk_live_", "rk_live_"], class: Class::Alphanumeric, min: 20, exact: false, bounded: false, what: "a Stripe secret key" },
     Token { prefixes: &["ygs_", "ygw_"], class: Class::KeyChars, min: 30, exact: false, bounded: false, what: "a Yougori sign-in token" },
+    Token { prefixes: &["ygrid_"], class: Class::Hex, min: 64, exact: true, bounded: true, what: "a Closed Neo Grid API key" },
 ];
 
 impl Token {
@@ -673,6 +677,162 @@ pub fn scan(files: &Files) -> Findings {
     findings
 }
 
+// ---- Live values in descriptions -----------------------------------------------------------
+// A description, README or changelog is shown to everyone. It must not hold what a running setup
+// hands out: an invite names a company's hub and its certificate, and a quick link opens the
+// publisher's own running setup. Placeholders such as desk-invite:… or
+// https://your-app.trycloudflare.com are fine. The website's `scanDescriptions` and
+// `checkDescription`, with the same patterns.
+
+const INVITES: &[(&str, &str)] = &[("grid", "Closed Neo Grid invite"), ("desk", "Sandbox Grid invite"), ("access", "Access Grid invite"), ("bounty", "closed bounty invite")];
+
+/// What a live value is, and what to write instead.
+struct Live {
+    at: usize,
+    what: String,
+    instead: String,
+}
+
+/// Base64url as Node's `Buffer.from(text, 'base64url')` reads it: six bits a character, whole
+/// bytes only, a leftover part dropped.
+fn base64url(text: &str) -> Vec<u8> {
+    let (mut bytes, mut bits, mut count) = (Vec::new(), 0u32, 0u32);
+    for c in text.bytes() {
+        let value = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => continue,
+        };
+        bits = (bits << 6) | u32::from(value);
+        count += 6;
+        if count >= 8 {
+            count -= 8;
+            bytes.push((bits >> count) as u8);
+            bits &= (1 << count) - 1;
+        }
+    }
+    bytes
+}
+
+/// An invite only when its body is the JSON a real invite carries: an address and a fingerprint.
+fn real_invite(body: &str) -> bool {
+    let json: Option<serde_json::Value> = serde_json::from_str(&String::from_utf8_lossy(&base64url(body))).ok();
+    json.is_some_and(|wire| wire.get("a").is_some_and(serde_json::Value::is_string) && wire.get("f").is_some_and(serde_json::Value::is_string))
+}
+
+/// `\b(grid|desk|access|bounty)-invite:(eyJ[A-Za-z0-9_-]{20,2048})`, left to right: the first
+/// whose body is a real invite.
+fn live_invite(text: &str) -> Option<Live> {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        at += 1;
+        if !matches!(bytes[start], b'g' | b'd' | b'a' | b'b') || (start > 0 && word(bytes.get(start - 1))) {
+            continue;
+        }
+        let rest = &bytes[start..];
+        let Some((kind, what)) = INVITES.iter().find(|(kind, _)| rest.starts_with(kind.as_bytes()) && rest[kind.len()..].starts_with(b"-invite:eyJ")) else { continue };
+        let body = start + kind.len() + "-invite:".len();
+        let run = bytes[body + 3..].iter().take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b'-').count().min(2048);
+        if run < 20 {
+            continue;
+        }
+        let end = body + 3 + run;
+        if real_invite(&text[body..end]) {
+            return Some(Live { at: start, what: format!("a live {what}"), instead: format!("share invites privately, and write a placeholder such as {kind}-invite:… instead") });
+        }
+        at = end;
+    }
+    None
+}
+
+/// `\bhttps?:\/\/[a-z0-9]+(?:-[a-z0-9]+){2,}\.trycloudflare\.com\b(?!\.[a-z0-9])` in any letter
+/// case, left to right: the first that is not a placeholder. The host must end at .com, so
+/// `….trycloudflare.com.example.org` is another site, while a full stop ending a sentence is not.
+fn live_quick_link(text: &str) -> Option<Live> {
+    const HOST: &[u8] = b".trycloudflare.com";
+    let bytes = text.as_bytes();
+    // Bytes, not text: a start may fall inside a character, and only ASCII is compared.
+    let lower = text.to_ascii_lowercase().into_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        at += 1;
+        if (start > 0 && word(bytes.get(start - 1))) || !lower[start..].starts_with(b"http") {
+            continue;
+        }
+        let scheme = if lower[start..].starts_with(b"https://") { 8 } else if lower[start..].starts_with(b"http://") { 7 } else { continue };
+        let name = start + scheme;
+        let length = bytes[name..].iter().take_while(|b| b.is_ascii_alphanumeric() || **b == b'-').count();
+        let labels: Vec<&[u8]> = bytes[name..name + length].split(|b| *b == b'-').collect();
+        let end = name + length + HOST.len();
+        let longer = bytes.get(end) == Some(&b'.') && bytes.get(end + 1).is_some_and(u8::is_ascii_alphanumeric);
+        if labels.len() < 3 || labels.iter().any(|label| label.is_empty()) || !lower[name + length..].starts_with(HOST) || word(bytes.get(end)) || longer {
+            continue;
+        }
+        if !placeholder(&text[start..end]) {
+            return Some(Live { at: start, what: "a quick link to a running setup".into(), instead: "it opens your own setup; write a placeholder such as https://your-link.trycloudflare.com instead".into() });
+        }
+        at = end;
+    }
+    None
+}
+
+/// The first live value in a text: invites first, then quick links, as the website looks.
+fn live_value(text: &str) -> Option<Live> {
+    live_invite(text).or_else(|| live_quick_link(text))
+}
+
+/// Whether a text holds a live invite, read as descriptions are (the website's `inviteIn`).
+pub fn invite_in(text: &str) -> bool {
+    live_invite(text).is_some()
+}
+
+/// Whether a text holds a quick link to a running setup, read as descriptions are (the website's
+/// `quickLinkIn`).
+pub fn quick_link_in(text: &str) -> bool {
+    live_quick_link(text).is_some()
+}
+
+/// `^(?:readme|changelog)(?:\.[a-z]+)?$` in any letter case: files whose text describes the item.
+fn describing(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let rest = lower.strip_prefix("readme").or_else(|| lower.strip_prefix("changelog"));
+    rest.is_some_and(|rest| rest.is_empty() || rest.strip_prefix('.').is_some_and(|extension| !extension.is_empty() && extension.bytes().all(|b| b.is_ascii_lowercase())))
+}
+
+/// The README, changelog and marker file (`marker`) problems: each file's first live value, with
+/// its line. Files that are not UTF-8 text are not read, as on the website.
+pub fn descriptions(files: &Files, marker: &str) -> Vec<String> {
+    files.iter().filter(|(path, _)| path.as_str() == marker || describing(path.rsplit('/').next().unwrap_or(path))).filter_map(|(path, bytes)| {
+        let text = text(bytes)?;
+        let live = live_value(text)?;
+        Some(format!("{} line {}: holds {}. Hub pages are public: {}.", shown(path), line_of(text.as_bytes(), live.at), live.what, live.instead))
+    }).collect()
+}
+
+/// Everything the website refuses in an upload's files and description fields: `scan`, then live
+/// values in the README, changelog and marker file and in the title, summary, changelog and
+/// subtitle (`fields`, by name).
+pub fn scan_upload(files: &Files, marker: &str, fields: &[(&str, Option<&str>)]) -> Findings {
+    let mut findings = scan(files);
+    findings.refused.extend(descriptions(files, marker));
+    findings.refused.extend(live_fields(fields));
+    findings
+}
+
+/// The title, summary, changelog and subtitle problems, by field name ("summary").
+pub fn live_fields(fields: &[(&str, Option<&str>)]) -> Vec<String> {
+    fields.iter().filter_map(|(field, text)| {
+        let live = live_value((*text)?)?;
+        Some(format!("The {field} holds {}. Hub pages are public: {}.", live.what, live.instead))
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +857,7 @@ mod tests {
             (format!("hf_{}", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0dF"), "a Hugging Face token"),
             (format!("sk_live_{}", "4eC39HqLyjWDarjtT1zdp7dc"), "a Stripe secret key"),
             (format!("ygs_{}", "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MDEyMzQ1"), "a Yougori sign-in token"),
+            (format!("ygrid_{}", "0123456789abcdef".repeat(4)), "a Closed Neo Grid API key"),
             (format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{KEY_MATERIAL}"), "a private key"),
             (format!("-----BEGIN PRIVATE KEY-----{KEY_MATERIAL}"), "a private key"),
             ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED".to_owned(), "a private key"),
@@ -710,6 +871,74 @@ mod tests {
             assert!(said.contains(what), "{secret}: {said}");
             assert!(!said.contains(&secret), "the message never repeats the secret");
         }
+    }
+
+    /// A real invite of `kind`, as the hub writes one: base64url JSON with an address and a fingerprint.
+    fn invite(kind: &str) -> String {
+        use base64::Engine;
+        let wire = serde_json::json!({"v": 1, "c": "Acme", "a": "10.0.0.5:7463", "f": "AB".repeat(32)});
+        format!("{kind}-invite:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(wire.to_string()))
+    }
+
+    const LINK: &str = "https://seasonal-deck-organisms-sf.trycloudflare.com";
+
+    #[test]
+    fn live_invites_and_quick_links_in_descriptions_are_refused_with_the_file_and_line() {
+        let marker = "yougori-template.yaml";
+        let cases = [
+            ("README.md", format!("# my-api\n\nJoin with {}\n", invite("desk")), "README.md line 3: holds a live Sandbox Grid invite. Hub pages are public: share invites privately, and write a placeholder such as desk-invite:… instead."),
+            ("docs/README.md", format!("Hub: {}", invite("grid")), "docs/README.md line 1: holds a live Closed Neo Grid invite."),
+            ("CHANGELOG.md", format!("## 1.0.0\n\n{}\n", invite("access")), "CHANGELOG.md line 3: holds a live Access Grid invite."),
+            (marker, format!("name: my-api\nversion: 1.0.0\nlicense: MIT\nsummary: An API.\ndescription: Join {}\n", invite("bounty")), "yougori-template.yaml line 5: holds a live closed bounty invite."),
+            ("README.md", format!("Open {LINK} to try it.\n"), "README.md line 1: holds a quick link to a running setup. Hub pages are public: it opens your own setup; write a placeholder such as https://your-link.trycloudflare.com instead."),
+            ("readme", format!("Café — ouvrez {}.\n", LINK.to_uppercase()), "readme line 1: holds a quick link to a running setup."),
+        ];
+        for (path, text, said) in cases {
+            let found = descriptions(&files(&[(path, &text)]), marker);
+            assert_eq!(found.len(), 1, "{path}: {found:?}");
+            assert!(found[0].starts_with(said), "{}", found[0]);
+        }
+        // An invite comes before a quick link, wherever each is, as the website looks for them.
+        let both = descriptions(&files(&[("README.md", &format!("{LINK}\n\n{}\n", invite("desk")))]), marker);
+        assert!(both[0].starts_with("README.md line 3: holds a live Sandbox Grid invite"), "{both:?}");
+        // The title, summary, changelog and subtitle, by name.
+        let fields = live_fields(&[("title", Some("My API")), ("summary", Some(&format!("Try it at {LINK}"))), ("changelog", Some(&format!("First version.\n{}", invite("desk")))), ("subtitle", None)]);
+        assert_eq!(fields, [
+            "The summary holds a quick link to a running setup. Hub pages are public: it opens your own setup; write a placeholder such as https://your-link.trycloudflare.com instead.",
+            "The changelog holds a live Sandbox Grid invite. Hub pages are public: share invites privately, and write a placeholder such as desk-invite:… instead.",
+        ]);
+        let upload = scan_upload(&files(&[("README.md", &invite("grid")), ("app/a.js", &format!("const key = 'ygrid_{}'\n", "0123456789abcdef".repeat(4)))]), marker, &[("summary", Some(LINK))]);
+        assert_eq!(upload.refused.len(), 3, "{:?}", upload.refused);
+    }
+
+    #[test]
+    fn placeholders_examples_and_invites_outside_descriptions_are_fine() {
+        let marker = "yougori-template.yaml";
+        let allowed = [
+            ("README.md", "# my-api\n\nJoin with desk-invite:… or grid-invite:..., e.g. desk-invite:abc.\nOpen https://your-app-name.trycloudflare.com or https://x.trycloudflare.com.\nAn access-invite:eyJub3QgYW4gaW52aXRlIGF0IGFsbCB9 is not one.\n".to_owned()),
+            // Code that reads invites, and another tool's marker, are not descriptions.
+            ("app/fixture.js", format!("export const sample = '{}'\n", invite("desk"))),
+            ("yougori-tool.yaml", format!("summary: {}\n", invite("desk"))),
+            ("README.en.md", invite("desk")),
+            ("README.md5", invite("desk")),
+            // Not a word boundary before it, not a whole host, or not trycloudflare.com.
+            ("README.md", format!("x{}", invite("desk"))),
+            ("README.md", format!("x{LINK} {}", LINK.replace(".com", ".community"))),
+            ("README.md", "https://a--b-c.trycloudflare.com https://a-b.trycloudflare.com https://a-b-c.trycloudflare.com.evil.example/".into()),
+            ("README.md", "desk-invite:eyJ2IjoxfQ is too short, and desk-invite:eyJhYmMiOiJkZWYiLCJnaGkiOiJqa2wifQ has no address.".into()),
+        ];
+        for (path, text) in allowed {
+            assert_eq!(descriptions(&files(&[(path, &text)]), marker), Vec::<String>::new(), "{path}: {text}");
+        }
+        // The host ends at .com: a path, or a full stop ending the sentence, still leaves it a quick link.
+        for text in ["https://a-b-c.trycloudflare.com/x", "Open https://a-b-c.trycloudflare.com.", "(https://a-b-c.trycloudflare.com.)"] {
+            assert_eq!(descriptions(&files(&[("README.md", text)]), marker).len(), 1, "{text}");
+        }
+        // A README that is not UTF-8 text is not read, as on the website.
+        let mut binary = invite("desk").into_bytes();
+        binary.push(0);
+        assert!(descriptions(&[("README.md".to_owned(), binary)].into(), marker).is_empty());
+        assert_eq!(base64url("eyJ2IjoxfQ"), b"{\"v\":1}", "a leftover part is dropped, as Node does");
     }
 
     #[test]
@@ -817,13 +1046,14 @@ mod tests {
 
     #[test]
     fn paths_follow_the_hub_rules() {
-        for good in ["yougori.yaml", "app/server.js", ".env.example", "a/.b/c", "naïve/日本.txt", "con .txt", "a b/c d.txt", "x\u{ad}y.txt"] {
+        for good in ["yougori.yaml", "app/server.js", ".env.example", "a/.b/c", "naïve/日本.txt", "con .txt", "a b/c d.txt"] {
             assert!(check_path(good).is_ok(), "{good}");
         }
         for bad in ["", "/abs", "a/", "a//b", "./a", "a/../b", "..", "a\\b", "c:x", "tab\there", "esc\u{1b}x", "del\u{7f}", "dot./x", "space /x", "con", "aux.txt", "dir/LPT1.log", "Com0", "lpt9.x", "COM¹.txt", "conin$", "CONOUT$.log", &"a".repeat(513), &format!("{}/b", "a".repeat(256))] {
             assert!(check_path(bad).is_err(), "{bad:?}");
         }
-        for character in ['*', '?', '"', '<', '>', '|', '\u{202e}', '\u{200b}', '\u{feff}', '\u{2066}', '\u{61c}'] {
+        // The soft hyphen, U+180E and the tag characters show as nothing too; the website refuses them as well.
+        for character in ['*', '?', '"', '<', '>', '|', '\u{202e}', '\u{200b}', '\u{feff}', '\u{2066}', '\u{61c}', '\u{ad}', '\u{180e}', '\u{e0041}'] {
             let refused = check_path(&format!("site/a{character}b.txt")).unwrap_err();
             assert!(refused.contains("has a character some computers cannot store or show"), "{character:?}: {refused}");
         }

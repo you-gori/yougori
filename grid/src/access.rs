@@ -14,6 +14,7 @@ pub mod activity;
 pub mod backup;
 pub mod forward;
 pub mod hub;
+pub mod instances;
 pub mod member;
 pub mod mint;
 pub mod policy;

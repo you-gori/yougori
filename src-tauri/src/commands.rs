@@ -683,7 +683,7 @@ async fn prepare_container_start(
     Ok(PreparedContainerStart { rollback, target: target_allocation })
 }
 
-fn container_object_missing(error: &str) -> bool {
+pub(crate) fn container_object_missing(error: &str) -> bool {
     error.contains("no such object") || error.contains("no such container")
 }
 
@@ -1564,6 +1564,12 @@ pub async fn set_environment_status(
     };
     if stopping { crate::file_import::cancel_transfers(&environment_id, None); crate::guest_execution::cancel_environment_jobs(&environment_id); }
     let guarded = store.environment(&environment_id)?;
+    let mut gpu_end = if provider(&guarded) == RuntimeProviderKind::YougoriCuda
+        && guarded.gpu_access && status == EnvironmentStatus::Stopped
+        && guarded.status != EnvironmentStatus::Stopped
+    {
+        Some(crate::model_runner::optimizer::RuntimeEnd::capture(&environment_id).await?)
+    } else { None };
     let _container_serial = environment_container_policy_guard(&runtime, &guarded).await?;
     let current_state = store.snapshot()?;
     if status == EnvironmentStatus::Running && current_state.pending_factory_resets.iter().any(|p| p.environment.id == environment_id) {
@@ -1810,6 +1816,10 @@ pub async fn set_environment_status(
             return Err(errors.join("; "));
         }
     };
+    // A failed state write above can restart the old runtime during rollback. Keep its
+    // grant until persistence succeeds; then let admission proceed before disk reclaim.
+    if let Some(end) = gpu_end.as_mut() { end.confirm(); }
+    drop(gpu_end);
     if status == EnvironmentStatus::Stopped {
         forget_applied_resource_limits(runtime_id(&environment));
         let cuda_busy = provider(&environment) == RuntimeProviderKind::YougoriCuda && next.environments.iter().any(|peer|
@@ -1966,7 +1976,31 @@ pub async fn delete_environment(
                     .delete_container_snapshot(runtime_id(&environment), &snapshot.id)
                     .await.map_err(|error| format!("Snapshot cleanup did not finish; the environment was kept so deletion can be retried. {error}"))?;
             }
+            // A model served from the engine's catalog (G04/S02) gives its leases and view back
+            // once its container and own storage are gone; the published copies stay. The
+            // binding is read first: the deletion removes the workload options with the container.
+            let catalog = crate::model_runner::model_catalog_binding(runtime_id(&environment), &runtime);
+            // The helper bundles served to this runner (G08) go with it; the options are read
+            // before the deletion removes them.
+            let served = runtime.workload_options(runtime_id(&environment)).ok();
+            let mut gpu_end = if provider(&environment) == RuntimeProviderKind::YougoriCuda
+                && environment.gpu_access
+            {
+                Some(crate::model_runner::optimizer::RuntimeEnd::capture(&environment_id).await?)
+            } else { None };
             runtime.delete_container_and_model_cache(runtime_id(&environment)).await?;
+            if let Some(end) = gpu_end.as_mut() { end.confirm(); }
+            drop(gpu_end);
+            if let Some(options) = served {
+                if let Err(error) = crate::model_runner::helpers::release_served(&options) {
+                    eprintln!("Served helper bundles of {environment_id} were not removed: {error}");
+                }
+            }
+            if let Some(options) = catalog {
+                if let Err(error) = crate::model_runner::release_model_catalog(options).await {
+                    eprintln!("Model catalog leases of {environment_id} were not released: {error}");
+                }
+            }
         }
         RuntimeProviderKind::Qemu => {
             for snapshot in state

@@ -105,6 +105,10 @@ async fn publication_plan(environment_id: &str, port: u16, kind: &PublicationKin
         if let Some(owner)=routes.values().find(|p|p.tunnel_id.as_deref()==Some(account.tunnel_id.as_str()) && (p.info.environment_id!=environment_id || p.info.port!=port)) {
             return Ok(json!({"allowed":false,"action":"conflict","code":"DOMAIN_IN_USE","owner":owner.info,"unrelatedPublicationsPreserved":true}));
         }
+        // A grid hub's tunnel holds this domain: a publication would take its route away.
+        if let Some(entry)=manager.grid_route(&account.tunnel_id) {
+            return Ok(json!({"allowed":false,"action":"conflict","code":"DOMAIN_IN_USE","owner":{"type":"gridTunnel","hostPort":entry},"unrelatedPublicationsPreserved":true}));
+        }
     }
     let existing=routes.values().find(|p|p.info.environment_id==environment_id && p.info.port==port && &p.info.kind==kind).map(|p|p.info.clone());
     if let Some(existing)=&existing {
@@ -169,8 +173,24 @@ pub struct WorkspaceManager {
     terminals: Mutex<HashMap<String, TerminalLease>>,
     pub(crate) operations: Mutex<()>,
     local_ports_key: Mutex<String>,
+    /// Saved domains carrying a grid hub's tunnel now: tunnel ID to the hub's tunnel entry port
+    /// and the supervisor holding it. No two grids, and no environment publication, share one.
+    grid_routes: std::sync::Mutex<HashMap<String, (u16, u64)>>,
+}
+/// Why a saved domain cannot carry a grid's tunnel, or nothing when it can: `claims` are the
+/// domains grid tunnels hold now (tunnel ID to entry port and supervisor).
+fn grid_route_refusal(claims: &HashMap<String, (u16, u64)>, tunnel_id: &str, port: u16) -> Option<String> {
+    claims.get(tunnel_id).filter(|(held, _)| *held != port).map(|_| "This domain already carries another grid's tunnel on this computer. Choose another saved domain for this grid, or a quick link.".to_owned())
 }
 impl WorkspaceManager {
+    /// The entry port of the grid tunnel holding this Cloudflare tunnel, if one does.
+    fn grid_route(&self, tunnel_id: &str) -> Option<u16> {
+        self.grid_routes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(tunnel_id).map(|(port, _)| *port)
+    }
+    /// A grid tunnel's supervisor ended: the domain it held is free again.
+    pub(crate) fn release_grid_tunnel(&self, claim: u64) {
+        self.grid_routes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retain(|_, (_, held)| *held != claim);
+    }
     /// PC folders stay mounted in a locked-down environment but answer nothing.
     pub(crate) async fn set_environment_shares_suspended(&self, environment_id: &str, suspended: bool) {
         for share in self.shares.lock().await.values().filter(|share| share.info.environment_id == environment_id) {
@@ -190,6 +210,9 @@ impl WorkspaceManager {
             if self.publications.lock().await.values().any(|p| p.tunnel_id.as_deref() == Some(account.tunnel_id.as_str())) {
                 return Err("This domain is serving another environment. Disconnect that publication or choose another domain.".into());
             }
+            if self.grid_route(&account.tunnel_id).is_some() {
+                return Err("This domain carries a grid's tunnel on this computer. Choose another domain.".into());
+            }
             cloudflare::finish_setup(self, account).await?;
         }
         let listener = TcpListener::bind(("127.0.0.1", account.as_ref().map_or(0, cloudflare::Account::host_port))).await
@@ -199,10 +222,12 @@ impl WorkspaceManager {
         let started = cloudflare::start(&executable, &self.root, port, account.as_ref()).await?;
         Ok((listener, started))
     }
-    /// A Cloudflare tunnel to the Closed Neo Grid hub's loopback entry on `port`, which the hub
-    /// opens itself: a Quick Tunnel, or `domain`'s saved account tunnel, whose route must
-    /// already point at that port. As for downloads, a domain serving an environment is refused.
-    pub(crate) async fn grid_tunnel(&self, domain: Option<&str>, port: u16, store: &PlatformStore) -> Result<cloudflare::Started, String> {
+    /// A Cloudflare tunnel to a grid hub's loopback entry on `port`, which the hub opens itself: a
+    /// Quick Tunnel, or `domain`'s saved account tunnel, whose route must already point at that
+    /// port. As for downloads, a domain serving an environment is refused, and so is one another
+    /// grid's tunnel holds; `claim` is the supervisor asking, which holds the domain until
+    /// `release_grid_tunnel`.
+    pub(crate) async fn grid_tunnel(&self, domain: Option<&str>, port: u16, claim: u64, store: &PlatformStore) -> Result<cloudflare::Started, String> {
         let _serial = self.operations.lock().await;
         let account = if let Some(domain) = domain {
             let saved = cloudflare::find_domain(store, domain)?;
@@ -215,6 +240,13 @@ impl WorkspaceManager {
         if let Some(account) = &account {
             if self.publications.lock().await.values().any(|p| p.tunnel_id.as_deref() == Some(account.tunnel_id.as_str())) {
                 return Err("This domain is serving an environment. Disconnect that publication or choose another domain for the grid.".into());
+            }
+            {
+                let mut claims = self.grid_routes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(refused) = grid_route_refusal(&claims, &account.tunnel_id, port) {
+                    return Err(refused);
+                }
+                claims.insert(account.tunnel_id.clone(), (port, claim));
             }
             cloudflare::finish_setup(self, account).await?;
         }
@@ -243,6 +275,7 @@ impl WorkspaceManager {
             terminals: Mutex::new(HashMap::new()),
             operations: Mutex::new(()),
             local_ports_key: Mutex::new(String::new()),
+            grid_routes: std::sync::Mutex::new(HashMap::new()),
         }
     }
     pub async fn cleanup(&self, store: &PlatformStore, runtime: &RuntimeManager) {
@@ -429,7 +462,7 @@ fn background(command: &mut tokio::process::Command) {
         command.as_std_mut().creation_flags(0x08000000);
     }
 }
-fn private_peer(ip: IpAddr) -> bool {
+pub(crate) fn private_peer(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
         IpAddr::V6(ip) => {
@@ -442,7 +475,7 @@ fn private_peer(ip: IpAddr) -> bool {
         }
     }
 }
-fn lan_address() -> String {
+pub(crate) fn lan_address() -> String {
     std::net::UdpSocket::bind("0.0.0.0:0")
         .and_then(|s| {
             s.connect("192.0.2.1:80")?;
@@ -954,7 +987,7 @@ async fn publish_service_with_intent(
     if let Some(account) = &account {
         if manager.publications.lock().await.values().any(|p| {
             p.tunnel_id.as_deref() == Some(account.tunnel_id.as_str())
-        }) {
+        }) || manager.grid_route(&account.tunnel_id).is_some() {
             return Err("This Cloudflare tunnel is already connected in Yougori. Use a dedicated tunnel for each published service.".into());
         }
     }

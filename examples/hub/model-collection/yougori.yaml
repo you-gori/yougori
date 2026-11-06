@@ -1,0 +1,35 @@
+format_version: 2
+project: model-collection
+
+# Each model is served by Yougori's model runner on this computer. On an NVIDIA GPU the runner's
+# optimizer gives the GPU to one model at a time and waits for a reply in progress to finish.
+
+resources:
+  first:
+    kind: model_service
+    spec:
+      model: "{{inputs.model_one}}"
+      quantization: "{{inputs.quant_one}}"
+      gpu: "{{inputs.gpu}}"
+      memory_gb: "{{inputs.memory_gb}}"
+      api:
+        protocol: openai
+  second:
+    kind: model_service
+    spec:
+      model: "{{inputs.model_two}}"
+      quantization: "{{inputs.quant_two}}"
+      gpu: "{{inputs.gpu}}"
+      memory_gb: "{{inputs.memory_gb}}"
+      api:
+        protocol: openai
+  third:
+    kind: model_service
+    when: {third: "yes"}
+    spec:
+      model: "{{inputs.model_three}}"
+      quantization: "{{inputs.quant_three}}"
+      gpu: "{{inputs.gpu}}"
+      memory_gb: "{{inputs.memory_gb}}"
+      api:
+        protocol: openai

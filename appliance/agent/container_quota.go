@@ -320,12 +320,8 @@ func privateContainerStorage(ctx context.Context, id string) (inspectedStorageCo
 	}
 	roots = append(roots, logs...)
 	for _, root := range roots {
-		if filepath.Clean(root) != root {
-			return container, nil, nil, errors.New("private storage path is not canonical")
-		}
-		resolved, err := filepath.EvalSymlinks(root)
-		if err != nil || resolved != root {
-			return container, nil, nil, errors.New("private storage path was redirected")
+		if err := storageRootProblem(root, snapshotDirectory); err != nil {
+			return container, nil, nil, err
 		}
 		if err := requireContainerStorePath(root); err != nil {
 			return container, nil, nil, err
@@ -337,6 +333,51 @@ func privateContainerStorage(ctx context.Context, id string) (inspectedStorageCo
 		}
 	}
 	return container, roots, shared, nil
+}
+
+const snapshotDirectory = "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/"
+
+// errIncompleteContainer is a container whose writable layer is missing: its machine stopped hard
+// before the container it had just made was on disk, so it has no files of its own left.
+var errIncompleteContainer = errors.New("the container's writable layer is missing; it was not saved completely")
+
+// storageRootProblem says what is wrong with one of a container's private storage paths, if
+// anything: not canonical, redirected through a link, or (for its writable layer, under
+// `snapshots`) missing altogether, which is an incomplete container rather than a redirect.
+func storageRootProblem(root, snapshots string) error {
+	if filepath.Clean(root) != root {
+		return errors.New("private storage path is not canonical")
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if errors.Is(err, os.ErrNotExist) && strings.HasPrefix(root, snapshots) {
+		return errIncompleteContainer
+	}
+	if err != nil || resolved != root {
+		return errors.New("private storage path was redirected")
+	}
+	return nil
+}
+
+// removeIncomplete removes a container whose writable layer is missing and says so as a missing
+// object, so the host makes it again from its definition, as it does one the runtime lost. It has
+// no files of its own left to keep; its named volumes are separate and stay.
+func removeIncomplete(ctx context.Context, id string) error {
+	if _, err := run(ctx, "nerdctl", "--namespace", namespace, "rm", "--force", id); err != nil && !commandReportsNotFound(err, id) {
+		return fmt.Errorf("remove the incomplete container %s: %w", id, err)
+	}
+	removeContainerDisplay(id)
+	durable()
+	return fmt.Errorf("no such object %s: its writable layer was not saved completely, so it was removed to be made again", id)
+}
+
+// dropIncomplete answers as [removeIncomplete] for a container whose writable layer is missing.
+// False, having answered nothing, for any other container.
+func dropIncomplete(ctx context.Context, w http.ResponseWriter, id string) bool {
+	if _, _, _, err := privateContainerStorage(ctx, id); !errors.Is(err, errIncompleteContainer) {
+		return false
+	}
+	writeError(w, http.StatusNotFound, removeIncomplete(ctx, id).Error())
+	return true
 }
 
 // Only anonymous volumes are one container's private storage. nerdctl names
@@ -457,6 +498,9 @@ func configureContainerStorage(ctx context.Context, id string, limit uint64, all
 		return result, err
 	}
 	container, roots, shared, err := privateContainerStorage(ctx, id)
+	if errors.Is(err, errIncompleteContainer) {
+		return result, removeIncomplete(ctx, id)
+	}
 	if err != nil {
 		return result, err
 	}

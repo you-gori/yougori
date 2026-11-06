@@ -1,10 +1,15 @@
 //! Verify prepared images before provisioning. Every host imports the same immutable bytes.
+//!
+//! The images a computer fetches to build desks from are kept by checksum in one cache for every
+//! grid on it (`grid/images`): the same bytes are the same image whichever grid asked. A hub keeps
+//! the images it serves beside its own record, which for `default` is that same folder.
 use super::*;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 pub(super) async fn resolve(
     app: &AppHandle,
+    instance: &str,
     order: &DeskOrder,
     membership: &member::Membership,
 ) -> Result<String, String> {
@@ -14,11 +19,17 @@ pub(super) async fn resolve(
     if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("Invalid image checksum".into());
     }
-    let directory = folder(app).join("images");
+    let directory = folder(app, DEFAULT).join("images");
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|e| e.to_string())?;
-    let path = directory.join(format!("{expected}.img"));
+    let mut path = directory.join(format!("{expected}.img"));
+    // This computer may host the grid's hub too, in a folder of its own: the image it serves is
+    // already here, and is checked by its checksum like any cached one rather than fetched again.
+    let served = folder(app, instance).join("images").join(format!("{expected}.img"));
+    if !path.is_file() && instance != DEFAULT && served.is_file() {
+        path = served;
+    }
     if path.is_file() {
         let path_copy = path.clone();
         let expected = expected.clone();
@@ -127,8 +138,8 @@ pub(super) async fn resolve(
 
 /// Import a local prepared disk into the hub's private, content-addressed catalog cache.
 /// This is available only to the local grid owner; remote admins publish HTTPS/OCI sources.
-pub(crate) async fn import(app: &AppHandle, mut request: Value) -> Result<Value, String> {
-    crate::deskgrid::with_hub(app, |_| Ok(())).await?;
+pub(crate) async fn import(app: &AppHandle, instance: &str, mut request: Value) -> Result<Value, String> {
+    crate::deskgrid::with_hub_in(app, instance, |_| Ok(())).await?;
     let path = std::path::PathBuf::from(
         request["path"]
             .as_str()
@@ -150,7 +161,8 @@ pub(crate) async fn import(app: &AppHandle, mut request: Value) -> Result<Value,
     if request["spec"]["kind"] != "vm" {
         return Err("Local image imports require a prepared full VM disk".into());
     }
-    let directory = folder(app).join("images");
+    // Beside the hub's own record, where the hub looks for the images it serves.
+    let directory = folder(app, instance).join("images");
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|e| e.to_string())?;
@@ -200,5 +212,5 @@ pub(crate) async fn import(app: &AppHandle, mut request: Value) -> Result<Value,
     request["action"] = json!("imageAdd");
     request["sha256"] = json!(checksum);
     request["spec"]["image"] = json!(format!("grid-image:{checksum}"));
-    crate::deskgrid::with_hub(app, |hub| hub.enterprise(request)).await
+    crate::deskgrid::with_hub_in(app, instance, |hub| hub.enterprise(request)).await
 }

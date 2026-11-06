@@ -9,13 +9,16 @@
 //! before the next one, and turning the fallback off or deleting the grid removes what it made.
 //! Without that, an expired cloud sign-in would create a new computer every few seconds, and a
 //! computer made before a crash or a switch-off would bill unseen.
+//!
+//! Every Sandbox Grid on this computer has its own ledger, beside its own hub record, and creates
+//! its own computers one at a time: two grids' cloud computers are never counted, retired or held
+//! back together.
 use super::*;
 use crate::cloud_deployment::{self, DeployRequest, Deployment};
 use crate::deskgrid::CloudSight;
 use crate::models::PlatformState;
 use crate::runtime::cloud::Profile;
-use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Instant;
 use yougori_grid::{enterprise::CloudFallback, net::HubAddress};
 
@@ -34,16 +37,31 @@ const RETIRE_RETRY: i64 = 15 * 60;
 /// before it is taken as never created (the request records one before it calls the provider).
 const PENDING_GRACE: i64 = 30 * 60;
 
-/// One computer is created at a time.
-static PROVISIONING: AtomicBool = AtomicBool::new(false);
-/// One writer at a time for the ledger file.
+/// The grids creating a computer right now: each creates one at a time.
+static PROVISIONING: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+/// One writer at a time for the ledger files. Shared by every grid's ledger: it is held only for
+/// one read and one write, never across the network.
 static LEDGER: std::sync::Mutex<()> = std::sync::Mutex::new(());
-/// Whether the last write of the ledger failed: nothing is created until one succeeds, since a
-/// computer that cannot be recorded could not be counted or removed either.
-static LEDGER_WRITE_FAILED: AtomicBool = AtomicBool::new(false);
+/// The grids whose last ledger write failed: such a grid creates nothing until one succeeds, since
+/// a computer that cannot be recorded could not be counted or removed either.
+static LEDGER_WRITE_FAILED: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
 /// Computers being created or removed right now: one task works on each while the grid keeps
-/// checking in, so a computer still being set up is never removed under it.
+/// checking in, so a computer still being set up is never removed under it. By environment ID,
+/// which no two grids share.
 static BUSY: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+
+fn write_failed(instance: &str) -> bool {
+    LEDGER_WRITE_FAILED.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains(instance)
+}
+
+fn set_write_failed(instance: &str, failed: bool) {
+    let mut set = LEDGER_WRITE_FAILED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if failed {
+        set.insert(instance.to_owned());
+    } else {
+        set.remove(instance);
+    }
+}
 
 /// A computer claimed in `BUSY` until this is dropped.
 struct Busy(String);
@@ -63,12 +81,19 @@ impl Drop for Busy {
     }
 }
 
-/// Lets the next computer be created when this attempt ends, however it ends.
-struct Provisioning;
+/// Lets the grid's next computer be created when this attempt ends, however it ends.
+struct Provisioning(String);
+
+impl Provisioning {
+    /// Claims the grid's one attempt, or `None` while it is already making a computer.
+    fn claim(instance: &str) -> Option<Provisioning> {
+        PROVISIONING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(instance.to_owned()).then(|| Provisioning(instance.to_owned()))
+    }
+}
 
 impl Drop for Provisioning {
     fn drop(&mut self) {
-        PROVISIONING.store(false, Ordering::SeqCst);
+        PROVISIONING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&self.0);
     }
 }
 
@@ -143,6 +168,8 @@ enum Failure {
 /// The world the fallback acts on: its ledger, the app's state, the provider and the grid. The
 /// app implements it with the real things; tests with a record of what was asked.
 trait Cloud {
+    /// The grid whose cloud computers these are, for the audit.
+    fn instance(&self) -> &str;
     fn record(&self, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String>;
     fn state(&self) -> Result<PlatformState, String>;
     async fn deploy(&self, id: &str, request: DeployRequest) -> Result<(), String>;
@@ -153,6 +180,7 @@ trait Cloud {
 
 struct AppCloud<'a> {
     app: &'a AppHandle,
+    instance: &'a str,
     fallback: Option<&'a CloudFallback>,
     reach: Option<&'a HubAddress>,
     /// Whether the hub that made the memberships still runs here.
@@ -160,8 +188,11 @@ struct AppCloud<'a> {
 }
 
 impl Cloud for AppCloud<'_> {
+    fn instance(&self) -> &str {
+        self.instance
+    }
     fn record(&self, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String> {
-        update_ledger(self.app, change)
+        update_ledger(self.app, self.instance, change)
     }
     fn state(&self) -> Result<PlatformState, String> {
         self.app.state::<PlatformStore>().snapshot()
@@ -181,7 +212,7 @@ impl Cloud for AppCloud<'_> {
         if !self.hub {
             return Ok(());
         }
-        crate::deskgrid::with_hub(self.app, |hub| {
+        crate::deskgrid::with_hub_in(self.app, self.instance, |hub| {
             // One the admin already removed is gone too.
             if !hub.status()["members"].as_array().is_some_and(|members| members.iter().any(|member| member["id"] == member_id)) {
                 return Ok(());
@@ -192,31 +223,49 @@ impl Cloud for AppCloud<'_> {
     }
 }
 
-fn ledger_path(app: &AppHandle) -> PathBuf {
-    folder(app).join("cloud-computers.json")
+fn ledger_path(app: &AppHandle, instance: &str) -> PathBuf {
+    folder(app, instance).join(instances::CLOUD)
 }
 
 const UNREADABLE: &str = "The record of cloud computers could not be read, so none is created or removed automatically. Check Cloud deployments for computers named yougori-desk- and delete any you no longer need, then remove cloud-computers.json from the grid folder in Yougori's data folder.";
 
-fn load_ledger(app: &AppHandle) -> Result<Ledger, String> {
-    match std::fs::read(ledger_path(app)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| UNREADABLE.to_owned()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
-        Err(_) => Err(UNREADABLE.to_owned()),
+/// What is said when a grid's ledger cannot be read, naming the folder it is in.
+fn unreadable(instance: &str) -> String {
+    if instance == DEFAULT {
+        UNREADABLE.to_owned()
+    } else {
+        format!("The record of cloud computers could not be read, so none is created or removed automatically. Check Cloud deployments for computers named yougori-desk- and delete any you no longer need, then remove cloud-computers.json from the grid/desks/{instance} folder in Yougori's data folder.")
     }
 }
 
+fn read_ledger(path: &Path, instance: &str) -> Result<Ledger, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| unreadable(instance)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Ledger::default()),
+        Err(_) => Err(unreadable(instance)),
+    }
+}
+
+fn load_ledger(app: &AppHandle, instance: &str) -> Result<Ledger, String> {
+    read_ledger(&ledger_path(app, instance), instance)
+}
+
 /// Reads, changes and writes the ledger as one step.
-fn update_ledger(app: &AppHandle, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String> {
+fn update_ledger(app: &AppHandle, instance: &str, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String> {
+    rewrite_ledger(&ledger_path(app, instance), instance, change)
+}
+
+/// `update_ledger` on the file itself.
+fn rewrite_ledger(path: &Path, instance: &str, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String> {
     let _writer = LEDGER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut ledger = load_ledger(app)?;
+    let mut ledger = read_ledger(path, instance)?;
     let before = ledger.clone();
     change(&mut ledger);
     // After a failed write every update writes, unchanged or not, so creating resumes once the
     // disk takes it again.
-    if ledger != before || LEDGER_WRITE_FAILED.load(Ordering::SeqCst) {
-        let written = write_json(&ledger_path(app), &ledger);
-        LEDGER_WRITE_FAILED.store(written.is_err(), Ordering::SeqCst);
+    if ledger != before || write_failed(instance) {
+        let written = write_json(path, &ledger);
+        set_write_failed(instance, written.is_err());
         written.map_err(|error| format!("The record of cloud computers could not be saved ({error}), so none is created until it can be."))?;
     }
     Ok(ledger)
@@ -225,8 +274,8 @@ fn update_ledger(app: &AppHandle, change: &mut dyn FnMut(&mut Ledger)) -> Result
 /// What the admin sees, while there is anything to see: why the last attempt failed, when the
 /// next may run, whether creating is held until they inspect a deployment, and how many cloud
 /// computers are still running. `null` when the fallback has never made one.
-pub(crate) fn status(app: &AppHandle) -> Value {
-    match load_ledger(app) {
+pub(crate) fn status(app: &AppHandle, instance: &str) -> Value {
+    match load_ledger(app, instance) {
         Ok(ledger) if ledger == Ledger::default() => Value::Null,
         Ok(ledger) => json!({
             "computers": ledger.computers.values().filter(|computer| !computer.vm_deleted).count(),
@@ -404,11 +453,8 @@ enum Sight {
 /// Runs on every check-in: removes the cloud computers no longer needed (whatever the fallback's
 /// setting, so switching it off or deleting the grid stops their bills) and creates one when a
 /// desk waits and that is allowed. Both run apart from the check-in, which never waits on them.
-pub(crate) async fn tick(app: &AppHandle) {
-    let view = {
-        let grid = app.state::<crate::deskgrid::DeskGrid>();
-        crate::deskgrid::cloud_view(app, &grid).await
-    };
+pub(crate) async fn tick(app: &AppHandle, instance: &str) {
+    let view = crate::deskgrid::cloud_view(app, instance).await;
     let (sight, fallback, reach) = match view {
         CloudSight::Open { fallback, needed, reach, members } => {
             let fallback = fallback.filter(|fallback| fallback.enabled);
@@ -427,11 +473,11 @@ pub(crate) async fn tick(app: &AppHandle) {
     };
     let settings = fallback.as_ref().map(settings_of);
     let mut seen = |ledger: &mut Ledger| observe(ledger, &state, &members, settings.as_deref(), now);
-    let ledger = match update_ledger(app, &mut seen) {
+    let ledger = match update_ledger(app, instance, &mut seen) {
         Ok(ledger) => ledger,
         // Unsaved, but removing what is no longer needed must not stop with the disk. Unreadable:
         // nothing is created or removed, and the status says so.
-        Err(_) => match load_ledger(app) {
+        Err(_) => match load_ledger(app, instance) {
             Ok(mut ledger) => {
                 seen(&mut ledger);
                 ledger
@@ -439,10 +485,10 @@ pub(crate) async fn tick(app: &AppHandle) {
             Err(_) => return,
         },
     };
-    let decided = plan(&ledger, &sight, now, !LEDGER_WRITE_FAILED.load(Ordering::SeqCst));
+    let decided = plan(&ledger, &sight, now, !write_failed(instance));
     if ledger.note != decided.note {
         let note = decided.note.clone();
-        let _ = update_ledger(app, &mut |ledger| ledger.note = note.clone());
+        let _ = update_ledger(app, instance, &mut |ledger| ledger.note = note.clone());
     }
     let hub = matches!(sight, Sight::Open { .. } | Sight::Closing);
     for environment_id in decided.retire {
@@ -450,23 +496,20 @@ pub(crate) async fn tick(app: &AppHandle) {
         // Being set up or removed already: that task finishes it.
         let Some(busy) = Busy::claim(&environment_id) else { continue };
         let unfit = decided.judge_fit && computer.member_id.as_ref().is_some_and(|id| members.iter().any(|member| member["id"] == id.as_str()));
-        let app = app.clone();
+        let (app, instance) = (app.clone(), instance.to_owned());
         tauri::async_runtime::spawn(async move {
             let _busy = busy;
-            let cloud = AppCloud { app: &app, fallback: None, reach: None, hub };
+            let cloud = AppCloud { app: &app, instance: &instance, fallback: None, reach: None, hub };
             retire(&cloud, &environment_id, &computer, unfit).await;
         });
     }
     let (Some(reason), Some(fallback), Some(reach)) = (decided.create, fallback, reach) else { return };
-    if PROVISIONING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let provisioning = Provisioning;
-    let app = app.clone();
+    let Some(provisioning) = Provisioning::claim(instance) else { return };
+    let (app, instance) = (app.clone(), instance.to_owned());
     let number = ledger.computers.len() + 1;
     tauri::async_runtime::spawn(async move {
         let _provisioning = provisioning;
-        let cloud = AppCloud { app: &app, fallback: Some(&fallback), reach: Some(&reach), hub: true };
+        let cloud = AppCloud { app: &app, instance: &instance, fallback: Some(&fallback), reach: Some(&reach), hub: true };
         let result = provision(&cloud, &fallback, &reach, &reason, number).await;
         let now = yougori_grid::now();
         let recorded = cloud.record(&mut |ledger| match &result {
@@ -490,7 +533,7 @@ pub(crate) async fn tick(app: &AppHandle) {
             (Ok(_), _) => Ok(()),
             (Err(Failure::Retry(message) | Failure::Inspect { message, .. }), _) => Err(message.clone()),
         };
-        crate::security::record(Event::new("desks.cloud.created").text("reason", &reason).outcome(&outcome));
+        crate::security::record(Event::new("desks.cloud.created").text("instance", &instance).text("reason", &reason).outcome(&outcome));
         drop(_provisioning);
         app.state::<crate::deskgrid::DeskGrid>().wake();
     });
@@ -593,7 +636,7 @@ async fn join(cloud: &AppCloud<'_>, app: &AppHandle, fallback: &CloudFallback, r
     runtime.cloud.save(environment_id, &profile)?;
     let known = crate::runtime::cloud::known_hosts(&runtime.cloud, environment_id)?;
     // A membership made for it: the token is all it gets, on its stdin, never in a command line.
-    let made = crate::deskgrid::with_hub(app, |hub| hub.preregister_member(name, PLATFORM)).await?;
+    let made = crate::deskgrid::with_hub_in(app, cloud.instance, |hub| hub.preregister_member(name, PLATFORM)).await?;
     let member_id = made["memberId"].as_str().unwrap_or_default().to_owned();
     // Retirement finds a computer by this membership, never by a name another computer could
     // claim. If it cannot be written, the membership goes again rather than linger unrecorded.
@@ -671,7 +714,7 @@ async fn retire<C: Cloud>(cloud: &C, environment_id: &str, computer: &Computer, 
             ledger.last_error = Some(format!("Cloud computer {} could not be deleted: {error}. It may still cost money; delete it in Cloud deployments.", computer.name));
         }
     });
-    crate::security::record(Event::new("desks.cloud.retired").env(environment_id).text("name", &computer.name).flag("membershipRemoved", removed.is_ok()).flag("didNotFit", did_not_fit).outcome(&deleted));
+    crate::security::record(Event::new("desks.cloud.retired").text("instance", cloud.instance()).env(environment_id).text("name", &computer.name).flag("membershipRemoved", removed.is_ok()).flag("didNotFit", did_not_fit).outcome(&deleted));
 }
 
 #[cfg(test)]
@@ -710,6 +753,9 @@ mod tests {
     }
 
     impl Cloud for Fake {
+        fn instance(&self) -> &str {
+            DEFAULT
+        }
         fn record(&self, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String> {
             if self.fail_writes {
                 return Err("disk full".into());
@@ -886,6 +932,7 @@ mod tests {
     fn a_retired_vm_goes_first_and_a_membership_that_stays_is_retried() {
         struct Stubborn(Fake);
         impl Cloud for Stubborn {
+            fn instance(&self) -> &str { self.0.instance() }
             fn record(&self, change: &mut dyn FnMut(&mut Ledger)) -> Result<Ledger, String> { self.0.record(change) }
             fn state(&self) -> Result<PlatformState, String> { self.0.state() }
             async fn deploy(&self, id: &str, request: DeployRequest) -> Result<(), String> { self.0.deploy(id, request).await }
@@ -928,5 +975,63 @@ mod tests {
         // Its desks are gone with it, so a stale count of them never keeps it.
         let off = plan(&ledger, &Sight::Open { enabled: false, members: vec![json!({"id":"member-1","online":false,"desks":2,"joinedAt":0})], needed: None, max_computers: 5, can_reach: true }, 10, true);
         assert_eq!((off.retire, off.note), (vec!["env-1".to_owned()], None));
+    }
+
+    /// PROVES that two Sandbox Grids on one computer never share a ledger of cloud computers.
+    ///
+    /// One ledger for the computer meant each grid counted the other's computers against its own
+    /// limit, each could retire what the other had just made, and one grid's failed write stopped
+    /// the other from creating anything. The old grid's ledger stays at its old name, so a
+    /// computer that has one reads and writes exactly the file it always did.
+    #[test]
+    fn each_sandbox_grid_counts_and_retires_only_its_own_cloud_computers() {
+        let root = tempfile::tempdir().unwrap();
+        let grid = root.path().join("grid");
+        let second = "i-0a1b2c3d";
+        let (old, new) = (grid.join(instances::CLOUD), instances::folder(&grid, second).join(instances::CLOUD));
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        assert_eq!(old, grid.join("cloud-computers.json"), "the first grid's ledger keeps the name it always had");
+        assert_ne!(old, new);
+
+        // Each grid records a computer of its own.
+        rewrite_ledger(&old, DEFAULT, &mut |ledger| {
+            ledger.computers.insert("env-first".into(), computer("yougori-desk-1", Some("member-1"), 0));
+        })
+        .unwrap();
+        rewrite_ledger(&new, second, &mut |ledger| {
+            ledger.computers.insert("env-second".into(), computer("yougori-desk-1", Some("member-9"), 0));
+        })
+        .unwrap();
+
+        // Neither sees the other's: a limit of one still lets each have its own.
+        let first = read_ledger(&old, DEFAULT).unwrap();
+        let other = read_ledger(&new, second).unwrap();
+        assert_eq!(first.computers.keys().collect::<Vec<_>>(), ["env-first"]);
+        assert_eq!(other.computers.keys().collect::<Vec<_>>(), ["env-second"]);
+        assert!(may_create(&first, 1, "Design has waited", 100, true).is_err(), "its own one computer fills its own limit");
+        assert!(may_create(&other, 2, "Design has waited", 100, true).is_ok(), "and the other grid's does not count against it");
+
+        // A grid deleted retires only what it made; the other grid's computer is untouched.
+        let gone = plan(&first, &Sight::Gone, 10, true);
+        assert_eq!(gone.retire, ["env-first".to_owned()], "a deleted grid retired the other grid's cloud computer");
+
+        // One grid's failed write holds only that grid back.
+        set_write_failed(second, true);
+        assert!(write_failed(second) && !write_failed(DEFAULT));
+        assert!(may_create(&first, 5, "Design has waited", 100, !write_failed(DEFAULT)).is_ok());
+        assert!(may_create(&other, 5, "Design has waited", 100, !write_failed(second)).is_err());
+        set_write_failed(second, false);
+
+        // Each grid is created one at a time, and one grid's attempt never blocks another's.
+        let held = Provisioning::claim(DEFAULT).unwrap();
+        assert!(Provisioning::claim(DEFAULT).is_none(), "one grid created two computers at once");
+        let beside = Provisioning::claim(second).expect("another grid was held back by the first grid's attempt");
+        drop(held);
+        drop(beside);
+        assert!(Provisioning::claim(DEFAULT).is_some(), "the next attempt is let through once the last one ends");
+
+        // The folder a grid is told to look in is its own.
+        assert!(unreadable(DEFAULT).contains("the grid folder"));
+        assert!(unreadable(second).contains("grid/desks/i-0a1b2c3d folder"), "{}", unreadable(second));
     }
 }

@@ -1,0 +1,309 @@
+{
+  "formatVersion": 2,
+  "instance": "neo-grid",
+  "template": {
+    "name": "neo-grid",
+    "version": "1.0.0",
+    "formatVersion": 2,
+    "profile": "neo_grid"
+  },
+  "requires": {
+    "yougori": "1.2.0",
+    "gpu": "optional",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "grid.create",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Create a grid",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.join",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Join a grid",
+      "permissions": []
+    },
+    {
+      "id": "grid.reuse_compute",
+      "selection": "default",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "grid_workers",
+      "name": "Reuse idle computers",
+      "permissions": [
+        "Enroll computers into a grid."
+      ]
+    },
+    {
+      "id": "grid.availability",
+      "selection": "default",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Run only when computers are idle",
+      "permissions": []
+    },
+    {
+      "id": "grid.cloud_compute",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "grid_workers",
+      "name": "Rent cloud computers",
+      "permissions": [
+        "Rent cloud compute, which may cost money.",
+        "Open a sign-in to a provider you choose."
+      ]
+    },
+    {
+      "id": "models.local",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "Local models",
+      "permissions": [
+        "Serve models from this computer."
+      ]
+    },
+    {
+      "id": "models.team",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "ai_models",
+      "name": "A team of models",
+      "permissions": []
+    },
+    {
+      "id": "web.service",
+      "selection": "required",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A website or API",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "web.lan",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "Reach it on the local network",
+      "permissions": [
+        "Open a port the computers of your local network can reach."
+      ]
+    },
+    {
+      "id": "web.quick_link",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A quick public link",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "web.domain",
+      "selection": "optional",
+      "locked": false,
+      "applies": false,
+      "enabled": false,
+      "group": "website_api",
+      "name": "A custom domain",
+      "permissions": [
+        "Open a public web address for this setup."
+      ]
+    },
+    {
+      "id": "run.service",
+      "selection": "required",
+      "locked": false,
+      "applies": true,
+      "enabled": true,
+      "group": "automation_recovery",
+      "name": "Run as a service",
+      "permissions": [
+        "Run containers on this computer."
+      ]
+    },
+    {
+      "id": "run.health_logs",
+      "selection": "optional",
+      "locked": false,
+      "applies": true,
+      "enabled": false,
+      "group": "automation_recovery",
+      "name": "Health and logs",
+      "permissions": []
+    }
+  ],
+  "inputs": {
+    "mode": "join"
+  },
+  "secrets": {
+    "invite": "hub-neo-grid-invite",
+    "join_password": "hub-neo-grid-join_password"
+  },
+  "bindings": {},
+  "resources": [
+    {
+      "id": "membership",
+      "kind": "grid",
+      "title": "grid",
+      "dependsOn": [],
+      "retention": {
+        "onStop": "keep",
+        "onRemove": "keep"
+      },
+      "placement": "coordinated by another computer",
+      "spec": {
+        "access": "lan",
+        "coordinator": "remote",
+        "member": "computer",
+        "mode": "join",
+        "profile": "neo_grid",
+        "secrets": {
+          "invitation": "hub-neo-grid-invite",
+          "join_password": "hub-neo-grid-join_password"
+        }
+      },
+      "outputs": [
+        "realm_id",
+        "join_address",
+        "name",
+        "page",
+        "invitation"
+      ]
+    }
+  ],
+  "order": [
+    "membership"
+  ],
+  "steps": [
+    {
+      "title": "Check what this computer serves",
+      "detail": "The grid's admin assigns models. This computer serves only when it is idle and inside the grid's schedule, and stops when you come back."
+    }
+  ],
+  "outputs": [
+    {
+      "key": "joined_grid",
+      "label": "Grid",
+      "value": "{{outputs.membership.name}}",
+      "private": false
+    }
+  ],
+  "retention": {
+    "onStop": "keep",
+    "onRemove": "keep"
+  },
+  "views": [
+    "computers",
+    "models",
+    "teams",
+    "api",
+    "keys",
+    "usage",
+    "queues",
+    "costs",
+    "logs"
+  ],
+  "review": {
+    "creates": [
+      {
+        "id": "membership",
+        "kind": "grid",
+        "title": "grid",
+        "placement": "coordinated by another computer"
+      }
+    ],
+    "borrows": [],
+    "downloads": [],
+    "permissions": [
+      "membership joins a grid someone else coordinates, with a private invitation.",
+      "Reuse idle computers: Enroll computers into a grid.",
+      "Run as a service: Run containers on this computer."
+    ],
+    "costs": [],
+    "warnings": [
+      "Uses an NVIDIA GPU when this computer has one."
+    ],
+    "notes": [],
+    "totals": {
+      "environments": 0,
+      "cpu": 0.0,
+      "memoryGb": 0.0,
+      "storageGb": 0.0,
+      "gpu": "optional"
+    },
+    "questions": [
+      {
+        "id": "mode",
+        "question": "What do you want to do?",
+        "answer": "join",
+        "secret": false,
+        "group": "grid_workers"
+      },
+      {
+        "id": "invite",
+        "question": "Paste the invite from the grid's admin",
+        "secret": true,
+        "group": "grid_workers"
+      },
+      {
+        "id": "join_password",
+        "question": "The grid's company password",
+        "secret": true,
+        "group": "grid_workers"
+      }
+    ],
+    "pcAccess": [],
+    "public": [],
+    "retention": {
+      "onStop": "keep",
+      "onRemove": "keep"
+    },
+    "secrets": [
+      {
+        "resource": "membership",
+        "variable": "invitation",
+        "source": "the question invite"
+      },
+      {
+        "resource": "membership",
+        "variable": "join_password",
+        "source": "the question join_password"
+      }
+    ]
+  },
+  "digest": "f73483ac91de9a04b2e6d16a82274abd8dbd4980f46dad83bad943a664c67faa"
+}

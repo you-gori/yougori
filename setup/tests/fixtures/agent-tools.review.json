@@ -1,0 +1,326 @@
+{
+  "aliases": [
+    "agent tools",
+    "coding agent",
+    "agent sandbox",
+    "scoped agent",
+    "agent permissions"
+  ],
+  "capabilities": [
+    {
+      "id": "tools.builtin",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "tools.custom",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "tools.provider_access",
+      "locked": false,
+      "selection": "optional"
+    },
+    {
+      "id": "data.project_source",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "data.sync",
+      "locked": false,
+      "selection": "default"
+    },
+    {
+      "id": "run.service",
+      "locked": false,
+      "selection": "required"
+    },
+    {
+      "id": "run.health_logs",
+      "locked": false,
+      "selection": "optional"
+    }
+  ],
+  "connections": [],
+  "costs": [],
+  "environments": [
+    {
+      "cpu": 4,
+      "gpu": false,
+      "image": "{{inputs.image}}",
+      "internet": true,
+      "memoryGb": 8,
+      "name": "agent",
+      "pcAccess": [
+        {
+          "binding": "project_readonly",
+          "path": "the folder you choose for project_readonly",
+          "readOnly": true,
+          "target": "/workspace"
+        },
+        {
+          "binding": "reference",
+          "path": "the folder you choose for reference",
+          "readOnly": true,
+          "target": "/reference"
+        },
+        {
+          "binding": "project",
+          "conflicts": "keep_both",
+          "continuous": true,
+          "path": "the folder you choose for project",
+          "readOnly": false,
+          "sync": true,
+          "target": "/workspace"
+        }
+      ],
+      "ports": [],
+      "secretSources": [],
+      "secrets": [],
+      "storageGb": 40,
+      "tools": [
+        "codex",
+        "claude",
+        "gemini",
+        "opencode",
+        "kilo",
+        "repo-map"
+      ],
+      "type": "container",
+      "writablePcFolders": true
+    }
+  ],
+  "format": 2,
+  "inputs": [
+    {
+      "group": "ai_models",
+      "id": "image",
+      "question": "Which container image should the agent work in?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "ai_models",
+      "id": "tools",
+      "question": "Which coding tools should it have?",
+      "required": true,
+      "secret": false,
+      "type": "multichoice"
+    },
+    {
+      "group": "ai_models",
+      "id": "codex_signin_source",
+      "question": "Which ChatGPT sign-in should Codex use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "claude_signin_source",
+      "question": "Which Claude sign-in should Claude Code use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "ai_models",
+      "id": "gemini_signin_source",
+      "question": "Which Google sign-in should the Gemini CLI use?",
+      "required": true,
+      "secret": false,
+      "type": "choice"
+    },
+    {
+      "group": "files_data",
+      "id": "project_writable",
+      "question": "May the agent change your project?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "files_data",
+      "id": "reference_path",
+      "question": "Where should reading material appear inside the sandbox?",
+      "required": true,
+      "secret": false,
+      "type": "text"
+    },
+    {
+      "group": "website_api",
+      "id": "internet",
+      "question": "Should the agent reach the internet?",
+      "required": true,
+      "secret": false,
+      "type": "yesno"
+    },
+    {
+      "group": "grid_workers",
+      "id": "cpu",
+      "question": "Processor cores",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "memory_gb",
+      "question": "Memory, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    },
+    {
+      "group": "grid_workers",
+      "id": "storage_gb",
+      "question": "Disk for the sandbox, in GB",
+      "required": true,
+      "secret": false,
+      "type": "number"
+    }
+  ],
+  "pcAccess": [
+    {
+      "binding": "project_readonly",
+      "environment": "agent",
+      "path": "the folder you choose for project_readonly",
+      "readOnly": true,
+      "target": "/workspace"
+    },
+    {
+      "binding": "reference",
+      "environment": "agent",
+      "path": "the folder you choose for reference",
+      "readOnly": true,
+      "target": "/reference"
+    },
+    {
+      "binding": "project",
+      "conflicts": "keep_both",
+      "continuous": true,
+      "environment": "agent",
+      "path": "the folder you choose for project",
+      "readOnly": false,
+      "sync": true,
+      "target": "/workspace"
+    }
+  ],
+  "public": [],
+  "requires": {
+    "gpu": "none",
+    "platforms": [
+      "windows-x86_64",
+      "linux-x86_64"
+    ],
+    "yougori": "1.2.0"
+  },
+  "resources": [
+    {
+      "dependsOn": [],
+      "id": "agent",
+      "kind": "environment",
+      "summary": {
+        "automatic_start": false,
+        "command": "sh, -lc, sh /opt/yougori-agent/write-instructions.sh; exec sleep infinity",
+        "cpu": "{{inputs.cpu}}",
+        "image": "{{inputs.image}}",
+        "internet": "{{inputs.internet}}",
+        "memory": "{{inputs.memory_gb}}",
+        "storage": "{{inputs.storage_gb}}",
+        "working_dir": "/workspace"
+      },
+      "when": []
+    }
+  ],
+  "retention": {
+    "onRemove": "keep",
+    "onStop": "keep"
+  },
+  "steps": [
+    "Read what the agent was told",
+    "Work with it",
+    "Change what it may reach"
+  ],
+  "subtitle": "A coding agent with exactly the tools and folders you grant it, and nothing else.",
+  "tools": [
+    {
+      "environment": "agent",
+      "name": "codex",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "codex_signin_source",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"codex\"]"
+      ]
+    },
+    {
+      "environment": "agent",
+      "name": "claude",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "claude_signin_source",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"claude\"]"
+      ]
+    },
+    {
+      "environment": "agent",
+      "name": "gemini",
+      "signin": "Choose PC credentials or a new account; sign-in opens in a separate terminal window",
+      "signinSource": "gemini_signin_source",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"gemini\"]"
+      ]
+    },
+    {
+      "environment": "agent",
+      "name": "opencode",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"opencode\"]"
+      ]
+    },
+    {
+      "environment": "agent",
+      "name": "kilo",
+      "source": "built-in",
+      "when": [
+        "tools contains any of [\"kilo\"]"
+      ]
+    },
+    {
+      "commands": [
+        "mkdir -p \"$HOME/.local/bin\"",
+        "printf '%s\\n' '#!/bin/sh' 'set -eu' 'cd \"${1:-.}\"' 'find . -type f -not -path \"*/.git/*\" -printf \"%s\\t%p\\n\" | sort -rn | head -500' > \"$HOME/.local/bin/repo-map\"",
+        "chmod 755 \"$HOME/.local/bin/repo-map\""
+      ],
+      "downloads": [],
+      "environment": "agent",
+      "name": "repo-map",
+      "path": "tools/repo-map",
+      "signin": "none",
+      "source": "bundled",
+      "version": "1.0.0"
+    }
+  ],
+  "totals": {
+    "cpu": 4,
+    "environments": 1,
+    "gpu": "none",
+    "memoryGb": 8,
+    "storageGb": 40
+  },
+  "warnings": [
+    "agent can read the folder you choose for project_readonly on this computer.",
+    "agent can read the folder you choose for reference on this computer.",
+    "agent can change files in the folder you choose for project on this computer.",
+    "May copy this computer's sign-in for codex into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for claude into its sandbox, only if you choose so during setup.",
+    "May copy this computer's sign-in for gemini into its sandbox, only if you choose so during setup."
+  ]
+}

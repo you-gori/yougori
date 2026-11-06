@@ -3,15 +3,28 @@ import "@testing-library/jest-dom/vitest"
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { HubDetail, HubInstance, HubReview, HubSummary } from "@/api/hub-api"
+import { SetupBuilderContext } from "@/components/setups/builder-context"
+import { SetupBuilderProvider } from "@/components/setups/setup-builder-provider"
+import { SandboxVmContext } from "@/components/sandbox-vm/sandbox-vm-context"
+import { Dialog, DialogPopup, DialogTitle } from "@/components/ui/dialog"
 
 const api = vi.hoisted(() => ({
-  list: vi.fn(), detail: vi.fn(), file: vi.fn(), star: vi.fn(), instances: vi.fn(), openConsole: vi.fn(), folder: vi.fn(),
+  builtins: vi.fn(), list: vi.fn(), detail: vi.fn(), file: vi.fn(), star: vi.fn(), instances: vi.fn(), openConsole: vi.fn(), folder: vi.fn(),
   pageUrl: (item: { publisher: string; name: string }) => `https://yougori.com/hub/${item.publisher}/${item.name}`,
 }))
 const toasts = vi.hoisted(() => [] as { title: string; description?: string; type?: string }[])
 vi.mock("@/api/hub-api", async importOriginal => ({ ...(await importOriginal<typeof import("@/api/hub-api")>()), hubApi: api }))
 vi.mock("@/api/workspace-api", () => ({ workspaceApi: { openUrl: vi.fn(() => Promise.resolve()) } }))
 vi.mock("@/components/ui/toast", () => ({ toastManager: { add: (toast: { title: string }) => { toasts.push(toast) } } }))
+vi.mock("@/api/setups/catalogue", async importOriginal => ({
+  ...(await importOriginal<typeof import("@/api/setups/catalogue")>()),
+  CATALOGUE: [{ id: "grid.create", group: "grid_workers", name: "Create a grid", aliases: [], examples: [], requires: [], conflicts: [] }],
+}))
+vi.mock("@/components/setups/template-builder", () => ({
+  TemplateBuilder: ({ intent, onClose }: { intent: unknown; onClose(): void }) => <div role="dialog" aria-label="Builder">
+    <span>{JSON.stringify(intent)}</span><button type="button" onClick={onClose}>Close builder</button>
+  </div>,
+}))
 
 import { HubPage } from "./hub-page"
 
@@ -35,6 +48,7 @@ const detail = (over: Partial<HubDetail> = {}): HubDetail => ({
 })
 
 beforeEach(() => {
+  api.builtins.mockResolvedValue([])
   api.list.mockResolvedValue({ items: [summary({ verified: true, ref: "yougori/hello-site", publisher: "yougori", name: "hello-site", title: "Hello site" }), summary()], total: 2, page: 1, pageSize: 24 })
   api.detail.mockResolvedValue(detail())
   api.openConsole.mockResolvedValue({ opened: true, command: "yougori run hub/ana/my-api@1.0.0" })
@@ -42,13 +56,27 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.clearAllMocks(); toasts.length = 0 })
 
-it("lists Hub items with the Verified badge only on owner uploads", async () => {
+it("opens the shipped inference template in the shared builder without starting a workload", async () => {
+  const open = vi.fn()
+  api.builtins.mockResolvedValue([{ id: "inference-solver", title: "Create my inference", folder: "C:/templates/inference-solver" }])
+  render(<SetupBuilderContext.Provider value={{ open }}><HubPage /></SetupBuilderContext.Provider>)
+  fireEvent.click(await screen.findByRole("button", { name: "Create my inference" }))
+  expect(open).toHaveBeenCalledWith({ mode: "run", folder: "C:/templates/inference-solver" })
+  expect(api.openConsole).not.toHaveBeenCalled()
+})
+
+it("lists Hub items with the Verified badge on owner uploads and on publishers who hold collateral", async () => {
+  api.list.mockResolvedValueOnce({ items: [
+    summary({ verified: true, ref: "yougori/hello-site", publisher: "yougori", name: "hello-site", title: "Hello site" }), summary(),
+    summary({ collateral: true, ref: "ben/shop", publisher: "ben", name: "shop", title: "Shop" }),
+  ], total: 3, page: 1, pageSize: 24 })
   render(<HubPage />)
   const rows = await screen.findAllByRole("button", { name: /clones/ })
-  expect(rows).toHaveLength(2)
-  expect(within(rows[0]!).getByText("Verified")).toBeInTheDocument()
+  expect(rows).toHaveLength(3)
+  expect(within(rows[0]!).getByText("Verified")).toHaveAttribute("title", "Uploaded by Yougori")
   expect(within(rows[1]!).queryByText("Verified")).toBeNull()
-  expect(screen.getByText(/Community uploads are not checked by Yougori/)).toBeInTheDocument()
+  expect(within(rows[2]!).getByText("Verified")).toHaveAttribute("title", "The publisher holds $100 collateral, lost if they publish harmful code")
+  expect(screen.getByText(/Yougori checks only its own uploads/)).toHaveTextContent("Verified means uploaded by Yougori, or by a publisher who holds $100 collateral")
   fireEvent.click(screen.getByRole("button", { name: "Tools" }))
   await waitFor(() => expect(api.list).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "tool" })))
 })
@@ -88,11 +116,21 @@ it("a malformed review and a very long file cannot break the item page", async (
   expect(screen.getByText(/Showing the first 5,000 of 12,000 lines/)).toBeInTheDocument()
 })
 
+it("a collateral publisher's item is Verified, and still says Yougori has not checked its files", async () => {
+  api.detail.mockResolvedValueOnce(detail({ collateral: true }))
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  expect(await screen.findByText("Verified", { selector: ".hub-detail-title *" })).toHaveClass("hub-verified-large")
+  expect(screen.getByText("Verified: ana holds $100 collateral.")).toBeInTheDocument()
+  expect(screen.getByRole("note")).toHaveTextContent("Not checked by Yougori. Community templates can contain harmful code, including viruses. Read the files first and run only what you trust. Its publisher holds $100 collateral, which they lose if Yougori removes their work for harmful code.")
+})
+
 it("a verified item has no warning; a removed one says why and cannot run", async () => {
   api.detail.mockResolvedValueOnce(detail({ verified: true }))
   render(<HubPage />)
   fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[0]!)
   expect(await screen.findByText("Verified", { selector: ".hub-detail-title *" })).toBeInTheDocument()
+  expect(screen.getByText("Verified: uploaded by Yougori.")).toBeInTheDocument()
   expect(screen.queryByRole("note")).toBeNull()
   fireEvent.click(screen.getByRole("button", { name: "Back" }))
   api.detail.mockResolvedValueOnce(detail({ state: "removed", removed: { reason: "harmful", message: "Removed by Yougori: harmful code.", at }, versions: [], version: null }))
@@ -155,4 +193,195 @@ it("tells people to sign in when starring needs an account", async () => {
   fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
   fireEvent.click(await screen.findByRole("button", { name: /^Star/ }))
   await waitFor(() => expect(toasts.at(-1)?.description).toBe("Sign in to the Yougori Network first: run yougori login, then try again."))
+})
+
+it("keeps Create template without redundant run and publish header actions", async () => {
+  render(<HubPage />)
+  const actions = screen.getAllByRole("button").filter(button => button.closest(".page-actions"))
+  expect(actions.map(button => button.textContent)).toEqual(["Create template", "Open yougori.com/hub"])
+  fireEvent.click(screen.getByRole("button", { name: /Create template/ }))
+  expect(await screen.findByRole("dialog", { name: "Create template from VMs" })).toHaveTextContent("setup declarations")
+  fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]!)
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create template from VMs" })).toBeNull())
+  expect(screen.queryByRole("button", { name: "Run a template" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Publish a template" })).toBeNull()
+})
+
+it("opens the current VM selection from the Hub popup using the shared builder", async () => {
+  const refresh = vi.fn().mockResolvedValue(undefined)
+  render(<SandboxVmContext value={{ error: "", refresh, status: {
+    sandboxes: [
+      { sandbox: "exe-web", phase: "ready", state: "running", boot: 1, revocation: null },
+      { sandbox: "exe-models", phase: "ended", state: "stopped", boot: 1, revocation: null },
+      { sandbox: "exe-importer", phase: "ended", state: "stopped", boot: 1, revocation: null },
+    ],
+    workspaces: [{ sandbox: "exe-models", sandbox_running: false, folder: "C:/projects/models", imported_at: "today", files: 1, excluded: 0, skipped: 0, state: { state: "imported" } }],
+  } }}><SetupBuilderProvider><Dialog open><DialogPopup><DialogTitle>Hub</DialogTitle><HubPage /></DialogPopup></Dialog></SetupBuilderProvider></SandboxVmContext>)
+  fireEvent.click(screen.getByRole("button", { name: "Create template" }))
+  const picker = await screen.findByRole("dialog", { name: "Create template from VMs" })
+  expect(picker).toBeVisible()
+  expect(refresh).toHaveBeenCalledOnce()
+  expect(within(picker).getAllByRole("checkbox")).toHaveLength(2)
+  expect(within(picker).getByRole("button", { name: "Review template" })).toBeDisabled()
+  fireEvent.click(within(picker).getByRole("checkbox", { name: /exe-web/ }))
+  fireEvent.click(within(picker).getByRole("checkbox", { name: /models/ }))
+  expect(within(picker).getByText(/2 of 2 VMs selected/)).toBeVisible()
+  expect(within(picker).getByRole("button", { name: "Review template" })).toBeEnabled()
+  expect(within(picker).queryByText("exe-importer")).toBeNull()
+})
+
+it("searches templates without offering the removed capability wizard", async () => {
+  render(<HubPage />)
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search the Hub" }), { target: { value: "backup" } })
+  expect(screen.queryByRole("region", { name: "Capabilities" })).toBeNull()
+  // The old grid names find nothing here now; the Hub's own search still runs on them.
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search the Hub" }), { target: { value: "Sandbox Grid" } })
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Capabilities" })).toBeNull())
+})
+
+it("runs a format 2 template here, on that exact version, with no console window", async () => {
+  const base = detail()
+  api.detail.mockResolvedValueOnce({ ...base, format: 2, version: { ...base.version!, review: { ...base.version!.review, format: 2 } as HubReview } })
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  fireEvent.click(await screen.findByRole("button", { name: /Run on this computer/ }))
+  expect(await screen.findByRole("dialog", { name: "Builder" })).toHaveTextContent('{"mode":"run","hubRef":"hub/ana/my-api@1.0.0"}')
+  expect(api.openConsole).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole("button", { name: "Close builder" }))
+  expect(screen.queryByRole("button", { name: "Make my own from it" })).toBeNull()
+})
+
+it("keeps an older template on the console path, and says why", async () => {
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  expect(await screen.findByText(/older format, so Run opens a console window/)).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Make my own from it" })).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: /Run on this computer/ }))
+  await waitFor(() => expect(api.openConsole).toHaveBeenCalledWith("run", "hub/ana/my-api@1.0.0"))
+  expect(screen.queryByRole("dialog", { name: "Builder" })).toBeNull()
+})
+
+it("reads a format 2 review: requirements before Run, capabilities in their groups, and the parts it sets up", async () => {
+  const base = detail()
+  const review = {
+    format: 2,
+    environments: [{ name: "web", type: "container", image: "node:24", cpu: 2, memoryGb: 4 }],
+    capabilities: [{ id: "grid.create", selection: "required", locked: true }, { id: "future.thing", selection: "optional" }],
+    resources: [{ id: "company", kind: "grid", summary: "The company grid" }, { id: "desks", kind: "workspace_pool", dependsOn: ["company"], when: { input: "mode", equals: "shared" } }],
+    requires: { yougori: ">=1.2.0", platforms: ["linux", "windows"], gpu: "nvidia" },
+    aliases: ["desks", "secret alias"],
+  } as unknown as HubReview
+  api.detail.mockResolvedValueOnce({ ...base, subtitle: "Desks for a team", tags: ["grids", "workspaces", "unknown"], version: { ...base.version!, review } })
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  expect(await screen.findByText("Desks for a team")).toBeInTheDocument()
+  expect(screen.getByText("Workspaces", { selector: ".hub-tag" })).toBeInTheDocument()
+  expect(screen.queryByText("unknown")).toBeNull()
+  const needs = screen.getByText(/Yougori 1\.2\.0 or newer · runs on Linux, Windows · an NVIDIA GPU/)
+  const run = screen.getByRole("button", { name: /Run on this computer/ })
+  expect(needs.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  fireEvent.click(screen.getByRole("button", { name: "What it creates" }))
+  expect(screen.getByRole("heading", { name: "Grid & workers" })).toBeInTheDocument()
+  expect(screen.getByText("Create a grid").closest("li")).toHaveTextContent("Create a grid · Required · settings fixed by the author")
+  expect(screen.getByRole("heading", { name: "Not known to this version of Yougori" })).toBeInTheDocument()
+  expect(screen.getByText("future.thing").closest("li")).toHaveTextContent("future.thing · Optional")
+  expect(screen.getByRole("rowheader", { name: "company" })).toBeInTheDocument()
+  expect(screen.getByRole("row", { name: /desks workspace pool company/ })).toHaveTextContent('{"input":"mode","equals":"shared"}')
+  expect(screen.getByText("node:24")).toBeInTheDocument()
+  expect(screen.queryByText(/secret alias/)).toBeNull()
+  expect(screen.queryByText(/newer than this app understands/)).toBeNull()
+})
+
+it("says when a review format is newer than it understands, and still lists every grant it can read", async () => {
+  const base = detail()
+  const review = { format: 3, environments: [{ name: "web", image: "node:24", pcAccess: [{ path: "x" }] }], inputs: [{ id: "key", question: "API key", secret: true }], somethingNew: { a: 1 } } as unknown as HubReview
+  api.detail.mockResolvedValueOnce({ ...base, version: { ...base.version!, review } })
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  fireEvent.click(await screen.findByRole("button", { name: "What it creates" }))
+  expect(screen.getByText(/This review format is newer than this app understands/)).toBeInTheDocument()
+  expect(screen.getByText("node:24")).toBeInTheDocument()
+  expect(within(screen.getByRole("row", { name: /^web/ })).getByText("1", { selector: ".hub-flag" })).toBeInTheDocument()
+  expect(screen.getByText(/API key · kept secret, never uploaded/)).toBeInTheDocument()
+})
+
+it("shows a format 2 item's subtitle and tags in the list", async () => {
+  api.list.mockResolvedValueOnce({ items: [summary({ subtitle: "Desks for a team", tags: ["workspaces"] } as Partial<HubSummary>)], total: 1, page: 1, pageSize: 24 })
+  render(<HubPage />)
+  const row = (await screen.findAllByRole("button", { name: /clones/ }))[0]!
+  expect(within(row).getByText("Desks for a team")).toBeInTheDocument()
+  expect(within(row).getByText("Workspaces")).toBeInTheDocument()
+})
+
+it("says what a template needs in plain words, and leaves out platform ids it doesn't know", async () => {
+  const base = detail()
+  const review = { format: 2, requires: { yougori: "1.2.0", platforms: ["linux-x86_64", "windows-arm64", "plan9", "linux-aarch64"], gpu: "optional" } } as unknown as HubReview
+  api.detail.mockResolvedValueOnce({ ...base, version: { ...base.version!, review } })
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  expect((await screen.findByText("Needs")).closest("p")).toHaveTextContent("Needs Yougori 1.2.0 or newer · runs on Linux (x86-64), Windows (Arm), Linux (Arm) · a GPU if you have one")
+  expect(screen.queryByText(/plan9/)).toBeNull()
+})
+
+it("treats a review format that isn't a number as newer than it understands", async () => {
+  const base = detail()
+  api.detail.mockResolvedValueOnce({ ...base, version: { ...base.version!, review: { format: "two", environments: [{ name: "web", image: "node:24" }] } as unknown as HubReview } })
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  fireEvent.click(await screen.findByRole("button", { name: "What it creates" }))
+  expect(screen.getByText(/newer than this app understands/)).toBeInTheDocument()
+  expect(screen.getByText("node:24")).toBeInTheDocument()
+})
+
+it("shows each list card's platforms and minimum version in plain words, and nothing when unknown", async () => {
+  api.list.mockResolvedValueOnce({ items: [
+    summary({ ref: "ana/web", name: "web", title: "Web", requires: { yougori: "1.2.0", platforms: ["linux-x86_64", "windows-arm64"], gpu: "nvidia" } } as Partial<HubSummary>),
+    summary({ ref: "ana/plain", name: "plain", title: "Plain" }),
+  ], total: 2, page: 1, pageSize: 24 })
+  render(<HubPage />)
+  const rows = await screen.findAllByRole("button", { name: /clones/ })
+  // The card with metadata names its platforms and minimum version; the plain id it doesn't know is
+  // left out, never shown raw.
+  expect(within(rows[0]!).getByText(/Needs/)).toHaveTextContent("Needs Yougori 1.2.0 or newer · runs on Linux (x86-64), Windows (Arm) · an NVIDIA GPU")
+  // The older card without a `requires` shows no requirements line at all.
+  expect(within(rows[1]!).queryByText(/Needs/)).toBeNull()
+})
+
+it("shows a forked template's lineage, and says when its original is gone", async () => {
+  // A fork names what it came from.
+  api.detail.mockResolvedValueOnce(detail({ forkedFrom: { ref: "yougori/hello-site", available: true } }))
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  expect(await screen.findByText(/Forked from yougori\/hello-site/)).toBeInTheDocument()
+  expect(screen.queryByText(/no longer on the Hub/)).toBeNull()
+  cleanup()
+  // When the original has been removed, the lineage says so rather than linking to nothing.
+  api.detail.mockResolvedValueOnce(detail({ forkedFrom: { ref: "yougori/hello-site", available: false } }))
+  render(<HubPage />)
+  fireEvent.click((await screen.findAllByRole("button", { name: /clones/ }))[1]!)
+  expect(await screen.findByText(/Forked from yougori\/hello-site \(no longer on the Hub\)/)).toBeInTheDocument()
+})
+
+it("keeps the Hub list and the detail usable at 200% text, with no fixed-height text containers", async () => {
+  // jsdom has no layout, so clipping can't be measured directly; instead we scale the root font and
+  // check the text containers carry no fixed pixel height that would clip larger text. Controls stay
+  // present and operable at the larger size.
+  document.documentElement.style.fontSize = "200%"
+  try {
+    api.detail.mockResolvedValueOnce(detail({ forkedFrom: null }))
+    const { container } = render(<HubPage />)
+    const rows = await screen.findAllByRole("button", { name: /clones/ })
+    expect(rows.length).toBeGreaterThan(0)
+    // No text-bearing element pins its own height in pixels (which would clip scaled text).
+    for (const node of container.querySelectorAll(".hub-row, .hub-row-title, .hub-row-summary, .hub-row-subtitle, .hub-row-requires, .hub-tag")) {
+      const style = (node as HTMLElement).style
+      expect(style.height === "" || !style.height.endsWith("px")).toBe(true)
+      expect(style.maxHeight === "" || !style.maxHeight.endsWith("px")).toBe(true)
+    }
+    // The detail opens and its actions are still reachable at the larger text size.
+    fireEvent.click(rows[1]!)
+    expect(await screen.findByRole("button", { name: /Run on this computer/ })).toBeInTheDocument()
+  } finally {
+    document.documentElement.style.fontSize = ""
+  }
 })

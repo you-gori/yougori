@@ -1,0 +1,8 @@
+{
+  "tools": "codex",
+  "codex_access": "subscription",
+  "codex_signin_source": "new",
+  "cpu": 2,
+  "memory_gb": 4,
+  "storage_gb": 20
+}

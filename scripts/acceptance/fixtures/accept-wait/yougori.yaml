@@ -1,0 +1,28 @@
+format_version: 2
+project: accept-wait
+resources:
+  first:
+    kind: environment
+    spec:
+      type: container
+      image: alpine:3.20
+      cpu: 0.5
+      memory: 0.5
+      storage: 2
+      command: [sh, -c, "while true; do sleep 30; done"]
+      internet: false
+      restart: always
+  second:
+    kind: environment
+    depends_on: [first]
+    spec:
+      type: container
+      image: alpine:3.20
+      cpu: 0.5
+      memory: 0.5
+      storage: 2
+      command: [sh, -c, "while true; do sleep 30; done"]
+      secrets:
+        TOKEN: "{{secrets.token}}"
+      internet: false
+      restart: always

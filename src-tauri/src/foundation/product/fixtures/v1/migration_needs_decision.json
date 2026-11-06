@@ -1,0 +1,207 @@
+{
+  "contract_version": 1,
+  "subject": {
+    "kind": "setup",
+    "id": "legacy-lab"
+  },
+  "shown_at": {
+    "clock": "01234567-89ab-4cde-8f01-23456789abcd",
+    "at": 1000,
+    "configuration": "ad2eeb2c62c77a270abb87f2900500596964121208c2db0fb539fe0b4d9342db"
+  },
+  "refusals": [
+    {
+      "code": {
+        "domain": "migration",
+        "code": "migration_decision_required"
+      },
+      "reason": "\"trainer\": the old setup ran this GPU sandbox on the shared-kernel GPU runtime, which is not a sandbox; it can stay as that labelled runtime or become a VM sandbox, and the old record does not say which you meant",
+      "remedy": {
+        "remedy": "choose_migration_option"
+      },
+      "remedy_text": "choose one of the listed options; nothing is chosen for you"
+    },
+    {
+      "code": {
+        "domain": "migration",
+        "code": "migration_decision_required"
+      },
+      "reason": "\"pod\": the old setup ran this sandbox in a provider container, which is not a sandbox; it can stay as that labelled remote runtime or become a VM sandbox on a provider that runs VMs, and the old record does not say which you meant",
+      "remedy": {
+        "remedy": "choose_migration_option"
+      },
+      "remedy_text": "choose one of the listed options; nothing is chosen for you"
+    }
+  ],
+  "migration": {
+    "status": {
+      "status": "pending"
+    },
+    "items": [
+      {
+        "subject": "web",
+        "recorded": {
+          "recorded": "sandbox_type",
+          "kind": "vm",
+          "gpu": false
+        },
+        "outcome": {
+          "outcome": "unchanged",
+          "requirement": {
+            "requires": "vm_sandbox"
+          }
+        }
+      },
+      {
+        "subject": "api",
+        "recorded": {
+          "recorded": "sandbox_type",
+          "kind": "container",
+          "gpu": false
+        },
+        "outcome": {
+          "outcome": "strengthened",
+          "requirement": {
+            "requires": "vm_sandbox"
+          },
+          "reason": "the container now runs inside a VM sandbox: a container on a shared kernel is no longer a sandbox option"
+        }
+      },
+      {
+        "subject": "trainer",
+        "recorded": {
+          "recorded": "sandbox_type",
+          "kind": "gpu",
+          "gpu": true
+        },
+        "outcome": {
+          "outcome": "needs_decision",
+          "options": [
+            {
+              "option": "vm_sandbox"
+            },
+            {
+              "option": "labelled",
+              "category": {
+                "category": "shared_kernel_gpu_runtime",
+                "label": "GPU runtime (shared kernel), not a sandbox",
+                "decision": "VM-D4",
+                "sandbox": false
+              }
+            }
+          ],
+          "refusal": {
+            "code": {
+              "domain": "migration",
+              "code": "migration_decision_required"
+            },
+            "reason": "the old setup ran this GPU sandbox on the shared-kernel GPU runtime, which is not a sandbox; it can stay as that labelled runtime or become a VM sandbox, and the old record does not say which you meant",
+            "remedy": {
+              "remedy": "choose_migration_option"
+            },
+            "remedy_text": "choose one of the listed options; nothing is chosen for you"
+          }
+        }
+      },
+      {
+        "subject": "pod",
+        "recorded": {
+          "recorded": "sandbox_type",
+          "kind": "cloud",
+          "gpu": false
+        },
+        "outcome": {
+          "outcome": "needs_decision",
+          "options": [
+            {
+              "option": "vm_sandbox"
+            },
+            {
+              "option": "labelled",
+              "category": {
+                "category": "provider_container_runtime",
+                "label": "remote runtime (provider container), not a sandbox",
+                "decision": "VM-D5",
+                "sandbox": false
+              }
+            }
+          ],
+          "refusal": {
+            "code": {
+              "domain": "migration",
+              "code": "migration_decision_required"
+            },
+            "reason": "the old setup ran this sandbox in a provider container, which is not a sandbox; it can stay as that labelled remote runtime or become a VM sandbox on a provider that runs VMs, and the old record does not say which you meant",
+            "remedy": {
+              "remedy": "choose_migration_option"
+            },
+            "remedy_text": "choose one of the listed options; nothing is chosen for you"
+          }
+        }
+      },
+      {
+        "subject": "shared-db",
+        "recorded": {
+          "recorded": "sandbox_type",
+          "kind": "shared",
+          "gpu": false
+        },
+        "outcome": {
+          "outcome": "follows_owner"
+        }
+      },
+      {
+        "subject": "analysis",
+        "recorded": {
+          "recorded": "isolation_tier",
+          "tier": "T2"
+        },
+        "outcome": {
+          "outcome": "strengthened",
+          "requirement": {
+            "requires": "vm_sandbox"
+          },
+          "reason": "isolation tier T2 becomes its explicit requirements: vm_sandbox, hardware_hypervisor_available, hardware_accelerated_boot, no_direct_guest_network, contract_no_external_credentials, contract_bounded_lifetime"
+        }
+      },
+      {
+        "subject": "scratch",
+        "recorded": {
+          "recorded": "isolation_tier",
+          "tier": "T1"
+        },
+        "outcome": {
+          "outcome": "refused",
+          "refusal": {
+            "code": {
+              "domain": "sandbox_policy",
+              "code": "legacy_tier_refused"
+            },
+            "reason": "tier T1 was a shared kernel, and no sandbox runs on a shared kernel; require a VM sandbox, or choose a labelled non-sandbox runtime as a separate request",
+            "remedy": {
+              "remedy": "sandbox_policy",
+              "code": "legacy_tier_refused"
+            },
+            "remedy_text": "Replace the old tier with explicit requirements."
+          }
+        }
+      },
+      {
+        "subject": "metal-runner",
+        "recorded": {
+          "recorded": "category",
+          "category": "host_process_model_runtime"
+        },
+        "outcome": {
+          "outcome": "preserved",
+          "category": {
+            "category": "host_process_model_runtime",
+            "label": "model runtime (host process, sandbox profile), not a sandbox",
+            "decision": "VM-D6",
+            "sandbox": false
+          }
+        }
+      }
+    ]
+  }
+}

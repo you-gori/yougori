@@ -120,7 +120,34 @@ async fn launch(model: String, compatibility: Value, environment_id: String, por
     runtime.save_workload_options(id, &options)?;
     let mut run = json!({"model":model,"token":token,"adminToken":admin,"hfToken":hf_token,"revision":compatibility["revision"],"format":format,"source":super::server_source()});
     if let Some(parser) = compatibility["toolParser"].as_str() { run["toolParser"] = json!(parser); }
+    // The helpers the rollout serves this pod's runner (G08 remote delivery): the pod writes
+    // the opened bundles under its own helpers directory; the start is recorded like a local
+    // runner's. A selection the rollout refuses is this run's error; an unavailable journal
+    // leaves source injection.
+    let selection_environment: std::collections::BTreeMap<String, String> = [
+        ("YOUGORI_MODEL".to_owned(), model.clone()),
+        ("YOUGORI_MODEL_FORMAT".to_owned(), format.to_owned()),
+        ("YOUGORI_MODEL_SERVER_SOURCE".to_owned(), String::new()),
+        ("YOUGORI_GPU_SOURCE".to_owned(), String::new()),
+        ("YOUGORI_CLEF_SOURCE".to_owned(), String::new()),
+        ("YOUGORI_PUBLISHER_SOURCE".to_owned(), String::new()),
+    ]
+    .into_iter()
+    .chain(super::loads_backends(Some(format)).then(|| ("YOUGORI_BACKENDS_SOURCE".to_owned(), String::new())))
+    .chain(options.environment.get(super::helpers::OPT_IN_OPTION).map(|value| (super::helpers::OPT_IN_OPTION.to_owned(), value.clone())))
+    .collect();
+    let delivery = match super::helpers::remote_delivery(&selection_environment) {
+        Ok(delivery) => Some(delivery),
+        Err(refusal) if super::helpers::blocks_start(&refusal) => return Err(refusal.to_string()),
+        Err(refusal) => { eprintln!("Helpers of the pod runner {environment_id} were not delivered: {refusal}"); None }
+    };
+    if let Some(payload) = delivery.as_ref().and_then(|delivery| delivery.payload.clone()) { run["helpers"] = payload; }
     let result = runtime.cloud.session(&environment_id).await?.request("model/run", run).await?;
+    if let Some(delivery) = delivery {
+        if let Err(refusal) = super::helpers::record_start(&environment_id, &selection_environment, delivery.selected) {
+            eprintln!("Helper pins of the pod runner {environment_id} were not recorded: {refusal}");
+        }
+    }
     options.environment.insert("YOUGORI_MODEL".into(), model.clone());
     runtime.save_workload_options(id, &options)?;
     store.mutate(|state| {

@@ -1,0 +1,251 @@
+format_version: 2
+kind: template
+name: ai-workspace
+title: AI Workspace
+subtitle: Your AI coding tools in one sandbox, signed in your way.
+summary: A container sandbox with the AI coding tools you pick, each signed in with your account, an API key or both, and a /workspace folder that keeps your files.
+version: 1.0.0
+license: MIT
+topics: [ai, coding, agents, sandbox, tools]
+aliases: [ai workspace, coding agent, codex, claude code, gemini cli, ai sandbox]
+changelog: First version. Installs the built-in AI tools you pick into one container sandbox, with subscription sign-in, API keys or both per tool.
+
+requires:
+  yougori: 1.2.0
+  platforms: [windows-x86_64, linux-x86_64]
+  gpu: none
+
+capabilities:
+  - {id: tools.builtin, selection: required}
+  - {id: tools.provider_access, selection: default}
+  - {id: data.volumes, selection: default}
+  - {id: run.health_logs, selection: optional}
+
+inputs:
+  - id: tools
+    question: Which AI tools do you want in the sandbox?
+    type: multichoice
+    group: ai_models
+    choices:
+      - {value: codex, label: "Codex", hint: "OpenAI's coding agent."}
+      - {value: claude, label: "Claude Code", hint: "Anthropic's coding agent."}
+      - {value: gemini, label: "Gemini CLI", hint: "Google's coding agent."}
+      - {value: opencode, label: "OpenCode", hint: "Open source agent for many model providers."}
+      - {value: kilo, label: "Kilo Code", hint: "Open source agent for many model providers."}
+      - {value: ollama, label: "Ollama", hint: "Runs open models inside the sandbox, on its processor."}
+      - {value: openclaw, label: "OpenClaw", hint: "Personal assistant agent; sign-in happens in its own setup."}
+    default: [codex]
+  - id: codex_access
+    question: How should Codex reach its models?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: subscription, label: "My ChatGPT account", hint: "Sign in once in a separate window."}
+      - {value: api, label: "An API key", hint: "Billed by OpenAI per use."}
+      - {value: both, label: "Both"}
+    default: subscription
+    when: {tools: codex}
+  - id: codex_signin_source
+    question: Which ChatGPT sign-in should Codex use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only Codex's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: codex, codex_access: [subscription, both]}
+  - id: codex_api_key
+    question: OpenAI API key for Codex
+    hint: Kept in this computer's credential store and given to the sandbox as OPENAI_API_KEY.
+    type: secret
+    group: ai_models
+    when: {tools: codex, codex_access: [api, both]}
+  - id: claude_access
+    question: How should Claude Code reach its models?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: subscription, label: "My Claude account", hint: "Sign in once in a separate window."}
+      - {value: api, label: "An API key", hint: "Billed by Anthropic per use."}
+      - {value: both, label: "Both"}
+    default: subscription
+    when: {tools: claude}
+  - id: claude_signin_source
+    question: Which Claude sign-in should Claude Code use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only Claude Code's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: claude, claude_access: [subscription, both]}
+  - id: claude_api_key
+    question: Anthropic API key for Claude Code
+    hint: Kept in this computer's credential store and given to the sandbox as ANTHROPIC_API_KEY.
+    type: secret
+    group: ai_models
+    when: {tools: claude, claude_access: [api, both]}
+  - id: gemini_access
+    question: How should Gemini CLI reach its models?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: subscription, label: "My Google account", hint: "Sign in once in a separate window."}
+      - {value: api, label: "An API key", hint: "Billed by Google per use."}
+      - {value: both, label: "Both"}
+    default: subscription
+    when: {tools: gemini}
+  - id: gemini_signin_source
+    question: Which Google sign-in should Gemini CLI use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only Gemini CLI's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: gemini, gemini_access: [subscription, both]}
+  - id: gemini_api_key
+    question: Google API key for Gemini CLI
+    hint: Kept in this computer's credential store and given to the sandbox as GEMINI_API_KEY.
+    type: secret
+    group: ai_models
+    when: {tools: gemini, gemini_access: [api, both]}
+  - id: opencode_access
+    question: How should OpenCode reach its models?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: subscription, label: "My OpenCode account", hint: "Sign in once in a separate window."}
+      - {value: api, label: "An API key", hint: "Billed by OpenCode per use."}
+      - {value: both, label: "Both"}
+    default: subscription
+    when: {tools: opencode}
+  - id: opencode_signin_source
+    question: Which OpenCode sign-in should OpenCode use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only OpenCode's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: opencode, opencode_access: [subscription, both]}
+  - id: opencode_api_key
+    question: OpenCode API key for OpenCode
+    hint: Kept in this computer's credential store and given to the sandbox as OPENCODE_API_KEY.
+    type: secret
+    group: ai_models
+    when: {tools: opencode, opencode_access: [api, both]}
+  - id: kilo_access
+    question: How should Kilo Code reach its models?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: subscription, label: "My Kilo account", hint: "Sign in once in a separate window."}
+      - {value: api, label: "An API key", hint: "Billed by Kilo per use."}
+      - {value: both, label: "Both"}
+    default: subscription
+    when: {tools: kilo}
+  - id: kilo_signin_source
+    question: Which Kilo sign-in should Kilo Code use?
+    type: choice
+    group: ai_models
+    choices:
+      - {value: computer, label: "Copy my sign-in from this computer", hint: "Only Kilo Code's own sign-in file is copied, after you choose this."}
+      - {value: new, label: "Sign in fresh in a new window"}
+    when: {tools: kilo, kilo_access: [subscription, both]}
+  - id: kilo_api_key
+    question: Kilo API key for Kilo Code
+    hint: Kept in this computer's credential store and given to the sandbox as KILO_API_KEY.
+    type: secret
+    group: ai_models
+    when: {tools: kilo, kilo_access: [api, both]}
+  - id: cpu
+    question: Processor cores for the sandbox
+    type: number
+    min: 0.5
+    max: 32
+    default: 2
+    group: grid_workers
+  - id: memory_gb
+    question: Memory for the sandbox, in GB
+    hint: Ollama needs more memory for larger models.
+    type: number
+    min: 1
+    max: 64
+    default: 4
+    group: grid_workers
+  - id: storage_gb
+    question: Disk for the sandbox, in whole GB
+    type: number
+    min: 6
+    max: 512
+    default: 20
+    group: files_data
+
+tools:
+  workspace: [codex, claude, gemini, opencode, kilo, ollama, openclaw]
+
+tool_options:
+  workspace/codex:
+    when: {tools: codex}
+    signin: true
+    signin_when: {codex_access: [subscription, both]}
+    signin_source: codex_signin_source
+  workspace/claude:
+    when: {tools: claude}
+    signin: true
+    signin_when: {claude_access: [subscription, both]}
+    signin_source: claude_signin_source
+  workspace/gemini:
+    when: {tools: gemini}
+    signin: true
+    signin_when: {gemini_access: [subscription, both]}
+    signin_source: gemini_signin_source
+  workspace/opencode:
+    when: {tools: opencode}
+    signin: true
+    signin_when: {opencode_access: [subscription, both]}
+    signin_source: opencode_signin_source
+  workspace/kilo:
+    when: {tools: kilo}
+    signin: true
+    signin_when: {kilo_access: [subscription, both]}
+    signin_source: kilo_signin_source
+  workspace/ollama:
+    when: {tools: ollama}
+  workspace/openclaw:
+    when: {tools: openclaw}
+retention:
+  on_stop: keep
+  on_remove: keep
+
+views: [storage, logs]
+
+steps:
+  - title: Open Codex
+    command: yougori codex --environment {{env.workspace}}
+    when: {tools: codex}
+  - title: Open Claude Code
+    command: yougori claude --environment {{env.workspace}}
+    when: {tools: claude}
+  - title: Open Gemini CLI
+    detail: If it asks, type /auth to finish signing in.
+    command: yougori gemini --environment {{env.workspace}}
+    when: {tools: gemini}
+  - title: Open OpenCode
+    detail: Use /connect to choose a provider and /models to pick a model.
+    command: yougori opencode --environment {{env.workspace}}
+    when: {tools: opencode}
+  - title: Open Kilo Code
+    command: yougori kilo --environment {{env.workspace}}
+    when: {tools: kilo}
+  - title: Start Ollama
+    detail: Starts the Ollama server inside the sandbox; then run ollama pull and ollama run in its terminal.
+    command: yougori ollama --environment {{env.workspace}}
+    when: {tools: ollama}
+  - title: Set up OpenClaw
+    detail: Runs openclaw onboard. Keep openclaw gateway run going in a terminal while you use it.
+    command: yougori openclaw --environment {{env.workspace}}
+    when: {tools: openclaw}
+  - title: Share the sandbox with a teammate
+    detail: Open a terminal, press Ctrl+G and choose Share this environment. A teammate with control can use everything in the sandbox, including your signed-in tools.
+    command: yougori terminal {{env.workspace}}
+
+outputs:
+  - {key: sandbox, label: Sandbox, value: "{{outputs.workspace.name}}"}

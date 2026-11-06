@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,8 @@ import server
 import store
 import bridge
 import attached
+import chain
+import transport
 from transport import Failure
 
 
@@ -69,7 +72,48 @@ def start(handler):
     return http, thread
 
 
-class ServiceTests(unittest.TestCase):
+def tron_address(seed):
+    """A well-formed Tron address with a valid checksum, for tests only."""
+    import hashlib
+    raw = b"\x41" + bytes((seed + index) % 256 for index in range(20))
+    return chain.base58_encode(raw + hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4])
+
+
+class ChainTests(unittest.TestCase):
+    """Address checks against published vectors; nothing contacts a network."""
+
+    def test_keccak_matches_published_vectors(self):
+        self.assertEqual(chain.keccak256(b"").hex(), "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
+        self.assertEqual(chain.keccak256(b"abc").hex(), "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45")
+
+    def test_eip55_examples_pass_and_a_changed_case_fails(self):
+        for address in ("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+                        "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB", "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+                        "0x52908400098527886E0F7030069857D2E4169EE7", "0xde709f2102306220921060314715629080e2fb77"):
+            self.assertTrue(chain.evm_address(address), address)
+        self.assertFalse(chain.evm_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD"))
+        self.assertFalse(chain.evm_address("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe"))
+
+    def test_tron_checksum_and_solana_length(self):
+        good = tron_address(1)
+        self.assertTrue(chain.tron_address(good))
+        broken = good[:-1] + ("2" if good[-1] != "2" else "3")
+        self.assertFalse(chain.tron_address(broken))
+        self.assertFalse(chain.tron_address("T" + "1" * 33))
+        self.assertTrue(chain.solana_address(chain.base58_encode(bytes(range(1, 33)))))
+        self.assertFalse(chain.solana_address(chain.base58_encode(bytes(range(1, 32)))))
+        self.assertFalse(chain.solana_address("0OIl" * 9))
+
+    def test_transaction_ids_take_one_spelling(self):
+        self.assertEqual(chain.transaction("ethereum", "0x" + "AB" * 32), "0x" + "ab" * 32)
+        self.assertEqual(chain.transaction("tron", "0x" + "Cd" * 32), "cd" * 32)
+        self.assertIsNone(chain.transaction("ethereum", "ab" * 32))
+        self.assertIsNotNone(chain.transaction("solana", chain.base58_encode(bytes(range(1, 65)))))
+        self.assertIsNone(chain.transaction("solana", chain.base58_encode(bytes(range(1, 33)))))
+
+
+class Harness(unittest.TestCase):
+    """A fresh database, a fake provider and the website on a free port for every test."""
     @classmethod
     def setUpClass(cls):
         cls.provider, cls.provider_thread = start(Provider)
@@ -92,6 +136,9 @@ class ServiceTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"BRIDGE_KEY": "fixture-bridge-secret", "OPENAI_API_KEY": "fixture-api-key",
                               "ANTHROPIC_API_KEY": "", "GEMINI_API_KEY": "", "ADMIN_BOOTSTRAP_EMAIL": "owner@example.invalid", "ADMIN_BOOTSTRAP_PASSWORD": "fixture-password", "COOKIE_SECURE": ""})
         self.env.start()
+        for name in ("SELECTED_PROVIDERS", "OPENCODE_SCOPE", "OPENCODE_ACCESS", "OPENCODE_API_KEY", "KILO_SCOPE", "KILO_ACCESS",
+                     "KILO_API_KEY", "CODEX_ACCESS", "GEMINI_ACCESS", "YOUGORI_INSTANCE", "OPENAI_BASE_URL"):
+            os.environ.pop(name, None)
         store.DATA = self.directory.name
         store.DATABASE = str(Path(store.DATA) / "my-api.db")
         store.close()
@@ -139,6 +186,29 @@ class ServiceTests(unittest.TestCase):
 
     def chat(self, token, **changes):
         return self.call("/v1/chat/completions", {"model":"openai/gpt-fixture","messages":[{"role":"user","content":"Hello"}], **changes},token=token)
+
+
+class ServiceTests(Harness):
+    def test_shared_models_host_discovers_and_routes_all_three_services(self):
+        # Exercise the real endpoint resolver and HTTP bridges, not the harness's
+        # usual endpoint mock. All model services share one host, on distinct ports.
+        self.endpoint_patch.stop()
+        with patch.dict(os.environ, {
+            "PAID_SANDBOX": "127.0.0.1", "FREE_SANDBOX": "127.0.0.1", "LOCAL_SANDBOX": "127.0.0.1",
+            "PAID_PORT": str(self.bridged.server_port), "FREE_PORT": str(self.free_bridge.server_port),
+            "LOCAL_PORT": str(self.provider.server_port), "SELECTED_PROVIDERS": "codex,kilo,ollama",
+            "CODEX_ACCESS": "api", "KILO_SCOPE": "free",
+        }):
+            found = server.refresh_catalogue()["available"]
+            for group, model in (("paid", "openai/gpt-fixture"), ("free", "kilo/gpt-fixture"), ("local", "ollama/fixture:latest")):
+                self.assertIn(model, [item["id"] for item in found[group]])
+            for group, model in (("paid", "openai/gpt-fixture"), ("free", "kilo/gpt-fixture"), ("local", "fixture:latest")):
+                answer = server.ask_sandbox(group, model, {"messages": [{"role": "user", "content": "Hi"}]})
+                self.assertEqual(answer["choices"][0]["message"]["content"], "Fixture response")
+            self.assertEqual(Provider.calls, 3)
+            with patch.dict(os.environ, {"FREE_PORT": "8081/path"}):
+                with self.assertRaises(Failure):
+                    server.endpoint("free")
 
     def test_successful_request_crosses_real_http_bridge_and_bills_exact_usage(self):
         token = self.ready()
@@ -300,7 +370,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_credits_are_bought_in_usdt_and_retired_networks_are_chosen_again(self):
         self.assertEqual(self.call("/api/admin/wallet",{"network":"bitcoin","address":"bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"},cookie=self.cookie)[0],400)
-        self.assertEqual(self.call("/api/admin/wallet",{"network":"tron","address":"T"+"1"*33},cookie=self.cookie)[0],200)
+        self.assertEqual(self.call("/api/admin/wallet",{"network":"tron","address":"T"+"1"*33},cookie=self.cookie)[0],400)
+        self.assertEqual(self.call("/api/admin/wallet",{"network":"tron","address":tron_address(7)},cookie=self.cookie)[0],200)
         result=self.call("/api/credits/buy",{"dollars":25},cookie=self.cookie)[1]
         self.assertEqual((result["coin"],result["network"]),("USDT","Tron (TRC-20)"))
         self.assertTrue(result["instruction"].startswith("Send exactly 25.00 USDT on Tron (TRC-20)"))
@@ -603,6 +674,187 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(Failure) as failure:
             bridge.completion("paid",[])
         self.assertEqual(failure.exception.status,400)
+
+
+class PaymentAndAvailabilityTests(Harness):
+    """2.0.0: checked wallets, transaction ids, reject and cancel, migrations, free-only freshness,
+    failed sign-ins and throttling."""
+
+    def wallet(self, **extra):
+        return self.call("/api/admin/wallet", {"network": "tron", "address": tron_address(3), **extra}, cookie=self.cookie)
+
+    def test_wallet_checks_checksums_and_shows_the_token_only_when_set(self):
+        self.assertEqual(self.call("/api/admin/wallet", {"network": "ethereum", "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD"}, cookie=self.cookie)[0], 400)
+        self.assertEqual(self.call("/api/admin/wallet", {"network": "ethereum", "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"}, cookie=self.cookie)[0], 200)
+        self.assertIsNone(self.call("/api/wallet")[1]["token"])
+        self.assertEqual(self.wallet(token="not-a-token")[0], 400)
+        self.assertEqual(self.wallet(token=tron_address(9))[0], 200)
+        shown = self.call("/api/wallet")[1]
+        self.assertEqual(shown["token"], tron_address(9))
+        self.assertIn("Tether USD (USDT) on Tron (TRC-20)", shown["tokenNote"])
+        bought = self.call("/api/credits/buy", {"dollars": 10}, cookie=self.cookie)[1]
+        self.assertEqual(bought["token"], tron_address(9))
+        self.assertIn("by hand", bought["instruction"])
+        self.assertNotIn("as soon as", bought["instruction"])
+
+    def test_one_transaction_credits_one_payment(self):
+        self.assertEqual(self.wallet()[0], 200)
+        first = self.call("/api/credits/buy", {"dollars": 5}, cookie=self.cookie)[1]["reference"]
+        second = self.call("/api/credits/buy", {"dollars": 5}, cookie=self.cookie)[1]["reference"]
+        tx = "ab" * 32
+        self.assertEqual(self.call("/api/admin/confirm", {"reference": first, "txId": "nonsense"}, cookie=self.cookie)[0], 400)
+        status, result, _ = self.call("/api/admin/confirm", {"reference": first, "txId": "0x" + tx.upper()}, cookie=self.cookie)
+        self.assertEqual((status, result["txId"]), (200, tx))
+        status, result, _ = self.call("/api/admin/confirm", {"reference": second, "txId": tx}, cookie=self.cookie)
+        self.assertEqual(status, 409)
+        self.assertIn(first, result["error"])
+        self.assertEqual(self.call("/api/admin/confirm", {"reference": first}, cookie=self.cookie)[0], 409)
+        credits = store.connect().execute("SELECT credits_micro FROM users WHERE id=1").fetchone()[0]
+        self.assertEqual(credits, 5_000_000)
+        row = store.connect().execute("SELECT confirmed_by, tx_id FROM payments WHERE reference=?", (first,)).fetchone()
+        self.assertEqual((row["confirmed_by"], row["tx_id"]), (1, tx))
+
+    def test_open_requests_are_capped_and_can_be_cancelled_or_rejected(self):
+        self.assertEqual(self.wallet()[0], 200)
+        references = [self.call("/api/credits/buy", {"dollars": 2}, cookie=self.cookie)[1]["reference"] for _ in range(store.MAX_WAITING_PAYMENTS)]
+        status, result, _ = self.call("/api/credits/buy", {"dollars": 2}, cookie=self.cookie)
+        self.assertEqual(status, 409)
+        self.assertIn("Cancel one", result["error"])
+        self.assertEqual(self.call("/api/payments/cancel", {"reference": references[0]}, cookie=self.cookie)[0], 200)
+        self.assertEqual(self.call("/api/payments/cancel", {"reference": references[0]}, cookie=self.cookie)[0], 409)
+        self.assertEqual(self.call("/api/admin/reject", {"reference": references[1]}, cookie=self.cookie)[0], 200)
+        self.assertEqual(self.call("/api/admin/confirm", {"reference": references[1]}, cookie=self.cookie)[0], 409)
+        self.assertEqual(self.call("/api/credits/buy", {"dollars": 2}, cookie=self.cookie)[0], 200)
+        # Another person can neither cancel nor reject someone else's request.
+        self.call("/api/signup", {"email": "buyer@example.invalid", "password": "buyer-password-1"})
+        _, _, cookie = self.call("/api/signin", {"email": "buyer@example.invalid", "password": "buyer-password-1"})
+        buyer = cookie.split(";")[0]
+        self.assertEqual(self.call("/api/payments/cancel", {"reference": references[2]}, cookie=buyer)[0], 409)
+        self.assertEqual(self.call("/api/admin/reject", {"reference": references[2]}, cookie=buyer)[0], 403)
+        states = dict(store.connect().execute("SELECT reference, state FROM payments").fetchall())
+        self.assertEqual((states[references[0]], states[references[1]], states[references[2]]), ("cancelled", "rejected", "waiting"))
+        self.assertEqual(store.connect().execute("SELECT credits_micro FROM users WHERE id=1").fetchone()[0], 0)
+
+    def test_an_older_database_is_copied_before_it_is_upgraded(self):
+        db = store.connect()
+        db.execute("PRAGMA user_version = 0")
+        store.close()
+        store._local = threading.local()
+        store.setup()
+        copies = os.listdir(Path(store.DATA) / "backups")
+        self.assertEqual(len(copies), 1)
+        self.assertTrue(copies[0].startswith("my-api-v0-before-v2-"))
+        self.assertEqual(store.connect().execute("PRAGMA user_version").fetchone()[0], store.SCHEMA_VERSION)
+
+    def test_an_upgrade_without_a_copy_is_refused_and_changes_nothing(self):
+        db = store.connect()
+        db.execute("PRAGMA user_version = 0")
+        store.close()
+        store._local = threading.local()
+        Path(store.DATA, "backups").write_text("a file where the backups folder should be")
+        with self.assertRaises(store.MigrationRefused) as refused:
+            store.setup()
+        self.assertIn("Nothing was changed", str(refused.exception))
+        self.assertEqual(store.connect().execute("PRAGMA user_version").fetchone()[0], 0)
+
+    def free_row(self):
+        db = store.connect()
+        with db:
+            db.execute("INSERT INTO models (provider,name,price_in,price_out,sandbox,available,price_ready,price_source,upstream,cost_in,cost_out) "
+                       "VALUES ('kilo','fixture-free',1,1,'free',1,1,'market','kilo/fixture-free',0,0)")
+        store.add_credits(db, 1, 1)
+        return self.call("/api/keys", {"name": "Free"}, cookie=self.cookie)[1]["key"]
+
+    def test_a_stale_catalogue_never_sells_a_free_only_model(self):
+        key = self.free_row()
+        store.setting(store.connect(), "catalogue_updated", str(int(time.time()) - 3600))
+        with patch.object(server, "ask_sandbox") as outbound:
+            status, result, _ = self.call("/v1/chat/completions", {"model": "fixture-free", "messages": [{"role": "user", "content": "Hi"}]}, token=key)
+        self.assertEqual(status, 503)
+        self.assertIn("out of date", json.dumps(result))
+        outbound.assert_not_called()
+
+    def test_the_bridge_refusal_reason_reaches_the_buyer_and_takes_the_model_off_sale(self):
+        key = self.free_row()
+        store.setting(store.connect(), "catalogue_updated", str(int(time.time())))
+        refusal = Failure(*transport.BRIDGE_REFUSALS["no_longer_free"], "no_longer_free")
+        with patch.object(server, "ask_sandbox", side_effect=refusal):
+            status, result, _ = self.call("/v1/chat/completions", {"model": "fixture-free", "messages": [{"role": "user", "content": "Hi"}]}, token=key)
+        self.assertEqual(status, 409)
+        self.assertIn("no longer free", json.dumps(result))
+        self.assertEqual(store.connect().execute("SELECT available FROM models WHERE name='fixture-free'").fetchone()[0], 0)
+        self.assertEqual(store.connect().execute("SELECT credits_micro FROM users WHERE id=1").fetchone()[0], 1_000_000)
+
+    def test_the_transport_passes_only_known_bridge_reasons(self):
+        class Refusing(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                wire = json.dumps({"error": {"code": self.server.code, "message": "account owner@example.invalid key sk-secret"}}).encode()
+                self.send_response(409)
+                self.send_header("Content-Length", str(len(wire)))
+                self.end_headers()
+                self.wfile.write(wire)
+        http, thread = start(Refusing)
+        try:
+            for code, expected in (("no_longer_free", "no_longer_free"), ("made_up", "upstream_error")):
+                http.code = code
+                with self.assertRaises(Failure) as caught:
+                    transport.request(f"http://127.0.0.1:{http.server_port}/v1/chat/completions", {"x": 1})
+                self.assertEqual(caught.exception.code, expected)
+                self.assertNotIn("secret", str(caught.exception))
+                self.assertNotIn("owner@", str(caught.exception))
+        finally:
+            http.shutdown(); http.server_close(); thread.join()
+
+    def test_a_failed_sign_in_takes_the_providers_models_off_sale_and_says_how_to_fix_it(self):
+        key = self.ready()
+        with patch.dict(os.environ, {"YOUGORI_INSTANCE": "my-api"}), patch.object(server, "ask_sandbox", side_effect=Failure(502, "Provider authorization failed.", "provider_auth")):
+            self.assertEqual(self.chat(key)[0], 503)
+            overview = self.call("/api/admin/overview", cookie=self.cookie)[1]
+        self.assertEqual(store.connect().execute("SELECT available FROM models WHERE name='openai/gpt-fixture'").fetchone()[0], 0)
+        self.assertIn("authorization", overview["providers"]["paid"]["openai"].lower())
+        self.assertIn("yougori template configure my-api", overview["fixes"]["paid"]["openai"])
+
+    def test_a_throttled_provider_keeps_its_models_listed(self):
+        db = store.connect()
+        store.set_available(db, "paid", [{"id": "openai/kept", "provider": "openai"}, {"id": "anthropic/gone", "provider": "anthropic"}])
+        store.set_available(db, "paid", [], keep=["openai"])
+        available = dict(db.execute("SELECT name, available FROM models WHERE name IN ('openai/kept','anthropic/gone')").fetchall())
+        self.assertEqual(available, {"openai/kept": 1, "anthropic/gone": 0})
+        with patch.object(bridge, "request", side_effect=Failure(429, "Provider rate limit reached. Try again later.", "rate_limit")):
+            result = bridge.catalogue("paid")
+        self.assertEqual(result["throttled"], ["openai"])
+
+    def test_each_provider_problem_names_the_exact_fix(self):
+        with patch.dict(os.environ, {"YOUGORI_INSTANCE": "my-api"}):
+            self.assertEqual(server.fix_for("paid", "Connected"), "")
+            for status in ("Finish signing in to Codex; models will appear automatically.", "Provider authorization failed.",
+                           "Codex could not read its model catalogue. Check its sign-in."):
+                self.assertIn("yougori template configure my-api", server.fix_for("paid", status), status)
+                self.assertIn("yougori template status my-api", server.fix_for("paid", status), status)
+            self.assertIn("models stay listed", server.fix_for("free", "Provider rate limit reached. Try again later."))
+            self.assertIn("Ollama sandbox reports with yougori template status my-api", server.fix_for("local", "Ollama is not answering."))
+        with patch.dict(os.environ, {"YOUGORI_INSTANCE": "my api; rm -rf /"}):
+            self.assertNotIn("rm -rf", server.fix_for("paid", "Provider authorization failed."))
+
+    def test_a_name_another_source_sells_is_reported_not_taken(self):
+        db = store.connect()
+        store.set_available(db, "paid", [{"id": "openai/gpt-clash", "provider": "openai"}])
+        store.set_available(db, "free", [{"id": "openai/gpt-clash", "provider": "kilo", "free": True}])
+        self.assertEqual(db.execute("SELECT sandbox FROM models WHERE name='openai/gpt-clash'").fetchone()[0], "paid")
+        overview = self.call("/api/admin/overview", cookie=self.cookie)[1]
+        self.assertIn({"name": "openai/gpt-clash", "owner": "paid", "sandbox": "free"}, overview["nameTaken"])
+        store.set_available(db, "free", [])
+        self.assertEqual(self.call("/api/admin/overview", cookie=self.cookie)[1]["nameTaken"], [])
+
+    def test_sandboxes_of_unselected_providers_are_not_asked(self):
+        with patch.dict(os.environ, {"SELECTED_PROVIDERS": "ollama"}):
+            result = self.call("/api/admin/refresh", {}, cookie=self.cookie)[1]
+        self.assertEqual(sorted(result["available"]), ["attached", "local"])
+        with patch.dict(os.environ, {"SELECTED_PROVIDERS": "kilo"}):
+            self.assertFalse(server.sandbox_selected("paid"))
+            self.assertTrue(server.sandbox_selected("free"))
 
 
 if __name__ == "__main__":

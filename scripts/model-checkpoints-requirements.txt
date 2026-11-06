@@ -1,0 +1,7 @@
+# Exact directly checked CPU checkpoint dependencies; see cpu-checkpoint-job.md.
+# Install torch first from its CPU wheel index, then this file from PyPI.
+torch==2.8.0+cpu
+transformers==5.18.0
+accelerate==1.15.0
+huggingface-hub==1.33.0
+safetensors==0.8.0

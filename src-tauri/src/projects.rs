@@ -621,7 +621,10 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
         return Err("Choose up, apply or down".into());
     }
     let (path, p) = if action == "down" {
-        let path = Path::new(&path).canonicalize().map_err(|e| e.to_string())?;
+        // A folder means its project file, as for up and apply: a setup's handler names the
+        // folder it keeps the project in, and the record is keyed by the file.
+        let candidate = Path::new(&path);
+        let path = if candidate.is_dir() { manifest::locate(candidate)? } else { candidate.canonicalize().map_err(|e| e.to_string())? };
         let p = manifest::parse(&manifest::read(&path)?)?;
         (path, p)
     } else {
@@ -858,7 +861,14 @@ async fn reconcile_project_action(path:String,action:String,app:AppHandle)->Resu
                 status(&app, id, false).await?;
                 options.hosts = hosts;
                 runtime.save_workload_options(options_id, &options)?;
-                runtime.update_workload_configuration(&env).await?;
+                // A container the runtime lost (its machine stopped before it saved a container
+                // just made) has nothing to update: starting it below makes it again from its
+                // saved definition, with these names. Found cutting off a real run mid-step.
+                if let Err(error) = runtime.update_workload_configuration(&env).await {
+                    if !crate::commands::container_object_missing(&error) {
+                        return Err(error);
+                    }
+                }
             }
         }
     }

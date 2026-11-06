@@ -148,6 +148,8 @@ fn start_at(app: &AppHandle, headless: bool, endpoint: String) -> Result<(), Str
     let listener = tauri::async_runtime::block_on(async { transport::bind(&endpoint, true) })
         .map_err(|e| format!("Cannot reserve the same-user CLI endpoint: {e}"))?;
     app.manage(control.clone());
+    #[cfg(not(test))]
+    crate::sandbox_vm::start_remote_recovery(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // A client that disconnects early or a temporary resource limit must not

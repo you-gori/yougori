@@ -4435,6 +4435,28 @@
   },
   {
     "ecosystem": "cargo",
+    "name": "equivalent",
+    "version": "1.0.3",
+    "scope": "lockfile-includes-build-and-other-target-dependencies",
+    "checksum": "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826",
+    "license": "Apache-2.0 OR MIT",
+    "texts": [
+      {
+        "path": "LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "LICENSE-MIT",
+        "sha256": "7365cc8878a1d7ce155a58c4ca09c3d7a6be413efa5334a80ea842912b669349"
+      }
+    ],
+    "noticeSectionSha256": [
+      "4552b483bf6bfa8f3c674c4d0074e31413243aa9b30ea580407fb4e986c783f5",
+      "dfc5ffe9bfd579dc44a140ac1bf72e0b3d52332c4fab5dfc4a0815527e02b1ce"
+    ]
+  },
+  {
+    "ecosystem": "cargo",
     "name": "erased-serde",
     "version": "0.4.10",
     "scope": "lockfile-includes-build-and-other-target-dependencies",
@@ -5209,23 +5231,6 @@
     ],
     "noticeSectionSha256": [
       "e340a138e2ff7f4b4772ee5a3b648e5691e40cf7e56b0df158f7948a8ce7a9d7"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
-    "name": "fsevent-sys",
-    "version": "4.1.0",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "76ee7a02da4d231650c7cea31349b889be2f45ddb3ef3032d2ec8185f6313fd2",
-    "license": "MIT",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "c4d64f0ce17c85d4a14e22d224fbbd76dbb1e03eb38f0d3c209fb38bdc8dc646"
-      }
-    ],
-    "noticeSectionSha256": [
-      "cdb8fd9317d0b6c341b1ca26ad70185bfff0c3927535aae65b13d74fbbba7586"
     ]
   },
   {
@@ -7070,40 +7075,6 @@
   },
   {
     "ecosystem": "cargo",
-    "name": "inotify",
-    "version": "0.11.5",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "4cc00ea907cab49550b7da656f80ebb97be1b997d931fbcd28d39734e17ce592",
-    "license": "ISC",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "7f78b31de4e7a3e2ac8de40e2b409eda313f03637aa62b8416fbde9bdc5ce4c9"
-      }
-    ],
-    "noticeSectionSha256": [
-      "f772a35923398e04f94472254353bad936c94e839eea25033fecb7c0b3b2604a"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
-    "name": "inotify-sys",
-    "version": "0.1.8",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d",
-    "license": "ISC",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "f68878c9ca61b25d4b2c470de571cb85ce97804a62bb153607f7e0e0d2684c8a"
-      }
-    ],
-    "noticeSectionSha256": [
-      "d53fb13fa9c5ea9ba3e3830bb9d7e072d92661271027145113149af690d11f12"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
     "name": "inout",
     "version": "0.1.4",
     "scope": "lockfile-includes-build-and-other-target-dependencies",
@@ -8035,40 +8006,6 @@
   },
   {
     "ecosystem": "cargo",
-    "name": "kqueue",
-    "version": "1.2.1",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "8d763e5b24120b4ddf50de6c92308156765aabfbbccebf401da7cff2d70a41ea",
-    "license": "MIT",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "9dc7535841863372cb757676c5acd69c010572a85df23d3467d6bb3cc2829e84"
-      }
-    ],
-    "noticeSectionSha256": [
-      "df48414d06b0918efeedd079a56d5c6dd82741948a209250c70aa73c6dc054d5"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
-    "name": "kqueue-sys",
-    "version": "1.1.2",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087",
-    "license": "MIT",
-    "texts": [
-      {
-        "path": "LICENSE",
-        "sha256": "9dc7535841863372cb757676c5acd69c010572a85df23d3467d6bb3cc2829e84"
-      }
-    ],
-    "noticeSectionSha256": [
-      "53bfb3d08d686c36f434e3612ebaad5aa4fa58d10397ad238142523a41422dea"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
     "name": "lazy_static",
     "version": "1.5.0",
     "scope": "lockfile-includes-build-and-other-target-dependencies",
@@ -8195,6 +8132,28 @@
     "noticeSectionSha256": [
       "fb0212afbdc6a9139f168f837aff46046be2748fcfc16e1f50a291d40281422a",
       "60760e21008d15a5e1a3f72ee8c31a61e750d63c24dfe58f179675789db06fc3"
+    ]
+  },
+  {
+    "ecosystem": "cargo",
+    "name": "libc",
+    "version": "0.2.191",
+    "scope": "lockfile-includes-build-and-other-target-dependencies",
+    "checksum": "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a",
+    "license": "MIT OR Apache-2.0",
+    "texts": [
+      {
+        "path": "LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      {
+        "path": "LICENSE-MIT",
+        "sha256": "123a331b5dbf04c30097fa43b8f858bc85df671fe776de498d01f3d6b7c1f69e"
+      }
+    ],
+    "noticeSectionSha256": [
+      "8435d03c6dddf4d1b4af681a928875b983fe43b7b446921716e3e6d46769d711",
+      "e9efde26aedc0f60c0b4c42d54a0774e3e219413fafc42ac89ea848d1910756b"
     ]
   },
   {
@@ -9006,23 +8965,6 @@
   },
   {
     "ecosystem": "cargo",
-    "name": "notify",
-    "version": "8.2.0",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "4d3d07927151ff8575b7087f245456e549fea62edf0ec4e565a5ee50c8402bc3",
-    "license": "CC0-1.0",
-    "texts": [
-      {
-        "path": "LICENSE-CC0",
-        "sha256": "e0456cbab4f7b5e7203e678faff37eadbdfef02e822db3b7a52a1dd9d3dc514a"
-      }
-    ],
-    "noticeSectionSha256": [
-      "30d028a9836904bcb0df9d2236d6703c8e05ebfc47958cad2ba6b74ad9128bcc"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
     "name": "notify-rust",
     "version": "4.18.0",
     "scope": "lockfile-includes-build-and-other-target-dependencies",
@@ -9041,28 +8983,6 @@
     "noticeSectionSha256": [
       "bbf8754ff206bb34fcd6a2d2bf4604019974bbf62630fb91e12d415943708299",
       "d210da2b786f6bb92441e1dda68ba5024e9bd471375cd9f752e1da10112c6f55"
-    ]
-  },
-  {
-    "ecosystem": "cargo",
-    "name": "notify-types",
-    "version": "2.1.0",
-    "scope": "lockfile-includes-build-and-other-target-dependencies",
-    "checksum": "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a",
-    "license": "MIT OR Apache-2.0",
-    "texts": [
-      {
-        "path": "LICENSE-APACHE",
-        "sha256": "b5b413d7421d728c14f33d78198d6e255a0018beef717d78c4c3f6188be3dfb4"
-      },
-      {
-        "path": "LICENSE-MIT",
-        "sha256": "b63e167d61ced1d872a588c5ac764b0dda477d62209dc4f6b6bfea5517d0a24c"
-      }
-    ],
-    "noticeSectionSha256": [
-      "73d35d52120c7e9c64a1ecb8df91eb488241f7d74511d37480915e0cddc4dafc",
-      "781ac249dfa4a4fb2ffe982aaaf3299b79bc3b5a70272951368c72a9b21322a9"
     ]
   },
   {

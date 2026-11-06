@@ -67,7 +67,33 @@ pub async fn run() -> Value {
             checks.push(check("GPU · CUDA runtime", "warning", gpu["detail"].as_str().unwrap_or("Not installed"), Some("`yougori gpu setup --yes`")));
         }
     }
+    if let Ok(vm) = call("sandbox_doctor", json!({})).await {
+        checks.extend(vm_sandbox_checks(&vm));
+    }
     summarize(checks)
+}
+
+/// The VM sandbox rows: one per backend the engine's doctor examined, or why it examined
+/// none. They inform and never make this computer "not ready": VM sandboxes are validated
+/// per backend by their own boundary checks.
+fn vm_sandbox_checks(vm: &Value) -> Vec<Value> {
+    if vm["examined"] != true {
+        return vec![check("VM sandbox", "info", vm["reason"].as_str().unwrap_or("Not examined"), vm["next"].as_str())];
+    }
+    let report = &vm["report"];
+    if let Some(reason) = report["no_backend"].as_str() {
+        return vec![check("VM sandbox", "info", reason, None)];
+    }
+    report["candidates"].as_array().into_iter().flatten().map(|candidate| {
+        let backend = candidate["candidate"]["backend"].as_str().unwrap_or("backend");
+        let label = candidate["label"].as_str().unwrap_or("unavailable");
+        let count = |key: &str| candidate["required"][key].as_u64().unwrap_or(0);
+        let total: u64 = ["passed", "failed", "inconclusive", "not_tested", "refused"].into_iter().map(count).sum();
+        let detail = format!("{label}: {} of {total} required boundary checks passed, {} failed, {} not tested", count("passed"), count("failed"), count("not_tested"));
+        let validated = label == "validated";
+        let fix = (!validated).then_some("`yougori call sandbox_doctor --action plan` lists each check and what it would observe");
+        check(&format!("VM sandbox · {backend}"), if validated { "ok" } else { "info" }, detail, fix)
+    }).collect()
 }
 
 fn summarize(checks: Vec<Value>) -> Value {
@@ -84,5 +110,22 @@ mod tests {
         let summary = summarize(vec![check("A", "ok", "", None), check("B", "warning", "", Some("fix")), check("C", "error", "", None)]);
         assert_eq!((summary["ready"].as_bool(), summary["errors"].as_u64(), summary["warnings"].as_u64()), (Some(false), Some(1), Some(1)));
         assert_eq!(summary["checks"][1]["fix"], "fix");
+    }
+    #[test]
+    fn vm_sandbox_rows_inform_and_never_block_readiness() {
+        let report = json!({"examined": true, "report": {"no_backend": null, "candidates": [
+            {"candidate": {"backend": "hcs"}, "label": "unavailable", "required": {"passed": 0, "failed": 0, "inconclusive": 0, "not_tested": 18, "refused": 0}},
+            {"candidate": {"backend": "qemu"}, "label": "validated", "required": {"passed": 18, "failed": 0, "inconclusive": 0, "not_tested": 0, "refused": 0}}]}});
+        let rows = vm_sandbox_checks(&report);
+        assert_eq!(rows[0]["name"], "VM sandbox · hcs");
+        assert_eq!(rows[0]["status"], "info");
+        assert_eq!(rows[0]["detail"], "unavailable: 0 of 18 required boundary checks passed, 0 failed, 18 not tested");
+        assert!(rows[0]["fix"].as_str().unwrap().contains("--action plan"));
+        assert_eq!((rows[1]["status"].as_str(), rows[1]["fix"].is_null()), (Some("ok"), true));
+        assert_eq!(summarize(rows)["ready"], true);
+        let waiting = vm_sandbox_checks(&json!({"examined": false, "reason": "Host evidence has not collected this computer's inventory yet.", "next": "Run it first"}));
+        assert_eq!((waiting[0]["status"].as_str(), waiting[0]["fix"].as_str()), (Some("info"), Some("Run it first")));
+        let wsl = vm_sandbox_checks(&json!({"examined": true, "report": {"no_backend": "No VM sandbox backend runs inside WSL2.", "candidates": []}}));
+        assert_eq!(wsl[0]["detail"], "No VM sandbox backend runs inside WSL2.");
     }
 }

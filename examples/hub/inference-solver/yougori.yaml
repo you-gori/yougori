@@ -1,0 +1,60 @@
+format_version: 2
+project: inference-solver
+resources:
+  model:
+    kind: model_service
+    when: {model_source: local}
+    spec:
+      model: "{{inputs.model}}"
+      quantization: "{{inputs.quantization}}"
+      gpu: "{{inputs.gpu}}"
+      memory_gb: "{{inputs.memory_gb}}"
+      api: {protocol: openai}
+  attached:
+    kind: connection
+    when: {model_source: local}
+    spec:
+      from: {resource: web}
+      to: {resource: model}
+      ports: [8000]
+      model_request: true
+  data:
+    kind: volume
+  web:
+    kind: environment
+    spec:
+      type: container
+      image: python:3.12-slim
+      cpu: 2
+      memory: 1GB
+      storage: 4GB
+      files:
+        - {source: ./site, target: /app/site}
+      environment:
+        SITE_NAME: "{{inputs.site_name}}"
+        ACCOUNT_MODE: "{{inputs.account_mode}}"
+        ADMIN_BOOTSTRAP_EMAIL: "{{inputs.admin_email}}"
+        WEB_ACCESS: "{{inputs.web_access}}"
+        SOLVER_BIND: "0.0.0.0"
+        SOLVER_DATA: /data
+        PYTHONDONTWRITEBYTECODE: "1"
+      secrets:
+        ADMIN_BOOTSTRAP_PASSWORD: "{{secrets.admin_password}}"
+      volumes:
+        - {source: data, target: /data}
+      command: [python, /app/site/server.py]
+      ports: [3000]
+      restart: unless-stopped
+      health:
+        port: 3000
+        path: /health
+  site:
+    kind: service_publication
+    spec:
+      target: {resource: web}
+      port: 3000
+      access: "{{inputs.web_access}}"
+      domain: "{{inputs.web_domain}}"
+      health:
+        path: /health
+        expected_status: 200

@@ -9,6 +9,11 @@ pub(super) fn inspect(config: &Value) -> Option<Value> {
     let kolibri = config["model_type"] == "kolibri1" && classes.iter().any(|c| c == "Kolibri1ForCausalLM");
     let native = classes.iter().any(|c| catalog["architectures"].as_array().unwrap().contains(c));
     if !kolibri && !native { return None; }
+    // vLLM reads the configuration through Transformers. A configuration that names repository
+    // code (`auto_map`) is refused by vLLM unless remote code is trusted, which Yougori never
+    // enables, so such a checkpoint cannot start; offering it would only download it (found
+    // live with InternLM2 and EXAONE 3.5, 30 Oct). The reviewed Kolibri plugin is exempt.
+    if !kolibri && config.get("auto_map").is_some_and(|map| !map.is_null()) { return None; }
     Some(json!({"runner":"yougori-vllm", "format":"vllm", "reason":if kolibri {
         "Kolibri text generation uses the reviewed Aleph Alpha plugin with vLLM; all expert weights must fit GPU memory"
     } else { "Native vLLM text generation is available; model repository code stays disabled" },
@@ -28,8 +33,8 @@ fn memory_check(csv: &str, required_gb: f64) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) async fn check_local_hardware(compatibility: &Value) -> Result<(), String> {
-    if compatibility["runner"] != "yougori-vllm" { return Ok(()); }
+pub(super) async fn check_local_hardware(compatibility: &Value) -> Result<bool, String> {
+    if compatibility["runner"] != "yougori-vllm" { return Ok(false); }
     let required = compatibility["resources"]["gpuMemoryGbEstimated"].as_f64().unwrap_or(0.0);
     #[cfg(windows)]
     let mut command = {
@@ -49,7 +54,11 @@ pub(super) async fn check_local_hardware(compatibility: &Value) -> Result<(), St
         .map_err(|_| "GPU memory verification timed out; no environment was created")?
         .map_err(|_| "Cannot verify GPU memory for vLLM; install an NVIDIA driver with nvidia-smi")?;
     if !output.status.success() { return Err("Cannot verify GPU memory for vLLM; no environment was created".into()); }
-    memory_check(&String::from_utf8_lossy(&output.stdout), required)
+    let csv = String::from_utf8_lossy(&output.stdout);
+    memory_check(&csv, required)?;
+    // The first shared-ledger production profile is single GPU. Multi-GPU
+    // placement keeps its existing explicit path until per-rank demand is bound.
+    Ok(csv.lines().filter(|line| !line.trim().is_empty()).count() == 1)
 }
 
 #[cfg(test)] mod tests {
@@ -59,6 +68,10 @@ pub(super) async fn check_local_hardware(compatibility: &Value) -> Result<(), St
             let selected = inspect(&config).unwrap(); assert_eq!(selected["runner"], "yougori-vllm"); assert_eq!(selected["remoteCodeAllowed"], false);
         }
         assert!(inspect(&json!({"model_type":"kolibri1","architectures":["UnreviewedRemoteModel"]})).is_none());
+        // A native architecture whose configuration needs repository code cannot start in vLLM.
+        for (model_type, architecture, module) in [("internlm2", "InternLM2ForCausalLM", "configuration_internlm2.InternLM2Config"), ("exaone", "ExaoneForCausalLM", "configuration_exaone.ExaoneConfig")] {
+            assert!(inspect(&json!({"model_type":model_type,"architectures":[architecture],"auto_map":{"AutoConfig":module}})).is_none(), "{model_type}");
+        }
         assert!(inspect(&json!({"architectures":["BertModel"]})).is_none());
     }
     #[test] fn all_expert_weights_count_toward_memory_and_old_gpus_do_not() {

@@ -86,7 +86,10 @@ async fn transfer_archive(
     url.query_pairs_mut()
         .append_pair("id", id)
         .append_pair("transfer", transfer)
-        .append_pair("folder", folder.unwrap_or(""));
+        .append_pair("folder", folder.unwrap_or(""))
+        // This computer's own copy in may land on one of the sandbox's own volumes (a restore of
+        // a setup's backup does); an older agent ignores the parameter.
+        .append_pair("volumes", "1");
     let mut progress_url = url::Url::parse(&format!("{base}/v1/files/import/progress"))
         .map_err(|_| "Invalid guest progress endpoint")?;
     progress_url
