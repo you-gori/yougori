@@ -86,7 +86,7 @@ Public commands:
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
-  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager]
+  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT]
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--closed-weights] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
                                    Share paid or free; --closed-weights offers chat/API without weight downloads
                                    Open weights by default. --publish is a legacy model alias for --closed-weights
@@ -423,6 +423,16 @@ fn absolute(path: &str) -> Result<PathBuf, String> {
 /// `--folder` is relative to where the user runs the CLI, not the engine's folder.
 pub fn model_folder(path: &str) -> Result<Value, String> {
     Ok(json!(absolute(path)?.to_string_lossy()))
+}
+/// A runner as `--runner` names it: a Hugging Face reference as typed, or a folder as an
+/// absolute path, because the engine reads the folder from its own working directory rather
+/// than from the one this command runs in (`--runner ./my-runner` was "not found" while the
+/// folder was right there).
+pub fn runner_reference(value: &str) -> Result<String, String> {
+    if value.starts_with("hf:") || value.trim().is_empty() {
+        return Ok(value.to_owned());
+    }
+    Ok(absolute(value)?.to_string_lossy().into_owned())
 }
 fn value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
     *i += 1;
@@ -1148,8 +1158,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
     if let Some(result)=crate::model_registry::handle(args).await? { return Ok(result); }
     let action = args.get(1).map(String::as_str).unwrap_or("");
     if action == "optimize" {
-        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager]")?;
-        let mut params=json!({"environmentId": resolve(target).await?});
+        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT]")?;
+        let mut params=json!({});
         let mut i=3;
         while i<args.len() {
             match args[i].as_str() {
@@ -1158,10 +1168,15 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 "--idle"=>{params["idleTimeoutSeconds"]=json!(value(args,&mut i,"--idle")?.parse::<u64>().map_err(|_|"Idle seconds must be an integer")?);},
                 "--parallel"=>{params["parallel"]=json!(value(args,&mut i,"--parallel")?.parse::<u64>().map_err(|_|"Parallel requests must be an integer")?);},
                 "--launch"=>{params["launch"]=json!(value(args,&mut i,"--launch")?);},
-                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N or --launch compiled|speculative|eager".into()),
+                "--runner"=>{params["runner"]=json!(runner_reference(&value(args,&mut i,"--runner")?)?);},
+                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N, --launch compiled|speculative|eager|megakernel or --runner FOLDER|hf:OWNER/REPO@COMMIT".into()),
             }
             i+=1;
         }
+        // Like every other model command: the options are read first, and the engine is started
+        // when it is not running rather than refused with "not running".
+        client::start(None).await?;
+        params["environmentId"]=json!(resolve(target).await?);
         return call("model_optimizer",params).await;
     }
     if action=="support" {return model_support(args).await;}
@@ -1560,6 +1575,13 @@ fn volume_mount(volumes: &Value, name: &str, write: bool) -> Result<Value, Strin
         format!("Start an environment that mounts {name}{}: {names}", if write { " read/write" } else { "" })
     })
 }
+/// `data:/exports` names a path inside the volume `data`. A Windows drive path (`D:/out`) has a
+/// one-letter prefix and is never one, as `environment_path` reads it.
+fn volume_reference(arg: &str) -> Option<(String, String)> {
+    let (name, path) = arg.split_once(':')?;
+    (name.chars().count() >= 2 && crate::workload::identifier(name) && (path.is_empty() || path.starts_with('/')))
+        .then(|| (name.to_owned(), path.to_owned()))
+}
 fn volume_path(mount: &Value, sub: &str) -> String {
     let target = mount["target"].as_str().unwrap_or("/").trim_end_matches('/');
     let sub = sub.trim_matches('/');
@@ -1611,16 +1633,24 @@ async fn volume(args: &[String]) -> Result<Value, String> {
         Some("cp") if args.len() >= 3 => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
             let (target, sources) = args[1..].split_last().ok_or(VOLUME_USAGE)?;
-            let split = |arg: &str| arg.split_once(':').filter(|(n, p)| crate::workload::identifier(n) && (p.is_empty() || p.starts_with('/'))).map(|(n, p)| (n.to_owned(), p.to_owned()));
             let local = |path: &str| cwd.join(path).to_string_lossy().into_owned();
-            if let ([source], true) = (sources, std::path::Path::new(&local(target)).is_dir()) {
-                let (name, sub) = split(source).unwrap_or((source.clone(), String::new()));
-                if volumes.as_array().into_iter().flatten().any(|v| v["name"] == name.as_str()) {
-                    let mount = volume_mount(&volumes, &name, false)?;
-                    return call("copy_files_from_environment", json!({"environmentId":mount["environmentId"],"path":volume_path(&mount, &sub),"destination":local(target)})).await;
+            let named = |name: &str| volumes.as_array().into_iter().flatten().any(|v| v["name"] == name);
+            if let [source] = sources {
+                let (name, sub) = volume_reference(source).unwrap_or((source.clone(), String::new()));
+                if named(&name) {
+                    if std::path::Path::new(&local(target)).is_dir() {
+                        let mount = volume_mount(&volumes, &name, false)?;
+                        return call("copy_files_from_environment", json!({"environmentId":mount["environmentId"],"path":volume_path(&mount, &sub),"destination":local(target)})).await;
+                    }
+                    // Out of a volume, the other end is a folder on this PC. One that is not
+                    // there was read as a volume to copy into, and a drive path such as D:/out
+                    // was refused as "No volume named D".
+                    if volume_reference(target).is_none_or(|(to, _)| !named(&to)) {
+                        return Err(format!("{target} is not a folder on this PC, so nothing was copied out of {name}. Create the folder first, or copy into a volume as VOLUME:/path."));
+                    }
                 }
             }
-            let (name, sub) = split(target).unwrap_or((target.clone(), String::new()));
+            let (name, sub) = volume_reference(target).unwrap_or((target.clone(), String::new()));
             let mount = volume_mount(&volumes, &name, true)?;
             call("copy_files_to_environment", json!({"environmentId":mount["environmentId"],"paths":sources.iter().map(|s| local(s)).collect::<Vec<_>>(),"destination":volume_path(&mount, &sub)})).await
         }
@@ -2178,6 +2208,59 @@ mod tests {
             {"name":"declared","inUse":false,"stored":[]},
         ]});
         assert_eq!(unused_volumes(&listing), vec!["old".to_string()]);
+    }
+    #[test]
+    fn volume_paths_are_not_windows_drives() {
+        assert_eq!(volume_reference("data:/exports"), Some(("data".into(), "/exports".into())));
+        assert_eq!(volume_reference("data:"), Some(("data".into(), String::new())));
+        assert_eq!(volume_reference("D:/out"), None, "a drive letter is not a volume name");
+        assert_eq!(volume_reference("C:\\out"), None);
+        assert_eq!(volume_reference("./a:b"), None);
+        assert_eq!(volume_reference("data:relative"), None);
+    }
+    /// PROVES that copying out of a volume to a folder that is not there says so. The target was
+    /// read as a volume to copy into, so `yougori volume cp data:/exports D:/out` answered
+    /// "No volume named D. List them with `yougori volume ls`." on Windows.
+    #[tokio::test]
+    async fn copying_out_of_a_volume_to_a_folder_that_is_not_there_says_so() {
+        let _engine = client::fake_engine::install(|method, _| match method {
+            "app_status" => Ok(json!({"running": true})),
+            "list_volumes" => Ok(json!({"volumes":[{"name":"data","mounts":[{"environmentId":"a","environment":"db","target":"/data","readOnly":false,"running":true}]}]})),
+            other => Err(format!("unexpected {other}")),
+        });
+        let gone = std::env::temp_dir().join(format!("yougori-no-such-folder-{}", std::process::id()));
+        let error = volume(&args(&["cp", "data:/exports", &gone.to_string_lossy()])).await.unwrap_err();
+        assert!(error.contains("is not a folder on this PC") && error.contains("data"), "{error}");
+        assert!(!client::fake_engine::called("copy_files_to_environment") && !client::fake_engine::called("copy_files_from_environment"));
+        // A volume named outright, not as a volume path, still copies out into a folder.
+        let here = std::env::temp_dir();
+        let error = volume(&args(&["cp", "data", &here.to_string_lossy()])).await.unwrap_err();
+        assert!(error.contains("copy_files_from_environment"), "the copy out was asked for: {error}");
+    }
+    /// PROVES that `model optimize` is a model command like the others: the engine is started
+    /// when it is not running (it was refused with "not running" instead), and a runner folder
+    /// reaches the engine as an absolute path, since the engine reads it from its own working
+    /// directory (`--runner ./my-runner` was "not found" while the folder was right there).
+    #[tokio::test]
+    async fn model_optimize_starts_the_engine_and_names_the_runner_folder_in_full() {
+        let _engine = client::fake_engine::install(|method, params| match method {
+            "app_status" => Ok(json!({"running": true})),
+            "get_platform_state" => Ok(json!({"environments":[{"id":"env-1","name":"chat"}]})),
+            "model_optimizer" => Ok(params.clone()),
+            other => Err(format!("unexpected {other}")),
+        });
+        let sent = model(&args(&["model", "optimize", "chat", "--launch", "megakernel", "--runner", "my-runner"])).await.unwrap();
+        assert!(client::fake_engine::called("app_status"), "started like every other model command");
+        assert_eq!(sent["environmentId"], "env-1", "a name becomes its ID");
+        assert_eq!(sent["launch"], "megakernel");
+        let runner = sent["runner"].as_str().unwrap();
+        assert!(std::path::Path::new(runner).is_absolute() && runner.ends_with("my-runner"), "{runner}");
+        let hub = model(&args(&["model", "optimize", "env-1", "--runner", "hf:acme/fast@0123"])).await.unwrap();
+        assert_eq!(hub["runner"], "hf:acme/fast@0123", "a Hugging Face reference is sent as typed");
+        // The options are read before anything is asked of the engine.
+        let calls = client::fake_engine::calls().len();
+        assert!(model(&args(&["model", "optimize", "chat", "--fast"])).await.is_err());
+        assert_eq!(client::fake_engine::calls().len(), calls);
     }
     #[test]
     fn environment_paths_are_not_windows_drives() {

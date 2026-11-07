@@ -143,6 +143,26 @@ pub fn remembered(error: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// What kind of failure a failed engine call was: the code remembered for it where the details
+/// belong to this error, else the one its words read as.
+fn failure_code(error: &str) -> String {
+    if remembered(error) {
+        if let Some(details) = latest_error_details() {
+            return details.code;
+        }
+    }
+    wire::ErrorDetails::from_message(error).code
+}
+
+/// Whether a failed probe means nothing is listening on the control endpoint, so that starting
+/// an engine is the answer. Any other failure comes from an engine that is there: one whose
+/// protocol this CLI does not speak, one another user owns, one whose answer could not be read.
+/// Starting a second one would not help, and waiting on it only ended in a timeout that hid
+/// what was wrong, so the probe's own error is what the person sees.
+fn engine_absent(error: &str) -> bool {
+    failure_code(error) == "engine_unavailable"
+}
+
 /// Discovery alone can inspect a legacy engine. Mutations never use this
 /// fallback: mismatched protocols require updating both installed components.
 pub async fn engine_identity()->Result<Value,String>{
@@ -635,8 +655,12 @@ fn launch(executable: &Path, args: &[&str]) -> Result<std::process::Child, Strin
 async fn wait_for_engine(mut child: std::process::Child) -> Result<Value, String> {
     let deadline = Instant::now() + Duration::from_secs(45);
     loop {
-        if let Ok(status) = call(&request("app_status", json!({}))).await {
-            return Ok(status);
+        match call(&request("app_status", json!({}))).await {
+            Ok(status) => return Ok(status),
+            // Still coming up, or too busy to answer in time: keep waiting. Anything else is
+            // an engine that answered and cannot be used as it is, which no wait will change.
+            Err(error) if !engine_absent(&error) && failure_code(&error) != "outcome_unknown" => return Err(error),
+            Err(_) => {}
         }
         if let Some(exit) = child.try_wait().map_err(|e| e.to_string())? {
             return Err(format!("Yougori exited during startup ({exit}). If an older desktop version is already open, close it normally and restart the updated build."));
@@ -662,8 +686,12 @@ pub async fn start(explicit: Option<&str>) -> Result<Value, String> {
 }
 
 pub async fn start_with(explicit: Option<&str>, prefer_engine: bool) -> Result<Value, String> {
-    if let Ok(status) = call(&request("app_status", json!({}))).await {
-        return Ok(status);
+    match call(&request("app_status", json!({}))).await {
+        Ok(status) => return Ok(status),
+        // An engine is there and refused the probe (a protocol mismatch, say): that is the
+        // answer. Starting another one beside it hid this behind "exited during startup".
+        Err(error) if !engine_absent(&error) => return Err(error),
+        Err(_) => {}
     }
     let executable = if explicit.is_some() {
         desktop_path(explicit)?
@@ -704,6 +732,7 @@ pub async fn show() -> Result<Value, String> {
             wait_for_engine(launch(&desktop, &[])?).await?;
             Ok(json!({"visible": true, "handover": true}))
         }
+        Err(error) if !engine_absent(&error) => Err(error),
         Err(_) => {
             wait_for_engine(launch(&desktop.ok_or(no_app)?, &[])?).await?;
             Ok(json!({"visible": true}))
@@ -975,6 +1004,45 @@ mod macos_path_tests {
         assert_eq!(first.error_details.unwrap().outcome, "partial_copy_retained");
         let second = capture_errors::<()>(async { Err("A transfer failed".into()) }).await.unwrap_err();
         assert_eq!(second.error_details.unwrap().outcome, "failed");
+    }
+    /// PROVES that an engine which answers the probe wrongly is reported in its own words and
+    /// never started again beside itself. `app start` (and every command that starts the engine)
+    /// read any failed probe as "not running": an engine of another protocol version, or one
+    /// another user owns, got a second launch, and the person saw "Yougori exited during startup"
+    /// or, after 45 seconds, "has not exposed its local control endpoint yet", with the mismatch
+    /// nowhere in it.
+    #[tokio::test]
+    async fn an_engine_that_answers_wrongly_is_reported_rather_than_started_again() {
+        // Nothing listening: the one case where starting an engine is the answer.
+        assert!(engine_absent("Cannot reach the Yougori engine because it is not running. Start it with yougori app start."));
+        for said in [
+            "CLI/engine protocol mismatch. Update both Yougori and its CLI.",
+            "Cannot verify Yougori engine ownership: Access is denied. No request was sent.",
+            "Invalid Yougori control response",
+        ] {
+            assert!(!engine_absent(said), "{said}");
+        }
+        // The code attached where the error was made counts first, whatever its words say.
+        capture_errors(async {
+            let gone = coded("Nothing answered", wire::Code::EngineUnavailable);
+            assert!(engine_absent(&gone));
+            let slow = coded("Yougori did not answer in time, so the outcome may be unknown.", wire::Code::OutcomeUnknown);
+            assert!(!engine_absent(&slow));
+            assert_eq!(failure_code(&slow), "outcome_unknown", "a start keeps waiting on a slow engine");
+            Ok::<_, String>(())
+        })
+        .await
+        .unwrap();
+        // A probe a running engine refused is what `start` reports, with nothing started.
+        let _engine = fake_engine::install(|method, _| match method {
+            "app_status" => Err("CLI/engine protocol mismatch. Update both Yougori and its CLI.".into()),
+            other => Err(format!("unexpected {other}")),
+        });
+        let said = start_with(None, false).await.unwrap_err();
+        assert!(said.contains("protocol mismatch"), "{said}");
+        assert_eq!(fake_engine::calls().len(), 1, "one probe, and nothing else");
+        let said = show().await.unwrap_err();
+        assert!(said.contains("protocol mismatch"), "{said}");
     }
     #[cfg(windows)]
     #[tokio::test]

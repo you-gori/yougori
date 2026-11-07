@@ -92,8 +92,10 @@ class Throughput(performance.Run):
         name = "-".join(part for part in (launch, slots and f"parallel-{slots}") if part)
         if launch:
             # Through the owner's own command, so a run also proves the CLI reaches the setting.
-            saved = self.command("model", "optimize", self.environment_id, "--launch", launch, label=f"{name}-launch-saved")
-            assert saved["result"] == {"launch": launch, "restartRequired": True}, saved
+            # A megakernel launch names the runner folder it serves with (--megakernel-runner).
+            runner = ["--runner", str(self.args.megakernel_runner)] if launch == "megakernel" and self.args.megakernel_runner else []
+            saved = self.command("model", "optimize", self.environment_id, "--launch", launch, *runner, label=f"{name}-launch-saved")
+            assert saved["result"].get("launch") == launch and saved["result"].get("restartRequired") is True, saved
         if slots:
             self.result("model_optimizer", {"environmentId": self.environment_id, "parallel": slots}, f"{name}-parallel-saved")
         for attempt in range(ATTEMPTS):
@@ -436,7 +438,8 @@ def main():
     parser.add_argument("--repository")
     parser.add_argument("--expected-revision")
     parser.add_argument("--parallel", default="none", help="none, or comma-separated slot counts (candidate only)")
-    parser.add_argument("--launch", default="none", help="none, or comma-separated vLLM launch modes: eager, compiled, speculative")
+    parser.add_argument("--launch", default="none", help="none, or comma-separated vLLM launch modes: eager, compiled, speculative, megakernel")
+    parser.add_argument("--megakernel-runner", type=Path, help="the runner folder a megakernel launch serves with (runner.json beside its module)")
     parser.add_argument("--prompt-kind", default="analysis", help="analysis, edit, or both comma-separated")
     parser.add_argument("--runner", choices=("auto", "vllm"), help="vllm serves a safetensors repository with vLLM")
     parser.add_argument("--concurrency", default="1,2,4,8")

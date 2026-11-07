@@ -1213,13 +1213,13 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "67539a851b0bec8232f55c7b142a25d6af4ce493ed618b141aacd4e965c89a25",
+      "sha256": "716f1d695646b3f756eb8a8ae21c2fee4b6705c6b8f52c82db4a1b01a1b80151",
       "bytes": 85750,
       "mode": 420
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "29ddf767095bfd82d2997a9b6685cfafb61c3afbb704785c25813d8953755956",
+      "sha256": "4f663eaa189935ac16f6b069f7ff1d615bd36c03d3ba98c0ff1c9dded42ec1de",
       "bytes": 1577,
       "mode": 420
     },
@@ -1267,8 +1267,8 @@
     },
     {
       "path": "cli/src/catalog.rs",
-      "sha256": "ce51fef6786a67b5623d826fd1886d622315f7993849a4b8589018992842c918",
-      "bytes": 168409,
+      "sha256": "51fd32c6627bf07463090b1199e596a8e99afcd710eb79e2617e0dc5f5ccbf28",
+      "bytes": 168633,
       "mode": 420
     },
     {
@@ -1279,8 +1279,8 @@
     },
     {
       "path": "cli/src/client.rs",
-      "sha256": "436d8e9787f57f7983735a3c5f8a277cf24c84713a64060a86126ec17588b799",
-      "bytes": 63117,
+      "sha256": "7a95b911f1955b5c1645c2be2d8b40ff6fb77e4e17968f9a8515f888dccf1e0a",
+      "bytes": 67093,
       "mode": 420
     },
     {
@@ -1471,8 +1471,8 @@
     },
     {
       "path": "cli/src/hub/plan.rs",
-      "sha256": "62c6b80dd879c2c3af41b8401a0476253e66cee25468c80fbd271e7f7413533d",
-      "bytes": 103175,
+      "sha256": "544da0efb658b0176e1e1f053659239872fb7c07a9c7e2c209c229a07d88e975",
+      "bytes": 103345,
       "mode": 420
     },
     {
@@ -1585,8 +1585,8 @@
     },
     {
       "path": "cli/src/main.rs",
-      "sha256": "b4a5cc10e082d24d699f807d9c53e75040839cf4e62de66fb602a8900e96a8ba",
-      "bytes": 46528,
+      "sha256": "249fc65d3480d4ad95f6f28cbd9b4149c84c3625ecd8dcbe5eeee6fb950eae5b",
+      "bytes": 48271,
       "mode": 420
     },
     {
@@ -1729,8 +1729,8 @@
     },
     {
       "path": "cli/src/public.rs",
-      "sha256": "02b09c29c52cf535ee2f0aba7e5437a07c795079f51c2a35e4aa06eeb079bcd8",
-      "bytes": 131346,
+      "sha256": "11d09c149b44f4f3c0f534ecc2d886eb9ad5a7c2da3d57911dafb6c8aedc8941",
+      "bytes": 137170,
       "mode": 420
     },
     {
@@ -2622,6 +2622,12 @@
       "mode": 420
     },
     {
+      "path": "docs/megakernel-runners.md",
+      "sha256": "89000e1ad1e9ddcc3ea5eede6cf72a5a9e5fbb843e7724a29e3e09c99e6729c8",
+      "bytes": 5541,
+      "mode": 420
+    },
+    {
       "path": "docs/model-publishing.md",
       "sha256": "3d572f377f3e5232fb43655fe549c59565c9333f5c43e9000826ec7d86e971cc",
       "bytes": 2875,
@@ -2790,27 +2796,15 @@
       "mode": 420
     },
     {
-      "path": "e2e/access-grid.spec.ts",
-      "sha256": "2258583d51d0506e8ed181b0e54431a345fd7f4730e94abae54ccf538dd4a481",
-      "bytes": 20000,
-      "mode": 420
-    },
-    {
       "path": "e2e/app.spec.ts",
-      "sha256": "70090d4bf16a10dcb8d0e9fc51f44c47dd21c7b5bb8503be6145055891064704",
-      "bytes": 4564,
-      "mode": 420
-    },
-    {
-      "path": "e2e/desks.spec.ts",
-      "sha256": "d916beb4cfc439bc44ff263b2f670f065179190291d54a7f53a3c69f84be731c",
-      "bytes": 24251,
+      "sha256": "57001ed911a2398522d59cc163cf19268629f8e0b1d0f866df6184e6d1bd7da0",
+      "bytes": 4581,
       "mode": 420
     },
     {
       "path": "e2e/environment-graph.spec.ts",
-      "sha256": "7b913aa9b88d55d0bfa8b4c1edd670a5676ece21a6fc1082e86d66f0e5cd40b0",
-      "bytes": 222540,
+      "sha256": "5d5de5ff751b567e6912ab01054c4c655c652bfc6b64ac7d1b8901ed1d9e6173",
+      "bytes": 225211,
       "mode": 420
     },
     {
@@ -2821,14 +2815,14 @@
     },
     {
       "path": "e2e/grids.spec.ts",
-      "sha256": "93feadf9ec0d8acd3f7873b1806ab352bfb741aac76126e027e70df34c285a25",
-      "bytes": 1425,
+      "sha256": "f14740d6a6196ee323cefb0b6a004545cdce6437c4aa7382d805308420a06564",
+      "bytes": 1653,
       "mode": 420
     },
     {
       "path": "e2e/instructions.spec.ts",
-      "sha256": "4165a75af37654f80ab648a078459f0d10f36f0739f9f2123bcebe22c607e6f8",
-      "bytes": 38526,
+      "sha256": "0adb1bfb0789c5f2f1eb851ab6b8c4f8b7fba93118725d5ed82880305bdff213",
+      "bytes": 38856,
       "mode": 420
     },
     {
@@ -2838,27 +2832,15 @@
       "mode": 420
     },
     {
-      "path": "e2e/neo-grid.spec.ts",
-      "sha256": "ed80ba3c3ae0014c4d08583255d2b05ef27006428073f851d6313c0c1f205813",
-      "bytes": 26205,
-      "mode": 420
-    },
-    {
       "path": "e2e/neocloud.spec.ts",
-      "sha256": "4b56cbfc1719dd85213fd0548b4966e6a19dc52c995560a807ace5f9d2826e32",
-      "bytes": 3102,
+      "sha256": "cd74f0e1f0f5b09c8614fe2c19efa8535df8d1f3752ac6781573e242dc305375",
+      "bytes": 3106,
       "mode": 420
     },
     {
       "path": "e2e/startup.spec.ts",
       "sha256": "84b5d090a36aa981f5c3a64bdc340409020972364c5350d406137fc0ca443e84",
       "bytes": 1261,
-      "mode": 420
-    },
-    {
-      "path": "e2e/swarm-mining.spec.ts",
-      "sha256": "8d6128243e6637da5569c82cecc6f74399c9faf673d5c58d5e87e6cf94ac062e",
-      "bytes": 13417,
       "mode": 420
     },
     {
@@ -2875,13 +2857,13 @@
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "8ba784f54be0832405d002b5a2d1ec7dd655bce93bd5b871d552c73cb475a217",
+      "sha256": "d16b6557017b282285974568a4a5347f3650d3d7f390daad654af48f659c56dc",
       "bytes": 196869,
       "mode": 420
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "908767b81d4f70d60d08913f34ba5c4f9c9d55c838128c29b80ebb61c20c1495",
+      "sha256": "8b4d019bd8ab98e385666a8e15e92e47a029fe104275d6e81a8b5d6242fea1f1",
       "bytes": 1668,
       "mode": 420
     },
@@ -3385,8 +3367,8 @@
     },
     {
       "path": "examples/hub/inference-solver/README.md",
-      "sha256": "f225b0a4168f7137039c83d7e1729bfa1e3eba24602579b8ac9c8606d6f8d353",
-      "bytes": 22211,
+      "sha256": "1906238f94d159850c2d609de0f3e1ca8570382753f5c81e49c667578b0e2f95",
+      "bytes": 22803,
       "mode": 420
     },
     {
@@ -3457,8 +3439,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/compute.py",
-      "sha256": "50f41c10989c8f524657cec797fb15b37cf73f014165fa77946184e61904509d",
-      "bytes": 28608,
+      "sha256": "d6fef346bf8475359532cfbd68821167c6f634727bd0e1d41c7504f615ae8180",
+      "bytes": 30794,
       "mode": 420
     },
     {
@@ -3469,8 +3451,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/compute_node.py",
-      "sha256": "c5bf733f943b1319e7a37b760f7f26e7b5dd069b5b19668dba970d9108088b94",
-      "bytes": 14583,
+      "sha256": "551436310a33c3aa6db723ae9287ce571555909f3ed81bb72385a693ae41a3d1",
+      "bytes": 16765,
       "mode": 420
     },
     {
@@ -3511,8 +3493,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/gateway.py",
-      "sha256": "d323f2aa07b3786839a8a8f943e34fc11fa63f32c0f28cf99d63ac40ad6695b9",
-      "bytes": 8191,
+      "sha256": "306ef8b9685c5216c0e880e9fd06d05c21d5535743092a27febc31a4d0ec84c5",
+      "bytes": 10965,
       "mode": 420
     },
     {
@@ -3541,8 +3523,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/harnesses/Containerfile",
-      "sha256": "65a5fef5132fe8224348c4061dfacfd7d02282a97378a9dcf63b09136795308f",
-      "bytes": 3518,
+      "sha256": "ec5733bf5ab0222f580e8a995b5e93c760ea3da7ebba425d0a8cfefa76a109b4",
+      "bytes": 3583,
       "mode": 420
     },
     {
@@ -3757,8 +3739,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/routing.py",
-      "sha256": "8abe9ac4bf165d32010f78fd746c9413f377aacfa7ed91dc19cbd9d6b37ee557",
-      "bytes": 8521,
+      "sha256": "1a8ee7dccc8bd3204cc32ced1e84414b68178610e746cb21516b714d5c0d78c5",
+      "bytes": 9508,
       "mode": 420
     },
     {
@@ -4057,14 +4039,14 @@
     },
     {
       "path": "examples/hub/inference-solver/tests/test_routing.py",
-      "sha256": "34c45500282540a9c1864a3b9b3ef3196d0c3a0dc8b6842f5e0b43fd5eac99b2",
-      "bytes": 22365,
+      "sha256": "a5ba84fa429a2c1a265179e31158aa86b49e895b525cd2f987ac40998f215165",
+      "bytes": 29809,
       "mode": 420
     },
     {
       "path": "examples/hub/inference-solver/tests/test_service.py",
-      "sha256": "bb42ef33cd20060564d57e3331f4c272b3b9e8c0332a31ff87ab9fafef3bfb3a",
-      "bytes": 22833,
+      "sha256": "4e38cd3584362ab757b36430802d2c1d702a7392778553654172de945f8c58a1",
+      "bytes": 23063,
       "mode": 420
     },
     {
@@ -4555,13 +4537,13 @@
     },
     {
       "path": "grid/Cargo.lock",
-      "sha256": "9cfdb8aab40a18990b590a389531f37ac729b6bbdbe8e4aed178a49c16ea54f2",
+      "sha256": "a4cd682eb4689937534254a6e412faf449055f04cbebfac5d904b69a7c1d6128",
       "bytes": 38783,
       "mode": 420
     },
     {
       "path": "grid/Cargo.toml",
-      "sha256": "910c9154726e8336cb67afdf37f66d09048a97da1144d97b5349ca8869e53180",
+      "sha256": "38f74bf1dd04ce2ff86a7d7968c939f78fb86a173332fe6c74ca1c69170ad964",
       "bytes": 2018,
       "mode": 420
     },
@@ -5317,13 +5299,13 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "3e19d27a00cdd45cc613d8562e643c741f5ecd7e17e61dc4884139502acb23fa",
+      "sha256": "d155b10bc381661d744fd1b163a784791286dc62c6f808aa05619eced723a6ff",
       "bytes": 193714,
       "mode": 420
     },
     {
       "path": "package.json",
-      "sha256": "2a800dbf840658a4dc5dfc8ff98334b1a74f51d48d94a5d7e7b16973d6ea18e3",
+      "sha256": "a4e3460d6c7df8906c302329e3d09927a47f36f9c4fa182f1d8441c09a560ecd",
       "bytes": 7581,
       "mode": 420
     },
@@ -5809,8 +5791,8 @@
     },
     {
       "path": "scripts/acceptance/model-throughput-benchmark.py",
-      "sha256": "9cc9382bc689b73d8fa4a8afa9f844e5a0b621d31793dfc0248957a1179c4c4c",
-      "bytes": 27995,
+      "sha256": "48f78e7ba151abe974a46adf7f74d254824843ee7cdabd0078f25ee0e14792bd",
+      "bytes": 28422,
       "mode": 420
     },
     {
@@ -6426,6 +6408,12 @@
       "mode": 420
     },
     {
+      "path": "scripts/megakernel-host.test.py",
+      "sha256": "46851f950a1482f0ece1f926f87cb6ac18bdba360b8ec30d4bffb59c9edfff46",
+      "bytes": 23284,
+      "mode": 420
+    },
+    {
       "path": "scripts/model-chat-client.test.py",
       "sha256": "6ea005859dd0cf655f1615957ea415a8ca7cfabd80c29e367dec03d7c5315b4a",
       "bytes": 2821,
@@ -6451,8 +6439,8 @@
     },
     {
       "path": "scripts/model-server.test.py",
-      "sha256": "dfdeb6182dde831eda7fa1eae69c416e5f871b3e24e880cfe5945b69381e3e52",
-      "bytes": 218643,
+      "sha256": "e480059afbaca7c9751ec80a94fa4cb7ed3e6593ccc70d3b5e323c602e7547e7",
+      "bytes": 226016,
       "mode": 420
     },
     {
@@ -7015,13 +7003,13 @@
     },
     {
       "path": "setup/Cargo.lock",
-      "sha256": "825ef75ff17ff4f42ecedf34730a61e9854a41ed59122183498a198b4518c2ef",
+      "sha256": "896d093296d7cceec1efb615043d6f0c91ccd582088b5f8754fd0eddab51c5b9",
       "bytes": 6402,
       "mode": 420
     },
     {
       "path": "setup/Cargo.toml",
-      "sha256": "3a65dd6df29963ecbbca815428d72d6990ac7aa61339c8b0d26d491144ba4ac2",
+      "sha256": "1c2706e77087f72642b254328bdec136e521d476baa2ed90214944be52e053f0",
       "bytes": 366,
       "mode": 420
     },
@@ -7657,19 +7645,19 @@
     },
     {
       "path": "skills/yougori/references/cli.txt",
-      "sha256": "0199337ad330dfd7944bfc47c23152818361a7970620162448ed918c9a1b5c26",
-      "bytes": 229868,
+      "sha256": "69bc0e34c1d56c18caee75daf1f43fd4d025d55482fbc9ba33a372acce7ac2c7",
+      "bytes": 230810,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "16732e2836c8f94146c818cf60880cd3df3a0a0242c2fe75349939b226174f46",
+      "sha256": "9f960b4c81af532c7b1c8612959c04838d6fb4f941c776a0ff7421b008ecb97d",
       "bytes": 199305,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "3f7342f2a7e8a3f3f53ba924817b78fbdb22f56996af561a99766fb85a2f93da",
+      "sha256": "d6a0c32f128669f2969d2b42d85a2071e3a1cb0420076c4f59a578b7cf6def23",
       "bytes": 4757,
       "mode": 420
     },
@@ -8155,8 +8143,8 @@
     },
     {
       "path": "src-tauri/src/automation/dispatch.rs",
-      "sha256": "f70431d714831615dc9a0194b63dfab428e13e0ba45eef4c44359f11d76ac3d8",
-      "bytes": 78676,
+      "sha256": "3465b33be138b6750897ef1d2d42bd0112e1d8b9d4409f8b5c56b81cfc36b3ad",
+      "bytes": 78693,
       "mode": 420
     },
     {
@@ -11509,8 +11497,8 @@
     },
     {
       "path": "src-tauri/src/model_memory/profiles/audit.rs",
-      "sha256": "563d0cb34ff007d56c3d40b62d059c1685c42648867561e87c23f9e8cc6149f3",
-      "bytes": 57882,
+      "sha256": "2c0d916c860d9a23d74ef5c0db80afdb095411c75f8175264f99eac408d15b64",
+      "bytes": 58054,
       "mode": 420
     },
     {
@@ -12823,8 +12811,8 @@
     },
     {
       "path": "src-tauri/src/model_runner.rs",
-      "sha256": "8c120df1381c31fa9391a6725f2d2545f23525681826e218f1a055c839de2de6",
-      "bytes": 103167,
+      "sha256": "91fde2cd3258c7c36a42d55d162aad2e90ae99add289e7e4440fde041d54be96",
+      "bytes": 105545,
       "mode": 420
     },
     {
@@ -12871,8 +12859,8 @@
     },
     {
       "path": "src-tauri/src/model_runner/engine_backends.py",
-      "sha256": "e8f4a879c1dec430c2fba625a2df2f98fad627e14f15aba5ed38068ee45bafd1",
-      "bytes": 55324,
+      "sha256": "93db1a5e2d1b351397da0155a5e96102c9b1fc99726b89a60958a3ea7ec77995",
+      "bytes": 66942,
       "mode": 420
     },
     {
@@ -12949,8 +12937,8 @@
     },
     {
       "path": "src-tauri/src/model_runner/measurement/cursor.rs",
-      "sha256": "f61f42bc0a6b6db6069ff2f7b5a93c17fa6e096400a49e56abb68d0de21a21c8",
-      "bytes": 8969,
+      "sha256": "5d21569ad168cccdfcac79ddea7ed024ddd4b61e92836e08e861599530c2c53e",
+      "bytes": 10565,
       "mode": 420
     },
     {
@@ -13008,6 +12996,12 @@
       "mode": 420
     },
     {
+      "path": "src-tauri/src/model_runner/megakernel_host.py",
+      "sha256": "c540a7e2a75553fdadfa890fd70e9c6c2ef83eea47be9b522ec256d97c65ad9c",
+      "bytes": 46540,
+      "mode": 420
+    },
+    {
       "path": "src-tauri/src/model_runner/migration.rs",
       "sha256": "bcc89ef095ab9d18e758ca071e503222607a3c3eb04637c5ca5c65f14748b9f9",
       "bytes": 73999,
@@ -13027,14 +13021,14 @@
     },
     {
       "path": "src-tauri/src/model_runner/neocloud.rs",
-      "sha256": "2fa6448c33a1324e9deb2a547a658ca7fde10310b8dfff6a3ddb5b4724b2303b",
-      "bytes": 16760,
+      "sha256": "a50875173dd2c1e9ead524fa02bd2a1f3631441b1fe727d276bd75570dc6316a",
+      "bytes": 17170,
       "mode": 420
     },
     {
       "path": "src-tauri/src/model_runner/optimizer.rs",
-      "sha256": "87da9e8b3f33532624a956b49a58c3e0b11c0c5fea3d08dc491e8f7783757a54",
-      "bytes": 86607,
+      "sha256": "46846f7ed2c827d831b1e34b992c6791789ad7bf69b48a13b59e00bd2a3e8ef7",
+      "bytes": 93359,
       "mode": 420
     },
     {
@@ -13183,14 +13177,14 @@
     },
     {
       "path": "src-tauri/src/model_runner/packaging.rs",
-      "sha256": "dd38d4295aea71c10135b3b5d9462769197acfbdb0641da06d7d9083e7d5c4b1",
-      "bytes": 7619,
+      "sha256": "33a684dac39336d6ad79f65d6888b42027f0a3181ce619978f61fdb35ceac181",
+      "bytes": 7798,
       "mode": 420
     },
     {
       "path": "src-tauri/src/model_runner/preflight.rs",
-      "sha256": "4e25229b131bd63d195b274ffb2852de9560db065b0eefde9c0847fca66719bf",
-      "bytes": 40118,
+      "sha256": "93de58ecca0bd797bc6a18bae06acbeecee2cf9f66cdf0f59e5cc05c94075f0c",
+      "bytes": 40711,
       "mode": 420
     },
     {
@@ -13273,7 +13267,7 @@
     },
     {
       "path": "src-tauri/src/model_server.py",
-      "sha256": "8df02e8f5b420d0ff0aca4cd393022b8e7611bdae2cbac5a28ded9ee0bab3234",
+      "sha256": "bcf5a17a1fe9c50d45b557f3407e3acf20ba5e74ae1c2de37e7caadbbec89de5",
       "bytes": 175004,
       "mode": 420
     },
@@ -13645,8 +13639,8 @@
     },
     {
       "path": "src-tauri/src/runtime/cloud/model.py",
-      "sha256": "80b63bd414133045da09f54bcb2287d65bfcbcce305a20c5209b7872c0176836",
-      "bytes": 13187,
+      "sha256": "4c03522627e1d573021cc6a1806e516deb59ac9bad271ad2063def1f34b3fea3",
+      "bytes": 14526,
       "mode": 420
     },
     {
@@ -13669,8 +13663,8 @@
     },
     {
       "path": "src-tauri/src/runtime/cloud/test_model.py",
-      "sha256": "742c0fece39d6d32acb7c703c399c773ae797b072e6b1117c99f2dbb515e6f14",
-      "bytes": 14010,
+      "sha256": "7a8f5342cf712c46f4977972b7112117fe41ee9004edd93d2e784349413060de",
+      "bytes": 15631,
       "mode": 420
     },
     {
@@ -15655,8 +15649,8 @@
     },
     {
       "path": "src-tauri/src/sandbox/vm_service/publish.rs",
-      "sha256": "050d5540edd5a87cffc038bad86a88e3985750c0c573d192038c3e5401827445",
-      "bytes": 35356,
+      "sha256": "1ce92b37c3b1e79370171745555e1ac84a68306f02f8c0075cbe6faa4383cacf",
+      "bytes": 35679,
       "mode": 420
     },
     {
@@ -15685,8 +15679,8 @@
     },
     {
       "path": "src-tauri/src/sandbox/vm_service/tests.rs",
-      "sha256": "873def00a0468deda5a81edd3756c4794668497d2fad0c7de1344450f3b7dc81",
-      "bytes": 72362,
+      "sha256": "815b25101def2dfe988b63056bd8543884bdb21b75857b7506b0dcb8d5f840dc",
+      "bytes": 72595,
       "mode": 420
     },
     {
@@ -15787,8 +15781,8 @@
     },
     {
       "path": "src-tauri/src/sandbox_contract/boundary_corpus/runner.rs",
-      "sha256": "27f0273694619ab00e4d76bbaef90f44e7634455133562b195b3b13c56142c24",
-      "bytes": 39189,
+      "sha256": "4cf931a095cad3daf4a0d1abbf922dbb741497bea1403cef1babc09bad8085bd",
+      "bytes": 39203,
       "mode": 420
     },
     {
@@ -18703,8 +18697,8 @@
     },
     {
       "path": "src-tauri/src/sandbox_vm/engine.rs",
-      "sha256": "b2fb9cd496b62aa8b8035c27254689f4217f5f147dea1f0339805d040cf8e7f5",
-      "bytes": 179258,
+      "sha256": "48dc86949267cd8f4ebde5faa48250939975e9ad3a114d3410e7fa73cb70acc0",
+      "bytes": 180769,
       "mode": 420
     },
     {
@@ -18715,8 +18709,8 @@
     },
     {
       "path": "src-tauri/src/sandbox_vm/engine/combine.rs",
-      "sha256": "528f2e40f571028264020d6afaba4c1b1037ab40e97c2f0a89ed42d7c1ab79d8",
-      "bytes": 44243,
+      "sha256": "1ad5f40f6ebce041592f7e640093f125f41ae8ae553971d6afc5e4879ffcb453",
+      "bytes": 47762,
       "mode": 420
     },
     {
@@ -19489,8 +19483,8 @@
     },
     {
       "path": "src-tauri/src/swarm/model_lifecycle.rs",
-      "sha256": "7a15fb0d05f7378ef89fef880e6e5b4b9bd63722dc70772d26ade4d750d2c4fd",
-      "bytes": 40879,
+      "sha256": "2b8d0bafe40b5779026eacd9c125f46275a3bd8e5f80565cd24629cea4c30348",
+      "bytes": 40927,
       "mode": 420
     },
     {
@@ -19663,7 +19657,7 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "43c676703a28670eb7cfd3f41c62a7e7543c654a70d2e7bc4a610e1c9b0a4b52",
+      "sha256": "fcd48f29d099dd09adbd4e2d34a2473e04c0da50a5a94fbfaf1b74f4ce1da7ad",
       "bytes": 1691,
       "mode": 420
     },
@@ -20245,8 +20239,8 @@
     },
     {
       "path": "src/components/dialogs/create-environment-dialog.tsx",
-      "sha256": "ccbb2635b98603b640ed01332f03ec79844ebcd2c123b3f629378bedfa726a22",
-      "bytes": 4320,
+      "sha256": "104c2b29407d4040a8aef93d4286ddfeaad2bd39e4be82664ddc90d2eee2a96d",
+      "bytes": 4821,
       "mode": 420
     },
     {
@@ -21025,14 +21019,14 @@
     },
     {
       "path": "src/components/sandbox-vm/combine-dialog.test.tsx",
-      "sha256": "091d310485b306ed5946d66c8af2d2766910ad9d7c077ed8f1f4d5a8d785be9b",
-      "bytes": 3664,
+      "sha256": "2bd770c85f4288e46f1dc4b9f805d9d66f69de1a5042e67e6804b6232db5b7f0",
+      "bytes": 5283,
       "mode": 420
     },
     {
       "path": "src/components/sandbox-vm/combine-dialog.tsx",
-      "sha256": "788729f7a4d1c489ebd1ee08d4eecdfd88d5534bd15ee63262a7bb09a8988131",
-      "bytes": 7433,
+      "sha256": "430b08e253c4c8dccaba9b1f24f61d30f0f252c9b72eb2885a304f1ebd54bfac",
+      "bytes": 7678,
       "mode": 420
     },
     {
@@ -21133,8 +21127,8 @@
     },
     {
       "path": "src/components/sandbox-vm/sandbox-vm-launch-form.tsx",
-      "sha256": "b640b08aca580cdeddaea29bc55fbd0aa5df711c7a1b10c6fec39e7217b962e0",
-      "bytes": 10759,
+      "sha256": "57004910a31907a85a5c3b22716b234e641552e99ad71fede78da79bb8237122",
+      "bytes": 10785,
       "mode": 420
     },
     {
@@ -21253,8 +21247,8 @@
     },
     {
       "path": "src/components/setups/setup-detail.tsx",
-      "sha256": "bf18fc0d0b4905d181c9f6b7f9362e33883f28625e5a6b1e8c71e87694810e4a",
-      "bytes": 34865,
+      "sha256": "ff124179d0630604d0a54b7207a4d42fa836ff8dde2d81c5e8b0a8cfbb97b991",
+      "bytes": 34919,
       "mode": 420
     },
     {
@@ -22087,14 +22081,14 @@
     },
     {
       "path": "src/lib/instruction-guides.test.ts",
-      "sha256": "1292c93a340b403fa2f7cf4f1a308dbaf36f481e88e5f63015a8dfcce43434d9",
+      "sha256": "89e701f57558469e6d1f99af52c5106cfbe46691b67b5ff4722cf3a214cb5f2c",
       "bytes": 799,
       "mode": 420
     },
     {
       "path": "src/lib/instruction-guides.ts",
-      "sha256": "656ddb6eaf32379550d01c7ac5d8f00397b6a7a5f8835de1551efe78a0d2aa74",
-      "bytes": 8412,
+      "sha256": "ae5192913cd4729c0b21fb9ff254052cac7aee2c32c3faff83bc4d5b053d5d3c",
+      "bytes": 7162,
       "mode": 420
     },
     {
@@ -22333,8 +22327,8 @@
     },
     {
       "path": "src/lib/topic-walkthrough.ts",
-      "sha256": "068aa2d74da331dbb564b30c1c483c5d95d8c8fcb1211a6f1194352b69be0295",
-      "bytes": 3142,
+      "sha256": "a27c3977dfe42b750c24e302991c19f651075380ac7a47a1552c97825ea131f1",
+      "bytes": 2810,
       "mode": 420
     },
     {
@@ -22417,8 +22411,8 @@
     },
     {
       "path": "src/pages/setups-page.test.tsx",
-      "sha256": "6c57cfce44088a319dba015f21c015086d5834653ff4d04308fe907b6ceffbd9",
-      "bytes": 33392,
+      "sha256": "586a78bddabc8718823fc546c344d5bb1e9c5c05c0f83c987531b33c032f311f",
+      "bytes": 33821,
       "mode": 420
     },
     {
@@ -22489,13 +22483,13 @@
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "34a5d381608201ec6d7e32dab8d8eba3a9238a0372010a8c5939a8f5b0f86a48",
+      "sha256": "8b5a55bf041a604935290e325f44d1060998313cf30e5e5bd0c7dcda4441efe8",
       "bytes": 80514,
       "mode": 420
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "2de46c297057259e5cf730b00911d6a78b7e67941f68690ba4fa8aa36d8ca925",
+      "sha256": "b8355e7e630fada2e4c354804da7cfb14c1c3f32f51fba4394b93f29b6f0af0c",
       "bytes": 1875,
       "mode": 420
     },

@@ -105,7 +105,7 @@ test("cloud environment from creation popup adds a verified server node with Ope
   await openGraph(page)
   const toolbar = page.getByRole("group", { name: "Dashboard actions", exact: true })
   await expect(toolbar.getByRole("button", { name: "Cloud environment", exact: true })).toHaveCount(0)
-  const createButton = page.getByRole("button", { name: "Add sandbox", exact: true })
+  const createButton = page.getByRole("button", { name: "New environment", exact: true })
   await createButton.click()
   const creation = page.getByRole("dialog", { name: "New environment", exact: true })
   await expect(creation.getByText("Computer branch", { exact: true })).toHaveCount(0)
@@ -193,7 +193,7 @@ test("cloud setup requires successful SSH access and preserves failed drafts", a
       throw new Error("Permission denied (publickey)")
     }
   })
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await page.getByRole("dialog", { name: "New environment", exact: true }).getByText("Cloud environment", { exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   const name = dialog.getByRole("textbox", { name: "Node name" })
@@ -220,7 +220,7 @@ test("cloud setup requires successful SSH access and preserves failed drafts", a
   await expect(add).toBeDisabled()
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
   // Reopen through the other entry point; it shares the same unfinished draft.
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await page.getByRole("dialog", { name: "New environment", exact: true }).getByText("Cloud environment", { exact: true }).click()
   await expect(name).toHaveValue("Retry server")
   await expect(identity).toHaveValue("C:/Keys/cloud.pem")
@@ -251,7 +251,7 @@ test("cloud setup requires successful SSH access and preserves failed drafts", a
   await expect(add).toBeEnabled()
   await add.click()
   await expect(dialog).not.toBeVisible()
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await page.getByRole("dialog", { name: "New environment", exact: true }).getByText("Cloud environment", { exact: true }).click()
   await expect(name).toHaveValue("")
   await expect(identity).toHaveValue("")
@@ -266,7 +266,7 @@ test("cloud setup accepts a pasted public key and explains a missing matching ag
     const { cloudApi } = await import("/src/api/cloud-api.ts" as string) as typeof import("../src/api/cloud-api")
     cloudApi.testConnection = async () => { throw new Error(message) }
   }, help)
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await page.getByRole("dialog", { name: "New environment", exact: true }).getByText("Cloud environment", { exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await dialog.getByRole("textbox", { name: "Node name" }).fill("Agent server")
@@ -565,9 +565,8 @@ test("graph uses the available width and a taller responsive canvas", async ({ p
   await openGraph(page)
   const graph = (await page.locator("[data-environment-graph]").boundingBox())!
   const canvas = (await page.locator("[data-environment-canvas]").boundingBox())!
-  // The board fills the width beside the sidebar.
-  const sidebar = (await page.locator(".app-sidebar").boundingBox())!
-  expect(graph.width).toBeGreaterThan(1920 - sidebar.width - 80)
+  // The board fills the width; there is no sidebar any more, only the page padding.
+  expect(graph.width).toBeGreaterThan(1920 - 80)
   // The redesigned workspace fills the space left by its toolbar and docks,
   // rather than imposing the old fixed 640px minimum and scrolling the page.
   expect(canvas.height).toBeGreaterThan(1080 / 2)
@@ -788,7 +787,7 @@ test("local restore is available without nodes and retains failures for retry", 
   const header = page.getByRole("banner")
   await expect(header.getByRole("button", { name: "Load local backup", exact: true })).toHaveCount(0)
   await expect(header.getByRole("button", { name: "Deploy to cloud", exact: true })).toHaveCount(0)
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const creation = page.getByRole("dialog", { name: "New environment", exact: true })
   await creation.getByText("Neocloud", { exact: true }).click()
   await expect(creation.getByRole("heading", { name: "Rent GPUs in the cloud", exact: true })).toBeVisible()
@@ -988,7 +987,7 @@ test("dashboard action styling stays compact, accessible and usable in both them
       await expect(page.locator("html")).toHaveClass(dark ? /dark/ : /^(?!.*dark)/)
       await expect(page.getByRole("region", { name: "Host resources and storage" })).toBeVisible()
       await expect(page.getByRole("button", { name: "Instructions", exact: true })).toBeVisible()
-      for (const name of ["Create my personal vault MCP", "Run a local model", "Neo Grid", "Settings", "Add sandbox"]) {
+      for (const name of ["Create my personal vault MCP", "Run a local model", "Settings", "New environment"]) {
         await expect(page.getByRole("button", { name, exact: true })).toBeVisible()
       }
       const boxes = await actions.locator("button").evaluateAll(elements => elements.map(element => {
@@ -1013,14 +1012,14 @@ test("dashboard action styling stays compact, accessible and usable in both them
       expect(await launch.evaluate(element => getComputedStyle(element).backgroundImage)).toBe("none")
     }
   }
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await page.getByRole("dialog", { name: "New environment", exact: true }).getByText("Load local backup", { exact: true }).click()
   const backup = page.getByRole("dialog", { name: "New environment", exact: true })
   await expect(backup).toBeVisible()
   await backup.getByRole("button", { name: "Cancel", exact: true }).click()
   await expect(backup).not.toBeVisible()
   await page.keyboard.press("Escape")
-  const create = page.getByRole("button", { name: "Add sandbox", exact: true })
+  const create = page.getByRole("button", { name: "New environment", exact: true })
   await create.focus()
   await page.keyboard.press("Enter")
   await expect(page.getByRole("dialog", { name: "New environment", exact: true })).toBeVisible()
@@ -1036,7 +1035,7 @@ test("persistent notifications do not block mobile dialog actions and can be dis
     toastManager.add({ title: "Persistent test warning", description: "This notice stays until dismissed.", timeout: 0, type: "warning" })
   })
   await expect(page.getByText("Persistent test warning", { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await page.getByRole("dialog", { name: "New environment", exact: true }).getByText("Load local backup", { exact: true }).click()
   const backup = page.getByRole("dialog", { name: "New environment", exact: true })
   await expect(backup).toBeVisible()
@@ -1199,12 +1198,16 @@ test("GPU is a category and legacy CUDA nodes have no Shared GPU connector", asy
 
 test("GPU creation explains unsupported browser hardware and cannot claim CUDA works", async ({ page }) => {
   await openGraph(page)
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
-  await dialog.getByRole("switch", { name: "GPU access", exact: true }).check()
-  await expect(dialog.getByRole("region", { name: "NVIDIA CUDA runtime" })).toContainText("desktop app")
-  await expect(dialog.getByRole("button", { name: "Set up CUDA", exact: true })).toBeDisabled()
-  await expect(dialog.getByRole("button", { name: "Create environment", exact: true })).toBeDisabled()
+  // The Sandbox VM form checks GPU support through the engine; the browser has none to ask.
+  const gpu = dialog.getByRole("switch", { name: "GPU acceleration", exact: true })
+  await expect(gpu).toBeDisabled()
+  await expect(gpu).not.toBeChecked()
+  await expect(dialog.getByRole("region", { name: "Resource allocation", exact: true })).toContainText("GPU support could not be checked")
+  await dialog.getByRole("button", { name: "Create environment", exact: true }).click()
+  await expect(dialog.getByRole("alert")).toContainText("Yougori Desktop")
+  await expect(page.locator("[data-environment-id]")).toHaveCount(2)
 })
 
 test("public access preserves independent local connections", async ({ page }) => {
@@ -2070,7 +2073,7 @@ test("workspace redesign keeps toolbar and metrics readable across desktop sizes
         expect(actions.y).toBeGreaterThanOrEqual(resources.y + resources.height)
       }
       await expect(page.getByRole("region", { name: "Host resources and storage" })).toBeVisible()
-      await expect(page.getByRole("button", { name: "Add sandbox", exact: true })).toBeVisible()
+      await expect(page.getByRole("button", { name: "New environment", exact: true })).toBeVisible()
       await expect(page.getByRole("table",{name:"Environments",exact:true})).toBeVisible()
     }
   }
@@ -2079,9 +2082,10 @@ test("workspace redesign keeps toolbar and metrics readable across desktop sizes
 
 
 test("new environments appear as distinct rows and retain individual access settings", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
     await openGraph(page,[])
     for(const name of ["First","Second"]){
-      await page.getByRole("button",{name:"Add sandbox",exact:true}).click()
+      await page.getByRole("button",{name:"New environment",exact:true}).click()
       await page.getByPlaceholder("Ubuntu Development").fill(name)
       await page.getByRole("dialog",{name:"New environment"}).getByRole("button",{name:"Create environment",exact:true}).click()
       await expect(page.locator("tr[data-environment-id]").filter({has:page.getByRole("button",{name:`Configure ${name}`,exact:true})})).toBeVisible()
@@ -2093,8 +2097,9 @@ test("new environments appear as distinct rows and retain individual access sett
   })
 
 test("MicroVM creation saves one fixed allocation from sliders and editable values", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await dialog.getByText("MicroVM", { exact: true }).click()
   await dialog.getByPlaceholder("Ubuntu Development").fill("Micro memory")
@@ -2115,8 +2120,9 @@ test("MicroVM creation saves one fixed allocation from sliders and editable valu
 })
 
 test("creation stays centered with margins, no visible header, and usable sliders on small screens", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await expect(dialog.getByRole("region", { name: "Connections after creation", exact: true })).toHaveCount(0)
   await expect(dialog.getByText("All disconnected", { exact: true })).toHaveCount(0)
@@ -2157,8 +2163,9 @@ test("creation stays centered with margins, no visible header, and usable slider
 })
 
 test("fixed creation values validate host limits and reset when isolation changes", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   const memory = dialog.getByRole("spinbutton", { name: "Memory value", exact: true })
   for (const [kind, floor, value] of [["MicroVM", "1", "1"], ["VM", "1", "4"], ["Container", "0.5", "0.5"]] as const) {
@@ -2188,10 +2195,11 @@ test("fixed creation values validate host limits and reset when isolation change
 
 for (const theme of ["light", "dark"]) {
   test(`creation workbench keeps readable controls and a live summary in ${theme} mode`, async ({ page }) => {
+    test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
     await page.setViewportSize({ width: 1440, height: 900 })
     await openGraph(page, [])
     await page.evaluate(theme => document.documentElement.classList.toggle("dark", theme === "dark"), theme)
-    await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+    await page.getByRole("button", { name: "New environment", exact: true }).click()
     const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
     const name = dialog.getByRole("textbox", { name: "Name", exact: true })
     await name.fill("Research workspace")
@@ -2227,6 +2235,7 @@ for (const theme of ["light", "dark"]) {
 }
 
 test("an early creation failure leaves the popup closed and preserves the next draft", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
   await page.evaluate(async () => {
     const url = "/src/api/platform-api.ts"
@@ -2238,13 +2247,13 @@ test("an early creation failure leaves the popup closed and preserves the next d
       } finally { platformApi.createEnvironment = original }
     }
   })
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Retry workspace")
   await dialog.getByRole("button", { name: "SaaS", exact: true }).click()
   await dialog.getByRole("button", { name: "Create environment", exact: true }).click()
   await expect(dialog).toHaveCount(0)
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   await expect(dialog).toBeVisible()
   await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Keep my next draft")
   await page.evaluate(() => window.dispatchEvent(new Event("fail-create")))
@@ -2259,6 +2268,7 @@ test("an early creation failure leaves the popup closed and preserves the next d
 
 for (const category of ["Container", "GPU", "MicroVM", "VM"]) for (const fails of [false, true]) {
   test(`${category} creation leaves the popup and keeps its node through ${fails ? "failure" : "completion"}`, async ({ page }) => {
+    test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
     await openGraph(page, [])
     await page.evaluate(async fails => {
       localStorage.setItem("yougori.cuda.fixture", JSON.stringify({ supported: true, installed: true, running: false, detail: "Browser creation fixture" }))
@@ -2280,7 +2290,7 @@ for (const category of ["Container", "GPU", "MicroVM", "VM"]) for (const fails o
         return finished
       }
     }, fails)
-    await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+    await page.getByRole("button", { name: "New environment", exact: true }).click()
     const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
     if (category === "GPU") await dialog.getByRole("switch", { name: "GPU access", exact: true }).check()
     else await dialog.getByRole("radiogroup", { name: "Environment type", exact: true }).getByText(category, { exact: true }).click()
@@ -2303,7 +2313,7 @@ for (const category of ["Container", "GPU", "MicroVM", "VM"]) for (const fails o
     await expect(sheet.getByRole("button", { name: "Open", exact: true })).toBeDisabled()
     await sheet.getByRole("button", { name: "Close", exact: true }).click()
     // Completing the old request must not close or clear a newly opened form.
-    await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+    await page.getByRole("button", { name: "New environment", exact: true }).click()
     await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Keep my next draft")
     await page.evaluate(() => window.dispatchEvent(new Event("finish-environment-creation")))
     await expect(node).toHaveAttribute("aria-busy", "false")
@@ -2367,8 +2377,9 @@ test("resource drafts survive telemetry, show save failures and preserve MicroVM
 })
 
 test("MongoDB uses its service entrypoint while Linux keeps a terminal alive", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   const command = dialog.getByRole("textbox", { name: "Startup command (optional)", exact: true })
   await expect(command).toHaveValue("sleep 2147483647")
@@ -2385,8 +2396,9 @@ test("MongoDB uses its service entrypoint while Linux keeps a terminal alive", a
 })
 
 test("container purpose shortcuts select base images and preserve the rest of the draft", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   const purposes = dialog.getByRole("group", { name: "What are you building?", exact: true })
   const image = dialog.getByRole("combobox", { name: "OCI image", exact: true })
@@ -2430,8 +2442,9 @@ test("container purpose shortcuts select base images and preserve the rest of th
 })
 
 test("OCI image search opens focused, filters by purpose and registry, and supports keyboard selection", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   const trigger = dialog.getByRole("combobox", { name: "OCI image", exact: true })
   const search = page.getByRole("combobox", { name: "Search OCI images", exact: true })
@@ -2479,8 +2492,9 @@ test("OCI image search opens focused, filters by purpose and registry, and suppo
 })
 
 test("OCI image search has a usable no-results custom reference path", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   const trigger = dialog.getByRole("combobox", { name: "OCI image", exact: true })
   await trigger.click()
@@ -2507,8 +2521,9 @@ test("OCI image search has a usable no-results custom reference path", async ({ 
 })
 
 test("OCI image picker stays inside the viewport with readable results in both themes", async ({ page }) => {
+  test.skip(true, "The New environment dialog now creates a Sandbox VM through the engine; the container, MicroVM and VM creation form this exercised (name, OCI image picker, purpose shortcuts, memory sliders, storage drive) is gone.")
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   for (const dark of [false, true]) {
     await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), dark)
@@ -2601,7 +2616,7 @@ test("MicroVM app launcher requires adequate running memory and keeps Linux limi
 test("removed PC Apps entry is not offered in the toolbar", async ({ page }) => {
   await openGraph(page, [])
   await expect(page.getByRole("banner").getByRole("button", { name: "Apps from your PC", exact: true })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Add sandbox", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "New environment", exact: true })).toBeVisible()
 })
 
 test("Cloudflare quick links can still be chosen when saved credentials are unavailable", async ({ page }) => {
@@ -2970,20 +2985,15 @@ test("all drives appear in the footer and new environments use the selected driv
   await page.reload()
   const footer = page.getByRole("region", { name: "Host resources and storage" })
   for (const drive of ["C:", "D:", "E:"]) await expect(footer.getByText(drive, { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  // The Sandbox VM form no longer offers a storage drive; the old creation form's
+  // drive selector and storage limit went with it.
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
-  await expect(dialog.getByText(/Not enough free space/)).toBeVisible()
-  const drive = dialog.getByRole("combobox", { name: "Storage drive", exact: true })
-  await expect(drive.locator('option[value="E:\\\\"]')).toHaveAttribute("disabled", "")
-  await drive.selectOption("D:\\")
-  await expect(dialog.getByRole("slider", { name: "Storage limit", exact: true })).toHaveAttribute("max", "198")
-  await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Stored on D")
-  await dialog.getByRole("button", { name: "Create environment", exact: true }).click()
+  await expect(dialog.getByRole("combobox", { name: "Storage drive", exact: true })).toHaveCount(0)
+  await expect(dialog.getByRole("slider", { name: "Storage limit", exact: true })).toHaveCount(0)
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
   await expect(dialog).not.toBeVisible()
-  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.platform.v1")!).environments.find((e: Environment) => e.name === "Stored on D"))
-  expect(saved.storageDrive).toBe("D:\\")
-  await page.reload()
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.platform.v1")!).environments.find((e: Environment) => e.name === "Stored on D").storageDrive)).toBe("D:\\")
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("yougori.platform.v1")!).environments.length)).toBe(2)
 })
 
 test("list view keeps the empty workspace guidance", async ({ page }) => {
@@ -3215,7 +3225,7 @@ test("cloud to local copies selected folders into the chosen image without provi
   await expect(dialog).toContainText("Local container image")
   await dialog.getByRole("combobox", { name: "Local container image", exact: true }).click()
   await page.getByRole("combobox", { name: "Search OCI images", exact: true }).fill("Ubuntu")
-  await page.locator('[data-slot="combobox-popup"]').getByRole("option").filter({ hasText: "Popular Debian-based Linux" }).click()
+  await page.locator('[data-slot="combobox-popup"]').getByRole("option").filter({ hasText: "General-purpose Linux" }).click()
   await expect(dialog.getByRole("button", { name: "Check source", exact: true })).toHaveCount(0)
   await expect(dialog.getByRole("textbox", { name: "Source AWS CLI profile" })).toHaveCount(0)
   await dialog.getByRole("textbox", { name: "Cloud files and folders", exact: true }).fill("/srv/my project\n~/documents")
@@ -3236,7 +3246,7 @@ test("cloud to local copies selected folders into the chosen image without provi
 
 test("new environment offers Neocloud instead of the retired deployment entry", async ({ page }) => {
   await openGraph(page, [])
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await expect(dialog.getByText("Deploy to cloud", { exact: true })).toHaveCount(0)
   await dialog.getByText("Neocloud", { exact: true }).click()

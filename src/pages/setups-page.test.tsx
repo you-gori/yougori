@@ -43,6 +43,7 @@ vi.mock("@/components/setups/vm-template-creator", () => ({
 }))
 
 import { setupFeed } from "@/api/setups/progress"
+import { workspaceApi } from "@/api/workspace-api"
 import { WorkspaceActionsContext } from "@/components/use-workspace-actions"
 import { SetupUnavailableError } from "@/api/setups/setups-api"
 import { SetupsPage } from "./setups-page"
@@ -286,7 +287,11 @@ it("a capability tab shows its own parts from what the engine sent: a published 
   // The group's own content names the published address, its port, how it is reached, and its link.
   expect(within(panel).getByRole("list", { name: "Published addresses" })).toBeInTheDocument()
   expect(within(panel).getByText(/web on port 3000, reached your own domain/)).toBeInTheDocument()
-  expect(within(panel).getByRole("link", { name: "https://shop.example.com" })).toHaveAttribute("href", "https://shop.example.com")
+  // The address is shown as the engine gave it; its href is the normalized form browsers resolve.
+  expect(within(panel).getByRole("link", { name: "https://shop.example.com" })).toHaveAttribute("href", "https://shop.example.com/")
+  // The desktop app opens no new webview windows, so the link goes through the native command.
+  await user.click(within(panel).getByRole("link", { name: "https://shop.example.com" }))
+  expect(vi.mocked(workspaceApi.openUrl)).toHaveBeenCalledWith("https://shop.example.com/")
 })
 
 it("follows the template's declared views: a history view brings Activity forward, and a storage view shows the Data tab", async () => {

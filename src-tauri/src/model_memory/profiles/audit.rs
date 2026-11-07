@@ -255,7 +255,7 @@ pub const TODAY: ServingAudit = ServingAudit {
     free_memory_headroom_gib: 2,
     max_num_seqs: SourceValue::Expression("str(sequences)"),
     launch: LaunchRule {
-        modes: &["compiled", "speculative", "eager"],
+        modes: &["compiled", "speculative", "eager", "megakernel"],
         default: "speculative",
         speculation: "{\"method\": \"ngram\", \"num_speculative_tokens\": 4, \"prompt_lookup_max\": 4, \"prompt_lookup_min\": 2}",
     },
@@ -1083,7 +1083,7 @@ mod tests {
         const {
             assert!(TODAY.exact_version_check);
         };
-        assert_eq!(TODAY.launch.modes, ["compiled", "speculative", "eager"]);
+        assert_eq!(TODAY.launch.modes, ["compiled", "speculative", "eager", "megakernel"]);
         assert_eq!(TODAY.launch.default, "speculative");
         assert!(TODAY.launch.speculation.contains("\"method\": \"ngram\""));
         assert_eq!(
@@ -1172,8 +1172,8 @@ mod tests {
                 AuditItem::LaunchMode,
             ),
             (
-                "            elif mode != \"eager\":\n                mode = \"eager\"\n            else:",
-                "            elif True:\n                pass\n            else:",
+                "            elif mode != \"eager\":\n                mode = \"eager\"\n                # Both compiled launches failed. Damaged compiled graphs would fail every",
+                "            elif True:\n                pass\n                # Both compiled launches failed. Damaged compiled graphs would fail every",
                 AuditItem::LaunchMode,
             ),
             (

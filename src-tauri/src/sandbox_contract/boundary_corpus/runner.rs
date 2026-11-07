@@ -367,7 +367,7 @@ pub(super) const REAL_MOUNT_NOTE: &str =
     "a real mount crossed to another device, so the resolver's volume comparison was exercised";
 /// The mount case's note where no mount can be made.
 pub(super) const STAND_IN_MOUNT_NOTE: &str =
-    "no mount could be made here: a symlink to / stood in, so only the link branch was exercised";
+    "no mount could be made here: a symlink to the root folder stood in, so only the link branch was exercised";
 
 /// Names added, removed or changed between two snapshots, at most five.
 fn difference(before: &Snapshot, after: &Snapshot) -> String {

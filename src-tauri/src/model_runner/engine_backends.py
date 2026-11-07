@@ -21,18 +21,26 @@ KOLIBRI_WHEEL = ("aleph_alpha_inference-1.0.0-py3-none-any.whl",
     "https://files.pythonhosted.org/packages/b0/d7/1eda35b6ee0293f2a52d7a653cf5a4d54c93f21e2e359fe70a7e7b87a851/aleph_alpha_inference-1.0.0-py3-none-any.whl",
     "5a0ca118e67924f10c4f9c04dd64bef117007a17dd820233a8841b9cb8d6f211", 13392)
 # A vLLM parked by sleep level 2 (vllm_park): its process and the root it serves; woken by the next load.
-VLLM_PARKED = None
+VLLM_PARKED = None  # (process, root, the launch asked for, the launch it runs) while parked
 VLLM_ROOT = None
+VLLM_ASKED = None   # the launch load_vllm asked for; the process may run a fallback launch
 VLLM_PREPARED = None
 # A Kolibri launch: no LoRA switches and no development routes (prefix-cache reset, sleep).
 VLLM_KOLIBRI = False
+# The megakernel runner serving this vLLM-format model (load_megakernel): the facts its host
+# reported when it came up (name, version, speed, check), or None while vLLM serves; and why a
+# runner that failed in this process is not tried again until the model restarts.
+MEGAKERNEL = None
+MEGAKERNEL_REFUSED = None
 # How vLLM runs the model (YOUGORI_MODEL_LAUNCH, saved per model like its parallel requests):
 # "compiled" captures CUDA graphs and compiles the model with torch.compile (vLLM's own defaults),
 # "speculative" adds n-gram speculative decoding to that, and "eager" runs every layer eagerly,
 # as every launch did before 6 November 2026. Speculative is the default: measured on 6 November
 # 2026 (7B, 8 slots), code edits generated 1.8-2.7 times faster than compiled at 1-8 callers,
-# and analysis replies, which rarely repeat their prompt, as fast as compiled.
-VLLM_LAUNCHES = ("compiled", "speculative", "eager")
+# and analysis replies, which rarely repeat their prompt, as fast as compiled. "megakernel" serves
+# the same verified checkpoint with the owner's own decode kernel instead of vLLM: the runner
+# YOUGORI_MODEL_RUNNER names (load_megakernel), started in its own process with no adapters.
+VLLM_LAUNCHES = ("compiled", "speculative", "eager", "megakernel")
 VLLM_DEFAULT_LAUNCH = "speculative"
 # N-gram (prompt lookup) speculation drafts the next tokens by matching the latest output against
 # the prompt, without a draft model, and the model checks the drafts in the same step, so replies
@@ -42,12 +50,15 @@ NGRAM_SPECULATION = '{"method": "ngram", "num_speculative_tokens": 4, "prompt_lo
 
 def vllm_launch(kolibri, limits):
     """The launch this model asked for, where its launch can take it: Kolibri's plugin keeps the
-    eager launch it was validated with, and LoRA adapters are not speculated."""
+    eager launch it was validated with, LoRA adapters are not speculated, and a megakernel launch
+    needs a runner to run and takes no adapters (it falls to the default launch otherwise)."""
     mode = os.environ.get("YOUGORI_MODEL_LAUNCH", VLLM_DEFAULT_LAUNCH)
     if mode not in VLLM_LAUNCHES:
         mode = VLLM_DEFAULT_LAUNCH
     if kolibri:
         return "eager"
+    if mode == "megakernel" and (limits or not os.environ.get("YOUGORI_MODEL_RUNNER")):
+        mode = VLLM_DEFAULT_LAUNCH
     return "compiled" if mode == "speculative" and limits else mode
 
 
@@ -466,14 +477,14 @@ def vllm_park():
     weights and KV cache leave the GPU, the process stays. False when it cannot, changing nothing."""
     global VLLM_PARKED
     process = ENGINE_PROCESS
-    if FORMAT != "vllm" or VLLM_ROOT is None or process is None or process.poll() is not None or VLLM_PARKED is not None:
+    if FORMAT != "vllm" or MEGAKERNEL is not None or VLLM_ROOT is None or process is None or process.poll() is not None or VLLM_PARKED is not None:
         return False
     try:
         llama_json("/sleep?level=2", {}, timeout=120)
     except (OSError, ValueError):
         return False
     RUNNER_TIMINGS.invalidate_load()
-    VLLM_PARKED = (process, VLLM_ROOT)
+    VLLM_PARKED = (process, VLLM_ROOT, VLLM_ASKED, STATE.get("launch"))
     # The runner's word, in its health and its unload answer: the engine probes the GPU around
     # it for CORE-01 evidence of the mode (sleep-mode weight discarding).
     STATE["parked"] = "sleep"
@@ -526,8 +537,9 @@ def vllm_metrics():
 
 
 def backend_observation_start():
-    """Before a measured request: vLLM's histograms now; llama.cpp's reply carries its own."""
-    return vllm_metrics() if FORMAT == "vllm" else {}
+    """Before a measured request: vLLM's histograms now; llama.cpp's reply and the megakernel
+    host's carry their own."""
+    return vllm_metrics() if FORMAT == "vllm" and MEGAKERNEL is None else {}
 
 
 def backend_observation_finish(before, timings=None):
@@ -535,9 +547,9 @@ def backend_observation_finish(before, timings=None):
     the growth of vLLM's histograms when each counted exactly this one request (queue: from the
     request's arrival in the engine to its first scheduling; prefill: from there to the first
     token; decode: from the first to the last token), or llama.cpp's timings (prompt
-    processing and generation; it reports no queue of its own). Nothing when the backend said
-    nothing exact."""
-    if FORMAT == "vllm":
+    processing and generation; it reports no queue of its own; the megakernel host reports the
+    same shape). Nothing when the backend said nothing exact."""
+    if FORMAT == "vllm" and MEGAKERNEL is None:
         after = vllm_metrics() if before is not None else None
         if after is None:
             return
@@ -555,7 +567,7 @@ def backend_observation_finish(before, timings=None):
     elif isinstance(timings, dict):
         try:
             cached, processed = int(timings.get("cache_n") or 0), int(timings["prompt_n"])
-            RUNNER_TIMINGS.backend({"version": 1, "source": "llama-cpp-timings", "promptTokens": processed + cached,
+            RUNNER_TIMINGS.backend({"version": 1, "source": "megakernel-timings" if MEGAKERNEL is not None else "llama-cpp-timings", "promptTokens": processed + cached,
                                     "cachedTokens": cached, "queueMs": None,
                                     "prefillMs": round(float(timings["prompt_ms"]), 6),
                                     "decodeMs": round(float(timings["predicted_ms"]), 6),
@@ -575,9 +587,9 @@ ADAPTER_MODULES = frozenset(("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj"
 
 def adapter_limits():
     """The adapter slots and the largest rank this vLLM launch enables, or None (a Kolibri launch
-    enables none whatever the owner saved)."""
+    enables none whatever the owner saved, and a megakernel launch serves none)."""
     found = re.fullmatch(r"([1-8]):(8|16|32|64)", os.environ.get("YOUGORI_VLLM_ADAPTERS", ""))
-    return (int(found[1]), int(found[2])) if found and FORMAT == "vllm" and not VLLM_KOLIBRI else None
+    return (int(found[1]), int(found[2])) if found and FORMAT == "vllm" and not VLLM_KOLIBRI and MEGAKERNEL is None else None
 
 
 def vllm_model(body):
@@ -626,6 +638,7 @@ def adapter_attach(name, repo, revision):
     limits = adapter_limits()
     if limits is None:
         raise BackendRefusal("This Kolibri launch takes no LoRA adapters." if FORMAT == "vllm" and VLLM_KOLIBRI
+                             else "This megakernel launch serves no LoRA adapters; vLLM launches do." if FORMAT == "vllm" and MEGAKERNEL is not None
                              else "This model's launch serves no adapters. Enable them (model_adapters --action enable) and restart the model."
                              if FORMAT == "vllm" else "llama.cpp loads LoRA adapters only at start, from GGUF files; this launch loads none and attaches none at runtime.")
     if revision is None and isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", repo):
@@ -723,6 +736,8 @@ def kv_check(body):
         raise BackendRefusal("This vLLM launch (Kolibri) has no prefix-cache reset route.")
     if STATE.get("status") != "ready" or STATE.get("parked"):
         return {"reset": True, "slots": 0, "detail": "The model holds no KV while it is unloaded or parked."}
+    if FORMAT == "vllm" and MEGAKERNEL is not None:
+        return {"reset": True, "slots": 0, "detail": "The megakernel runner reads each request's whole conversation and keeps no KV between requests."}
     return None
 
 
@@ -773,6 +788,14 @@ def backend_capabilities():
                         + ". The cache serves every caller of this model and is dropped when the model unloads" + ("; the native service's cache is not reset from here." if native else "; the owner can erase every slot (model_adapters --action kv-reset).")},
             "concurrency": concurrency,
         }
+    if MEGAKERNEL is not None:
+        return {
+            "kvGrowth": {"supported": False, "detail": "The megakernel runner keeps one conversation's KV per request; nothing grows in increments."},
+            "adapters": {"supported": False, "configurable": False, "detail": "This megakernel launch serves no LoRA adapters; vLLM launches do."},
+            "kvReuse": {"supported": False, "reset": False, "detail": "The megakernel runner reads each request's whole conversation and keeps no KV between requests; a reset changes nothing."},
+            "concurrency": concurrency,
+            "megakernel": MEGAKERNEL,
+        }
     limits = adapter_limits()
     attached = ", ".join(sorted(ADAPTERS)) or "none"
     adapters = ({"supported": True, "configurable": True, "detail": "LoRA adapters attach at runtime: " + str(limits[0]) + " slot(s), rank up to " + str(limits[1]) + "; a request names one as its model; attached: " + attached + ".",
@@ -801,8 +824,146 @@ def end_engine(process):
             process.wait(timeout=5)
 
 
+def vllm_registry(config):
+    """Built-in registry only. vLLM's Transformers/remote-code fallback is never enabled."""
+    from vllm.model_executor.models.registry import ModelRegistry
+    if not set(config.get("architectures", [])) & set(ModelRegistry.get_supported_archs()):
+        raise RuntimeError("No native implementation exists in the pinned vLLM runtime")
+
+
+def vllm_after_megakernel(config, size, cuda):
+    """vLLM's own checks, made when it serves a model whose megakernel runner could not."""
+    vllm_registry(config)
+    return vllm_hardware(config, size, cuda)
+
+
+# The megakernel runner host (model_runner/megakernel_host.py), carried by vLLM runners beside
+# these backends (YOUGORI_MEGAKERNEL_SOURCE) and run as its own process by load_megakernel. The
+# injected source must match the digest these backends ship; a runner started from a source tree
+# reads the file beside them.
+MEGAKERNEL_HOST_SHA256 = "c540a7e2a75553fdadfa890fd70e9c6c2ef83eea47be9b522ec256d97c65ad9c"
+
+
+def megakernel_host_source():
+    injected = globals().get("__YOUGORI_MEGAKERNEL_SOURCE__") or os.environ.get("YOUGORI_MEGAKERNEL_SOURCE")
+    beside = os.path.join(os.path.dirname(os.path.abspath(globals().get("__file__") or os.sep)), "model_runner", "megakernel_host.py")
+    if not injected and "__file__" in globals() and os.path.isfile(beside):
+        with open(beside, "rb") as handle:
+            return handle.read()
+    if not injected:
+        raise RuntimeError("This build is missing the megakernel host. Update Yougori.")
+    source = zlib.decompress(base64.b64decode(injected))
+    if hashlib.sha256(source).hexdigest() != MEGAKERNEL_HOST_SHA256:
+        raise RuntimeError("Bundled megakernel host failed integrity verification")
+    return source
+
+
+def megakernel_status(folder):
+    """What the host last wrote about itself (megakernel_host.py: stage, error), or {}."""
+    try:
+        with open(os.path.join(folder, "status.json"), encoding="utf-8") as file:
+            status = json.loads(file.read(65536))
+        return status if isinstance(status, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def load_megakernel(root, config, revision):
+    """Starts the megakernel host for the runner YOUGORI_MODEL_RUNNER names (a folder bound at
+    /yougori-runner, or hf:OWNER/REPO@REVISION) on the verified checkpoint at `root`, in its own
+    process without this runner's credentials, and waits until it serves: the host resolves the
+    runner, builds it for this GPU on first start (cached in the model's volume), answers a check
+    question, measures its speed and then listens on this container's loopback like vLLM would.
+    True when it serves (STATE ready, MEGAKERNEL its facts); False with why in health (megakernel.
+    refused, and MEGAKERNEL_REFUSED for this process) when it cannot, so vLLM serves instead."""
+    global ENGINE_PROCESS, MEGAKERNEL, MEGAKERNEL_REFUSED
+    import torch
+    reference = os.environ.get("YOUGORI_MODEL_RUNNER", "")
+    folder = os.path.join(CACHE, "yougori-megakernel")
+    os.makedirs(folder, exist_ok=True)
+    host = os.path.join(folder, "megakernel_host.py")
+    with open(host, "wb") as file:
+        file.write(megakernel_host_source())
+    try:
+        os.remove(os.path.join(folder, "status.json"))
+    except OSError:
+        pass
+    parallel = serving_slots()
+    environment = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
+    environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", YOUGORI_MEGAKERNEL_KEY=LLAMA["key"])
+    args = [sys.executable, "-u", host, "serve", "--runner", reference, "--model", root, "--name", MODEL,
+            "--revision", str(revision), "--port", str(LLAMA["port"]), "--parallel", str(parallel),
+            "--context", str(LLAMA["context"]), "--build", os.path.join(folder, "build"), "--status", os.path.join(folder, "status.json")]
+    memory_before = model_memory_events()
+    STATE.pop("servingFallback", None)
+    LLAMA["servingFallback"] = None
+    STATE["megakernel"] = {"serving": False, "reference": reference, "stage": "starting"}
+    launch_serves(1)
+    print("Starting the megakernel runner " + reference + "...", flush=True)
+    with RUNNER_TIMINGS.stage("engine_start_to_ready"):
+        process = ENGINE_PROCESS = subprocess.Popen(args, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        tail, loading = deque(maxlen=VLLM_LOAD_TAIL_LINES), threading.Event()
+        loading.set()
+        reader = threading.Thread(target=vllm_load_output, args=(process.stdout, tail, loading), daemon=True)
+        reader.start()
+        facts, refused = None, None
+        deadline = time.monotonic() + 3600
+        while True:
+            if process.poll() is not None:
+                report_vllm_load_failure(reader, tail, loading)
+                status = megakernel_status(folder)
+                refused = str(status.get("error") or "The megakernel runner stopped while starting (exit code " + str(process.returncode) + ").")[:300]
+                break
+            try:
+                connection, response = llama("/health", timeout=5)
+                try:
+                    body = response.read(1 << 20)
+                finally:
+                    connection.close()
+                if response.status == 200:
+                    facts = json.loads(body).get("runner")
+                    if not isinstance(facts, dict):
+                        raise ValueError("no runner facts")
+                    break
+            except (OSError, ValueError, http.client.HTTPException):
+                pass
+            if time.monotonic() >= deadline:
+                refused = "The megakernel runner did not finish starting within an hour."
+                break
+            stage = megakernel_status(folder).get("stage")
+            if stage:
+                STATE["megakernel"]["stage"] = str(stage)[:120]
+            time.sleep(READY_POLL_SECONDS)
+        loading.clear()
+        tail.clear()
+    if facts is None:
+        end_engine(process)
+        MEGAKERNEL_REFUSED = refused
+        STATE["megakernel"] = {"serving": False, "reference": reference, "refused": refused}
+        STATE["servingFallback"] = LLAMA["servingFallback"] = "The megakernel runner could not serve, so vLLM does: " + refused
+        print("The megakernel runner could not serve, so vLLM does: " + refused, flush=True)
+        return False
+    MEGAKERNEL = {"serving": True, "reference": reference, **{key: facts[key] for key in facts if key not in ("serving", "reference")}}
+    STATE["megakernel"] = MEGAKERNEL
+    LLAMA["context"] = max(256, min(LLAMA["context"], int(facts.get("context") or LLAMA["context"])))
+    launch_serves(max(1, min(parallel, int(facts.get("parallel") or 1))))
+
+    def watch():
+        returncode = process.wait()
+        if ENGINE_PROCESS is process:
+            STATE.update(status="error", error=llama_exit_error(returncode, memory_before, "The megakernel runner"))
+    threading.Thread(target=watch, daemon=True).start()
+    quant = (config.get("quantization_config") or {}).get("quant_method")
+    STATE.update(status="ready", gpu=str(facts.get("gpu") or torch.cuda.get_device_name(0)), gpuCount=1, context=LLAMA["context"], stream=True,
+                 weightsVerified=True, revision=revision, runner="megakernel", launch="megakernel",
+                 quant=str(quant).upper() if quant else None, precision=str(facts.get("precision") or config.get("dtype") or config.get("torch_dtype") or "auto"))
+    print("The megakernel runner " + str(facts.get("name")) + " serves: " + str(facts.get("tokensPerSecond")) + " tokens/s on " + STATE["gpu"] + ".", flush=True)
+    return True
+
+
 def load_vllm():
-    global ENGINE_PROCESS, VLLM_PARKED, VLLM_ROOT, VLLM_KOLIBRI
+    global ENGINE_PROCESS, VLLM_PARKED, VLLM_ROOT, VLLM_ASKED, VLLM_KOLIBRI, MEGAKERNEL
+    MEGAKERNEL = None  # load_megakernel sets it again when the runner serves this load
     STATE["sourceReused"] = False
     if os.environ.get("YOUGORI_INSTALL_VLLM") == "1": install({"vllm": VLLM_VERSION})
     if importlib.metadata.version("vllm") != VLLM_VERSION:
@@ -841,16 +1002,24 @@ def load_vllm():
             weights = [s for s in metadata.siblings or [] if s.rfilename.endswith(".safetensors")]
             size = sum((getattr(s, "size", None) or (s.lfs.get("size") if isinstance(getattr(s,"lfs",None),dict) else getattr(getattr(s,"lfs",None),"size",0)) or 0) for s in weights)
     kolibri = VLLM_KOLIBRI = config.get("model_type") == "kolibri1"
+    # G06: adapters only where the owner enabled them, loaded at runtime (vllm_adapter).
+    limits = adapter_limits() if not kolibri else None
+    mode = vllm_launch(kolibri, limits)
+    if mode == "megakernel" and MEGAKERNEL_REFUSED is not None:
+        # The runner failed earlier in this process (why stays in health); vLLM serves this load.
+        mode = VLLM_DEFAULT_LAUNCH
     if kolibri:
         if "Kolibri1ForCausalLM" not in config.get("architectures", []): raise RuntimeError("Unknown Kolibri implementation")
         kolibri_plugin()
-    else:
-        # Built-in registry only. vLLM's Transformers/remote-code fallback is never enabled.
-        from vllm.model_executor.models.registry import ModelRegistry
-        if not set(config.get("architectures", [])) & set(ModelRegistry.get_supported_archs()):
-            raise RuntimeError("No native implementation exists in the pinned vLLM runtime")
+    elif mode != "megakernel":
+        vllm_registry(config)
     gpu_before_load()
-    count = vllm_hardware(config, size, torch.cuda)
+    if mode == "megakernel":
+        # The runner's manifest states the GPU it needs (megakernel_host.py checks it); vLLM's own
+        # memory check runs only if vLLM serves after all (vllm_after_megakernel).
+        count = 1
+    else:
+        count = vllm_hardware(config, size, torch.cuda)
     if not MODEL_PATH and prepared is None:
         root = verified_snapshot(revision)
         remember_vllm_source(metadata, root, config, size)
@@ -870,6 +1039,18 @@ def load_vllm():
         STATE["chatWarning"] = "This is a base checkpoint without a chat template. Use an instruction-tuned checkpoint for assistant chat."
     STATE["status"] = "loading"
     LLAMA["context"] = min(int(config.get("max_position_embeddings") or 4096), 32768)
+    if mode == "megakernel":
+        # The owner's kernel serves this load; a vLLM parked by an earlier load is ended first.
+        parked, VLLM_PARKED = VLLM_PARKED, None
+        STATE.pop("parked", None)
+        if parked is not None:
+            end_engine(parked[0])
+        if load_megakernel(root, config, revision):
+            return
+        # The runner could not serve (why: health's megakernel.refused); vLLM does, after the
+        # checks it would have made first.
+        mode = VLLM_DEFAULT_LAUNCH
+        count = vllm_after_megakernel(config, size, torch.cuda)
     sequences = serving_slots()
     args = [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", root,
         "--served-model-name", MODEL, "--host", "127.0.0.1", "--port", str(LLAMA["port"]),
@@ -879,12 +1060,9 @@ def load_vllm():
     at = len(args) - 4  # where the sequences value is, for the one-sequence fallback
     if kolibri: args += ["--reasoning-parser", "kolibri1"]
     if not kolibri: args += ["--enable-sleep-mode"]
-    # G06: adapters only where the owner enabled them, loaded at runtime (vllm_adapter).
-    limits = adapter_limits() if not kolibri else None
     if limits: args += ["--enable-lora", "--max-loras", str(limits[0]), "--max-lora-rank", str(limits[1]), "--max-cpu-loras", str(limits[0])]
     args += agent_arguments()
     if kolibri and (config.get("quantization_config") or {}).get("quant_method") == "fp8": args += ["--kv-cache-dtype", "fp8"]
-    mode = vllm_launch(kolibri, limits)
     environment = {k:v for k,v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
     environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", VLLM_NO_USAGE_STATS="1",
                        VLLM_PLUGINS="aleph_alpha_inference" if kolibri else "", VLLM_API_KEY=LLAMA["key"])
@@ -905,20 +1083,22 @@ def load_vllm():
         environment["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
     quant = (config.get("quantization_config") or {}).get("quant_method")
 
-    def ready():
+    def ready(launch):
         gpu = torch.cuda.get_device_name(0)
         STATE.update(status="ready", gpu=(str(count) + " × " + gpu) if count > 1 else gpu, gpuCount=count,
             context=LLAMA["context"], stream=True, weightsVerified=True, revision=revision, runner="vllm", **({"toolCalling": True} if TOOL_PARSER else {}),
-            quant=str(quant).upper() if quant else None, precision=str(config.get("dtype") or config.get("torch_dtype") or "auto"), launch=mode)
-    # A parked vLLM serving this root wakes with its weights reloaded from the files verified above.
+            quant=str(quant).upper() if quant else None, precision=str(config.get("dtype") or config.get("torch_dtype") or "auto"), launch=launch)
+    # A parked vLLM serving this root wakes with its weights reloaded from the files verified above,
+    # and reports the launch it runs (a fallback stays a fallback). A launch the owner changed
+    # since it was parked starts afresh instead.
     parked, VLLM_PARKED = VLLM_PARKED, None
     STATE.pop("parked", None)
     if parked is not None:
-        if parked[0] is ENGINE_PROCESS and parked[0].poll() is None and parked[1] == root and vllm_wake():
-            ready()
+        if parked[0] is ENGINE_PROCESS and parked[0].poll() is None and parked[1] == root and parked[2] == mode and vllm_wake():
+            ready(parked[3] or mode)
             return reattach_adapters()
         end_engine(parked[0])
-    VLLM_ROOT = root
+    VLLM_ROOT, VLLM_ASKED = root, mode
     # Native engine diagnostics can contain caller content once requests arrive, so serving
     # output never reaches workload logs. While loading no request exists yet: the last lines
     # are kept in memory and shown only if the load fails (vllm_load_output).
@@ -926,6 +1106,7 @@ def load_vllm():
     STATE.pop("servingFallback", None)
     LLAMA["servingFallback"] = None
     launch_serves(1)
+    cleared = ""  # a note that the compiled graphs were cleared, kept through later fallbacks
     with RUNNER_TIMINGS.stage("engine_start_to_ready"):
         while True:
             process = ENGINE_PROCESS = subprocess.Popen(args + launch_arguments(mode), env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -959,15 +1140,21 @@ def load_vllm():
                 # The launches that served before, one step at a time: compiled (no speculation),
                 # eager (no CUDA graphs or compilation either), then one sequence. Why the faster
                 # one failed stays in health.
-                STATE["servingFallback"] = LLAMA["servingFallback"] = str(error)[:300]
                 memory_before = model_memory_events()
                 if mode == "speculative":
                     mode = "compiled"
                 elif mode != "eager":
                     mode = "eager"
+                    # Both compiled launches failed. Damaged compiled graphs would fail every
+                    # start the same way, so they are cleared and the next start compiles afresh;
+                    # a launch that failed for another reason wrote none.
+                    if environment.get("VLLM_CACHE_ROOT") and os.path.isdir(environment["VLLM_CACHE_ROOT"]):
+                        shutil.rmtree(environment["VLLM_CACHE_ROOT"], ignore_errors=True)
+                        cleared = " The compiled graphs were cleared; the next start compiles them again."
                 else:
                     sequences = 1
                     args[at] = "1"
+                STATE["servingFallback"] = LLAMA["servingFallback"] = str(error)[:300] + cleared
         # Serving begins: from here on every line is drained and discarded.
         loading.clear()
         tail.clear()
@@ -979,5 +1166,5 @@ def load_vllm():
             # output can carry caller content).
             STATE.update(status="error", error=llama_exit_error(returncode, memory_before, "vLLM"))
     threading.Thread(target=watch, daemon=True).start()
-    ready()
+    ready(mode)
     reattach_adapters()

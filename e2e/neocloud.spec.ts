@@ -22,7 +22,7 @@ test("Neocloud guides a GPU pod from template to a priced review", async ({ page
       templates: [{ id: "runpod-torch-v280", name: "Runpod Pytorch 2.8.0", image: "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404", kind: "gpu", containerDiskGb: 30, volumeGb: 50, mountPath: "/workspace", own: false, official: true }],
     })
   })
-  await page.getByRole("button", { name: "Add sandbox", exact: true }).click()
+  await page.getByRole("button", { name: "New environment", exact: true }).click()
   const dialog = page.getByRole("dialog", { name: "New environment", exact: true })
   await dialog.getByText("Neocloud", { exact: true }).click()
   await expect(dialog.getByText("$10.00")).toBeVisible()

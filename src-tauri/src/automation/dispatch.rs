@@ -287,7 +287,7 @@ dispatch_group! { dispatch_group_3(app, method, p, progress, store, runtime, bac
         // Never gives a copy up: that is only Yougori's own window, after its confirmation.
         "cleanup_environment_duplication" => encoded(crate::duplication::clean_up_copy(arg(p, "operationId")?,&store,&runtime).await?),
         "model_api" => crate::model_runner::model_api(arg(p, "environmentId")?,arg(p, "port")?,app.clone()).await,
-        "model_optimizer" => crate::model_runner::optimizer::model_optimizer(arg(p,"environmentId")?,arg(p,"enabled")?,arg(p,"pinned")?,arg(p,"idleTimeoutSeconds")?,arg(p,"parallel")?,arg(p,"launch")?,app.clone()).await,
+        "model_optimizer" => crate::model_runner::optimizer::model_optimizer(arg(p,"environmentId")?,arg(p,"enabled")?,arg(p,"pinned")?,arg(p,"idleTimeoutSeconds")?,arg(p,"parallel")?,arg(p,"launch")?,arg(p,"runner")?,app.clone()).await,
         "model_status" => crate::model_runner::model_status(arg(p, "environmentId")?,app.clone()).await,
         _ => Err(format!("No backend handler for {method}")),
     }

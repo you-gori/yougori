@@ -777,15 +777,31 @@ fn backends_source() -> String {
 fn loads_backends(format: Option<&str>) -> bool {
     matches!(format, Some("gguf" | "vllm"))
 }
-/// The model server a new runner carries, with the engine backends when its format loads them.
+/// The megakernel runner host (`model_runner/megakernel_host.py`), which a vLLM runner's
+/// backends start as their own process when the model's launch is "megakernel"
+/// (`load_megakernel`); engine_backends.py pins its digest (`MEGAKERNEL_HOST_SHA256`).
+fn megakernel_source() -> String {
+    let mut source=flate2::write::ZlibEncoder::new(Vec::new(),flate2::Compression::best());
+    std::io::Write::write_all(&mut source,include_str!("model_runner/megakernel_host.py").replace("\r\n","\n").as_bytes()).expect("compressing the megakernel host");
+    STANDARD.encode(source.finish().expect("finishing the megakernel host"))
+}
+/// Whether a runner of this format carries the megakernel host: vLLM, whose launch can be it.
+pub(crate) fn carries_megakernel(format: Option<&str>) -> bool {
+    format == Some("vllm")
+}
+/// The model server a new runner carries, with the engine backends when its format loads them
+/// and the megakernel host when its launch can be a megakernel.
 fn carry_server(environment: &mut Value) {
     environment["YOUGORI_MODEL_SERVER_SOURCE"] = json!(server_payload());
     if loads_backends(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
         environment["YOUGORI_BACKENDS_SOURCE"] = json!(backends_source());
     }
+    if carries_megakernel(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
+        environment["YOUGORI_MEGAKERNEL_SOURCE"] = json!(megakernel_source());
+    }
 }
 pub(crate) fn server_source() -> String {
-    format!("__YOUGORI_GPU_SOURCE__ = '{}'\n__YOUGORI_CLEF_SOURCE__ = '{}'\n__YOUGORI_PUBLISHER_SOURCE__ = '{}'\n__YOUGORI_BACKENDS_SOURCE__ = '{}'\n{}", optimizer::source(), clef_source(), publisher_source(), backends_source(), include_str!("model_server.py"))
+    format!("__YOUGORI_GPU_SOURCE__ = '{}'\n__YOUGORI_CLEF_SOURCE__ = '{}'\n__YOUGORI_PUBLISHER_SOURCE__ = '{}'\n__YOUGORI_BACKENDS_SOURCE__ = '{}'\n__YOUGORI_MEGAKERNEL_SOURCE__ = '{}'\n{}", optimizer::source(), clef_source(), publisher_source(), backends_source(), megakernel_source(), include_str!("model_server.py"))
 }
 /// Brings a stopped model environment's server up to this version before it starts, so reused
 /// environments get the same fixes as new ones. Only commands this runner wrote are replaced.
@@ -1647,11 +1663,27 @@ mod tests {
             carry_server(&mut environment);
             assert_eq!(environment["YOUGORI_MODEL_SERVER_SOURCE"], json!(server_payload()));
             assert_eq!(environment.get("YOUGORI_BACKENDS_SOURCE").is_some(), carried, "{format:?}");
+            // The megakernel host travels only with vLLM runners, whose launch can be a megakernel.
+            assert_eq!(environment.get("YOUGORI_MEGAKERNEL_SOURCE").is_some(), format == Some("vllm"), "{format:?}");
         }
         let compressed = STANDARD.decode(backends_source()).unwrap();
         let mut decoded = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
         assert_eq!(decoded, include_str!("model_runner/engine_backends.py").replace("\r\n", "\n").into_bytes());
+    }
+    #[test] fn the_megakernel_host_digest_is_pinned_by_the_engine_backends_and_fits_a_variable() {
+        use sha2::{Digest,Sha256};
+        let source=include_str!("model_runner/megakernel_host.py").replace("\r\n","\n");
+        let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
+        assert!(include_str!("model_runner/engine_backends.py").contains(&format!("MEGAKERNEL_HOST_SHA256 = \"{digest}\"")));
+        let compressed = STANDARD.decode(megakernel_source()).unwrap();
+        let mut decoded = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
+        assert_eq!(decoded, source.into_bytes());
+        // Each carried source is one workload variable; the guest keeps them under 64 KiB, and
+        // the backends under 32 KiB so the Windows test harness can inject them as well.
+        assert!(megakernel_source().len() < 32 * 1024, "{}", megakernel_source().len());
+        assert!(backends_source().len() < 32 * 1024, "{}", backends_source().len());
     }
     #[test]
     fn active_tunnels_are_offered_for_admission_but_failed_saved_links_are_not() {

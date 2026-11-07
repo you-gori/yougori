@@ -29,6 +29,12 @@ HEARTBEAT_SECONDS = 15
 # A request delivered on a stream must be acknowledged this soon, or it fails over to another
 # computer: a connection that dropped without closing would otherwise hold it for two minutes.
 ACK_SECONDS = 8
+# A queued request waits this long for a computer to take it, then this long for the first bytes
+# of the answer once taken, and then this long between chunks. Time spent in the queue is not
+# charged against the answer: a long reply on a slow computer is cut off only when it stalls.
+QUEUE_SECONDS = 120
+ANSWER_SECONDS = 120
+IDLE_SECONDS = 120
 
 
 def model_name(value):
@@ -45,7 +51,8 @@ class Response(io.RawIOBase):
         self.headers = threading.Event()
         self.status = 502
         self.content_type = "application/json"
-        self.expires = time.monotonic() + 180
+        # When an unclaimed request leaves the queue unserved; a claimed one lives until its caller closes it.
+        self.expires = time.monotonic() + QUEUE_SECONDS
         self.ended = False
         self.total = 0
         self.sequence = 0
@@ -67,7 +74,7 @@ class Response(io.RawIOBase):
             return 0
         if not self.pending and not self.ended:
             try:
-                chunk = self.parts.get(timeout=max(.01, self.expires - time.monotonic()))
+                chunk = self.parts.get(timeout=IDLE_SECONDS)
             except queue.Empty:
                 raise UpstreamError("The contributing computer stopped responding.", 504) from None
             if chunk is None:
@@ -107,6 +114,7 @@ class Compute:
         self.local_adapter = None
         self.router = None
         self.generations = {}  # host -> the number of its newest stream; older ones end
+        self.capacities = {}   # host -> requests its connector serves at once, across its models
         with store.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS compute_policy(id INTEGER PRIMARY KEY CHECK(id=1), password TEXT NOT NULL);
@@ -234,6 +242,11 @@ class Compute:
         inventory = {"models": cleaned, "platform": str(data.get("platform", ""))[:80],
                      "detail": str(data.get("detail", ""))[:200], "connected": data.get("connected", True) is True,
                      "telemetry":clean(data.get('telemetry'))}
+        capacity = data.get("capacity")
+        with self.lock:
+            if type(capacity) is int and 1 <= capacity <= 64:
+                self.capacities[host["id"]] = capacity
+            capacity = self.capacities.get(host["id"])
         now = int(time.time())
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -253,6 +266,9 @@ class Compute:
                 db.execute("INSERT INTO models VALUES(?,?,?)", (identity + ":" + item["name"], identity, item["name"]))
                 if self.router and "slots" in item:
                     self.router.report_slots(identity + ":" + item["name"], item["slots"])
+                if self.router and capacity:
+                    # The connector's limit is across its models: two shared models share the eight.
+                    self.router.report_group(identity + ":" + item["name"], host["id"], capacity)
 
     def submit(self, actor, data):
         kind, host_id = data.get("kind"), data.get("host")
@@ -321,7 +337,7 @@ class Compute:
         for identity, request in list(self.requests.items()):
             if len(tasks) >= count or (capacity and busy >= capacity):
                 break
-            if request["response"].expires < now or request["response"].closed:
+            if request["response"].closed or (not request["claimed"] and request["response"].expires < now):
                 self.requests.pop(identity, None)
             elif request["host"] == host and not request["claimed"]:
                 request.update(claimed=True, via=via, claimed_at=now)
@@ -355,6 +371,8 @@ class Compute:
         if type(capacity) is not int or not 1 <= capacity <= 64:
             raise ComputeInput("Invalid connector capacity.")
         server = handler.server
+        with self.lock:
+            self.capacities[host["id"]] = capacity
         if not server.streams.acquire(blocking=False):
             raise UpstreamError("Too many computers are connected. Retry shortly.", 503)
         server.slots.release()
@@ -369,13 +387,13 @@ class Compute:
             while time.monotonic() < ends and not server.service.stopped.is_set():
                 with self.changed:
                     if self.generations.get(host["id"]) != generation:
-                        return
+                        return self.replaced(handler, host)
                     tasks = self.claim(host["id"], "stream", capacity, capacity)
                     remaining = min(HEARTBEAT_SECONDS - (time.monotonic() - beat), ends - time.monotonic())
                     if not tasks and remaining > 0:
                         self.changed.wait(remaining)
                         if self.generations.get(host["id"]) != generation:
-                            return
+                            return self.replaced(handler, host)
                         tasks = self.claim(host["id"], "stream", capacity, capacity)
                 try:
                     for task in tasks:
@@ -392,6 +410,21 @@ class Compute:
         finally:
             server.streams.release()
             server.slots.acquire()
+
+    def replaced(self, handler, host):
+        """Tells a connector whose stream a newer one replaced, when the computer is still
+        connected: a second connector was started with the same credential, and the first one
+        stops rather than both reconnecting forever. A disconnected computer learns that from
+        its next request instead."""
+        with self.store.db() as db:
+            active = db.execute("SELECT 1 FROM compute_hosts WHERE id=? AND active=1", (host["id"],)).fetchone()
+        if not active:
+            return
+        try:
+            handler.wfile.write(b"data: " + json.dumps({"replaced": True}).encode() + b"\n\n")
+            handler.wfile.flush()
+        except OSError:
+            pass
 
     def poll(self, host, accept_job=True):
         with self.lock:
@@ -450,15 +483,17 @@ class Compute:
                                        "claimed": False, "via": None, "claimed_at": None, "acked": False}
             self.changed.notify_all()
         connection = Connection(self, identity, raw)
-        deadline = time.monotonic() + 120
+        queued = time.monotonic()
         while not raw.headers.wait(.2):
+            now = time.monotonic()
             with self.lock:
                 item = self.requests.get(identity) or {}
-                lost = item.get("via") == "stream" and not item["acked"] and time.monotonic() - item["claimed_at"] > ACK_SECONDS
+                taken = item.get("claimed_at")
+                lost = item.get("via") == "stream" and not item["acked"] and now - taken > ACK_SECONDS
             if lost:
                 connection.close()
                 raise UpstreamError("The contributing computer did not take the request.", 503)
-            if time.monotonic() > deadline:
+            if now > (taken + ANSWER_SECONDS if taken else queued + QUEUE_SECONDS):
                 connection.close()
                 raise UpstreamError("The contributing computer did not answer.", 504)
         if raw.status != 200:
@@ -487,6 +522,8 @@ class Compute:
         if len(content) > 65536:
             raise ComputeInput("Response chunk too large.")
         with raw.lock:
+            if type(data.get("sequence")) is int and data["sequence"] == raw.sequence - 1:
+                return True  # The previous chunk again: its upload was retried after a lost reply.
             if type(data.get("sequence")) is not int or data["sequence"] != raw.sequence:
                 raise ComputeInput("Response chunks must arrive in order.")
             if raw.total + len(content) > 16 * 1024 * 1024:

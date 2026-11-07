@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import { Button } from "@/components/ui/button"
+import { ExternalLink } from "@/components/shared/external-link"
 import { CATALOGUE, GROUPS } from "@/api/setups/catalogue"
 import { isMoving, useOperation, useSetupFeed } from "@/api/setups/progress"
 import type { CapabilityGroup, NextAction, OperationBrief, Output, ResourceRef, ResourceView, SetupDetailView, SetupSummary, SourceRef } from "@/api/setups/types"
@@ -216,7 +217,7 @@ function GroupContent({ group, parts, outputs }: { group: CapabilityGroup; parts
         return <li key={view.resourceId}>
           <strong>{view.label}</strong>
           {exposure ? <span> — {exposure.to} on port {exposure.port}, reached {ACCESS_WORD[exposure.access] ?? exposure.access}</span> : <span className="setup-note"> — how it is reached is not recorded yet</span>}
-          {url ? <span> · <a href={url} target="_blank" rel="noreferrer">{url}</a></span> : null}
+          {url ? <span> · <ExternalLink href={url}>{url}</ExternalLink></span> : null}
           <span className="setup-note"> · {OBSERVED[view.observed ?? "unknown"] ?? "state not checked"}</span>
         </li>
       })}

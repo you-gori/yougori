@@ -13,7 +13,9 @@ from upstream import UpstreamError, connect
 
 def dispatch(service, order, payload, session):
     """Opens the first replica in `order` that answers. A replica that could not take the request
-    is skipped before anything reaches the caller; a refused request (400) is not retried."""
+    is skipped before anything reaches the caller. A refusal (400) is tried on the other replicas
+    too, since replicas of one name can differ in context length; it is the caller's answer only
+    when every replica refuses, and it never counts against a replica."""
     last = None
     for replica in order:
         service.router.begin(replica["id"])
@@ -25,9 +27,8 @@ def dispatch(service, order, payload, session):
                 connection, response = connect(replica["url"], replica["secret"], "/chat/completions", body, timeout=120)
         except UpstreamError as error:
             service.router.end(replica["id"], failed=error.status != 400, cool=error.status not in (400, 429))
-            if error.status == 400:
-                raise
-            last = error
+            if error.status == 400 or last is None or last.status != 400:
+                last = error
             continue
         except BaseException:
             service.router.end(replica["id"], failed=True)
@@ -35,6 +36,72 @@ def dispatch(service, order, payload, session):
         service.router.remember(session, replica, replica["same"])
         return connection, response, replica
     raise last or UpstreamError("The model server is not currently available.", 503)
+
+
+def read_stream(response, answering):
+    """The chunks of an upstream event stream, each a dict, until its [DONE]. The stream must
+    finish within the service limits and may not carry an error or end early."""
+    total = 0
+    while True:
+        if time.time() - answering > 240:
+            raise UpstreamError('The request exceeded the service time limit.', 504)
+        line = response.readline(1024 * 1024 + 1)
+        if not line:
+            raise UpstreamError("The model stream ended before completion.", 502)
+        total += len(line)
+        if len(line) > 1024 * 1024 or total > 16 * 1024 * 1024:
+            raise UpstreamError("The model response exceeded the service limit.", 502)
+        if not line.startswith(b"data:"):
+            continue
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            return
+        chunk = json.loads(data)
+        if not isinstance(chunk, dict) or "error" in chunk:
+            raise UpstreamError("The model server could not finish the response.", 502)
+        yield chunk
+
+
+def assemble(chunks, model):
+    """One chat completion from a stream's chunks: the first choice's text fields joined, its
+    tool calls merged by index, the last finish reason and the final usage and timings."""
+    message, calls, finish, usage, timings, identity, created = {"role": "assistant", "content": None}, {}, None, None, None, None, None
+    for chunk in chunks:
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
+        if isinstance(chunk.get("timings"), dict):
+            timings = chunk["timings"]
+        identity, created = chunk.get("id", identity), chunk.get("created", created)
+        for choice in chunk.get("choices") or []:
+            if not isinstance(choice, dict) or choice.get("index", 0) != 0:
+                continue
+            if choice.get("finish_reason"):
+                finish = choice["finish_reason"]
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+            for field, value in delta.items():
+                if field == "tool_calls" and isinstance(value, list):
+                    for call in value:
+                        if not isinstance(call, dict) or type(call.get("index")) is not int:
+                            continue
+                        entry = calls.setdefault(call["index"], {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+                        if isinstance(call.get("id"), str):
+                            entry["id"] = call["id"]
+                        function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                        for part in ("name", "arguments"):
+                            if isinstance(function.get(part), str):
+                                entry["function"][part] += function[part]
+                elif field == "role":
+                    message["role"] = value if isinstance(value, str) else message["role"]
+                elif isinstance(value, str):
+                    message[field] = (message.get(field) or "") + value  # content, reasoning_content, refusal
+                elif value is not None and message.get(field) is None:
+                    message[field] = value
+    if calls:
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+    return {"id": identity if isinstance(identity, str) else "chatcmpl-" + secrets.token_hex(12), "object": "chat.completion",
+            "created": created if type(created) is int else int(time.time()), "model": model,
+            "choices": [{"index": 0, "message": message, "finish_reason": finish or "stop", "logprobs": None}],
+            **({"usage": usage} if usage else {}), **({"timings": timings} if timings else {})}
 
 
 def complete(handler, key, payload):
@@ -70,59 +137,36 @@ def complete(handler, key, payload):
         service.control.presence(key['user_id'],api=True)
         with service.control.lock:
             service.control.active.add(request_id)
-        if payload.get('stream'):
-            options=payload.get('stream_options',{})
-            if not isinstance(options,dict):
-                return handler.error(400,'stream_options must be an object.')
-            payload['stream_options']={**options,'include_usage':True}
+        options = payload.get('stream_options', {})
+        if not isinstance(options, dict):
+            return handler.error(400, 'stream_options must be an object.')
+        # The model server always streams, with its usage in the last chunk: a caller who asked
+        # for a stream gets it as it comes; the others get the completion assembled from it, so
+        # a long answer is cut off only when the model stalls, not by the socket's timeout.
+        streaming = payload.get("stream") is True
+        payload = {**payload, "stream": True, "stream_options": {**options, "include_usage": True}}
         connection, response, replica = dispatch(service, order, payload, session)
-        if payload.get("stream"):
-            if "text/event-stream" not in response.getheader("Content-Type", "").lower():
-                raise UpstreamError("The model server did not return an event stream.", 502)
+        # The reply's time limit starts when a replica answers, after any failed replicas and queue time.
+        answering = time.time()
+        if "text/event-stream" not in response.getheader("Content-Type", "").lower():
+            raise UpstreamError("The model server did not return an event stream.", 502)
+        if streaming:
             handler.begin(200, "text/event-stream; charset=utf-8")
-            sent, total, finished = True, 0, False
-            while True:
-                if time.time() - started > 240:
-                    raise UpstreamError('The request exceeded the service time limit.', 504)
-                line = response.readline(1024 * 1024 + 1)
-                if not line:
-                    break
-                total += len(line)
-                if len(line) > 1024 * 1024 or total > 16 * 1024 * 1024:
-                    raise UpstreamError("The model response exceeded the service limit.", 502)
-                if line.startswith(b"data:"):
-                    data = line[5:].strip()
-                    if data == b"[DONE]":
-                        finished = True
-                    else:
-                        chunk = json.loads(data)
-                        if not isinstance(chunk, dict) or "error" in chunk:
-                            raise UpstreamError("The model server could not finish the response.", 502)
-                        if "model" in chunk:
-                            chunk["model"] = model
-                        if isinstance(chunk.get("usage"), dict):
-                            usage = chunk["usage"]
-                        if isinstance(chunk.get("timings"), dict):
-                            timings = chunk["timings"]
-                        line = b"data: " + json.dumps(chunk, allow_nan=False).encode() + b"\n"
-                handler.wfile.write(line)
+            sent = True
+            for chunk in read_stream(response, answering):
+                if "model" in chunk:
+                    chunk["model"] = model
+                if isinstance(chunk.get("usage"), dict):
+                    usage = chunk["usage"]
+                if isinstance(chunk.get("timings"), dict):
+                    timings = chunk["timings"]
+                handler.wfile.write(b"data: " + json.dumps(chunk, allow_nan=False).encode() + b"\n\n")
                 handler.wfile.flush()
-                if finished:
-                    handler.wfile.write(b"\n")
-                    handler.wfile.flush()
-                    break
-            if not finished:
-                raise UpstreamError("The model stream ended before completion.", 502)
+            handler.wfile.write(b"data: [DONE]\n\n")
+            handler.wfile.flush()
         else:
-            raw = response.read(16 * 1024 * 1024 + 1)
-            if len(raw) > 16 * 1024 * 1024:
-                raise UpstreamError("The model response exceeded the service limit.", 502)
-            result = json.loads(raw)
-            if not isinstance(result, dict) or not isinstance(result.get("choices"), list) or "error" in result:
-                raise UpstreamError("The model server returned an invalid completion.", 502)
-            result["model"] = model
-            usage = result.get("usage") if isinstance(result.get("usage"), dict) else None
-            timings = result.get("timings") if isinstance(result.get("timings"), dict) else None
+            result = assemble(read_stream(response, answering), model)
+            usage, timings = result.get("usage"), result.get("timings")
             handler.json(200, result)
         status = "completed"
     except (BrokenPipeError, ConnectionResetError):

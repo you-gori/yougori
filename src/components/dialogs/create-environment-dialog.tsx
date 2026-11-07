@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Radio, RadioGroup } from "@/components/ui/radio-group"
 import { cn } from "@/lib/utils"
 import type { EnvironmentKind } from "@/types/platform"
+import { useTopicWalkthroughModal } from "@/lib/topic-walkthrough"
 import "./create-environment-dialog.css"
 
 const choices = [
@@ -45,7 +46,12 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: {
     } finally { lock.current = false; setBusy(false) }
   }
   const locked = busy || importing
-  return <Dialog open={open} onOpenChange={value => { if (!locked) onOpenChange(value) }}>
+  // Nonmodal while an instruction guide walks through it, so the guide's card stays in view
+  // and its buttons do not close the dialog (as the other guided dialogs do).
+  const topic = useTopicWalkthroughModal(open)
+  return <Dialog modal={!topic} open={open} onOpenChange={(value, details) => {
+    if (!locked && !(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest("[data-topic-ui]"))) onOpenChange(value)
+  }}>
     <DialogPopup bottomStickOnMobile={false} closeProps={{ disabled: locked }} className="creation-workbench overflow-hidden" data-create-environment data-create-kind={workflow}>
       <DialogTitle className="sr-only">New environment</DialogTitle>
       <DialogDescription className="sr-only">Create a Sandbox VM, connect a remote environment, or load a backup.</DialogDescription>
@@ -55,7 +61,7 @@ export function CreateEnvironmentDialog({ open, onOpenChange, initialKind }: {
         </div>
         <div className="creation-type-tabs">
           <RadioGroup aria-label="Environment type" className="creation-types" disabled={locked} value={workflow} onValueChange={value => setWorkflow(value as Workflow)}>
-            {choices.map(([value, label]) => <Label key={value} className={cn("creation-type", workflow === value && "is-selected")}>
+            {choices.map(([value, label]) => <Label key={value} data-instruction-kind={value} className={cn("creation-type", workflow === value && "is-selected")}>
               <Radio className="sr-only" value={value} /><span>{label}</span>
             </Label>)}
           </RadioGroup>

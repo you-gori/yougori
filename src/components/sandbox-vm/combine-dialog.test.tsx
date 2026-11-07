@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest"
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 import type { CombinePreview } from "@/api/sandbox-vm-api"
@@ -47,6 +47,32 @@ it("shows the summed allocation and combines only after every conflict is decide
   api.combineFinish.mockResolvedValue({ operation: "combine-1", state: "finished" })
   await user.click(screen.getByRole("button", { name: "Keep the originals' workspaces" }))
   expect(api.combineFinish).toHaveBeenCalledWith("combine-1", "keep")
+})
+
+it("asks the engine for one preview per set of decisions, not again every time an answer arrives", async () => {
+  const user = userEvent.setup()
+  api.combinePreview.mockImplementation((_a: string, _b: string, decisions: { keep: Record<string, string> }) =>
+    Promise.resolve(preview(decisions.keep["publish:web"] ? 0 : 1)))
+  render(<CombineSandboxesDialog first="vm-a" second="vm-b" open onOpenChange={() => {}} />)
+  expect(await screen.findByText(/3 vCPU, 2.00 GiB/)).toBeVisible()
+  // Each answer is a fresh object; it must not count as a change of the decisions.
+  await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+  expect(api.combinePreview).toHaveBeenCalledTimes(1)
+  await user.click(screen.getByRole("radio", { name: "Keep vm-b's" }))
+  await waitFor(() => expect(api.combinePreview).toHaveBeenCalledTimes(2))
+  await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+  expect(api.combinePreview).toHaveBeenCalledTimes(2)
+})
+
+it("adds the image decision once a source turns out to carry an image, then settles", async () => {
+  const withImage = preview(0)
+  withImage.sources[0]!.image = "img-1"
+  api.combinePreview.mockResolvedValue(withImage)
+  render(<CombineSandboxesDialog first="vm-a" second="vm-b" open onOpenChange={() => {}} />)
+  expect(await screen.findByText(/3 vCPU, 2.00 GiB/)).toBeVisible()
+  await waitFor(() => expect(api.combinePreview).toHaveBeenLastCalledWith("vm-a", "vm-b", expect.objectContaining({ imageProcess: "once" })))
+  await act(() => new Promise(resolve => setTimeout(resolve, 50)))
+  expect(api.combinePreview).toHaveBeenCalledTimes(2)
 })
 
 it("never offers to combine sandboxes the preview found incompatible", async () => {

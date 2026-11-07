@@ -28,10 +28,7 @@ export function useTopicWalkthroughModal(open: boolean) {
 
 export const instructionTargets: Record<string, readonly string[]> = {
   settings: ['[data-tour="settings"]', '[data-instruction="settings-dialog"]', '[data-instruction="settings-dialog"]'],
-  container: ['[data-tour="new-environment"]', '[data-instruction-kind="container"]', '[data-tour="create-submit"]'],
-  gpu: ['[data-tour="new-environment"]', '[data-instruction-kind="gpu"]', '[data-tour="create-submit"]'],
-  microvm: ['[data-tour="new-environment"]', '[data-instruction-kind="microVm"]', '[data-tour="create-submit"]'],
-  vm: ['[data-tour="new-environment"]', '[data-instruction-kind="fullVm"]', '[data-tour="create-submit"]'],
+  sandbox: ['[data-tour="new-environment"]', '[data-instruction-kind="sandbox"]', '[data-tour="create-submit"]'],
   cloud: ['[data-tour="new-environment"]', '[data-instruction-kind="cloud"]', '[data-create-environment]'],
   shared: ['[data-tour="new-environment"]', '[data-instruction-kind="shared"]', '[data-create-environment]'],
   runpod: ['[data-tour="new-environment"]', '[data-instruction-kind="neocloud"]', '[data-create-environment]'],

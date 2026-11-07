@@ -389,7 +389,7 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
     }
     let freed = first.memory_bytes + second.memory_bytes;
     let fits = available.map(|available| available.saturating_add(freed) >= memory_bytes);
-    let minimum = |key: &str| [first.params.get(key), second.params.get(key)].into_iter().flatten().filter_map(Value::as_u64).min();
+    let limit = |key: &str| stricter_limit(first.params.get(key).and_then(Value::as_u64), second.params.get(key).and_then(Value::as_u64));
     let adoptable = first.grants.iter().chain(second.grants.iter()).map(|grant| json!({
         "grant": grant["id"], "path": grant["path"], "mode": grant["mode"], "folder": grant["folder"],
         "adopt": decisions["adopt"].as_array().is_some_and(|ids| ids.contains(&grant["id"])),
@@ -408,8 +408,8 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
         if !grids.is_empty() { params["gridHosting"] = json!(grids); }
         if !routes.is_empty() { params["routes"] = json!(routes); }
         if let Some(image) = &image.0 { params["image"] = image.clone(); }
-        if let Some(seconds) = minimum("idleSeconds") { params["idleSeconds"] = json!(seconds); }
-        if let Some(seconds) = minimum("lifetimeSeconds") { params["lifetimeSeconds"] = json!(seconds); }
+        if let Some(seconds) = limit("idleSeconds") { params["idleSeconds"] = json!(seconds); }
+        if let Some(seconds) = limit("lifetimeSeconds") { params["lifetimeSeconds"] = json!(seconds); }
         params
     };
     if let Err(reason) = super::network::launch_internet(&combined_params) {
@@ -446,6 +446,18 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
     });
     value["digest"] = json!(preview_digest(&first.id, &second.id, &value, decisions)?);
     Ok(value)
+}
+
+/// The lease limit the combined VM takes from the sources' `idleSeconds` or `lifetimeSeconds`
+/// (as `launch_from` reads them: absent is the default limit, 0 is no limit): the stricter of
+/// the two, so a source whose owner disabled the limit never lifts the one the other kept.
+fn stricter_limit(first: Option<u64>, second: Option<u64>) -> Option<u64> {
+    let explicit = [first, second].into_iter().flatten().filter(|seconds| *seconds > 0).min();
+    match explicit {
+        Some(seconds) => Some(seconds),
+        None if first == Some(0) && second == Some(0) => Some(0),
+        None => None,
+    }
 }
 
 /// What a start must find unchanged: both sources, the combined VM, its files, conflicts,
@@ -528,6 +540,26 @@ fn guest_files(production: &Production, id: &SandboxId) -> Result<BTreeMap<Strin
         .filter_map(|line| line.split_once("  "))
         .map(|(hash, path)| (path.trim_start_matches("./").to_owned(), hash.to_owned()))
         .collect())
+}
+
+/// What every launch puts into a guest's workspace root besides the owner's files: the setup
+/// package (`yougori-probe setup init`, appliance/agent/setupkit) and the application log folder
+/// its `setup run` keeps. The combined VM's check compares the owner's files only; these are
+/// written again at its launch and would otherwise count as files the preview never showed.
+const SETUP_PACKAGE: [&str; 5] = [
+    "yougori.py",
+    "node_modules/yougori/index.mjs",
+    "node_modules/yougori/index.d.ts",
+    "node_modules/yougori/package.json",
+    ".agents/skills/yougori-setup/SKILL.md",
+];
+
+fn is_setup_package(path: &str) -> bool {
+    SETUP_PACKAGE.contains(&path) || path.starts_with(".yougori/")
+}
+
+fn without_setup_package<V>(files: BTreeMap<String, V>) -> BTreeMap<String, V> {
+    files.into_iter().filter(|(path, _)| !is_setup_package(path)).collect()
 }
 
 /// `sandbox_vm combine` (module docs): preview, start, status or finish.
@@ -685,13 +717,13 @@ pub(super) async fn dispatch(app: &AppHandle, production: &Arc<Production>, para
             journal["combined"] = json!(combined);
             journal["state"] = json!("checking");
             save(&data, &journal)?;
-            let expected: BTreeMap<String, String> = shown["combined"]["workspace"].as_array().into_iter().flatten()
-                .filter_map(|row| Some((row["path"].as_str()?.to_owned(), row["sha256"].as_str()?.to_owned()))).collect();
+            let expected: BTreeMap<String, String> = without_setup_package(shown["combined"]["workspace"].as_array().into_iter().flatten()
+                .filter_map(|row| Some((row["path"].as_str()?.to_owned(), row["sha256"].as_str()?.to_owned()))).collect());
             let combined_id = sandbox_of(&json!({"sandbox": combined}), "sandbox")?;
             let check = {
                 let (combined_id, expected, adopt, shown) = (combined_id.clone(), expected.clone(), adopt.clone(), shown.clone());
                 blocking(Arc::clone(production), move |production| {
-                    let seen = guest_files(production, &combined_id)?;
+                    let seen = without_setup_package(guest_files(production, &combined_id)?);
                     let missing: Vec<&String> = expected.iter().filter(|(name, hash)| seen.get(*name) != Some(*hash)).map(|(name, _)| name).collect();
                     if !missing.is_empty() || seen.len() != expected.len() {
                         return Err(format!("The combined workspace does not match the reviewed result ({} differ, {} seen, {} expected).", missing.len(), seen.len(), expected.len()));
@@ -795,6 +827,36 @@ mod tests {
         let mut conflicts = Vec::new();
         assert_eq!(union("publish", &a, &a, key, &mut conflicts, &Value::Null), a);
         assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn the_guest_check_compares_the_owners_files_not_the_setup_package_every_launch_writes() {
+        // The combined VM's launch installs the setup package at its workspace root again (and
+        // its application may log under .yougori/): neither counts against the reviewed files.
+        let seen: BTreeMap<String, String> = [
+            ("first/app.py", "a"), ("second/main.go", "b"), ("yougori.py", "s"), ("node_modules/yougori/index.mjs", "s"),
+            ("node_modules/yougori/index.d.ts", "s"), ("node_modules/yougori/package.json", "s"),
+            (".agents/skills/yougori-setup/SKILL.md", "s"), (".yougori/application.log", "l"),
+        ].into_iter().map(|(path, hash)| (path.to_owned(), hash.to_owned())).collect();
+        let owners = without_setup_package(seen);
+        assert_eq!(owners.keys().collect::<Vec<_>>(), ["first/app.py", "second/main.go"]);
+        // A source's own copy of such a file, under its folder, is the owner's and still counts.
+        assert!(!is_setup_package("first/yougori.py") && !is_setup_package("first/.yougori/notes.txt"));
+        assert!(is_setup_package(".yougori/application.log") && is_setup_package("yougori.py"));
+    }
+
+    #[test]
+    fn a_disabled_limit_never_lifts_the_limit_the_other_source_kept() {
+        // 0 means no limit (launch_from), so it is the loosest value, never the minimum.
+        assert_eq!(stricter_limit(Some(0), Some(600)), Some(600));
+        assert_eq!(stricter_limit(Some(600), Some(0)), Some(600));
+        assert_eq!(stricter_limit(Some(300), Some(600)), Some(300));
+        assert_eq!(stricter_limit(None, Some(600)), Some(600));
+        // A source without the setting keeps the default limit, stricter than none at all.
+        assert_eq!(stricter_limit(Some(0), None), None);
+        assert_eq!(stricter_limit(None, None), None);
+        // Only two sources that both disabled the limit combine without one.
+        assert_eq!(stricter_limit(Some(0), Some(0)), Some(0));
     }
 
     #[test]

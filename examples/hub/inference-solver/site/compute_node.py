@@ -28,6 +28,9 @@ from harnesses.transport import LocalConnection
 CAPACITY = 8
 # The website sends a comment at least every 15 seconds; three missed ones mean the stream is gone.
 STREAM_SILENCE = 45
+# A request handed over while the previous one's slot is being freed waits this long for it; the
+# website fails a request over if it is not acknowledged within eight seconds.
+ACK_WAIT = 5
 LIMIT = 3 * 1024 * 1024
 
 
@@ -35,6 +38,10 @@ class SiteError(Exception):
     def __init__(self, status):
         super().__init__("The website answered HTTP " + str(status) + ".")
         self.status = self.code = status
+
+
+class Replaced(ComputeError):
+    """A second connector was started for this computer with the same credential."""
 
 
 class Link:
@@ -82,8 +89,8 @@ class Link:
             except BaseException:
                 connection.close()
                 raise
-            if response.will_close:
-                connection.close()
+            if response.will_close or len(raw) > LIMIT:
+                connection.close()  # An oversized reply is left half read: never reused.
             else:
                 with self.lock:
                     if len(self.idle) < CAPACITY + 2:
@@ -103,7 +110,7 @@ def site_request(server, path, payload, token=None):
     return Link(server).post(path, payload, token)
 
 
-def receive(link, token, deliver, stopped):
+def receive(link, token, deliver, stopped, connected=None):
     """Reads the website's request stream until it ends. Returns False if the website has none."""
     connection, response = link.open("/api/compute/agent", {"action": "stream", "capacity": CAPACITY}, token, STREAM_SILENCE)
     try:
@@ -111,6 +118,8 @@ def receive(link, token, deliver, stopped):
             return False  # An older website: poll it instead.
         if response.status != 200:
             raise SiteError(response.status)
+        if connected:
+            connected()
         lines = []
         while not stopped.is_set():
             line = response.readline(LIMIT + 1)
@@ -123,6 +132,8 @@ def receive(link, token, deliver, stopped):
                 lines.append(line[5:].strip())
             elif not line and lines:
                 event, lines = json.loads(b"\n".join(lines)), []
+                if isinstance(event, dict) and event.get("replaced") is True:
+                    raise Replaced("Another connector is running for this computer with the same credential. Stop one of them; a computer runs one connector.")
                 if isinstance(event, dict) and isinstance(event.get("inference"), dict):
                     deliver(event["inference"])
         return True
@@ -195,47 +206,73 @@ def main(server):
         else:
             raise ComputeError("Computer approval timed out.")
     slots, last_inventory, last_grid = threading.BoundedSemaphore(CAPACITY), 0, 0
-    grid_busy, stopped, disconnected, polling = threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    grid_busy, stopped, disconnected, polling, replaced = (threading.Event() for _ in range(5))
     print("Connected. Selected models appear automatically. Keep this terminal running; Ctrl+C disconnects.")
 
     def send(data):
-        return request("/api/compute/agent", {"action": "chunk", **data}, True)
+        """Uploads one reply chunk. A website that was briefly unreachable or full gets it again:
+        the website accepts the same chunk twice, so a lost reply never ends the answer."""
+        for attempt in range(3):
+            try:
+                return request("/api/compute/agent", {"action": "chunk", **data}, True)
+            except SiteError as error:
+                if error.status != 503 or attempt == 2:
+                    raise
+            except (OSError, http.client.HTTPException):
+                if attempt == 2:
+                    raise
+            time.sleep(1)
 
-    def quietly(action, data):
-        try:
-            request("/api/compute/agent", {"action": action, **data}, True)
-        except Exception:
-            pass  # The website fails the request over to another computer.
+    def quietly(action, data, attempts=1):
+        for attempt in range(attempts):
+            try:
+                return request("/api/compute/agent", {"action": action, **data}, True)
+            except Exception:
+                time.sleep(.5)  # The website fails the request over to another computer.
 
     def infer(task, acknowledge):
         try:
             if acknowledge:
-                # Confirms receipt while the model starts; the website fails the request over otherwise.
-                threading.Thread(target=quietly, args=("ack", {"id": task["id"]}), daemon=True).start()
+                # Confirms receipt while the model starts, again if the website was busy for a
+                # moment; the website fails the request over to another computer otherwise.
+                threading.Thread(target=quietly, args=("ack", {"id": task["id"]}, 4), daemon=True).start()
             adapter.inference(task, send)
         finally:
             slots.release()
 
-    def deliver(task):
-        if slots.acquire(blocking=False):
-            threading.Thread(target=infer, args=(task, True), daemon=True).start()
+    def take(task):
+        # A finished request frees its slot a moment after the website hands over the next one.
+        if slots.acquire(timeout=ACK_WAIT):
+            infer(task, True)
         else:
-            # The website respects this computer's capacity; this only happens after a reconnect.
-            threading.Thread(target=quietly, args=("chunk", {"id": task["id"], "sequence": 0, "status": 429, "done": True}), daemon=True).start()
+            quietly("chunk", {"id": task["id"], "sequence": 0, "status": 429, "done": True})
+
+    def deliver(task):
+        threading.Thread(target=take, args=(task,), daemon=True).start()
 
     def listen():
+        failures = 0
         while not stopped.is_set():
             try:
-                if not receive(link, token, deliver, stopped):
+                if not receive(link, token, deliver, stopped, connected=lambda: polling.clear()):
                     polling.set()
                     return
+                failures = 0
+            except Replaced:
+                replaced.set()
+                return
             except SiteError as error:
                 if error.status == 401:
                     disconnected.set()
                     return
+                failures += 1
                 stopped.wait(5)
             except (OSError, ValueError, ComputeError, http.client.HTTPException):
+                failures += 1
                 stopped.wait(2)
+            if failures >= 3:
+                # A website that keeps refusing the stream (full, for example) is polled meanwhile.
+                polling.set()
 
     def grid_work(job):
         try:
@@ -253,8 +290,11 @@ def main(server):
             try:
                 if disconnected.is_set():
                     raise SiteError(401)
+                if replaced.is_set():
+                    raise Replaced("Another connector is running for this computer with the same credential. Stop one of them; a computer runs one connector.")
                 if time.monotonic() - last_inventory > 10:
-                    request("/api/compute/agent", {"action": "inventory", **adapter.inventory(), "grid":grid_adapter.advertisement(),"grid_vms":grid_adapter.inventory()}, True)
+                    request("/api/compute/agent", {"action": "inventory", **adapter.inventory(), "capacity": CAPACITY,
+                                                   "grid": grid_adapter.advertisement(), "grid_vms": grid_adapter.inventory()}, True)
                     last_inventory = time.monotonic()
                 if capacity and not grid_busy.is_set() and time.monotonic() - last_grid > 1:
                     last_grid = time.monotonic()
@@ -273,6 +313,8 @@ def main(server):
                         slots.release()
                         raise
                 time.sleep(.3)
+            except Replaced:
+                raise
             except SiteError as error:
                 if error.status == 401:
                     grid_adapter.stop_all()
@@ -297,5 +339,8 @@ if __name__ == "__main__":
         main(json.loads(Path(__file__).with_name("connection.json").read_text(encoding="utf-8"))["server"])
     except KeyboardInterrupt:
         print("Contributor disconnected.")
-    except (ComputeError, OSError, ValueError):
+    except ComputeError as error:
+        # Its own words: a disconnected computer is told to reconnect, not to check the address.
+        sys.exit(str(error))
+    except (OSError, ValueError):
         sys.exit("Contributor could not connect. Check Yougori and the website address, then retry.")

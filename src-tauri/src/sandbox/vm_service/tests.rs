@@ -554,6 +554,8 @@ fn an_owner_session_releases_past_vm_d12_only_to_its_owner() {
     let budget = &view.publications.iter().find(|p| p.publication == owner).unwrap().response_budget;
     assert_eq!(budget.limit_bytes, super::OWNER_SESSION_RELEASE_BYTES);
     assert!(budget.limit_bytes > super::PUBLISHED_RESPONSE_BYTES);
+    // The status says what the session may release in all, not VM-D12's 8 MiB.
+    assert_eq!(view.release_bound_bytes, super::OWNER_SESSION_RELEASE_BYTES);
     harness.service().withdraw(&id, owner).unwrap();
     harness.service().stop(&id).unwrap();
 
@@ -569,6 +571,7 @@ fn an_owner_session_releases_past_vm_d12_only_to_its_owner() {
     let view = harness.service().publications(&other);
     let budget = &view.publications.iter().find(|p| p.publication == publication).unwrap().response_budget;
     assert_eq!(budget.limit_bytes, 4096);
+    assert_eq!(view.release_bound_bytes, super::PUBLISHED_RESPONSE_BYTES);
     harness.service().withdraw(&other, publication).unwrap();
     harness.service().stop(&other).unwrap();
 }

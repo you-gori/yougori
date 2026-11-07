@@ -136,7 +136,7 @@ export function SandboxVmLaunchForm({ disabled, error, onCancel, onImportBusyCha
         <div aria-label="Startup summary" className="creation-summary"><ShieldCheck aria-hidden="true" /><span className="creation-summary-name">Sandbox VM</span><span className="creation-summary-resources">{cpu} vCPU<span>/</span>{Number.isFinite(memory) ? memory : "—"} GB memory</span></div>
         <div className="creation-actions">
           {onCancel ? <Button type="button" variant="ghost" disabled={locked} onClick={onCancel}>Cancel</Button> : null}
-          <Button type="submit" className="creation-submit" disabled={locked || !imageReady}>Create environment</Button>
+          <Button type="submit" data-tour="create-submit" className="creation-submit" disabled={locked || !imageReady}>Create environment</Button>
         </div>
       </div>
     </DialogFooter>

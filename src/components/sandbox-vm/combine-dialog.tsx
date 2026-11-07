@@ -20,9 +20,12 @@ export function CombineSandboxesDialog({ first, second, open, onOpenChange }: {
   const [result, setResult] = useState<CombineOperation | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  // Whether an image conflict is decided comes from the sources, as a boolean: the preview object
+  // itself must not be a dependency, or every answer would change the decisions and ask again.
+  const imageProcess = Boolean(preview?.sources.some(source => source.image))
   const decisions = useMemo<CombineDecisions>(() => ({
-    layout, keep, files, adopt, ...(preview?.sources.some(source => source.image) ? { imageProcess: "once" as const } : {}),
-  }), [layout, keep, files, adopt, preview])
+    layout, keep, files, adopt, ...(imageProcess ? { imageProcess: "once" as const } : {}),
+  }), [layout, keep, files, adopt, imageProcess])
 
   useEffect(() => {
     if (!open || result) return

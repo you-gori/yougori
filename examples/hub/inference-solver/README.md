@@ -167,12 +167,15 @@ use Yougori's existing publication system, not managed Cloudflare for SaaS.
   `X-Session-ID` header or OpenAI's `prompt_cache_key` (Codex sends it); Claude Code's
   `metadata.user_id` and the opening of the conversation work the same way. A server that
   cannot take a request is skipped before anything reaches the caller and tried last for
-  30 seconds; a refused request (400) is not retried. Admin **Usage** shows requests per
-  computer and the live routing.
+  30 seconds; a refused request (400) is tried on the other servers of that name, since
+  they can differ in context length, and is the answer only when all of them refuse. Admin
+  **Usage** shows requests per computer and the live routing.
 - `/v1/models` and streaming/non-streaming `/v1/chat/completions`, including
-  streamed tool-call deltas. The relay accepts up to 32 simultaneous upstream
-  requests; further requests get retryable 429 responses. Backend capacity and
-  queue behavior still determine actual serving concurrency.
+  streamed tool-call deltas. The model server always streams to the relay; a caller who
+  did not ask for a stream gets the completion assembled from it, so a long answer is cut
+  off only when the model stalls for two minutes, not after a fixed time. The relay accepts
+  up to 32 simultaneous upstream requests; further requests get retryable 429 responses.
+  Backend capacity and queue behavior still determine actual serving concurrency.
 - Private request counts, reported token usage and duration. Prompts, completions
   and raw provider errors are not stored in the usage log. Missing token counts
   remain unknown rather than estimated for billing.
@@ -184,9 +187,11 @@ use Yougori's existing publication system, not managed Cloudflare for SaaS.
   in their own usage fields.
 - Contributing computers receive requests over one long-lived stream from the website and
   acknowledge each one, so a request starts without a polling delay; a computer that does
-  not acknowledge within eight seconds loses the request to another server. Connectors
-  from earlier releases keep polling, and the new connector polls websites that have no
-  stream.
+  not acknowledge within eight seconds loses the request to another server. A connector
+  serves eight requests at once across every model it shares, and the website routes by
+  that. Run one connector per computer: a second one started with the same credential
+  replaces the first, which stops and says so. Connectors from earlier releases keep
+  polling, and the new connector polls websites that have no stream, or that refuse it.
 - Administrator server-side compute management, invitations, request totals, connection
   status, audit events, and editable name, tagline and accent.
 - A catalog of 21 requested harnesses, with server-bound setup ZIPs for supported

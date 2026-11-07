@@ -500,7 +500,7 @@ Refreshing every 2 seconds * Ctrl+C to leave
         Ok::<_, String>(result)
     }).await?;
     let full = (as_text && invocation.select.is_some()).then(|| result.clone());
-    if !invocation.no_wait && !invocation.request.dry_run {
+    if final_answer(&result, invocation.request.dry_run) {
         result = parse::project(result, &invocation.select)?;
     }
     let view = as_text.then(|| view_text(&args, full.as_ref().unwrap_or(&result), &result, output::stdout_color())).flatten();
@@ -542,9 +542,21 @@ fn take_format(args: &mut Vec<String>) -> Result<Option<String>, String> {
     args.drain(at..=at + 1);
     Ok(Some(format.into()))
 }
+/// Whether `result` is the answer the command asked for, which a view or a projection reads
+/// out of it: not a dry run's check of the request, and not a job accepted with --no-wait. A
+/// read-only answer is one whether or not --no-wait was typed; left whole, `env list --no-wait`
+/// printed the entire platform state.
+fn final_answer(result: &Value, dry_run: bool) -> bool {
+    !dry_run && result["accepted"] != true
+}
 /// The text view of a read-only result; `full` is the platform state when the result was
 /// picked out of it, so lists can show names rather than IDs.
 fn view_text(args: &[String], full: &Value, result: &Value, color: bool) -> Option<String> {
+    // A dry run answers with its check of the request, not with what was asked for; shown as
+    // a list it read as an empty one ("No environments yet").
+    if result["dryRun"] == true {
+        return None;
+    }
     let word = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
     Some(match (word(0), word(1)) {
         ("inspect", _) | ("env" | "environment", "show") if result.is_object() => output::details(result, color),
@@ -876,6 +888,21 @@ mod exit_code_tests {
         let view = view_text(&words(&["snapshot", "list"]), &json!({"environments":[{"id":"env-1","name":"web"}]}), &json!([]), false).unwrap();
         assert!(view.contains("No snapshots yet"));
         assert!(view_text(&words(&["pull", "nginx"]), &json!({}), &json!({}), false).is_none());
+        // A dry run's check is not a list of anything: at a terminal `env list --dry-run` said
+        // "No environments yet" and `snapshot list --dry-run` "No snapshots yet".
+        let dry = json!({"dryRun":true,"method":"get_platform_state","validSyntax":true,"runtimeChecked":false});
+        for view in [words(&["env", "list"]), words(&["snapshot", "list"]), words(&["inspect", "web"]), words(&["model", "status", "chat"])] {
+            assert!(view_text(&view, &dry, &dry, false).is_none(), "{view:?}");
+        }
+    }
+    #[test]
+    fn only_the_answer_itself_is_projected() {
+        // `env list` picks the environments out of the platform state, with or without --no-wait:
+        // left whole, `--no-wait` printed the entire state. A job left running by --no-wait and a
+        // dry run's check are not the answer, so nothing is picked out of them.
+        assert!(final_answer(&json!({"environments":[]}), false));
+        assert!(!final_answer(&json!({"accepted":true,"jobId":"job-1"}), false));
+        assert!(!final_answer(&json!({"dryRun":true,"validSyntax":true}), true));
     }
     #[test]
     fn failures_read_without_method_names_or_job_ids() {

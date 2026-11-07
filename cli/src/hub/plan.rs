@@ -1649,12 +1649,14 @@ mod tests {
     fn script_answers_sort_inputs_bindings_capabilities_and_refuse_secrets_in_the_open() {
         let template = TEMPLATE.replace("inputs:\n", "capabilities:\n  - {id: web.service, selection: required}\n  - {id: web.quick_link, selection: optional}\nbindings:\n  - {id: data, type: folder, question: Data folder?}\ninputs:\n");
         let checked = check_files(&files(&[(v1::TEMPLATE_FILE, &template), ("yougori.yaml", PROJECT)])).unwrap_or_else(|p| panic!("{}", problems_text("the package", &p)));
-        let options = Options { source: ".".into(), name: None, inputs: vec![("title".into(), "Hi".into()), ("capabilities.web.quick_link".into(), "true".into())], bindings: vec![("data".into(), "C:/".into())], inputs_file: None, secrets_stdin: false, yes: true, allow_pc_access: false, dry_run: false, storage_drive: None };
+        // A folder that is there on every platform the tests run on (C:/ is Windows only).
+        let folder = std::env::temp_dir().to_string_lossy().to_string();
+        let options = Options { source: ".".into(), name: None, inputs: vec![("title".into(), "Hi".into()), ("capabilities.web.quick_link".into(), "true".into())], bindings: vec![("data".into(), folder.clone())], inputs_file: None, secrets_stdin: false, yes: true, allow_pc_access: false, dry_run: false, storage_drive: None };
         let collected = tokio::runtime::Runtime::new().unwrap().block_on(given_from(&checked, &options, None)).unwrap();
         assert_eq!(collected.inputs["title"], "Hi");
         assert_eq!(collected.capabilities["web.quick_link"], true);
-        assert_eq!(collected.bindings["data"], "C:/");
-        let wrong = Options { bindings: vec![("nothing".into(), "C:/".into())], ..options.clone() };
+        assert_eq!(collected.bindings["data"], folder);
+        let wrong = Options { bindings: vec![("nothing".into(), folder.clone())], ..options.clone() };
         assert!(tokio::runtime::Runtime::new().unwrap().block_on(given_from(&checked, &wrong, None)).unwrap_err().contains("has no binding nothing"));
         let missing = Options { bindings: vec![("data".into(), "C:/no/such/folder/for/sure".into())], ..options.clone() };
         assert!(tokio::runtime::Runtime::new().unwrap().block_on(given_from(&checked, &missing, None)).unwrap_err().contains("--binding data: There is no folder"));

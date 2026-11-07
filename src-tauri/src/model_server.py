@@ -1944,7 +1944,7 @@ def llama_json(path, body=None, timeout=30):
 # carried by GGUF and vLLM runners only and executed into this namespace before their first load.
 # Injected source must match the digest this server ships (a bundle's integrity is the catalog's,
 # re-hashed against its pin at every open); a server run from a source tree reads the file beside it.
-BACKENDS_SHA256 = "e8f4a879c1dec430c2fba625a2df2f98fad627e14f15aba5ed38068ee45bafd1"
+BACKENDS_SHA256 = "93db1a5e2d1b351397da0155a5e96102c9b1fc99726b89a60958a3ea7ec77995"
 
 
 def load_backends():

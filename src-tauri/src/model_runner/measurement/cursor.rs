@@ -8,6 +8,8 @@ use std::{
 };
 
 const MAX_CURSOR_BYTES: u64 = 131_072;
+/// How long a taken lock may still free up before the store is reported busy.
+const LOCK_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 pub(super) const MAX_ACTIVE: usize = 4096;
 
 pub(super) fn opaque_id(value: &str) -> bool {
@@ -93,7 +95,19 @@ impl CursorStore {
             options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
         let lock = options.open(lock_path).map_err(|_| CursorError::Storage)?;
-        lock.try_lock().map_err(|_| CursorError::Busy)?;
+        // A child this process spawned a moment ago still holds its open file descriptions,
+        // this lock among them, until it execs (close-on-exec), so on Unix the lock can look
+        // taken for an instant after its holder let go. Busy means held beyond that instant.
+        let started = std::time::Instant::now();
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_GRACE => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(_) => return Err(CursorError::Busy),
+            }
+        }
         let path = directory.join("cursor.json");
         regular_if_present(&path)?;
         let current = match File::open(&path) {
@@ -228,13 +242,13 @@ mod tests {
         next.instance_id = Some("b".repeat(32));
         first.commit(next.clone()).unwrap();
         drop(first);
-        let mut recovered = CursorStore::open(dir.path(), "env-1", &session).unwrap();
+        let mut recovered = open_settled(dir.path(), "env-1", &session).unwrap();
         assert_eq!(recovered.current(), &next);
         next.after = 2;
         assert_eq!(recovered.commit(next), Err(CursorError::Regression));
         drop(recovered);
         assert!(matches!(
-            CursorStore::open(dir.path(), "env-2", &session),
+            open_settled(dir.path(), "env-2", &session),
             Err(CursorError::Identity)
         ));
         fs::write(
@@ -243,8 +257,27 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            CursorStore::open(dir.path(), "env-1", &session),
+            open_settled(dir.path(), "env-1", &session),
             Err(CursorError::Invalid)
         ));
+    }
+
+    /// Opens once the dropped holder's lock is really gone. On Unix a child that a sibling
+    /// test spawned at that moment still holds this process's open file descriptions, the
+    /// lock's among them, until it execs; the store reports that as Busy for an instant.
+    fn open_settled(
+        directory: &Path,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<CursorStore, CursorError> {
+        let started = std::time::Instant::now();
+        loop {
+            match CursorStore::open(directory, environment_id, session_id) {
+                Err(CursorError::Busy) if started.elapsed() < std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                outcome => return outcome,
+            }
+        }
     }
 }

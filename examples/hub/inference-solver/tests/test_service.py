@@ -72,7 +72,8 @@ class Model(BaseHTTPRequestHandler):
             self.end_headers()
             chunks = [
                 {"model": data["model"], "choices": [{"delta": {"content": "hello"}, "index": 0}]},
-                {"model": data["model"], "choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}, "index": 0}]},
+                {"model": data["model"], "choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_fixture", "type": "function", "function": {"name": "noop", "arguments": "{"}}]}, "index": 0}]},
+                {"model": data["model"], "choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]}, "index": 0, "finish_reason": "tool_calls"}]},
                 {"choices": [], "usage": usage, **extra},
             ]
             for chunk in chunks:

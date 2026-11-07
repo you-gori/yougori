@@ -80,6 +80,7 @@ class Router:
         self.lock = threading.Lock()
         self.active = {}                   # replica id -> requests in flight
         self.slots = {}                    # replica id -> slots its computer reported
+        self.groups = {}                   # replica id -> (computer, requests it serves at once in total)
         self.remembered = OrderedDict()    # conversation -> (replica id, last use)
         self.cooling = {}                  # replica id -> time after which it is tried normally
         self.served = {}                   # replica id -> {"requests", "same", "failed"} since start
@@ -97,6 +98,13 @@ class Router:
             with self.lock:
                 self.slots[replica] = slots
 
+    def report_group(self, replica, group, capacity):
+        """A connector serves `capacity` requests at once across every model it shares: its
+        replicas are full together, whatever each model server's own slots."""
+        if type(capacity) is int and 1 <= capacity <= 256:
+            with self.lock:
+                self.groups[replica] = (group, capacity)
+
     def order(self, replicas, session):
         """The ready replicas to try for one request, best first (at most ATTEMPTS)."""
         now, clock = time.time(), time.monotonic()
@@ -104,11 +112,22 @@ class Router:
         if not ready:
             return []
         with self.lock:
+            load = {}
+            for member, (group, _) in self.groups.items():
+                load[group] = load.get(group, 0) + self.active.get(member, 0)
+
             def busy(replica):
                 return self.active.get(replica["id"], 0)
 
+            def share(replica):
+                """The replica's load as a share of what it can take: its own slots, or its
+                computer's capacity across models when that is the tighter limit."""
+                own = busy(replica) / self.slots.get(replica["id"], DEFAULT_SLOTS)
+                group = self.groups.get(replica["id"])
+                return max(own, load.get(group[0], 0) / group[1]) if group else own
+
             def full(replica):
-                return busy(replica) >= self.slots.get(replica["id"], DEFAULT_SLOTS)
+                return share(replica) >= 1
 
             def cool(replica):
                 return self.cooling.get(replica["id"], 0) > clock
@@ -124,7 +143,7 @@ class Router:
                 if first and full(first) and any(not full(r) and not cool(r) for r in ready if r is not first):
                     first = None
             rest = sorted((r for r in ready if r is not first),
-                          key=lambda r: (cool(r), full(r), busy(r) / self.slots.get(r["id"], DEFAULT_SLOTS), spread(r)))
+                          key=lambda r: (cool(r), full(r), share(r), spread(r)))
             chosen = ([first] if first else []) + rest
             return [dict(r, same=r is first) for r in chosen[:ATTEMPTS]]
 

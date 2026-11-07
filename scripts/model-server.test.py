@@ -1786,6 +1786,8 @@ class VllmRunnerTests(unittest.TestCase):
                 if saved:
                     os.environ["YOUGORI_MODEL_LAUNCH"] = saved
                 launches, during, pending = [], [], list(exits)
+                cache = Path(folder)/"cache"; (cache/"vllm-compile").mkdir(parents=True)  # graphs an earlier start compiled
+                stack.enter_context(patch.object(server, "CACHE", str(cache)))
                 def popen(args, **kwargs):
                     launches.append(list(args)); during.append(server.INFERENCE_QUEUE.slots)
                     return Mock(poll=Mock(return_value=1 if pending.pop(0) else None))
@@ -1806,6 +1808,96 @@ class VllmRunnerTests(unittest.TestCase):
                 self.assertEqual((during, server.INFERENCE_QUEUE.slots), ([1]*len(launched), int(launched[-1][0])))
                 self.assertEqual(server.STATE.get("servingFallback", "")[:28], "vLLM stopped while loading. " if len(launched) > 1 else "")
                 self.assertEqual(server.STATE["launch"], launched[-1][1])
+                # Both compiled launches failed: the compiled graphs are cleared for the next start.
+                cleared = any(mode(args) == E for args in launches)
+                self.assertEqual((cache/"vllm-compile").is_dir(), not cleared)
+                self.assertEqual("compiled graphs were cleared" in server.STATE.get("servingFallback", ""), cleared)
+                if not cleared:
+                    continue
+                # A parked engine that fell back wakes and still says eager; a launch changed meanwhile restarts.
+                stack.enter_context(patch.object(server, "llama_json", return_value={}))
+                self.assertTrue(server.vllm_park())
+                server.load_vllm()
+                self.assertEqual((len(launches), server.STATE["launch"]), (len(launched), E))
+                self.assertTrue(server.vllm_park())
+                os.environ["YOUGORI_MODEL_LAUNCH"] = E
+                pending.append(False)
+                server.load_vllm()
+                self.assertEqual((len(launches), server.STATE["launch"]), (len(launched) + 1, E))
+
+    def test_a_megakernel_launch_serves_through_its_host_or_falls_back_to_vllm(self):
+        # The saved launch "megakernel" with a runner starts the host (load_megakernel) on the
+        # verified checkpoint, skipping vLLM's registry and memory checks; when the host cannot
+        # serve, vLLM's own checks run and its launches follow, with why in health. Without a
+        # runner, or with adapters, the default launch serves.
+        for runner, adapters, served, launched in (("/yougori-runner", None, True, []), ("/yougori-runner", None, False, ["speculative"]),
+                                                   (None, None, None, ["speculative"]), ("/yougori-runner", (2, 16), None, ["compiled"])):
+            with self.subTest(runner=runner, adapters=adapters, served=served), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                root = Path(folder)/"mount"; root.mkdir()
+                fixture = local_vllm_startup(stack, root)
+                stack.enter_context(patch.object(server, "VLLM_PARKED", None)); stack.enter_context(patch.object(server, "VLLM_ROOT", None))
+                stack.enter_context(patch.object(server, "FORMAT", "vllm"))
+                stack.enter_context(patch.object(server, "MEGAKERNEL", None)); stack.enter_context(patch.object(server, "MEGAKERNEL_REFUSED", None))
+                stack.enter_context(patch.object(server, "adapter_limits", return_value=adapters))
+                stack.enter_context(patch.dict(os.environ, YOUGORI_MODEL_LAUNCH="megakernel"))
+                if runner: os.environ["YOUGORI_MODEL_RUNNER"] = runner
+                else: os.environ.pop("YOUGORI_MODEL_RUNNER", None)
+                calls = []
+                def load_megakernel(root_, config, revision):
+                    calls.append((root_, config["architectures"], revision))
+                    if served:
+                        server.MEGAKERNEL = {"serving": True, "name": "fixture"}
+                        server.STATE.update(status="ready", runner="megakernel", launch="megakernel", gpu="fixture GPU")
+                        return True
+                    server.MEGAKERNEL_REFUSED = "the check question went unanswered"
+                    server.STATE["megakernel"] = {"serving": False, "refused": server.MEGAKERNEL_REFUSED}
+                    return False
+                stack.enter_context(patch.object(server, "load_megakernel", load_megakernel))
+                server.load_vllm()
+                mode = lambda args: "eager" if "--enforce-eager" in args else "speculative" if "--speculative-config" in args else "compiled"
+                self.assertEqual([mode(call.args[0]) for call in fixture.spawn.call_args_list], launched)
+                self.assertEqual(len(calls), 1 if served is not None else 0)
+                if served:
+                    self.assertEqual(calls[0][0], os.path.realpath(root)); self.assertEqual(calls[0][2], fixture.revision)
+                    self.assertEqual(fixture.hardware.call_count, 0, "the runner's manifest states the GPU it needs")
+                    self.assertEqual((server.STATE["runner"], server.STATE["launch"]), ("megakernel", "megakernel"))
+                    self.assertEqual(fixture.admission.call_count, 1)
+                elif served is False:
+                    self.assertEqual(fixture.hardware.call_count, 1, "vLLM's memory check runs once it serves after all")
+                    self.assertEqual((server.STATE["runner"], server.STATE["launch"]), ("vllm", "speculative"))
+                    self.assertEqual(server.STATE["megakernel"]["refused"], "the check question went unanswered")
+                    self.assertIsNone(server.MEGAKERNEL)
+                else:
+                    self.assertEqual(fixture.hardware.call_count, 1)
+                    self.assertEqual(server.STATE["launch"], launched[0])
+                # A reload in the same process after a refusal goes straight to vLLM.
+                if served is False:
+                    server.gpu_release_memory()
+                    server.load_vllm()
+                    self.assertEqual(len(calls), 1); self.assertEqual(server.STATE["launch"], "speculative")
+
+    def test_a_megakernel_launch_has_no_adapters_or_kv_reuse_and_reports_the_runner(self):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(server, "FORMAT", "vllm")); stack.enter_context(patch.dict(server.STATE, status="ready"))
+            stack.enter_context(patch.object(server, "MEGAKERNEL", {"serving": True, "name": "fixture", "tokensPerSecond": 640.5}))
+            stack.enter_context(patch.dict(server.LLAMA, slots=1, pool=0, servingFallback=None))
+            stack.enter_context(patch.dict(os.environ, YOUGORI_VLLM_ADAPTERS="2:16"))
+            self.assertIsNone(server.adapter_limits(), "a megakernel launch serves no adapters whatever the owner saved")
+            with self.assertRaisesRegex(server.BackendRefusal, "megakernel launch serves no LoRA adapters"):
+                server.adapter_attach("a", "acme/adapter", "a" * 40)
+            self.assertEqual(server.kv_check({"action": "reset"})["slots"], 0)
+            capabilities = server.backend_capabilities()
+            self.assertFalse(capabilities["adapters"]["supported"]); self.assertFalse(capabilities["kvReuse"]["supported"])
+            self.assertEqual(capabilities["megakernel"]["tokensPerSecond"], 640.5)
+            self.assertEqual(server.backend_observation_start(), {}, "no vLLM metrics are read from the host")
+            self.assertFalse(server.vllm_park())
+        # vllm_launch keeps megakernel only with a runner and no adapters.
+        with patch.dict(os.environ, YOUGORI_MODEL_LAUNCH="megakernel", YOUGORI_MODEL_RUNNER="/yougori-runner"):
+            self.assertEqual(server.vllm_launch(False, None), "megakernel")
+            self.assertEqual(server.vllm_launch(False, (1, 8)), "compiled")
+            self.assertEqual(server.vllm_launch(True, None), "eager")
+            os.environ.pop("YOUGORI_MODEL_RUNNER")
+            self.assertEqual(server.vllm_launch(False, None), "speculative")
 
     def test_the_launch_mode_picks_cuda_graphs_and_compilation_speculation_or_eager(self):
         speculation = ["--speculative-config", server.NGRAM_SPECULATION]

@@ -134,8 +134,8 @@ pub fn methods() -> Vec<Method> {
     method!(model_api, "Enable or reconnect a model's authenticated localhost API and reveal its private API key to this user.", "environmentId:string port:port",json!({"environmentId":"env-ID","port":8000}),true,None);
     method!(
         model_optimizer,
-        "Read or configure automatic GPU memory, idle unloading, pinning and parallel requests (GGUF and vLLM, 1-16, applied at the next start). launch, given alone, sets how a vLLM model runs from its next start: speculative (the default: CUDA graphs, torch.compile and n-gram speculative decoding), compiled (no speculation) or eager (neither); a start that fails steps down from speculative to compiled, then to eager.",
-        "environmentId:string enabled?:bool pinned?:bool idleTimeoutSeconds?:number parallel?:number launch?:compiled|speculative|eager",
+        "Read or configure automatic GPU memory, idle unloading, pinning and parallel requests (GGUF and vLLM, 1-16, applied at the next start). launch, given alone, sets how a vLLM model runs from its next start: speculative (the default: CUDA graphs, torch.compile and n-gram speculative decoding), compiled (no speculation) or eager (neither); a start that fails steps down from speculative to compiled, then to eager. megakernel serves the checkpoint with the owner's own runner (runner: a folder with runner.json, or hf:OWNER/REPO@COMMIT; runner alone means megakernel) and falls back to vLLM when it cannot serve.",
+        "environmentId:string enabled?:bool pinned?:bool idleTimeoutSeconds?:number parallel?:number launch?:compiled|speculative|eager|megakernel runner?:string",
         json!({"environmentId":"env-ID","enabled":true,"idleTimeoutSeconds":120}),
         true,
         None

@@ -118,6 +118,12 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
     } else {
         options.environment.remove("YOUGORI_BACKENDS_SOURCE");
     }
+    // The megakernel host travels with the backends that can start it, for vLLM runners only.
+    if super::carries_megakernel(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str)) {
+        options.environment.insert("YOUGORI_MEGAKERNEL_SOURCE".into(), super::megakernel_source());
+    } else {
+        options.environment.remove("YOUGORI_MEGAKERNEL_SOURCE");
+    }
     options.environment.insert("YOUGORI_GPU_SOURCE".into(),source());
     if options.environment.get("YOUGORI_MODEL_CPU").is_some_and(|v|v == "1") {
         options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(),"0".into());
@@ -135,16 +141,20 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, launch: Option<String>, app: AppHandle) -> Result<Value, String> {
-    if let Some(mode) = launch {
-        // Saved on its own and applied at the next start; nothing is sent to the runner.
+pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, launch: Option<String>, runner: Option<String>, app: AppHandle) -> Result<Value, String> {
+    if launch.is_some() || runner.is_some() {
+        // Saved on its own and applied at the next start; nothing is sent to the runner. A
+        // runner given alone means the megakernel launch with it.
         if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() {
             return Err("Change the launch mode on its own, then the other settings.".into());
         }
+        let mode = launch.unwrap_or_else(|| "megakernel".into());
         let _admission = tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
             .map_err(|_| "GPU settings are busy. No changes were sent; retry after the current operation finishes.")?;
-        save_launch(&app, &environment_id, &mode)?;
-        return Ok(json!({"launch": mode, "restartRequired": true}));
+        let saved = save_launch(&app, &environment_id, &mode, runner.as_deref())?;
+        let mut result = json!({"launch": mode, "restartRequired": true});
+        if let Some(reference) = saved { result["runner"] = json!(reference); }
+        return Ok(result);
     }
     let _admission = if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() {
         Some(tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
@@ -232,12 +242,20 @@ fn save_parallel(app: &AppHandle, environment_id: &str, slots: u64) -> Result<()
 /// starts): "compiled" captures CUDA graphs and compiles the model with torch.compile,
 /// "speculative" (the default) adds n-gram speculative decoding, and "eager" runs it as launches
 /// did before 6 November 2026. A launch that fails to start steps down by itself: speculative to
-/// compiled, then to eager.
-const LAUNCHES: [&str; 3] = ["compiled", "speculative", "eager"];
+/// compiled, then to eager. "megakernel" serves the same checkpoint with the owner's own runner
+/// (`YOUGORI_MODEL_RUNNER`: a folder of theirs bound read-only at [`RUNNER_TARGET`], or a public
+/// Hugging Face repository `hf:OWNER/REPO@COMMIT`), and falls back to vLLM when the runner
+/// cannot serve (health says why).
+const LAUNCHES: [&str; 4] = ["compiled", "speculative", "eager", "megakernel"];
 
-fn save_launch(app: &AppHandle, environment_id: &str, mode: &str) -> Result<(), String> {
+/// Where a runner folder is bound in the model's container (engine_backends.py reads the
+/// reference from `YOUGORI_MODEL_RUNNER`).
+pub(crate) const RUNNER_TARGET: &str = "/yougori-runner";
+
+/// Saves the launch mode, and the runner when one is given; returns the saved runner reference.
+fn save_launch(app: &AppHandle, environment_id: &str, mode: &str, runner: Option<&str>) -> Result<Option<String>, String> {
     if !LAUNCHES.contains(&mode) {
-        return Err("The launch mode must be compiled, speculative or eager".into());
+        return Err("The launch mode must be compiled, speculative, eager or megakernel".into());
     }
     let state = app.state::<PlatformStore>().snapshot()?;
     let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
@@ -247,17 +265,74 @@ fn save_launch(app: &AppHandle, environment_id: &str, mode: &str) -> Result<(), 
     if let Some(refusal) = launch_refusal(&env.kind, &options.environment) {
         return Err(refusal.into());
     }
+    let reference = match runner.map(str::trim).filter(|reference| !reference.is_empty()) {
+        Some(reference) => Some(runner_reference(reference, env.kind == EnvironmentKind::Cloud)?),
+        None => None,
+    };
+    if mode == "megakernel" && reference.is_none() && !options.environment.contains_key("YOUGORI_MODEL_RUNNER") {
+        return Err("A megakernel launch needs its runner: --runner FOLDER (a folder with runner.json) or --runner hf:OWNER/REPO@COMMIT".into());
+    }
+    let saved = reference.as_ref().map(|reference| apply_runner(&mut options, reference));
     options.environment.insert("YOUGORI_MODEL_LAUNCH".into(), mode.into());
     super::mark_for_start(&mut options);
-    runtime.save_workload_options(&id, &options)
+    runtime.save_workload_options(&id, &options)?;
+    Ok(saved)
 }
 
-/// Why a model takes no launch mode from this engine, if it takes none: only vLLM runners in
-/// this engine's containers have one.
-fn launch_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>) -> Option<&'static str> {
-    if *kind == EnvironmentKind::Cloud {
-        return Some("A model on a cloud server runs with that server's own launch; change it where it runs.");
+/// A runner reference as the owner gives it.
+#[derive(Debug, PartialEq, Eq)]
+enum RunnerReference {
+    /// A folder on this computer holding runner.json, bound into the container.
+    Folder(String),
+    /// `hf:OWNER/REPO@COMMIT`, which the host downloads; the only kind a cloud pod takes.
+    Hub(String),
+}
+
+fn runner_reference(reference: &str, cloud: bool) -> Result<RunnerReference, String> {
+    if let Some(rest) = reference.strip_prefix("hf:") {
+        let part = |name: &str| !name.is_empty() && name.len() <= 96 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        let pinned = rest.split_once('@').filter(|(repo, commit)| {
+            repo.split_once('/').is_some_and(|(owner, name)| part(owner) && part(name))
+                && commit.len() == 40 && commit.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        });
+        return match pinned {
+            Some((repo, commit)) => Ok(RunnerReference::Hub(format!("hf:{repo}@{commit}"))),
+            None => Err("A Hugging Face runner reads hf:OWNER/REPO@COMMIT, the commit as its 40 hex characters".into()),
+        };
     }
+    if cloud {
+        return Err("A model on a Neocloud pod takes its runner from Hugging Face: --runner hf:OWNER/REPO@COMMIT".into());
+    }
+    let folder = std::fs::canonicalize(reference).map_err(|_| format!("The runner folder {reference} does not exist"))?;
+    if !folder.join("runner.json").is_file() {
+        return Err(format!("The runner folder {} has no runner.json", folder.display()));
+    }
+    let folder = folder.to_string_lossy().trim_start_matches(r"\\?\").to_owned();
+    Ok(RunnerReference::Folder(folder))
+}
+
+/// Puts the runner into the model's options: a folder as the one bind at [`RUNNER_TARGET`] (an
+/// earlier runner's bind goes), a repository as the reference itself. Returns what was saved.
+fn apply_runner(options: &mut Options, reference: &RunnerReference) -> String {
+    options.binds.retain(|bind| bind.target != RUNNER_TARGET);
+    let saved = match reference {
+        RunnerReference::Folder(folder) => {
+            options.binds.push(yougori_cli::workload::Volume { source: folder.clone(), target: RUNNER_TARGET.into(), read_only: true });
+            options.environment.insert("YOUGORI_MODEL_RUNNER".into(), RUNNER_TARGET.into());
+            folder.clone()
+        }
+        RunnerReference::Hub(reference) => {
+            options.environment.insert("YOUGORI_MODEL_RUNNER".into(), reference.clone());
+            reference.clone()
+        }
+    };
+    saved
+}
+
+/// Why a model takes no launch mode from this engine, if it takes none: only vLLM runners have
+/// one, in this engine's containers and on Neocloud pods (whose next start carries it).
+fn launch_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>) -> Option<&'static str> {
+    let _ = kind;
     if !environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|f| f == "vllm") {
         return Some("Only vLLM models have a launch mode; this model's runner runs one way.");
     }
@@ -1180,18 +1255,44 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
             ("failed".into(),json!({"status":"error","optimizer":{"pending":1,"waitingSince":0}}))];
         assert_eq!(demand(&rows).unwrap().0,"old");
     }
-    #[test] fn only_container_vllm_runners_take_a_launch_mode() {
+    #[test] fn only_vllm_runners_take_a_launch_mode() {
         let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])), None);
         for format in ["gguf", "safetensors"] {
             assert!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", format)])).unwrap().contains("Only vLLM"));
         }
         assert!(launch_refusal(&EnvironmentKind::Container, &options(&[])).is_some());
-        assert!(launch_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])).unwrap().contains("cloud server"));
+        // A Neocloud pod's next start carries the launch (neocloud.rs forwards it to the pod).
+        assert_eq!(launch_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])), None);
         // The modes engine_backends.py reads, in the same order.
         let backends = include_str!("engine_backends.py");
-        assert_eq!(backends.matches("VLLM_LAUNCHES = (\"compiled\", \"speculative\", \"eager\")").count(), 1);
-        assert_eq!(LAUNCHES, ["compiled", "speculative", "eager"]);
+        assert_eq!(backends.matches("VLLM_LAUNCHES = (\"compiled\", \"speculative\", \"eager\", \"megakernel\")").count(), 1);
+        assert_eq!(LAUNCHES, ["compiled", "speculative", "eager", "megakernel"]);
+    }
+    #[test] fn a_runner_reference_is_a_folder_with_a_manifest_or_a_pinned_hugging_face_repository() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(runner_reference(&format!("hf:acme/fast-qwen@{commit}"), true), Ok(RunnerReference::Hub(format!("hf:acme/fast-qwen@{commit}"))));
+        for bad in ["hf:acme/fast-qwen", "hf:acme/fast-qwen@main", "hf:acme@0123456789abcdef0123456789abcdef01234567", "hf:/x@0123456789abcdef0123456789abcdef01234567",
+                    &format!("hf:acme/fast-qwen@{}", commit.to_uppercase())] {
+            assert!(runner_reference(bad, false).unwrap_err().contains("hf:OWNER/REPO@COMMIT"), "{bad}");
+        }
+        let folder = tempfile::tempdir().unwrap();
+        assert!(runner_reference(folder.path().to_str().unwrap(), false).unwrap_err().contains("no runner.json"));
+        std::fs::write(folder.path().join("runner.json"), "{}").unwrap();
+        let RunnerReference::Folder(saved) = runner_reference(folder.path().to_str().unwrap(), false).unwrap() else { panic!("a folder") };
+        assert!(!saved.starts_with(r"\\?\") && std::path::Path::new(&saved).join("runner.json").is_file(), "{saved}");
+        assert!(runner_reference(folder.path().to_str().unwrap(), true).unwrap_err().contains("Neocloud pod"), "a pod takes no folder");
+        assert!(runner_reference(&folder.path().join("missing").to_string_lossy(), false).unwrap_err().contains("does not exist"));
+        // Applied: a folder is the one bind at the runner target and the reference its path there;
+        // a repository replaces an earlier folder's bind.
+        let mut options = Options::default();
+        assert_eq!(apply_runner(&mut options, &RunnerReference::Folder(saved.clone())), saved);
+        assert_eq!(options.binds.len(), 1);
+        assert_eq!((options.binds[0].target.as_str(), options.binds[0].read_only), (RUNNER_TARGET, true));
+        assert_eq!(options.environment["YOUGORI_MODEL_RUNNER"], RUNNER_TARGET);
+        apply_runner(&mut options, &RunnerReference::Hub(format!("hf:acme/fast-qwen@{commit}")));
+        assert!(options.binds.is_empty());
+        assert_eq!(options.environment["YOUGORI_MODEL_RUNNER"], format!("hf:acme/fast-qwen@{commit}"));
     }
     #[test] fn only_container_gguf_and_vllm_runners_take_a_parallel_setting() {
         let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::BTreeMap<_, _>>();

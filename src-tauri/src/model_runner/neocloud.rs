@@ -120,6 +120,11 @@ async fn launch(model: String, compatibility: Value, environment_id: String, por
     runtime.save_workload_options(id, &options)?;
     let mut run = json!({"model":model,"token":token,"adminToken":admin,"hfToken":hf_token,"revision":compatibility["revision"],"format":format,"source":super::server_source()});
     if let Some(parser) = compatibility["toolParser"].as_str() { run["toolParser"] = json!(parser); }
+    // The launch mode and megakernel runner saved for this model (optimizer::save_launch) go
+    // with the start: the pod keeps them in its configuration and exports them to its server.
+    for (name, key) in [("YOUGORI_MODEL_LAUNCH", "launch"), ("YOUGORI_MODEL_RUNNER", "runner")] {
+        if let Some(value) = options.environment.get(name).filter(|_| format == "vllm") { run[key] = json!(value); }
+    }
     // The helpers the rollout serves this pod's runner (G08 remote delivery): the pod writes
     // the opened bundles under its own helpers directory; the start is recorded like a local
     // runner's. A selection the rollout refuses is this run's error; an unavailable journal

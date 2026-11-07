@@ -187,8 +187,11 @@ pub struct PublicationsView {
     /// The services the launch declared.
     pub declared: Vec<PublishedPort>,
     pub publications: Vec<PublicationView>,
-    /// What the sandbox's publications released so far, of [`PUBLISHED_RESPONSE_BYTES`].
+    /// What the sandbox's publications released so far, of `release_bound_bytes`.
     pub released_bytes: u64,
+    /// What they may release in all: VM-D12's [`PUBLISHED_RESPONSE_BYTES`], or an owner
+    /// session's [`OWNER_SESSION_RELEASE_BYTES`].
+    pub release_bound_bytes: u64,
 }
 
 /// What one pump of every session and connection did.
@@ -838,13 +841,17 @@ impl Publications {
                 sessions_admitted: status.sessions_admitted,
             })
             .collect();
-        let released_bytes = self.releases.get(sandbox).map_or(0, |account| {
-            account.used_bytes(ReleaseChannel::PublishedServiceResponse)
-        });
+        let (released_bytes, release_bound_bytes) = self
+            .releases
+            .get(sandbox)
+            .map_or((0, PUBLISHED_RESPONSE_BYTES), |account| {
+                (account.used_bytes(ReleaseChannel::PublishedServiceResponse), account.bound_bytes())
+            });
         PublicationsView {
             declared,
             publications,
             released_bytes,
+            release_bound_bytes,
         }
     }
 }

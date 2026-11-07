@@ -3,6 +3,7 @@ real website HTTP, SQLite and disposable model servers. No GPU.
 
 Run: python -I -B examples/hub/inference-solver/tests/test_routing.py
 """
+import base64
 import hashlib
 from http.server import ThreadingHTTPServer
 import json
@@ -126,7 +127,7 @@ class RoutingFlow(Flow):
         self.assertEqual(sum(1 for e, c in self.served(servers).items() if c != before[e]), 1)
         self.assertFalse(any("metadata" in call or "prompt_cache_key" in call for server in servers.values() for call in server.calls))
 
-    def test_a_failing_server_is_skipped_before_anything_is_sent_and_refusals_are_not_retried(self):
+    def test_a_failing_server_is_skipped_before_anything_is_sent_and_a_refusal_is_tried_on_the_other_replica(self):
         servers = self.two_replicas()
         broken = next(iter(servers.values()))
         broken.broken = True
@@ -145,9 +146,12 @@ class RoutingFlow(Flow):
         self.assertEqual(len(cooling), 1)
         broken.broken = False
         calls = sum(len(s.calls) for s in servers.values())
+        # A refusal (a prompt longer than one replica's context) is tried on the other replica, which
+        # may have a longer context; it is the caller's answer when both refuse, and neither cools.
         status, body, _ = self.call("/v1/chat/completions", self.completion("test/one", content="refuse"), key=key)
         self.assertEqual(status, 400, body)
-        self.assertEqual(sum(len(s.calls) for s in servers.values()), calls + 1)
+        self.assertEqual(sum(len(s.calls) for s in servers.values()), calls + 2)
+        self.assertEqual(sum(r["failed"] for r in self.call("/api/admin/control", session=self.admin)[1]["routing"]), 1)  # The earlier failure only.
         for server in servers.values():
             server.broken = True
         status, body, _ = self.call("/v1/chat/completions", self.completion("test/one"), key=key)
@@ -179,6 +183,18 @@ class RoutingFlow(Flow):
         self.assertNotEqual(router.order(replicas, "conversation")[0]["id"], first[0]["id"])  # Failed: cooling.
         stale = [dict(r, checked=now - 120) for r in replicas]
         self.assertEqual(router.order(stale, "conversation"), [])
+        # A connector's capacity is across its models: with one request in flight on one of its two
+        # shared models, both of its replicas are full, and another computer's replica goes first.
+        grouped = routing.Router()
+        grouped.report_group("a", "pc", 1)
+        grouped.report_group("b", "pc", 1)
+        grouped.begin("a")
+        self.assertEqual(grouped.order(replicas, "fresh")[0]["id"], "c")
+        grouped.begin("c")
+        grouped.report_slots("c", 1)
+        self.assertEqual(grouped.order(replicas, "fresh")[0]["id"], "c")  # All full: the least loaded share.
+        grouped.end("a")
+        self.assertIn(grouped.order(replicas, "fresh")[0]["id"], ("a", "b"))
         self.assertEqual(routing.cached_tokens({"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 12}}), 10)
         self.assertEqual(routing.cached_tokens({"prompt_tokens": 10}, {"cache_n": 4}), 4)
         self.assertIsNone(routing.cached_tokens({"prompt_tokens": 10}))
@@ -338,25 +354,136 @@ class RoutingFlow(Flow):
         work.unclaim(["r0", "r1"])  # Only the unacknowledged one returns to the queue.
         self.assertEqual(self.agent(token, "poll")[1]["inference"]["id"], "r1")
         self.assertTrue(work.requests["r0"]["claimed"])
+        # A request in progress is never dropped for its age; an unclaimed one leaves the queue.
+        for name, claimed in (("old-claimed", True), ("old-queued", False)):
+            response = compute.Response()
+            response.expires = time.monotonic() - 1
+            work.requests[name] = {"host": host["id"], "environment": "env-one", "payload": {}, "response": response,
+                                   "claimed": claimed, "via": "poll" if claimed else None, "claimed_at": time.monotonic() if claimed else None, "acked": claimed}
+        with work.lock:
+            self.assertEqual([task["id"] for task in work.claim(host["id"], "poll", 8)], ["r2"])
+        self.assertEqual(set(work.requests) - {"r0", "r1", "r2"}, {"old-claimed"})
+        # A chunk uploaded twice (the connector retried after a lost reply) counts once.
+        request = work.requests["old-claimed"]
+        chunk = {"id": "old-claimed", "sequence": 0, "status": 200, "data": base64.b64encode(b"hello").decode()}
+        self.assertTrue(work.chunk(host, chunk))
+        self.assertTrue(work.chunk(host, chunk))
+        self.assertEqual((request["response"].sequence, request["response"].total), (1, 5))
+        with self.assertRaises(compute.ComputeInput):
+            work.chunk(host, {**chunk, "sequence": 2})
         work.requests.clear()
         self.assertEqual(self.agent(token, "stream", capacity=0)[0], 400)
         link = compute_node.Link(self.url)
         stopped = threading.Event()
         results = []
-        older = threading.Thread(target=lambda: results.append(compute_node.receive(link, token, lambda task: None, stopped)), daemon=True)
+
+        def receive():
+            try:
+                results.append(compute_node.receive(link, token, lambda task: None, stopped))
+            except compute_node.Replaced:
+                results.append("replaced")
+
+        older = threading.Thread(target=receive, daemon=True)
         older.start()
         for _ in range(200):
             if work.generations.get(host["id"]) == 1:
                 break
             time.sleep(.01)
-        newer = threading.Thread(target=lambda: results.append(compute_node.receive(link, token, lambda task: None, stopped)), daemon=True)
+        newer = threading.Thread(target=receive, daemon=True)
         newer.start()
         older.join(5)
-        self.assertEqual(results, [True])  # The older stream ended cleanly when the newer one began.
+        # The older connector is told that another one replaced it, so the two do not take turns forever.
+        self.assertEqual(results, ["replaced"])
         work.revoke("test", host["id"])
         newer.join(5)
-        self.assertEqual(results, [True, True])
+        self.assertEqual(results, ["replaced", True])  # A disconnected computer's stream just ends.
         stopped.set()
+
+    def test_a_caller_waits_in_the_queue_and_then_for_the_answer_separately(self):
+        token = self.pair_node()
+        self.agent(token, "inventory", models=[{"id": "env-one", "name": "test/one", "state": "ready", "shared": True}])
+        host = self.service.compute.host(token)
+        work = self.service.compute
+        with patch.object(compute, "QUEUE_SECONDS", .4), patch.object(compute, "ANSWER_SECONDS", 10):
+            started = time.monotonic()
+            with self.assertRaises(compute.UpstreamError) as refused:
+                work.connect("compute://" + host["id"] + "/env-one", {})
+            self.assertEqual(refused.exception.status, 504)
+            self.assertLess(time.monotonic() - started, 3)
+        with patch.object(compute, "QUEUE_SECONDS", 10), patch.object(compute, "ANSWER_SECONDS", .4):
+            taken = threading.Event()
+
+            def take():
+                while not work.poll(host).get("inference"):
+                    time.sleep(.02)
+                taken.set()
+
+            threading.Thread(target=take, daemon=True).start()
+            started = time.monotonic()
+            with self.assertRaises(compute.UpstreamError) as refused:
+                work.connect("compute://" + host["id"] + "/env-one", {})
+            self.assertEqual(refused.exception.status, 504)
+            self.assertTrue(taken.is_set())
+            self.assertLess(time.monotonic() - started, 3)
+        self.assertFalse(work.requests)
+
+    def test_the_connector_program_takes_queued_work_as_slots_free_and_stops_when_replaced(self):
+        """The connector as contributors run it (main), against the website and the fixture model."""
+        from concurrent.futures import ThreadPoolExecutor
+        import os
+        token = self.pair_node()
+        server, model_url = self.url, self.model_url
+        home = Path(self.temp.name) / "home"
+        folder = home / "InferenceSolver" / ("node-" + hashlib.sha256(server.encode()).hexdigest()[:16])
+        folder.mkdir(parents=True)
+        (folder / "credential").write_text(token, encoding="utf-8")
+
+        class FakeAdapter(Adapter):
+            def inventory(self):
+                return {"platform": "test", "models": [{"id": "env-one", "name": "test/one", "state": "ready", "shared": True, "slots": 4}], "detail": ""}
+
+            def share(self, environment, enabled=True):
+                self.shared.add(environment)
+                self.apis[environment] = {"apiUrl": model_url, "apiKey": UPSTREAM_KEY, "model": "test/one"}
+
+        answers = iter(["1", "n"])
+        outcome = []
+
+        def run():
+            try:
+                compute_node.main(server)
+            except BaseException as error:  # noqa: the connector reports its own ending
+                outcome.append(error)
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(home)}), patch.object(compute_node, "executable", lambda: "unused"), \
+                patch.object(compute_node, "Adapter", FakeAdapter), patch.object(compute_node, "CAPACITY", 1), \
+                patch("builtins.input", lambda prompt="": next(answers)), patch("sys.argv", ["compute_node.py"]):
+            connector = threading.Thread(target=run, daemon=True)
+            connector.start()
+            for _ in range(500):
+                if self.service.compute.generations and self.service.router.groups:
+                    break
+                time.sleep(.02)
+            self.assertTrue(self.service.compute.generations, outcome)
+            self.assertEqual(list(self.service.router.groups.values()), [(self.service.compute.host(token)["id"], 1)])
+            key = self.key()["key"]
+            # Three callers at once on a computer that serves one request at a time: each is handed
+            # over the moment the previous one finishes, while the connector is still freeing its slot.
+            with ThreadPoolExecutor(3) as pool:
+                results = list(pool.map(lambda index: self.call("/v1/chat/completions", self.completion("test/one", stream=index != 1, content=f"Opening {index}"), key=key), range(3)))
+            self.assertEqual([status for status, _, _ in results], [200, 200, 200], results)
+            self.assertFalse(self.service.compute.requests)
+            # A second connector with the same credential: the first one stops and says why.
+            stopped = threading.Event()
+            second = threading.Thread(target=lambda: compute_node.receive(compute_node.Link(server), token, lambda task: None, stopped), daemon=True)
+            second.start()
+            connector.join(10)
+            self.assertFalse(connector.is_alive())
+            self.assertIsInstance(outcome[0], compute_node.Replaced)
+            self.assertIn("Another connector is running", str(outcome[0]))
+            stopped.set()
+            self.service.compute.revoke("test", self.service.compute.host(token)["id"])
+            second.join(5)
 
 
 def load_tests(loader, tests, pattern):

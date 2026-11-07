@@ -179,6 +179,19 @@ fn launch_cpu_count(params: &Value) -> Result<u64, String> {
     }
 }
 
+/// The host memory a launch reserves, in GiB (`memoryGb`; 1 unless given). A value that is
+/// not a positive number is refused rather than read as the default: a launch asked for
+/// `"8"` must not start a 1 GiB VM.
+fn launch_memory_gb(params: &Value) -> Result<f64, String> {
+    match params.get("memoryGb") {
+        None | Some(Value::Null) => Ok(1.0),
+        Some(value) => value
+            .as_f64()
+            .filter(|memory_gb| memory_gb.is_finite() && *memory_gb > 0.0)
+            .ok_or_else(|| "memoryGb must be a positive number of gigabytes.".to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod launch_resource_tests {
     use super::*;
@@ -190,6 +203,20 @@ mod launch_resource_tests {
             assert!(launch_cpu_count(&json!({"cpu":value})).is_err());
         }
         assert_eq!(launch_cpu_count(&json!({"gpu":true})).is_ok(), cfg!(windows));
+    }
+
+    #[test]
+    fn memory_that_is_not_a_positive_number_is_refused_rather_than_defaulted() {
+        assert_eq!(launch_memory_gb(&json!({})).unwrap(), 1.0);
+        assert_eq!(launch_memory_gb(&json!({"memoryGb": null})).unwrap(), 1.0);
+        assert_eq!(launch_memory_gb(&json!({"memoryGb": 4})).unwrap(), 4.0);
+        assert_eq!(launch_memory_gb(&json!({"memoryGb": 0.5})).unwrap(), 0.5);
+        for value in [json!("8"), json!(0), json!(-1), json!(true), json!([8]), json!({})] {
+            assert_eq!(
+                launch_memory_gb(&json!({"memoryGb": value})).unwrap_err(),
+                "memoryGb must be a positive number of gigabytes."
+            );
+        }
     }
 }
 
@@ -1479,6 +1506,14 @@ impl Production {
             }
         };
         self.previews.start_pump(host);
+        // What the service applied, not what was asked: an owner session's publication gets
+        // the session's whole release account (vm_service::OWNER_SESSION_RELEASE_BYTES).
+        let after = self.service.publications(sandbox);
+        let applied_budget = after
+            .publications
+            .iter()
+            .find(|view| view.publication == publication)
+            .map_or(budget_bytes, |view| view.response_budget.limit_bytes);
         Ok(json!({
             "sandbox": sandbox,
             "publication": publication,
@@ -1489,9 +1524,9 @@ impl Production {
             "url": opened.url,
             "port": opened.port,
             "expires_in_seconds": lifetime.as_secs(),
-            "response_budget_bytes": budget_bytes,
+            "response_budget_bytes": applied_budget,
             "released_so_far_bytes": before.released_bytes,
-            "release_bound_bytes": crate::sandbox::vm_service::PUBLISHED_RESPONSE_BYTES,
+            "release_bound_bytes": after.release_bound_bytes,
         }))
     }
 
@@ -3390,10 +3425,7 @@ async fn launch_from(app: &AppHandle, production: &Arc<Production>, params: Valu
         let cpu_count = launch_cpu_count(&params)?;
         let gpu = params.get("gpu").and_then(Value::as_bool).unwrap_or(false);
         let grid_hosting = grid_hosting::selected(&params)?;
-        let memory_gb = params.get("memoryGb").and_then(Value::as_f64).unwrap_or(1.0);
-        if !memory_gb.is_finite() || memory_gb <= 0.0 {
-            return Err("memoryGb must be a positive number of gigabytes.".to_owned());
-        }
+        let memory_gb = launch_memory_gb(&params)?;
         if gpu && memory_gb < 4.0 { return Err("GPU VMs require at least 4 GB of memory.".into()); }
         let memory_bytes = (memory_gb * (1u64 << 30) as f64) as u64;
         if memory_bytes < LEAST_LAUNCH_MEMORY_BYTES || memory_bytes > MAX_LAUNCH_MEMORY_BYTES {

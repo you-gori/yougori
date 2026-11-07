@@ -206,7 +206,7 @@ fn remote_file_bundle_preserves_sources_and_fits_its_distinct_transport_limit() 
     // The remote model.py guard counts Python str characters, not UTF-8 bytes.
     let source = server_source();
     assert!(source.chars().count() <= 262144);
-    let mut parts = source.splitn(5, '\n');
+    let mut parts = source.splitn(6, '\n');
     for (name, expected) in [
         (
             "__YOUGORI_GPU_SOURCE__",
@@ -226,6 +226,14 @@ fn remote_file_bundle_preserves_sources_and_fits_its_distinct_transport_limit() 
             "__YOUGORI_BACKENDS_SOURCE__",
             include_str!("engine_backends.py")
                 .replace("\r\n", "\n")
+                .into_bytes(),
+        ),
+        (
+            "__YOUGORI_MEGAKERNEL_SOURCE__",
+            include_str!("megakernel_host.py")
+                .replace("
+", "
+")
                 .into_bytes(),
         ),
     ] {

@@ -162,6 +162,25 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(result['format'],'vllm');self.assertEqual(result['installVllm'],'1')
         self.assertEqual(json.loads((self.runner.root_dir()/'config.json').read_text())['format'],'vllm')
 
+    def test_launch_mode_and_megakernel_runner_are_checked_persisted_and_injected(self):
+        commit = '0123456789abcdef0123456789abcdef01234567'
+        for body in ({'launch': 'megakernel'}, {'format': 'vllm', 'launch': 'turbo'}, {'format': 'vllm', 'runner': 'C:/kernels/mine'},
+                     {'format': 'vllm', 'runner': 'hf:acme/fast-qwen'}, {'format': 'vllm', 'runner': 'hf:acme/fast-qwen@main'}):
+            with self.assertRaises(ValueError):
+                self.runner.request('run', {**self.body, **body})
+        self.assertFalse(self.runner.running(self.runner.root_dir()))
+        self.body.update(format='vllm', launch='megakernel', runner='hf:acme/fast-qwen@' + commit)
+        self.body['source'] = SERVER.replace("'status':'ready'", "'status':'ready', 'launch':os.environ.get('YOUGORI_MODEL_LAUNCH'), 'runner':os.environ.get('YOUGORI_MODEL_RUNNER')")
+        self.assertEqual(self.runner.request('run', self.body), {'reused': False})
+        ready = self.ready()
+        self.assertEqual((ready['launch'], ready['runner']), ('megakernel', 'hf:acme/fast-qwen@' + commit))
+        saved = json.loads((self.runner.root_dir() / 'config.json').read_text())
+        self.assertEqual((saved['launch'], saved['runner']), ('megakernel', 'hf:acme/fast-qwen@' + commit))
+        # The same launch reuses the running server; another launch needs a stop first.
+        self.assertEqual(self.runner.request('run', self.body), {'reused': True})
+        with self.assertRaisesRegex(ValueError, 'another launch'):
+            self.runner.request('run', {**self.body, 'launch': 'speculative', 'runner': None})
+
     def test_agent_tool_parser_is_allow_listed_persisted_and_injected(self):
         with self.assertRaisesRegex(ValueError, 'Unsupported tool-call parser'):
             self.runner.request('run', {**self.body, 'format': 'vllm', 'toolParser': 'unreviewed'})

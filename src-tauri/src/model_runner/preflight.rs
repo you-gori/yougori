@@ -129,7 +129,9 @@ pub(crate) fn gguf_choice(files:&[Value],quant:Option<&str>)->Result<Option<(Str
     let mut matching=candidates.iter().filter(|(_,l,_)|*l==label).collect::<Vec<_>>();
     matching.sort_by_key(|(name,_,_)|*name);
     let (first,_,_)=matching[0];
-    let split=first.rsplit_once("-of-").filter(|(head,tail)|tail.len()==10&&tail.ends_with(".gguf")&&head.len()>=6&&head[head.len()-5..].bytes().all(|b|b.is_ascii_digit()));
+    // Checked on bytes: a file name from the repository may hold a multibyte character right
+    // before the part number, where a string slice would panic on the character boundary.
+    let split=first.rsplit_once("-of-").filter(|(head,tail)|tail.len()==10&&tail.ends_with(".gguf")&&head.len()>=6&&head.as_bytes()[head.len()-5..].iter().all(u8::is_ascii_digit));
     let chosen=match split{
         Some((head,tail))=>{let prefix=&head[..head.len()-5];matching.iter().filter(|(name,_,_)|name.starts_with(prefix)&&name.ends_with(tail)).map(|(_,_,f)|(*f).clone()).collect::<Vec<_>>()}
         None=>vec![(*matching[0].2).clone()],
@@ -399,6 +401,11 @@ pub async fn model_support_task(model:String,agent:String,quant:Option<String>)-
         assert_eq!((label.as_str(),chosen[0]["rfilename"].as_str()),("Q8_0",Some("x-Q8_0.gguf")));
         assert!(gguf_choice(&files,Some("Q2_K")).unwrap_err().contains("IQ4_XS, Q4_K_M, Q8_0"));
         assert!(gguf_choice(&[file("model.safetensors",1)],None).unwrap().is_none());
+        // A two-byte character where the five-digit part number would start must not panic
+        // the choice (the repository names its files): the name is simply not a split part.
+        let odd=vec![file("x-Q4_K_M-\u{e9}1234-of-00002.gguf",8)];
+        let (odd_label,odd_chosen)=gguf_choice(&odd,None).unwrap().unwrap();
+        assert_eq!((odd_label.as_str(),odd_chosen.len()),("Q4_K_M",1));
         let result=inspect_gguf("ressl/x-GGUF",&json!({"sha":"b".repeat(40),"pipeline_tag":"text-generation"}),&label,&chosen);
         assert_eq!(result["runner"],"yougori-llama-cpp");
         assert_eq!(result["files"][0]["size"],30);
