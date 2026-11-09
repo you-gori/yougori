@@ -15,6 +15,7 @@ import threading
 import time
 
 DEFAULT_SLOTS = 8          # Requests one model server generates together (Yougori's vLLM default).
+MEDIA_TASKS = ("text-to-image", "image-to-image", "text-to-video", "image-to-video", "text-to-audio", "text-to-speech")
 REMEMBER_SECONDS = 1800    # How long a conversation's replica is remembered between turns.
 REMEMBER_LIMIT = 20000     # Conversations remembered at most; the oldest are forgotten first.
 COOL_SECONDS = 30          # A replica that failed is tried after the others for this long.
@@ -89,9 +90,26 @@ class Router:
     def replicas(store, model):
         """Every replica of a model name, ready or not, with the connection each one uses."""
         with store.db() as db:
-            rows = db.execute("SELECT m.id,m.upstream,e.id AS endpoint,e.name AS source,e.url,e.secret,e.state,e.checked "
-                              "FROM models m JOIN endpoints e ON e.id=m.endpoint_id WHERE m.upstream=? ORDER BY m.id", (model,)).fetchall()
+            rows = db.execute("SELECT m.id,m.upstream,e.id AS endpoint,e.name AS source,e.url,e.secret,e.state,e.checked,f.json,t.task "
+                              "FROM models m JOIN endpoints e ON e.id=m.endpoint_id LEFT JOIN model_features f ON f.id=m.id "
+                              "LEFT JOIN model_tasks t ON t.id=m.id WHERE m.upstream=? ORDER BY m.id", (model,)).fetchall()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def enforcing_json(replicas):
+        """The replicas that can serve a request asking for a JSON reply format: those whose
+        server enforces it, and those that did not say (a server connected by address)."""
+        return [r for r in replicas if r.get("json") != 0]
+
+    @staticmethod
+    def media_replicas(replicas):
+        """The replicas whose server generates media (images, video, sound, speech): they take
+        jobs, one at a time, and chat replicas of the same name are not among them."""
+        return [r for r in replicas if r.get("task") in MEDIA_TASKS]
+
+    @staticmethod
+    def chat_replicas(replicas):
+        return [r for r in replicas if r.get("task") not in MEDIA_TASKS]
 
     def report_slots(self, replica, slots):
         if type(slots) is int and 1 <= slots <= 256:

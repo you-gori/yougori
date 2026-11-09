@@ -1,7 +1,7 @@
 import type { ModelRun } from "@/api/projects-api"
 
 /** Options describe the running model server: public links and streaming change what callers can do. */
-export function modelApiSkill(model: Pick<ModelRun, "model" | "apiUrl">, options: { public?: boolean; streaming?: boolean; apiKey?: string } = {}): string {
+export function modelApiSkill(model: Pick<ModelRun, "model" | "apiUrl">, options: { public?: boolean; streaming?: boolean; apiKey?: string; json?: boolean } = {}): string {
   const credentials = options.apiKey
     ? `API key: ${options.apiKey}
 
@@ -11,9 +11,11 @@ The user included this key on purpose. Send it as the bearer token and keep it o
   const where = options.public
     ? "This is a public HTTPS address: it works from any computer, container or online agent. It lasts while Yougori and the model environment keep running; if it stops working, ask the user for the current link."
     : "Run requests on the PC hosting Yougori. Localhost inside another container or on an online agent is not this PC."
-  const fields = options.streaming
+  // The launch enforces a JSON reply format (health's structuredOutput): say how to ask for it.
+  const fields = (options.streaming
     ? "Supported fields: model, messages, max_tokens (1–4096), temperature (0–2), stream. With stream:true the reply arrives as OpenAI-style server-sent events (chat.completion.chunk) ending with data: [DONE]."
-    : "This model is non-streaming; use stream:false. Supported fields: model, messages, max_tokens (1–2048), temperature (0–2), stream."
+    : "This model is non-streaming; use stream:false. Supported fields: model, messages, max_tokens (1–2048), temperature (0–2), stream.")
+    + (options.json ? ' response_format asks for JSON: {"type": "json_object"} for any object, or {"type": "json_schema", "json_schema": {"name": ..., "schema": ..., "strict": true}} for a shape; the server holds the reply to it.' : "")
   return `---
 name: yougori-model-api
 description: Call the user's Yougori Hugging Face model for text generation through its authenticated OpenAI-compatible chat API.

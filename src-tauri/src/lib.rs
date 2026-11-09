@@ -145,6 +145,66 @@ fn relocated_app_storage(previous_storage: &std::path::Path, current_app_data: &
     (!previous_app_data.exists() && relocated.exists()).then_some(relocated)
 }
 
+/// A VM whose unfinished disk restore could not be checked or finished at startup: its runtime
+/// id, why (already safe to show), and whether a restore intent is still recorded for it.
+pub(crate) struct UnfinishedRestore {
+    runtime_id: String,
+    reason: String,
+    intent_kept: bool,
+}
+
+/// Finishes the VM disk restores a previous run left unfinished: rolls back a restore whose
+/// state never committed (its intent is recorded) and finalizes one whose state did. A VM whose
+/// storage drive is unavailable (unplugged, a changed drive letter, a locked BitLocker drive), or
+/// whose restore can't be finished now, is skipped with a logged warning and returned to be
+/// marked as needing attention; its intent stays recorded, so the restore is finished at the next
+/// start with the drive back. Starts are refused while a restore is pending, so nothing runs on
+/// a half-restored disk meanwhile. One environment's drive never stops Yougori from starting.
+pub(crate) fn finish_unfinished_vm_restores(runtime: &runtime::RuntimeManager, state: &mut models::PlatformState) -> Vec<UnfinishedRestore> {
+    let restore_intents = state.pending_vm_restores.iter().cloned().collect::<HashSet<_>>();
+    let mut candidates = restore_intents.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    candidates.extend(
+        state
+            .environments
+            .iter()
+            .filter(|environment| environment.provider == Some(models::RuntimeProviderKind::Qemu))
+            .map(|environment| environment.runtime_id.clone().unwrap_or_else(|| environment.id.clone())),
+    );
+    let mut unfinished = Vec::new();
+    for environment_id in candidates {
+        let intent = restore_intents.contains(&environment_id);
+        let finished = runtime.has_pending_vm_backup_install(&environment_id).and_then(|pending| match (pending, intent) {
+            (false, _) => Ok(()),
+            (true, true) => tauri::async_runtime::block_on(runtime.rollback_vm_backup_install(&environment_id)),
+            (true, false) => tauri::async_runtime::block_on(runtime.finalize_vm_backup_install(&environment_id)),
+        });
+        if let Err(error) = finished {
+            let reason = lifecycle::safe_diagnostic(&error);
+            eprintln!("Startup skipped the disk restore check of VM {environment_id}: {reason}");
+            unfinished.push(UnfinishedRestore { runtime_id: environment_id, reason, intent_kept: intent });
+        }
+    }
+    // Every other intent was settled above (or had nothing left to settle).
+    state.pending_vm_restores.retain(|id| unfinished.iter().any(|skipped| skipped.intent_kept && &skipped.runtime_id == id));
+    unfinished
+}
+
+/// Marks each environment `finish_unfinished_vm_restores` skipped as needing attention, saying why
+/// and what happens to its unfinished restore.
+pub(crate) fn mark_unfinished_vm_restores(state: &mut models::PlatformState, unfinished: Vec<UnfinishedRestore>) {
+    for skipped in unfinished {
+        let message = if skipped.intent_kept {
+            format!("{} Its unfinished disk restore is kept and is finished when Yougori next starts with this storage available; until then it can't start.", skipped.reason)
+        } else {
+            format!("{} If it was restoring a backup, that is finished when Yougori next starts with this storage available.", skipped.reason)
+        };
+        for environment in state.environments.iter_mut().filter(|environment| environment.runtime_id.as_deref().unwrap_or(&environment.id) == skipped.runtime_id) {
+            environment.status = models::EnvironmentStatus::Error;
+            environment.last_error = Some(message.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod app_data_migration_tests {
     use super::{migrate_legacy_app_data, relocated_app_storage};
@@ -603,46 +663,8 @@ pub fn run() {
             // A durable state intent brackets every disk replacement. If the process
             // stopped before the restored state committed, reactivate the old disk;
             // if state committed first, finish deleting the retained rollback disk.
-            let restore_intents = state
-                .pending_vm_restores
-                .iter()
-                .cloned()
-                .collect::<HashSet<_>>();
-            let mut restore_candidates = restore_intents.clone();
-            restore_candidates.extend(
-                state
-                    .environments
-                    .iter()
-                    .filter(|environment| {
-                        environment.provider == Some(models::RuntimeProviderKind::Qemu)
-                    })
-                    .map(|environment| {
-                        environment
-                            .runtime_id
-                            .clone()
-                            .unwrap_or_else(|| environment.id.clone())
-                    }),
-            );
-            for environment_id in restore_candidates {
-                if !runtime
-                    .has_pending_vm_backup_install(&environment_id)
-                    .map_err(std::io::Error::other)?
-                {
-                    continue;
-                }
-                if restore_intents.contains(&environment_id) {
-                    tauri::async_runtime::block_on(
-                        runtime.rollback_vm_backup_install(&environment_id),
-                    )
-                    .map_err(std::io::Error::other)?;
-                } else {
-                    tauri::async_runtime::block_on(
-                        runtime.finalize_vm_backup_install(&environment_id),
-                    )
-                    .map_err(std::io::Error::other)?;
-                }
-            }
-            state.pending_vm_restores.clear();
+            // A VM whose drive is unavailable is skipped and marked below; it never stops startup.
+            let unfinished_restores = finish_unfinished_vm_restores(&runtime, &mut state);
             // A fresh install has no OCI state to protect, so creating/checking the appliance
             // disk can wait until the first container operation. Existing OCI environments
             // still get the compatibility check before their persisted status is restored.
@@ -683,6 +705,9 @@ pub fn run() {
                     if let Some(environment)=state.environments.iter_mut().find(|e|&e.id==id){environment.status=models::EnvironmentStatus::Error;environment.last_error=deployment.last_error.clone();}
                 }
             }
+            // Marked after the recovery candidates were taken, so a VM that was running still has
+            // its abandoned runtime looked for (and its drive reported) by startup recovery.
+            mark_unfinished_vm_restores(&mut state, unfinished_restores);
             for environment in &mut state.environments {
                 if environment.provider == Some(models::RuntimeProviderKind::YougoriOci) {
                     if let Some(error) = &appliance_error {
@@ -883,6 +908,10 @@ pub fn run() {
             model_runner::model_api_status,
             model_runner::optimizer::model_optimizer,
             model_runner::model_usage,
+            model_runner::model_generate,
+            model_runner::model_job,
+            model_runner::model_job_save,
+            model_runner::model_file,
             market::market_status,
             model_registry::model_registry_request,
             template_hub::open_hub_console,

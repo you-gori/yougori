@@ -42,6 +42,41 @@ it("connects a quick link and shows ready-to-use examples without the key", asyn
   expect(await screen.findByRole("button", { name: "Set up public access" })).toBeInTheDocument()
 })
 
+it("shows the JSON output example only for a launch that enforces response_format", async () => {
+  const on = { ...off, apiUrl: "http://127.0.0.1:8000/v1" }
+  access.mockResolvedValue(on)
+  status.mockResolvedValue({ status: "ready", model: "owner/model", error: null, stream: true, capabilities: { structuredOutput: { supported: true, detail: "vLLM's structured outputs constrain generation" } } })
+  render(<ModelApiPanel environmentId="model-one" />)
+  const code = await screen.findByText(/base_url="http:\/\/127.0.0.1:8000\/v1"/)
+  expect(code).toHaveTextContent('response_format={"type": "json_schema"')
+  expect(screen.getByText(/held to your schema by the server/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Agent skill" }))
+  expect(screen.getByText(/response_format asks for JSON/)).toBeInTheDocument()
+  cleanup()
+  status.mockResolvedValue({ status: "ready", model: "owner/model", error: null, stream: true, capabilities: { structuredOutput: { supported: false, detail: "The Transformers runner does not constrain a reply" } } })
+  render(<ModelApiPanel environmentId="model-one" />)
+  const plain = await screen.findByText(/base_url="http:\/\/127.0.0.1:8000\/v1"/)
+  expect(plain).not.toHaveTextContent("response_format")
+  expect(screen.queryByText(/held to your schema by the server/)).not.toBeInTheDocument()
+})
+
+it("shows a media model's job routes and its OpenAI-shaped route", async () => {
+  access.mockResolvedValue({ ...off, apiUrl: "http://127.0.0.1:8000/v1" })
+  status.mockResolvedValue({ status: "ready", model: "owner/model", error: null, task: "text-to-image", outputs: { keptHours: 48, capGb: 20, bytes: 0, jobs: 0 } })
+  render(<ModelApiPanel environmentId="model-one" />)
+  const code = await screen.findByText(/client.images.generate/)
+  expect(code).toHaveTextContent('base_url="http://127.0.0.1:8000/v1"')
+  expect(screen.getByText(/Output files are kept 48 hours/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "curl" }))
+  expect(screen.getByText(/curl http:\/\/127.0.0.1:8000\/v1\/images\/generations/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Agent skill" }))
+  expect(screen.getByText(/POST \/jobs with JSON/)).toBeInTheDocument()
+  cleanup()
+  status.mockResolvedValue({ status: "ready", model: "owner/model", error: null, task: "text-to-speech" })
+  render(<ModelApiPanel environmentId="model-one" />)
+  expect(await screen.findByText(/client\.audio\.speech/)).toBeInTheDocument()
+})
+
 it("connects the model API to the user's own Cloudflare domain", async () => {
   access.mockResolvedValueOnce(off).mockResolvedValueOnce({ ...off, publicUrl: "https://llm.example.com/v1", publicId: "pub-2", publicAccount: true })
   status.mockResolvedValue({ status: "ready", model: "owner/model", error: null, stream: true })

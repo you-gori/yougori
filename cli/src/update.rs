@@ -183,7 +183,7 @@ pub async fn install(yes: bool) -> Result<Value, String> {
     }
     let url = status["download"].as_str().ok_or_else(|| format!("No {} download in this release yet", status["platform"].as_str().unwrap_or("")))?.to_owned();
     if status["channel"] == "preview" {
-        return Ok(json!({"updateAvailable": true, "latest": status["latest"], "channel": "preview", "notes": status["notes"], "next": "This unsigned preview uses the explicit preview installer. Finish your work, then use the installation command at https://yougori.com/#hero-cli or download the app at https://yougori.com/#download. Your environments remain running until you install."}));
+        return Ok(json!({"updateAvailable": true, "latest": status["latest"], "channel": "preview", "notes": status["notes"], "next": "This unsigned preview uses the explicit preview installer. Finish your work, then use the installation command at https://yougori.com/#install-cli or download the app at https://yougori.com/#download. Your environments remain running until you install."}));
     }
     if !yes {
         return Ok(json!({"updateAvailable": true, "latest": status["latest"], "notes": status["notes"], "next": "Run `yougori update --yes` to download and install it. Yougori stops its workloads while it updates."}));

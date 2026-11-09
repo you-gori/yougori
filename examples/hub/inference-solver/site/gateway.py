@@ -123,6 +123,19 @@ def complete(handler, key, payload):
     replicas = service.router.replicas(service.store, model)
     if not replicas:
         return handler.error(404, "This model is no longer in the catalog.")
+    # A media model (its server generates images, video or sound) takes jobs, not conversation.
+    chat = service.router.chat_replicas(replicas)
+    if not chat:
+        return handler.json(404, {"error": {"code": "task_mismatch", "message": "This model generates " + str(replicas[0].get("task")) + "; use /v1/jobs, or the images, audio/speech or videos endpoint."}})
+    replicas = chat
+    # A JSON reply format (OpenAI's response_format) goes only to a replica whose server enforces
+    # it, so a caller never gets free text where it asked for a schema. The format itself is
+    # passed through as given; the model server checks its shape.
+    wanted = payload.get("response_format")
+    if isinstance(wanted, dict) and wanted.get("type") in ("json_object", "json_schema"):
+        replicas = service.router.enforcing_json(replicas)
+        if not replicas:
+            return handler.error(400, "No connected server of this model enforces JSON output (response_format). Serve it with vLLM or llama.cpp.")
     order = service.router.order(replicas, session)
     if not order:
         return handler.error(503, "The model server is not currently available.")

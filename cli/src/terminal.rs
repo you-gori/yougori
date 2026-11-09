@@ -280,31 +280,75 @@ impl Drop for Raw {
 }
 
 fn key_bytes(key: KeyEvent) -> Vec<u8> {
-    let mut bytes = match key.code {
-        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) && c.is_ascii() => {
-            vec![(c.to_ascii_lowercase() as u8) & 0x1f]
-        }
-        KeyCode::Char(c) => c.to_string().into_bytes(),
-        KeyCode::Enter => vec![13],
-        KeyCode::Backspace => vec![127],
-        KeyCode::Tab => vec![9],
-        KeyCode::Esc => vec![27],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::BackTab => b"\x1b[Z".to_vec(),
-        _ => vec![],
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    // xterm's modifier parameter for keys that carry one: 1, plus 1 for Shift, 2 for Alt, 4 for Ctrl.
+    let modifier = 1 + u8::from(key.modifiers.contains(KeyModifiers::SHIFT)) + 2 * u8::from(key.modifiers.contains(KeyModifiers::ALT)) + 4 * u8::from(control);
+    let cursor = |letter: char| if modifier > 1 { format!("\x1b[1;{modifier}{letter}") } else { format!("\x1b[{letter}") }.into_bytes();
+    let tilde = |number: u8| if modifier > 1 { format!("\x1b[{number};{modifier}~") } else { format!("\x1b[{number}~") }.into_bytes();
+    let function = |letter: char| if modifier > 1 { format!("\x1b[1;{modifier}{letter}") } else { format!("\x1bO{letter}") }.into_bytes();
+    let (mut bytes, carries_modifier) = match key.code {
+        // Unix terminals send Ctrl+\, Ctrl+], Ctrl+^ and Ctrl+_ as 0x1c-0x1f, which crossterm reads
+        // as Ctrl+4 to Ctrl+7; masking the digit would send Ctrl+T, Ctrl+U, Ctrl+V and Ctrl+W.
+        KeyCode::Char(c @ '4'..='7') if control => (vec![0x1c + (c as u8 - b'4')], false),
+        KeyCode::Char(c) if control && c.is_ascii() => (vec![(c.to_ascii_lowercase() as u8) & 0x1f], false),
+        KeyCode::Char(c) => (c.to_string().into_bytes(), false),
+        KeyCode::Enter => (vec![13], false),
+        KeyCode::Backspace => (vec![127], false),
+        KeyCode::Tab => (vec![9], false),
+        KeyCode::Esc => (vec![27], false),
+        KeyCode::Up => (cursor('A'), true),
+        KeyCode::Down => (cursor('B'), true),
+        KeyCode::Right => (cursor('C'), true),
+        KeyCode::Left => (cursor('D'), true),
+        KeyCode::Home => (cursor('H'), true),
+        KeyCode::End => (cursor('F'), true),
+        KeyCode::Insert => (tilde(2), true),
+        KeyCode::Delete => (tilde(3), true),
+        KeyCode::PageUp => (tilde(5), true),
+        KeyCode::PageDown => (tilde(6), true),
+        KeyCode::BackTab => (b"\x1b[Z".to_vec(), true),
+        KeyCode::F(number @ 1..=4) => (function(['P', 'Q', 'R', 'S'][usize::from(number) - 1]), true),
+        KeyCode::F(number @ 5..=12) => (tilde([15, 17, 18, 19, 20, 21, 23, 24][usize::from(number) - 5]), true),
+        _ => (vec![], false),
     };
-    if key.modifiers.contains(KeyModifiers::ALT) && !bytes.is_empty() {
+    // Alt before a plain key is ESC first; a key with a modifier parameter carries Alt in it.
+    if key.modifiers.contains(KeyModifiers::ALT) && !carries_modifier && !bytes.is_empty() {
         bytes.insert(0, 27);
     }
     bytes
+}
+
+/// The most guest output held while a host menu is open; past it the session catches up by reconnecting.
+const HELD_OUTPUT_LIMIT: usize = 256 * 1024 * 1024;
+
+/// Runs a host menu (its prompts block) on a thread of its own while this session keeps taking
+/// the guest's output and holds it, not drawn over the menu. A guest that keeps printing never
+/// fills the pipe, so the engine's writer never stalls and closes the session (after 15 seconds)
+/// while the person reads the menu. The held output is drawn when the menu closes.
+async fn hold_output_while<T: Send + 'static>(
+    menu: impl FnOnce() -> Result<T, String> + Send + 'static,
+    rx: &mut tokio::sync::mpsc::Receiver<Result<crate::terminal_stream::Frame, String>>,
+    held: &mut std::collections::VecDeque<Option<Result<crate::terminal_stream::Frame, String>>>,
+) -> Result<T, String> {
+    let (done, mut finished) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("yougori-terminal-menu".into())
+        .spawn(move || { let _ = done.send(menu()); })
+        .map_err(|error| format!("The menu could not open: {error}"))?;
+    let ended = || Err::<T, String>("The menu ended unexpectedly".into());
+    let mut bytes = 0_usize;
+    loop {
+        tokio::select! {
+            result = &mut finished => return result.unwrap_or_else(|_| ended()),
+            frame = rx.recv(), if bytes <= HELD_OUTPUT_LIMIT => {
+                if let Some(Ok(crate::terminal_stream::Frame::Output { bytes: output, .. })) = &frame { bytes += output.len(); }
+                let open = matches!(frame, Some(Ok(_)));
+                held.push_back(frame);
+                // The connection ended: the menu still finishes, and the session reports it then.
+                if !open { return finished.await.unwrap_or_else(|_| ended()); }
+            }
+        }
+    }
 }
 
 fn detach_key(key: KeyEvent) -> bool {
@@ -651,6 +695,8 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
         let mut interrupts = ui::Interrupts::default();
         let mut screen = ui::GuestScreen::default();
         let mut pending = std::collections::VecDeque::new();
+        // The guest's output that arrived while a host menu was open, drawn once it closes.
+        let mut held: std::collections::VecDeque<Option<Result<crate::terminal_stream::Frame, String>>> = std::collections::VecDeque::new();
         if let Some(command) = launch {
             for chunk in format!("{command}\r").as_bytes().chunks(12*1024) {
                 if pending.len() >= 32 { return Err("Terminal launch command is too large".into()); }
@@ -665,7 +711,7 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
         let exit = loop {
             use crate::terminal_stream::Frame;
             let done = tokio::select! {
-                frame = stream.rx.recv() => match frame.ok_or_else(|| lost("it closed"))?.map_err(|error| lost(&error))? {
+                frame = async { match held.pop_front() { Some(frame) => frame, None => stream.rx.recv().await } } => match frame.ok_or_else(|| lost("it closed"))?.map_err(|error| lost(&error))? {
                     Frame::Output { offset: next, bytes } => {
                         if next.checked_sub(bytes.len() as u64) != Some(offset) { return Err(lost("the screen fell out of step")); }
                         offset = next;
@@ -710,7 +756,11 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                 input.bytes.clear();
                 let stopped = {
                     let _overlay = ui::StopOverlay::enter(screen.alternate)?;
-                    crate::sandbox_stop::menu(id).await
+                    let menu_id = id.to_owned();
+                    hold_output_while(move || {
+                        tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?
+                            .block_on(crate::sandbox_stop::menu(&menu_id))
+                    }, &mut stream.rx, &mut held).await
                 };
                 match stopped {
                     Ok(true) => return Ok(SessionExit::Stopped),
@@ -737,7 +787,12 @@ async fn attach_session(id: &str, command: Option<&str>, tool: Option<(&str, &[S
                     else { "Ctrl+C interrupts the guest command. Press Ctrl+D at an empty shell prompt, type exit, or press Ctrl+] to return to your PC terminal." })?;
             }
             if actions.menu {
-                if let Err(error) = context.menu().await {
+                let menu_context = context.clone();
+                let chosen = hold_output_while(move || {
+                    tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?
+                        .block_on(menu_context.menu())
+                }, &mut stream.rx, &mut held).await;
+                if let Err(error) = chosen {
                     ui::line(&format!("Could not complete that action: {}", ui::clean(&error)))?;
                 }
                 // Redraw full-screen programs/readline after the host menu closes.
@@ -815,6 +870,17 @@ mod tests {
             key_bytes(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)),
             b"\x1bb"
         );
+        // Unix terminals' Ctrl+\ and Ctrl+_ arrive as Ctrl+4 and Ctrl+7: SIGQUIT and readline undo.
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL)), vec![0x1c]);
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Char('7'), KeyModifiers::CONTROL)), vec![0x1f]);
+        // Function keys, Insert and modified navigation keys, as xterm sends them.
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)), b"\x1bOP");
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE)), b"\x1b[21~");
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)), b"\x1b[2~");
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)), b"\x1b[1;5D");
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)), b"\x1b[1;2C");
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)), b"\x1b[1;3A");
+        assert_eq!(key_bytes(KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL)), b"\x1b[3;5~");
     }
     #[test]
     fn detach_accepts_platform_control_bracket_events_without_catching_plain_keys() {

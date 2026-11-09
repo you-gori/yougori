@@ -83,6 +83,13 @@ def from_responses(data):
     choice = data.get("tool_choice")
     if choice:
         result["tool_choice"] = {"type": "function", "function": {"name": tool_name(choice["name"], choice.get("namespace"))}} if isinstance(choice, dict) else choice
+    # The Responses API asks for JSON in text.format; Chat Completions calls it response_format.
+    text = data.get("text")
+    layout = text.get("format") if isinstance(text, dict) else None
+    if isinstance(layout, dict) and layout.get("type") == "json_schema":
+        result["response_format"] = {"type": "json_schema", "json_schema": {field: layout[field] for field in ("name", "schema", "strict", "description") if field in layout}}
+    elif isinstance(layout, dict) and layout.get("type") == "json_object":
+        result["response_format"] = {"type": "json_object"}
     return result
 
 

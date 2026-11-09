@@ -349,7 +349,8 @@ function WorkspaceItem({ workspace, disabled, onDiscard, onChanged }: { workspac
     </div>
     {problem ? <Problem text={problem} /> : null}
     {reading ? <NormalizeView sandbox={workspace.sandbox} disabled={disabled} /> : null}
-    {review ? <ReviewView sandbox={workspace.sandbox} folder={workspace.folder} review={review} onPromoted={onChanged} /> : null}
+    {/* Keyed by its review: each new review starts with no approvals and no earlier promotion shown. */}
+    {review ? <ReviewView key={review.review ?? "none"} sandbox={workspace.sandbox} folder={workspace.folder} review={review} onPromoted={onChanged} /> : null}
   </li>
 }
 

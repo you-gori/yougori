@@ -86,9 +86,9 @@ prints is kept once requests arrive.
 4. Asks the check question and compares the greedy answer with `expect`.
 5. Warms the GPU up and measures one conversation's speed (`tokensPerSecond` in health).
 6. Serves the model through the usual chat API: streaming, usage, stop strings, the model's
-   chat template, `parallel` conversations at once. Tool calling and LoRA adapters are not
-   served by a megakernel launch; a KV reset changes nothing (the runner reads each request's
-   whole conversation).
+   chat template, `parallel` conversations at once. Tool calling, LoRA adapters and JSON output
+   (`response_format`, refused with `yougori_structured_output`) are not served by a megakernel
+   launch; a KV reset changes nothing (the runner reads each request's whole conversation).
 
 When any step fails, the model's health shows `megakernel.refused` with the reason, vLLM
 serves the model with its own launch, and the runner is not tried again until the model

@@ -9,12 +9,16 @@
 //!   that needs the owner's decision, whether the host can admit the result once both originals
 //!   release theirs, and what is not carried. It changes nothing, and names itself by a digest.
 //! - **start** applies exactly the previewed combination (the digest must still match) with the
-//!   owner's decisions: both guests lose their workspace (no more writes), each original's
-//!   staged files are copied (and checked) into the combined workspace, both originals stop
-//!   (their reservations end before the combined VM reserves, so nothing is charged twice), the
+//!   owner's decisions: each original's staged files are copied (and checked) into the combined
+//!   workspace while both still run, both originals stop (a stop ends each guest's access to its
+//!   workspace, so nothing is written after it; their reservations end before the combined VM
+//!   reserves, so nothing is charged twice), what either wrote after its copy is listed, the
 //!   combined VM boots with the merged settings, and its workspace is checked file by file
-//!   inside the guest. The originals' workspaces and settings are kept: if the combined VM
-//!   fails, it is stopped and each original is launched again from its own settings.
+//!   inside the guest. The originals' workspaces and settings are kept: if anything fails after
+//!   the copy, the combined VM is stopped and each original this combine stopped is launched
+//!   again from its own settings; one whose stop failed keeps running with its workspace. The
+//!   combined copy (`combine/<operation>/workspace`) is removed with a failed, rolled-back or
+//!   interrupted combine and kept only for a healthy one, whose VM reviews into it.
 //! - **finish** removes the originals' workspaces only when the owner says so, after a healthy
 //!   combine; one-time grants and pending requests never carry over, and a lasting grant reaches
 //!   the combined VM only when the owner adopts it explicitly.
@@ -51,6 +55,27 @@ const JOURNAL: &str = "journal.json";
 const MAX_FILES: usize = crate::sandbox_vm::workspace::MAX_FILES;
 const MAX_TOTAL_BYTES: u64 = crate::sandbox_vm::workspace::MAX_TOTAL_BYTES;
 const GIB: f64 = (1u64 << 30) as f64;
+/// The longest line the guest's listing prints for one file: its SHA-256 (64 hex digits), two
+/// spaces, `./`, the longest name a workspace file has and a newline.
+const LISTED_LINE_BYTES: usize = 64 + 2 + 2 + crate::sandbox_contract::files::MAX_NAME_BYTES + 1;
+/// What the guest's listing of the combined workspace may print: a line for every file of both
+/// sources at their largest (`MAX_FILES` each) and the setup package a launch writes, up to the
+/// most one command may print (16 MiB, which holds 40,000 lines whose names average about 350
+/// bytes). A listing longer than that is reported as cut off, never compared.
+const LISTING_BYTES: usize = {
+    let wanted = (2 * MAX_FILES + 64) * LISTED_LINE_BYTES;
+    let most = crate::sandbox::vm_service::MAX_COMMAND_OUTPUT_BYTES;
+    if wanted < most { wanted } else { most }
+};
+/// How long the guest may take to hash the combined workspace: both sources at their largest
+/// (2 GiB in 40,000 files) read through the workspace channel at a slow 2 MiB/s with 10 ms per
+/// file come to about 24 minutes. A listing that takes longer is reported as timed out.
+const LISTING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// The states in which a combine is still under way (`recover` marks one the engine's end cut
+/// short as interrupted). A repeat of the same request joins a combine in one of these, or one
+/// that ended healthy (or was finished); a failed, rolled-back or interrupted one never blocks a
+/// new try.
+const UNDER_WAY: [&str; 4] = ["copying", "stopping-originals", "launching", "checking"];
 
 fn data_dir(production: &Production) -> Result<PathBuf, String> {
     production
@@ -86,6 +111,8 @@ pub(super) fn prune_launches(production: &Production) {
 }
 
 pub(super) fn launch_params(production: &Production, id: &SandboxId) -> Result<Value, String> {
+    // The id names a file of its own under `launches`, never a path elsewhere.
+    crate::sandbox_vm::workspace::plain_component(id.as_str())?;
     let path = data_dir(production)?
         .join(LAUNCHES_DIRECTORY)
         .join(format!("{}.json", id.execution().as_str()));
@@ -240,7 +267,10 @@ fn parts(a: &Source, b: &Source) -> (String, String) {
             .as_deref()
             .and_then(|folder| Path::new(folder).file_name())
             .map(|name| name.to_string_lossy().chars().filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')).collect::<String>())
-            .filter(|name| !name.is_empty() && !name.starts_with('.'))
+            .map(|name| name.trim_end_matches('.').to_owned())
+            // A name the combined VM's workspace could not hold (a device name such as `con`) would
+            // leave every file under it out of that VM; such a folder takes the fallback name.
+            .filter(|name| !name.is_empty() && !name.starts_with('.') && crate::sandbox_vm::workspace::plain_component(name).is_ok())
             .unwrap_or_else(|| fallback.to_owned())
     };
     let (first, second) = (name(a, "first"), name(b, "second"));
@@ -374,6 +404,17 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
         }
         other => return Err(format!("Unknown workspace layout '{other}'; use separate or merged.")),
     }
+    // The combined VM's workspace is imported as any workspace is, within the same bounds: a
+    // combination over them could never launch, and would only fail once both originals stopped.
+    let combined_files = workspace.len();
+    let combined_bytes = workspace.values().map(|((_, size), _)| size).sum::<u64>();
+    if combined_files > MAX_FILES || combined_bytes > MAX_TOTAL_BYTES {
+        reasons.push(format!(
+            "The combined workspace would hold {combined_files} files and {:.2} GiB; one VM's workspace holds at most {MAX_FILES} files and {:.0} GiB.",
+            combined_bytes as f64 / GIB,
+            MAX_TOTAL_BYTES as f64 / GIB
+        ));
+    }
     if image.0.is_some() && decisions["imageProcess"].as_str() != Some("once") {
         conflicts.push(json!({"kind": "image-process", "key": "image-process", "decision": decisions["imageProcess"],
                                "detail": "Both sources run the same image's own process; the combined VM runs it once. Decide imageProcess: once."}));
@@ -440,7 +481,7 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
         "permissions": {"lastingGrants": adoptable, "notCarried": "one-time grants, pending requests and the tree/ask switches start empty"},
         "notCarried": ["running processes and anything in guest memory (the VMs boot once)", "files outside the workspace, including an image root's changes",
                        "one-time grants and pending host-file requests"],
-        "transition": "Both guests lose their workspace, each staged copy is copied and checked, both sandboxes stop (their workspaces and settings are kept), then one VM boots with the sum of their CPU and memory and both workspaces, and its files are checked inside it. If it fails, it is stopped and each original is launched again from its own settings.",
+        "transition": "Each staged copy is copied and checked while both run, then both sandboxes stop (a stop ends each guest's access to its workspace; their workspaces and settings are kept), then one VM boots with the sum of their CPU and memory and both workspaces, and its files are checked inside it. If it fails, it is stopped and each original is launched again from its own settings.",
         "trust": "Both workloads will share one guest kernel and one workspace; anything either could reach, the other can.",
         "promotion": "Changes made in the combined VM are reviewed and promoted into its combined folder; each original's own unpromoted changes stay reviewable in its kept workspace.",
     });
@@ -474,15 +515,47 @@ fn preview_digest(first: &SandboxId, second: &SandboxId, value: &Value, decision
     Ok(hex::encode(Sha256::digest(canonical)))
 }
 
-fn journal_path(data: &Path, operation: &str) -> PathBuf {
-    data.join(COMBINE_DIRECTORY).join(operation).join(JOURNAL)
+/// The folder of one combine operation, refused unless `operation` is one plain path component:
+/// `finish` takes the id from its caller, so it never names a path outside `combine/`.
+fn operation_dir(data: &Path, operation: &str) -> Result<PathBuf, String> {
+    crate::sandbox_vm::workspace::child_of(&data.join(COMBINE_DIRECTORY), operation).map_err(|refusal| format!("No such combine operation: {refusal}"))
+}
+
+fn journal_path(data: &Path, operation: &str) -> Result<PathBuf, String> {
+    Ok(operation_dir(data, operation)?.join(JOURNAL))
+}
+
+/// The combined copy of both workspaces a start makes for the combined VM.
+fn workspace_dir(data: &Path, operation: &str) -> Result<PathBuf, String> {
+    Ok(operation_dir(data, operation)?.join("workspace"))
+}
+
+fn read_journal(data: &Path, operation: &str) -> Option<Value> {
+    serde_json::from_slice(&fs::read(journal_path(data, operation).ok()?).ok()?).ok()
 }
 
 fn save(data: &Path, journal: &Value) -> Result<(), String> {
     let operation = journal["operation"].as_str().ok_or("journal without operation")?;
-    let path = journal_path(data, operation);
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let path = journal_path(data, operation)?;
+    fs::create_dir_all(path.parent().ok_or("journal without folder")?).map_err(|e| e.to_string())?;
     write_atomic(&path, &serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// Removes the combined copy of a combine that did not end healthy (up to two workspaces' worth
+/// of files), and notes on its journal whether that worked. Kept only for a healthy combine,
+/// whose VM reviews and promotes into it. Nothing to remove is not an error.
+fn remove_workspace(data: &Path, journal: &mut Value) {
+    let Some(folder) = journal["operation"].as_str().and_then(|operation| workspace_dir(data, operation).ok()) else { return };
+    match fs::remove_dir_all(&folder) {
+        Ok(()) => {
+            journal["workspaceRemoved"] = json!(true);
+            if let Some(fields) = journal.as_object_mut() {
+                fields.remove("workspaceRemovalError");
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => journal["workspaceRemovalError"] = json!(format!("{}: {error}", folder.display())),
+    }
 }
 
 fn journals(data: &Path) -> Vec<Value> {
@@ -491,7 +564,11 @@ fn journals(data: &Path) -> Vec<Value> {
         for entry in entries.flatten() {
             if let Ok(bytes) = fs::read(entry.path().join(JOURNAL)) {
                 if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-                    found.push(value);
+                    // A journal is read only from the folder it names, so a record can't speak for
+                    // (or have removed) a folder other than its own.
+                    if value["operation"].as_str() == entry.file_name().to_str() {
+                        found.push(value);
+                    }
                 }
             }
         }
@@ -500,21 +577,44 @@ fn journals(data: &Path) -> Vec<Value> {
     found
 }
 
-/// At the engine's start: a combine its end cut short is marked interrupted, with what it left.
-pub(super) fn recover(data: &Path) -> Value {
+/// At the engine's start: a combine its end cut short is marked interrupted, with what it left,
+/// and the combined copy of every combine that did not end healthy is removed (one a failed or
+/// rolled-back start could not remove then is tried again here), with the workspace a combined VM
+/// that never became healthy staged from it. Every VM ended with the last engine, and nobody
+/// worked in such a VM; the originals' own workspaces are never touched.
+pub(super) fn recover(data: &Path, workspaces: &crate::sandbox_vm::workspace::WorkspaceStore) -> Value {
     let mut interrupted = Vec::new();
+    let mut removed = Vec::new();
     for mut journal in journals(data) {
-        if matches!(journal["state"].as_str(), Some("finished" | "healthy" | "rolled-back" | "failed" | "interrupted")) {
-            continue;
+        let mut changed = false;
+        if !matches!(journal["state"].as_str(), Some("finished" | "healthy" | "rolled-back" | "failed" | "interrupted")) {
+            let was = journal["state"].clone();
+            journal["state"] = json!("interrupted");
+            journal["interruptedAt"] = was;
+            journal["recovery"] = json!("The engine ended during this combine. Every VM ended with it; the originals' workspaces are kept and each can be launched again from originals[].params (workspace: its own folder).");
+            interrupted.push(journal["operation"].clone());
+            changed = true;
         }
-        let was = journal["state"].clone();
-        journal["state"] = json!("interrupted");
-        journal["interruptedAt"] = was;
-        journal["recovery"] = json!("The engine ended during this combine. Every VM ended with it; the originals' workspaces are kept and each can be launched again from originals[].params (workspace: its own folder).");
-        let _ = save(data, &journal);
-        interrupted.push(journal["operation"].clone());
+        let ended_badly = matches!(journal["state"].as_str(), Some("rolled-back" | "failed" | "interrupted"));
+        let folder_left = journal["operation"].as_str().and_then(|operation| workspace_dir(data, operation).ok()).is_some_and(|folder| folder.exists());
+        if ended_badly && folder_left {
+            if let Ok(folder) = workspace_dir(data, journal["operation"].as_str().unwrap_or_default()) {
+                let staged = workspaces.discard_imported_from(&folder);
+                if !staged.is_empty() {
+                    journal["combinedWorkspaceRemoved"] = json!(staged);
+                }
+            }
+            remove_workspace(data, &mut journal);
+            if journal["workspaceRemoved"] == true {
+                removed.push(journal["operation"].clone());
+            }
+            changed = true;
+        }
+        if changed {
+            let _ = save(data, &journal);
+        }
     }
-    json!({"interrupted": interrupted})
+    json!({"interrupted": interrupted, "workspacesRemoved": removed})
 }
 
 fn sandbox_of(params: &Value, key: &str) -> Result<SandboxId, String> {
@@ -527,14 +627,41 @@ fn ledger_available(ledger: &crate::foundation::coordination::SharedLedger<crate
     ledger.lock().ok()?.available(ResourceKey::Host(HostResource::Ram))
 }
 
-/// The files a guest sees in its workspace, by SHA-256, read inside the guest.
+/// The files a guest sees in its workspace, by SHA-256, read inside the guest. The listing is
+/// sized for the largest workspace a combine makes (`LISTING_BYTES`, `LISTING_DEADLINE`); one that
+/// was cut off, timed out or ended otherwise than by finishing is its own error, never compared
+/// with the reviewed files as if it were whole.
 fn guest_files(production: &Production, id: &SandboxId) -> Result<BTreeMap<String, String>, String> {
     let script = format!("cd {GUEST_WORKSPACE} && find . -type f -exec sha256sum {{}} +");
     let outcome = production
         .service
-        .exec(id, ExecRequest::new(script.into_bytes(), 4 << 20, std::time::Duration::from_secs(120)))
+        .exec(id, ExecRequest::new(script.into_bytes(), LISTING_BYTES, LISTING_DEADLINE))
         .map_err(|e| format!("The combined workspace could not be checked inside the VM: {e}"))?;
-    let text = String::from_utf8_lossy(outcome.output.as_bytes()).into_owned();
+    listed(&outcome.end, outcome.exit_code, outcome.output.as_bytes(), outcome.output_dropped_bytes)
+}
+
+/// The listing a command's outcome holds (how it ended, its exit code, what it printed and how
+/// much more it dropped), or why it can't be trusted to be whole.
+fn listed(end: &crate::sandbox::vm_service::ExecEnd, exit_code: Option<i32>, output: &[u8], dropped: u64) -> Result<BTreeMap<String, String>, String> {
+    use crate::sandbox::vm_service::ExecEnd;
+    match end {
+        ExecEnd::Finished => {}
+        ExecEnd::OutputLimitReached => {
+            return Err(format!(
+                "The combined workspace's listing inside the VM was cut off after {} bytes ({dropped} more were not kept), so its files could not all be checked.",
+                output.len()
+            ))
+        }
+        ExecEnd::DeadlinePassed => {
+            return Err(format!("Listing the combined workspace inside the VM took longer than {} minutes, so its files were not checked.", LISTING_DEADLINE.as_secs() / 60))
+        }
+        other => return Err(format!("Listing the combined workspace inside the VM ended before it finished ({other:?}), so its files were not checked.")),
+    }
+    let text = String::from_utf8_lossy(output).into_owned();
+    if let Some(code) = exit_code.filter(|code| *code != 0) {
+        let said = text.lines().find(|line| line.split_once("  ").is_none()).unwrap_or_default();
+        return Err(format!("The combined workspace could not be listed whole inside the VM (exit {code}{}).", if said.is_empty() { String::new() } else { format!(": {}", crate::lifecycle::safe_diagnostic(said)) }));
+    }
     Ok(text
         .lines()
         .filter_map(|line| line.split_once("  "))
@@ -577,7 +704,7 @@ pub(super) async fn dispatch(app: &AppHandle, production: &Arc<Production>, para
         }
         "finish" => {
             let id = string(&params, "id").ok_or("id is required (the combine operation).")?;
-            let path = journal_path(&data, &id);
+            let path = journal_path(&data, &id)?;
             let mut journal: Value = serde_json::from_slice(&fs::read(&path).map_err(|_| "No such combine operation.")?).map_err(|e| e.to_string())?;
             if journal["state"] != "healthy" {
                 return Err(format!("This combine is {}; only a healthy one is finished.", journal["state"]));
@@ -614,13 +741,11 @@ pub(super) async fn dispatch(app: &AppHandle, production: &Arc<Production>, para
             let decisions = params.get("decisions").cloned().unwrap_or(Value::Null);
             let digest = string(&params, "preview").ok_or("preview is required: the digest of the preview being applied.")?;
             let key = string(&params, "requestKey").filter(|key| key.len() <= 128 && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-            if let Some(key) = &key {
-                if let Some(earlier) = journals(&data).into_iter().find(|journal| journal["requestKey"] == key.as_str()) {
-                    return Ok(earlier);
-                }
+            if let Some(earlier) = key.as_deref().and_then(|key| joined(&journals(&data), key)) {
+                return Ok(earlier);
             }
             let operation = format!("combine-{}", uuid::Uuid::new_v4().simple());
-            let folder = data.join(COMBINE_DIRECTORY).join(&operation).join("workspace");
+            let folder = workspace_dir(&data, &operation)?;
             let prepared = {
                 let (a, b, decisions, folder, operation, data) = (a.clone(), b.clone(), decisions.clone(), folder.clone(), operation.clone(), data.clone());
                 blocking(Arc::clone(production), move |production| {
@@ -639,87 +764,119 @@ pub(super) async fn dispatch(app: &AppHandle, production: &Arc<Production>, para
                     }
                     let first = source(production, &a)?;
                     let second = source(production, &b)?;
-                    let mut journal = json!({
+                    let journal = json!({
                         "operation": operation, "requestKey": key, "state": "copying", "preview": shown["digest"],
                         "decisions": decisions, "folder": folder.display().to_string(),
                         "originals": [{"sandbox": a, "params": first.params}, {"sandbox": b, "params": second.params}],
                     });
                     save(&data, &journal)?;
                     // Copied and checked against the previewed bytes while both still run: a copy
-                    // that fails, or finds a file changed since the preview, changes nothing.
-                    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-                    let layout = shown["combined"]["layout"].as_str().unwrap_or("separate");
-                    for (source, side) in [(&first, "first"), (&second, "second")] {
-                        let Some(staging) = &source.staging else { continue };
-                        let chosen: BTreeMap<String, (String, u64)> = if layout == "separate" {
-                            source.files.clone()
-                        } else {
-                            source.files.iter().filter(|(name, _)| shown["combined"]["workspace"].as_array().is_some_and(|rows|
-                                rows.iter().any(|row| row["path"] == name.as_str() && row["from"] == side))).map(|(n, e)| (n.clone(), e.clone())).collect()
-                        };
-                        let prefix = if layout == "separate" { shown["combined"]["parts"][side].as_str().unwrap_or(side).to_owned() } else { String::new() };
-                        if let Err(error) = copy_tree(&chosen, staging, &folder, &prefix) {
-                            journal["state"] = json!("failed");
-                            journal["failure"] = json!(error);
-                            let _ = fs::remove_dir_all(&folder);
-                            save(&data, &journal)?;
-                            return Err(error);
+                    // that fails, or finds a file changed since the preview, changes nothing but
+                    // the copy, which goes again.
+                    let copied = (|| -> Result<(), String> {
+                        fs::create_dir_all(&folder).map_err(|e| format!("The combined workspace could not be made: {e}"))?;
+                        let layout = shown["combined"]["layout"].as_str().unwrap_or("separate");
+                        for (source, side) in [(&first, "first"), (&second, "second")] {
+                            let Some(staging) = &source.staging else { continue };
+                            let chosen: BTreeMap<String, (String, u64)> = if layout == "separate" {
+                                source.files.clone()
+                            } else {
+                                source.files.iter().filter(|(name, _)| shown["combined"]["workspace"].as_array().is_some_and(|rows|
+                                    rows.iter().any(|row| row["path"] == name.as_str() && row["from"] == side))).map(|(n, e)| (n.clone(), e.clone())).collect()
+                            };
+                            let prefix = if layout == "separate" { shown["combined"]["parts"][side].as_str().unwrap_or(side).to_owned() } else { String::new() };
+                            copy_tree(&chosen, staging, &folder, &prefix)?;
                         }
+                        // Trust roots reloaded while the files were copied would refuse the combined
+                        // VM and each original's relaunch alike: stop here, both still running.
+                        super::guest_publisher().map(|_| ())
+                    })();
+                    if let Err(error) = copied {
+                        return Err(fail_before_stopping(&data, journal, error));
                     }
-                    // Trust roots reloaded while the files were copied would refuse the combined
-                    // VM and each original's relaunch alike: stop here, both still running.
-                    if let Err(refusal) = super::guest_publisher() {
-                        journal["state"] = json!("failed");
-                        journal["failure"] = json!(refusal);
-                        let _ = fs::remove_dir_all(&folder);
-                        save(&data, &journal)?;
-                        return Err(refusal);
-                    }
-                    // No more writes from either guest. A write that landed between the copy and
-                    // now is not in the combined VM; it stays in its original's kept workspace.
-                    production.service.detach_workspace(&a);
-                    production.service.detach_workspace(&b);
-                    let mut late = Vec::new();
-                    for source in [&first, &second] {
-                        if let Some(staging) = &source.staging {
-                            let now = files_of(staging)?;
-                            late.extend(now.iter().filter(|(name, entry)| source.files.get(*name) != Some(*entry))
-                                .map(|(name, _)| json!({"sandbox": source.id, "path": name})));
-                        }
-                    }
-                    journal["lateWrites"] = json!(late);
-                    journal["state"] = json!("stopping-originals");
-                    save(&data, &journal)?;
                     let mut params = shown["combined"]["params"].clone();
                     params["workspace"] = json!(folder.display().to_string());
-                    Ok((journal, params, shown))
+                    let copies = [&first, &second].map(|source| (source.id.clone(), source.staging.clone(), source.files.clone()));
+                    Ok((journal, params, shown, copies))
                 }).await
             };
-            let (mut journal, launch, shown) = prepared?;
-            // Both originals stop: their reservations end before the combined VM reserves.
+            let (mut journal, launch, shown, copies) = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    // A failure after the record was written that nothing marked yet (the engine's
+                    // checkpoint after the copy) leaves no combine under way: both originals run.
+                    if let Some(journal) = read_journal(&data, &operation).filter(|journal| journal["state"] == "copying") {
+                        return Err(fail_before_stopping(&data, journal, error));
+                    }
+                    return Err(error);
+                }
+            };
+            journal["state"] = json!("stopping-originals");
+            if let Err(error) = save(&data, &journal) {
+                // Nothing was stopped: both originals run as they did, with their workspaces.
+                return Err(fail_before_stopping(&data, journal, format!("the combine's record could not be saved: {error}")));
+            }
+            // Both originals stop: their reservations end before the combined VM reserves. A stop
+            // ends its guest's every grant, its workspace included, so nothing is written after it;
+            // each is detached as well once its stop succeeded. An original whose stop failed was
+            // never detached: it keeps running with its workspace, and the rollback leaves it so.
             let stops = {
                 let (a, b) = (a.clone(), b.clone());
                 blocking(Arc::clone(production), move |production| {
-                    Ok([&a, &b].map(|id| production.stop_sandbox(id).err()))
-                }).await?
+                    Ok([&a, &b].map(|id| match production.stop_sandbox(id) {
+                        Ok(_) => {
+                            production.service.detach_workspace(id);
+                            None
+                        }
+                        Err(error) => Some(error),
+                    }))
+                }).await
+            };
+            let stops = match stops {
+                Ok(stops) => stops,
+                Err(error) => return roll_back(app, production, &data, journal, format!("the originals could not be stopped: {error}")).await,
             };
             if let Some(error) = stops.iter().flatten().next() {
                 return roll_back(app, production, &data, journal, format!("an original did not stop: {error}")).await;
             }
+            // What either guest wrote after its files were copied, up to its stop, is not in the
+            // combined VM: it stays in its original's kept workspace, and is listed here.
+            let late = blocking(Arc::clone(production), move |_| {
+                let mut late = Vec::new();
+                for (id, staging, files) in &copies {
+                    if let Some(staging) = staging {
+                        let now = files_of(staging)?;
+                        late.extend(now.iter().filter(|(name, entry)| files.get(*name) != Some(*entry)).map(|(name, _)| json!({"sandbox": id, "path": name})));
+                        late.extend(files.keys().filter(|name| !now.contains_key(*name)).map(|name| json!({"sandbox": id, "path": name, "removed": true})));
+                    }
+                }
+                Ok(late)
+            }).await;
+            match late {
+                Ok(late) => journal["lateWrites"] = json!(late),
+                Err(error) => return roll_back(app, production, &data, journal, format!("what the originals wrote after the copy could not be read: {error}")).await,
+            }
             journal["state"] = json!("launching");
-            save(&data, &journal)?;
+            if let Err(error) = save(&data, &journal) {
+                return roll_back(app, production, &data, journal, format!("the combine's record could not be saved: {error}")).await;
+            }
             let adopt = decisions["adopt"].as_array().cloned().unwrap_or_default();
             let launched = launch_from(app, production, launch).await;
             let combined = match launched.as_ref().ok().and_then(|value| value["sandbox"].as_str().map(str::to_owned)) {
                 Some(id) => id,
-                None => return roll_back(app, production, &data, journal, launched.err().unwrap_or_default()).await,
+                None => return roll_back(app, production, &data, journal, launched.err().unwrap_or_else(|| "the combined VM's launch named no sandbox".to_owned())).await,
             };
             journal["combined"] = json!(combined);
             journal["state"] = json!("checking");
-            save(&data, &journal)?;
+            let combined_id = match sandbox_of(&json!({"sandbox": combined}), "sandbox") {
+                Ok(id) => id,
+                Err(error) => return roll_back(app, production, &data, journal, format!("the combined VM's id was refused: {error}")).await,
+            };
+            if let Err(error) = save(&data, &journal) {
+                return stop_combined_and_roll_back(app, production, &data, journal, combined_id, format!("the combine's record could not be saved: {error}")).await;
+            }
             let expected: BTreeMap<String, String> = without_setup_package(shown["combined"]["workspace"].as_array().into_iter().flatten()
                 .filter_map(|row| Some((row["path"].as_str()?.to_owned(), row["sha256"].as_str()?.to_owned()))).collect());
-            let combined_id = sandbox_of(&json!({"sandbox": combined}), "sandbox")?;
             let check = {
                 let (combined_id, expected, adopt, shown) = (combined_id.clone(), expected.clone(), adopt.clone(), shown.clone());
                 blocking(Arc::clone(production), move |production| {
@@ -747,23 +904,67 @@ pub(super) async fn dispatch(app: &AppHandle, production: &Arc<Production>, para
                 Ok(health) => {
                     journal["state"] = json!("healthy");
                     journal["health"] = health;
-                    save(&data, &journal)?;
-                    Ok(journal)
+                    match save(&data, &journal) {
+                        Ok(()) => Ok(journal),
+                        // Without its record the combine could never be finished, and the next start
+                        // would read it as cut short: it is undone now, as any other failure is.
+                        Err(error) => stop_combined_and_roll_back(app, production, &data, journal, combined_id, format!("the combine's record could not be saved: {error}")).await,
+                    }
                 }
-                Err(error) => {
-                    let stopped = blocking(Arc::clone(production), move |production| production.stop_sandbox(&combined_id)).await;
-                    journal["combinedStopped"] = json!(stopped.is_ok());
-                    roll_back(app, production, &data, journal, error).await
-                }
+                Err(error) => stop_combined_and_roll_back(app, production, &data, journal, combined_id, error).await,
             }
         }
         other => Err(format!("Unknown combine operation '{other}'; use preview, start, status or finish.")),
     }
 }
 
+/// An earlier start of the same request (`requestKey`) to answer with instead of starting again:
+/// only one still under way, healthy or finished. A failed, rolled-back or interrupted attempt
+/// never blocks a new one; the new one is a combine of its own.
+fn joined(journals: &[Value], key: &str) -> Option<Value> {
+    journals
+        .iter()
+        .find(|journal| {
+            journal["requestKey"] == key
+                && journal["state"].as_str().is_some_and(|state| UNDER_WAY.contains(&state) || matches!(state, "healthy" | "finished"))
+        })
+        .cloned()
+}
+
+/// A start that failed before either original was stopped: the combined copy is removed, the
+/// journal says why, and both originals run as they did.
+fn fail_before_stopping(data: &Path, mut journal: Value, error: String) -> String {
+    journal["state"] = json!("failed");
+    journal["failure"] = json!(error);
+    remove_workspace(data, &mut journal);
+    match save(data, &journal) {
+        Ok(()) => error,
+        Err(problem) => format!("{error} (its record could not be saved: {problem})"),
+    }
+}
+
+/// After a failed check of a launched combined VM: it is stopped, then the originals come back.
+async fn stop_combined_and_roll_back(app: &AppHandle, production: &Arc<Production>, data: &Path, mut journal: Value, combined: SandboxId, error: String) -> Result<Value, String> {
+    let ended = blocking(Arc::clone(production), move |production| {
+        let stopped = production.stop_sandbox(&combined).is_ok();
+        // Its own staged copy of the combined workspace goes with it once it stopped: nobody worked
+        // in it, and it holds as much as both originals. One that may still run keeps it.
+        let removed = stopped && production.workspaces().discard(combined.execution()).unwrap_or(false);
+        Ok((stopped, removed))
+    })
+    .await;
+    let (stopped, removed) = ended.unwrap_or((false, false));
+    journal["combinedStopped"] = json!(stopped);
+    if removed {
+        journal["combinedWorkspaceRemoved"] = json!(true);
+    }
+    roll_back(app, production, data, journal, error).await
+}
+
 /// After a failed combine: each original this combine stopped is launched again from its own
 /// settings (its workspace from its own folder; its old workspace, with any unpromoted changes,
-/// is kept). One still running is left as it is.
+/// is kept). One still running is left as it is: its stop failed, so it was never detached and
+/// keeps its workspace. The combined copy is removed.
 async fn roll_back(app: &AppHandle, production: &Arc<Production>, data: &Path, mut journal: Value, error: String) -> Result<Value, String> {
     journal["failure"] = json!(error);
     let running = live(production);
@@ -781,8 +982,9 @@ async fn roll_back(app: &AppHandle, production: &Arc<Production>, data: &Path, m
     }
     journal["state"] = json!(if relaunched.iter().all(|row| row.get("sandbox").is_some()) { "rolled-back" } else { "failed" });
     journal["relaunched"] = json!(relaunched);
-    save(data, &journal)?;
-    Err(format!("The combine failed and was rolled back: {error} (operation {}; originals: {})", journal["operation"], journal["relaunched"]))
+    remove_workspace(data, &mut journal);
+    let saved = save(data, &journal).err().map(|problem| format!("; its record could not be saved: {problem}")).unwrap_or_default();
+    Err(format!("The combine failed and was rolled back: {error} (operation {}; originals: {}{saved})", journal["operation"], journal["relaunched"]))
 }
 
 #[cfg(test)]
@@ -874,5 +1076,81 @@ mod tests {
         // A file changed after the preview is refused, so no original is stopped for it.
         fs::write(from.join("a.txt"), b"changed").unwrap();
         assert!(copy_tree(&files, &from, &dir.path().join("again"), "").is_err());
+    }
+
+    #[test]
+    fn the_guest_listing_fits_the_largest_combined_workspace_and_a_partial_one_is_never_compared() {
+        use crate::sandbox::vm_service::ExecEnd;
+        // Both sources at their largest, with names of a few hundred bytes, fit one listing.
+        assert!(LISTING_BYTES <= crate::sandbox::vm_service::MAX_COMMAND_OUTPUT_BYTES);
+        assert!((2 * MAX_FILES + 64) * (64 + 2 + 2 + 300 + 1) <= LISTING_BYTES, "{LISTING_BYTES}");
+        assert!(LISTING_DEADLINE <= crate::sandbox::vm_service::MAX_EXEC_DEADLINE && LISTING_DEADLINE >= std::time::Duration::from_secs(20 * 60));
+        let printed = format!("{}  ./first/app.py\n{}  ./second/main.go\n", "a".repeat(64), "b".repeat(64));
+        let whole = listed(&ExecEnd::Finished, Some(0), printed.as_bytes(), 0).unwrap();
+        assert_eq!(whole.keys().collect::<Vec<_>>(), ["first/app.py", "second/main.go"]);
+        assert_eq!(listed(&ExecEnd::Finished, None, printed.as_bytes(), 0).unwrap(), whole, "a guest that reports no exit code is read as it printed");
+        // Cut off, timed out, failed or ended otherwise: each is its own error, not a mismatch.
+        let cut = listed(&ExecEnd::OutputLimitReached, None, printed.as_bytes(), 4096).unwrap_err();
+        assert!(cut.contains("cut off") && cut.contains("4096 more"), "{cut}");
+        assert!(listed(&ExecEnd::DeadlinePassed, None, printed.as_bytes(), 0).unwrap_err().contains("took longer than 30 minutes"));
+        assert!(listed(&ExecEnd::Revoked, None, b"", 0).unwrap_err().contains("ended before it finished"));
+        let failed = listed(&ExecEnd::Finished, Some(1), format!("{printed}sha256sum: ./x: Permission denied\n").as_bytes(), 0).unwrap_err();
+        assert!(failed.contains("exit 1") && failed.contains("Permission denied"), "{failed}");
+        for error in [cut, failed] {
+            assert!(!error.contains("does not match"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_repeat_of_the_same_request_joins_only_a_combine_that_is_under_way_or_healthy() {
+        let journal = |operation: &str, state: &str| json!({"operation": operation, "requestKey": "desktop-1", "state": state});
+        for state in ["copying", "stopping-originals", "launching", "checking", "healthy", "finished"] {
+            assert_eq!(joined(&[journal("combine-a", state)], "desktop-1").unwrap()["state"], state);
+        }
+        for state in ["failed", "rolled-back", "interrupted"] {
+            assert!(joined(&[journal("combine-a", state)], "desktop-1").is_none(), "{state} never blocks a new try");
+        }
+        let both = [journal("combine-a", "rolled-back"), journal("combine-b", "launching")];
+        assert_eq!(joined(&both, "desktop-1").unwrap()["operation"], "combine-b", "the new try is found, not the old failure");
+        assert!(joined(&both, "desktop-2").is_none());
+    }
+
+    #[test]
+    fn only_a_healthy_combine_keeps_its_combined_copy_and_ids_never_leave_the_combine_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let make = |operation: &str, state: &str| {
+            let folder = workspace_dir(data, operation).unwrap();
+            fs::create_dir_all(folder.join("first")).unwrap();
+            fs::write(folder.join("first/app.py"), b"print(1)").unwrap();
+            save(data, &json!({"operation": operation, "state": state})).unwrap();
+            folder
+        };
+        let cut_short = make("combine-cut", "launching");
+        let failed = make("combine-failed", "failed");
+        let rolled_back = make("combine-rolled", "rolled-back");
+        let healthy = make("combine-healthy", "healthy");
+        let finished = make("combine-finished", "finished");
+        let workspaces = crate::sandbox_vm::workspace::WorkspaceStore::new(data.join("workspaces"));
+        let report = recover(data, &workspaces);
+        assert_eq!(report["interrupted"], json!(["combine-cut"]));
+        assert!(!cut_short.exists() && !failed.exists() && !rolled_back.exists(), "{report}");
+        assert!(healthy.exists() && finished.exists(), "a healthy combine's VM reviews into its copy");
+        let after = read_journal(data, "combine-cut").unwrap();
+        assert_eq!(after["state"], "interrupted");
+        assert_eq!(after["interruptedAt"], "launching");
+        assert_eq!(after["workspaceRemoved"], true);
+        assert_eq!(recover(data, &workspaces)["interrupted"], json!([]), "a second start changes nothing more");
+        // A start that fails before stopping anything removes its copy and says why.
+        let early = make("combine-early", "copying");
+        let said = fail_before_stopping(data, read_journal(data, "combine-early").unwrap(), "a file changed".into());
+        assert_eq!(said, "a file changed");
+        assert!(!early.exists());
+        assert_eq!(read_journal(data, "combine-early").unwrap()["state"], "failed");
+        // An operation id is one plain folder name, never a path elsewhere.
+        for id in ["D:.", "C:.", "..", "a/b", "a\\b", ""] {
+            assert!(journal_path(data, id).is_err() && workspace_dir(data, id).is_err(), "{id:?}");
+        }
+        assert!(save(data, &json!({"operation": "D:.", "state": "failed"})).is_err());
     }
 }

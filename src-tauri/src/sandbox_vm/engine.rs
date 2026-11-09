@@ -1368,7 +1368,7 @@ async fn compose(app: &AppHandle) -> Result<Production, String> {
         "swept_at_start": swept,
         "groups_at_start": groups_at_start,
         "workspaces_at_start": workspaces_recovered,
-        "combine_at_start": combine::recover(&data),
+        "combine_at_start": combine::recover(&data, &workspaces),
         "supervisors_at_start": supervisors_at_start,
     });
     let production = Production {

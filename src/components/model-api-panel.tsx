@@ -1,6 +1,8 @@
 import { ModelGpuOptimizer } from "@/components/model-gpu-optimizer"
 import { useEffect, useRef, useState } from "react"
 import { modelsApi, type ModelApiAccess } from "@/api/projects-api"
+import { isMediaTask } from "@/lib/media-tasks"
+import { mediaExample } from "@/lib/media-examples"
 import { workspaceApi } from "@/api/workspace-api"
 import { CloudflareAccountFields } from "@/components/cloudflare-account-fields"
 import { accountRequest, emptyCloudflareDraft } from "@/lib/cloudflare-account"
@@ -20,7 +22,9 @@ const API_PORT = 8000
 const EXAMPLES: [Example, string][] = [["python", "Python"], ["javascript", "JavaScript"], ["curl", "curl"], ["powershell", "PowerShell"], ["skill", "Agent skill"]]
 
 /** With `key`, examples embed the real API key; otherwise they read it from YOUGORI_MODEL_API_KEY. */
-function example(kind: Example, base: string, model: string, streaming: boolean, isPublic: boolean, key?: string) {
+/** The same examples as the CLI's /api menu (cli/src/model_run/api.rs). With `json` the Python and
+ * JavaScript ones also ask for a reply in a schema's shape, which the launch enforces. */
+function example(kind: Example, base: string, model: string, streaming: boolean, isPublic: boolean, key?: string, json = false) {
   const q = JSON.stringify
   switch (kind) {
     case "curl": return `curl ${base}/chat/completions \\
@@ -58,7 +62,15 @@ stream = client.chat.completions.create(
 )
 for chunk in stream:
     if chunk.choices:
-        print(chunk.choices[0].delta.content or "", end="", flush=True)` : ""}`
+        print(chunk.choices[0].delta.content or "", end="", flush=True)` : ""}${json ? `
+
+# Ask for JSON in a shape the server enforces
+answer = client.chat.completions.create(
+    model="${model}",
+    messages=[{"role": "user", "content": "Is Paris the capital of France?"}],
+    response_format={"type": "json_schema", "json_schema": {"name": "answer", "schema": {"type": "object", "properties": {"yes": {"type": "boolean"}, "why": {"type": "string"}}, "required": ["yes", "why"]}, "strict": True}},
+)
+print(answer.choices[0].message.content)  # {"yes": true, "why": "..."}` : ""}`
     case "javascript": return `// npm install openai
 import OpenAI from "openai"
 
@@ -78,9 +90,44 @@ const stream = await client.chat.completions.create({
   max_tokens: 512,
   stream: true,
 })
-for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.content ?? "")` : ""}`
-    case "skill": return modelApiSkill({ model, apiUrl: base }, { public: isPublic, streaming, apiKey: key })
+for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.content ?? "")` : ""}${json ? `
+
+// Ask for JSON in a shape the server enforces
+const answer = await client.chat.completions.create({
+  model: "${model}",
+  messages: [{ role: "user", content: "Is Paris the capital of France?" }],
+  response_format: { type: "json_schema", json_schema: { name: "answer", schema: { type: "object", properties: { yes: { type: "boolean" }, why: { type: "string" } }, required: ["yes", "why"] }, strict: true } },
+})
+console.log(JSON.parse(answer.choices[0].message.content))` : ""}`
+    case "skill": return modelApiSkill({ model, apiUrl: base }, { public: isPublic, streaming, apiKey: key, json })
   }
+}
+
+/** A media model's one setting: how long finished jobs' files stay (`--keep-outputs`). It stays
+ * loaded while it runs, so the GPU memory switches of a chat model do not apply to it. */
+function MediaRetention({ environmentId, keptHours }: { environmentId: string; keptHours?: number }) {
+  const [hours, setHours] = useState(String(keptHours ?? 24))
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState("")
+  useEffect(() => { if (keptHours) setHours(String(keptHours)) }, [keptHours])
+  const valid = /^\d+$/.test(hours) && Number(hours) >= 1 && Number(hours) <= 720
+  const save = async () => {
+    setBusy(true); setNote("")
+    try {
+      const result = await modelsApi.keepOutputs(environmentId, Number(hours))
+      setNote(result.applied ? `Finished jobs' files now stay ${result.keepOutputsHours} hours.` : `Saved: ${result.keepOutputsHours} hours from the model's next start.`)
+    } catch (reason) { setNote(reason instanceof Error ? reason.message : String(reason)) }
+    finally { setBusy(false) }
+  }
+  return <section className="model-card" aria-label="Output retention">
+    <h3>Outputs</h3>
+    <p className="model-hint">A media model stays loaded while it runs and makes one job at a time. Finished jobs' files stay on this computer for the hours set here.</p>
+    <div className="model-input-row">
+      <Input aria-label="Keep outputs (hours)" type="number" min={1} max={720} value={hours} disabled={busy} onChange={event => setHours(event.target.value)} />
+      <Button size="sm" variant="outline" disabled={busy || !valid} onClick={() => void save()}>Save</Button>
+    </div>
+    {note ? <p role="status" className="model-hint">{note}</p> : null}
+  </section>
 }
 
 function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
@@ -105,6 +152,10 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   const [streaming, setStreaming] = useState(false)
   const [sourceOnly, setSourceOnly] = useState(false)
   const [decision, setDecision] = useState(false)
+  // The launch enforces a JSON reply format (response_format), as its health reports.
+  const [json, setJson] = useState(false)
+  // A media model's kind and how long it keeps its files; its examples are the job routes.
+  const [media, setMedia] = useState<{ task: string; keptHours?: number } | null>(null)
   const [port, setPort] = useState("8000")
   const [busy, setBusy] = useState<"local" | "public" | null>(null)
   const [error, setError] = useState("")
@@ -122,8 +173,12 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   useEffect(() => {
     alive.current = true
     void modelsApi.access(environmentId).then(value => { if (alive.current) setAccess(value) }).catch(e => { if (alive.current) setError(String(e)) })
-    void modelsApi.status(environmentId).then(value => { if (alive.current) { setStreaming(Boolean(value.stream)); setDecision(value.task === "structured-decision"); setSourceOnly(Boolean(value.sourceOnly)) } }).catch(() => undefined)
-    return () => { alive.current = false }
+    // A model still starting does not answer yet: ask again until it says what it serves.
+    let timer: number | undefined, attempts = 0
+    const read = () => void modelsApi.status(environmentId).then(value => { if (alive.current) { setStreaming(Boolean(value.stream)); setDecision(value.task === "structured-decision"); setSourceOnly(Boolean(value.sourceOnly)); setJson(Boolean(value.capabilities?.structuredOutput?.supported)); setMedia(isMediaTask(value.task) ? { task: value.task, keptHours: value.outputs?.keptHours } : null) } })
+      .catch(() => { if (alive.current && ++attempts < 40) timer = window.setTimeout(read, 3000) })
+    read()
+    return () => { alive.current = false; window.clearTimeout(timer) }
   }, [environmentId])
   useEffect(() => {
     const refresh = () => setPresets(readPublicAccessPresets())
@@ -159,11 +214,11 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
   const model = access?.model ?? ""
   const base = target === "public" && access?.publicUrl ? access.publicUrl : access?.apiUrl ?? access?.publicUrl ?? null
   const isPublic = Boolean(access?.publicUrl && base === access.publicUrl)
-  const snippet = base ? (decision ? decisionExample(kind, base, model, withKey ? access?.apiKey : undefined) : example(kind, base, model, streaming, isPublic, withKey ? access?.apiKey : undefined)) : ""
+  const snippet = base ? (decision ? decisionExample(kind, base, model, withKey ? access?.apiKey : undefined) : media ? mediaExample(kind, base, model, media.task, withKey ? access?.apiKey : undefined) : example(kind, base, model, streaming, isPublic, withKey ? access?.apiKey : undefined, json)) : ""
 
   if (sourceOnly) return <section className="model-card" aria-label="Source-only API"><h3>File downloads only</h3><p>No model weights were supplied. Chat and inference API are unavailable. Use Neo Grid to publish the source files.</p></section>
   return <section className="model-api" aria-label="Model API access">
-    <ModelGpuOptimizer environmentId={environmentId} />
+    {media ? <MediaRetention environmentId={environmentId} keptHours={media.keptHours} /> : <ModelGpuOptimizer environmentId={environmentId} />}
     <div className="model-api-cards">
       <div className="model-api-card">
         <div className="model-api-card-head"><h3>Local</h3><span data-on={Boolean(access?.apiUrl) || undefined}>{access?.apiUrl ? "On" : "Off"}</span></div>
@@ -231,9 +286,14 @@ export function ModelApiPanel({ environmentId }: { environmentId: string }) {
         {withKey ? <p className="model-api-key-warning">This example contains your API key. Don't commit it, paste it publicly or share it with anyone you don't trust with your GPU.</p> : null}
       </> : <p className="model-hint">Examples appear here once an address is on.</p>}
       <ul className="model-api-notes">
-        <li>Endpoint: <code>POST /chat/completions</code>. Fields: <code>model</code>, <code>messages</code> (system, user and assistant text), <code>max_tokens</code> (up to {streaming ? "4096" : "2048"}), <code>temperature</code> (0–2){streaming ? <>, <code>stream</code></> : null}. Tools, images and other fields are rejected.</li>
-        <li>Updated GGUF and vLLM runners generate several requests together; up to 128 more wait in order. A full queue returns 429; a wait over five minutes returns 504. Set your client timeout to cover waiting and generation.</li>
-        {streaming ? null : <li>This model was started by an older Yougori, so replies don't stream. Run it again from Hugging Face for streaming and longer replies.</li>}
+        {media ? <>
+          <li>Jobs: <code>POST /jobs</code> with <code>{"{\"input\": {...}}"}</code>, <code>GET /jobs/ID?wait=30</code> until the status is final, <code>GET /jobs/ID/result</code>, <code>GET /files/ID</code> for each output file, <code>POST /jobs/ID/cancel</code>. {media.task.endsWith("to-image") ? <>Also <code>POST /images/generations</code> in OpenAI's shape.</> : media.task === "text-to-speech" ? <>Also <code>POST /audio/speech</code> in OpenAI's shape, answering WAV bytes.</> : media.task.endsWith("to-video") ? <>Also <code>POST /videos</code>, <code>GET /videos/ID</code> and <code>GET /videos/ID/content</code> as OpenAI's video objects.</> : null}</li>
+          <li>One job generates at a time; up to 16 wait in order, a 17th gets 429. Output files are kept {media.keptHours ?? 24} hours (yougori model optimize ENV --keep-outputs HOURS), under 20 GB; download what you need.</li>
+        </> : <>
+          <li>Endpoint: <code>POST /chat/completions</code>. Fields: <code>model</code>, <code>messages</code> (system, user and assistant text), <code>max_tokens</code> (up to {streaming ? "4096" : "2048"}), <code>temperature</code> (0–2){streaming ? <>, <code>stream</code></> : null}{json ? <>, <code>response_format</code> (JSON, held to your schema by the server)</> : null}. Tools, images and other fields are rejected.</li>
+          <li>Updated GGUF and vLLM runners generate several requests together; up to 128 more wait in order. A full queue returns 429; a wait over five minutes returns 504. Set your client timeout to cover waiting and generation.</li>
+          {streaming ? null : <li>This model was started by an older Yougori, so replies don't stream. Run it again from Hugging Face for streaming and longer replies.</li>}
+        </>}
         <li>Anyone with the public link and your key can use your GPU. Turn the public link off when you're done.</li>
       </ul>
     </div>

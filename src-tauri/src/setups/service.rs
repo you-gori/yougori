@@ -2014,6 +2014,22 @@ impl Service {
         })
     }
 
+    /// The setups that sent a job of their own and are not being removed: the ones whose queue may
+    /// hold work for this computer's workers after Yougori starts again. Reads only; empty when the
+    /// registry can't be read.
+    pub(crate) fn with_jobs(&self) -> Vec<String> {
+        self.read(|registry| {
+            Ok(registry
+                .instances
+                .iter()
+                .filter(|(_, instance)| !matches!(instance.lifecycle, Lifecycle::Removing | Lifecycle::Removed))
+                .filter(|(_, instance)| instance.resources.values().any(|resource| resource.kind == Kind::Job && !resource.borrowed() && resource.runtime_id.is_some()))
+                .map(|(id, _)| id.clone())
+                .collect())
+        })
+        .unwrap_or_default()
+    }
+
     /// The setup's resources of `kind` it owns, with their recorded IDs. Reads only.
     pub(crate) fn resources_of(&self, setup: &str, kind: Kind) -> Result<Vec<Resource>, Diagnostic> {
         self.read(|registry| {

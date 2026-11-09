@@ -3268,6 +3268,8 @@ fn key_action(key: KeyEvent) -> WorkerKey {
         return match key.code {
             KeyCode::Char('c') => WorkerKey::Interrupt,
             KeyCode::Char(']') => WorkerKey::Detach,
+            // Unix terminals send Ctrl+] as 0x1d, which crossterm reads as Ctrl+5.
+            KeyCode::Char('5') if cfg!(unix) => WorkerKey::Detach,
             _ => WorkerKey::None,
         };
     }

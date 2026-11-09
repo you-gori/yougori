@@ -102,5 +102,9 @@ pub(crate) fn start(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         service.reconcile_all().await;
         service.refresh_all().await;
+        // Job workers live in memory only: once what the last engine left is settled, each setup
+        // whose queue is open and holds queued or interrupted work gets this computer's workers
+        // again, as applying or starting it would.
+        finite.resume_all(service.with_jobs()).await;
     });
 }

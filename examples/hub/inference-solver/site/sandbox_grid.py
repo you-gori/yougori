@@ -136,7 +136,7 @@ class Grid:
                 resources = limits(data)
                 name = data.get("name", "Sandbox VM")
                 if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
-                    raise GridInput("Name the sandbox (1â€“80 characters).")
+                    raise GridInput("Name the sandbox (1–80 characters).")
                 node = db.execute("SELECT n.* FROM sandbox_grid_nodes n JOIN compute_hosts h ON h.id=n.host WHERE n.host=? AND h.active=1", (data.get("host"),)).fetchone()
                 if not node or node["seen"] < time.time() - 45:
                     raise GridInput("Choose an online contributor.")
@@ -160,7 +160,7 @@ class Grid:
                 if kind == "exec":
                     command = data.get("input")
                     if not isinstance(command, str) or not 1 <= len(command) <= 16000:
-                        raise GridInput("Enter a command of 1â€“16000 characters.")
+                        raise GridInput("Enter a command of 1–16000 characters.")
                     payload = {"input": command}
                 if db.execute("SELECT COUNT(*) FROM sandbox_grid_jobs WHERE vm=? AND state IN ('queued','running')", (vm,)).fetchone()[0]:
                     raise GridInput("Wait for this VM's current action to finish.")

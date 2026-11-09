@@ -124,6 +124,12 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
     } else {
         options.environment.remove("YOUGORI_MEGAKERNEL_SOURCE");
     }
+    // The media backends travel with media runners only.
+    if super::carries_media(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str)) {
+        options.environment.insert("YOUGORI_MEDIA_SOURCE".into(), super::media_source());
+    } else {
+        options.environment.remove("YOUGORI_MEDIA_SOURCE");
+    }
     options.environment.insert("YOUGORI_GPU_SOURCE".into(),source());
     if options.environment.get("YOUGORI_MODEL_CPU").is_some_and(|v|v == "1") {
         options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(),"0".into());
@@ -141,7 +147,17 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, launch: Option<String>, runner: Option<String>, app: AppHandle) -> Result<Value, String> {
+pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, launch: Option<String>, runner: Option<String>, keep_outputs_hours: Option<u64>, app: AppHandle) -> Result<Value, String> {
+    if let Some(hours) = keep_outputs_hours {
+        // A media model's output retention: saved for its next start and applied now when it runs.
+        if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() || launch.is_some() || runner.is_some() {
+            return Err("Change the output retention on its own, then the other settings.".into());
+        }
+        return save_keep_hours(&app, &environment_id, hours).await;
+    }
+    if (enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some()) && model_format(&app, &environment_id)?.as_deref() == Some("media") {
+        return Err("A media model stays loaded while it runs and generates one job at a time; stop it to free the GPU. Its setting is --keep-outputs HOURS, how long finished jobs' files are kept.".into());
+    }
     if launch.is_some() || runner.is_some() {
         // Saved on its own and applied at the next start; nothing is sent to the runner. A
         // runner given alone means the megakernel launch with it.
@@ -226,6 +242,36 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
         fields.insert("restartRequired".into(), json!(true));
     }
     Ok(result)
+}
+
+/// The format of a model environment's runner, as its workload says (`YOUGORI_MODEL_FORMAT`).
+fn model_format(app: &AppHandle, environment_id: &str) -> Result<Option<String>, String> {
+    let state = app.state::<PlatformStore>().snapshot()?;
+    let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
+    let options = app.state::<RuntimeManager>().workload_options(env.runtime_id.as_deref().unwrap_or(environment_id))?;
+    Ok(options.environment.get("YOUGORI_MODEL_FORMAT").cloned())
+}
+
+/// How long a media model keeps a finished job's files (`YOUGORI_MEDIA_KEEP_HOURS`, 1-720,
+/// read by media_backends.py when the runner starts): saved for the next start, and applied to
+/// the running model through its owner route, which also moves the expiry of what it keeps.
+async fn save_keep_hours(app: &AppHandle, environment_id: &str, hours: u64) -> Result<Value, String> {
+    if !(1..=720).contains(&hours) { return Err("Outputs are kept 1–720 hours".into()); }
+    let state = app.state::<PlatformStore>().snapshot()?;
+    let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
+    let id = env.runtime_id.clone().unwrap_or_else(|| environment_id.to_owned());
+    let runtime = app.state::<RuntimeManager>();
+    let mut options = runtime.workload_options(&id)?;
+    if options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str) != Some("media") {
+        return Err("Only a media model keeps job outputs; this model answers chat.".into());
+    }
+    options.environment.insert("YOUGORI_MEDIA_KEEP_HOURS".into(), hours.to_string());
+    super::mark_for_start(&mut options);
+    runtime.save_workload_options(&id, &options)?;
+    let applied = if env.status == EnvironmentStatus::Running {
+        super::model_request(app, environment_id, "/v1/yougori/media", Some(json!({"action": "configure", "keepHours": hours}))).await.is_ok()
+    } else { false };
+    Ok(json!({"keepOutputsHours": hours, "applied": applied, "restartRequired": !applied}))
 }
 
 /// How many requests a GGUF (llama.cpp slots sharing one KV pool) or vLLM model generates

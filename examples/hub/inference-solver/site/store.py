@@ -18,6 +18,9 @@ import unicodedata
 UNCENSORED = re.compile(r"uncensor|decensor|abliterat|obliterat|unfilter|unalign|heretic|dolphin", re.I)
 # Replica states, best first: a model takes the state of its best replica.
 STATES = ("ready", "checking", "stale", "unavailable")
+# The kinds of model the media runner serves: a Yougori model server says its task in its catalog
+# and health, and a connector reports it; such a model takes jobs, not chat.
+MEDIA_TASKS = ("text-to-image", "image-to-image", "text-to-video", "image-to-video", "text-to-audio", "text-to-speech")
 # Completed requests with reported cache use before a model's cache hit rate is published.
 CACHE_MINIMUM = 5
 
@@ -97,6 +100,15 @@ class Store:
                     ON DELETE CASCADE, upstream TEXT NOT NULL);
                 -- Refreshes replace model rows, so labels are kept apart; a reconnected model keeps its label.
                 CREATE TABLE IF NOT EXISTS model_labels (id TEXT PRIMARY KEY, uncensored INTEGER NOT NULL);
+                -- What each replica's server enforces, as its catalog or connector reported it, replaced
+                -- with the model rows: json 1 enforces a JSON reply format (response_format), 0 does
+                -- not, NULL did not say (a server connected by address that lists no capabilities).
+                CREATE TABLE IF NOT EXISTS model_features (id TEXT PRIMARY KEY, json INTEGER);
+                -- The kind of model each replica's server serves (text-generation, or a media task such as
+                -- text-to-image), as its catalog or connector reported it; replaced with the model rows.
+                CREATE TABLE IF NOT EXISTS model_tasks (id TEXT PRIMARY KEY, task TEXT NOT NULL);
+                -- What a media job made, beside its request row: images, milliseconds of video or audio, GPU time.
+                CREATE TABLE IF NOT EXISTS request_media (id TEXT PRIMARY KEY, images INTEGER NOT NULL, output_ms INTEGER NOT NULL, compute_ms INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS token_prices (model TEXT PRIMARY KEY, input_microusd INTEGER NOT NULL, output_microusd INTEGER NOT NULL);
                 -- Prompt tokens a model server reused from its cache. Without a row they cost the input price.
                 CREATE TABLE IF NOT EXISTS token_cache_prices (model TEXT PRIMARY KEY, cached_microusd INTEGER NOT NULL);
@@ -155,6 +167,23 @@ class Store:
                         raise
             finally:
                 connection.close()
+
+    @staticmethod
+    def replace_models(db, endpoint_id, catalog):
+        """The models one endpoint serves, as its catalog reports them: `catalog` is a list of
+        (name, features) with features {"json": True|False|None, "task": str|None}. Earlier rows
+        of the endpoint go."""
+        db.execute("DELETE FROM model_features WHERE id IN (SELECT id FROM models WHERE endpoint_id=?)", (endpoint_id,))
+        db.execute("DELETE FROM model_tasks WHERE id IN (SELECT id FROM models WHERE endpoint_id=?)", (endpoint_id,))
+        db.execute("DELETE FROM models WHERE endpoint_id=?", (endpoint_id,))
+        for name, features in catalog:
+            identity = endpoint_id + ":" + name
+            db.execute("INSERT INTO models VALUES(?,?,?)", (identity, endpoint_id, name))
+            enforced = (features or {}).get("json")
+            db.execute("INSERT INTO model_features VALUES(?,?)", (identity, None if enforced is None else int(bool(enforced))))
+            task = (features or {}).get("task")
+            if isinstance(task, str) and task:
+                db.execute("INSERT INTO model_tasks VALUES(?,?)", (identity, task[:40]))
 
     @staticmethod
     def audit(db, user, action, target):
@@ -269,11 +298,13 @@ class Store:
         model servers) serve it. The name is the model's own name, as its servers report it."""
         now = int(time.time())
         with self.db() as db:
-            rows = db.execute("SELECT m.upstream,e.name AS source,e.place,e.state,e.checked FROM models m "
-                              "JOIN endpoints e ON e.id=m.endpoint_id ORDER BY m.upstream,e.name").fetchall()
+            rows = db.execute("SELECT m.upstream,e.name AS source,e.place,e.state,e.checked,f.json,t.task FROM models m "
+                              "JOIN endpoints e ON e.id=m.endpoint_id LEFT JOIN model_features f ON f.id=m.id LEFT JOIN model_tasks t ON t.id=m.id "
+                              "ORDER BY m.upstream,e.name").fetchall()
             labels = {r[0]: r[1] for r in db.execute("SELECT id,uncensored FROM model_labels")}
             prices = {r["model"]: r for r in db.execute("SELECT * FROM token_prices")}
             cached = {r[0]: r[1] for r in db.execute("SELECT model,cached_microusd FROM token_cache_prices")}
+            media_prices = {r["model"]: r for r in db.execute("SELECT * FROM media_prices")} if db.execute("SELECT 1 FROM sqlite_master WHERE name='media_prices'").fetchone() else {}
             cache = {r["model"]: r for r in db.execute(
                 "SELECT r.model,COUNT(*) AS requests,SUM(r.input_tokens) AS prompt,SUM(d.cached_tokens) AS cached FROM requests r "
                 "JOIN request_details d ON d.id=r.id WHERE r.started>? AND r.status='completed' AND r.input_tokens IS NOT NULL "
@@ -292,11 +323,22 @@ class Store:
             price, label, stats = prices.get(name), labels.get(name), cache.get(name)
             inputs = price["input_microusd"] if price else 0
             uncensored = bool(UNCENSORED.search(name)) if label is None else bool(label)
+            # JSON output is enforced for the model when a replica says so; unknown (a server
+            # connected by address that lists no capabilities) stays unknown rather than refused.
+            enforced = [r["json"] for r in replicas]
+            # The kind of model: what its replicas' servers said, text generation when none said.
+            tasks = {r["task"] for r in replicas if r["task"]}
+            task = tasks.pop() if len(tasks) == 1 else "mixed" if tasks else "text-generation"
+            media = task in MEDIA_TASKS
+            media_price = media_prices.get(name)
             catalog.append({"id": name, "upstream": name, "state": state, "checked": max(r["checked"] for r in replicas),
                             "place": places.pop() if len(places) == 1 else "mixed",
                             "source": ", ".join(r["source"] for r in replicas),
                             "replicas": [{"name": r["source"], "place": r["place"], "state": s} for r, s in zip(replicas, states)],
-                            "protocols": ["chat_completions"],
+                            "task": task,
+                            "protocols": ["jobs"] + [p for p, kinds in (("images", ("text-to-image", "image-to-image")), ("speech", ("text-to-speech",)), ("videos", ("text-to-video", "image-to-video"))) if task in kinds] if media else ["chat_completions"],
+                            "features": {"json": True if 1 in enforced else (None if None in enforced else False), **({"media": task} if media else {})},
+                            "media_price": {"image_microusd": media_price["image_microusd"] if media_price else 0, "second_microusd": media_price["second_microusd"] if media_price else 0},
                             "price": {"input_microusd_per_million": inputs, "output_microusd_per_million": price["output_microusd"] if price else 0,
                                       "cached_microusd_per_million": cached.get(name, inputs)},
                             # The share of prompt tokens served from a model server's cache in the last 24 hours.
@@ -320,7 +362,8 @@ class Store:
                            (model_id, int(censorship == "uncensored")))
             self.audit(db, actor, "model.labeled", model_id[:100])
 
-    def request_done(self, request_id, key, model, started, status, usage=None, db=None, replica=None, cached=None):
+    def request_done(self, request_id, key, model, started, status, usage=None, db=None, replica=None, cached=None, media=None):
+        """`media`: what a media job made ({"images", "output_ms", "compute_ms"}), kept beside the request."""
         usage = usage or {}
         def tokens(name):
             value = usage.get(name)
@@ -332,6 +375,9 @@ class Store:
             if replica:
                 connection.execute("INSERT OR IGNORE INTO request_details VALUES(?,?,?,?)", (
                     request_id, replica["endpoint"], replica["source"][:200], cached if type(cached) is int and 0 <= cached <= 2**40 else None))
+            if media:
+                connection.execute("INSERT OR IGNORE INTO request_media VALUES(?,?,?,?)", (
+                    request_id, *(max(0, min(2**40, int(media.get(name) or 0))) for name in ("images", "output_ms", "compute_ms"))))
         if db is not None:
             write(db)
         else:

@@ -113,6 +113,13 @@ pub(crate) trait JobCalls: Send + Sync {
         let _ = (setup, resource);
         Box::pin(async { Vec::new() })
     }
+    /// Whether the setup's queue admits work and holds work for this computer's workers: a job
+    /// waiting for a computer, or one an attempt held when Yougori stopped. Asking never makes a
+    /// realm, and a setup that has none has no work.
+    fn waiting<'a>(&'a self, setup: &'a str, queue: &'a str) -> BoxFuture<'a, Result<bool, String>> {
+        let _ = (setup, queue);
+        Box::pin(async { Ok(false) })
+    }
 }
 
 #[derive(Clone)]
@@ -173,9 +180,41 @@ impl Jobs {
         self.calls.logs(setup, job).await
     }
 
-    /// Settles a job nobody knows the outcome of (`setup_job_settle`).
+    /// Settles a job nobody knows the outcome of (`setup_job_settle`). One settled to run again
+    /// waits in the queue again, so this computer's workers are started for it, as applying the
+    /// job starts them, unless the setup's queue is closed (a stopped setup stays stopped).
     pub(crate) async fn settle(&self, setup: &str, job: &str, outcome: &str) -> Result<String, String> {
-        self.calls.settle(setup, job, outcome).await
+        let state = self.calls.settle(setup, job, outcome).await?;
+        if outcome == "run_again" {
+            // The job is settled either way; one whose workers could not start runs once the
+            // setup is started again.
+            if let Err(error) = self.resume(setup).await {
+                eprintln!("The workers of setup {setup} did not start for a job settled to run again: {}", crate::lifecycle::safe_diagnostic(&error));
+            }
+        }
+        Ok(state)
+    }
+
+    /// Starts this computer's workers for a setup whose queue admits work and has work waiting
+    /// (`JobCalls::waiting`). Workers live in memory only, so this is what brings them back after
+    /// Yougori starts again; workers already running are left as they are. Whether they started.
+    pub(crate) async fn resume(&self, setup: &str) -> Result<bool, String> {
+        let queue = queue_of(setup);
+        if !self.calls.waiting(setup, &queue).await? {
+            return Ok(false);
+        }
+        self.calls.workers(setup, &queue, true).await?;
+        Ok(true)
+    }
+
+    /// `resume` for each of `setups`, at the engine's start: one that can't be read is said in
+    /// the log and leaves the others alone.
+    pub(crate) async fn resume_all(&self, setups: Vec<String>) {
+        for setup in setups {
+            if let Err(error) = self.resume(&setup).await {
+                eprintln!("The jobs of setup {setup} were not picked up again: {}", crate::lifecycle::safe_diagnostic(&error));
+            }
+        }
     }
 }
 
@@ -672,6 +711,14 @@ impl ResourceHandler for JobHandler {
         true
     }
 
+    /// A job waiting in its queue reads as running, but nothing runs it unless this computer's
+    /// workers are on, and they live in memory only: after Yougori starts again none are. So a
+    /// start always reaches a job, and its `Start` opens the queue and the workers.
+    fn renews_when_running(&self, spec: &Value) -> bool {
+        let _ = spec;
+        true
+    }
+
     /// Pauses or resumes new work for the setup's job queue. Every job of the setup shares it, so
     /// the first job asked settles it for all of them. This computer keeps running what it has, so
     /// that can end; a job that was never sent has no work to pause.
@@ -692,6 +739,9 @@ impl ResourceHandler for JobHandler {
                 }
                 Admission::Resume => {
                     self.0.calls.admit(&context.setup, &queue, true).await.map_err(failed)?;
+                    // What waited runs only with this computer's workers on, and after Yougori
+                    // started again with new work paused, none were started for it.
+                    self.0.calls.workers(&context.setup, &queue, true).await.map_err(failed)?;
                     "This setup's jobs take new work again; the ones that waited start as computers have room.".to_owned()
                 }
             })
@@ -1221,6 +1271,24 @@ impl JobCalls for EngineJobs {
             let open = self.realm(setup)?;
             let mut core = open.core.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             core.settle_job(&open.person, job, settled, at()).map(|state| state.word().to_owned()).map_err(|refusal| refusal.describe())
+        })
+    }
+
+    fn waiting<'a>(&'a self, setup: &'a str, queue: &'a str) -> BoxFuture<'a, Result<bool, String>> {
+        Box::pin(async move {
+            use yougori_grid::core::jobs::JobState;
+            if !self.made(setup) {
+                return Ok(false);
+            }
+            let open = self.realm(setup)?;
+            let core = open.core.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !core.job_queue(queue).map_err(|refusal| refusal.describe())?.open {
+                return Ok(false);
+            }
+            // Queued work, and work an attempt held when the last engine ended: the worker that
+            // picks it up again settles what that attempt left. A job whose outcome is unknown
+            // waits for a person, not a worker.
+            Ok(core.jobs().map_err(|refusal| refusal.describe())?.iter().any(|job| matches!(job.state, JobState::Queued | JobState::Running | JobState::CancelRequested)))
         })
     }
 

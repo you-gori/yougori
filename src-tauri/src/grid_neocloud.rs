@@ -652,7 +652,7 @@ async fn follow(app: &AppHandle, id: &str, pod: &Pod, membership: Membership, as
                         return;
                     }
                 }
-                let result = crate::model_runner::run_neocloud_model(model.clone(), id.clone(), None, app.clone()).await;
+                let result = crate::model_runner::run_neocloud_model(model.clone(), id.clone(), None, None, None, app.clone()).await;
                 set_live(&app, &id, |member| match result {
                     Ok(_) => status(member, "loading", format!("Starting {model} on the pod")),
                     Err(error) => {

@@ -243,6 +243,10 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 .install-steps pre{margin:8px 0}
 .install-steps .hint{margin-top:8px}
 .facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 18px;margin:0}
+.try-output{display:flex;flex-direction:column;gap:10px}
+.try-output img,.try-output video{max-width:100%;max-height:520px;border-radius:8px;background:var(--bg)}
+.try-output audio{width:100%}
+#try-form textarea{width:100%;box-sizing:border-box;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:inherit}
 .facts>div{display:contents}
 .facts dt{color:var(--faint)}
 .facts dd{margin:0;overflow-wrap:anywhere}

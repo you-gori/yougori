@@ -30,16 +30,22 @@ class Hosted(unittest.TestCase):
             root = Path(temporary)
             config = self.config(root)
             first = create(root, "abc.localhost:12000", root / "vm1")
-            with first.store.db() as db:
-                admin = db.execute("SELECT password FROM users WHERE admin=1").fetchone()[0]
-                self.assertTrue(password_matches("fixture-password", admin))
-                self.assertFalse(password_matches("wrong-password", admin))
-                db.execute("UPDATE settings SET name='Persisted change' WHERE id=1")
+            try:
+                with first.store.db() as db:
+                    admin = db.execute("SELECT password FROM users WHERE admin=1").fetchone()[0]
+                    self.assertTrue(password_matches("fixture-password", admin))
+                    self.assertFalse(password_matches("wrong-password", admin))
+                    db.execute("UPDATE settings SET name='Persisted change' WHERE id=1")
+            finally:
+                first.close()  # its media watcher holds the database while it reads
             with closing(sqlite3.connect(root / "data/inference-solver.sqlite3")) as db:
                 self.assertEqual(db.execute("SELECT name FROM settings").fetchone()[0], "Persisted change")
             second = create(root, "def.localhost:12001", root / "vm2")
-            self.assertEqual(second.store.settings()["name"], "Persisted change")
-            self.assertEqual(second.account_mode, "private")
+            try:
+                self.assertEqual(second.store.settings()["name"], "Persisted change")
+                self.assertEqual(second.account_mode, "private")
+            finally:
+                second.close()
             config["accessMode"] = "public"
             (root / "provision.json").write_text(json.dumps(config))
             with self.assertRaisesRegex(ValueError, "another inference or access mode"):

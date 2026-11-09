@@ -131,6 +131,26 @@ impl JobCalls for FakeGrid {
         })
     }
 
+    /// As the real one: work is waiting when the queue was opened, still admits work, and holds
+    /// a job that is queued or that an attempt held when the engine stopped.
+    fn waiting<'a>(&'a self, _setup: &'a str, queue: &'a str) -> BoxFuture<'a, Result<bool, String>> {
+        Box::pin(async move {
+            let open = self.queues.lock().unwrap().get(queue).copied().unwrap_or(false);
+            Ok(open && self.jobs.lock().unwrap().values().any(|job| matches!(job["state"].as_str(), Some("queued" | "running" | "cancelRequested"))))
+        })
+    }
+
+    fn settle<'a>(&'a self, _setup: &'a str, job: &'a str, outcome: &'a str) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            self.note(format!("settle {job} {outcome}"));
+            let mut jobs = self.jobs.lock().unwrap();
+            let found = jobs.get_mut(job).ok_or("This computer has no job of that setup to settle.")?;
+            let state = if outcome == "run_again" { "queued" } else { outcome };
+            found["state"] = json!(state);
+            Ok(state.to_owned())
+        })
+    }
+
     /// As the real one: the realm exists once a queue was opened or the store was kept, and
     /// asking is not a call that does anything.
     fn realm_id<'a>(&'a self, setup: &'a str) -> BoxFuture<'a, Result<Option<String>, String>> {
@@ -480,8 +500,12 @@ async fn pausing_new_work_closes_the_queue_keeps_the_workers_and_resuming_opens_
     assert!(said.contains("asked to stop, as a cancel asks") && said.contains("Nothing was killed"), "{said}");
     assert_eq!(grid.said().last().map(String::as_str), Some("pause build-farm drain=false"));
 
+    // After a restart with new work paused no workers were started; resuming starts them, so
+    // what waited does start as the review says.
+    grid.workers.lock().unwrap().clear();
     job.admission(&sent, Admission::Resume).await.unwrap();
     assert!(grid.queues.lock().unwrap()["build-farm"]);
+    assert_eq!(grid.workers.lock().unwrap().get("build-farm"), Some(&true));
     assert!(!grid.said().iter().any(|said| said.starts_with("withdraw")), "nothing was withdrawn: {:?}", grid.said());
 }
 
@@ -879,4 +903,46 @@ fn what_an_attempt_printed_is_kept_for_its_last_ten_attempts() {
     crate::setups::job_worker::remember_source(meta.path(), "job-1", folder.path()).unwrap();
     assert_eq!(crate::setups::job_worker::source_of(meta.path(), "job-1").as_deref(), Some(folder.path()));
     assert_eq!(crate::setups::job_worker::source_of(meta.path(), "job-2"), None);
+}
+
+// ---- workers after Yougori starts again ----
+
+/// PROVES the workers that run a setup's jobs come back: they live in memory only, so after a
+/// restart nothing ran a queued job. The engine's start picks them up for a setup whose queue is
+/// open and holds queued or interrupted work, a stopped setup's closed queue stays without them,
+/// Start reaches a job that reads as running (queued counts as running), and a job settled to
+/// run again gets them too.
+#[tokio::test]
+async fn workers_come_back_after_a_restart_for_work_that_is_waiting() {
+    let grid = Arc::new(FakeGrid::default());
+    let jobs = Jobs::new(grid.clone());
+    let queue = queue_of("build-farm");
+    assert!(!jobs.resume("build-farm").await.unwrap(), "no realm, no work: nothing starts");
+    // A job queued before Yougori stopped, in a queue that still admits work.
+    grid.queues.lock().unwrap().insert(queue.clone(), true);
+    grid.jobs.lock().unwrap().insert("job-1".into(), json!({"state": "queued", "finished": false, "attempts": 0, "label": "x"}));
+    jobs.resume_all(vec!["build-farm".into()]).await;
+    assert_eq!(grid.workers.lock().unwrap().get("build-farm"), Some(&true));
+    // A stopped setup closed its queue: its workers stay off.
+    grid.workers.lock().unwrap().clear();
+    grid.queues.lock().unwrap().insert(queue.clone(), false);
+    assert!(!jobs.resume("build-farm").await.unwrap());
+    assert!(grid.workers.lock().unwrap().is_empty());
+    // Work an attempt held when the engine stopped is picked up as well.
+    grid.queues.lock().unwrap().insert(queue.clone(), true);
+    grid.jobs.lock().unwrap().insert("job-1".into(), json!({"state": "running", "finished": false, "attempts": 1, "label": "x"}));
+    assert!(jobs.resume("build-farm").await.unwrap());
+    // One nobody knows the outcome of waits for a person, not a worker; settled to run again,
+    // it is queued and the workers start for it.
+    grid.workers.lock().unwrap().clear();
+    grid.jobs.lock().unwrap().insert("job-1".into(), json!({"state": "outcomeUnknown", "finished": false, "attempts": 1, "label": "x"}));
+    assert!(!jobs.resume("build-farm").await.unwrap());
+    assert_eq!(jobs.settle("build-farm", "job-1", "run_again").await.unwrap(), "queued");
+    assert_eq!(grid.workers.lock().unwrap().get("build-farm"), Some(&true));
+    // Start reaches a job even while it reads as running, and opens its queue and workers.
+    let (job, _) = handlers(grid.clone());
+    assert!(job.renews_when_running(&job_spec()));
+    grid.workers.lock().unwrap().clear();
+    job.apply(&context(Action::Start, job_spec(), Some("job-1"))).await.unwrap();
+    assert_eq!(grid.workers.lock().unwrap().get("build-farm"), Some(&true));
 }

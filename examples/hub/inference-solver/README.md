@@ -179,6 +179,24 @@ use Yougori's existing publication system, not managed Cloudflare for SaaS.
 - Private request counts, reported token usage and duration. Prompts, completions
   and raw provider errors are not stored in the usage log. Missing token counts
   remain unknown rather than estimated for billing.
+- JSON output: a request's `response_format` (`json_object`, or `json_schema` with a schema) goes
+  only to a replica whose server enforces it. Yougori's vLLM and llama.cpp launches say so in
+  their catalog (`capabilities.structuredOutput`) and health, and the connector reports it; a
+  server connected by address that lists no capabilities is not refused. A model with no replica
+  that enforces it refuses such requests rather than answering in prose, model pages and the
+  catalog show "JSON output", and the Responses adapter maps `text.format`.
+- Media models: a model whose Yougori server generates images, video, speech or sound (its
+  catalog names the task) is listed with that task and takes jobs, not chat. The website
+  serves the model server's own routes (`/v1/jobs`, `/v1/jobs/ID?wait=`, `/v1/jobs/ID/result`,
+  `/v1/files/ID`, cancel, delete, uploads) and OpenAI's `images/generations`, `audio/speech` and
+  `videos` shapes, so a client written for one Yougori model works unchanged. A job goes to one
+  replica like a chat request; when it ends its files are copied to the website, the job is
+  recorded as a request by what it made (images, seconds of output) and charged at the model's
+  per-image and per-second prices (Admin → Media pricing), and the model server's copy is
+  removed. Outputs stay for the retention and storage cap the administrator sets. Connected
+  computers relay jobs and files through the connector (`yougori inference connect`); a
+  connector from an earlier release is not sent media jobs. Model pages show a Try it box for
+  signed-in members (`site/media.py`, `tests/test_media.py`).
 - Cached input: the prompt tokens a model server reused from its cache, as it reports them
   (vLLM's `prompt_tokens_details.cached_tokens`, llama.cpp's `timings.cache_n`). Each model
   has a cached-input price beside its input and output prices; without one, cached tokens
@@ -244,6 +262,7 @@ node examples/hub/inference-solver/tests/browser.mjs
 node examples/hub/inference-solver/tests/private_accounts.mjs
 node examples/hub/inference-solver/tests/device_browser.mjs
 python -I -B examples/hub/inference-solver/tests/test_device_auth.py
+python -I -B examples/hub/inference-solver/tests/test_media.py
 # Windows integration, with the checksum-pinned official Python ZIP already downloaded:
 python -I -B examples/hub/inference-solver/tests/windows_installer.py --runtime-zip PATH/TO/python-3.14.10-embed-amd64.zip --run-client
 # Opt-in: downloads/builds a real client image and uses a disposable model fixture.

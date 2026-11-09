@@ -863,7 +863,8 @@ USAGE_PATH = os.path.join(CACHE, "yougori-usage.json")
 USAGE_LOCK = threading.Lock()
 USAGE_HOURS = 90 * 24
 USAGE_RECENT = 100
-COUNTERS = ("requests", "prompt_tokens", "completion_tokens", "errors", "rejected")
+# Tokens for chat; images and output and compute milliseconds for media.
+COUNTERS = ("requests", "prompt_tokens", "completion_tokens", "errors", "rejected", "images", "output_ms", "compute_ms")
 GENERATION_MAX_SECONDS = 90
 STREAM_MAX_SECONDS = 300
 STREAM_POLL_SECONDS = 1
@@ -1257,10 +1258,12 @@ def save_usage():
 USAGE = load_usage()
 
 
-def record_usage(source, outcome, prompt_tokens=0, completion_tokens=0, seconds=0.0, stream=False):
-    """outcome: ok, cancelled, busy, invalid, error or rejected (bad API key)."""
+def record_usage(source, outcome, prompt_tokens=0, completion_tokens=0, seconds=0.0, stream=False, media=None):
+    """outcome: ok, cancelled, busy, invalid, error or rejected (bad API key). `media` counts a
+    media job's output: images, output_ms (seconds of video or audio) and compute_ms."""
     now = time.time()
     failed = outcome in ("busy", "invalid", "error")
+    media = {key: int(media.get(key, 0)) for key in ("images", "output_ms", "compute_ms")} if media else None
     with USAGE_LOCK:
         hour = str(int(now // 3600))
         bucket = USAGE["hours"].setdefault(hour, dict.fromkeys(COUNTERS, 0))
@@ -1273,13 +1276,15 @@ def record_usage(source, outcome, prompt_tokens=0, completion_tokens=0, seconds=
             target["completion_tokens"] = target.get("completion_tokens", 0) + completion_tokens
             target["errors"] = target.get("errors", 0) + (1 if failed else 0)
             target[source] = target.get(source, 0) + 1
+            for key, count in (media or {}).items():
+                target[key] = target.get(key, 0) + count
         if outcome != "rejected":
             USAGE["sources"][source] = USAGE["sources"].get(source, 0) + 1
         oldest = int(now // 3600) - USAGE_HOURS
         for key in [k for k in USAGE["hours"] if not usage_hour_valid(k) or int(k) < oldest]:
             del USAGE["hours"][key]
         USAGE["recent"] = (USAGE["recent"] + [{"time": int(now), "source": source, "outcome": outcome, "prompt_tokens": prompt_tokens,
-                                               "completion_tokens": completion_tokens, "seconds": round(seconds, 3), "stream": stream}])[-USAGE_RECENT:]
+                                               "completion_tokens": completion_tokens, "seconds": round(seconds, 3), "stream": stream, **(media or {})}])[-USAGE_RECENT:]
         save_usage()
 
 
@@ -1321,10 +1326,81 @@ def serving_selection(body, offered):
     return selected
 
 
+RESPONSE_FORMAT_SCHEMA_LIMIT = 16384
+
+
+class StructuredOutputRefusal(ValueError):
+    """A reply format this request asked for wrongly, or one this launch cannot enforce. The reply
+    carries the code yougori_structured_output and a fixed sentence, never caller text."""
+
+    def body(self):
+        return {"error": {"code": "yougori_structured_output", "message": str(self)}}
+
+
+def response_format_kind(body):
+    """The reply format a request asks for, checked: None for text, else "json_object" or
+    "json_schema" (OpenAI's shapes; a schema of at most 16 KiB with an optional name, strict flag
+    and description). The format itself is forwarded as given to a backend that enforces it."""
+    value = body.get("response_format")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("type") not in ("text", "json_object", "json_schema"):
+        raise StructuredOutputRefusal("response_format takes type text, json_object or json_schema")
+    kind = value["type"]
+    if kind != "json_schema":
+        if set(value) != {"type"}:
+            raise StructuredOutputRefusal("A text or json_object response_format carries only its type")
+        return None if kind == "text" else kind
+    wrapper = value.get("json_schema")
+    if set(value) != {"type", "json_schema"} or not isinstance(wrapper, dict) or set(wrapper) - {"name", "schema", "strict", "description"} or not isinstance(wrapper.get("schema"), dict):
+        raise StructuredOutputRefusal("A json_schema response_format needs json_schema with a schema object; name, strict and description are optional")
+    name = wrapper.get("name", "reply")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+        raise StructuredOutputRefusal("A schema name uses 1-64 letters, digits, dashes or underscores")
+    if "strict" in wrapper and type(wrapper["strict"]) is not bool:
+        raise StructuredOutputRefusal("strict must be true or false")
+    if "description" in wrapper and (not isinstance(wrapper["description"], str) or len(wrapper["description"]) > 1024):
+        raise StructuredOutputRefusal("A schema description is text of at most 1,024 characters")
+    if len(json.dumps(wrapper["schema"])) > RESPONSE_FORMAT_SCHEMA_LIMIT:
+        raise StructuredOutputRefusal("The JSON schema exceeds 16 KiB")
+    return kind
+
+
+def structured_output():
+    """Whether this launch constrains a reply to the JSON a request asks for (response_format
+    json_object or json_schema), and how: the launch's own fact, shown with the other capabilities."""
+    if FORMAT == "media":
+        return {"supported": False, "detail": "A media model takes job inputs, not chat; response_format does not apply."}
+    if FORMAT == "gguf":
+        return {"supported": True, "detail": "llama.cpp constrains generation to the requested JSON with a grammar built from the schema (response_format json_schema or json_object)."}
+    if FORMAT == "vllm":
+        if globals().get("MEGAKERNEL") is not None:
+            return {"supported": False, "detail": "The megakernel runner decodes with the owner's kernel and does not constrain a reply to a schema; a vLLM launch does."}
+        return {"supported": True, "detail": "vLLM's structured outputs constrain generation to the requested JSON (response_format json_schema or json_object)."}
+    return {"supported": False, "detail": "The Transformers runner does not constrain a reply to a schema (response_format); run the model with --runner vllm or a GGUF checkpoint for JSON output."}
+
+
+def refuse_structured_output(body, meter):
+    """The 400 reply for a request whose JSON format this launch cannot enforce, or None."""
+    if response_format_kind(body) is None or structured_output()["supported"]:
+        return None
+    meter["outcome"] = "invalid"
+    return 400, StructuredOutputRefusal(structured_output()["detail"]).body()
+
+
+# OpenAI fields ignored here, and sampling ones vLLM and llama.cpp take.
+CHAT_IGNORED = {"user": str, "metadata": dict, "store": bool, "service_tier": str, "prompt_cache_key": str, "safety_identifier": str, "reasoning_effort": str}
+CHAT_SAMPLING = ("seed", "presence_penalty", "frequency_penalty")
+
+
 def validate_chat(body):
     # "truncate" is a Yougori extension: drop the oldest turns instead of failing when the context is full.
-    if not isinstance(body, dict) or set(body) - {"model", "messages", "max_tokens", "temperature", "stream", "truncate", "tools", "tool_choice", "parallel_tool_calls", "stream_options", "max_completion_tokens", "top_p", "stop"}:
-        raise ValueError("Use model, messages, max_tokens, temperature, stream and truncate")
+    if not isinstance(body, dict) or set(body) - {"model", "messages", "max_tokens", "temperature", "stream", "truncate", "tools", "tool_choice", "parallel_tool_calls", "stream_options", "max_completion_tokens", "top_p", "stop", "response_format", "n", "logprobs", *CHAT_SAMPLING, *CHAT_IGNORED}:
+        raise ValueError("Use model, messages and OpenAI chat fields")
+    if (any(k in body and not isinstance(body[k], t) for k, t in CHAT_IGNORED.items()) or body.get("n", 1) != 1 or body.get("logprobs", False) is not False
+            or "seed" in body and (type(body["seed"]) is not int or body["seed"] < 0) or any(k in body and (type(body[k]) not in (int, float) or not -2 <= body[k] <= 2) for k in CHAT_SAMPLING[1:])):
+        raise ValueError("One choice (n 1), no logprobs, an integer seed, penalties from -2 to 2")
+    response_format_kind(body)
     if body.get("model", MODEL) != MODEL and body.get("model") not in globals().get("ADAPTERS", {}):
         raise ValueError("This endpoint serves " + MODEL)
     stream, truncate = body.get("stream", False), body.get("truncate", False)
@@ -1684,8 +1760,10 @@ def begin_local_load():
 
 
 @timed_stage("snapshot")
-def verified_snapshot(revision):
-    """Download directly into the persistent guest cache and verify pinned weight identities."""
+def verified_snapshot(revision, select=None):
+    """Download directly into the persistent guest cache and verify pinned weight identities.
+    `select(names)` chooses the safetensors files to fetch and verify (a media pipeline's
+    components in one variant); without it, every safetensors file, or the index's shard set."""
     global SNAPSHOT_METADATA
     if MODEL_PATH:
         # The verifier's memo covers this load attempt only (begin_local_load): a path and
@@ -1703,9 +1781,9 @@ def verified_snapshot(revision):
     if metadata.sha != revision:
         raise RuntimeError("Model revision changed during download preflight")
     names = {item.rfilename for item in metadata.siblings or []}
-    weights = sorted(name for name in names if name.endswith(".safetensors"))
+    weights = sorted(select(names) if select else (name for name in names if name.endswith(".safetensors")))
     # Some repositories carry several shard sets; download only the one the index names.
-    if "model.safetensors.index.json" in names:
+    if select is None and "model.safetensors.index.json" in names:
         with open(hf_hub_download(MODEL, "model.safetensors.index.json", revision=revision), encoding="utf-8") as file:
             indexed = set(json.load(file).get("weight_map", {}).values())
         if indexed and indexed <= names:
@@ -1944,7 +2022,28 @@ def llama_json(path, body=None, timeout=30):
 # carried by GGUF and vLLM runners only and executed into this namespace before their first load.
 # Injected source must match the digest this server ships (a bundle's integrity is the catalog's,
 # re-hashed against its pin at every open); a server run from a source tree reads the file beside it.
-BACKENDS_SHA256 = "93db1a5e2d1b351397da0155a5e96102c9b1fc99726b89a60958a3ea7ec77995"
+BACKENDS_SHA256 = "d27929b259b47e3ad9a9f77f2eb79010306f7fad6a7a57b53d1dabfd0e0c8a26"
+
+
+# The media loaders and job runner (model_runner/media_backends.py), for media runners only.
+MEDIA_SHA256 = "040a24c49199a3bd96fdc14940e9aba4d5ed8ab2f29491d1117c66df4fdf372d"
+
+
+def load_media_backends():
+    if "load_media" in globals():
+        return
+    injected = globals().get("__YOUGORI_MEDIA_SOURCE__") or os.environ.get("YOUGORI_MEDIA_SOURCE")
+    beside = os.path.join(os.path.dirname(os.path.abspath(globals().get("__file__") or os.sep)), "model_runner", "media_backends.py")
+    if not injected and "media-backends" not in bundled_helpers() and "__file__" in globals() and os.path.isfile(beside):
+        with open(beside, "rb") as handle:
+            source = handle.read()
+    else:
+        source = helper_bytes("media-backends", injected)
+        if HELPERS_SERVED["media-backends"]["served"] == "source_injection" and hashlib.sha256(source).hexdigest() != MEDIA_SHA256:
+            raise RuntimeError("Bundled media backends failed integrity verification")
+    base = dict(globals())
+    exec(compile(source, "yougori-media-backends", "exec"), globals())
+    shadow_attach("media-backends", globals(), base)
 
 
 def load_backends():
@@ -1983,6 +2082,9 @@ def load_model():
             load_gguf()
         elif FORMAT == "vllm":
             load_vllm()
+        elif FORMAT == "media":
+            load_media_backends()
+            load_media()
         elif MODEL == "Cloudflare/clef":
             load_clef()
         else:
@@ -2153,6 +2255,8 @@ def runner_capabilities():
     """
     if FORMAT == "source":
         return {}
+    if FORMAT == "media":
+        return media_capabilities() if "media_capabilities" in globals() else {}
     if FORMAT in ("vllm", "gguf"):
         return backend_capabilities() if "backend_capabilities" in globals() else {}
     context = GPU_CAPACITY_CONTEXT
@@ -2161,6 +2265,7 @@ def runner_capabilities():
         "adapters": {"supported": False, "detail": "The Transformers runner loads no unmerged adapters (LoRA); only the checkpoint's own weights are served."},
         "kvReuse": {"supported": False, "detail": "The Transformers runner keeps no KV between requests; every prompt is processed in full."},
         "concurrency": {"supported": False, "slots": 1, "detail": "The Transformers runner generates one request at a time; more wait in order (requestQueue)."},
+        "structuredOutput": structured_output(),
     }
 
 
@@ -2404,6 +2509,9 @@ def generate_gguf(body, handler, meter):
     per request (InferenceQueue.reserve); each relay owns only its own backend connection."""
     messages, count, temperature, stream, truncate = validate_chat(body)
     meter["stream"] = stream
+    refused = refuse_structured_output(body, meter)
+    if refused is not None:
+        return refused
     reserved, pooled, backend = 0, INFERENCE_QUEUE.pool > 0, {}
     try:
         if not pooled:
@@ -2418,9 +2526,12 @@ def generate_gguf(body, handler, meter):
         extra = {"truncated_messages": dropped, "context_window": LLAMA["context"]} if truncate else {}
         limit = STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS
         request = {"messages": messages, "max_tokens": count, "temperature": temperature, "stream": stream}
-        for key in ("tools", "tool_choice", "parallel_tool_calls", "top_p", "stop"):
+        for key in ("tools", "tool_choice", "parallel_tool_calls", "top_p", "stop", *CHAT_SAMPLING):
             if key in body:
                 request[key] = body[key]
+        # A JSON format is enforced by the backend; text is the default.
+        if response_format_kind(body) is not None:
+            request["response_format"] = body["response_format"]
         if FORMAT == "vllm":
             request.update(model=vllm_model(body), chat_template_kwargs={"enable_thinking":False})
             if STATE.get("chatTemplate") is False: request.update(chat_template=BASE_TEMPLATE, stop=["\nuser:", "\nUser:", "\nassistant:", "\nAssistant:"])
@@ -2443,7 +2554,7 @@ def generate_gguf(body, handler, meter):
                     detail = str(json.loads(response.read(65536))["error"]["message"])[:500]
                 except (ValueError, KeyError, TypeError):
                     detail = "Generation failed. Check the model's compatibility and available GPU memory."
-                if FORMAT == "vllm": detail = "vLLM rejected the request. Check context length and checkpoint compatibility."
+                if FORMAT == "vllm": detail = "vLLM rejected the request. Check context length, response_format and checkpoint compatibility."
                 meter["outcome"] = "invalid" if response.status == 400 else "error"
                 return (400 if response.status == 400 else 500), {"error": {"message": detail}}
             if stream:
@@ -2696,6 +2807,9 @@ def generate(body, handler, meter):
     if FORMAT in ("gguf", "vllm"):
         return generate_gguf(body, handler, meter)
     messages, count, temperature, stream, truncate = validate_chat(body)
+    refused = refuse_structured_output(body, meter)
+    if refused is not None:
+        return refused
     if DECISION_MODEL:
         meter["stream"] = stream
         try:
@@ -3109,9 +3223,30 @@ class Handler(BaseHTTPRequestHandler):
         supplied = self.headers.get("X-Yougori-Admin", "")
         return bool(ADMIN_TOKEN) and supplied.isascii() and secrets.compare_digest(supplied, ADMIN_TOKEN)
 
+    def media(self, method):
+        """A media model's routes, served by the media backends once they are loaded; until
+        then a job request is told the model is still loading. False for other paths."""
+        if FORMAT != "media":
+            return False
+        if "media_route" in globals():
+            return media_route(self, method)
+        if self.path.split("?", 1)[0].startswith(("/v1/jobs", "/v1/files", "/v1/images/", "/v1/audio/", "/v1/videos", "/v1/yougori/media")):
+            self.reply(503, {"error": {"code": "model_loading", "message": "The model is still " + str(STATE.get("status")) + "; retry shortly."}})
+            return True
+        return False
+
+    def do_DELETE(self):
+        if not self.authorized():
+            return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if self.media("DELETE"):
+            return
+        self.reply(404, {"error": {"message": "Endpoint not found"}})
+
     def do_GET(self):
         if not self.authorized():
             return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if self.media("GET"):
+            return
         if self.path == "/v1/diagnostics/load":
             if not self.admin_authorized():
                 return self.reply(403, {"error": {"message": "Only the local Yougori engine can read model diagnostics"}})
@@ -3145,9 +3280,16 @@ class Handler(BaseHTTPRequestHandler):
             health["capabilities"] = runner_capabilities()
             health["helpers"] = dict(HELPERS_SERVED)
             health["helperShadow"] = shadow_snapshot()
+            if FORMAT == "media" and "media_health" in globals():
+                health.update(media_health())
             return self.reply(200, health)
         if self.path == "/v1/models":
-            return self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "local"}]})
+            # The task and enforced features, for websites and connectors reading the catalog.
+            capabilities = {"structuredOutput": structured_output()["supported"]}
+            if FORMAT == "media":
+                capabilities["media"] = os.environ.get("YOUGORI_MEDIA_TASK", "")
+            return self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "local",
+                                                                  "task": STATE.get("task") or "text-generation", "capabilities": capabilities}]})
         if self.path == "/v1/usage":
             with USAGE_LOCK:
                 usage = json.loads(json.dumps(USAGE))
@@ -3163,6 +3305,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/chat/completions":
                 record_usage(source, "rejected")
             return self.reply(401, {"error": {"message": "A model API token is required"}})
+        if self.media("POST"):
+            return
+        if FORMAT == "media" and self.path in ("/v1/chat/completions", "/v1/systemone"):
+            return self.reply(404, {"error": {"code": "task_mismatch", "message": "This model generates " + os.environ.get("YOUGORI_MEDIA_TASK", "media")
+                                              + "; submit a job to /v1/jobs, or use the images, speech or videos routes."}})
         if self.path == "/v1/diagnostics/timings":
             if not self.admin_authorized():
                 return self.reply(403, {"error": {"message": "Only the local Yougori engine can manage model observations"}})
@@ -3283,7 +3430,7 @@ class Handler(BaseHTTPRequestHandler):
             except ServingAgreementError as error:
                 meter["outcome"] = "invalid"
                 self.reply(error.status, {"error": {"code": error.code, "message": error.message}})
-            except ContextRefusal as error:
+            except (ContextRefusal, StructuredOutputRefusal) as error:
                 meter["outcome"] = "invalid"
                 self.reply(400, error.body())
             except (ValueError, TypeError):

@@ -21,7 +21,9 @@ enum Action {
 
 pub enum MenuExit { Done, NewChat }
 
-pub async fn menu(id: &str, streaming: bool) -> Result<MenuExit, String> {
+/// `json`: the launch enforces a JSON reply format (health's structuredOutput), so the examples
+/// show response_format too.
+pub async fn menu(id: &str, streaming: bool, json: bool) -> Result<MenuExit, String> {
     loop {
         if ui::interrupt_pending() { return Ok(MenuExit::Done); }
         let access = match busy("Loading API access", call("model_api_status", json!({"environmentId":id}))).await {
@@ -90,7 +92,7 @@ pub async fn menu(id: &str, streaming: bool) -> Result<MenuExit, String> {
                 .map(|_| ()),
                 None => Err("Public access is already off".into()),
             },
-            Action::Examples => examples(&access, streaming),
+            Action::Examples => examples(&access, streaming, json),
             Action::ShowKey => private_view(
                 "Model API key",
                 &format!(
@@ -226,7 +228,7 @@ const LANGUAGES: [(&str, &str); 5] = [
 
 /// Asks for the address and language in turn, shows the example and offers to copy it; each
 /// question after the first offers Back.
-fn examples(access: &Value, streaming: bool) -> Result<(), String> {
+fn examples(access: &Value, streaming: bool, json: bool) -> Result<(), String> {
     let local = access["apiUrl"].as_str().map(clean);
     let public = access["publicUrl"].as_str().map(clean);
     let Some(mut base) = local.clone().or_else(|| public.clone()) else {
@@ -267,7 +269,7 @@ fn examples(access: &Value, streaming: bool) -> Result<(), String> {
             _ => {
                 let (kind, label) = LANGUAGES[language];
                 let is_public = public.as_deref() == Some(base.as_str());
-                let snippet = example(kind, &base, &model, streaming, is_public, None);
+                let snippet = example(kind, &base, &model, streaming, is_public, None, json);
                 ui::line(&format!(
                     "{}  {}",
                     ui::muted("│"),
@@ -293,7 +295,7 @@ fn examples(access: &Value, streaming: bool) -> Result<(), String> {
                     Ok(0) => return copy(&snippet).map(|()| ui::step("Example copied")),
                     Ok(1) => {
                         let key = access["apiKey"].as_str().unwrap_or("");
-                        return copy(&example(kind, &base, &model, streaming, is_public, Some(key)))
+                        return copy(&example(kind, &base, &model, streaming, is_public, Some(key), json))
                             .map(|()| ui::step("Example with the API key copied; keep it private"));
                     }
                     Ok(_) => return Ok(()),
@@ -321,7 +323,8 @@ fn note(kind: &str) -> &'static str {
 }
 
 /// The same examples as the app's API panel. Without `key` they read YOUGORI_MODEL_API_KEY.
-fn example(kind: &str, base: &str, model: &str, streaming: bool, public: bool, key: Option<&str>) -> String {
+/// With `json` the Python and JavaScript examples also ask for a reply in a schema's shape.
+fn example(kind: &str, base: &str, model: &str, streaming: bool, public: bool, key: Option<&str>, json: bool) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
     match kind {
         // Single-quoted JSON and a trailing backslash are a POSIX shell's, which is why
@@ -343,6 +346,9 @@ fn example(kind: &str, base: &str, model: &str, streaming: bool, public: bool, k
             if streaming {
                 code.push_str(&format!("\n\n# Stream the reply as it is generated\nstream = client.chat.completions.create(\n    model=\"{model}\",\n    messages=[{{\"role\": \"user\", \"content\": \"Tell me a story.\"}}],\n    max_tokens=512,\n    stream=True,\n)\nfor chunk in stream:\n    if chunk.choices:\n        print(chunk.choices[0].delta.content or \"\", end=\"\", flush=True)"));
             }
+            if json {
+                code.push_str(&format!("\n\n# Ask for JSON in a shape the server enforces\nanswer = client.chat.completions.create(\n    model=\"{model}\",\n    messages=[{{\"role\": \"user\", \"content\": \"Is Paris the capital of France?\"}}],\n    response_format={{\"type\": \"json_schema\", \"json_schema\": {{\"name\": \"answer\", \"schema\": {{\"type\": \"object\", \"properties\": {{\"yes\": {{\"type\": \"boolean\"}}, \"why\": {{\"type\": \"string\"}}}}, \"required\": [\"yes\", \"why\"]}}, \"strict\": True}}}},\n)\nprint(answer.choices[0].message.content)  # {{\"yes\": true, \"why\": \"...\"}}"));
+            }
             code
         }
         "javascript" => {
@@ -353,14 +359,17 @@ fn example(kind: &str, base: &str, model: &str, streaming: bool, public: bool, k
             if streaming {
                 code.push_str(&format!("\n\n// Stream the reply as it is generated\nconst stream = await client.chat.completions.create({{\n  model: \"{model}\",\n  messages: [{{ role: \"user\", content: \"Tell me a story.\" }}],\n  max_tokens: 512,\n  stream: true,\n}})\nfor await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.content ?? \"\")"));
             }
+            if json {
+                code.push_str(&format!("\n\n// Ask for JSON in a shape the server enforces\nconst answer = await client.chat.completions.create({{\n  model: \"{model}\",\n  messages: [{{ role: \"user\", content: \"Is Paris the capital of France?\" }}],\n  response_format: {{ type: \"json_schema\", json_schema: {{ name: \"answer\", schema: {{ type: \"object\", properties: {{ yes: {{ type: \"boolean\" }}, why: {{ type: \"string\" }} }}, required: [\"yes\", \"why\"] }}, strict: true }} }},\n}})\nconsole.log(JSON.parse(answer.choices[0].message.content))"));
+            }
             code
         }
-        _ => skill(model, base, public, streaming, key),
+        _ => skill(model, base, public, streaming, key, json),
     }
 }
 
 /// The agent skill from the app's API panel (src/lib/model-api-skill.ts).
-fn skill(model: &str, base: &str, public: bool, streaming: bool, key: Option<&str>) -> String {
+fn skill(model: &str, base: &str, public: bool, streaming: bool, key: Option<&str>, json: bool) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
     let credentials = match key {
         Some(key) => format!("API key: {key}\n\nThe user included this key on purpose. Send it as the bearer token and keep it out of source code, commits and logs."),
@@ -372,11 +381,13 @@ fn skill(model: &str, base: &str, public: bool, streaming: bool, key: Option<&st
     } else {
         "Run requests on the PC hosting Yougori. Localhost inside another container or on an online agent is not this PC."
     };
-    let fields = if streaming {
+    let fields = format!("{}{}", if streaming {
         "Supported fields: model, messages, max_tokens (1–4096), temperature (0–2), stream. With stream:true the reply arrives as OpenAI-style server-sent events (chat.completion.chunk) ending with data: [DONE]."
     } else {
         "This model is non-streaming; use stream:false. Supported fields: model, messages, max_tokens (1–2048), temperature (0–2), stream."
-    };
+    }, if json {
+        " response_format asks for JSON: {\"type\": \"json_object\"} for any object, or {\"type\": \"json_schema\", \"json_schema\": {\"name\": ..., \"schema\": ..., \"strict\": true}} for a shape; the server holds the reply to it."
+    } else { "" });
     format!(
         "---\nname: yougori-model-api\ndescription: Call the user's Yougori Hugging Face model for text generation through its authenticated OpenAI-compatible chat API.\n---\n\n# Yougori model API\n\nModel: {model}\nAPI base URL: {base}\n\n{place} Keep Yougori and the model environment running; wait for Chat to report ready.\n\n{credentials}\n\nPOST to /chat/completions under the base URL with Authorization: Bearer <key> and Content-Type: application/json. Any OpenAI-compatible client works when given this base URL and key. {fields} Messages contain only role (system, user, assistant) and text content. Tool calling, images and other OpenAI fields are rejected.\n\nPython example (standard library):\n\n```python\nimport json\nimport os\nimport urllib.request\n\npayload = {{\n    \"model\": {},\n    \"messages\": [{{\"role\": \"user\", \"content\": \"Hello!\"}}],\n    \"max_tokens\": 256,\n    \"stream\": False,\n}}\nrequest = urllib.request.Request(\n    {},\n    data=json.dumps(payload).encode(\"utf-8\"),\n    headers={{\n        \"Authorization\": \"Bearer \" + {key_expression},\n        \"Content-Type\": \"application/json\",\n    }},\n)\nwith urllib.request.urlopen(request, timeout=600) as response:\n    result = json.load(response)\nprint(result[\"choices\"][0][\"message\"][\"content\"])\n```\n\nKeep the request under 64 KiB, with at most 128 messages and 32,768 content characters. The model's context window may be smaller. Updated GGUF and vLLM runners generate several requests together (four and eight by default); others answer one at a time. Up to 128 more wait in order for up to five minutes. Allow for queue time in your client timeout; 429 means the queue is full, and 504 means the wait or generation timed out. For 401, check the key; for 429, wait and retry once; for a loading response, check Chat/startup logs before retrying. Shorten the conversation for context or GPU memory errors. Report persistent failures instead of looping.\n",
         q(model),
@@ -442,19 +453,23 @@ mod tests {
     fn examples_match_the_app_and_keep_the_key_out_unless_asked() {
         let base = "http://127.0.0.1:8000/v1";
         for (kind, _) in LANGUAGES {
-            let text = example(kind, base, "Owner/Model", true, false, None);
+            let text = example(kind, base, "Owner/Model", true, false, None, false);
             assert!(text.contains("YOUGORI_MODEL_API_KEY"), "{kind}");
             assert!(text.contains(base), "{kind}");
-            let keyed = example(kind, base, "Owner/Model", true, false, Some("abc123"));
+            let keyed = example(kind, base, "Owner/Model", true, false, Some("abc123"), false);
             assert!(keyed.contains("abc123"), "{kind}");
+            // A launch that enforces JSON output gets the response_format example; others never mention it.
+            assert!(!text.contains("response_format"), "{kind}");
+            let json = example(kind, base, "Owner/Model", true, false, None, true);
+            assert_eq!(json.contains("response_format"), matches!(kind, "python" | "javascript" | "skill"), "{kind}");
         }
-        assert!(example("python", base, "M", true, false, None).contains("stream=True"));
-        assert!(!example("python", base, "M", false, false, None).contains("stream=True"));
-        let skill = example("skill", "https://x.trycloudflare.com/v1", "Owner/Model", false, true, None);
+        assert!(example("python", base, "M", true, false, None, false).contains("stream=True"));
+        assert!(!example("python", base, "M", false, false, None, false).contains("stream=True"));
+        let skill = example("skill", "https://x.trycloudflare.com/v1", "Owner/Model", false, true, None, false);
         assert!(skill.starts_with("---\nname: yougori-model-api"));
         assert!(skill.contains("public HTTPS address") && skill.contains("non-streaming"));
         assert!(skill.contains("\"https://x.trycloudflare.com/v1/chat/completions\""));
-        assert!(example("curl", base, "Owner/Model", true, false, None)
+        assert!(example("curl", base, "Owner/Model", true, false, None, false)
             .contains("\"model\": \"Owner/Model\""));
     }
 }

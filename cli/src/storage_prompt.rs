@@ -146,7 +146,9 @@ pub async fn prepare_args(args: &mut Vec<String>) -> Result<(), String> {
             .unwrap_or(20.0)
             .ceil()
             .max(1.0) as u32;
-        let plan = model_storage(target, quant).await?;
+        // A model from a local folder is checked against that folder, not looked up on Hugging Face.
+        let folder = args.iter().position(|a| a == "--folder").and_then(|i| args.get(i + 1)).map(|path| public::model_folder(path)).transpose()?;
+        let plan = model_storage(target, quant, folder.as_ref()).await?;
         model_support = Some(plan.supports_selection);
         (if model { 3 } else { 2 }, plan.minimum.max(requested))
     } else if env {
@@ -298,8 +300,8 @@ impl ModelStorage {
         }
     }
 }
-pub async fn model_storage(model: &str, quant: Option<&str>) -> Result<ModelStorage, String> {
-    let preflight=busy("Checking the model on Hugging Face", call("model_preflight",json!({"model":model,"quant":quant}))).await?;
+pub async fn model_storage(model: &str, quant: Option<&str>, folder: Option<&Value>) -> Result<ModelStorage, String> {
+    let preflight=busy(if folder.is_some() {"Checking the model folder"} else {"Checking the model on Hugging Face"}, call("model_preflight",json!({"model":model,"quant":quant,"folder":folder}))).await?;
     if preflight["supported"]!=true {return Err(preflight["reason"].as_str().unwrap_or("This model needs a dedicated runner").into());}
     Ok(ModelStorage::from_preflight(&preflight))
 }

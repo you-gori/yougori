@@ -31,6 +31,8 @@ pub(super) fn line(text: &str) -> Result<(), String> {
     out.flush().map_err(|e| e.to_string())
 }
 
+/// Cloned to run the Ctrl+G menu on a thread of its own while the session keeps reading output.
+#[derive(Clone)]
 pub(super) struct Context {
     id: String,
     pub name: String,

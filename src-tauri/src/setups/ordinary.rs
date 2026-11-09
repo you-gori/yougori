@@ -261,6 +261,47 @@ impl Ordinary {
         self.folder(setup).join("vault-names")
     }
 
+    /// The folders chosen for a binding that each sandbox mounts writable with the person's
+    /// agreement (`folder_consent`), as `RESOURCE/BINDING` lines, written when that sandbox is
+    /// made or changed. A change to another part converges the whole project without being asked
+    /// about them, so it reads them here; a folder not listed is mounted read only.
+    fn agreements(&self, setup: &str) -> PathBuf {
+        self.folder(setup).join("folder-agreements")
+    }
+
+    /// Keeps what this step's operation agreed to for its sandbox's mounted folders, replacing what
+    /// an earlier step of it agreed to: a folder left unticked this time is mounted read only.
+    fn remember_agreements(&self, context: &StepContext) -> Result<(), HandlerError> {
+        let path = self.agreements(&context.setup);
+        let mut kept = read_ledger(&path);
+        let mine = format!("{}/", context.resource);
+        kept.retain(|line| !line.starts_with(&mine));
+        for (binding, _, synced) in writable_folders(&context.spec) {
+            if !synced && context.consents.contains(&folder_consent(&context.resource, &binding)) {
+                kept.insert(format!("{}/{binding}", context.resource));
+            }
+        }
+        write_ledger(&path, &kept).map_err(|error| {
+            HandlerError::new(
+                Outcome::NotStarted,
+                "agreement_unsaved",
+                format!("What you agreed to for the folders of {} could not be kept, so nothing was changed: {}", context.resource, crate::lifecycle::safe_diagnostic(&error)),
+            )
+        })
+    }
+
+    /// Forgets the agreements of a sandbox that goes.
+    fn forget_agreements(&self, setup: &str, resource: &str) {
+        let path = self.agreements(setup);
+        let mut kept = read_ledger(&path);
+        let mine = format!("{resource}/");
+        let before = kept.len();
+        kept.retain(|line| !line.starts_with(&mine));
+        if kept.len() != before {
+            let _ = write_ledger(&path, &kept);
+        }
+    }
+
     /// Whether every other sandbox of the setup is running, so converging its project starts
     /// nothing that was stopped.
     fn all_running(&self, context: &StepContext) -> bool {
@@ -327,10 +368,14 @@ impl Ordinary {
             publish: BTreeMap::new(),
         };
         let mut here = Vec::new();
+        // A sandbox's own step writes what its operation agreed to before it converges, so every
+        // sandbox, its own included, mounts a chosen folder writable only as agreed.
+        let agreed = read_ledger(&self.agreements(&context.setup));
         for (id, (kind, spec)) in &resources {
             match kind {
                 Kind::Environment => {
-                    project.environments.insert(id.clone(), environment(&context.setup, id, spec, &self.folder(&context.setup).join("package"))?);
+                    let writable = |binding: &str| agreed.contains(&format!("{id}/{binding}"));
+                    project.environments.insert(id.clone(), environment(&context.setup, id, spec, &self.folder(&context.setup).join("package"), &writable)?);
                 }
                 Kind::ServicePublication => match publication(spec)? {
                     (target, Opening::Public(publication)) => {
@@ -489,10 +534,13 @@ pub(crate) fn consents(setup: &str, resource: &str, spec: &Value) -> Vec<Value> 
         .map(|(binding, path, synced)| {
             json!({
                 "id": folder_consent(resource, &binding),
+                // What leaving it unticked does: a synced folder is not synced and the step waits
+                // for the agreement; a mounted one is mounted read only.
+                "mode": if synced { "sync" } else { "mount" },
                 "message": if synced {
                     format!("Let {sandbox} change files in {path}, the folder you chose for {binding}. Changes travel both ways; a file changed in both places keeps both copies.")
                 } else {
-                    format!("Let {sandbox} change files in {path}, the folder you chose for {binding}. Anything that controls that sandbox can change those files.")
+                    format!("Let {sandbox} change files in {path}, the folder you chose for {binding}. Anything that controls that sandbox can change those files. Left unticked, the folder is mounted read only.")
                 },
             })
         })
@@ -536,10 +584,40 @@ fn interrupted_or(context: &StepContext, error: String) -> HandlerError {
     HandlerError::new(Outcome::Unknown, "project_failed", message)
 }
 
+/// `value` as a path inside the template (`./` and a trailing `/` allowed; `.` is the template's
+/// own folder), or `None` when it names something else: an absolute path, a drive, an address
+/// (`https://…`) or a built-in source (`builtin:alpine`).
+fn template_relative(value: &str) -> Option<&str> {
+    let mut rest = value.trim();
+    if rest.is_empty() || rest.contains(':') || rest.starts_with('/') || rest.starts_with('\\') {
+        return None;
+    }
+    while let Some(stripped) = rest.strip_prefix("./") {
+        rest = stripped;
+    }
+    Some(rest.trim_end_matches('/'))
+}
+
+/// A fixed path the template names, as the setup's kept copy of the package has it: the project
+/// file is written beside the setup's own records, not in the template's folder, so a path
+/// relative to the template means nothing there. Anything that is not such a path (an absolute
+/// path, an address, a built-in source) is left as it is; a relative path leaving the template
+/// is refused, as a `files:` source is.
+fn in_package(id: &str, package: &Path, value: &str) -> Result<String, HandlerError> {
+    match template_relative(value) {
+        None => Ok(value.to_owned()),
+        Some("" | ".") => Ok(package.to_string_lossy().into_owned()),
+        Some(relative) => super::package::resolve(package, relative).map(|path| path.to_string_lossy().into_owned()).map_err(|problem| invalid(format!("{id}: {problem}"))),
+    }
+}
+
 /// The v1 environment for a v2 sandbox specification. The two share their fields; the v2 `tools`
-/// are installed by the handler once the sandbox runs, secret bindings become vault names, and `files:` sources,
-/// paths inside the template, become the setup's kept copy of them (`package`).
-fn environment(setup: &str, id: &str, spec: &Value, package: &Path) -> Result<manifest::Environment, HandlerError> {
+/// are installed by the handler once the sandbox runs, secret bindings become vault names, and
+/// paths inside the template (`files:` sources, fixed `pc_access` folders, bind-volume sources and
+/// a boot `source:`) become the setup's kept copy of them (`package`). A folder the person chose
+/// is mounted writable only when `writable` says they agreed to it (`folder_consent`); otherwise
+/// it is mounted read only, never writable.
+fn environment(setup: &str, id: &str, spec: &Value, package: &Path, writable: &dyn Fn(&str) -> bool) -> Result<manifest::Environment, HandlerError> {
     let mut value = spec.clone();
     let object = value.as_object_mut().ok_or_else(|| invalid(format!("The settings of {id} are not an object.")))?;
     object.remove("tools");
@@ -548,13 +626,35 @@ fn environment(setup: &str, id: &str, spec: &Value, package: &Path) -> Result<ma
     object.remove("sync");
     if let Some(folders) = object.get_mut("pc_access").and_then(Value::as_array_mut) {
         for folder in folders.iter_mut() {
+            let Some(entry) = folder.as_object_mut() else { continue };
             // The planner put the person's folder in `path` and the binding's access in
             // `read_only`; v1 knows neither the binding nor an empty path.
-            let bound = folder.as_object_mut().and_then(|entry| entry.remove("binding"));
-            if bound.is_some() && folder["path"].as_str().unwrap_or_default().is_empty() {
-                return Err(invalid(format!("{id}: a folder you chose has no path; plan the setup again.")));
+            match entry.remove("binding") {
+                Some(binding) => {
+                    if entry.get("path").and_then(Value::as_str).unwrap_or_default().is_empty() {
+                        return Err(invalid(format!("{id}: a folder you chose has no path; plan the setup again.")));
+                    }
+                    if entry.get("read_only") == Some(&Value::Bool(false)) && !writable(binding.as_str().unwrap_or_default()) {
+                        entry.insert("read_only".into(), Value::Bool(true));
+                    }
+                }
+                None => {
+                    if let Some(path) = entry.get("path").and_then(Value::as_str).map(str::to_owned) {
+                        entry.insert("path".into(), json!(in_package(id, package, &path)?));
+                    }
+                }
             }
         }
+    }
+    if let Some(volumes) = object.get_mut("volumes").and_then(Value::as_array_mut) {
+        for volume in volumes.iter_mut().filter(|volume| volume["bind"] == true) {
+            if let Some(source) = volume["source"].as_str().map(str::to_owned) {
+                volume["source"] = json!(in_package(id, package, &source)?);
+            }
+        }
+    }
+    if let Some(source) = object.get("source").and_then(Value::as_str).map(str::to_owned) {
+        object.insert("source".into(), json!(in_package(id, package, &source)?));
     }
     if let Some(files) = object.get_mut("files").and_then(Value::as_array_mut) {
         for file in files.iter_mut() {
@@ -764,6 +864,9 @@ impl EnvironmentHandler {
 
     /// Converges the project with this sandbox, installs its tools, and says what it made.
     async fn converge(&self, context: &StepContext) -> Result<Receipt, HandlerError> {
+        // What this operation agreed to for this sandbox's mounted folders: a folder left unticked
+        // is mounted read only, now and by every later change of another part.
+        self.0.remember_agreements(context)?;
         let project = self.0.project(context, Change::Put(Kind::Environment, &context.spec))?;
         let created_before = self.own(context).is_some();
         let ids = match self.0.converge(context, &project).await {
@@ -1079,7 +1182,7 @@ impl ResourceHandler for EnvironmentHandler {
                 return Err(invalid(format!("{name} downloads its installer, so its sandbox needs internet access.")));
             }
         }
-        let mut environment = environment("setup-00000000", "check", spec, Path::new("/package"))?;
+        let mut environment = environment("setup-00000000", "check", spec, Path::new("/package"), &|_| true)?;
         // Other sandboxes are checked by the plan's own graph; this checks the sandbox itself.
         environment.depends_on.clear();
         let project = Project {
@@ -1199,6 +1302,7 @@ impl ResourceHandler for EnvironmentHandler {
             }
             let names = context.spec["secrets"].as_object().into_iter().flatten().map(|(variable, _)| secret_name(&context.setup, &context.resource, variable)).collect();
             self.0.forget(&context.setup, names).await;
+            self.0.forget_agreements(&context.setup, &context.resource);
             if project.environments.is_empty() {
                 self.0.sweep(&context.setup).await;
             }
@@ -2639,7 +2743,7 @@ mod tests {
             "volumes": [{"source": "data", "target": "/data"}]
         });
         let package = Path::new("/setups/projects/setup-1/package");
-        let converted = environment("setup-6f1c2a1e-1b55-4c55-9a64-2d4a0b5c3e10", "app", &spec, package).unwrap();
+        let converted = environment("setup-6f1c2a1e-1b55-4c55-9a64-2d4a0b5c3e10", "app", &spec, package, &|_| false).unwrap();
         assert!(converted.secrets["APP_SECRET"].starts_with("setup-6f1c2a1e-app-app_secret-"));
         assert_ne!(converted.secrets["STORED"], "hub-site-key-codex", "never a stored entry by the template's name");
         assert!(!converted.secrets.contains_key("UNSET"));
@@ -2654,10 +2758,109 @@ mod tests {
         assert!(long.len() <= 80 && yougori_cli::workload::identifier(&long));
         assert_ne!(secret_name("setup-1", "app", "KEY"), secret_name("setup-1", "app", "key"));
         let files = json!({"type": "container", "image": "x", "files": [{"source": "./app", "target": "/app"}]});
-        let copied = environment("setup-1", "app", &files, package).unwrap();
+        let copied = environment("setup-1", "app", &files, package, &|_| false).unwrap();
         assert_eq!(Path::new(&copied.files[0].source), package.join("app"), "a template path becomes the kept copy");
         let escaping = json!({"type": "container", "image": "x", "files": [{"source": "../../secrets", "target": "/app"}]});
-        assert_eq!(environment("setup-1", "app", &escaping, package).unwrap_err().code, "invalid_spec");
+        assert_eq!(environment("setup-1", "app", &escaping, package, &|_| false).unwrap_err().code, "invalid_spec");
+    }
+
+    /// A step of `resource` with `peers`, the setup's other sandboxes as recorded.
+    fn step_for(setup: &str, resource: &str, spec: Value, peers: &[(&str, Value)]) -> StepContext {
+        let mut step = syncing_step(setup, resource, Path::new("/unused"), false);
+        step.spec = spec;
+        step.peers = peers
+            .iter()
+            .map(|(id, spec)| ((*id).to_owned(), super::super::handler::Peer { kind: Kind::Environment, spec: spec.clone(), runtime_id: None, owned: true }))
+            .collect();
+        step
+    }
+
+    /// PROVES a folder the person chose is mounted writable only with their agreement: left
+    /// unticked on the review, it is mounted read only, never writable; a read-only folder needs
+    /// none, and the agreement a sandbox's own step was given is what later changes of other parts
+    /// converge it with.
+    #[test]
+    fn a_writable_mount_without_the_persons_agreement_is_mounted_read_only() {
+        let spec = json!({
+            "type": "container",
+            "image": "x",
+            "pc_access": [
+                {"binding": "code", "path": "C:/Users/ada/code", "read_only": false, "target": "/code"},
+                {"binding": "notes", "path": "C:/Users/ada/notes", "read_only": true, "target": "/notes"}
+            ]
+        });
+        let package = Path::new("/setups/projects/setup-1/package");
+        let refused = environment("setup-1", "app", &spec, package, &|_| false).unwrap();
+        assert!(refused.pc_access.iter().all(|folder| folder.read_only), "{:?}", refused.pc_access);
+        let agreed = environment("setup-1", "app", &spec, package, &|binding| binding == "code").unwrap();
+        let code = agreed.pc_access.iter().find(|folder| folder.path == "C:/Users/ada/code").unwrap();
+        let notes = agreed.pc_access.iter().find(|folder| folder.path == "C:/Users/ada/notes").unwrap();
+        assert!(!code.read_only && notes.read_only, "{:?}", agreed.pc_access);
+        // The review says what leaving it unticked does.
+        let asked = consents("setup-1", "app", &spec);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0]["id"], folder_consent("app", "code"));
+        assert_eq!(asked[0]["mode"], "mount", "a client can tell a mount, which goes on read only, from a sync, which waits");
+        assert!(asked[0]["message"].as_str().unwrap().contains("Left unticked, the folder is mounted read only."));
+
+        // What a sandbox's own step agreed to is kept for the changes of other parts, and a later
+        // step of it without the agreement takes it back.
+        let state = tempfile::tempdir().unwrap();
+        let ordinary = Ordinary::new(Arc::new(fake::FakeProjects::default()), state.path().to_path_buf());
+        let mut step = step_for("setup-1", "app", spec.clone(), &[]);
+        ordinary.remember_agreements(&step).unwrap();
+        assert!(read_ledger(&ordinary.agreements("setup-1")).is_empty());
+        step.consents = Arc::new([folder_consent("app", "code")].into_iter().collect());
+        ordinary.remember_agreements(&step).unwrap();
+        assert_eq!(read_ledger(&ordinary.agreements("setup-1")).into_iter().collect::<Vec<_>>(), ["app/code"]);
+        let project = ordinary.project(&step_for("setup-1", "web", json!({}), &[("app", spec.clone())]), Change::Leave).unwrap();
+        assert!(!project.environments["app"].pc_access.iter().find(|folder| folder.path == "C:/Users/ada/code").unwrap().read_only, "another part's change keeps the agreed mount");
+        step.consents = Arc::new(Default::default());
+        ordinary.remember_agreements(&step).unwrap();
+        let project = ordinary.project(&step_for("setup-1", "web", json!({}), &[("app", spec)]), Change::Leave).unwrap();
+        assert!(project.environments["app"].pc_access.iter().all(|folder| folder.read_only), "unticked the next time, read only again");
+        ordinary.forget_agreements("setup-1", "app");
+        assert!(read_ledger(&ordinary.agreements("setup-1")).is_empty());
+    }
+
+    /// PROVES fixed folders and files the template names by a relative path reach the project as
+    /// the setup's kept copy of the package (the project file is written elsewhere, where they
+    /// would not exist), while absolute paths, addresses, built-in sources and the person's own
+    /// folders are left as they are, and a relative path leaving the template is refused.
+    #[test]
+    fn fixed_template_paths_become_the_kept_package_copy() {
+        let package = Path::new("/setups/projects/setup-1/package");
+        let spec = json!({
+            "type": "vm",
+            "source": "./images/guest.qcow2",
+            "image": "",
+            "pc_access": [
+                {"path": "./docs", "read_only": true},
+                {"path": "/srv/shared", "read_only": true},
+                {"binding": "code", "path": "C:/Users/ada/code", "read_only": true}
+            ],
+            "volumes": [
+                {"source": "assets/", "target": "/assets", "bind": true},
+                {"source": ".", "target": "/template", "bind": true, "read_only": true},
+                {"source": "data", "target": "/data"}
+            ]
+        });
+        let converted = environment("setup-1", "app", &spec, package, &|_| false).unwrap();
+        assert_eq!(Path::new(converted.source.as_deref().unwrap()), package.join("images").join("guest.qcow2"));
+        let paths: Vec<&str> = converted.pc_access.iter().map(|folder| folder.path.as_str()).collect();
+        assert_eq!(Path::new(paths[0]), package.join("docs"));
+        assert_eq!(paths[1], "/srv/shared", "an absolute path is left alone");
+        assert_eq!(paths[2], "C:/Users/ada/code", "the person's folder is left alone");
+        assert_eq!(Path::new(&converted.volumes[0].source), package.join("assets"));
+        assert_eq!(Path::new(&converted.volumes[1].source), package, "the template's own folder");
+        assert_eq!(converted.volumes[2].source, "data", "a named volume is a name, not a path");
+        for kept in ["builtin:alpine", "https://example.com/guest.iso", "C:/images/guest.qcow2", "/images/guest.qcow2"] {
+            let spec = json!({"type": "vm", "source": kept, "image": ""});
+            assert_eq!(environment("setup-1", "app", &spec, package, &|_| false).unwrap().source.as_deref(), Some(kept), "{kept}");
+        }
+        for escaping in [json!({"type": "vm", "source": "../guest.qcow2", "image": ""}), json!({"type": "container", "image": "x", "pc_access": [{"path": "../../etc", "read_only": true}]}), json!({"type": "container", "image": "x", "volumes": [{"source": "a/../../b", "target": "/b", "bind": true}]})] {
+            assert_eq!(environment("setup-1", "app", &escaping, package, &|_| false).unwrap_err().code, "invalid_spec", "{escaping}");
+        }
     }
 
     #[test]

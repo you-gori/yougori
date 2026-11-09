@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { runpodApi, type EndpointRequest, type HubInput, type HubRepo, type HubRepoDetails, type RunpodAccount, type RunpodCatalog } from "@/api/runpod-api"
+import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { gpuPools, suggestName, validName } from "@/lib/runpod"
@@ -21,6 +22,9 @@ export function EndpointWorkbench(props: EndpointProps) {
   const [loadError, setLoadError] = useState("")
   const [repo, setRepo] = useState<HubRepo | null>(null)
   const [details, setDetails] = useState<HubRepoDetails | null>(null)
+  // A model's settings that failed to load say why on its own step, and can be asked for again.
+  const [detailError, setDetailError] = useState("")
+  const [detailAttempt, setDetailAttempt] = useState(0)
   const [values, setValues] = useState<Record<string, string>>({})
   const [gpuId, setGpuId] = useState("")
   const [workersMax, setWorkersMax] = useState(1)
@@ -42,13 +46,14 @@ export function EndpointWorkbench(props: EndpointProps) {
     if (!repo) return
     let alive = true
     setDetails(null)
+    setDetailError("")
     void runpodApi.hubRepo(repo.id).then(d => {
       if (!alive) return
       setDetails(d)
       setValues(Object.fromEntries(d.inputs.map(i => [i.key, initial(i)])))
-    }).catch(e => { if (alive) setLoadError(String(e)) })
+    }).catch(e => { if (alive) setDetailError(String(e)) })
     return () => { alive = false }
-  }, [repo])
+  }, [repo, detailAttempt])
   useEffect(() => { if (!nameTouched) setName(suggestName([repo?.title ?? "endpoint"], taken)) }, [nameTouched, repo, taken])
 
   const shown = useMemo(() => (repos ?? []).filter(r => !category || r.category === category), [category, repos])
@@ -87,7 +92,7 @@ export function EndpointWorkbench(props: EndpointProps) {
       <Pills<string> label="Category" value={category} options={categories} onChange={setCategory} />
       <Input className="neo-input neo-search" aria-label="Search models and apps" placeholder="Search, for example Whisper, Flux or Llama" value={search} onChange={e => setSearch(e.target.value)} />
       <div className="neo-grid is-wide">
-        {shown.map((r, i) => <Tile key={r.id} selected={repo?.id === r.id} label={`Use ${r.title}`} onSelect={() => { setRepo(r); setStep(1) }}
+        {shown.map((r, i) => <Tile key={r.id} selected={repo?.id === r.id} label={`Use ${r.title}`} onSelect={() => { setRepo(r); setDetailAttempt(attempt => attempt + 1); setStep(1) }}
           title={r.title} badge={i === 0 && !search && !category ? <Badge tone="primary">Most used</Badge> : categoryNames[r.category] ? <Badge>{categoryNames[r.category]}</Badge> : null}
           meta={`${r.deploys.toLocaleString()} deployments`}>
           {r.description}
@@ -98,7 +103,7 @@ export function EndpointWorkbench(props: EndpointProps) {
     </div> : null}
 
     {step === 1 && repo ? <div className="neo-stack">
-      {!details ? <p role="status" className="neo-note">Loading its settings…</p> : <>
+      {!details ? detailError ? <div className="neo-stack"><p role="alert" className="neo-error">{detailError}</p><div><Button size="sm" variant="outline" onClick={() => setDetailAttempt(attempt => attempt + 1)}>Try again</Button></div></div> : <p role="status" className="neo-note">Loading its settings…</p> : <>
         {!details.ready ? <p role="alert" className="neo-error">This one has no finished build yet. Choose another.</p> : null}
         <div className="neo-fields">{required.map(field)}</div>
         <div className="neo-fields">

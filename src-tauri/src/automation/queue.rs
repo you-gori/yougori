@@ -876,6 +876,8 @@ impl Control {
                 | "vault_summary"
                 | "model_chat_begin"
                 | "model_chat_read"
+                | "model_job"
+                | "model_file"
                 | "get_startup_report"
                 | "get_settings_snapshot"
                 | "guest_execution_output"

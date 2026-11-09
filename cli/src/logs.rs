@@ -50,7 +50,8 @@ pub async fn read(id:&str,mut options:Options)->Result<Value,String>{
         if options.last_error{
             let text=window["stdout"].as_str().unwrap_or("");
             let last=text.lines().filter(|line|{let line=line.to_ascii_lowercase();["error","failed","panic","exception"].iter().any(|word|line.contains(word))}).next_back().unwrap_or("").to_owned();
-            window["stdout"]=last.into();
+            // Followed at a terminal, each window's error is a line of its own; a window without one adds nothing.
+            window["stdout"]=if options.follow&&!last.is_empty(){format!("{last}\n")}else{last}.into();
         }
         window["id"]=id.into();window["logs"]=window["stdout"].clone();
         if !options.follow{return Ok(window);}

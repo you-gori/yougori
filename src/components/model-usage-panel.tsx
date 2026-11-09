@@ -45,6 +45,9 @@ export function ModelUsagePanel({ environmentId }: { environmentId: string }) {
   const peak = Math.max(1, ...days.map(day => day.requests))
   const recent = [...usage.recent].reverse().slice(0, 25)
   const tip = hovered === null ? null : days[hovered]!
+  // A media model counts images and seconds of output and GPU time instead of tokens.
+  const media = (usage.totals.images ?? 0) > 0 || (usage.totals.output_ms ?? 0) > 0
+  const seconds = (ms: number | undefined) => `${((ms ?? 0) / 1000).toFixed(1)}`
 
   return <section className="model-usage" aria-label="Model usage">
     <div className="model-usage-bar">
@@ -57,9 +60,15 @@ export function ModelUsagePanel({ environmentId }: { environmentId: string }) {
 
     <div className="model-usage-tiles">
       <div><span className="model-label">Requests</span><strong>{number(totals.requests)}</strong><small>{number(totals.yougori ?? 0)} chat · {number(totals.api ?? 0)} API</small></div>
-      <div><span className="model-label">Tokens in</span><strong>{compact(totals.prompt_tokens)}</strong><small>Prompts and history</small></div>
-      <div><span className="model-label">Tokens out</span><strong>{compact(totals.completion_tokens)}</strong><small>Generated replies</small></div>
-      <div><span className="model-label">Speed</span><strong>{speed === null ? "—" : `${speed.toFixed(1)}`}</strong><small>{inputSpeed ? "Input tokens per second" : "Tokens per second"}</small></div>
+      {media ? <>
+        <div><span className="model-label">Images</span><strong>{number(totals.images ?? 0)}</strong><small>Generated images</small></div>
+        <div><span className="model-label">Output seconds</span><strong>{seconds(totals.output_ms)}</strong><small>Video and audio made</small></div>
+        <div><span className="model-label">GPU seconds</span><strong>{seconds(totals.compute_ms)}</strong><small>Time generating</small></div>
+      </> : <>
+        <div><span className="model-label">Tokens in</span><strong>{compact(totals.prompt_tokens)}</strong><small>Prompts and history</small></div>
+        <div><span className="model-label">Tokens out</span><strong>{compact(totals.completion_tokens)}</strong><small>Generated replies</small></div>
+        <div><span className="model-label">Speed</span><strong>{speed === null ? "—" : `${speed.toFixed(1)}`}</strong><small>{inputSpeed ? "Input tokens per second" : "Tokens per second"}</small></div>
+      </>}
       <div><span className="model-label">Problems</span><strong>{number(totals.errors + totals.rejected)}</strong><small>{number(totals.errors)} failed · {number(totals.rejected)} wrong key</small></div>
     </div>
 
@@ -84,17 +93,22 @@ export function ModelUsagePanel({ environmentId }: { environmentId: string }) {
     <div className="model-usage-recent">
       <h3>Recent requests</h3>
       {recent.length ? <div className="md-table"><table>
-        <thead><tr><th>Time</th><th>From</th><th>Result</th><th>In</th><th>Out</th><th>Speed</th><th>Duration</th></tr></thead>
+        <thead><tr><th>Time</th><th>From</th><th>Result</th>{media ? <><th>Images</th><th>Output</th></> : <><th>In</th><th>Out</th><th>Speed</th></>}<th>Duration</th></tr></thead>
         <tbody>{recent.map((request, i) => <tr key={`${request.time}-${i}`}>
           <td>{new Date(request.time * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</td>
-          <td>{request.source === "yougori" ? "Chat" : "API"}</td>
+          <td>{request.source === "yougori" ? (media ? "App" : "Chat") : "API"}</td>
           <td data-outcome={request.outcome}>{OUTCOMES[request.outcome] ?? request.outcome}</td>
-          <td>{number(request.prompt_tokens)}</td>
-          <td>{number(request.completion_tokens)}</td>
-          <td>{request.outcome === "ok" && request[speedField] && request.seconds ? `${(request[speedField] / request.seconds).toFixed(1)} ${inputSpeed ? "input " : ""}tok/s` : "—"}</td>
+          {media ? <>
+            <td>{number(request.images ?? 0)}</td>
+            <td>{request.output_ms ? `${seconds(request.output_ms)} s` : "—"}</td>
+          </> : <>
+            <td>{number(request.prompt_tokens)}</td>
+            <td>{number(request.completion_tokens)}</td>
+            <td>{request.outcome === "ok" && request[speedField] && request.seconds ? `${(request[speedField] / request.seconds).toFixed(1)} ${inputSpeed ? "input " : ""}tok/s` : "—"}</td>
+          </>}
           <td>{request.seconds ? `${request.seconds.toFixed(1)} s` : "—"}</td>
         </tr>)}</tbody>
-      </table></div> : <p className="model-hint">No requests yet. Chat with the model or call its API to see usage here.</p>}
+      </table></div> : <p className="model-hint">{media ? "No jobs yet. Generate something or call the model's API to see usage here." : "No requests yet. Chat with the model or call its API to see usage here."}</p>}
     </div>
 
     <div className="model-usage-footer">

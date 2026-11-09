@@ -228,9 +228,105 @@ pub(crate) async fn preflight_pinned(model:&str,quant:Option<&str>,revision:Opti
     let token_required=hub_token_required(&metadata);
     if let Some((label,chosen))=gguf_choice(&files,quant)?{let mut result=inspect_gguf(model,&metadata,&label,&chosen);result["hubTokenRequired"]=json!(token_required);result["resources"]["gguf"]=remote_gguf_facts(&client,model,sha,&chosen).await.unwrap_or(Value::Null);return Ok(result)}
     if quant.is_some(){return Err(format!("{model} has no GGUF files; --quant chooses a GGUF quantization"))}
+    // A Diffusers pipeline (images, video, sound) has model_index.json where a Transformers
+    // checkpoint has config.json; a text-to-speech checkpoint has config.json with its own types.
+    if files.iter().any(|f|f["rfilename"]=="model_index.json"){
+        let index=fetch_metadata(&client,format!("https://huggingface.co/{model}/resolve/{sha}/model_index.json"),model).await?;
+        let mut result=inspect_media(model,&metadata,&index);result["hubTokenRequired"]=json!(token_required);
+        return Ok(result)
+    }
     let config=fetch_metadata(&client,format!("https://huggingface.co/{model}/resolve/{sha}/config.json"),model).await?;
-    let mut result=inspect(model,&metadata,&config);result["hubTokenRequired"]=json!(token_required);
+    let speech=metadata["pipeline_tag"]=="text-to-speech"||matches!(config["model_type"].as_str(),Some("vits"|"bark"|"speecht5"));
+    let mut result=if speech{inspect_speech(model,&metadata,&config)}else{inspect(model,&metadata,&config)};
+    result["hubTokenRequired"]=json!(token_required);
     Ok(result)
+}
+/// The kinds of media model the media runner serves (format "media"): Diffusers pipelines for
+/// images, video and sound, and Transformers text-to-speech.
+pub(crate) const MEDIA_TASKS:[&str;6]=["text-to-image","image-to-image","text-to-video","image-to-video","text-to-audio","text-to-speech"];
+/// What a Diffusers pipeline generates, from its class name: the class decides the inputs the
+/// runner gives it, so it wins over the repository's pipeline tag. None for pipelines whose
+/// inputs the runner does not give (inpainting masks, ControlNet conditions, upscalers).
+fn media_task_of(class_name:&str,tag:&str)->Option<&'static str>{
+    let name=class_name.to_ascii_lowercase();
+    if !name.ends_with("pipeline")||name.contains("inpaint")||name.contains("controlnet")||name.contains("upscale")||name.contains("adapter"){return None}
+    if name.contains("imagetovideo")||name.contains("image2video")||name.contains("img2vid")||name.contains("i2v")||name.contains("stablevideodiffusion"){return Some("image-to-video")}
+    // Video families whose class names do not say "video": LTX, Wan, Mochi, Allegro, Latte, SkyReels.
+    if ["video","ltx","wan","mochi","allegro","latte","skyreels","texttoworld"].iter().any(|family|name.contains(family)){return Some("text-to-video")}
+    if name.contains("img2img")||name.contains("imagetoimage")||name.contains("image2image"){return Some("image-to-image")}
+    if name.contains("audio")||name.contains("music"){return Some("text-to-audio")}
+    Some(if tag=="image-to-image"{"image-to-image"}else{"text-to-image"})
+}
+/// The safetensors files a pipeline's components need, in one variant for all of them (fp16
+/// where every component has it, else the plain files), and their bytes: what media_backends.py
+/// (`media_plan`) downloads. Single-file checkpoints at the root and folders the index does not
+/// name are left on the Hub.
+fn media_weights(files:&[Value],index:&Value)->(Vec<String>,Option<&'static str>,u64){
+    let components:Vec<&str>=index.as_object().into_iter().flatten()
+        .filter(|(key,value)|!key.starts_with('_')&&value.as_array().is_some_and(|parts|parts.len()==2&&parts[0].is_string()&&parts[1].is_string()))
+        .map(|(key,_)|key.as_str()).collect();
+    let mut per:Vec<Vec<(&str,u64)>>=Vec::new();
+    for component in &components{
+        let prefix=format!("{component}/");
+        let own:Vec<(&str,u64)>=files.iter().filter_map(|f|{
+            let name=f["rfilename"].as_str()?;
+            (name.starts_with(&prefix)&&name.ends_with(".safetensors")).then(||(name,f["lfs"]["size"].as_u64().or(f["size"].as_u64()).unwrap_or(0)))
+        }).collect();
+        if !own.is_empty(){per.push(own)}
+    }
+    let fp16=!per.is_empty()&&per.iter().all(|own|own.iter().any(|(name,_)|name.contains(".fp16.")));
+    let (mut weights,mut bytes)=(Vec::new(),0u64);
+    for own in per{
+        let plain:Vec<&(&str,u64)>=own.iter().filter(|(name,_)|!name.contains(".fp16.")&&!name.contains(".bf16.")&&!name.contains(".fp32.")).collect();
+        let chosen:Vec<&(&str,u64)>=if fp16{own.iter().filter(|(name,_)|name.contains(".fp16.")).collect()}else if plain.is_empty(){own.iter().collect()}else{plain};
+        for (name,size) in chosen{weights.push((*name).to_owned());bytes+=size;}
+    }
+    weights.sort();
+    (weights,fp16.then_some("fp16"),bytes)
+}
+/// A Diffusers pipeline repository (model_index.json): its task from the pipeline class, the
+/// files its components need and the resources they take.
+pub(crate) fn inspect_media(model:&str,metadata:&Value,index:&Value)->Value{
+    let files=metadata["siblings"].as_array().cloned().unwrap_or_default();
+    let class=index["_class_name"].as_str().unwrap_or("").to_owned();
+    let tag=metadata["pipeline_tag"].as_str().unwrap_or("unknown");
+    let task=media_task_of(&class,tag);
+    let (weights,variant,bytes)=media_weights(&files,index);
+    let supported=task.is_some()&&!weights.is_empty();
+    let gb=bytes as f64/1073741824.0;
+    let video=task.is_some_and(|t|t.contains("video"));
+    let heavy=video||task==Some("text-to-audio");
+    let vram=(gb*if variant.is_some(){1.0}else{0.5}+if video{4.0}else{2.0}).ceil();
+    let reason=if task.is_none(){"This pipeline's class is not one the media runner generates with; inpainting, ControlNet, adapters and upscalers need inputs it does not give"}
+        else if weights.is_empty(){"No safetensors weights were found for the pipeline's components; the media runner does not load pickle checkpoints"}
+        else{"A Diffusers pipeline; the media runner serves it through asynchronous jobs (/v1/jobs) and the OpenAI-shaped route of its kind"};
+    json!({"model":model,"task":task.unwrap_or(if MEDIA_TASKS.contains(&tag){tag}else{"text-to-image"}),"modelType":class,"pipeline":class,"variant":variant,"supported":supported,
+        "runner":if supported{"yougori-diffusers"}else{"dedicatedRunnerRequired"},"format":"media","reason":reason,"revision":metadata["sha"],
+        "dependencies":if supported{json!({"applicable":true,"pythonMinimum":"3.10","diffusers":"0.42.1","transformers":"5.18.0","accelerate":"1.15.0","huggingfaceHub":"1.33.0","pytorch":"2.8.0","cuda":"12.8","additionalRepositoryDependenciesVerified":false})}else{json!({"applicable":false,"requiresDedicatedSdk":true,"pythonMinimum":null})},
+        "resources":{"cpuRecommended":4,"memoryGbRecommended":if heavy{16}else{8},"storageGbRecommended":(gb*1.15+12.0).ceil(),"gpuMemoryGbEstimated":vram,"weightsBytes":bytes,"estimateOnly":true},
+        "downloads":{"location":"persistent guest model volume","revisionPinned":true,"safetensorsOnly":true,"checksumVerification":"requiredBeforeLoad","checksumsVerified":false,"hostWeightImportRequired":false,"files":weights.len()},
+        "remoteCodeAllowed":false,"supportAvailable":false,"architectures":[class]})
+}
+/// A Transformers text-to-speech checkpoint (config.json): VITS (the MMS voices) and Bark run
+/// on the media runner's speech pipeline; SpeechT5 needs a vocoder and speaker embedding it
+/// does not assemble.
+pub(crate) fn inspect_speech(model:&str,metadata:&Value,config:&Value)->Value{
+    let files=metadata["siblings"].as_array().cloned().unwrap_or_default();
+    let model_type=config["model_type"].as_str().unwrap_or("unknown").to_owned();
+    let bytes=files.iter().filter(|f|f["rfilename"].as_str().is_some_and(|s|s.ends_with(".safetensors")&&!s.contains('/'))).filter_map(|f|f["lfs"]["size"].as_u64().or(f["size"].as_u64())).sum::<u64>();
+    let family=matches!(model_type.as_str(),"vits"|"bark");
+    let supported=family&&bytes>0;
+    let reason=if supported{"A Transformers text-to-speech checkpoint; the media runner serves it through jobs (/v1/jobs) and /v1/audio/speech"}
+        else if model_type=="speecht5"{"SpeechT5 needs a separate vocoder and a speaker embedding, which the media runner does not assemble"}
+        else if family{"No safetensors weights were found; the media runner does not load pickle checkpoints"}
+        else{"The media runner's text-to-speech serves VITS (MMS) and Bark checkpoints"};
+    let gb=bytes as f64/1073741824.0;
+    json!({"model":model,"task":"text-to-speech","modelType":model_type,"pipeline":"text-to-speech","variant":null,"supported":supported,
+        "runner":if supported{"yougori-speech"}else{"dedicatedRunnerRequired"},"format":"media","reason":reason,"revision":metadata["sha"],
+        "dependencies":if supported{json!({"applicable":true,"pythonMinimum":"3.10","transformers":"5.18.0","accelerate":"1.15.0","huggingfaceHub":"1.33.0","pytorch":"2.8.0","cuda":"12.8","additionalRepositoryDependenciesVerified":false})}else{json!({"applicable":false,"requiresDedicatedSdk":true,"pythonMinimum":null})},
+        "resources":{"cpuRecommended":2,"memoryGbRecommended":8,"storageGbRecommended":(gb*1.15+12.0).ceil(),"gpuMemoryGbEstimated":(gb*2.0+2.0).ceil(),"weightsBytes":bytes,"estimateOnly":true},
+        "downloads":{"location":"persistent guest model volume","revisionPinned":true,"safetensorsOnly":true,"checksumVerification":"requiredBeforeLoad","checksumsVerified":false,"hostWeightImportRequired":false},
+        "remoteCodeAllowed":false,"supportAvailable":false,"architectures":config["architectures"].as_array().into_iter().flatten().take(4).cloned().collect::<Vec<_>>()})
 }
 #[tauri::command]
 pub async fn model_preflight(model:String,quant:Option<String>,folder:Option<String>,window:crate::WebviewWindow)->Result<Value,String>{
@@ -246,6 +342,33 @@ pub async fn model_support_task(model:String,agent:String,quant:Option<String>)-
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[test] fn diffusers_pipelines_take_their_task_from_the_class_and_one_variant_of_their_components() {
+        let file=|name:&str,size:u64|json!({"rfilename":name,"lfs":{"size":size}});
+        let meta=json!({"sha":"a".repeat(40),"pipeline_tag":"text-to-image","siblings":[file("sd_turbo.safetensors",5),file("unet/diffusion_pytorch_model.safetensors",4),file("unet/diffusion_pytorch_model.fp16.safetensors",2),file("vae/diffusion_pytorch_model.safetensors",2),file("vae/diffusion_pytorch_model.fp16.safetensors",1),file("text_encoder/model.safetensors",2),file("text_encoder/model.fp16.safetensors",1),file("comfy/x.safetensors",9)]});
+        let index=json!({"_class_name":"StableDiffusionPipeline","unet":["diffusers","UNet2DConditionModel"],"vae":["diffusers","AutoencoderKL"],"text_encoder":["transformers","CLIPTextModel"],"tokenizer":["transformers","CLIPTokenizer"],"safety_checker":[null,null]});
+        let result=inspect_media("stabilityai/sd-turbo",&meta,&index);
+        assert_eq!((&result["supported"],&result["task"],&result["runner"],&result["format"],&result["variant"]),(&json!(true),&json!("text-to-image"),&json!("yougori-diffusers"),&json!("media"),&json!("fp16")));
+        assert_eq!(result["resources"]["weightsBytes"],4,"the fp16 files of the three components");
+        assert_eq!(result["downloads"]["files"],3);
+        assert_eq!(result["resources"]["memoryGbRecommended"],8);
+        // The class decides the task, not the repository's tag; a video pipeline needs more memory.
+        let video=inspect_media("x/y",&json!({"sha":"b".repeat(40),"pipeline_tag":"image-to-video","siblings":[file("transformer/diffusion_pytorch_model-00001-of-00002.safetensors",10),file("transformer/diffusion_pytorch_model-00002-of-00002.safetensors",5)]}),&json!({"_class_name":"LTXPipeline","transformer":["diffusers","T"]}));
+        assert_eq!((&video["task"],&video["resources"]["memoryGbRecommended"],&video["resources"]["weightsBytes"],&video["variant"]),(&json!("text-to-video"),&json!(16),&json!(15),&Value::Null));
+        let inpaint=inspect_media("x/y",&meta,&json!({"_class_name":"StableDiffusionInpaintPipeline","unet":["diffusers","U"]}));
+        assert_eq!(inpaint["supported"],false);
+        let empty=inspect_media("x/y",&json!({"sha":"c".repeat(40),"siblings":[file("model.safetensors",1)]}),&json!({"_class_name":"AudioLDM2Pipeline","unet":["diffusers","U"]}));
+        assert_eq!((&empty["supported"],&empty["task"]),(&json!(false),&json!("text-to-audio")));
+    }
+    #[test] fn speech_checkpoints_are_vits_or_bark_with_safetensors() {
+        let meta=json!({"sha":"a".repeat(40),"pipeline_tag":"text-to-speech","siblings":[{"rfilename":"model.safetensors","lfs":{"size":145227512u64}},{"rfilename":"pytorch_model.bin","lfs":{"size":1}}]});
+        let vits=inspect_speech("facebook/mms-tts-eng",&meta,&json!({"model_type":"vits","architectures":["VitsModel"]}));
+        assert_eq!((&vits["supported"],&vits["runner"],&vits["task"],&vits["resources"]["weightsBytes"]),(&json!(true),&json!("yougori-speech"),&json!("text-to-speech"),&json!(145227512u64)));
+        let speecht5=inspect_speech("microsoft/speecht5_tts",&meta,&json!({"model_type":"speecht5"}));
+        assert_eq!(speecht5["supported"],false);
+        assert!(speecht5["reason"].as_str().unwrap().contains("vocoder"));
+        let none=inspect_speech("x/y",&json!({"sha":"a".repeat(40),"siblings":[]}),&json!({"model_type":"bark"}));
+        assert_eq!(none["supported"],false);
+    }
     #[test] fn custom_native_text_models_and_kolibri_use_vllm_without_enabling_arbitrary_code() {
         let metadata=json!({"sha":"a".repeat(40),"pipeline_tag":"text-generation","siblings":[{"rfilename":"model.safetensors","size":78103074560u64}]});
         for config in [json!({"model_type":"kolibri1","architectures":["Kolibri1ForCausalLM"]}),json!({"model_type":"internlm2","architectures":["InternLM2ForCausalLM"]})] {

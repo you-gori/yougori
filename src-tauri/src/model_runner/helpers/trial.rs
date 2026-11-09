@@ -760,6 +760,7 @@ async fn stream(
         Some(MAX_TOKENS),
         Some(0.0),
         true,
+        None,
     )?;
     let cancel = tokio::sync::Notify::new();
     let mut text = String::new();

@@ -180,6 +180,31 @@ class ComputeFlow(Flow):
         self.assertEqual(fallback["models"][0]["id"], "env-model")
         self.assertIsNone(fallback["telemetry"]["cpu_percent"])
 
+    def test_adapter_reports_slots_and_enforced_json_output_from_the_model_servers_health(self):
+        """A shared model's inventory carries what its server's health says of its launch, read
+        once a minute: the requests it generates together and whether it enforces a JSON reply
+        format; the website's catalog shows the model JSON-capable from that report alone."""
+        adapter = Adapter("unused", Path(self.temp.name) / "facts", controller=True)
+        def call(method, **params):
+            if method in ("get_platform_state", "refresh_host_metrics"):
+                return {"environments": [{"id": "env-model", "kind": "container", "status": "running", "description": "Hugging Face · test/one"}]}
+            return {"model": "test/one", "apiUrl": self.model_url, "apiKey": UPSTREAM_KEY}
+        adapter.call = call
+        adapter.shared.add("env-model")
+        self.model.health = {"requestQueue": {"slots": 4}, "capabilities": {"structuredOutput": {"supported": True, "detail": "fixture"}}}
+        item = adapter.inventory()["models"][0]
+        self.assertEqual((item["slots"], item["json"]), (4, True))
+        # The health route is read once a minute, not per inventory.
+        self.model.health = {}
+        self.assertEqual(adapter.inventory()["models"][0]["json"], True)
+        token, pair = self.pair_node()
+        self.call("/api/compute/pair/approve", {"code": pair["code"]}, self.admin)
+        self.assertEqual(self.agent(token, "inventory", models=[{"id": "env-one", "name": "test/one", "state": "ready", "shared": True, "slots": 4, "json": True}])[0], 200)
+        catalog = {m["id"]: m for m in self.call("/api/models")[1]["models"]}
+        self.assertEqual(catalog["test/one"]["features"], {"json": True})
+        self.assertEqual(self.agent(token, "inventory", models=[{"id": "env-one", "name": "test/one", "state": "ready", "shared": True}])[0], 200)
+        self.assertEqual({m["id"]: m["features"] for m in self.call("/api/models")[1]["models"]}["test/one"], {"json": None})
+
     def test_cloud_adapter_creates_once_then_connects_model_automatically(self):
         adapter = Adapter("unused", Path(self.temp.name) / "cloud", controller=True)
         calls, stages = [], []

@@ -527,13 +527,17 @@ fn is_view(args: &[String]) -> bool {
         | ("backup", "list" | "destinations")
         | ("gpu", "status")
         | ("neocloud" | "remote" | "domain", "list")
-        | ("model", "status" | "access" | "usage"))
+        | ("model", "status" | "access" | "usage" | "jobs" | "generate"))
         || word(0) == "logs" && !args.iter().any(|a| a == "--follow")
 }
 /// Takes `--format json|table|text` off a view's words; text is the same as table.
 fn take_format(args: &mut Vec<String>) -> Result<Option<String>, String> {
     let Some(at) = args.iter().position(|a| a == "--format") else { return Ok(None) };
     let value = args.get(at + 1).map(String::as_str).ok_or("--format needs json, table or text")?;
+    // `model generate --format png|jpeg|webp` names the image format, which generate reads itself.
+    if args.starts_with(&["model".to_owned(), "generate".to_owned()]) && matches!(value, "png" | "jpeg" | "jpg" | "webp") {
+        return Ok(None);
+    }
     let format = match value {
         "json" => "json",
         "table" | "text" => "table",
@@ -578,6 +582,9 @@ fn view_text(args: &[String], full: &Value, result: &Value, color: bool) -> Opti
         ("model", "status") => output::model_status(result, color),
         ("model", "access") => output::model_access(result, color),
         ("model", "usage") => output::model_usage(result, color),
+        // `model jobs ENV JOB --save FOLDER` answers with the saved files, like generate does.
+        ("model", "jobs") => output::model_generated(result, color),
+        ("model", "generate") => output::model_generated(result, color),
         _ => return None,
     })
 }

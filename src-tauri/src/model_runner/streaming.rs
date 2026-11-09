@@ -52,12 +52,16 @@ pub(super) fn profile(body: &Value) -> Result<Profile, String> {
 /// engine's words.
 const GPU_MEMORY_REFUSED: &str = "The GPU ran out of memory for this request; the model stays loaded. Shorten the conversation or choose a smaller model.";
 
+/// The model server's refusal of a JSON reply format (`yougori_structured_output`), in the
+/// engine's words: its runner does not enforce one, or the format is not one it takes.
+const STRUCTURED_OUTPUT_REFUSED: &str = "The model refused response_format: either its runner does not enforce JSON output (serve it with --runner vllm or from a GGUF checkpoint), or the format is not json_object or json_schema with a schema object of at most 16 KiB.";
+
 /// The model server's typed refusals rendered from their codes and the runner's own
 /// integers, never from its message text: the context window a conversation or `max_tokens`
 /// does not fit (`yougori_context_window`, with the prompt's tokens, `max_tokens` and the
 /// context the GPU grant covers when one does) and GPU memory running out during a request
-/// (`yougori_gpu_memory`). `None` for every other body, which the classifier handles without
-/// echoing it.
+/// (`yougori_gpu_memory`), and a JSON reply format it cannot enforce (`yougori_structured_output`).
+/// `None` for every other body, which the classifier handles without echoing it.
 pub(super) fn typed_refusal(body: &Value) -> Option<String> {
     let error = &body["error"];
     match error["code"].as_str()? {
@@ -84,6 +88,7 @@ pub(super) fn typed_refusal(body: &Value) -> Option<String> {
             })
         }
         "yougori_gpu_memory" => Some(GPU_MEMORY_REFUSED.to_owned()),
+        "yougori_structured_output" => Some(STRUCTURED_OUTPUT_REFUSED.to_owned()),
         _ => None,
     }
 }

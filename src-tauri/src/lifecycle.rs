@@ -175,7 +175,10 @@ async fn save_settings_registering(settings: AppSettings, expected_revision: u64
     if startup_changed { change_startup_registration(settings.launch_at_startup, settings.startup_headless).await?; }
     let committed = store.mutate(|state| {
         if state.settings_revision != expected_revision { return Err("[YOUGORI_SETTINGS_REVISION_CONFLICT] Settings changed before commit; read settings and retry".into()); }
-        if settings.auto_start_environment_ids.iter().any(|id| !state.environments.iter().any(|environment| &environment.id == id)) { return Err("Automatic startup environment was removed before settings commit".into()); }
+        let mut settings = settings;
+        // An environment removed since the caller read its settings no longer starts automatically;
+        // its id is dropped rather than refusing the whole save.
+        known_auto_start(&mut settings, state);
         state.settings = settings;
         crate::scheduler::schedule(state);
         Ok(())
@@ -252,7 +255,7 @@ pub async fn recover_environment_runtime_report(environment_id: String, confirme
     Ok(report)
 }
 
-pub fn validate(settings: &AppSettings, store: &PlatformStore) -> Result<(), String> {
+pub fn validate(settings: &AppSettings, _store: &PlatformStore) -> Result<(), String> {
     if matches!(settings.theme, ThemePreference::Custom) && settings.custom_theme_colors.is_none() {
         return Err("Choose four colors for the custom theme".into());
     }
@@ -263,11 +266,15 @@ pub fn validate(settings: &AppSettings, store: &PlatformStore) -> Result<(), Str
             }
         }
     }
-    let state = store.snapshot()?;
-    if settings.auto_start_environment_ids.len() > state.environments.len() || settings.auto_start_environment_ids.iter().any(|id| !state.environments.iter().any(|e| &e.id == id)) {
-        return Err("Automatic startup must reference existing environments".into());
-    }
+    // Automatic startup ids of environments that no longer exist are not refused here: the save
+    // drops them (`known_auto_start`), so one stale id never blocks every other setting.
     Ok(())
+}
+
+/// Keeps only the automatic startup ids of environments that exist, each once, in their order.
+fn known_auto_start(settings: &mut AppSettings, state: &crate::models::PlatformState) {
+    let mut seen = BTreeSet::new();
+    settings.auto_start_environment_ids.retain(|id| state.environments.iter().any(|environment| &environment.id == id) && seen.insert(id.clone()));
 }
 
 /// `headless` starts the engine without the dashboard (for CLI-first use).
@@ -604,7 +611,29 @@ pub async fn finish_app_close(keep_running: bool, app: AppHandle, store: State<'
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn startup_cannot_reference_unknown_environments(){let dir=tempfile::tempdir().unwrap();let store=PlatformStore::load(dir.path().join("state.json")).unwrap();let mut settings=store.snapshot().unwrap().settings;settings.auto_start_environment_ids=vec!["missing".into()];assert!(validate(&settings,&store).is_err());}
+    #[tokio::test]
+    async fn a_save_naming_removed_environments_drops_them_and_keeps_every_other_setting() {
+        // PROVES one stale automatic startup id (an environment removed since, or every one after
+        // "Reset local data") no longer refuses the whole settings save: it is dropped, the
+        // environments that exist keep starting, and the rest of the save goes through.
+        let dir = tempfile::tempdir().unwrap();
+        let store = PlatformStore::load(dir.path().join("state.json")).unwrap();
+        let kept: crate::models::Environment = serde_json::from_value(json!({
+            "id":"env-kept","name":"Kept","kind":"container","provider":"yougoriOci","status":"stopped",
+            "runtime":"docker.io/library/alpine:3.20","description":"Settings fixture","createdAt":"test",
+            "cpuUsage":0,"memoryUsageGb":0,"storageDeltaGb":0,"networkRxMbps":0,
+            "resourcePolicy":{"cpu":{"min":1,"preferred":1,"max":1,"current":0},"memoryGb":{"min":1,"preferred":1,"max":1,"current":0},"priority":"normal","dynamic":true}
+        })).unwrap();
+        store.mutate(|state| { state.environments = vec![kept]; Ok(()) }).unwrap();
+        let initial = store.snapshot().unwrap();
+        let mut settings = initial.settings.clone();
+        settings.keep_awake = !initial.settings.keep_awake;
+        settings.auto_start_environment_ids = vec!["missing".into(), "env-kept".into(), "env-kept".into()];
+        assert!(validate(&settings, &store).is_ok(), "a stale id is not a reason to refuse");
+        let saved = save_settings(settings, initial.settings_revision, &store).await.unwrap();
+        assert_eq!(saved.settings.auto_start_environment_ids, vec!["env-kept".to_owned()]);
+        assert_eq!(saved.settings.keep_awake, !initial.settings.keep_awake, "the rest of the save went through");
+    }
 
     #[test]
     fn custom_theme_requires_safe_complete_hex_colors() {

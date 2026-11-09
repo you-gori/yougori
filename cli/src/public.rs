@@ -22,7 +22,7 @@ Public commands:
   yougori logs ENV [--cursor CURSOR] [--limit BYTES] [--tail BYTES] [--last-error] [--follow]
   yougori exec ENV [--no-wait] [--timeout WAIT_SECONDS] [--guest-timeout SECONDS] -- COMMAND...
   yougori terminal ENV [--project] [--container NAME] [--new-window]
-  terminal ENV --subscription TOOL [--new-signin] [--new-window]  Interactive shell; exit leaves the workload running
+  yougori terminal ENV --subscription TOOL [--new-signin] [--new-window]  Interactive shell; exit leaves the workload running
                                   --project starts in /workspace; --container enters a cloud server's Docker container
   yougori download on ENV [--domain HOST] --yes  Share a complete copy while this CLI stays open
   yougori download list | off ENV_ID  Lifetime download counts / turn off a download link
@@ -82,11 +82,16 @@ Public commands:
                                   Omit the model in a terminal to fill in hf.co/; Esc cancels
                                   Resources: --cpu N --memory GB --storage GB; --backend auto|cuda|metal|cpu
                                   --runner vllm serves a native vLLM architecture on the pinned vLLM image instead of Transformers
+                                  Media models (image, video, sound, speech): --adapter hf:OWNER/REPO@COMMIT loads a LoRA on the pipeline;
+                                  --runner hf:OWNER/REPO@COMMIT runs its pipeline.py (a Diffusers custom pipeline) with the packages it pins
                                   --template INSTANCE also sells it on a Hub template that takes models (My API)
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
-  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT]
+  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT] [--keep-outputs HOURS]
+  yougori model generate ENV --prompt TEXT [--negative TEXT] [--image FILE] [--size WxH] [--count N] [--steps N] [--guidance X] [--seconds N] [--fps N] [--seed N] [--voice NAME] [--format png|jpeg|webp] [--input FILE.json] [--output FOLDER] [--no-wait]
+                                  A media model's job (image, video, sound or speech): waits for it and saves its files; --no-wait returns the job
+  yougori model jobs ENV [JOB] [--cancel] [--save FOLDER] [--wait SECONDS]   Recent jobs; one job's state, its cancellation or its files saved
   yougori model run hf.co/OWNER/MODEL --now|--nowfree [--closed-weights] [--folder PATH] [--listen (free only)] [--quant Q4_K_M] [--storage-drive DRIVE]
                                    Share paid or free; --closed-weights offers chat/API without weight downloads
                                    Open weights by default. --publish is a legacy model alias for --closed-weights
@@ -108,7 +113,7 @@ Public commands:
   yougori model support hf.co/OWNER/MODEL --agent claude|codex|kilo|opencode|gemini [--quant Q4_K_M] [--launch]
                                    Reuses this model's environment when one exists
   yougori model chat ENV | model status ENV | model api ENV [--port 8000]
-  yougori model chat ENV [--new]   Continues the conversation shared with the app
+  yougori model chat ENV [--new] [--json [SCHEMA.json]]   Continues the conversation shared with the app; --json asks for a JSON reply, a schema file holds it to a shape
   yougori model history ENV        Saved conversations
   yougori model access ENV         API key plus local and public addresses
   yougori model usage ENV [--days 7] [--reset --yes]
@@ -439,6 +444,110 @@ fn value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
     args.get(*i)
         .cloned()
         .ok_or_else(|| format!("{name} needs a value"))
+}
+
+const GENERATE_USAGE: &str = "Usage: yougori model generate ENV --prompt TEXT [--negative TEXT] [--image FILE] [--size WxH] [--count N] [--steps N] [--guidance X] [--seconds N] [--fps N] [--seed N] [--voice NAME] [--format png|jpeg|webp] [--input FILE.json] [--output FOLDER] [--no-wait]";
+const JOBS_USAGE: &str = "Usage: yougori model jobs ENV [JOB] [--cancel] [--save FOLDER] [--wait SECONDS]";
+/// The kinds of model the media runner serves; a chat command on one of them says so.
+pub const MEDIA_TASKS: [&str; 6] = ["text-to-image", "image-to-image", "text-to-video", "image-to-video", "text-to-audio", "text-to-speech"];
+
+/// A media model's task from its status, or None for a chat or decision model.
+pub fn media_task(status: &Value) -> Option<&str> {
+    status["task"].as_str().filter(|task| MEDIA_TASKS.contains(task))
+}
+
+/// What `model generate` asks for: the job's input as the engine takes it, where to save the
+/// files, and whether to wait for them.
+pub struct GenerateRequest { pub input: Value, pub output: Option<String>, pub wait: bool }
+
+/// Reads the generate options; a `--input FILE.json` object comes first and the flags change
+/// it, so a saved request can be reused with another prompt or seed.
+pub fn generate_options(args: &[String]) -> Result<GenerateRequest, String> {
+    let mut input = serde_json::Map::new();
+    let mut output = None;
+    let mut wait = true;
+    let mut i = 0;
+    let number = |raw: &str, name: &str| raw.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{name} needs a number"));
+    let whole = |raw: &str, name: &str| raw.parse::<u64>().map_err(|_| format!("{name} needs a whole number"));
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" => {
+                let path = value(args, &mut i, "--input")?;
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+                if text.len() > 64 * 1024 { return Err("A request file is at most 64 KiB; give the image with --image".into()); }
+                let saved: Value = serde_json::from_str(&text).map_err(|e| format!("{path} is not valid JSON: {e}"))?;
+                let object = saved.get("input").filter(|v| v.is_object()).unwrap_or(&saved).as_object().ok_or(format!("{path} must hold one JSON object"))?;
+                for (key, value) in object { input.insert(key.clone(), value.clone()); }
+            }
+            "--prompt" => { input.insert("prompt".into(), json!(value(args, &mut i, "--prompt")?)); }
+            "--negative" => { input.insert("negative_prompt".into(), json!(value(args, &mut i, "--negative")?)); }
+            "--image" => { input.insert("image".into(), json!(image_data_url(&value(args, &mut i, "--image")?)?)); }
+            "--size" => {
+                let raw = value(args, &mut i, "--size")?;
+                let (width, height) = raw.split_once('x').and_then(|(w, h)| Some((w.parse::<u64>().ok()?, h.parse::<u64>().ok()?))).ok_or("--size reads WIDTHxHEIGHT, such as 1024x1024")?;
+                input.insert("width".into(), json!(width));
+                input.insert("height".into(), json!(height));
+            }
+            flag @ ("--count" | "--steps" | "--fps" | "--seed") => { let raw = value(args, &mut i, flag)?; input.insert(flag[2..].into(), json!(whole(&raw, flag)?)); }
+            flag @ ("--guidance" | "--seconds") => { let raw = value(args, &mut i, flag)?; input.insert(flag[2..].into(), json!(number(&raw, flag)?)); }
+            "--voice" => { input.insert("voice".into(), json!(value(args, &mut i, "--voice")?)); }
+            "--format" => { input.insert("format".into(), json!(value(args, &mut i, "--format")?)); }
+            "--output" => output = Some(absolute_folder(&value(args, &mut i, "--output")?)?),
+            "--no-wait" => wait = false,
+            other => return Err(format!("Unknown option {other}. {GENERATE_USAGE}")),
+        }
+        i += 1;
+    }
+    if !input.contains_key("prompt") && !input.contains_key("text") && !input.contains_key("image") {
+        return Err(format!("Give the prompt. {GENERATE_USAGE}"));
+    }
+    if output.is_some() && !wait { return Err("--output saves the files once the job ends; drop --no-wait".into()); }
+    Ok(GenerateRequest { input: Value::Object(input), output, wait })
+}
+
+/// A folder as a full path: the engine saves there, from its own working directory.
+fn absolute_folder(raw: &str) -> Result<String, String> {
+    let path = std::path::Path::new(raw.trim());
+    if raw.trim().is_empty() { return Err("Give the folder to save into".into()); }
+    let full = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().map_err(|e| e.to_string())?.join(path) };
+    Ok(full.to_string_lossy().into_owned())
+}
+
+/// Where `model generate` puts a job's files when no folder is given: the user's
+/// `.yougori/outputs/MODEL/JOB`.
+fn default_output_folder(target: &str, job_id: &str) -> Result<String, String> {
+    let profile = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).ok_or("Cannot locate your user profile")?;
+    let model: String = target.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect();
+    Ok(std::path::PathBuf::from(profile).join(".yougori").join("outputs").join(model).join(job_id).to_string_lossy().into_owned())
+}
+
+/// An image file as the data URL a job takes (PNG, JPEG or WebP, at most 20 MiB).
+pub fn image_data_url(path: &str) -> Result<String, String> {
+    let extension = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    let kind = match extension.as_str() { "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "webp" => "image/webp", _ => return Err("--image takes a PNG, JPEG or WebP file".into()) };
+    let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {path}: {e}"))?;
+    if bytes.len() > 20 * 1024 * 1024 { return Err("The image is larger than 20 MiB".into()); }
+    use base64::Engine as _;
+    Ok(format!("data:{kind};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+/// Follows a job until it ends, asking the engine to wait up to half a minute at a time and
+/// saying how far it got on stderr when that is a terminal.
+async fn follow_job(id: &str, job_id: &str) -> Result<Value, String> {
+    let mut shown = String::new();
+    loop {
+        let job = call("model_job", json!({"environmentId": id, "jobId": job_id, "action": "status", "wait": 30})).await?;
+        let status = job["status"].as_str().unwrap_or("unknown").to_owned();
+        if matches!(status.as_str(), "succeeded" | "failed" | "cancelled") { return Ok(job); }
+        let line = match status.as_str() {
+            "queued" => format!("queued, position {}", job["position"].as_u64().unwrap_or(0)),
+            _ => format!("{status} {:.0}%", job["progress"].as_f64().unwrap_or(0.0) * 100.0),
+        };
+        if line != shown && std::io::stderr().is_terminal() {
+            eprintln!("{job_id}: {line}");
+            shown = line;
+        }
+    }
 }
 #[derive(Debug)]
 pub struct Run {
@@ -1158,7 +1267,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     if let Some(result)=crate::model_registry::handle(args).await? { return Ok(result); }
     let action = args.get(1).map(String::as_str).unwrap_or("");
     if action == "optimize" {
-        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT]")?;
+        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT] [--keep-outputs HOURS]")?;
         let mut params=json!({});
         let mut i=3;
         while i<args.len() {
@@ -1169,7 +1278,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 "--parallel"=>{params["parallel"]=json!(value(args,&mut i,"--parallel")?.parse::<u64>().map_err(|_|"Parallel requests must be an integer")?);},
                 "--launch"=>{params["launch"]=json!(value(args,&mut i,"--launch")?);},
                 "--runner"=>{params["runner"]=json!(runner_reference(&value(args,&mut i,"--runner")?)?);},
-                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N, --launch compiled|speculative|eager|megakernel or --runner FOLDER|hf:OWNER/REPO@COMMIT".into()),
+                "--keep-outputs"=>{params["keepOutputsHours"]=json!(value(args,&mut i,"--keep-outputs")?.parse::<u64>().map_err(|_|"Hours must be an integer from 1 to 720")?);},
+                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N, --launch compiled|speculative|eager|megakernel, --runner FOLDER|hf:OWNER/REPO@COMMIT or --keep-outputs HOURS".into()),
             }
             i+=1;
         }
@@ -1178,6 +1288,53 @@ async fn model(args: &[String]) -> Result<Value, String> {
         client::start(None).await?;
         params["environmentId"]=json!(resolve(target).await?);
         return call("model_optimizer",params).await;
+    }
+    if action == "generate" {
+        let target = args.get(2).filter(|t| !t.starts_with('-')).ok_or(GENERATE_USAGE)?;
+        let request = generate_options(&args[3..])?;
+        client::start(None).await?;
+        let id = resolve(target).await?;
+        let job = call("model_generate", json!({"environmentId": id, "input": request.input})).await?;
+        if !request.wait { return Ok(job); }
+        let job_id = job["id"].as_str().ok_or("The engine returned no job id")?.to_owned();
+        let finished = follow_job(&id, &job_id).await?;
+        if finished["status"] != "succeeded" {
+            return Err(format!("The job {job_id} {}{}", finished["status"].as_str().unwrap_or("ended"), finished["error"].as_str().map(|e| format!(": {e}")).unwrap_or_default()));
+        }
+        let folder = match request.output { Some(folder) => folder, None => default_output_folder(target, &job_id)? };
+        return call("model_job_save", json!({"environmentId": id, "jobId": job_id, "folder": folder})).await;
+    }
+    if action == "jobs" {
+        let target = args.get(2).filter(|t| !t.starts_with('-')).ok_or(JOBS_USAGE)?;
+        let job = args.get(3).filter(|t| !t.starts_with('-')).cloned();
+        let (mut cancel, mut save, mut wait) = (false, None, 0u64);
+        let mut i = if job.is_some() { 4 } else { 3 };
+        while i < args.len() {
+            match args[i].as_str() {
+                "--cancel" => cancel = true,
+                "--save" => save = Some(absolute_folder(&value(args, &mut i, "--save")?)?),
+                "--wait" => wait = value(args, &mut i, "--wait")?.parse::<u64>().ok().filter(|w| *w <= 600).ok_or("--wait takes 0–600 seconds")?,
+                _ => return Err(JOBS_USAGE.into()),
+            }
+            i += 1;
+        }
+        if job.is_none() && (cancel || save.is_some() || wait > 0) { return Err(JOBS_USAGE.into()); }
+        client::start(None).await?;
+        let id = resolve(target).await?;
+        return match (job, cancel, save) {
+            (None, _, _) => call("model_job", json!({"environmentId": id, "action": "list"})).await,
+            (Some(_), true, Some(_)) => Err("Choose --cancel or --save, not both: a cancelled job has no files to save.".into()),
+            (Some(job), true, None) => call("model_job", json!({"environmentId": id, "jobId": job, "action": "cancel"})).await,
+            (Some(job), false, Some(folder)) => {
+                // `--wait N` waits up to N seconds for the job to end, then saves only a finished one.
+                let finished = call("model_job", json!({"environmentId": id, "jobId": job, "action": "status", "wait": wait})).await?;
+                if finished["status"] != "succeeded" {
+                    return Err(format!("The job {job} is {}; nothing was saved", finished["status"].as_str().unwrap_or("unknown")));
+                }
+                call("model_job_save", json!({"environmentId": id, "jobId": job, "folder": folder})).await
+            }
+            (Some(job), false, None) => call("model_job", json!({"environmentId": id, "jobId": job, "action": "status", "wait": wait})).await,
+        };
     }
     if action=="support" {return model_support(args).await;}
     if action=="compute" {
@@ -1218,7 +1375,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return call("model_preflight", json!({"model":target,"quant":quant})).await;
     }
     if !["run", "chat", "stop", "unshare", "status", "api", "usage", "access", "history"].contains(&action) {
-        return Err("Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--change] [--api] [--port PORT] [--template INSTANCE] | chat ENV [--new] | unshare ENV | history ENV | status ENV | api ENV [--port PORT] | access ENV | usage ENV [--days N] [--reset]".into());
+        return Err("Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--quant Q4_K_M] [--change] [--api] [--port PORT] [--template INSTANCE] | chat ENV [--new] [--json [SCHEMA.json]] | unshare ENV | history ENV | status ENV | api ENV [--port PORT] | access ENV | usage ENV [--days N] [--reset]".into());
     }
     let target = args.get(2).ok_or("Supply a model or environment")?;
     let mut api = false;
@@ -1228,6 +1385,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     let mut reset = false;
     let mut confirmed = false;
     let mut fresh = false;
+    let mut response_format: Option<Value> = None;
     let mut days = 7u32;
     let mut resources = serde_json::Map::new();
     let mut neocloud = false;
@@ -1255,8 +1413,13 @@ async fn model(args: &[String]) -> Result<Value, String> {
             }
             "--runner" if action == "run" && !resources.contains_key("runner") => {
                 let runner = value(args, &mut i, "--runner")?;
-                if !matches!(runner.as_str(), "auto" | "vllm") { return Err("--runner must be vllm or auto".into()); }
+                if !matches!(runner.as_str(), "auto" | "vllm") && !runner.starts_with("hf:") { return Err("--runner must be vllm, auto or hf:OWNER/REPO@COMMIT (a media model's pipeline runner)".into()); }
                 resources.insert("runner".into(), runner.into());
+            }
+            "--adapter" if action == "run" && !resources.contains_key("adapter") => {
+                let adapter = value(args, &mut i, "--adapter")?;
+                if !adapter.contains('@') { return Err("--adapter names a LoRA repository at a commit: hf:OWNER/REPO@COMMIT".into()); }
+                resources.insert("adapter".into(), adapter.into());
             }
             "--storage-drive" if action == "run" => storage_drive = Some(value(args, &mut i, "--storage-drive")?),
             "--neocloud" if action == "run" => neocloud = true,
@@ -1269,6 +1432,12 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 resources.insert(match flag.as_str() {"--cpu"=>"cpu", "--memory"=>"memoryGb", _=>"storageGb"}.into(), json!(number));
             }
             "--new" if action == "chat" => fresh = true,
+            // A reply in JSON: any object with --json alone, or the shape a schema file gives.
+            "--json" if action == "chat" && response_format.is_none() => {
+                let file = args.get(i + 1).filter(|next| !next.starts_with('-')).cloned();
+                if file.is_some() { i += 1; }
+                response_format = Some(response_format_option(file.as_deref())?);
+            }
             "--reset" if action == "usage" => reset = true,
             "--yes" if action == "usage" => confirmed = true,
             "--days" if action == "usage" => {
@@ -1299,7 +1468,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return Err("Model API port must be between 1 and 65535".into());
     }
     validate_model_resources(&resources)?;
-    validate_model_neocloud(neocloud, environment.as_deref(), !resources.is_empty())?;
+    // A media model's adapter and pipeline runner go to the pod with the start; the rest size a local model.
+    validate_model_neocloud(neocloud, environment.as_deref(), resources.keys().any(|key| key != "adapter" && key != "runner"))?;
     if neocloud && storage_drive.is_some() { return Err("--storage-drive selects local storage; it cannot be used with --neocloud".into()); }
     if storage_drive.as_deref().is_some_and(|path| path.trim().is_empty()) { return Err("--storage-drive requires a drive path".into()); }
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
@@ -1307,7 +1477,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
         return Err("Resetting model usage permanently clears its history. Repeat with --yes.".into());
     }
     if dry {
-        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"closedWeights":publish,"quant":quant,"storageDrive":storage_drive,"template":template}));
+        return Ok(json!({"dryRun":true,"model":target,"gpu":"nvidia","api":api,"port":port,"resources":resources,"neocloud":neocloud,"environment":environment,"shareMode":share_mode,"listen":listen,"closedWeights":publish,"quant":quant,"storageDrive":storage_drive,"template":template,"responseFormat":response_format}));
     }
     if neocloud && environment.is_none() { return Err("Choosing a Neocloud pod needs an interactive terminal. For scripts add --environment POD_NAME --api.".into()); }
     let chat_mode = model_chat_mode(action, api, std::io::stdin().is_terminal(), std::io::stdout().is_terminal());
@@ -1325,9 +1495,9 @@ async fn model(args: &[String]) -> Result<Value, String> {
         let candidates = neocloud_model_targets(&state);
         let mut env = choose_neocloud_target(&candidates, environment.as_deref().unwrap())?.clone();
         name_neocloud_model(&mut env, &state, target).await?;
-        call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port)})).await?
+        call("run_neocloud_model", json!({"model":target,"environmentId":env["id"],"port":api.then_some(port),"adapter":resources.get("adapter"),"runner":resources.get("runner")})).await?
     } else if action == "run" {
-        match find_model(target).await?.filter(|_| quant.is_none() && !resources.contains_key("modelFolder") && !resources.contains_key("backend") && !resources.contains_key("runner")) {
+        match find_model(target).await?.filter(|_| quant.is_none() && !["modelFolder", "backend", "runner", "adapter"].iter().any(|key| resources.contains_key(*key))) {
             Some(env) => {
                 if storage_drive.is_some() {
                     let state=call("get_platform_state",json!({})).await?;
@@ -1389,8 +1559,8 @@ async fn model(args: &[String]) -> Result<Value, String> {
     }
     if result["sourceOnly"]==true {return Ok(result)}
     match chat_mode {
-        ModelChatMode::Interactive => chat_session(id, fresh).await?,
-        ModelChatMode::Scripted => return scripted_chat(id, fresh, prompts.unwrap(), |method, params| call(method, params)).await,
+        ModelChatMode::Interactive => chat_session(id, fresh, response_format.as_ref()).await?,
+        ModelChatMode::Scripted => return scripted_chat(id, fresh, prompts.unwrap(), response_format, |method, params| call(method, params)).await,
         ModelChatMode::None => {},
     }
     Ok(result)
@@ -1410,6 +1580,29 @@ const SCRIPTED_CHAT_INPUT_LIMIT: usize = 64 * 1024;
 const SCRIPTED_CHAT_PROMPT_LIMIT: usize = 32;
 const SCRIPTED_CHAT_CONTENT_LIMIT: usize = 256 * 1024;
 const SCRIPTED_CHAT_REPLY_LIMIT: usize = 64 * 1024;
+
+/// The JSON reply format `--json [SCHEMA.json]` asks for: any JSON object without a file, or
+/// OpenAI's json_schema with the file's schema (at most 16 KiB), named after the file and
+/// strict, which the model server's backend holds the reply to.
+fn response_format_option(file: Option<&str>) -> Result<Value, String> {
+    let Some(file) = file else { return Ok(json!({"type": "json_object"})) };
+    let path = std::path::Path::new(file);
+    let text = std::fs::read_to_string(path).map_err(|e| format!("Cannot read the JSON schema {file}: {e}"))?;
+    if text.len() > 16 * 1024 { return Err("A JSON schema file is at most 16 KiB".into()); }
+    let schema: Value = serde_json::from_str(&text).map_err(|e| format!("{file} is not valid JSON: {e}"))?;
+    if !schema.is_object() { return Err(format!("{file} must hold one JSON schema object")); }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("reply");
+    let name: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).take(64).collect();
+    Ok(json!({"type": "json_schema", "json_schema": {"name": if name.is_empty() { "reply".to_owned() } else { name }, "schema": schema, "strict": true}}))
+}
+
+/// One chat request to the engine: the conversation and its settings, and the JSON reply
+/// format when one was asked for.
+pub(crate) fn chat_params(id: &str, request: Vec<Value>, max_tokens: u64, temperature: f64, response_format: Option<&Value>) -> Value {
+    let mut params = json!({"environmentId":id,"messages":request,"maxTokens":max_tokens,"temperature":temperature});
+    if let Some(format) = response_format { params["responseFormat"] = format.clone(); }
+    params
+}
 
 fn scripted_prompts(input: &mut impl Read) -> Result<Vec<String>, String> {
     let mut bytes = Vec::new();
@@ -1451,10 +1644,13 @@ fn transcript_error(stage: &str, turn: usize, mut response: crate::wire::Respons
 /// Scripted chat reads literal newline-separated prompts and emits no text.
 /// Capture each turn's machine error so partial success cannot look like a
 /// request that never ran, and never retry a failed or unsaved turn here.
-async fn scripted_chat<F, Fut>(id: &str, fresh: bool, prompts: Vec<String>, mut invoke: F) -> Result<Value, String>
+async fn scripted_chat<F, Fut>(id: &str, fresh: bool, prompts: Vec<String>, response_format: Option<Value>, mut invoke: F) -> Result<Value, String>
 where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Result<Value, String>> {
     let mut store = saved_chat_history(invoke("model_chat_history", json!({"environmentId":id})).await)?;
     let status = invoke("model_status", json!({"environmentId":id})).await?;
+    if let Some(task) = media_task(&status) {
+        return Err(format!("This model generates {task}, not chat. Use: yougori model generate {id} --prompt TEXT"));
+    }
     let decision = status["task"] == "structured-decision";
     if decision { for prompt in &prompts { crate::decisions::parse(prompt)?; } }
     let (max_tokens, temperature, system) = chat_settings(&store, &status);
@@ -1476,7 +1672,7 @@ where F: FnMut(&'static str, Value) -> Fut, Fut: std::future::Future<Output = Re
         let messages = conversation["messages"].as_array_mut().ok_or("Saved conversation is invalid")?;
         messages.push(json!({"id":new_id(),"role":"user","content":prompt}));
         let request = if decision { vec![json!({"role":"user","content":prompt})] } else { fit_messages(&system, messages) };
-        let response = client::capture_errors(invoke("model_chat", json!({"environmentId":id,"messages":request,"maxTokens":if decision {1} else {max_tokens},"temperature":if decision {0.0} else {temperature}}))).await;
+        let response = client::capture_errors(invoke("model_chat", chat_params(id, request, if decision {1} else {max_tokens}, if decision {0.0} else {temperature}, response_format.as_ref()))).await;
         let answer = match response {
             Ok(answer) => answer,
             Err(error) => { messages.pop(); errors.push(transcript_error("reply", attempted, error)); break; }
@@ -1766,9 +1962,12 @@ pub fn start_conversation(store: &mut Value) {
     }
 }
 /// Interactive chat that continues the conversation shared with the desktop app and saves after each reply.
-async fn chat_session(id: &str, fresh: bool) -> Result<(), String> {
+async fn chat_session(id: &str, fresh: bool, response_format: Option<&Value>) -> Result<(), String> {
     let mut store = saved_chat_history(call("model_chat_history", json!({"environmentId":id})).await)?;
     let status = call("model_status", json!({"environmentId":id})).await.unwrap_or(Value::Null);
+    if let Some(task) = media_task(&status) {
+        return Err(format!("This model generates {task}, not chat. Use: yougori model generate {id} --prompt TEXT"));
+    }
     let (max_tokens, temperature, system) = chat_settings(&store, &status);
     let active = store["conversations"].as_array().and_then(|list| list.iter().position(|c| c["id"] == store["activeId"]));
     match active {
@@ -1809,7 +2008,7 @@ async fn chat_session(id: &str, fresh: bool) -> Result<(), String> {
         messages.push(json!({"id":new_id(),"role":"user","content":text}));
         let request = fit_messages(&system, messages);
         let started = std::time::Instant::now();
-        match call("model_chat", json!({"environmentId":id,"messages":request,"maxTokens":max_tokens,"temperature":temperature})).await {
+        match call("model_chat", chat_params(id, request, max_tokens, temperature, response_format)).await {
             Ok(answer) => {
                 let reply = answer["choices"][0]["message"]["content"].as_str().ok_or("Invalid model answer")?.to_owned();
                 println!("\n{reply}\n");
@@ -1836,6 +2035,48 @@ fn now_hour() -> u64 {
 #[cfg(test)]
 mod scripted_chat_tests {
     use super::*;
+    /// `--json` alone asks for any JSON object; with a file, the file's schema, strict and named
+    /// after the file, so the engine's backend holds the reply to it; a file that is not one
+    /// schema object, or is missing, is refused before anything is asked of the engine.
+    #[test]
+    fn a_json_reply_format_is_any_object_or_the_schema_file_named_after_it() {
+        assert_eq!(response_format_option(None).unwrap(), json!({"type":"json_object"}));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("city answer.json");
+        std::fs::write(&path, r#"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#).unwrap();
+        let format = response_format_option(Some(path.to_str().unwrap())).unwrap();
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["json_schema"]["name"], "city_answer");
+        assert_eq!(format["json_schema"]["strict"], true);
+        assert_eq!(format["json_schema"]["schema"]["required"], json!(["city"]));
+        std::fs::write(&path, "[1]").unwrap();
+        assert!(response_format_option(Some(path.to_str().unwrap())).unwrap_err().contains("one JSON schema object"));
+        assert!(response_format_option(Some(dir.path().join("missing.json").to_str().unwrap())).is_err());
+        let params = chat_params("env-1", vec![json!({"role":"user","content":"hi"})], 64, 0.0, Some(&format));
+        assert_eq!(params["responseFormat"], format);
+        assert_eq!(params["maxTokens"], 64);
+        assert!(chat_params("env-1", vec![], 64, 0.0, None).get("responseFormat").is_none());
+    }
+    #[tokio::test]
+    async fn scripted_chat_sends_the_json_reply_format_with_every_turn() {
+        let format = json!({"type":"json_object"});
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = sent.clone();
+        let result = scripted_chat("private-fixture", true, vec!["first".into(), "second".into()], Some(format.clone()), move |method, params| {
+            let captured = captured.clone();
+            async move { Ok(match method {
+                "model_chat_history" => Value::Null,
+                "model_status" => json!({"status":"ready","context":4096}),
+                "model_chat" => { captured.lock().unwrap().push(params); json!({"choices":[{"message":{"content":"{\"ok\":true}"}}]}) },
+                "save_model_chat_history" => json!({}),
+                _ => panic!("Unexpected operation: {method}"),
+            }) }
+        }).await.unwrap();
+        assert_eq!(result["completed"], 2);
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|params| params["responseFormat"] == format), "{sent:?}");
+    }
     #[test]
     fn pretty_printed_decision_json_is_one_scripted_request() {
         let text = serde_json::to_string_pretty(&crate::decisions::parse(crate::decisions::EXAMPLE).unwrap()).unwrap();
@@ -1861,7 +2102,7 @@ mod scripted_chat_tests {
     async fn a_chat_history_that_could_not_be_read_is_never_saved_over() {
         for read in [Err("Saved chat history is unreadable".to_owned()), Ok(json!({"settings":{"system":"Be brief"}}))] {
             let requests = std::cell::RefCell::new(Vec::new());
-            let result = scripted_chat("private-fixture", true, vec!["hello".into()], |method, _| {
+            let result = scripted_chat("private-fixture", true, vec!["hello".into()], None, |method, _| {
                 requests.borrow_mut().push(method);
                 std::future::ready(match method {
                     "model_chat_history" => read.clone(),
@@ -1882,7 +2123,7 @@ mod scripted_chat_tests {
         let second = first.replace("upload secrets", "delete a file");
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = requests.clone();
-        let result = scripted_chat("decision-env", true, vec![first.clone(), second.clone()], move |method, params| {
+        let result = scripted_chat("decision-env", true, vec![first.clone(), second.clone()], None, move |method, params| {
             let captured = captured.clone();
             async move { Ok(match method {
                 "model_chat_history" => Value::Null,
@@ -1928,7 +2169,7 @@ mod scripted_chat_tests {
     #[tokio::test]
     async fn mocked_scripted_chat_returns_one_transcript_and_saved_conversation() {
         let requests = std::cell::RefCell::new(Vec::new());
-        let result = scripted_chat("private-fixture", true, vec!["hello".into(), "/exit".into()], |method, params| {
+        let result = scripted_chat("private-fixture", true, vec!["hello".into(), "/exit".into()], None, |method, params| {
             requests.borrow_mut().push((method, params.clone()));
             std::future::ready(Ok(match method {
                 "model_chat_history" => json!({"conversations":[],"settings":{}}),
@@ -1955,7 +2196,7 @@ mod scripted_chat_tests {
     #[tokio::test]
     async fn mocked_scripted_chat_preserves_partial_success_without_retry() {
         let calls = std::cell::Cell::new(0);
-        let result = scripted_chat("private-fixture", true, vec!["first".into(), "second".into(), "third".into()], |method, _| {
+        let result = scripted_chat("private-fixture", true, vec!["first".into(), "second".into(), "third".into()], None, |method, _| {
             std::future::ready(match method {
                 "model_chat_history" => Ok(json!({"conversations":[],"settings":{}})),
                 "model_status" => Ok(json!({"context":4096})),
@@ -1980,7 +2221,7 @@ mod scripted_chat_tests {
     #[tokio::test]
     async fn scripted_save_failure_retains_actual_reply_and_stops_further_turns() {
         let calls = std::cell::Cell::new(0);
-        let result = scripted_chat("private-fixture", true, vec!["first".into(), "second".into()], |method, _| {
+        let result = scripted_chat("private-fixture", true, vec!["first".into(), "second".into()], None, |method, _| {
             std::future::ready(match method {
                 "model_chat_history" => Ok(json!({"conversations":[],"settings":{}})),
                 "model_status" => Ok(json!({"context":4096})),
@@ -2027,7 +2268,7 @@ fn civil_date(days: i64) -> String {
 }
 /// Groups the model server's hourly usage into the last `days` UTC days and keeps the 10 newest requests.
 fn usage_summary(id: &str, usage: &Value, days: u32, now_hour: u64) -> Value {
-    const KEYS: [&str; 7] = ["requests", "prompt_tokens", "completion_tokens", "errors", "rejected", "yougori", "api"];
+    const KEYS: [&str; 10] = ["requests", "prompt_tokens", "completion_tokens", "errors", "rejected", "yougori", "api", "images", "output_ms", "compute_ms"];
     let today = (now_hour / 24) as i64;
     let first = today - i64::from(days) + 1;
     let mut buckets = vec![serde_json::Map::new(); days as usize];
@@ -2405,6 +2646,19 @@ mod tests {
             assert!(model(&args(&words)).await.is_err());
         }
         assert!(model(&args(&["model","status","env-1","--template","my-api"])).await.is_err());
+    }
+    #[tokio::test]
+    async fn a_media_models_adapter_and_pipeline_runner_name_repositories_at_a_commit() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let plan = model(&args(&["model", "run", "hf.co/acme/base", "--adapter", &format!("hf:acme/lora@{commit}"), "--runner", &format!("hf:acme/pipeline@{commit}"), "--dry-run"])).await.unwrap();
+        assert_eq!(plan["resources"]["adapter"], format!("hf:acme/lora@{commit}"));
+        assert_eq!(plan["resources"]["runner"], format!("hf:acme/pipeline@{commit}"));
+        let pod = model(&args(&["model", "run", "hf.co/acme/base", "--neocloud", "--environment", "pod-1", "--adapter", &format!("acme/lora@{commit}"), "--dry-run"])).await.unwrap();
+        assert_eq!((pod["neocloud"].as_bool(), pod["resources"]["adapter"].as_str()), (Some(true), Some(format!("acme/lora@{commit}").as_str())));
+        // The runner is vllm, auto or a pipeline runner reference; an adapter names a commit.
+        assert!(model(&args(&["model", "run", "hf.co/acme/base", "--runner", "transformers", "--dry-run"])).await.unwrap_err().contains("hf:OWNER/REPO@COMMIT"));
+        assert!(model(&args(&["model", "run", "hf.co/acme/base", "--adapter", "acme/lora", "--dry-run"])).await.unwrap_err().contains("hf:OWNER/REPO@COMMIT"));
+        assert!(model(&args(&["model", "run", "hf.co/acme/base", "--adapter", "a@b", "--adapter", "c@d", "--dry-run"])).await.is_err());
     }
     #[tokio::test]
     async fn model_storage_dry_runs_keep_scripts_noninteractive() {

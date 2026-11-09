@@ -603,7 +603,10 @@ fn draft(planned: &plan::Plan, checked: &format::Checked, name: String, source: 
             protocol_version: dto::CONTRACT_VERSION,
             lock_digest: Some(lock.digest()),
             lock: serde_json::to_value(lock).ok(),
-            answers: planned.inputs.iter().map(|(id, value)| (id.clone(), Value::String(value.clone()))).collect(),
+            // The person's answers and the bindings they chose on this computer (a folder, drive,
+            // file or another setup's resource), which share one namespace in a template: kept
+            // together, so a later change, the permissions view and an update read them again.
+            answers: planned.inputs.iter().chain(planned.bindings.iter()).map(|(id, value)| (id.clone(), Value::String(value.clone()))).collect(),
             secret_bindings: planned.secrets.clone(),
             capabilities: planned
                 .capabilities
@@ -982,6 +985,15 @@ pub(crate) async fn plan(host: &plan::Host, hub: &dyn Hub, service: &Service, ca
         if let Some(base) = base.as_ref().filter(|base| base.template.version() != checked.template.version()) {
             before = Some((base.clone(), answered(base, &chosen.instance, &applied, &capabilities, &secrets)));
         }
+        // The bindings it was made with (kept with its answers) carry over to every binding this
+        // version still declares, unless the request chooses again; an empty choice clears an
+        // optional one. They are not answers to questions, so the merge below never sees them.
+        let (bound, applied) = split_bindings(base.as_ref().unwrap_or(&checked), &applied);
+        for (id, value) in bound {
+            if checked.bindings.iter().any(|binding| binding.id == id) {
+                chosen.bindings.entry(id).or_insert(value);
+            }
+        }
         let carried = carry(base.as_ref(), &checked, &applied, &capabilities);
         for (id, value) in carried.inputs {
             chosen.inputs.entry(id).or_insert(value);
@@ -1060,6 +1072,12 @@ pub(crate) async fn plan(host: &plan::Host, hub: &dyn Hub, service: &Service, ca
     // none; a plan without one is still reviewed and applied as before.
     let document = super::product::engine_now().await.and_then(|now| super::product::of_plan(&reviewed, now));
     Ok(super::product::attach(value, document))
+}
+
+/// A setup's kept answers split by the template that reads them: its bindings (a folder, drive,
+/// file or another setup's resource the person chose) and the answers to its questions.
+fn split_bindings(checked: &format::Checked, applied: &BTreeMap<String, String>) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+    applied.iter().map(|(id, value)| (id.clone(), value.clone())).partition(|(id, _)| checked.bindings.iter().any(|binding| &binding.id == id))
 }
 
 /// A setup's own answers, as the version it runs reads them: folders as bindings, the rest as

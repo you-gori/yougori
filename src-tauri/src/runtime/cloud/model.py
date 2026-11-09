@@ -22,6 +22,8 @@ TOOL_PARSERS = ('hermes', 'qwen3_coder', 'llama3_json', 'openai', 'gemma4')
 # megakernel runner takes on a pod: a public Hugging Face repository pinned to a commit.
 LAUNCHES = ('compiled', 'speculative', 'eager', 'megakernel')
 RUNNER_REFERENCE = r'hf:[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*@[0-9a-f]{40}'
+# A media model (Diffusers pipelines, text-to-speech): its task, and the loaders it runs with.
+MEDIA_TASKS = ('text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'text-to-audio', 'text-to-speech')
 
 
 def root_dir():
@@ -181,8 +183,23 @@ def request(action, body):
             raise ValueError('Unknown model operation')
         model, token = body['model'], body['token']
         model_format = body.get('format', 'safetensors')
-        if model_format not in ('safetensors', 'vllm'):
+        if model_format not in ('safetensors', 'vllm', 'media'):
             raise ValueError('Unsupported model runner')
+        # A media runner: its task, the media loaders (not in the server bundle), and the LoRA
+        # adapter and pipeline runner it starts with, each a public repository at a commit.
+        media, task, adapter, pipeline = body.get('media'), body.get('task'), body.get('adapter'), body.get('pipeline')
+        if model_format == 'media':
+            if not isinstance(media, str) or not 1 <= len(media) <= 262144 or task not in MEDIA_TASKS:
+                raise ValueError('A media model run names its task and carries its loaders')
+            for value in (adapter, pipeline):
+                if value is not None and (not isinstance(value, str) or not re.fullmatch(RUNNER_REFERENCE, value)):
+                    raise ValueError('An adapter or pipeline runner is a public Hugging Face repository at a commit: hf:OWNER/REPO@COMMIT')
+        elif any(value is not None for value in (media, task, adapter, pipeline)):
+            raise ValueError('Media loaders, adapters and pipeline runners apply to media models')
+        # How long a media model keeps finished jobs' files (the engine's --keep-outputs).
+        keep = body.get('keepHours')
+        if keep is not None and (model_format != 'media' or type(keep) is not int or not 1 <= keep <= 720):
+            raise ValueError('keepHours is 1 to 720 hours, for a media model')
         tool_parser = body.get('toolParser')
         if tool_parser is not None and (model_format != 'vllm' or tool_parser not in TOOL_PARSERS):
             raise ValueError('Unsupported tool-call parser')
@@ -210,6 +227,8 @@ def request(action, body):
                 raise ValueError('This pod already runs ' + model + ' ' + started + '. Stop its model, then retry.')
             if (launch, runner) != (saved.get('launch'), saved.get('runner')):
                 raise ValueError('This pod already runs ' + model + ' with another launch. Stop its model, then retry.')
+            if (adapter, pipeline) != (saved.get('adapter'), saved.get('pipeline')):
+                raise ValueError('This pod already runs ' + model + ' with another adapter or pipeline runner. Stop its model, then retry.')
             return {'reused': True}
         probe = socket.socket()
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -229,7 +248,7 @@ def request(action, body):
         if admin_token is not None and (not isinstance(admin_token, str) or not re.fullmatch(r'[a-f0-9]{64}', admin_token)):
             raise ValueError('Invalid model configuration')
         helpers = helper_delivery(root, body.get('helpers'))
-        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format, **({'toolParser': tool_parser} if tool_parser else {}), **({'launch': launch} if launch else {}), **({'runner': runner} if runner else {}), **({'helpers': helpers} if helpers else {})}))]:
+        for name, data in [('server.py', source), ('config.json', json.dumps({'model': model, 'token': token, 'adminToken': admin_token, 'revision':revision, 'hfToken':hf_token, 'format':model_format, **({'toolParser': tool_parser} if tool_parser else {}), **({'launch': launch} if launch else {}), **({'runner': runner} if runner else {}), **({'helpers': helpers} if helpers else {}), **({'media': media, 'task': task} if model_format == 'media' else {}), **({'adapter': adapter} if adapter else {}), **({'pipeline': pipeline} if pipeline else {}), **({'keepHours': keep} if keep else {})}))]:
             path = root / name
             with open(path, 'w', opener=lambda p, flags: os.open(p, flags | os.O_NOFOLLOW, 0o600)) as file:
                 file.write(data)
@@ -258,6 +277,14 @@ if config.get('launch'):
     os.environ['YOUGORI_MODEL_LAUNCH']=config['launch']
 if config.get('runner'):
     os.environ['YOUGORI_MODEL_RUNNER']=config['runner']
+if config.get('format')=='media':
+    os.environ.update(YOUGORI_MEDIA_SOURCE=config['media'], YOUGORI_MEDIA_TASK=config['task'], YOUGORI_GPU_OPTIMIZER='0')
+if config.get('adapter'):
+    os.environ['YOUGORI_MEDIA_ADAPTER']=config['adapter']
+if config.get('pipeline'):
+    os.environ['YOUGORI_MEDIA_RUNNER']=config['pipeline']
+if config.get('keepHours'):
+    os.environ['YOUGORI_MEDIA_KEEP_HOURS']=str(config['keepHours'])
 os.environ.update(config.get('helpers') or {})
 (root / 'cache').mkdir(exist_ok=True)
 os.execv(str(python), [str(python), '-u', str(root / 'server.py')])

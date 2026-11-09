@@ -35,6 +35,7 @@ pub const TEMPLATE_USAGE: &str = "Yougori Hub templates: whole setups, shared on
                                      [--allow-pc-access]
   yougori template status [INSTANCE] | list | down INSTANCE
   yougori template update INSTANCE [--yes] [--allow-pc-access] [--input ID=VALUE]... [--secrets -]
+                                   [--binding ID=VALUE]...   (bindings: a format 2 setup)
   yougori template rm INSTANCE --yes [--delete-data]
   yougori template new [NAME] | check [FOLDER] | capture ENV... [--output FOLDER]
   yougori template publish [FOLDER] [--yes] [--publisher NAME]
@@ -45,13 +46,14 @@ pub const TEMPLATE_USAGE: &str = "Yougori Hub templates: whole setups, shared on
   yougori template delete REF --yes
   yougori template capabilities [--group grid|models|web|people|data|automation]
   yougori template plan hub/PUBLISHER/NAME[@VERSION] | ./FOLDER | INSTANCE [--name INSTANCE] [--input ID=VALUE]... [--inputs FILE] [--dry-run]
-  yougori template configure INSTANCE [--input ID=VALUE]... [--inputs FILE] [--secrets -] [--yes] [--dry-run]
+  yougori template configure INSTANCE [--input ID=VALUE]... [--inputs FILE] [--binding ID=VALUE]...
+                                      [--secrets -] [--yes] [--allow-pc-access] [--dry-run]
   yougori template start INSTANCE | stop INSTANCE
   yougori template logs INSTANCE [--follow] [--cursor N] | --sandbox NAME
   yougori template jobs INSTANCE JOB [--settle succeeded|failed|run_again]
   yougori template artifacts INSTANCE [--save ID --to FOLDER]
   yougori template usage INSTANCE
-  yougori template join
+  yougori template join [--yes]   (a script: {\"invitation\": \"…\", \"password\": \"…\"} on stdin)
   yougori template export INSTANCE [FOLDER]
   yougori template reveal INSTANCE [KEY]
   yougori template permissions INSTANCE
@@ -65,8 +67,13 @@ from those files. A run that stopped (Ctrl+C, a closed window, a failure) carrie
 continue INSTANCE, with the same files and answers; a setup waiting for a secret is answered with
 template configure INSTANCE --secrets -. In a terminal each
 question offers Back and Ctrl+C stops; scripts pass --yes, --input/--inputs and --secrets - (JSON
-on stdin; secrets never go on the command line or in --inputs). Text in a terminal, JSON when
-piped or with --format json.";
+on stdin; secrets never go on the command line or in --inputs). A change that lets a sandbox
+change files in a folder you chose asks you to agree; a script agrees with --allow-pc-access.
+template join takes the invitation without showing it, shows what joining does, then takes the
+grid's company password the same way; a script pipes {\"invitation\": \"…\", \"password\": \"…\"}
+to it with --yes (an invitation that starts with yougori-invite: carries your account and may
+come alone, as plain text). A fork always starts from an item's latest version. Text in a
+terminal, JSON when piped or with --format json.";
 
 pub const TOOL_USAGE: &str = "Yougori tools: programs installed into a sandbox
 
@@ -332,7 +339,9 @@ fn stopped_message(args: &[String], current: Option<&instances::State>) -> Strin
         ["template", "configure" | "start" | "stop", ..] => format!("Stopped watching. The operation may still be running; follow it with yougori template logs {}.", named(2)),
         ["template", "plan", ..] => "Stopped. A plan changes nothing, so nothing was created.".to_owned(),
         ["template", "capabilities", ..] => "Stopped.".to_owned(),
-        ["template", "join", ..] => "Stopped. Nothing was joined.".to_owned(),
+        // The join is applied only after the review and the password; once it was, the engine
+        // carries it on whether or not anyone watches.
+        ["template", "join", ..] => "Stopped. If the join had already been applied, the engine carries on with it: see it with yougori template list. Otherwise nothing was joined.".to_owned(),
         ["template", "export", ..] => "Stopped. If a folder was started, remove it before exporting again.".to_owned(),
         // Reading and rehearsing change nothing at all, so stopping one leaves nothing behind.
         ["setup", "migration", "inventory" | "rehearse" | "verify", ..] => "Stopped. Nothing was read out and nothing was changed.".to_owned(),
@@ -603,13 +612,13 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             }))
         }
         "update" => {
-            let parsed = parse(rest, &["format", "input", "inputs", "secrets"], &["yes", "allow-pc-access"], usage)?;
+            let parsed = parse(rest, &["format", "input", "inputs", "binding", "secrets"], &["yes", "allow-pc-access"], usage)?;
             let name = one(&parsed, 0, "Usage: yougori template update INSTANCE [--yes]")?;
             let mode = mode(&parsed);
             // An engine setup moves to its template's newest version through the engine.
             if setups::setup_named(&name).await.is_some() {
                 let options = run_options(&parsed, String::new())?;
-                let value = setups::update(&name, &options.inputs, options.inputs_file.as_deref(), options.secrets_stdin, options.yes, mode.interactive).await?;
+                let value = setups::update(&name, &options.inputs, &options.bindings, options.inputs_file.as_deref(), options.secrets_stdin, options.yes, options.allow_pc_access, mode.interactive).await?;
                 return Ok(reply(value, mode, move |v| {
                     let mut lines: Vec<String> = v["plan"]["conflicts"].as_array().into_iter().flatten().filter_map(|conflict| conflict["message"].as_str()).map(|said| format!("▲ {}", views::clean(said))).collect();
                     if v["applied"] == true {
@@ -618,12 +627,18 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
                     }
                     lines.extend(setups::plan_review_lines(&v["plan"]));
                     if v["needsConfirmation"] == true {
-                        lines.push(format!("Apply it with: yougori template update {name} --yes"));
+                        lines.push(format!("Apply it with: yougori template update {name} --yes{}", setups::agreement_flags(&v["plan"])));
                     }
                     lines.join("\n")
                 }));
             }
-            let value = lifecycle::update(&name, run_options(&parsed, String::new())?, mode.interactive).await?;
+            let options = run_options(&parsed, String::new())?;
+            // Bindings belong to setups made from format 2 templates; a format 1 instance has none
+            // to change, and a flag that did nothing would read as if it had.
+            if !options.bindings.is_empty() && instances::Instances::standard().ok().and_then(|store| store.load(&name).ok().flatten()).is_some() {
+                return Err(format!("{name} is a format 1 instance, which has no bindings: --binding is for setups made from format 2 templates. Nothing was changed."));
+            }
+            let value = lifecycle::update(&name, options, mode.interactive).await?;
             if value["updated"] == false {
                 let said = value["said"].as_str().unwrap_or_default().to_owned();
                 return Ok(reply(value, mode, |_| views::done(vec![said])));
@@ -814,17 +829,17 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             Ok(reply(value, mode, setups::plan_view))
         }
         "configure" => {
-            let parsed = parse(rest, &["format", "input", "inputs", "binding", "secrets"], &["yes", "dry-run"], usage)?;
+            let parsed = parse(rest, &["format", "input", "inputs", "binding", "secrets"], &["yes", "allow-pc-access", "dry-run"], usage)?;
             let name = one(&parsed, 0, "Usage: yougori template configure INSTANCE [--input ID=VALUE]... [--dry-run]")?;
             let options = run_options(&parsed, String::new())?;
             let mode = mode(&parsed);
-            let value = setups::configure(&name, &options.inputs, &options.bindings, options.inputs_file.as_deref(), options.secrets_stdin, options.yes, options.dry_run, mode.interactive).await?;
+            let value = setups::configure(&name, &options.inputs, &options.bindings, options.inputs_file.as_deref(), options.secrets_stdin, options.yes, options.allow_pc_access, options.dry_run, mode.interactive).await?;
             Ok(reply(value, mode, |v| {
                 if v["applied"] == true {
                     views::done(vec![format!("Configured {name}.")])
                 } else if v["needsConfirmation"] == true {
                     let mut lines = setups::plan_review_lines(&v["plan"]);
-                    lines.push(format!("Apply it with: yougori template configure {name} --yes"));
+                    lines.push(format!("Apply it with: yougori template configure {name} --yes{}", setups::agreement_flags(&v["plan"])));
                     lines.join("\n")
                 } else {
                     setups::plan_review_lines(&v["plan"]).join("\n")
@@ -890,13 +905,13 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
             Ok(reply(value, mode, setups::artifacts_view))
         }
         "join" => {
-            let parsed = parse(rest, &["format"], &[], usage)?;
+            let parsed = parse(rest, &["format"], &["yes"], usage)?;
             if !parsed.words.is_empty() {
-                return Err("Usage: yougori template join".into());
+                return Err(format!("Usage: yougori template join [--yes]. The invitation is never an argument. {}", setups::JOIN_STDIN));
             }
             let mode = mode(&parsed);
-            let value = setups::join(mode.interactive).await?;
-            Ok(reply(value, mode, |v| views::done(vec![format!("Joined {}.", v["setup"].as_str().unwrap_or_default())])))
+            let value = setups::join(parsed.has("yes"), mode.interactive).await?;
+            Ok(reply(value, mode, join_view))
         }
         "export" => {
             let parsed = parse(rest, &["format"], &[], usage)?;
@@ -928,6 +943,26 @@ async fn template(action: &str, rest: &[String]) -> Result<Reply, String> {
         }
         other => Err(format!("Unknown template command {}.\n{usage}", scan::shown(other))),
     }
+}
+
+/// `template join` as text: the setup it joined, by the name the engine keeps, or, when a script
+/// left out `--yes`, the review, that nothing was joined, and the command that joins.
+fn join_view(value: &Value) -> String {
+    if value["joined"] == true {
+        let setup_id = value["setupId"].as_str().unwrap_or_default();
+        return views::done(vec![
+            format!("Joined {}.", value["setup"].as_str().filter(|name| !name.is_empty()).unwrap_or(setup_id)),
+            format!("See it with yougori template status {setup_id}"),
+        ]);
+    }
+    let mut lines = setups::join_lines(&value["plan"]);
+    lines.push("Nothing was joined.".to_owned());
+    lines.push(if value["passwordNeeded"] == false {
+        "Join it with yougori template join --yes, giving the invitation on stdin again.".to_owned()
+    } else {
+        "Join it with yougori template join --yes, giving {\"invitation\": \"…\", \"password\": \"…\"} on stdin: the invitation again and the grid's company password.".to_owned()
+    });
+    views::done(lines)
 }
 
 fn published(value: &Value) -> String {
@@ -1122,6 +1157,12 @@ async fn download(reference: &refs::Ref, folder: Option<&str>, interactive: bool
 /// `template info REF`: the item, its counts, and its review built from the files here.
 async fn info(reference: &refs::Ref) -> Result<Value, String> {
     let site = client::Site::configured()?;
+    let cache = client::Cache::standard()?;
+    info_at(&site, &cache, reference).await
+}
+
+/// [`info`] from `site`, with checked copies kept in `cache`.
+async fn info_at(site: &client::Site, cache: &client::Cache, reference: &refs::Ref) -> Result<Value, String> {
     let detail = site.item(reference).await.map_err(String::from)?;
     let mut value = json!({"item": detail, "version": detail["version"]["version"], "notices": detail["version"]["notices"]});
     if let Some(reason) = client::removed(&detail) {
@@ -1129,9 +1170,8 @@ async fn info(reference: &refs::Ref) -> Result<Value, String> {
         return Ok(value);
     }
     let version = detail["version"]["version"].as_str().unwrap_or_default().to_owned();
-    let cache = client::Cache::standard()?;
     if detail["kind"] == "tool" {
-        let got = client::obtain(&site, &cache, &reference.at(&version)).await?;
+        let got = client::obtain(site, cache, &reference.at(&version)).await?;
         let tool = format::tool_file(&got.bundle.files, "").map_err(|problems| tools::list(&reference.item(), &problems))?;
         let wallet: Vec<String> = scan::scan(&got.bundle.files).wallet_notice().into_iter().collect();
         // The shared file, not the installer's view: the review then shows what the tool declares.
@@ -1139,7 +1179,15 @@ async fn info(reference: &refs::Ref) -> Result<Value, String> {
         value["run"] = json!(format!("yougori tool add hub/{}", reference.item()));
         return Ok(value);
     }
-    let prepared = run::prepare(&site, &cache, &run::Wanted::Hub(reference.at(&version))).await?;
+    // Read in the template's own format: the format 1 reader refuses a format 2 template's fields.
+    let prepared = match run::read(site, cache, &run::Wanted::Hub(reference.at(&version))).await? {
+        run::Read::V1(prepared) => prepared,
+        run::Read::V2(fetched) => {
+            info_v2(site, cache, &fetched, &mut value).await?;
+            value["run"] = json!(format!("yougori run hub/{}", reference.item()));
+            return Ok(value);
+        }
+    };
     value["review"] = prepared.review.clone();
     value["pageDiffers"] = json!(prepared.differs);
     if prepared.differs {
@@ -1147,6 +1195,39 @@ async fn info(reference: &refs::Ref) -> Result<Value, String> {
     }
     value["run"] = json!(format!("yougori run hub/{}", reference.item()));
     Ok(value)
+}
+
+/// `template info` of a format 2 template: the review its files produce, written as `template
+/// publish` wrote the page's (every format 1 part, plus its resources, capabilities and what each
+/// pinned component grants, which are fetched and checked first), and the page check against what
+/// the Hub says about that version, by the one rule `template plan` and the engine apply. Nothing
+/// is created and no engine is needed.
+async fn info_v2(site: &client::Site, cache: &client::Cache, fetched: &run::Fetched, value: &mut Value) -> Result<(), String> {
+    let item = match &fetched.origin {
+        run::Wanted::Hub(reference) => Some(reference.item()),
+        run::Wanted::Folder(_) => None,
+    };
+    let package = components::package(site, cache, &fetched.files, item, Some(fetched.digest.clone())).await.map_err(|problems| plan::problems_text("This template", &problems))?;
+    let wallet: Vec<String> = scan::scan(&fetched.files).wallet_notice().into_iter().collect();
+    let review = review::template_v2(&package, &wallet).map_err(|error| format!("This template's review can't be built here: {error}"))?;
+    let page = review::page_check(&package, &fetched.files, fetched.detail.as_ref(), &fetched.version);
+    value["format"] = json!(2);
+    value["review"] = review;
+    value["page"] = review::page_json(&page);
+    value["pageDiffers"] = json!(matches!(&page, Ok(differences) if !differences.is_empty()));
+    // What the page check found joins the Hub's own notices: a page that says something else, or
+    // why there was nothing to compare, which must never read as a clean check.
+    let said = match &page {
+        Ok(differences) if !differences.is_empty() => Some(format!("The Hub page describes this version differently from its files ({}). This review was built from the files themselves.", differences.join(", "))),
+        Ok(_) => None,
+        Err(why) => Some(why.clone()),
+    };
+    if let Some(said) = said {
+        let mut notices: Vec<Value> = value["notices"].as_array().cloned().unwrap_or_default();
+        notices.push(json!(said));
+        value["notices"] = json!(notices);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1262,6 +1343,68 @@ mod tests {
         for bad in [&b"{\"key\": \"\"}"[..], b"{\"key\": \"a\\nb\"}", b"{\"token\": \"x\"}", b"sk-abc"] {
             assert!(parse_key(bad).is_err(), "{}", String::from_utf8_lossy(bad));
         }
+    }
+
+    #[tokio::test]
+    async fn info_reviews_a_format_2_hub_template_from_its_own_files_and_a_format_1_one_as_before() {
+        // PROVES `template info` works for a format 2 Hub template. It read every template with
+        // the format 1 reader, which refuses a format 2 template's fields, so it failed for all of
+        // them. Now the template's own format decides: format 2 gets the review `template publish`
+        // writes, and the page check by the one rule `template plan` uses. The Hub is this test's.
+        use crate::hub::client::tests::{bundle_json, serve, Fixture};
+        let template = "format_version: 2\nkind: template\nname: shop\nsummary: A shop.\nversion: 1.0.0\nlicense: MIT\nrequires: {yougori: 1.2.0}\ninputs:\n  - {id: title, question: Title?, type: text, group: website_api, default: Hi}\npublic:\n  - {environment: web, port: 8080}\n";
+        let project = "format_version: 2\nproject: shop\nenvironments:\n  web:\n    image: nginx:1.27\n    ports: [8080]\n    environment: {TITLE: \"{{inputs.title}}\"}\n";
+        let v2: scan::Files = [(format::TEMPLATE_FILE, template), ("yougori.yaml", project)].iter().map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec())).collect();
+        let checked = plan::check_files(&v2).unwrap_or_else(|problems| panic!("{}", plan::problems_text("the package", &problems)));
+        let honest = review::template_v2(&yougori_setup::plan::Package { checked, components: BTreeMap::new(), item: None, digest: None }, &[]).unwrap();
+        let info_with = |files: scan::Files, published: Value| async move {
+            let fixture = Fixture::default();
+            *fixture.detail.lock().unwrap() = json!({"ref": "acme/shop", "kind": "template", "state": "active", "title": "Shop", "summary": "A shop.", "license": "MIT", "latestVersion": "1.0.0", "counts": {}, "version": {"version": "1.0.0", "digest": scan::digest_of(&files), "verified": false, "review": published, "notices": ["Published by acme."]}});
+            *fixture.bundle.lock().unwrap() = bundle_json("acme", "shop", "1.0.0", &files);
+            let site = client::Site::at(&serve(fixture).await).unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let cache = client::Cache { root: root.path().to_path_buf() };
+            info_at(&site, &cache, &refs::Ref { publisher: "acme".into(), name: "shop".into(), version: None }).await
+        };
+        let shown = info_with(v2.clone(), honest.clone()).await.unwrap_or_else(|said| panic!("info was refused: {said}"));
+        assert_eq!(shown["format"], 2);
+        assert_eq!(shown["review"], honest, "the review the page was published with, built again from the files");
+        assert_eq!((&shown["page"]["compared"], &shown["page"]["differs"], &shown["pageDiffers"]), (&json!(true), &json!(false), &json!(false)));
+        assert_eq!(shown["notices"], json!(["Published by acme."]), "nothing to add when the page agrees");
+        assert_eq!(shown["run"], "yougori run hub/acme/shop");
+        let text = views::info(&shown);
+        assert!(text.contains("Sandboxes (1)") && text.contains("Run it: yougori run hub/acme/shop"), "{text}");
+
+        // A page that promises less than the files: said, and named.
+        let mut quiet = honest.clone();
+        quiet["public"] = json!([]);
+        let shown = info_with(v2.clone(), quiet).await.unwrap();
+        assert_eq!(shown["pageDiffers"], true);
+        let notices = shown["notices"].to_string();
+        assert!(notices.contains("Published by acme.") && notices.contains("describes this version differently from its files"), "{notices}");
+        // Nothing to compare is said as such, never as a clean check.
+        let shown = info_with(v2, json!({})).await.unwrap();
+        assert_eq!((&shown["page"]["compared"], &shown["pageDiffers"]), (&json!(false), &json!(false)));
+        assert!(shown["notices"].to_string().contains("published without a review"), "{}", shown["notices"]);
+
+        // A format 1 template is read as it always was.
+        let v1 = scan::collect(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub/hello-site")).unwrap().files;
+        let shown = info_with(v1, json!({})).await.unwrap_or_else(|said| panic!("info of a format 1 template was refused: {said}"));
+        assert!(shown.get("format").is_none() && shown.get("page").is_none(), "{shown}");
+        assert_eq!(shown["review"]["format"], review::FORMAT);
+        assert_eq!(shown["pageDiffers"], false);
+    }
+
+    #[test]
+    fn a_template_join_says_what_it_joined_or_that_it_joined_nothing() {
+        let joined = join_view(&json!({"joined": true, "setup": "Acme Sandbox Grid", "setupId": "setup-j"}));
+        assert_eq!(joined, "Joined Acme Sandbox Grid.\nSee it with yougori template status setup-j\n");
+        // Never an empty name: the setup's id stands in.
+        assert!(join_view(&json!({"joined": true, "setup": "", "setupId": "setup-j"})).starts_with("Joined setup-j."));
+        let reviewed = join_view(&json!({"joined": false, "needsConfirmation": true, "passwordNeeded": false, "plan": {"headline": "Create this setup: 1 step.", "steps": [{"title": "Create membership (grid)"}]}}));
+        assert!(reviewed.contains("Create membership (grid)") && reviewed.contains("Nothing was joined.") && reviewed.contains("giving the invitation on stdin again") && !reviewed.contains("Joined"), "{reviewed}");
+        let said = stopped_message(&words("template join --yes"), None);
+        assert!(said.contains("carries on with it") && said.contains("Otherwise nothing was joined"), "{said}");
     }
 
     #[test]

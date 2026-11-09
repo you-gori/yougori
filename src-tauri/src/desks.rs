@@ -1396,7 +1396,7 @@ async fn install_login(app:&AppHandle,instance:&str,portal:Value)->Result<Value,
     for old in previous.iter().flat_map(|p|p.desks.iter()).filter_map(|d|d.environment_id.as_ref()){
         if !desks.iter().any(|d|d.environment_id.as_ref()==Some(old)){
             crate::peer_sharing::forget(old)?;
-            store.mutate(|state|{state.environments.retain(|e|&e.id!=old);Ok(())})?;
+            store.mutate(|state|{state.environments.retain(|e|&e.id!=old);state.settings.auto_start_environment_ids.retain(|id|id!=old);Ok(())})?;
         }
     }
     let login=Login{grid_id,grid_name:portal["grid"]["name"].as_str().unwrap_or_default().into(),username:portal["username"].as_str().unwrap_or_default().into(),person_id,name:portal["name"].as_str().unwrap_or_default().into(),admin_role:serde_json::from_value(portal["adminRole"].clone()).unwrap_or_default(),desks,signed_in_at:yougori_grid::now(),connections:portal["connections"].as_array().cloned().unwrap_or_default(),mfa:portal["mfa"]==true};
@@ -1438,7 +1438,11 @@ async fn desk_logout_in(app: &AppHandle, instance: &str) -> Result<Value, String
         if let Some(id) = &desk.environment_id {
             if store.environment(id).is_ok() {
                 let _ = crate::peer_sharing::forget(id);
-                let _ = store.mutate(|state| { state.environments.retain(|environment| &environment.id != id); Ok(()) });
+                let _ = store.mutate(|state| {
+                    state.environments.retain(|environment| &environment.id != id);
+                    state.settings.auto_start_environment_ids.retain(|auto| auto != id);
+                    Ok(())
+                });
             }
         }
     }

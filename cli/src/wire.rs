@@ -4,7 +4,9 @@ use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const VERSION: u32 = 2;
-pub const MAX_REQUEST: usize = 1024 * 1024;
+/// The largest request either side takes: room for a media job's input image (20 MiB, about 26.7
+/// MiB as a data URL) and a model's whole shared chat history (16 MiB), on this computer only.
+pub const MAX_REQUEST: usize = 32 * 1024 * 1024;
 pub const MAX_RESPONSE: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

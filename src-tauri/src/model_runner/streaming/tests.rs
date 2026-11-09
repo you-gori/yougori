@@ -202,7 +202,7 @@ async fn malformed_or_unfinished_streams_never_succeed_or_release_calls() {
 async fn the_model_servers_typed_refusals_are_rendered_from_their_numbers_not_their_text() {
     // The runner's own integers name the window and what overflowed it; its message text is
     // never copied, so a tokenizer echo could not reach the user through this path.
-    let cases: [(u16, Value, &str); 5] = [
+    let cases: [(u16, Value, &str); 6] = [
         (400, json!({"code":"yougori_context_window","message":"sensitive-synthetic-value","context":9728,"promptTokens":10294,"maxTokens":256,"grantContext":9728}),
             "This conversation needs 10294 prompt tokens plus up to 256 reply tokens, more than the model's 9728-token context window (the GPU grant covers that many tokens). Shorten the conversation or lower max_tokens."),
         (400, json!({"code":"yougori_context_window","message":"sensitive-synthetic-value","context":32768,"promptTokens":40000,"maxTokens":256}),
@@ -212,6 +212,8 @@ async fn the_model_servers_typed_refusals_are_rendered_from_their_numbers_not_th
         (400, json!({"code":"yougori_context_window","message":"sensitive-synthetic-value","context":4096,"grantContext":9728}),
             "This conversation exceeds the model's 4096-token context window. Shorten it or lower max_tokens."),
         (507, json!({"code":"yougori_gpu_memory","message":"sensitive-synthetic-value"}), GPU_MEMORY_REFUSED),
+        // A JSON reply format the runner cannot enforce: the reason reaches the person, in the engine's words.
+        (400, json!({"code":"yougori_structured_output","message":"sensitive-synthetic-value"}), STRUCTURED_OUTPUT_REFUSED),
     ];
     for (status, error, expected) in cases {
         let value = json!({"error": error});

@@ -908,6 +908,12 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
                 with stack, self.assertRaisesRegex(server.BackendRefusal, message):
                     server.adapter_attach("fin", "owner/adapter", self.ADAPTER_REVISION)
                 self.assertFalse([path for path, _ in calls if path.endswith("load_lora_adapter")])
+        # A base repository that keeps another shard set beside the served one (a consolidated
+        # file, as Mistral's do) is still the served model's: only the served files are compared.
+        with tempfile.TemporaryDirectory() as root:
+            stack, calls, _ = self.adapter_world(root, base={"model.safetensors": "a" * 64, "consolidated.safetensors": "b" * 64})
+            with stack:
+                self.assertEqual(server.adapter_attach("fin", "owner/adapter", self.ADAPTER_REVISION)["name"], "fin")
         with tempfile.TemporaryDirectory() as root:
             stack, _, _ = self.adapter_world(root)
             with stack:
@@ -1341,15 +1347,22 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
             with self.subTest(fmt=fmt), patch.object(server, "FORMAT", fmt), patch.object(server, "GPU_CAPACITY_CONTEXT", 9728 if fmt == "safetensors" else None), \
                  patch.dict(os.environ, YOUGORI_VLLM_ADAPTERS=""):
                 facts = server.runner_capabilities()
-                self.assertEqual(set(facts), {"kvGrowth", "adapters", "kvReuse", "concurrency"})
+                self.assertEqual(set(facts), {"kvGrowth", "adapters", "kvReuse", "concurrency", "structuredOutput"})
                 self.assertEqual(facts["concurrency"]["slots"], server.INFERENCE_QUEUE.slots if fmt != "safetensors" else 1)
                 self.assertFalse(facts["kvGrowth"]["supported"])
                 self.assertFalse(facts["adapters"]["supported"])
                 self.assertEqual(facts["kvReuse"]["supported"], reuse)
                 self.assertIn(kv_words, facts["kvGrowth"]["detail"])
                 self.assertIn(adapter_words, facts["adapters"]["detail"])
+                # JSON output (response_format) is enforced by the two backends with a grammar or
+                # structured outputs, and by nothing in the Transformers runner.
+                self.assertEqual(facts["structuredOutput"]["supported"], fmt != "safetensors")
+                self.assertIn("response_format", facts["structuredOutput"]["detail"])
                 if fmt == "safetensors":
                     self.assertIn("9728", facts["kvGrowth"]["detail"])
+        # A megakernel launch decodes with the owner's kernel: no schema is enforced.
+        with patch.object(server, "FORMAT", "vllm"), patch.object(server, "MEGAKERNEL", {"serving": True}), patch.dict(os.environ, YOUGORI_VLLM_ADAPTERS=""):
+            self.assertFalse(server.runner_capabilities()["structuredOutput"]["supported"])
         with patch.object(server, "FORMAT", "source"):
             self.assertEqual(server.runner_capabilities(), {})
 
@@ -1359,6 +1372,30 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
         for extra in [{"max_tokens": 0}, {"max_tokens": True}, {"max_tokens": 4097}, {"stream": "yes"}, {"truncate": 1}, {"messages": [{"role": "system", "content": "only"}]}, {"temperature": float("nan")}, {"model": "other/model"}, {"messages": [{"role": "tool", "content": "x"}]}, {"messages": [{"role": "user", "content": "x" * 32769}]}]:
             with self.assertRaises(ValueError):
                 server.validate_chat({**valid, **extra})
+        # Fields ordinary OpenAI clients send are accepted: ignored, or passed to vLLM and llama.cpp.
+        server.validate_chat({**valid, "seed": 7, "user": "u1", "presence_penalty": 0.5, "frequency_penalty": -1, "n": 1, "logprobs": False,
+                              "metadata": {"run": "a"}, "store": False, "service_tier": "auto", "prompt_cache_key": "k", "reasoning_effort": "low"})
+        for extra in [{"n": 2}, {"logprobs": True}, {"seed": -1}, {"seed": "7"}, {"presence_penalty": 3}, {"frequency_penalty": True}, {"user": 5}, {"metadata": "x"}, {"logit_bias": {}}]:
+            with self.assertRaises(ValueError):
+                server.validate_chat({**valid, **extra})
+        # OpenAI's reply formats, checked for shape only here (what enforces them is the launch's
+        # business): the two JSON kinds pass, text is no format, and anything else is refused
+        # with a typed sentence that never echoes the request.
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        for value, kind in [({"type": "json_object"}, "json_object"), ({"type": "text"}, None),
+                            ({"type": "json_schema", "json_schema": {"name": "reply", "schema": schema, "strict": True, "description": "yes or no"}}, "json_schema"),
+                            ({"type": "json_schema", "json_schema": {"schema": schema}}, "json_schema")]:
+            server.validate_chat({**valid, "response_format": value})
+            self.assertEqual(server.response_format_kind({"response_format": value}), kind)
+        self.assertIsNone(server.response_format_kind(valid))
+        for value in ["json", {"type": "xml"}, {"type": "json_object", "schema": schema}, {"type": "json_schema"}, {"type": "json_schema", "json_schema": {}},
+                      {"type": "json_schema", "json_schema": {"schema": schema, "name": "bad name"}}, {"type": "json_schema", "json_schema": {"schema": schema, "strict": "yes"}},
+                      {"type": "json_schema", "json_schema": {"schema": schema, "other": 1}},
+                      {"type": "json_schema", "json_schema": {"schema": {"description": "x" * 17000}}}]:
+            with self.assertRaises(server.StructuredOutputRefusal) as refused:
+                server.validate_chat({**valid, "response_format": value})
+            self.assertEqual(refused.exception.body()["error"]["code"], "yougori_structured_output")
+            self.assertNotIn("xml", refused.exception.body()["error"]["message"])
 
     def test_truncation_drops_whole_oldest_turns_and_keeps_the_system_prompt(self):
         class Inputs(dict):
@@ -1396,7 +1433,8 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
             server.record_usage("yougori", "busy")
             server.record_usage("api", "rejected")
             usage = server.load_usage()
-            self.assertEqual(usage["totals"], {"requests": 2, "prompt_tokens": 120, "completion_tokens": 30, "errors": 1, "rejected": 1, "api": 1, "yougori": 1})
+            # A chat model's media counters stay at zero; a media model's token counters do.
+            self.assertEqual(usage["totals"], {"requests": 2, "prompt_tokens": 120, "completion_tokens": 30, "errors": 1, "rejected": 1, "api": 1, "yougori": 1, "images": 0, "output_ms": 0, "compute_ms": 0})
             self.assertEqual(usage["sources"], {"yougori": 1, "api": 1})
             self.assertEqual(sum(h["requests"] for h in usage["hours"].values()), 2)
             self.assertEqual([r["outcome"] for r in usage["recent"]], ["ok", "busy", "rejected"])
@@ -2733,6 +2771,26 @@ class ServingAgreementTests(unittest.TestCase):
             self.assertEqual(server.serving_selection(body,"stream,tools"),"stream,tools")
 
 
+    def test_the_model_listing_says_whether_json_output_is_enforced_and_a_bad_format_is_a_typed_refusal(self):
+        """/v1/models carries the launch's structured-output fact for websites and connectors
+        that read the catalog, and a malformed response_format answers 400 with its code before
+        admission, never the generic sentence."""
+        for fmt, enforced in (("gguf", True), ("safetensors", False)):
+            with self.subTest(fmt=fmt), patch.object(server, "FORMAT", fmt), self.endpoint() as (port, enter, generated):
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                try:
+                    connection.request("GET", "/v1/models", headers={"Authorization": "Bearer " + server.TOKEN})
+                    reply = connection.getresponse()
+                    listing = json.loads(reply.read())
+                finally:
+                    connection.close()
+                self.assertEqual(reply.status, 200)
+                self.assertEqual(listing["data"][0]["capabilities"], {"structuredOutput": enforced})
+                status, _, raw = self.request(port, body={"messages": [{"role": "user", "content": "synthetic"}], "stream": False, "response_format": {"type": "xml"}})
+                self.assertEqual(status, 400)
+                self.assertEqual(json.loads(raw)["error"]["code"], "yougori_structured_output")
+                self.assertEqual((enter.call_count, generated.call_count), (0, 0))
+
     def test_buffered_negotiation_and_mode_mismatch_before_admission(self):
         with self.endpoint(tools=True) as (port,enter,generated):
             for tools in (False,True):
@@ -2778,6 +2836,41 @@ class BufferedRelayTests(unittest.TestCase):
                 server.generate_gguf({"messages": [{"role": "user", "content": "fixture"}], "stream": False, "model": "other"}, Mock(), {})
             self.assertEqual(len(sent), 3)
 
+    def test_a_json_reply_format_is_forwarded_to_the_backend_and_refused_where_nothing_enforces_it(self):
+        """response_format reaches llama.cpp and vLLM as given (they enforce it); a text format
+        is not forwarded; a megakernel launch and the Transformers runner answer the typed 400
+        before anything is generated."""
+        reply = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "{\"ok\": true}"}, "finish_reason": "stop"}]}
+        sent = []
+
+        def llama(path, request, timeout=30, caller=None, holder=None):
+            sent.append(request)
+            return Mock(), Mock(status=200, read=Mock(return_value=json.dumps(reply).encode()))
+        schema = {"type": "json_schema", "json_schema": {"name": "reply", "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}, "strict": True}}
+        for fmt in ("gguf", "vllm"):
+            with self.subTest(fmt=fmt), patch.object(server, "FORMAT", fmt), patch.object(server, "prepare_gguf", return_value=([], 1, 0)), patch.object(server, "llama", llama):
+                for value in (schema, {"type": "json_object"}):
+                    meter = {}
+                    status, body = server.generate_gguf({"messages": [{"role": "user", "content": "fixture"}], "stream": False, "response_format": value}, Mock(), meter)
+                    self.assertEqual((status, meter["outcome"], sent[-1]["response_format"]), (200, "ok", value))
+                    self.assertEqual(body["choices"][0]["message"]["content"], "{\"ok\": true}")
+                server.generate_gguf({"messages": [{"role": "user", "content": "fixture"}], "stream": False, "response_format": {"type": "text"}}, Mock(), {})
+                self.assertNotIn("response_format", sent[-1])
+        self.assertEqual(len(sent), 6)
+        with patch.object(server, "FORMAT", "vllm"), patch.object(server, "MEGAKERNEL", {"serving": True}), patch.object(server, "llama", llama):
+            meter = {}
+            status, body = server.generate_gguf({"messages": [{"role": "user", "content": "fixture"}], "stream": False, "response_format": schema}, Mock(), meter)
+            self.assertEqual((status, meter["outcome"], body["error"]["code"]), (400, "invalid", "yougori_structured_output"))
+            self.assertIn("megakernel", body["error"]["message"])
+        with patch.object(server, "FORMAT", "safetensors"), patch.object(server, "NETWORK", Mock()), patch.object(server, "prepare", side_effect=AssertionError("generated anyway")):
+            meter = {}
+            status, body = server.generate({"messages": [{"role": "user", "content": "fixture"}], "response_format": {"type": "json_object"}}, None, meter)
+            self.assertEqual((status, meter["outcome"], body["error"]["code"]), (400, "invalid", "yougori_structured_output"))
+            self.assertIn("--runner vllm", body["error"]["message"])
+            self.assertTrue(server.GENERATION.acquire(blocking=False))
+            server.GENERATION.release()
+        self.assertEqual(len(sent), 6, "nothing reached a backend after a refusal")
+
     def test_preserves_refusal_tools_reasoning_and_actual_terminal(self):
         message={"role":"assistant","content":None,"refusal":"fixture refusal","reasoning_content":"fixture reasoning",
                  "tool_calls":[{"id":"a","type":"function","function":{"name":"lookup","arguments":"{}"}}]}
@@ -2795,6 +2888,425 @@ class BufferedRelayTests(unittest.TestCase):
         for choices in ([],[good,good]):
             with self.assertRaises(RuntimeError): self.generate({"choices":choices})
         with self.assertRaises(RuntimeError): self.generate({"choices":[good],"error":{"message":"fixture"}})
+
+class FakeImage:
+    """What a Diffusers pipeline returns: something with a size that saves itself."""
+    def __init__(self, width=512, height=512):
+        self.width, self.height = width, height
+
+    def save(self, path, format="PNG"):
+        with open(path, "wb") as file:
+            file.write(b"\x89PNG\r\n\x1a\n" + format.encode() + b"\x00" * 64)
+
+
+class FakePipeline:
+    """A Diffusers-like pipeline: three steps with the modern step callback, images or frames."""
+    def __init__(self, delay=0.0, frames=False, fail=None):
+        self.delay, self.frames, self.fail = delay, frames, fail
+        self.scheduler = SimpleNamespace(timesteps=[3, 2, 1])
+        self.calls = []
+
+    def __call__(self, prompt, num_images_per_prompt=1, generator=None, callback_on_step_end=None, num_inference_steps=None,
+                 guidance_scale=None, width=None, height=None, negative_prompt=None, num_frames=None, image=None):
+        self.calls.append({"prompt": prompt, "count": num_images_per_prompt, "steps": num_inference_steps, "guidance": guidance_scale,
+                           "width": width, "height": height, "negative": negative_prompt, "frames": num_frames, "generator": generator})
+        if self.fail:
+            raise self.fail
+        for step in range(3):
+            time.sleep(self.delay)
+            if callback_on_step_end:
+                callback_on_step_end(self, step, 0, {})
+        if self.frames:
+            return SimpleNamespace(frames=[[FakeImage(width or 256, height or 256) for _ in range(num_frames or 8)]])
+        return SimpleNamespace(images=[FakeImage(width or 512, height or 512) for _ in range(num_images_per_prompt)])
+
+
+class MediaRunnerTests(unittest.TestCase):
+    """The media runner with a fake pipeline and no GPU: the files a pipeline needs, job
+    validation, the job API with files and ranges, the OpenAI shapes, cancellation, the queue
+    limit, retention, the restart rule and what health and /v1/models say."""
+
+    @classmethod
+    def setUpClass(cls):
+        with patch.dict(os.environ, YOUGORI_MEDIA_TASK="text-to-image"):
+            server.load_media_backends()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="yg-media-test-")
+        self.stack = ExitStack()
+        self.stack.enter_context(patch.object(server, "FORMAT", "media"))
+        self.stack.enter_context(patch.object(server, "MEDIA_TASK", "text-to-image"))
+        self.stack.enter_context(patch.dict(server.STATE, status="ready", task="text-to-image", error=None))
+        self.stack.enter_context(patch.object(server, "TORCH", SimpleNamespace(cuda=SimpleNamespace(empty_cache=lambda: None))))
+        self.stack.enter_context(patch.dict("sys.modules", torch=SimpleNamespace(Generator=lambda device: SimpleNamespace(manual_seed=lambda seed: ("generator", seed)))))
+        self.usage = self.stack.enter_context(patch.object(server, "record_usage"))
+        self.pipeline = FakePipeline()
+        self.stack.enter_context(patch.dict(server.MEDIA, {"pipeline": self.pipeline, "task": "text-to-image", "class": "FakePipeline", "speed": {}, "sampleRate": 16000}))
+        self.jobs = server.MediaJobs(os.path.join(self.temp.name, "media"))
+        self.jobs.start()
+        self.stack.enter_context(patch.object(server, "JOBS", self.jobs))
+        self.web = server.Server(("127.0.0.1", 0), server.Handler)
+        self.worker = threading.Thread(target=self.web.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        self.worker.start()
+
+    def tearDown(self):
+        self.web.shutdown()
+        self.web.server_close()
+        self.worker.join(2)
+        self.jobs.stop()
+        self.jobs.thread.join(5)
+        self.stack.close()
+        try:
+            self.temp.cleanup()
+        except OSError:
+            pass
+
+    def request(self, method, path, body=None, headers=None, raw=False):
+        data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
+        connection = http.client.HTTPConnection("127.0.0.1", self.web.server_port, timeout=30)
+        try:
+            connection.putrequest(method, path, skip_host="Host" in (headers or {}))
+            connection.putheader("Authorization", "Bearer " + server.TOKEN)
+            for name, value in (headers or {}).items():
+                connection.putheader(name, value)
+            if data is not None:
+                connection.putheader("Content-Length", str(len(data)))
+                connection.putheader("Content-Type", "application/json")
+            connection.endheaders(data)
+            reply = connection.getresponse()
+            payload = reply.read()
+            return reply.status, dict(reply.getheaders()), payload if raw else json.loads(payload)
+        finally:
+            connection.close()
+
+    def submit(self, inputs, status=202):
+        code, _, body = self.request("POST", "/v1/jobs", {"input": inputs})
+        self.assertEqual(code, status, body)
+        return body
+
+    def done(self, job_id):
+        code, _, body = self.request("GET", "/v1/jobs/" + job_id + "?wait=30")
+        self.assertEqual(code, 200, body)
+        return body
+
+    def test_adapter_and_pipeline_runner_are_repositories_at_a_commit(self):
+        """`--adapter` and a media `--runner` name a repository at a commit. The adapter's
+        safetensors load onto the pipeline with Diffusers' LoRA loading once peft is installed;
+        a pipeline runner's pipeline.py becomes the custom pipeline and its requirements.txt may
+        only pin packages; health names both."""
+        commit = "a" * 40
+        self.assertEqual(server.media_reference("hf:Pika-Labs/Pika-H3-Flex@" + commit, "adapter"), ("Pika-Labs/Pika-H3-Flex", commit))
+        self.assertEqual(server.media_reference("Pika-Labs/Pika-H3-Flex@" + commit, "adapter")[0], "Pika-Labs/Pika-H3-Flex")
+        for bad in ("Pika-Labs/Pika-H3-Flex", "hf:Pika-Labs/Pika-H3-Flex@main", "hf:Pika-Labs@" + commit, "hf:a/b@" + "A" * 40):
+            with self.assertRaises(RuntimeError):
+                server.media_reference(bad, "adapter")
+        runner = Path(self.temp.name) / "runner"
+        runner.mkdir()
+        git = "diffusers @ git+https://github.com/huggingface/diffusers@" + "b" * 40
+        (runner / "requirements.txt").write_text(git + "\nsentencepiece==0.2.3  # the tokenizer\n\n", encoding="utf-8")
+        self.assertEqual(server.media_requirements(str(runner)), [git, "sentencepiece==0.2.3"])
+        for line in ("diffusers>=0.30", "evil --index-url https://example.invalid", "name @ git+https://gitlab.com/a/b@" + "b" * 40, "diffusers @ git+https://github.com/huggingface/diffusers@main"):
+            (runner / "requirements.txt").write_text(line + "\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                server.media_requirements(str(runner))
+        self.assertEqual(server.media_requirements(str(Path(self.temp.name) / "none")), [])
+        # The custom pipeline reaches Diffusers as the pipeline runner's folder.
+        loaded = []
+
+        class Pipeline:
+            components = {}
+
+            def set_progress_bar_config(self, **_):
+                pass
+
+            def to(self, device):
+                loaded.append(("to", device))
+                return self
+
+            def enable_model_cpu_offload(self):
+                loaded.append(("offload",))
+
+            def load_lora_weights(self, folder):
+                loaded.append(("lora", folder))
+        diffusers = SimpleNamespace(DiffusionPipeline=SimpleNamespace(from_pretrained=lambda root, **kwargs: loaded.append(("from_pretrained", root, kwargs)) or Pipeline()))
+        torch = SimpleNamespace(float16="fp16", bfloat16="bf16", float32="fp32", cuda=SimpleNamespace(mem_get_info=lambda index: (64 * 1024 ** 3, 64 * 1024 ** 3)))
+        with patch.dict("sys.modules", diffusers=diffusers), patch.object(server, "MEDIA_RUNNER", "hf:acme/pipeline@" + commit), patch.dict(server.MEDIA, {}):
+            pipeline = server.media_load_pipeline(torch, "/weights", {"variant": "fp16", "weights": ["unet/x.safetensors"]}, "fp16", custom=str(runner))
+            self.assertEqual(loaded[0], ("from_pretrained", "/weights", {"torch_dtype": "fp16", "local_files_only": True, "variant": "fp16", "custom_pipeline": str(runner)}))
+            self.assertEqual(server.MEDIA["pipelineSource"], "hf:acme/pipeline@" + commit)
+            # The adapter: fetched at its commit (safetensors required), peft installed, LoRA loaded.
+            adapter = Path(self.temp.name) / "adapter"
+            adapter.mkdir()
+            installed, fetched = [], []
+            with patch.object(server, "install", lambda required: installed.append(dict(required))), \
+                 patch.object(server, "media_fetch", lambda reference, what, patterns: fetched.append((what, reference, tuple(patterns))) or str(adapter)):
+                with self.assertRaises(RuntimeError):
+                    server.media_load_adapter(pipeline, "hf:Pika-Labs/Pika-H3-Flex@" + commit)  # no safetensors
+                (adapter / "pytorch_lora_weights.safetensors").write_bytes(b"\0" * 8)
+                server.media_load_adapter(pipeline, "hf:Pika-Labs/Pika-H3-Flex@" + commit)
+                with self.assertRaises(RuntimeError):
+                    server.media_load_adapter(SimpleNamespace(), "hf:Pika-Labs/Pika-H3-Flex@" + commit)  # no LoRA loading
+            self.assertEqual(installed, [server.MEDIA_ADAPTER_DEPENDENCIES] * 2)
+            self.assertEqual(fetched[0][:2], ("adapter", "hf:Pika-Labs/Pika-H3-Flex@" + commit))
+            self.assertEqual(loaded[-1], ("lora", str(adapter)))
+            self.assertEqual(server.MEDIA["adapter"], "hf:Pika-Labs/Pika-H3-Flex@" + commit)
+            health = server.media_health()
+            self.assertEqual((health["adapter"], health["pipelineSource"]), ("hf:Pika-Labs/Pika-H3-Flex@" + commit, "hf:acme/pipeline@" + commit))
+
+    def test_a_pipeline_downloads_one_variant_of_its_components_and_leaves_single_file_checkpoints(self):
+        index = {"_class_name": "StableDiffusionPipeline", "unet": ["diffusers", "UNet2DConditionModel"], "vae": ["diffusers", "AutoencoderKL"],
+                 "text_encoder": ["transformers", "CLIPTextModel"], "tokenizer": ["transformers", "CLIPTokenizer"], "safety_checker": [None, None]}
+        names = ["sd_turbo.safetensors", "unet/diffusion_pytorch_model.safetensors", "unet/diffusion_pytorch_model.fp16.safetensors",
+                 "vae/diffusion_pytorch_model.safetensors", "vae/diffusion_pytorch_model.fp16.safetensors",
+                 "text_encoder/model.safetensors", "text_encoder/model.fp16.safetensors", "comfy/loras/x.safetensors"]
+        plan = server.media_plan(names, index)
+        self.assertEqual(plan["variant"], "fp16")
+        self.assertEqual(plan["weights"], ["text_encoder/model.fp16.safetensors", "unet/diffusion_pytorch_model.fp16.safetensors", "vae/diffusion_pytorch_model.fp16.safetensors"])
+        # One component without the variant: the plain files for all, shards included.
+        mixed = server.media_plan([n for n in names if "text_encoder/model.fp16" not in n] + ["transformer/diffusion_pytorch_model-00001-of-00002.safetensors"],
+                                  {**index, "transformer": ["diffusers", "X"]})
+        self.assertIsNone(mixed["variant"])
+        self.assertNotIn("unet/diffusion_pytorch_model.fp16.safetensors", mixed["weights"])
+        self.assertIn("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", mixed["weights"])
+        self.assertNotIn("sd_turbo.safetensors", mixed["weights"])
+        self.assertEqual(server.media_plan(["sd_turbo.safetensors"], index)["weights"], [])
+        self.assertEqual(server.media_frames(2, 24, 8), 49)
+        self.assertEqual(server.media_frames(0.5, 16, 4), 9)
+        self.assertEqual(server.media_frames(2, 8, 1), 16)
+
+    def test_job_inputs_are_checked_per_task(self):
+        with self.assertRaisesRegex(server.MediaInput, "prompt is required"):
+            server.validate_job({"input": {}})
+        with self.assertRaisesRegex(server.MediaInput, "Unknown input field"):
+            server.validate_job({"input": {"prompt": "x", "cfg": 1}})
+        with self.assertRaisesRegex(server.MediaInput, "multiple of 8"):
+            server.validate_job({"input": {"prompt": "x", "width": 500}})
+        with self.assertRaisesRegex(server.MediaInput, "seconds applies"):
+            server.validate_job({"input": {"prompt": "x", "seconds": 2}})
+        with self.assertRaisesRegex(server.MediaInput, "format must be"):
+            server.validate_job({"input": {"prompt": "x", "format": "gif"}})
+        with self.assertRaisesRegex(server.MediaInput, "serves"):
+            server.validate_job({"model": "other/model", "input": {"prompt": "x"}})
+        job = server.validate_job({"input": {"prompt": "a cat", "count": 2, "steps": 4, "guidance": 0, "seed": 7, "format": "jpeg"}})
+        self.assertEqual((job["count"], job["steps"], job["guidance"], job["seed"], job["format"]), (2, 4, 0, 7, "jpeg"))
+        self.assertIn("seed", server.validate_job({"input": {"prompt": "x"}}))
+        with patch.object(server, "MEDIA_TASK", "image-to-video"):
+            with self.assertRaisesRegex(server.MediaInput, "image is required"):
+                server.validate_job({"input": {"prompt": "x"}})
+            with self.assertRaisesRegex(server.MediaInput, "count applies"):
+                server.validate_job({"input": {"prompt": "x", "count": 2, "image": "data:image/png;base64,AAAA"}})
+            job = server.validate_job({"input": {"image": "data:image/png;base64,AAAA", "seconds": 3, "fps": 8}})
+            self.assertEqual((job["image"], job["seconds"], job["fps"], job["format"], job["_image"]), ({"bytes": 3}, 3, 8, "mp4", b"\x00\x00\x00"))
+        with patch.object(server, "MEDIA_TASK", "text-to-speech"):
+            self.assertEqual(server.validate_job({"input": {"text": "hello", "voice": "v2/en_speaker_6"}})["prompt"], "hello")
+
+    def test_jobs_run_one_at_a_time_with_progress_results_files_and_usage(self):
+        self.pipeline.delay = 0.2
+        first = self.submit({"prompt": "a red bicycle", "count": 2, "steps": 3, "guidance": 1.5, "seed": 11})
+        second = self.submit({"prompt": "a blue bicycle", "width": 256, "height": 192})
+        self.assertIn(first["status"], ("queued", "running"))
+        self.assertEqual((first["task"], first["model"], first["object"]), ("text-to-image", server.MODEL, "job"))
+        time.sleep(0.3)
+        code, _, running = self.request("GET", "/v1/jobs/" + first["id"])
+        self.assertEqual(code, 200)
+        self.assertEqual(running["status"], "running")
+        code, _, waiting = self.request("GET", "/v1/jobs/" + second["id"])
+        self.assertEqual((waiting["status"], waiting["position"]), ("queued", 1))
+        done = self.done(first["id"])
+        self.assertEqual((done["status"], done["progress"]), ("succeeded", 1.0), done)
+        self.assertEqual(len(done["output"]["images"]), 2)
+        self.assertEqual(done["output"]["seed"], 11)
+        self.assertEqual(done["usage"]["images"], 2)
+        self.assertEqual(done["output"]["files"][0]["url"], "/v1/files/" + first["id"] + ".1")
+        self.assertEqual(done["output"]["images"][1]["file"], first["id"] + ".2")
+        self.assertEqual(self.pipeline.calls[0]["steps"], 3)
+        self.assertEqual(self.pipeline.calls[0]["guidance"], 1.5)
+        self.assertEqual(self.pipeline.calls[0]["generator"], ("generator", 11))
+        self.done(second["id"])
+        self.assertEqual((self.pipeline.calls[1]["width"], self.pipeline.calls[1]["height"]), (256, 192))
+        code, _, result = self.request("GET", "/v1/jobs/" + first["id"] + "/result")
+        self.assertEqual(code, 200)
+        self.assertEqual(result["images"][0]["width"], 512)
+        code, headers, data = self.request("GET", "/v1/files/" + first["id"] + ".1", raw=True)
+        self.assertEqual((code, headers["Content-Type"], headers["Accept-Ranges"]), (200, "image/png", "bytes"))
+        self.assertTrue(data.startswith(b"\x89PNG"))
+        code, headers, part = self.request("GET", "/v1/files/" + first["id"] + ".1", headers={"Range": "bytes=2-5"}, raw=True)
+        self.assertEqual((code, headers["Content-Range"], part), (206, "bytes 2-5/" + str(len(data)), data[2:6]))
+        self.assertEqual(self.request("GET", "/v1/files/" + first["id"] + ".3")[0], 404)
+        code, _, listing = self.request("GET", "/v1/jobs?limit=5")
+        self.assertEqual([item["id"] for item in listing["data"]], [second["id"], first["id"]])
+        self.usage.assert_called()
+        source, outcome = self.usage.call_args_list[0].args[:2]
+        self.assertEqual((source, outcome, self.usage.call_args_list[0].kwargs["media"]["images"]), ("api", "ok", 2))
+        health = server.media_health()
+        self.assertEqual((health["queue"]["waiting"], health["queue"]["running"], health["outputs"]["jobs"], health["outputs"]["keptHours"]), (0, 0, 2, 24))
+        self.assertGreater(health["outputs"]["bytes"], 0)
+        self.assertIn("secondsPerImage", health["speed"])
+        self.assertEqual(server.runner_capabilities()["media"]["task"], "text-to-image")
+        # The unknown parameter of a pipeline is left out and noted, never passed.
+        self.pipeline.delay = 0
+        with patch.object(server, "MEDIA_TASK", "image-to-image"), patch.dict(server.MEDIA, task="image-to-image"), patch.object(server, "media_pil", lambda data: "pil:" + str(len(data))):
+            job = self.submit({"prompt": "again", "image": "data:image/png;base64,AAAA", "strength": 0.5})
+            done = self.done(job["id"])
+            self.assertEqual(done["status"], "succeeded", done)
+            self.assertEqual(done["notes"], ["strength"])
+            self.assertEqual(done["input"]["image"], {"bytes": 3})
+
+    def test_cancellation_the_queue_limit_and_failures(self):
+        self.pipeline.delay = 0.3
+        running = self.submit({"prompt": "slow"})
+        queued = [self.submit({"prompt": "waiting " + str(i)}) for i in range(server.MEDIA_QUEUE_LIMIT)]
+        code, _, body = self.request("POST", "/v1/jobs", {"input": {"prompt": "one too many"}})
+        self.assertEqual((code, body["error"]["code"]), (429, "media_queue_full"))
+        code, _, cancelled = self.request("POST", "/v1/jobs/" + queued[-1]["id"] + "/cancel")
+        self.assertEqual((code, cancelled["status"]), (200, "cancelled"))
+        time.sleep(0.2)
+        code, _, stopped = self.request("POST", "/v1/jobs/" + running["id"] + "/cancel")
+        self.assertEqual(code, 200)
+        self.assertEqual(self.done(running["id"])["status"], "cancelled")
+        self.assertFalse(os.path.isdir(os.path.join(self.jobs.outputs, running["id"])))
+        for job in queued[:-1]:
+            self.request("POST", "/v1/jobs/" + job["id"] + "/cancel")
+        self.assertEqual(self.request("GET", "/v1/jobs/job_" + "0" * 24)[0], 404)
+        self.assertEqual(self.request("POST", "/v1/jobs/job_" + "0" * 24 + "/cancel")[0], 404)
+        self.pipeline.delay = 0
+        self.pipeline.fail = RuntimeError("CUDA out of memory " + server.TOKEN)
+        failed = self.done(self.submit({"prompt": "too big"})["id"])
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("Not enough GPU memory", failed["error"])
+        self.assertNotIn(server.TOKEN, failed["error"])
+        self.pipeline.fail = ValueError("shape mismatch at " + server.TOKEN)
+        failed = self.done(self.submit({"prompt": "wrong"})["id"])
+        self.assertEqual(failed["error"], "ValueError: shape mismatch at [redacted]")
+        code, _, body = self.request("GET", "/v1/jobs/" + failed["id"] + "/result")
+        self.assertEqual((code, body["error"]["code"]), (410, "job_failed"))
+        code, _, body = self.request("POST", "/v1/jobs", {"input": {"prompt": "x", "count": 99}})
+        self.assertEqual((code, body["error"]["code"]), (400, "media_input"))
+        code, _, body = self.request("POST", "/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual((code, body["error"]["code"]), (404, "task_mismatch"))
+        self.assertEqual(self.usage.call_args_list[-1].args[1], "error")
+
+    def test_a_deleted_running_job_leaves_when_it_ends_and_a_job_cancelled_once_picked_never_runs(self):
+        self.pipeline.delay = 0.2
+        running = self.submit({"prompt": "slow"})
+        for _ in range(100):
+            if self.jobs.row(running["id"])["status"] == "running":
+                break
+            time.sleep(0.01)
+        code, _, body = self.request("DELETE", "/v1/jobs/" + running["id"])
+        self.assertEqual(code, 200, body)
+        # The worker ends it at its next step, counts its usage, and removes the record and files.
+        for _ in range(200):
+            if self.jobs.row(running["id"]) is None:
+                break
+            time.sleep(0.02)
+        self.assertIsNone(self.jobs.row(running["id"]))
+        self.assertFalse(os.path.isdir(os.path.join(self.jobs.outputs, running["id"])))
+        self.assertEqual(self.usage.call_args_list[-1].args[1], "cancelled")
+        # A job cancelled after the worker picked it, before it started, does not run.
+        self.jobs.stop()
+        self.jobs.thread.join(5)
+        queued = self.submit({"prompt": "picked then cancelled"})
+        picked = self.jobs.row(queued["id"])
+        self.jobs.cancel(queued["id"])
+        self.jobs.run(picked)
+        self.assertNotIn("picked then cancelled", [call["prompt"] for call in self.pipeline.calls])
+        self.assertEqual(self.jobs.row(queued["id"])["status"], "cancelled")
+
+    def test_openai_images_speech_and_videos_shapes(self):
+        code, _, body = self.request("POST", "/v1/images/generations", {"prompt": "a cat", "n": 2, "size": "256x256", "seed": 3})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(len(body["data"]), 2)
+        self.assertTrue(base64.b64decode(body["data"][0]["b64_json"]).startswith(b"\x89PNG"))
+        self.assertEqual(body["usage"]["images"], 2)
+        code, _, body = self.request("POST", "/v1/images/generations", {"prompt": "a cat", "response_format": "url"}, headers={"Host": "models.example.test"})
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["data"][0]["url"].startswith("http://models.example.test/v1/files/job_"), body)
+        self.assertEqual(self.request("POST", "/v1/images/generations", {"prompt": "x", "size": "big"})[0], 400)
+        self.assertEqual(self.request("POST", "/v1/audio/speech", {"input": "hi"})[0], 404)
+        self.assertEqual(self.request("POST", "/v1/videos", {"prompt": "hi"})[0], 404)
+        # Speech: the WAV bytes of one job.
+        speech = SimpleNamespace(calls=[])
+        speech.__call__ = None
+        def speak(text, **kwargs):
+            speech.calls.append((text, kwargs))
+            return {"audio": [0.0] * 8, "sampling_rate": 16000}
+        written = []
+        def write_audio(folder, name, audio, rate):
+            path = os.path.join(folder, name)
+            with open(path, "wb") as file:
+                file.write(b"RIFF" + b"\x00" * 40)
+            written.append((name, len(audio), rate))
+            return path
+        with patch.object(server, "MEDIA_TASK", "text-to-speech"), patch.dict(server.MEDIA, task="text-to-speech", pipeline=speak), \
+                patch.object(server, "media_write_audio", write_audio), patch.object(server, "media_audio_seconds", lambda path: 0.5):
+            code, headers, data = self.request("POST", "/v1/audio/speech", {"input": "Hello there", "voice": "alloy"}, raw=True)
+            self.assertEqual((code, headers["Content-Type"]), (200, "audio/wav"))
+            self.assertTrue(data.startswith(b"RIFF"))
+            self.assertEqual(written, [("speech.wav", 8, 16000)])
+            self.assertEqual(speech.calls[0][0], "Hello there")
+            self.assertEqual(self.request("POST", "/v1/audio/speech", {"input": "x", "response_format": "mp3"})[0], 400)
+            done = self.done(self.submit({"text": "again"})["id"])
+            self.assertEqual((done["output"]["audio"]["seconds"], done["usage"]["output_seconds"]), (0.5, 0.5))
+        # Video: OpenAI's video object, polled, then its content.
+        exported = []
+        def export_to_video(frames, path, fps):
+            exported.append((len(frames), fps))
+            with open(path, "wb") as file:
+                file.write(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32)
+        video_pipeline = FakePipeline(frames=True)
+        with patch.object(server, "MEDIA_TASK", "text-to-video"), patch.dict(server.MEDIA, task="text-to-video", pipeline=video_pipeline, **{"class": "TextToVideoSDPipeline"}), \
+                patch.dict("sys.modules", {"diffusers": SimpleNamespace(utils=SimpleNamespace(export_to_video=export_to_video)), "diffusers.utils": SimpleNamespace(export_to_video=export_to_video)}):
+            code, _, video = self.request("POST", "/v1/videos", {"prompt": "waves", "seconds": "2", "size": "256x256"})
+            # The worker may have taken the job between its submission and this read.
+            self.assertEqual((code, video["object"]), (200, "video"), video)
+            self.assertIn(video["status"], ("queued", "in_progress"), video)
+            self.request("GET", "/v1/jobs/" + video["id"] + "?wait=30")
+            code, _, finished = self.request("GET", "/v1/videos/" + video["id"])
+            self.assertEqual((finished["status"], finished["progress"], finished["seconds"], finished["size"]), ("completed", 100, 2.0, "256x256"), finished)
+            self.assertEqual(exported, [(16, 8)])
+            code, headers, data = self.request("GET", "/v1/videos/" + video["id"] + "/content", raw=True)
+            self.assertEqual((code, headers["Content-Type"]), (200, "video/mp4"))
+            self.assertIn(b"ftyp", data)
+            code, _, deleted = self.request("DELETE", "/v1/videos/" + video["id"])
+            self.assertEqual((code, deleted["deleted"]), (200, True))
+            self.assertEqual(self.request("GET", "/v1/videos/" + video["id"])[0], 404)
+
+    def test_outputs_expire_fit_the_cap_and_a_restart_fails_what_was_running(self):
+        first = self.done(self.submit({"prompt": "one"})["id"])
+        second = self.done(self.submit({"prompt": "two"})["id"])
+        code, _, body = self.request("POST", "/v1/yougori/media", {"action": "configure", "keepHours": 1})
+        self.assertEqual(code, 403)
+        code, _, body = self.request("POST", "/v1/yougori/media", {"action": "configure", "keepHours": 1}, headers={"X-Yougori-Admin": server.ADMIN_TOKEN})
+        self.assertEqual((code, body["outputs"]["keptHours"]), (200, 1), body)
+        self.assertEqual(self.request("POST", "/v1/yougori/media", {"action": "configure", "keepHours": 0}, headers={"X-Yougori-Admin": server.ADMIN_TOKEN})[0], 400)
+        with self.jobs.db() as db:
+            db.execute("UPDATE jobs SET expires=? WHERE id=?", (time.time() - 1, first["id"]))
+        self.jobs.sweep()
+        self.assertEqual(self.request("GET", "/v1/jobs/" + first["id"])[0], 404)
+        self.assertFalse(os.path.isdir(os.path.join(self.jobs.outputs, first["id"])))
+        self.assertEqual(self.request("GET", "/v1/jobs/" + second["id"])[0], 200)
+        with patch.object(server, "MEDIA_CAP_BYTES", 1):
+            self.jobs.sweep()
+        self.assertEqual(self.request("GET", "/v1/jobs/" + second["id"])[0], 404)
+        # A job left running by a stopped server is failed by the next start, not resumed.
+        with self.jobs.db() as db:
+            db.execute("INSERT INTO jobs (id,created,started,status,task,source,input) VALUES (?,?,?,?,?,?,?)",
+                       ("job_" + "a" * 24, time.time(), time.time(), "running", "text-to-image", "api", "{}"))
+        restarted = server.MediaJobs(self.jobs.root)
+        row = restarted.row("job_" + "a" * 24)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("restarted", row["error"])
+
+    def test_before_the_load_a_job_is_told_to_wait_and_the_listing_names_the_task(self):
+        with patch.object(server, "JOBS", None), patch.dict(server.STATE, status="downloading"):
+            code, _, body = self.request("POST", "/v1/jobs", {"input": {"prompt": "x"}})
+            self.assertEqual((code, body["error"]["code"]), (503, "model_loading"))
+            self.assertEqual(self.request("GET", "/v1/jobs")[0], 503)
+            self.assertEqual(self.request("GET", "/v1/usage")[0], 200)
+        code, _, listing = self.request("GET", "/v1/models")
+        self.assertEqual((listing["data"][0]["task"], listing["data"][0]["capabilities"]), ("text-to-image", {"structuredOutput": False, "media": os.environ.get("YOUGORI_MEDIA_TASK", "")}))
+
 
 class CatalogViewVerifierTests(unittest.TestCase):
     """What the engine's catalog path (model_runner/catalog_binding.rs) hands the runner, run

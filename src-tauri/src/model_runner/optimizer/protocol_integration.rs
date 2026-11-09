@@ -192,7 +192,7 @@ async fn http(port: u16, path: &str, body: Option<Value>) -> Result<Value, Strin
             if body.is_some() { "POST" } else { "GET" }, data.len());
         stream.write_all(headers.as_bytes()).await.map_err(|e| e.to_string())?;
         stream.write_all(&data).await.map_err(|e| e.to_string())?;
-        super::super::model_response(Box::new(stream), body.is_some()).await
+        super::super::model_response(Box::new(stream), super::super::reply_seconds(path, body.is_some())).await
     }).await.map_err(|_| "Fixture HTTP timeout".to_owned())?
 }
 

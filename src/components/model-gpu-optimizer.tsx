@@ -15,7 +15,7 @@ function reservedGrant(admission: ModelAdmission) {
 }
 
 /** What the runner's launch supports and does not, as the runner itself reports it (not host evidence). */
-const CAPABILITY_NAMES: Record<string, string> = { kvGrowth: "KV growth in increments", adapters: "Unmerged adapters (LoRA)", kvReuse: "KV reuse across requests" }
+const CAPABILITY_NAMES: Record<string, string> = { kvGrowth: "KV growth in increments", adapters: "Unmerged adapters (LoRA)", kvReuse: "KV reuse across requests", structuredOutput: "JSON output (response_format)" }
 
 export function ModelGpuOptimizer({ environmentId }: { environmentId: string }) {
   const [value, setValue] = useState<GpuOptimizer | null>(null)

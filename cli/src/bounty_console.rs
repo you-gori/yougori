@@ -428,7 +428,8 @@ impl View {
                 }
                 return self.stop(worker, block).await;
             }
-            KeyCode::Char(']') if ctrl => {
+            // Unix terminals send Ctrl+] as 0x1d, which crossterm reads as Ctrl+5.
+            KeyCode::Char(c @ (']' | '5')) if ctrl && (c == ']' || cfg!(unix)) => {
                 if self.holding {
                     let _ = dispatch(json!({"action":"practiceResume","workerId":worker})).await;
                 }

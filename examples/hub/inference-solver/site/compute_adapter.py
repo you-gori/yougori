@@ -45,7 +45,7 @@ class Adapter:
         self.apis = {}
         self.stopping = set()
         self.lock = threading.Lock()
-        self.slot_counts = {}  # environment -> (slots, when read)
+        self.facts_read = {}  # environment -> ({"slots", "json"}, when read)
 
     @staticmethod
     def loopback(api):
@@ -56,14 +56,16 @@ class Adapter:
             return None
         return url
 
-    def slots(self, environment, api):
-        """How many requests the model server generates together (its requestQueue), read from its
-        own health route at most once a minute. The website routes by it; None when unknown."""
-        known = self.slot_counts.get(environment)
+    def facts(self, environment, api):
+        """What the model server says of its launch, read from its own health route at most once
+        a minute: "slots", how many requests it generates together (its requestQueue; the website
+        routes by it), and "json", whether it enforces a JSON reply format (response_format; the
+        website sends such requests only where it is enforced). None where unknown."""
+        known = self.facts_read.get(environment)
         if known and known[1] > time.monotonic() - 60:
             return known[0]
         import http.client
-        url, value = self.loopback(api), None
+        url, value = self.loopback(api), {"slots": None, "json": None, "task": None}
         if url:
             connection = http.client.HTTPConnection(url.hostname, url.port, timeout=3)
             try:
@@ -71,13 +73,19 @@ class Adapter:
                 response = connection.getresponse()
                 raw = response.read(1024 * 1024 + 1)
                 if response.status == 200 and len(raw) <= 1024 * 1024:
-                    count = (json.loads(raw).get("requestQueue") or {}).get("slots")
-                    value = count if type(count) is int and 1 <= count <= 256 else None
+                    health = json.loads(raw)
+                    count = (health.get("requestQueue") or {}).get("slots")
+                    value["slots"] = count if type(count) is int and 1 <= count <= 256 else None
+                    enforced = ((health.get("capabilities") or {}).get("structuredOutput") or {}).get("supported")
+                    value["json"] = enforced if isinstance(enforced, bool) else None
+                    # The kind of model: a media runner names its task (text-to-image, ...); the website routes jobs by it.
+                    task = health.get("task") or ((health.get("capabilities") or {}).get("media") or {}).get("task")
+                    value["task"] = task if isinstance(task, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", task) else None
             except (OSError, ValueError, http.client.HTTPException):
                 pass
             finally:
                 connection.close()
-        self.slot_counts[environment] = (value, time.monotonic())
+        self.facts_read[environment] = (value, time.monotonic())
         return value
 
     def call(self, method, **params):
@@ -132,14 +140,17 @@ class Adapter:
                     pass
             if api.get("apiUrl") and api.get("apiKey"):
                 apis[identity] = api
-            slots = self.slots(identity, api) if identity in apis and identity in self.shared else None
+            facts = self.facts(identity, api) if identity in apis and identity in self.shared else {"slots": None, "json": None, "task": None}
             models.append({"id": identity, "name": api.get("model") or model or env.get("name", "Model"),
                            "state": "ready" if identity in apis else "unavailable", "shared": identity in self.shared,
-                           "place": "neocloud" if env.get("kind") == "cloud" else "local", **({"slots": slots} if slots else {})})
+                           "place": "neocloud" if env.get("kind") == "cloud" else "local",
+                           **({"slots": facts["slots"]} if facts["slots"] else {}), **({"json": facts["json"]} if facts["json"] is not None else {}),
+                           **({"task": facts["task"]} if facts["task"] else {})})
         with self.lock:
             self.apis = apis
         from control_panel import sample
-        return {"platform": platform.system(), "models": models[:64], "detail": "Yougori is connected on " + socket.gethostname() + ".", "telemetry":sample(state, fresh)}
+        # "media": this connector relays a media model's job routes and files, not only chat.
+        return {"platform": platform.system(), "models": models[:64], "detail": "Yougori is connected on " + socket.gethostname() + ".", "telemetry":sample(state, fresh), "media": True}
 
     def share(self, environment, enabled=True):
         if enabled:
@@ -267,50 +278,69 @@ class Adapter:
         self.share(env["id"])
         return result
 
+    # The model server routes a connector relays: chat, and a media model's jobs and files.
+    RELAYED = re.compile(r"/(chat/completions|jobs|jobs/job_[a-f0-9]{24}(/result|/cancel)?|files/job_[a-f0-9]{24}\.[0-9]{1,2})(\?wait=[0-9]{1,3})?")
+
     def inference(self, task, send):
+        """Relays one request to the shared model's own API and uploads its answer in chunks:
+        a chat completion (streamed as it comes), or a media model's job route or file (`path`,
+        `method`), of at most `limit` bytes. A media route's own refusal keeps its words."""
         # The only network destination comes from this node's own engine, never the website request.
         import http.client
         with self.lock:
             api = self.apis.get(task["environment"]) if task["environment"] in self.shared else None
         sequence = 0
         connection = None
-        failure = 502
+        failure, refusal = 502, None
+        path, method = task.get("path") or "/chat/completions", task.get("method") or "POST"
+        chat = path == "/chat/completions"
+        limit = task.get("limit") if type(task.get("limit")) is int and 0 < task.get("limit") <= 2 * 1024 ** 3 else 16 * 1024 * 1024
         try:
             if not api:
                 raise ComputeError("This model is not shared.")
             url = self.loopback(api)
             if not url:
                 raise ComputeError("Only Yougori's authenticated loopback model API is used.")
-            connection = http.client.HTTPConnection(url.hostname, url.port, timeout=120)
-            payload = {**task["payload"], "model": api["model"]}
-            connection.request("POST", url.path.rstrip("/") + "/chat/completions", json.dumps(payload),
-                               {"Content-Type": "application/json", "Authorization": "Bearer " + api["apiKey"]})
+            if method not in ("GET", "POST", "DELETE") or not self.RELAYED.fullmatch(path):
+                raise ComputeError("This route is not relayed.")
+            connection = http.client.HTTPConnection(url.hostname, url.port, timeout=120 if chat else 600)
+            payload = {**task["payload"], "model": api["model"]} if chat else task.get("payload")
+            body = None if method == "GET" or not isinstance(payload, dict) else json.dumps(payload)
+            headers = {"Authorization": "Bearer " + api["apiKey"]}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            connection.request(method, url.path.rstrip("/") + path, body, headers)
             response = connection.getresponse()
-            if response.status != 200:
-                # A refused request (400) or a full queue (429) is reported as such, never its text.
-                failure = response.status if response.status in (400, 429) else 502
+            if response.status not in (200, 201, 202, 206):
+                # A refused request (400) or a full queue (429) is reported as such, never its text;
+                # a media route's own answer (an unknown job, a job not done) keeps its words, which
+                # are the model server's own.
+                failure = response.status if response.status in (400, 429) or (not chat and response.status in (404, 409, 410, 503)) else 502
+                if not chat and failure != 502:
+                    refusal = response.read(65536)
                 raise ComputeError("Model refused the request.")
+            kind = response.getheader("Content-Type", "application/json")
             total = 0
             while True:
-                chunk = response.read1(32768)
+                chunk = response.read1(32768) if chat else response.read(1024 * 1024)
                 total += len(chunk)
-                if total > 16 * 1024 * 1024:
+                if total > limit:
                     raise ComputeError("Model response too large.")
-                ack = send({"id": task["id"], "sequence": sequence, "status": 200, "stream": payload.get("stream") is True,
-                      "data": base64.b64encode(chunk).decode(), "done": not chunk})
+                ack = send({"id": task["id"], "sequence": sequence, "status": response.status, "stream": chat and payload.get("stream") is True,
+                            "content_type": kind, "data": base64.b64encode(chunk).decode(), "done": not chunk})
                 sequence += 1
                 if not chunk or (isinstance(ack, dict) and ack.get("cancelled")):
                     break
         except Exception:
             # Never send a provider's raw error, credentials, or local paths.
             try:
-                send({"id": task["id"], "sequence": sequence, "status": failure, "done": True})
+                send({"id": task["id"], "sequence": sequence, "status": failure, "done": True,
+                      **({"content_type": "application/json", "data": base64.b64encode(refusal).decode()} if refusal else {})})
             except Exception:
                 pass
         finally:
             if connection:
                 connection.close()
-
 
 def serve_local(compute, adapter, stopped):
     """Trusted website-host worker; browsers get no engine endpoint or credential."""

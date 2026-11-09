@@ -162,6 +162,7 @@ async fn exercise_model(app: &AppHandle) -> Result<(), String> {
             json!([{"role":"user","content":"Reply with a short greeting."}]),
             None,
             None,
+            None,
             app.clone(),
         )
         .await?;

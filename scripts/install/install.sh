@@ -65,6 +65,14 @@ version=$(printf '%s' "$manifest" | tr -d '\n' | sed -n 's/.*"version"[[:space:]
 url=$(field url)
 sha=$(field sha256)
 [ -n "$url" ] && [ -n "$sha" ] || fail "release $version has no download for $platform yet"
+# A platform this release has no package for keeps an earlier release: "unchanged" names its
+# version and "kept" carries its download, which field() reads. Installed CLIs read only "assets",
+# so they offer no update to it.
+kept=$(printf '%s' "$manifest" | tr -d '\n' | sed -n "s/.*\"$platform\"[[:space:]]*:[[:space:]]*\"\([0-9][0-9.]*\)\".*/\1/p")
+if [ -n "$kept" ]; then
+  echo "Yougori $version has no new package for $platform; installing Yougori $kept, the release it keeps."
+  version=$kept
+fi
 https_url "$url" "the release download"
 [ "${#sha}" = 64 ] || fail "the release SHA-256 is invalid"
 case "$sha" in *[!0-9a-fA-F]*) fail "the release SHA-256 is invalid" ;; esac

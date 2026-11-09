@@ -21,14 +21,30 @@ use std::{
     time::Duration,
 };
 
-/// At most this much JSON per batch of files, whatever the website allows.
-pub const BATCH_LIMIT: usize = 600 * 1024;
+/// The largest request body the live website takes, whatever the Hub itself advertises: its nginx
+/// says `client_max_body_size 512k`, 524,288 bytes, and refuses anything larger with HTTP 413
+/// before the Hub sees it. Every request an upload makes is sent through the engine
+/// (`model_registry_request`), which posts exactly the body it is given, so the body's JSON is what
+/// counts against this.
+pub const REQUEST_CAP: usize = 512 * 1024;
+/// Room kept under [`REQUEST_CAP`] for a proxy that counts a little differently.
+const WEBSITE_MARGIN: usize = 32 * 1024;
+/// The most any one request of an upload may come to: [`REQUEST_CAP`] less [`WEBSITE_MARGIN`],
+/// 480 KiB. The upload's description and every batch of files are held to it, whatever
+/// `crate::wire::MAX_REQUEST` lets through to the engine.
+pub const SEND_CAP: usize = REQUEST_CAP - WEBSITE_MARGIN;
+/// At most this much JSON per batch of files, whatever the website allows (the Hub advertises
+/// 600 KiB, which its own nginx does not let through). A batch is the whole body of its request
+/// (`{"files": [...]}`), and with [`MARGIN`] taken off, the largest one is 489,472 bytes: 34 KiB
+/// under [`REQUEST_CAP`].
+pub const BATCH_LIMIT: usize = SEND_CAP;
 /// Room left for the request around a batch.
 const MARGIN: usize = 2 * 1024;
 /// The website's limits for the manifest and the review (`server/hub/rules.mjs`).
 pub const MANIFEST_BYTES: usize = 64 * 1024;
 pub const REVIEW_BYTES: usize = 128 * 1024;
-/// Room left around the upload's description in the engine's 1 MiB request.
+/// Room left around the upload's description in its request (to the engine, and on to the
+/// website, whose requests are held to [`SEND_CAP`]).
 const FRAME_MARGIN: usize = 4 * 1024;
 
 /// What goes up: the upload document, the files, and what the person is shown first.
@@ -60,8 +76,10 @@ pub fn top_level(text: &str, field: &str) -> Option<String> {
     Some(if quoted { value[1..value.len() - 1].to_owned() } else { value.to_owned() })
 }
 
-/// The largest part of one file in a request: about 560 KB once base64-encoded.
-pub const PART: usize = 420 * 1024;
+/// The largest part of one file in a request: 352 KiB, about 470 KB once base64-encoded, so one
+/// part with its path always fits a batch of [`BATCH_LIMIT`]. A file larger than that (the Hub
+/// takes files up to 5 MiB) goes up in consecutive parts, each continuing at its byte offset.
+pub const PART: usize = 352 * 1024;
 
 /// Batches of `{path, content}` entries whose JSON stays under `budget` bytes each, in path
 /// order. Small files are packed together; a file too big for one request goes in consecutive
@@ -287,8 +305,12 @@ pub fn preflight(upload: &Upload) -> Result<(), String> {
     if let Some(problem) = review::shape_problem(&upload.body["review"]) {
         return Err(format!("{problem} Nothing was uploaded."));
     }
+    // The description is one request too: to the engine, and from there to the website, whose
+    // nginx takes at most REQUEST_CAP; it is held to SEND_CAP, the margin under that, or to what
+    // the engine takes, should that ever be less.
+    let cap = crate::wire::MAX_REQUEST.min(SEND_CAP);
     let whole = json_size(&json!({"path": "/hub/uploads", "body": upload.body}));
-    if whole + FRAME_MARGIN > crate::wire::MAX_REQUEST {
+    if whole + FRAME_MARGIN > cap {
         let parts = [
             ("the list of files", json_size(&upload.body["files"]), "Leave files out with .yougoriignore, or use shorter paths."),
             ("the manifest", manifest, "Shorten the marker file."),
@@ -296,7 +318,7 @@ pub fn preflight(upload: &Upload) -> Result<(), String> {
             ("the changelog", json_size(&upload.body["changelog"]), "Shorten the changelog."),
         ];
         let (part, _, advice) = parts.iter().max_by_key(|(_, size, _)| *size).copied().unwrap_or(parts[0]);
-        return Err(format!("The description of this upload is too large to send ({} of at most {}); {part} is the largest part. {advice} Nothing was uploaded.", scan::size(whole as u64), scan::size((crate::wire::MAX_REQUEST - FRAME_MARGIN) as u64)));
+        return Err(format!("The description of this upload is too large to send ({} of at most {}); {part} is the largest part. {advice} Nothing was uploaded.", scan::size(whole as u64), scan::size((cap - FRAME_MARGIN) as u64)));
     }
     Ok(())
 }
@@ -541,7 +563,14 @@ async fn send_files<T: Transport>(transport: &T, uploads: &Uploads, progress: &m
     let limit = progress.batch_bytes.map(|bytes| bytes as usize).filter(|bytes| *bytes < BATCH_LIMIT).unwrap_or(BATCH_LIMIT);
     let batches = batches_from(&upload.files, progress, limit.saturating_sub(MARGIN).max(1024)).map_err(Failure::Other)?;
     for batch in batches {
-        match with_retries(transport, &format!("/hub/uploads/{}/files", progress.id), json!({"files": batch})).await {
+        let body = json!({"files": batch});
+        // The batches are built to fit; this is the last word on it, so no request this sends can
+        // ever be one the website's nginx turns away.
+        let size = json_size(&body);
+        if size > SEND_CAP {
+            return Err(Failure::Other(format!("A request for these files came to {}, more than the {} the Hub takes in one, so it was not sent.", scan::size(size as u64), scan::size(SEND_CAP as u64))));
+        }
+        match with_retries(transport, &format!("/hub/uploads/{}/files", progress.id), body).await {
             Ok(_) => {
                 progress.sent(&batch, &upload.files);
                 uploads.save(progress);
@@ -724,11 +753,27 @@ pub async fn delete(reference: &Ref) -> Result<Value, String> {
     client::account(&path(reference, "delete"), Some(json!({"confirm": reference.item()}))).await
 }
 
+/// Why a fork can't be asked for at a version: the Hub's fork takes the item, and copies its
+/// latest version (`server/hub/index.mjs`, `fork`), whatever version was named. Forking
+/// `REF@VERSION` used to send the item alone and fork the latest without a word, so it is refused
+/// rather than quietly answered with another version than the one asked for.
+fn fork_version_problem(reference: &Ref, name: Option<&str>) -> Option<String> {
+    let version = reference.version.as_ref()?;
+    let renamed = name.map(|name| format!(" --name {name}")).unwrap_or_default();
+    Some(format!(
+        "A fork always starts from the latest version of {item}; the Hub can't fork version {version}. To fork the latest version, leave out @{version}: yougori template fork hub/{item}{renamed}. Nothing was forked.",
+        item = reference.item()
+    ))
+}
+
 pub async fn fork(reference: &Ref, name: Option<&str>, chosen: Option<&str>, interactive: bool) -> Result<Value, String> {
     if let Some(name) = name {
         if !refs::valid_name(name) {
             return Err(format!("{} is not a Hub name: use {}.", scan::shown(name), refs::NAME_RULE));
         }
+    }
+    if let Some(problem) = fork_version_problem(reference, name) {
+        return Err(problem);
     }
     let publisher = publisher(&me().await?, chosen, interactive)?;
     let mut body = json!({"publisher": publisher});
@@ -831,7 +876,7 @@ mod tests {
             assert!(serde_json::to_string(&json!({"files": batch})).unwrap().len() < BATCH_LIMIT, "no request over the cap");
         }
         let parts: Vec<&Value> = batches.iter().flatten().filter(|e| e["path"] == "model.bin").collect();
-        assert_eq!(parts.len(), 5, "2 MB in parts of at most 420 KB");
+        assert_eq!(parts.len(), 6, "2 MiB in parts of at most 352 KiB");
         let mut rebuilt = Vec::new();
         for part in &parts {
             assert_eq!(part["offset"].as_u64().unwrap() as usize, rebuilt.len(), "each part continues where the last ended");
@@ -841,7 +886,7 @@ mod tests {
         }
         assert_eq!(rebuilt, big);
         let offsets: Vec<u64> = parts.iter().map(|p| p["offset"].as_u64().unwrap()).collect();
-        assert_eq!(offsets, [0, 430_080, 860_160, 1_290_240, 1_720_320]);
+        assert_eq!(offsets, [0, 360_448, 720_896, 1_081_344, 1_441_792, 1_802_240]);
         let order: Vec<&str> = batches.iter().flatten().map(|e| e["path"].as_str().unwrap()).collect();
         assert_eq!(order.first(), Some(&"a.txt"));
         assert_eq!(&order[order.len() - 2..], ["z/one.txt", "z/two.txt"]);
@@ -906,14 +951,20 @@ mod tests {
         bytes: AtomicUsize,
         failures: Mutex<Vec<(usize, String)>>,
         max_body: Option<usize>,
+        /// Requests turned away for their size, as a proxy's limit turns them away.
+        too_large: AtomicUsize,
+        /// The largest request body that reached it.
+        largest: AtomicUsize,
     }
 
     impl Transport for Fake {
         async fn call(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
             let body = body.unwrap_or_default();
+            self.largest.fetch_max(json_size(&body), Ordering::SeqCst);
             if path.ends_with("/files") {
                 let request = self.file_requests.fetch_add(1, Ordering::SeqCst) + 1;
                 if self.max_body.is_some_and(|limit| json_size(&body) > limit) {
+                    self.too_large.fetch_add(1, Ordering::SeqCst);
                     return Err("The Yougori Network returned HTTP 413".into());
                 }
                 let mut failures = self.failures.lock().unwrap();
@@ -1093,6 +1144,108 @@ mod tests {
         std::fs::remove_file(root.path().join(".env")).unwrap();
         write("app.js", "const key = 'sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z';\n");
         assert!(template(root.path()).await.err().unwrap().contains("app.js line 1: looks like an OpenAI or Anthropic API key"));
+    }
+
+    /// The largest request body any batch can come to, over every batch of `files`.
+    fn largest_batch(files: &Files, progress: &Progress) -> usize {
+        let batches = batches_from(files, progress, BATCH_LIMIT - MARGIN).unwrap();
+        for batch in &batches {
+            let body = json!({"files": batch});
+            // And the request to the engine around it, which has a limit of its own.
+            let frame = json_size(&json!({"path": format!("/hub/uploads/hup_{}/files", "x".repeat(40)), "body": body}));
+            assert!(frame + 1024 < crate::wire::MAX_REQUEST, "{frame}");
+        }
+        batches.iter().map(|batch| json_size(&json!({"files": batch}))).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn no_batch_can_be_larger_than_the_live_websites_nginx_takes() {
+        // PROVES every request of file contents fits the live website, whose nginx says
+        // `client_max_body_size 512k` and turns anything larger away with HTTP 413 before the Hub
+        // sees it. The batch limit was 600 KiB (what the Hub advertises), and one part of a big file
+        // alone came to about 573 KB, so every template over about 500 KB failed to publish.
+        assert_eq!(REQUEST_CAP, 524_288, "client_max_body_size 512k");
+        let budget = BATCH_LIMIT - MARGIN;
+        assert!(budget + 32 * 1024 <= REQUEST_CAP, "the largest batch keeps 32 KiB of room under the cap ({budget})");
+        // The worst cases there are. The longest path the Hub could take, in four-byte characters,
+        // so a path costs the most it can. A file at the Hub's 5 MiB limit, in parts. Files on
+        // either side of the size that still goes whole, each with that path. A file sent partly
+        // before, carrying on at an odd offset. And many small files packed together.
+        let long = format!("{}/{}", "\u{1f600}".repeat(127), "\u{1f600}".repeat(120));
+        let path_json = serde_json::to_string(&long).unwrap().len();
+        let whole_max = (budget - 12 - 23 - path_json) / 4 * 3;
+        let mut files: Files = Files::new();
+        files.insert(format!("{long}0"), (0..5 * 1024 * 1024).map(|i| (i % 251) as u8).collect());
+        for (index, size) in (whole_max - 6..=whole_max + 6).enumerate() {
+            files.insert(format!("{long}{}", index + 1), vec![b'x'; size]);
+        }
+        for index in 0..400 {
+            files.insert(format!("small/{index:03}.txt"), vec![b'y'; 900 + index]);
+        }
+        let largest = largest_batch(&files, &Progress::default());
+        assert!(largest <= budget && largest < REQUEST_CAP, "{largest} of at most {budget}");
+        assert!(largest > budget - 8 * 1024, "the batches are filled close to the limit, not far below it ({largest})");
+        let mut partly = Progress::default();
+        partly.partial.insert(format!("{long}0"), 123_457);
+        assert!(largest_batch(&files, &partly) <= budget);
+        // Every byte still goes up, whole files and parts alike, in order.
+        let mut rebuilt: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for entry in batches(&files, budget).unwrap().iter().flatten() {
+            let path = entry["path"].as_str().unwrap().to_owned();
+            let bytes = B64.decode(entry["content"].as_str().unwrap()).unwrap();
+            let kept = rebuilt.entry(path).or_default();
+            assert_eq!(entry["offset"].as_u64().unwrap_or(0) as usize, kept.len());
+            kept.extend(bytes);
+        }
+        assert_eq!(rebuilt, files);
+    }
+
+    #[tokio::test]
+    async fn an_upload_through_a_proxy_at_the_live_limit_is_never_turned_away() {
+        // The same, end to end: through a website that advertises 600 KiB batches behind a proxy
+        // that takes 512 KiB, a template of several megabytes goes up without one request refused.
+        let root = tempfile::tempdir().unwrap();
+        let uploads = Uploads { root: root.path().to_path_buf() };
+        let mut files = sample();
+        files.insert("assets/big.bin".into(), (0..5 * 1024 * 1024).map(|i| (i % 241) as u8).collect());
+        let upload = upload_of(files);
+        let total: usize = upload.files.values().map(Vec::len).sum();
+        let fake = Fake { max_body: Some(REQUEST_CAP), ..Default::default() };
+        send(&fake, &uploads, &upload, "acme/shop", 1_000).await.unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(fake.too_large.load(Ordering::SeqCst), 0, "no request was over the proxy's limit");
+        assert!(fake.largest.load(Ordering::SeqCst) <= BATCH_LIMIT - MARGIN, "{}", fake.largest.load(Ordering::SeqCst));
+        assert_eq!(fake.bytes.load(Ordering::SeqCst), total);
+    }
+
+    #[test]
+    fn an_upload_description_over_the_websites_limit_is_named_before_anything_is_sent() {
+        // The description that starts an upload is a request too. One the engine would take but
+        // the website's nginx would not is refused here, with what to change.
+        let marker = "name: shop\nversion: 1.0.0\nsummary: A shop.\nlicense: MIT\n";
+        let mut upload = upload_of(Files::from([(format::TEMPLATE_FILE.to_owned(), marker.as_bytes().to_vec())]));
+        let entries = |count: usize| json!((0..count).map(|i| json!({"path": format!("{}/{}{i:04}.txt", "\u{1f600}".repeat(127), "\u{1f600}".repeat(120)), "bytes": 1, "sha256": "0".repeat(64)})).collect::<Vec<_>>());
+        // Held to the same cap as a batch of files, with room under the website's own limit.
+        assert!(SEND_CAP + 32 * 1024 <= REQUEST_CAP && BATCH_LIMIT == SEND_CAP);
+        upload.body["files"] = entries(400);
+        assert!(preflight(&upload).is_ok(), "{} bytes is under the limit", json_size(&upload.body));
+        upload.body["files"] = entries(500);
+        assert!(json_size(&upload.body) < 1024 * 1024, "the engine alone would take it");
+        let said = preflight(&upload).unwrap_err();
+        assert!(said.contains("too large to send") && said.contains("the list of files is the largest part") && said.ends_with("Nothing was uploaded."), "{said}");
+    }
+
+    #[test]
+    fn a_fork_at_a_version_is_refused_because_the_hub_forks_the_latest() {
+        // PROVES `template fork REF@VERSION` no longer forks another version than the one named.
+        // The Hub's fork takes the item and copies its latest version, so the version is refused,
+        // saying how to fork the latest, before the account or the Hub is asked anything.
+        let pinned = Ref { publisher: "acme".into(), name: "shop".into(), version: Some("1.0.0".into()) };
+        let said = fork_version_problem(&pinned, Some("my-shop")).unwrap();
+        assert!(said.starts_with("A fork always starts from the latest version of acme/shop"), "{said}");
+        assert!(said.contains("version 1.0.0") && said.contains("yougori template fork hub/acme/shop --name my-shop") && said.ends_with("Nothing was forked."), "{said}");
+        assert_eq!(fork_version_problem(&Ref { version: None, ..pinned.clone() }, None), None);
+        let refused = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(fork(&pinned, None, None, false)).unwrap_err();
+        assert_eq!(refused, fork_version_problem(&pinned, None).unwrap(), "refused before anything was asked");
     }
 
     #[test]

@@ -2,15 +2,18 @@
 import http.client
 import ipaddress
 import json
+import re
 import socket
 import ssl
 from urllib.parse import urlsplit
 
 
 class UpstreamError(Exception):
-    def __init__(self, message, status=503):
+    def __init__(self, message, status=503, code=""):
         super().__init__(message)
         self.status = status
+        # The model server's own code where it gave one (a media route's job_unknown, media_input).
+        self.code = code
 
 
 def address(value):
@@ -30,7 +33,10 @@ def address(value):
     return value.rstrip("/")
 
 
-def connect(base, secret, path, payload=None, timeout=30):
+def connect(base, secret, path, payload=None, timeout=30, expect=(200,), method=None):
+    """One request to a model server: GET without a payload, POST with one (or `method`); the
+    connection and response, when the status is one of `expect`. A media route's own refusals
+    (400, 404, 409, 410, 429) are raised with their words and code."""
     parsed = urlsplit(address(base))
     if not isinstance(secret, str) or len(secret) > 1024 or any(ord(c) < 33 or ord(c) > 126 for c in secret):
         raise ValueError("The model API key is invalid.")
@@ -60,9 +66,20 @@ def connect(base, secret, path, payload=None, timeout=30):
             headers = {"Accept": "application/json", "Content-Type": "application/json", "Connection": "close"}
             if secret:
                 headers["Authorization"] = "Bearer " + secret
-            conn.request("GET" if body is None else "POST", parsed.path.rstrip("/") + path, body=body, headers=headers)
+            conn.request(method or ("GET" if body is None else "POST"), parsed.path.rstrip("/") + path, body=body, headers=headers)
             response = conn.getresponse()
-            if response.status != 200:
+            if response.status not in expect:
+                if path != "/chat/completions" and response.status in (400, 404, 409, 410, 429, 503):
+                    # A media route answers in its own words, with a code the caller can act on.
+                    raw = response.read(65536)
+                    response.close()
+                    conn.close()
+                    try:
+                        detail = json.loads(raw)["error"]
+                        message, code = str(detail.get("message", ""))[:300], str(detail.get("code", ""))[:40]
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        message, code = "", ""
+                    raise UpstreamError(message or "The model server refused this request.", response.status, code)
                 # The response may own the socket (a closing server); close both.
                 response.close()
                 conn.close()
@@ -81,7 +98,10 @@ def connect(base, secret, path, payload=None, timeout=30):
         raise UpstreamError("The model server could not be reached securely.") from None
 
 
-def discover(base, secret):
+def discover_catalog(base, secret):
+    """The server's models, each with what it says it enforces: (name, {"json": True|False|None}),
+    sorted by name. Yougori's model server lists capabilities.structuredOutput; a server that
+    lists nothing leaves it unknown (None)."""
     conn, response = connect(base, secret, "/models", timeout=5)
     try:
         raw = response.read(1024 * 1024 + 1)
@@ -90,11 +110,24 @@ def discover(base, secret):
         data = json.loads(raw)["data"]
         if not isinstance(data, list) or not 1 <= len(data) <= 100:
             raise ValueError()
-        ids = [m["id"] for m in data]
-        if any(not isinstance(m, str) or not 1 <= len(m) <= 200 or any(ord(c) < 33 for c in m) for m in ids):
-            raise ValueError()
-        return sorted(set(ids))
+        catalog = {}
+        for item in data:
+            name = item["id"]
+            if not isinstance(name, str) or not 1 <= len(name) <= 200 or any(ord(c) < 33 for c in name):
+                raise ValueError()
+            capabilities = item.get("capabilities") if isinstance(item, dict) else None
+            enforced = capabilities.get("structuredOutput") if isinstance(capabilities, dict) else None
+            # The kind of model (text-generation, or a media task) as Yougori's model server lists it.
+            task = item.get("task") if isinstance(item, dict) else None
+            catalog[name] = {"json": enforced if isinstance(enforced, bool) else None,
+                             "task": task if isinstance(task, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", task) else None}
+        return sorted(catalog.items())
     except (ValueError, KeyError, TypeError, OSError, http.client.HTTPException):
         raise UpstreamError("The server did not return a valid model catalog.", 502) from None
     finally:
         conn.close()
+
+
+def discover(base, secret):
+    """The names of the server's models, sorted."""
+    return [name for name, _ in discover_catalog(base, secret)]

@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from "react"
-import { sandboxVmApi, visibleText, type CombineDecisions, type CombineOperation, type CombinePreview } from "@/api/sandbox-vm-api"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { newCombineRequestKey, sandboxVmApi, visibleText, type CombineDecisions, type CombineOperation, type CombinePreview } from "@/api/sandbox-vm-api"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogDescription, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "@/components/ui/dialog"
 
 const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(2)} GiB`
+
+/** What a combine that ended without a healthy VM came to, in a sentence. */
+const ended: Partial<Record<CombineOperation["state"], string>> = {
+  "rolled-back": "The combine failed, and each sandbox it stopped was launched again from its own settings.",
+  failed: "The combine failed.",
+  interrupted: "The combine was cut short when Yougori stopped.",
+}
 
 /** One real VM holding both selected sandboxes (CLI: `yougori sandbox combine A --with B`).
  * Nothing changes until the owner presses Combine on the exact preview shown; every conflict
@@ -20,6 +27,10 @@ export function CombineSandboxesDialog({ first, second, open, onOpenChange }: {
   const [result, setResult] = useState<CombineOperation | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  // The request key of the click being made: kept only while that click is retried on the same
+  // preview after its answer never came back, so the retry joins the combine the engine may still
+  // be running. Any answer, or a different preview, makes the next click a new one.
+  const pendingKey = useRef<{ digest: string; key: string } | null>(null)
   // Whether an image conflict is decided comes from the sources, as a boolean: the preview object
   // itself must not be a dependency, or every answer would change the decisions and ask again.
   const imageProcess = Boolean(preview?.sources.some(source => source.image))
@@ -39,10 +50,14 @@ export function CombineSandboxesDialog({ first, second, open, onOpenChange }: {
 
   async function start() {
     if (!preview) return
+    if (pendingKey.current?.digest !== preview.digest) pendingKey.current = { digest: preview.digest, key: newCombineRequestKey() }
+    const { key } = pendingKey.current
     setBusy(true)
     setError("")
     try {
-      setResult(await sandboxVmApi.combineStart(first, second, preview.digest, decisions))
+      const value = await sandboxVmApi.combineStart(first, second, preview.digest, decisions, key)
+      pendingKey.current = null
+      setResult(value)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally { setBusy(false) }
@@ -58,11 +73,20 @@ export function CombineSandboxesDialog({ first, second, open, onOpenChange }: {
     } finally { setBusy(false) }
   }
 
+  /** Back to the preview, read again: the sandboxes may have changed since. */
+  function backToPreview() {
+    pendingKey.current = null
+    setPreview(null)
+    setError("")
+    setResult(null)
+  }
+
   const chosen = (conflict: CombinePreview["conflicts"][number]) => conflict.kind === "file" ? files[conflict.key.slice(5)] : keep[conflict.key]
   const choose = (conflict: CombinePreview["conflicts"][number], side: "first" | "second") => conflict.kind === "file"
     ? setFiles(current => ({ ...current, [conflict.key.slice(5)]: side }))
     : setKeep(current => ({ ...current, [conflict.key]: side }))
   const blocked = !preview || !preview.compatible || preview.undecidedConflicts > 0 || preview.capacity.fits === false
+  const endedBadly = result ? ended[result.state] : undefined
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogPopup>
       <DialogHeader>
@@ -72,11 +96,17 @@ export function CombineSandboxesDialog({ first, second, open, onOpenChange }: {
       <DialogPanel>
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         {result ? <div className="space-y-2 text-sm">
-          <p>{result.state === "healthy" ? `Combined into ${visibleText(result.combined ?? "")}; its files were checked inside it.` : `This combine is ${result.state}.`}</p>
+          <p>{result.state === "healthy" ? `Combined into ${visibleText(result.combined ?? "")}; its files were checked inside it.`
+            : endedBadly ?? (result.state === "finished" ? "This combine is finished." : `This combine is still under way (${result.state}).`)}</p>
+          {endedBadly && result.failure ? <p role="alert" className="text-destructive">{visibleText(result.failure)}</p> : null}
+          {endedBadly && result.relaunched?.length ? <ul className="list-disc pl-5">
+            {result.relaunched.map(row => <li key={row.from}>{visibleText(row.from)}: {row.kept ? "still running, with its workspace" : row.sandbox ? `launched again as ${visibleText(row.sandbox)}` : `not launched again${row.error ? ` (${visibleText(row.error)})` : ""}`}</li>)}
+          </ul> : null}
           {result.state === "healthy" ? <div className="flex gap-2">
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void finish("keep")}>Keep the originals' workspaces</Button>
             <Button size="sm" variant="destructive-outline" disabled={busy} onClick={() => void finish("remove")}>Remove the originals' workspaces</Button>
           </div> : null}
+          {endedBadly ? <Button size="sm" variant="outline" disabled={busy} onClick={backToPreview}>Back to the preview</Button> : null}
         </div> : preview ? <div className="space-y-3 text-sm">
           {!preview.compatible ? <p role="alert">These cannot be combined: {preview.reasons.join("; ")}</p> : null}
           <table className="w-full text-left">

@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { GuestLogs } from "@/components/guest-logs"
 import { ModelDecisions } from "@/components/model-decisions"
+import { ModelGenerate } from "@/components/model-generate"
+import { isMediaTask } from "@/lib/media-tasks"
 import { modelProgress } from "@/lib/model-progress"
 import { Markdown } from "@/components/chat-markdown"
 import { modelsApi, type ChatMessage, type ChatOptions, type ModelStatus } from "@/api/projects-api"
@@ -242,6 +244,7 @@ export function ModelChat({ environmentId }: { environmentId: string }) {
   const history = [...store.conversations].sort((a, b) => b.updatedAt - a.updatedAt)
   if (status?.sourceOnly) return <section className="model-card" aria-label="Source-only model"><h3>Source files ready</h3><p>This folder has no model weights. You can publish and download its source files through Neo Grid. Chat and inference API become available when a runnable checkpoint is supplied.</p></section>
   if (status?.task === "structured-decision") return <ModelDecisions environmentId={environmentId} status={status} />
+  if (status && isMediaTask(status.task)) return <ModelGenerate environmentId={environmentId} status={status} />
 
   return <section className="model-chat" aria-label="Model chat">
     <nav className="model-chat-history" aria-label="Conversations">

@@ -325,7 +325,7 @@ pub fn remind_later(status: &ReleaseStatus) -> Result<(), String> {
 
 pub fn downloads_url(engine_only: bool) -> &'static str {
     if engine_only {
-        "https://yougori.com/#hero-cli"
+        "https://yougori.com/#install-cli"
     } else {
         "https://yougori.com/#download"
     }

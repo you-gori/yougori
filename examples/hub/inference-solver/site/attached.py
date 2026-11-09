@@ -7,7 +7,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from store import Store, digest
-from upstream import address, discover
+from upstream import address, discover_catalog
 
 
 def receive(store, request):
@@ -27,7 +27,7 @@ def receive(store, request):
     url, key, name, place = address(request.get("url")), request.get("key"), request.get("model"), request.get("place")
     if not isinstance(name, str) or not name.strip() or len(name) > 200 or place not in ("local", "neocloud"):
         raise ValueError("Invalid model identity or placement.")
-    models = discover(url, key)
+    models = discover_catalog(url, key)
     with store.db() as db:
         db.execute("BEGIN IMMEDIATE")
         exists = db.execute("SELECT 1 FROM endpoints WHERE id=?", (endpoint,)).fetchone()
@@ -39,8 +39,7 @@ def receive(store, request):
                    "name=excluded.name,url=excluded.url,secret=excluded.secret,place=excluded.place,"
                    "state=excluded.state,checked=excluded.checked,detail=excluded.detail",
                    (endpoint, name[:60], url, key, place, int(time.time()), "Attached by Yougori; catalog connected."))
-        db.execute("DELETE FROM models WHERE endpoint_id=?", (endpoint,))
-        db.executemany("INSERT INTO models VALUES(?,?,?)", [(endpoint + ":" + model, endpoint, model) for model in models])
+        store.replace_models(db, endpoint, models)
         store.audit(db, "yougori", "endpoint.attached", endpoint)
     return {"attached": True, "reachable": True, "name": name, "models": len(models)}
 

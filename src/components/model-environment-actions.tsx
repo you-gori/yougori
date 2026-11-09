@@ -3,6 +3,8 @@ import { modelsApi, type ModelRun } from "@/api/projects-api"
 import { workspaceApi } from "@/api/workspace-api"
 import type { Environment } from "@/types/platform"
 import { modelApiSkill } from "@/lib/model-api-skill"
+import { isMediaTask } from "@/lib/media-tasks"
+import { mediaExample } from "@/lib/media-examples"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogPopup, DialogHeader, DialogTitle, DialogDescription, DialogPanel } from "@/components/ui/dialog"
@@ -36,11 +38,14 @@ function ModelApiSkill({ environment }: { environment: Environment }) {
   const [reveal, setReveal] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
+  // A media model takes jobs, not chat: its skill describes the job API.
+  const [mediaTask, setMediaTask] = useState<string | null>(null)
   const alive = useRef(false)
   const lock = useRef(false)
   useEffect(() => {
     alive.current = true
     let current = true
+    void modelsApi.status(environment.id).then(value => { if (current) setMediaTask(isMediaTask(value.task) ? value.task ?? null : null) }).catch(() => undefined)
     void workspaceApi.services(environment.id).then(services => {
       if (!current) return
       const existing = services.publications.find(p => p.kind === "loopback" && p.port === 8000)
@@ -64,7 +69,7 @@ function ModelApiSkill({ environment }: { environment: Environment }) {
     try { await navigator.clipboard.writeText(text); if (alive.current) setNotice(message) }
     catch { if (alive.current) setError("Could not copy. Select and copy the text manually.") }
   }
-  const skill = result?.apiUrl ? modelApiSkill(result) : ""
+  const skill = result?.apiUrl ? (mediaTask ? mediaExample("skill", result.apiUrl, result.model, mediaTask) : modelApiSkill(result)) : ""
   return <section className="space-y-4" aria-label="Model API skill">
     <p className="text-sm text-muted-foreground">Use this model from an app or coding agent on this PC. Enable local API access, then copy the skill and provide the API key separately.</p>
     <div className="flex flex-wrap items-end gap-2">

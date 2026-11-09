@@ -91,7 +91,10 @@ impl InputReader {
             0x26 => Some(KeyCode::Up),
             0x27 => Some(KeyCode::Right),
             0x28 => Some(KeyCode::Down),
+            0x2d => Some(KeyCode::Insert),
             0x2e => Some(KeyCode::Delete),
+            // F1-F12 (VK_F1 to VK_F12): htop's F10, Midnight Commander's function keys.
+            key @ 0x70..=0x7b => Some(KeyCode::F((key - 0x70 + 1) as u8)),
             _ => None,
         };
         let bytes = if let Some(code) = special {

@@ -837,6 +837,7 @@ fn forget(store: &PlatformStore, id: &str) -> Result<PlatformState, String> {
     store.mutate(|state| {
         state.neocloud_deployments.remove(id);
         state.environments.retain(|e| e.id != id);
+        state.settings.auto_start_environment_ids.retain(|auto| auto != id);
         Ok(())
     })
 }
@@ -1026,6 +1027,7 @@ fn after_failed_create(store: &PlatformStore, id: &str, found: Option<&str>) -> 
             None => {
                 state.neocloud_deployments.remove(id);
                 state.environments.retain(|e| e.id != id);
+                state.settings.auto_start_environment_ids.retain(|auto| auto != id);
             }
             Some(pod) => {
                 let environment = state.environments.iter_mut().find(|e| e.id == id).ok_or("Environment not found")?;
@@ -1926,8 +1928,14 @@ mod tests {
         let attached = after_failed_create(&store, "env-b", Some("pod-2")).unwrap().expect("attached");
         assert_eq!((attached.neocloud_deployments["env-b"].resource_id.as_str(), attached.neocloud_deployments["env-b"].state.as_str()), ("pod-2", "Starting"));
         add("env-c", "night-c");
+        // A removed node no longer starts automatically: a list naming it would refuse every
+        // later settings save.
+        store.mutate(|state| { state.settings.auto_start_environment_ids = vec!["env-b".into(), "env-c".into()]; Ok(()) }).unwrap();
         let removed = after_failed_create(&store, "env-c", None).unwrap().expect("removed");
         assert!(!removed.neocloud_deployments.contains_key("env-c") && !removed.environments.iter().any(|e| e.id == "env-c"));
+        assert_eq!(removed.settings.auto_start_environment_ids, vec!["env-b".to_owned()]);
+        let forgotten = forget(&store, "env-b").unwrap();
+        assert!(forgotten.settings.auto_start_environment_ids.is_empty() && !forgotten.environments.iter().any(|e| e.id == "env-b"));
     }
 
     #[test]

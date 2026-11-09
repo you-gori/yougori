@@ -102,4 +102,31 @@ function renderPriceAdmin() {
     const model = models.find(m=>m.id === data.model); if(model) model.price = {input_microusd_per_million:micro(data.input_usd),cached_microusd_per_million:micro(data.cached_usd),output_microusd_per_million:micro(data.output_usd)};
     notice('Model token prices saved.');
   });
+  renderMediaAdmin();
+}
+
+// Media models are priced by what a job makes; their outputs are kept on this website for a while.
+function renderMediaAdmin() {
+  const media = models.filter(isMedia);
+  const area = document.createElement('section'); area.className = 'pricing-setup';
+  area.innerHTML = panel('Media pricing and storage', `<form id="media-price" class="stack"><p class="hint">USD per image, and per second of video or sound, billed from the model server's measured output. A job reserves the most it may cost until it ends; a failed or cancelled job is not charged.</p><label>Model<select name="model">${media.map(m=>`<option value="${esc(m.id)}">${esc(friendly(m))} · ${esc(named(TASKS, m.task))}</option>`).join('')}</select></label><div class="compute-sizing"><label>Per image ($)<input name="image_usd" type="number" min="0" max="1000" step="0.000001" required value="0"></label><label>Per second of output ($)<input name="second_usd" type="number" min="0" max="1000" step="0.000001" required value="0"></label></div><p class="error" role="alert"></p><button class="primary" type="submit"${media.length ? '' : ' disabled'}>Save media price</button>${media.length ? '' : '<p class="hint">No media model is connected yet. Run an image, video, speech or sound model with Yougori and share it.</p>'}</form><form id="media-storage" class="stack"><p class="hint" id="media-storage-state">Outputs are kept on this website so a result survives the computer that made it.</p><div class="compute-sizing"><label>Keep outputs (hours)<input name="keep_hours" type="number" min="1" max="720" step="1" required value="24"></label><label>Storage cap (GB)<input name="cap_gb" type="number" min="1" max="10000" step="1" required value="20"></label></div><p class="error" role="alert"></p><button class="secondary" type="submit">Save retention</button></form>`);
+  $('#infrastructure-setup').append(area);
+  const form = $('#media-price');
+  const selected = () => { const price = models.find(m=>m.id === form.elements.model.value)?.media_price || {};
+    form.elements.image_usd.value = String((price.image_microusd || 0)/1000000);
+    form.elements.second_usd.value = String((price.second_microusd || 0)/1000000);
+  };
+  form.elements.model.onchange = selected; selected();
+  formAction('#media-price', async data => {
+    await api('/api/admin/media/prices', data);
+    const micro = value => Math.round(Number(value)*1000000);
+    const model = models.find(m=>m.id === data.model); if(model) model.media_price = {image_microusd: micro(data.image_usd), second_microusd: micro(data.second_usd)};
+    notice('Media prices saved.');
+  });
+  const showStorage = state => {
+    $('#media-storage').elements.keep_hours.value = state.keep_hours; $('#media-storage').elements.cap_gb.value = state.cap_gb;
+    $('#media-storage-state').textContent = `${state.jobs} stored job${state.jobs === 1 ? '' : 's'}, ${(state.bytes/1024/1024).toFixed(1)} MB; ${state.open} in progress (${state.open_limit} at most). Outputs are kept on this website so a result survives the computer that made it.`;
+  };
+  api('/api/admin/media').then(showStorage).catch(()=>{});
+  formAction('#media-storage', async data => { showStorage(await api('/api/admin/media', {keep_hours: Number(data.keep_hours), cap_gb: Number(data.cap_gb)})); notice('Media retention saved.'); });
 }

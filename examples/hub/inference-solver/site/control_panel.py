@@ -92,8 +92,9 @@ class ControlPanel:
             requests=[dict(r) for r in db.execute("SELECT started/300*300 AS at,COUNT(*) AS requests,SUM(status='completed') AS completed,COUNT(DISTINCT user_id) AS users,AVG(duration_ms) AS latency_ms,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens FROM requests WHERE started>? GROUP BY at ORDER BY at",(now-86400,))]
             # Cache use counts only requests whose model server reported it (cache_input is their input).
             by_model=[dict(r) for r in db.execute("SELECT r.model,COUNT(*) AS requests,SUM(r.status='completed') AS completed,SUM(r.input_tokens) AS input_tokens,SUM(d.cached_tokens) AS cached_tokens,"
-                "SUM(CASE WHEN d.cached_tokens IS NOT NULL THEN r.input_tokens END) AS cache_input,SUM(r.output_tokens) AS output_tokens,SUM(r.input_tokens IS NULL OR r.output_tokens IS NULL) AS unknown_usage "
-                "FROM requests r LEFT JOIN request_details d ON d.id=r.id WHERE r.started>? GROUP BY r.model ORDER BY requests DESC LIMIT 100",(now-86400,))]
+                "SUM(CASE WHEN d.cached_tokens IS NOT NULL THEN r.input_tokens END) AS cache_input,SUM(r.output_tokens) AS output_tokens,SUM(r.input_tokens IS NULL OR r.output_tokens IS NULL) AS unknown_usage,"
+                "SUM(m.images) AS images,SUM(m.output_ms) AS output_ms "
+                "FROM requests r LEFT JOIN request_details d ON d.id=r.id LEFT JOIN request_media m ON m.id=r.id WHERE r.started>? GROUP BY r.model ORDER BY requests DESC LIMIT 100",(now-86400,))]
             by_source=[dict(r) for r in db.execute("SELECT d.source,COUNT(*) AS requests,SUM(r.status='completed') AS completed,AVG(r.duration_ms) AS latency_ms,SUM(d.cached_tokens) AS cached_tokens,"
                 "SUM(CASE WHEN d.cached_tokens IS NOT NULL THEN r.input_tokens END) AS cache_input FROM requests r JOIN request_details d ON d.id=r.id WHERE r.started>? "
                 "GROUP BY d.source ORDER BY requests DESC LIMIT 100",(now-86400,))]

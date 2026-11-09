@@ -233,6 +233,65 @@ mod tests {
         assert!(adopted.get("product").is_none() && adopted.get("productUnavailable").is_none(), "{adopted}");
     }
 
+    /// PROVES the folders a person chose for a setup are kept with its answers: its permissions
+    /// read again (rather than "no longer plans"), a later change plans without choosing them
+    /// again, a folder given again replaces the kept one, and an optional folder given empty is
+    /// dropped. Before, only the answers to questions were kept, so every one of these failed with
+    /// "needs a folder chosen".
+    #[tokio::test]
+    async fn a_setups_chosen_folders_are_kept_and_planned_again() {
+        use super::super::handler::{fake::FakeHandler, Handlers};
+        use yougori_setup::resource::Kind;
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let (project, reference, moved) = (root.path().join("project"), root.path().join("reference"), root.path().join("moved"));
+        for folder in [&data, &project, &reference, &moved] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        let mut handlers = Handlers::default();
+        for kind in [Kind::Environment, Kind::ServicePublication, Kind::Volume, Kind::Connection] {
+            handlers.register(std::sync::Arc::new(FakeHandler::new(kind)));
+        }
+        let service = Service::open(&data.join("setups"), &data, handlers);
+        let template = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub/dev-workspace");
+        let call = serde_json::from_value(json!({
+            "source": { "kind": "local_folder", "path": template.to_string_lossy() },
+            "name": "Dev",
+            "answers": [{ "field": "project", "value": text(&project) }, { "field": "reference", "value": text(&reference) }]
+        }))
+        .unwrap();
+        let planned = super::super::planning::plan(&host(), &NoHub, &service, call).await.unwrap_or_else(|problem| panic!("{problem:?}"));
+        let setup = planned["setupId"].as_str().unwrap().to_owned();
+        let reviewed = service.reviewed(&setup, planned["digest"].as_str().unwrap()).unwrap();
+        let operation = super::super::model::new_id("op-");
+        service.submit(&reviewed, &operation, 0, BTreeMap::new()).unwrap();
+        service.run(&operation).await.unwrap();
+        let (answers, _, _) = service.chosen(&setup).unwrap();
+        assert_eq!(answers.get("project"), Some(&json!(text(&project))), "{answers:?}");
+        assert_eq!(answers.get("reference"), Some(&json!(text(&reference))), "{answers:?}");
+
+        let read = of(&service, &setup, &host()).await.unwrap();
+        assert_eq!(read["known"], true, "the permissions read again: {read}");
+
+        let change = |answers: Value| {
+            serde_json::from_value::<super::super::planning::PlanCall>(json!({
+                "source": { "kind": "installed_setup", "setupId": setup },
+                "existingSetup": setup,
+                "answers": answers,
+            }))
+            .unwrap()
+        };
+        let again = super::super::planning::plan(&host(), &NoHub, &service, change(json!([]))).await.unwrap_or_else(|problem| panic!("{problem:?}"));
+        assert_eq!(again["plan"]["bindings"]["project"], json!(text(&project)), "{}", again["plan"]["bindings"]);
+        assert_eq!(again["plan"]["bindings"]["reference"], json!(text(&reference)));
+        let changed = super::super::planning::plan(&host(), &NoHub, &service, change(json!([{ "field": "project", "value": text(&moved) }, { "field": "reference", "value": "" }])))
+            .await
+            .unwrap_or_else(|problem| panic!("{problem:?}"));
+        assert_eq!(changed["plan"]["bindings"]["project"], json!(text(&moved)), "a folder given again replaces the kept one");
+        assert!(changed["plan"]["bindings"].get("reference").is_none(), "an optional folder given empty is dropped: {}", changed["plan"]["bindings"]);
+    }
+
     #[test]
     fn what_cant_be_read_again_says_why_rather_than_guessing() {
         let mut files = example("host-my-app");

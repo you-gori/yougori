@@ -43,7 +43,8 @@ export function SharingPanel({ environmentId, reconnectEnvironmentId, onConnecte
   useEffect(() => {
     if (!open || !environmentId) return
     let alive = true; let timer: ReturnType<typeof setTimeout>
-    const poll = async () => { try { const result = await remoteAccessApi.list(); if (alive) setShares(result) } catch (e) { if (alive) setError(String(e)) } finally { if (alive) timer = setTimeout(() => void poll(), 4000) } }
+    // A poll that works again clears the error an earlier one showed.
+    const poll = async () => { try { const result = await remoteAccessApi.list(); if (alive) { setShares(result); setError("") } } catch (e) { if (alive) setError(String(e)) } finally { if (alive) timer = setTimeout(() => void poll(), 4000) } }
     void poll(); return () => { alive = false; clearTimeout(timer) }
   }, [open, environmentId])
   useEffect(() => {

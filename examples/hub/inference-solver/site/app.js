@@ -14,7 +14,13 @@ function installCommand(name, address = location) {
   return name === "node" ? `yougori inference connect "${address.origin}"`
     : `yougori inference run ${name} --server "${address.origin}"`;
 }
-const PROTOCOLS = {chat_completions: "Chat Completions", responses: "Responses", messages: "Messages", google: "Gemini", mcp: "MCP", custom: "Custom adapter"};
+const PROTOCOLS = {chat_completions: "Chat Completions", responses: "Responses", messages: "Messages", google: "Gemini", mcp: "MCP", custom: "Custom adapter", jobs: "Jobs", images: "Images", speech: "Speech", videos: "Videos"};
+// A media model generates images, video, speech or sound: it takes jobs, not chat.
+const TASKS = {"text-to-image": "Image generation", "image-to-image": "Image to image", "text-to-video": "Video generation", "image-to-video": "Image to video", "text-to-audio": "Sound generation", "text-to-speech": "Speech"};
+const isMedia = m => Object.hasOwn(TASKS, m.task);
+const SAMPLE_INPUTS = {"text-to-image": {prompt: "a red bicycle leaning on a white wall, morning light", width: 512, height: 512, steps: 4}, "image-to-image": {prompt: "the same scene in winter", image: "data:image/png;base64,...", strength: 0.6}, "text-to-video": {prompt: "a paper boat drifting down a stream", seconds: 2}, "image-to-video": {prompt: "a slow push in", image: "data:image/png;base64,...", seconds: 2}, "text-to-audio": {prompt: "rain on a tin roof", seconds: 5}, "text-to-speech": {text: "Hello from this inference service."}};
+const mediaPriced = m => m.media_price && (m.media_price.image_microusd || m.media_price.second_microusd);
+const mediaPrice = m => !mediaPriced(m) ? "Free" : [m.media_price.image_microusd ? dollars(m.media_price.image_microusd) + " per image" : "", m.media_price.second_microusd ? dollars(m.media_price.second_microusd) + " per second of output" : ""].filter(Boolean).join(" / ");
 const CATEGORIES = {};
 const STATES = {ready: "Available", stale: "Stale", unavailable: "Unavailable", checking: "Checking"};
 const PLACES = {local: "Local host", neocloud: "Rented cloud GPU", mixed: "Local hosts and rented cloud GPUs"};
@@ -311,7 +317,7 @@ function renderDeviceConnect() {
   });
 }
 function modelRow(m) {
-  const meta = [esc(named(CENSORSHIP, m.censorship)), `<span class="model-id">${esc(m.id)}</span>`, esc((m.protocols || []).map(p => named(PROTOCOLS, p)).join(", ")), esc(servedBy(m)), esc(cacheHits(m))].filter(Boolean).join(" · ");
+  const meta = [isMedia(m) ? esc(named(TASKS, m.task)) : esc(named(CENSORSHIP, m.censorship)), `<span class="model-id">${esc(m.id)}</span>`, esc((m.protocols || []).map(p => named(PROTOCOLS, p)).join(", ")), m.features?.json ? "JSON output" : "", esc(servedBy(m)), esc(cacheHits(m))].filter(Boolean).join(" · ");
   return `<article class="entry"><div class="entry-head"><h3 class="entry-name"><a class="entry-open" href="${esc(pageLink("models", m.id))}" data-model="${esc(m.id)}">${esc(friendly(m))}</a></h3><span class="tag${ready(m) ? " ready" : ""}">${esc(named(STATES, m.state))}</span><button type="button" class="text-button entry-action" data-copy="${esc(m.id)}" aria-label="Copy model ID ${esc(m.id)}">Copy ID</button></div><p class="entry-text mono">${esc(m.upstream)}</p><p class="entry-meta">${meta}</p></article>`;
 }
 function renderModels() {
@@ -341,21 +347,67 @@ function renderModel(id) {
   const m = models.find(m => m.id === id);
   if (!m) return missing("models", "This model is not connected.");
   header(friendly(m), m.upstream, '<a class="secondary" href="#models">← All models</a>');
-  const request = `POST ${location.origin}/v1/chat/completions\nAuthorization: Bearer YOUR_API_KEY\nContent-Type: application/json\n\n` + JSON.stringify({model: m.id, messages: [{role: "user", content: "Hello"}]}, null, 2);
+  const request = isMedia(m)
+    ? `POST ${location.origin}/v1/jobs\nAuthorization: Bearer YOUR_API_KEY\nContent-Type: application/json\n\n` + JSON.stringify({model: m.id, input: SAMPLE_INPUTS[m.task] || {prompt: "..."}}, null, 2) + `\n\nGET ${location.origin}/v1/jobs/JOB_ID?wait=30\n→ status, progress, output.files[].url\nGET ${location.origin}/v1/files/JOB_ID.1\n→ the file`
+    : `POST ${location.origin}/v1/chat/completions\nAuthorization: Bearer YOUR_API_KEY\nContent-Type: application/json\n\n` + JSON.stringify({model: m.id, messages: [{role: "user", content: "Hello"}]}, null, 2);
   const labelled = m.censorship_source === "administrator";
   const priced = m.price?.input_microusd_per_million || m.price?.output_microusd_per_million;
   const cachedPrice = priced && m.price.cached_microusd_per_million !== m.price.input_microusd_per_million ? " / " + dollars(m.price.cached_microusd_per_million) + " cached input" : "";
   const replicas = (m.replicas || []).map(r => `${r.name} (${named(STATES, r.state)})`).join(", ");
-  const about = facts([["Model ID", m.id], ["Price", priced ? dollars(m.price.input_microusd_per_million) + " input" + cachedPrice + " / " + dollars(m.price.output_microusd_per_million) + " output per 1M tokens" : "Free"], ["Status", named(STATES, m.state)], ["Cache · 24 hours", cacheHits(m) ? cacheHits(m) + ", " + m.cache.requests + " requests" : ""], ["Content", `${named(CENSORSHIP, m.censorship)}, ${labelled ? "set by the administrator" : "detected from the name"}`], ["Served by", replicas], ["Runs on", m.place && named(PLACES, m.place)], ["Last checked", m.checked && nowLabel(m.checked)]]);
-  const label = session.user?.admin ? panel("Content label", `<form id="censorship-form" class="stack"><p class="hint">Automatic marks a model uncensored when its name says so, for example “uncensored” or “abliterated”.</p><label>Label<select name="censorship"><option value="automatic">Automatic, from the name</option><option value="censored">Censored</option><option value="uncensored">Uncensored</option></select></label><p class="error" role="alert"></p><div><button class="primary" type="submit">Save label ↗</button></div></form>`) : "";
+  const about = facts([["Model ID", m.id], ["Kind", isMedia(m) ? named(TASKS, m.task) + ": asynchronous jobs" + (m.protocols.includes("images") ? ", and OpenAI's images endpoint" : m.protocols.includes("speech") ? ", and OpenAI's speech endpoint" : m.protocols.includes("videos") ? ", and OpenAI's videos endpoint" : "") : ""], ["Price", isMedia(m) ? mediaPrice(m) : priced ? dollars(m.price.input_microusd_per_million) + " input" + cachedPrice + " / " + dollars(m.price.output_microusd_per_million) + " output per 1M tokens" : "Free"], ["Status", named(STATES, m.state)], ["JSON output", m.features?.json ? "Enforced by the server: send response_format with a json_schema" : m.features?.json === false ? "Not enforced by its servers" : ""], ["Cache · 24 hours", cacheHits(m) ? cacheHits(m) + ", " + m.cache.requests + " requests" : ""], ["Content", isMedia(m) ? "" : `${named(CENSORSHIP, m.censorship)}, ${labelled ? "set by the administrator" : "detected from the name"}`], ["Served by", replicas], ["Runs on", m.place && named(PLACES, m.place)], ["Last checked", m.checked && nowLabel(m.checked)]]);
+  const label = session.user?.admin && !isMedia(m) ? panel("Content label", `<form id="censorship-form" class="stack"><p class="hint">Automatic marks a model uncensored when its name says so, for example “uncensored” or “abliterated”.</p><label>Label<select name="censorship"><option value="automatic">Automatic, from the name</option><option value="censored">Censored</option><option value="uncensored">Uncensored</option></select></label><p class="error" role="alert"></p><div><button class="primary" type="submit">Save label ↗</button></div></form>`) : "";
   const keys = session.user ? '<a class="text-button" href="#keys">Create a personal API key</a>' : '<a class="text-button" href="#signin">Sign in to create a personal API key</a>';
-  $("#view").innerHTML = `<div class="detail"><div class="detail-main">${panel("Request", `<pre class="code">${esc(request)}</pre><button class="primary" data-copy="${esc(m.id)}">Copy model ID</button><p class="hint">${keys} and use it in place of YOUR_API_KEY. Availability confirms the server's catalog, not that weights are resident or a GPU is healthy.</p>`)}</div><div class="detail-side">${panel("About", about)}${label}</div></div>`;
+  const tryIt = isMedia(m) && session.user ? tryPanel(m) : isMedia(m) ? panel("Try it", `<p class="hint"><a class="text-button" href="#signin">Sign in</a> to generate with this model from this page.</p>`) : "";
+  $("#view").innerHTML = `<div class="detail"><div class="detail-main">${panel("Request", `<pre class="code">${esc(request)}</pre><button class="primary" data-copy="${esc(m.id)}">Copy model ID</button><p class="hint">${keys} and use it in place of YOUR_API_KEY. Availability confirms the server's catalog, not that weights are resident or a GPU is healthy.</p>`)}${tryIt}</div><div class="detail-side">${panel("About", about)}${label}</div></div>`;
   bindCopies($("#view"));
+  if (isMedia(m) && session.user) bindTry(m);
   if (label) {
     $("#censorship-form select").value = labelled ? m.censorship : "automatic";
     formAction("#censorship-form", async data => { await api("/api/admin/models/censorship", {id: m.id, censorship: data.censorship}); models = (await api("/api/models")).models; notice("Content label saved."); await route(); });
   }
   scrollTo(0, 0);
+}
+// The model page's Try it box: one job at a time through the session's own routes, shown as it runs.
+let tryJob = null;
+function tryPanel(m) {
+  const image = ["image-to-image", "image-to-video"].includes(m.task), speech = m.task === "text-to-speech", timed = ["text-to-video", "image-to-video", "text-to-audio"].includes(m.task);
+  return panel("Try it", `<form id="try-form" class="stack"><label>${speech ? "Text to speak" : "Prompt"}<textarea name="prompt" rows="3" maxlength="8000" required placeholder="${esc(speech ? SAMPLE_INPUTS[m.task].text : SAMPLE_INPUTS[m.task]?.prompt || "")}"></textarea></label>${image ? '<label>Image<input name="image" type="file" accept="image/png,image/jpeg,image/webp" required></label>' : ""}${timed ? `<label>Seconds<input name="seconds" type="number" min="0.5" max="60" step="0.5" value="${m.task === "text-to-audio" ? 5 : 2}"></label>` : ""}<p class="hint">${mediaPriced(m) ? "Charged to your balance at " + esc(mediaPrice(m)) + "." : "Free on this service."} Outputs stay for the administrator's retention period and count in your usage.</p><p class="error" role="alert"></p><div class="device-actions"><button class="primary" type="submit">Generate ↗</button><button class="secondary" type="button" id="try-cancel" hidden>Cancel</button></div></form><p id="try-status" class="hint" role="status"></p><div id="try-output" class="try-output"></div>`);
+}
+function bindTry(m) {
+  formAction("#try-form", async (data, form) => {
+    const input = {};
+    if (m.task === "text-to-speech") input.text = data.prompt; else input.prompt = data.prompt;
+    if (data.seconds) input.seconds = Number(data.seconds);
+    const file = form.elements.image?.files?.[0];
+    if (file) {
+      if (file.size > 16 * 1024 * 1024) throw new Error("Choose an image of at most 16 MiB.");
+      input.image = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error("The image could not be read.")); reader.readAsDataURL(file); });
+    }
+    $("#try-output").replaceChildren(); $("#try-status").textContent = "Submitting…";
+    const job = await api("/api/media/jobs", {model: m.id, input});
+    tryJob = job.id; $("#try-cancel").hidden = false;
+    await followTry(job.id);
+  });
+  $("#try-cancel").addEventListener("click", async () => { if (tryJob) try { await api(`/api/media/jobs/${tryJob}/cancel`, {}); } catch (problem) { notice(problem.message); } });
+}
+async function followTry(id) {
+  while (tryJob === id) {
+    const job = await api(`/api/media/jobs/${id}?wait=20`);
+    if (tryJob !== id || !$("#try-status")) return;
+    $("#try-status").textContent = job.status === "queued" ? `Queued${job.position ? ", position " + job.position : ""}` : job.status === "running" ? `Generating, ${Math.round((job.progress || 0) * 100)}%` : job.status === "succeeded" ? "Done" : `${job.status[0].toUpperCase() + job.status.slice(1)}${job.error ? ": " + job.error : ""}`;
+    if (["succeeded", "failed", "cancelled"].includes(job.status)) { $("#try-cancel").hidden = true; tryJob = null; if (job.status === "succeeded") showTryOutput(job); return; }
+  }
+}
+function showTryOutput(job) {
+  const out = $("#try-output"); out.replaceChildren();
+  for (const file of job.output?.files || []) {
+    const src = "/api/media/files/" + encodeURIComponent(file.file);
+    const node = file.content_type.startsWith("image/") ? Object.assign(document.createElement("img"), {src, alt: job.input?.prompt || "Generated image"})
+      : file.content_type.startsWith("video/") ? Object.assign(document.createElement("video"), {src, controls: true})
+      : Object.assign(document.createElement("audio"), {src, controls: true});
+    const link = Object.assign(document.createElement("a"), {href: src, download: file.name, textContent: `Download ${file.name} (${Math.max(1, Math.round(file.bytes / 1024))} KB)`, className: "text-button"});
+    out.append(node, link);
+  }
 }
 async function renderKeys(generation) {
   const result = await api("/api/keys"); if(generation !== viewGeneration) return;
@@ -375,8 +427,9 @@ function keyDialog() {
 }
 async function renderUsage(generation) {
   const r = await api("/api/usage"); if(generation !== viewGeneration) return;
-  header("Usage", "Your last 100 requests. Token counts come from the model server; missing counts stay unknown. Cached input is the part of the prompt the model server reused from earlier turns.");
-  $("#view").innerHTML = r.requests.length ? `<div class="table-wrap"><table><thead><tr><th>Model</th><th>Time</th><th>Duration</th><th>Input (cached) / output tokens</th><th>Cost (USD)</th><th>Status</th></tr></thead><tbody>${r.requests.map(x=>`<tr><td>${esc(x.model)}</td><td>${esc(nowLabel(x.started))}</td><td>${(x.duration_ms/1000).toFixed(2)} s</td><td>${x.input_tokens??"—"}${Number.isInteger(x.cached_tokens) ? ` (${x.cached_tokens})` : ""} / ${x.output_tokens??"—"}</td><td>${dollars(x.cost_microusd)}${x.billing_state === "unbilled" ? " · Unbilled" : ""}</td><td>${esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : empty("A clear view of every request.", "Requests made with your API keys will appear here. Prompts and generated content are not stored.");
+  header("Usage", "Your last 100 requests. Token counts come from the model server; missing counts stay unknown. Cached input is the part of the prompt the model server reused from earlier turns. A media job counts its images, or its seconds of video or sound.");
+  const made = x => Number.isInteger(x.images) ? (x.images ? `${x.images} image${x.images === 1 ? "" : "s"}` : `${((x.output_ms || 0) / 1000).toFixed(1)} s of output`) : `${x.input_tokens??"—"}${Number.isInteger(x.cached_tokens) ? ` (${x.cached_tokens})` : ""} / ${x.output_tokens??"—"} tokens`;
+  $("#view").innerHTML = r.requests.length ? `<div class="table-wrap"><table><thead><tr><th>Model</th><th>Time</th><th>Duration</th><th>Input (cached) / output tokens, or output made</th><th>Cost (USD)</th><th>Status</th></tr></thead><tbody>${r.requests.map(x=>`<tr><td>${esc(x.model)}</td><td>${esc(nowLabel(x.started))}</td><td>${(x.duration_ms/1000).toFixed(2)} s</td><td>${made(x)}</td><td>${dollars(x.cost_microusd)}${x.billing_state === "unbilled" ? " · Unbilled" : ""}</td><td>${esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : empty("A clear view of every request.", "Requests made with your API keys will appear here. Prompts and generated content are not stored.");
   await renderCredits();
   if(session.user?.admin) await renderControlPanel();
 }

@@ -96,6 +96,51 @@ class RoutingFlow(Flow):
         self.assertEqual(sum(r["requests"] for r in details["routing"]), 36)
         self.assertEqual(sum(r["same"] for r in details["routing"]), 9)
 
+    def test_json_output_goes_only_to_replicas_whose_server_enforces_it(self):
+        """A request with OpenAI's response_format is served by a replica whose server enforces
+        it (Yougori's model server says so in its catalog), never by one that said it does not,
+        and still by one that did not say; the format travels as given, including through the
+        Responses adapter's text.format; the catalog shows the model as JSON-capable while any
+        replica enforces it, and a model with no such replica refuses the request."""
+        self.model.json = {"test/one": True}
+        servers = self.two_replicas()
+        first, second = list(servers)
+        servers[second].json = {"test/one": False}
+        self.service.refresh()
+        key = self.key(["test/one"])["key"]
+        schema = {"type": "json_schema", "json_schema": {"name": "answer", "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}, "strict": True}}
+        for index in range(6):
+            status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": [{"role": "user", "content": f"json {index}"}], "response_format": schema},
+                                        key=key, headers={"X-Session-ID": f"json-{index}"})
+            self.assertEqual(status, 200, body)
+        self.assertEqual(self.served(servers), {first: 6, second: 0})
+        self.assertEqual(servers[first].calls[-1]["response_format"], schema)
+        # Plain requests may go to either replica as before.
+        for index in range(4):
+            self.turn(key, [], f"plain {index}", headers={"X-Session-ID": f"plain-{index}"})
+        self.assertEqual(sum(self.served(servers).values()), 10)
+        catalog = {m["id"]: m for m in self.call("/api/models")[1]["models"]}
+        self.assertEqual(catalog["test/one"]["features"], {"json": True})
+        # The Responses API names the format text.format; it reaches the server as response_format.
+        status, body, _ = self.call("/v1/responses", {"model": "test/one", "input": "json please", "text": {"format": {"type": "json_schema", "name": "answer", "schema": schema["json_schema"]["schema"], "strict": True}}}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(servers[first].calls[-1]["response_format"], schema)
+        # Once no replica enforces it, the catalog says so and such requests are refused, not served as text.
+        self.model.json = {"test/one": False}
+        self.service.refresh()
+        self.assertEqual({m["id"]: m["features"] for m in self.call("/api/models")[1]["models"]}["test/one"], {"json": False})
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": [{"role": "user", "content": "json"}], "response_format": {"type": "json_object"}}, key=key)
+        self.assertEqual(status, 400)
+        self.assertIn("JSON output", body["error"]["message"])
+        self.assertEqual(self.turn(key, [], "still text")["choices"][0]["message"]["content"], "hello")
+        # A server that lists no capabilities (a plain vLLM or llama.cpp connected by address) is not refused.
+        url, third = self.model_server(("test/three",))
+        self.connect(url, "Third server")
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/three", "messages": [{"role": "user", "content": "json"}], "response_format": {"type": "json_object"}}, key=self.key(["test/three"])["key"])
+        self.assertEqual(status, 200, body)
+        self.assertEqual(third.calls[-1]["response_format"], {"type": "json_object"})
+        self.assertEqual({m["id"]: m["features"] for m in self.call("/api/models")[1]["models"]}["test/three"], {"json": None})
+
     def test_a_client_session_id_wins_and_routing_hints_are_not_forwarded(self):
         servers = self.two_replicas()
         key = self.key()["key"]
@@ -346,6 +391,7 @@ class RoutingFlow(Flow):
         work = self.service.compute
         for index in range(3):
             work.requests["r" + str(index)] = {"host": host["id"], "environment": "env-one", "payload": {}, "response": compute.Response(),
+                                               "path": "/chat/completions", "method": "POST",
                                                "claimed": False, "via": None, "claimed_at": None, "acked": False}
         with work.lock:
             self.assertEqual(len(work.claim(host["id"], "stream", 8, 2)), 2)

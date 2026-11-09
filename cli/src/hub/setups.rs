@@ -10,6 +10,7 @@
 
 use serde_json::{json, Value};
 use yougori_setup::capability::{self, Availability, Group};
+use zeroize::Zeroizing;
 
 use crate::cli_ui as ui;
 use crate::public;
@@ -379,6 +380,23 @@ async fn merged_answers(inputs: &[(String, String)], inputs_file: Option<&str>) 
     Ok(out)
 }
 
+/// The answers of a change to an installed setup (`configure`, `update`, `plan INSTANCE`): the
+/// public answers of [`merged_answers`], then each `--binding ID=VALUE` as the answer to that
+/// binding. The engine's planner reads an answer whose field is one of the template's binding ids
+/// as that binding (a folder, a drive, a file or `SETUP/RESOURCE`); the plan's `bindings` list is
+/// for secret references only, and refuses anything else. A binding given on the command line wins
+/// over the same field in `--input` or `--inputs`, and of two for one id the last wins. Its value
+/// travels as typed, never read as JSON: an empty one clears an optional binding, and one not given
+/// keeps what the setup chose before.
+async fn change_answers(inputs: &[(String, String)], inputs_file: Option<&str>, bindings: &[(String, String)]) -> Result<Vec<Value>, String> {
+    let mut out = merged_answers(inputs, inputs_file).await?;
+    for (id, value) in bindings {
+        out.retain(|answer| answer["field"] != json!(id));
+        out.push(json!({ "field": id, "value": value }));
+    }
+    Ok(out)
+}
+
 /// Build `plan::Answers` from the CLI's input pairs, an optional inputs file and `--binding` pairs.
 /// Public answers go to `inputs`; `capabilities.<id>` toggles go to `capabilities`; installation-time
 /// bindings (a folder, drive, file, or `SETUP/RESOURCE`) go to `bindings`. Secrets never arrive here
@@ -433,12 +451,13 @@ pub async fn plan(
     // A plan against an installed setup is a diff the engine computes; packages are planned locally.
     if source_value["kind"] == "installed_setup" {
         // The engine knows a setup by its id; the person names it as `template list` shows it.
-        // Planned as `configure` plans it: a change to that setup, from its own kept package.
+        // Planned as `configure` plans it: a change to that setup, from its own kept package, with
+        // a `--binding` as the answer to that binding.
         let setup_id = resolve_setup_id(source).await?;
         let request = json!({
             "source": { "kind": "installed_setup", "setupId": setup_id },
             "existingSetup": setup_id,
-            "answers": merged_answers(inputs, inputs_file).await?,
+            "answers": change_answers(inputs, inputs_file, bindings).await?,
         });
         return public::call("setup_plan", request).await;
     }
@@ -447,29 +466,47 @@ pub async fn plan(
     // Use the engine's view of this computer when it is running (real GPU/runtimes), else the local
     // assumption. Either way planning changes nothing.
     let host = crate::hub::plan::host_from_engine().await;
+    let site = crate::hub::client::Site::configured()?;
+    let cache = crate::hub::client::Cache::standard()?;
+    plan_package(&site, &cache, source, &source_value, answers, name, &host).await
+}
 
+/// [`plan`] of a package (a Hub template or a folder), from `site` with `cache`.
+async fn plan_package(
+    site: &crate::hub::client::Site,
+    cache: &crate::hub::client::Cache,
+    source: &str,
+    source_value: &Value,
+    answers: yougori_setup::plan::Answers,
+    name: Option<&str>,
+    host: &yougori_setup::plan::Host,
+) -> Result<Value, String> {
     // Get the package's files, where it came from and its digest. A Hub ref is fetched and verified; a
     // local folder is read as-is. Then resolve any pinned components through the Hub (a package with no
     // imports never touches the Hub), and plan.
     let (files, item, digest, page) = if source_value["kind"] == "hub" {
         let reference = crate::hub::refs::parse(source, &crate::hub::client::website())?;
         let wanted = crate::hub::run::Wanted::Hub(reference.clone());
-        let site = crate::hub::client::Site::configured()?;
-        let cache = crate::hub::client::Cache::standard()?;
-        let prepared = crate::hub::run::prepare(&site, &cache, &wanted).await?;
-        (prepared.files, Some(reference.item()), Some(prepared.digest.clone()), Some((prepared.detail, prepared.version)))
+        // Read in its own format: a format 2 package goes to the shared planner as downloaded;
+        // the format 1 reader would refuse its fields. A format 1 package is read as before.
+        let (files, digest, detail, version) = match crate::hub::run::read(site, cache, &wanted).await? {
+            crate::hub::run::Read::V2(fetched) => (fetched.files, fetched.digest, fetched.detail, fetched.version),
+            crate::hub::run::Read::V1(prepared) => {
+                let prepared = *prepared;
+                (prepared.files, prepared.digest, prepared.detail, prepared.version)
+            }
+        };
+        (files, Some(reference.item()), Some(digest), Some((detail, version)))
     } else {
         let path = source_value["path"].as_str().unwrap_or(source);
         let collected = crate::hub::scan::collect(std::path::Path::new(path)).map_err(|e| e.to_string())?;
         let digest = crate::hub::scan::digest_of(&collected.files);
         (collected.files, None, Some(digest), None)
     };
-    let site = crate::hub::client::Site::configured()?;
-    let cache = crate::hub::client::Cache::standard()?;
-    let package = crate::hub::components::package(&site, &cache, &files, item, digest)
+    let package = crate::hub::components::package(site, cache, &files, item, digest)
         .await
         .map_err(|problems| crate::hub::plan::problems_text("This template", &problems))?;
-    let mut planned = package_plan(&package, answers, name, &host)?;
+    let mut planned = package_plan(&package, answers, name, host)?;
     // The Hub page against the files, by the one rule the engine applies when it plans (the
     // review's `page_check`), so a plan made here with no engine says the same as one the engine
     // made. A folder has no page; that is said rather than passed off as a clean check.
@@ -539,10 +576,12 @@ pub fn plan_view(value: &Value) -> String {
     lines.join("\n")
 }
 
-/// `yougori template configure INSTANCE`: edit an existing setup's capabilities and inputs, review the
-/// diff, and apply through the shared planner. In a terminal it shows the review and asks to confirm;
-/// a script must pass `--yes`, otherwise only the plan is returned. `--dry-run` returns the plan and
-/// applies nothing.
+/// `yougori template configure INSTANCE`: edit an existing setup's capabilities, inputs and
+/// bindings, review the diff, and apply through the shared planner. In a terminal it shows the
+/// review and asks to confirm; a script must pass `--yes`, otherwise only the plan is returned.
+/// `--dry-run` returns the plan and applies nothing. What the plan asks the person to agree to (a
+/// sandbox changing files in a folder they chose) is asked as a first run asks it; a script agrees
+/// to the folder ones with `allow_pc_access` (`--allow-pc-access`).
 ///
 /// A saved plan carries secret *references* only, never values: for each secret entered on stdin the
 /// plan gets a binding `{ field, secretRef: "apply:<field>" }`, and the value travels separately in
@@ -561,13 +600,14 @@ pub async fn configure(
     inputs_file: Option<&str>,
     secrets_stdin: bool,
     yes: bool,
+    allow_pc_access: bool,
     dry_run: bool,
     interactive: bool,
 ) -> Result<Value, String> {
     // The secret values, read privately from stdin before anything is asked of the engine. On a
     // dry run no values are needed, so none are read.
     let secrets = if secrets_stdin && !dry_run { Some(read_secret_values().await?) } else { None };
-    configure_given(instance, inputs, install_bindings, inputs_file, secrets, yes, dry_run, interactive).await
+    configure_given(instance, inputs, install_bindings, inputs_file, secrets, yes, allow_pc_access, dry_run, interactive).await
 }
 
 /// [`configure`] with the stdin secrets already read (`None` when `--secrets -` was not given).
@@ -579,6 +619,7 @@ async fn configure_given(
     inputs_file: Option<&str>,
     secrets: Option<Value>,
     yes: bool,
+    allow_pc_access: bool,
     dry_run: bool,
     interactive: bool,
 ) -> Result<Value, String> {
@@ -587,7 +628,18 @@ async fn configure_given(
         return answer_waiting(instance, &setup_id, &waiting, inputs, install_bindings, inputs_file, secrets, dry_run, interactive).await;
     }
     let source = json!({ "kind": "installed_setup", "setupId": setup_id });
-    change(instance, &setup_id, source, inputs, install_bindings, inputs_file, secrets.unwrap_or(Value::Null), yes, dry_run, interactive).await
+    let asked = Asked { yes, allow_pc_access, dry_run, interactive };
+    change(instance, &setup_id, source, inputs, install_bindings, inputs_file, secrets.unwrap_or(Value::Null), asked).await
+}
+
+/// How a change to a setup was asked for: `--yes`, `--allow-pc-access`, `--dry-run`, and whether a
+/// person is at the terminal.
+#[derive(Clone, Copy, Debug, Default)]
+struct Asked {
+    yes: bool,
+    allow_pc_access: bool,
+    dry_run: bool,
+    interactive: bool,
 }
 
 /// The setup's current operation when it is waiting for an answer, as `setup_operation` reads it.
@@ -636,7 +688,9 @@ pub(super) fn waiting_words(instance: &str, progress: &Value) -> String {
             )
         }
         Waiting::Other => format!(
-            "{instance} is waiting: {asked} That can't be given to a change already under way. Give it up with {give_up}, then review the setup again with yougori template configure {instance}. What it already did is kept."
+            "{instance} is waiting: {asked} That can't be given to a change already under way. Give it up with {give_up}, then review the setup again with yougori template configure {instance}{}. What it already did is kept.",
+            // The new review asks for the agreement again; a script gives a folder's with a flag.
+            if error["code"] == "folder_consent_needed" { " and agree to it there (a script passes --yes --allow-pc-access)" } else { "" }
         ),
     }
 }
@@ -743,21 +797,25 @@ async fn answer_waiting(
 /// `yougori template update INSTANCE` for an engine setup: plans it against the latest version of
 /// its Hub template (or its folder as the folder is now), carrying the person's own answers and
 /// choices across, and applies it once agreed, as `configure` does. What the new version changes
-/// about those choices is shown first.
+/// about those choices is shown first. A `--binding` changes that binding with the update (a new
+/// version may ask for one it did not have); the bindings not given are kept as they were.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(
     instance: &str,
     inputs: &[(String, String)],
+    install_bindings: &[(String, String)],
     inputs_file: Option<&str>,
     secrets_stdin: bool,
     yes: bool,
+    allow_pc_access: bool,
     interactive: bool,
 ) -> Result<Value, String> {
     let setup_id = resolve_setup_id(instance).await?;
     let summary = list_setups().await.into_iter().find(|setup| setup["setupId"] == json!(setup_id)).ok_or_else(|| format!("{instance} is not a setup on this computer. Nothing was changed."))?;
     let source = update_source(instance, &summary["source"])?;
     let secrets = if secrets_stdin { read_secret_values().await? } else { Value::Null };
-    change(instance, &setup_id, source, inputs, &[], inputs_file, secrets, yes, false, interactive).await
+    let asked = Asked { yes, allow_pc_access, dry_run: false, interactive };
+    change(instance, &setup_id, source, inputs, install_bindings, inputs_file, secrets, asked).await
 }
 
 /// Where an update reads the new version from: the latest version of the Hub item a setup was made
@@ -781,31 +839,28 @@ async fn change(
     install_bindings: &[(String, String)],
     inputs_file: Option<&str>,
     secrets: Value,
-    yes: bool,
-    dry_run: bool,
-    interactive: bool,
+    asked: Asked,
 ) -> Result<Value, String> {
+    let Asked { yes, allow_pc_access, dry_run, interactive } = asked;
     let setup_id = setup_id.to_owned();
-    // The secret values (field → value) and the references that stand in for them in the plan.
-    // Secret references (never values), plus the installation-time bindings (a folder, drive, file or
-    // SETUP/RESOURCE) the person gave with --binding. Both are references in the plan.
-    let mut bindings: Vec<Value> = secrets
+    // The references that stand in for the secret values (field → value) in the plan: a plan's
+    // `bindings` are secret references and nothing else, never a value.
+    let bindings: Vec<Value> = secrets
         .as_object()
         .into_iter()
         .flatten()
         .map(|(field, _)| json!({ "field": field, "secretRef": format!("apply:{field}") }))
         .collect();
-    for (id, value) in install_bindings {
-        bindings.push(json!({ "field": id, "value": value }));
-    }
 
-    // Plan the change first, against the existing setup. The plan sees only references.
+    // Plan the change first, against the existing setup. The plan sees only references. The
+    // installation-time bindings given with --binding (a folder, drive, file or SETUP/RESOURCE)
+    // are answers to those bindings, as the first run sends them.
     let planned = public::call(
         "setup_plan",
         json!({
             "source": source,
             "existingSetup": setup_id,
-            "answers": merged_answers(inputs, inputs_file).await?,
+            "answers": change_answers(inputs, inputs_file, install_bindings).await?,
             "bindings": bindings,
         }),
     )
@@ -848,8 +903,15 @@ async fn change(
         }
     }
 
+    // What this change needs the person to agree to beyond the review itself, asked as the first
+    // run asks it: letting a sandbox change files in a folder they chose, or copying a sign-in from
+    // this computer. Without the folder agreement the engine would change the sandbox and then stop
+    // its folder waiting for an agreement nobody could give, so a change missing one is refused
+    // here, before anything is applied.
+    let agreed = super::plan::agreements(&planned, allow_pc_access, interactive, super::plan::Stage::Change)?;
+
     // Apply exactly the plan that was returned, by its digest and the setup's expected revision. The
-    // secret values ride along here and nowhere else.
+    // secret values ride along here and nowhere else, and only what was agreed to goes with them.
     let applied_setup = planned["setupId"].as_str().unwrap_or(&setup_id).to_owned();
     let operation = operation_id()?;
     let mut request = json!({
@@ -857,6 +919,7 @@ async fn change(
         "planDigest": planned["digest"],
         "operationId": operation,
         "expectedRevision": planned["baseRevision"],
+        "consents": agreed,
     });
     if secrets.is_object() {
         request["secrets"] = secrets;
@@ -865,6 +928,13 @@ async fn change(
     // The apply runs in the background; wait for it to finish (or a terminal state) before reporting.
     let finished = wait_for_operation(&applied_setup, &started, interactive).await?;
     Ok(with_conflicts(json!({ "planned": true, "applied": true, "plan": planned, "operation": finished })))
+}
+
+/// What a script adds to `--yes` to apply this plan: `--allow-pc-access` when the plan asks to let
+/// a sandbox change files in a folder the person chose (a `write_folder:` agreement), else nothing.
+pub fn agreement_flags(plan: &Value) -> &'static str {
+    let folder = plan["consents"].as_array().into_iter().flatten().filter_map(|consent| consent["id"].as_str()).any(|id| id.starts_with("write_folder:"));
+    if folder { " --allow-pc-access" } else { "" }
 }
 
 /// A fresh operation id for an apply, so replaying after an interruption is safe. Random, URL-safe
@@ -913,6 +983,19 @@ pub async fn list_setups() -> Vec<Value> {
         Ok(list) => list["setups"].as_array().cloned().or_else(|| list.as_array().cloned()).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Every name a lifecycle command would take for one of the engine's setups: each setup's name and
+/// id, lowercase, so a new format 1 instance or a new setup is never given one of them (see
+/// [`setup_named`], which every lifecycle command asks first). Empty when the engine is not running.
+pub(super) async fn setup_names() -> std::collections::BTreeSet<String> {
+    list_setups()
+        .await
+        .iter()
+        .flat_map(|setup| [setup["name"].as_str(), setup["setupId"].as_str()])
+        .flatten()
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 /// Whether a name the person typed is an engine setup (by id or memorable name), so a lifecycle
@@ -1663,23 +1746,229 @@ fn export_folder(instance: &str, folder: Option<&str>) -> Result<String, String>
     Ok(chosen.to_string_lossy().into_owned())
 }
 
-/// `yougori template join`: an interactive scoped grid invitation flow. The invitation is entered
-/// privately, never on the command line. In a script with no terminal, the invitation is read from
-/// stdin instead.
-pub async fn join(interactive: bool) -> Result<Value, String> {
-    use std::io::IsTerminal;
-    // A hidden prompt only makes sense at a real terminal; decide on the actual stdin, so an
-    // invitation is never read with the echo on because the flag and the device disagreed.
-    let invitation = if interactive && std::io::stdin().is_terminal() {
-        crate::cli_ui::hidden("Paste the invitation (it is not shown): ")?
-    } else {
-        let bytes = super::run::read_stdin("the invitation on stdin").await?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| "The invitation must be text.".to_owned())?.trim().to_owned()
-    };
-    if invitation.is_empty() {
-        return Err("No invitation was given. Nothing was joined.".into());
+/// How a person's own invitation starts: it carries their username and password, so joining with
+/// it needs no company password (the engine's `grids::scoped::PREFIX`).
+const ACCOUNT_INVITATION: &str = "yougori-invite:";
+
+/// What a script gives `template join` on stdin, said wherever it was given wrong.
+pub const JOIN_STDIN: &str = "A script gives the invitation and the grid's company password on stdin as {\"invitation\": \"…\", \"password\": \"…\"}; an invitation that starts with yougori-invite: carries your own account, so it can come alone, as the only text. Neither is ever put on the command line.";
+
+/// The longest answer [`hidden_text`] takes: far more than any invitation.
+const HIDDEN_MAX: usize = 8192;
+
+/// What `template join` was given: the invitation, and the grid's company password when one was
+/// given. Both are private: never on the command line, never in a reply, zeroed when dropped.
+struct Joining {
+    invitation: Zeroizing<String>,
+    password: Option<Zeroizing<String>>,
+}
+
+impl Joining {
+    /// Whether the invitation carries the person's own account, so no company password is needed.
+    fn carries_account(&self) -> bool {
+        self.invitation.trim().starts_with(ACCOUNT_INVITATION)
     }
-    public::call("setup_action", json!({ "action": "join", "invitation": invitation })).await
+}
+
+/// Reads what a script gave on stdin: a JSON object `{"invitation": "…", "password": "…"}`
+/// (the password left out when the invitation carries the account), or the invitation alone as
+/// the only text, as before. Anything else is refused rather than guessed at, so a misspelt key
+/// can never send a join without its password.
+fn joining_from(bytes: &[u8]) -> Result<Joining, String> {
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    let text = std::str::from_utf8(bytes).map_err(|_| format!("The invitation on stdin must be text. {JOIN_STDIN} Nothing was joined."))?.trim();
+    if !text.starts_with('{') {
+        return Ok(Joining { invitation: Zeroizing::new(text.to_owned()), password: None });
+    }
+    let object: serde_json::Map<String, Value> = serde_json::from_str(text).map_err(|_| format!("What is on stdin starts like JSON but is not a JSON object. {JOIN_STDIN} Nothing was joined."))?;
+    let mut joining = Joining { invitation: Zeroizing::new(String::new()), password: None };
+    for (key, value) in object {
+        let Value::String(said) = value else {
+            return Err(format!("{} on stdin must be text. {JOIN_STDIN} Nothing was joined.", crate::hub::scan::shown(&key)));
+        };
+        let said = Zeroizing::new(said);
+        match key.as_str() {
+            "invitation" => joining.invitation = Zeroizing::new(said.trim().to_owned()),
+            "password" => joining.password = Some(said).filter(|password| !password.is_empty()),
+            other => return Err(format!("template join reads no {} on stdin. {JOIN_STDIN} Nothing was joined.", crate::hub::scan::shown(other))),
+        }
+    }
+    Ok(joining)
+}
+
+/// Asks for a line at a terminal without echoing it: an invitation, or a company password. The
+/// shared hidden prompt keeps only its first 256 characters, and a person's `yougori-invite:` code
+/// is longer than that, so its end was dropped without a word and the join was refused; this one
+/// keeps [`HIDDEN_MAX`] and refuses anything longer rather than cutting it. Esc and Ctrl+C cancel.
+fn hidden_text(prompt: &str) -> Result<Zeroizing<String>, String> {
+    use crossterm::event::{read, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use std::io::Write;
+    struct Raw;
+    impl Drop for Raw {
+        fn drop(&mut self) {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+    // Nothing appears as it is typed or pasted; the prompt says so before the cursor sits there.
+    eprint!("{prompt}");
+    std::io::stderr().flush().map_err(|_| "Cannot ask for it at this terminal.".to_owned())?;
+    crossterm::terminal::enable_raw_mode().map_err(|_| format!("This terminal can't take an answer without showing it. {JOIN_STDIN}"))?;
+    let _raw = Raw;
+    let cancelled = || crate::wire::cancelled("Cancelled. Nothing was joined.");
+    // Room for the longest answer up front, so the text is never moved, leaving a copy behind.
+    let mut value = Zeroizing::new(String::with_capacity(HIDDEN_MAX * 4));
+    let (mut count, mut too_long) = (0usize, false);
+    loop {
+        let Event::Key(key) = read().map_err(|_| "Cannot read the answer from this terminal.".to_owned())? else { continue };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter => {
+                eprintln!("\r");
+                break;
+            }
+            KeyCode::Esc => {
+                eprintln!("\r");
+                return Err(cancelled());
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                eprintln!("\r");
+                return Err(cancelled());
+            }
+            KeyCode::Backspace => {
+                if value.pop().is_some() {
+                    count -= 1;
+                }
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if count < HIDDEN_MAX {
+                    value.push(c);
+                    count += 1;
+                } else {
+                    too_long = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if too_long {
+        return Err(format!("That was longer than {HIDDEN_MAX} characters, more than any invitation holds. Copy only the code, then join again. Nothing was joined."));
+    }
+    Ok(value)
+}
+
+/// A join's review in a terminal: what it makes, step by step, and the engine's notes. A join plan
+/// has the shape a removal review has, so it is read the same way.
+pub fn join_lines(plan: &Value) -> Vec<String> {
+    removal_lines(plan)
+}
+
+/// `yougori template join [--yes]`: joins this computer to a grid with the invitation its admin
+/// shared, as the app does. The engine reviews the invitation first (`setup_action join`, which
+/// changes nothing and answers with the plan); the reviewed plan is then applied with
+/// `setup_apply`, carrying the invitation again and, unless the invitation carries the person's own
+/// account (`yougori-invite:`), the grid's company password, as secrets the engine keeps only for
+/// that operation; and the operation is followed to its end. Returns `{joined: true, setup,
+/// setupId, operation}` with the setup's own name, or, for a script without `yes`,
+/// `{joined: false, plan, needsConfirmation: true}` and nothing joined.
+///
+/// The invitation and the password are read privately: at a real terminal without echo, otherwise
+/// from stdin ([`joining_from`]); never from an argument. Which one is decided on the actual stdin
+/// alone, so neither is ever read with the echo on: `--format json` at a terminal still asks
+/// without showing what is typed, and only a stdin that is not a terminal is read as a script's.
+pub async fn join(yes: bool, interactive: bool) -> Result<Value, String> {
+    use std::io::IsTerminal;
+    let at_terminal = std::io::stdin().is_terminal();
+    let joining = if at_terminal {
+        let pasted = hidden_text("Paste the invitation (it is not shown): ")?;
+        Joining { invitation: Zeroizing::new(pasted.trim().to_owned()), password: None }
+    } else {
+        joining_from(&super::run::read_stdin("the invitation on stdin").await?)?
+    };
+    join_given(joining, at_terminal, yes, interactive).await
+}
+
+/// [`join`] with the invitation (and the password, when a script gave it) already read.
+/// `at_terminal` says whether a missing password can still be asked for without echo.
+async fn join_given(mut joining: Joining, at_terminal: bool, yes: bool, interactive: bool) -> Result<Value, String> {
+    if joining.invitation.is_empty() {
+        return Err(format!("No invitation was given. {} Nothing was joined.", if at_terminal { "Paste the code the grid's admin shared." } else { JOIN_STDIN }));
+    }
+    // A script that means to join gives everything at once; one missing the password is told
+    // before the engine is asked anything.
+    if !at_terminal && yes && !joining.carries_account() && joining.password.is_none() {
+        return Err(format!("This invitation needs the grid's company password too. {JOIN_STDIN} Nothing was joined."));
+    }
+    // The review. The engine reads the invitation only to tell which grid it is for and keeps
+    // nothing of it; nothing is joined by this call.
+    let plan = super::run::wait(interactive, "Reading the invitation", public::call("setup_action", json!({ "action": "join", "invitation": joining.invitation.as_str() }))).await?;
+    let setup_id = plan["setupId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or("The engine did not say which setup this join would make, so it can't be applied from here. Nothing was joined.")?
+        .to_owned();
+    if !yes && !interactive {
+        return Ok(json!({ "joined": false, "plan": plan, "needsConfirmation": true, "passwordNeeded": !joining.carries_account() }));
+    }
+    let stopped = |error: String| if error == ui::CANCELLED || error == ui::BACK { crate::wire::cancelled("Cancelled. Nothing was joined.") } else { error };
+    if interactive {
+        let lines = join_lines(&plan);
+        if !lines.is_empty() {
+            ui::lines(lines);
+        }
+        if !yes {
+            let choices = [ui::Choice::new("Join", "join this grid as reviewed"), ui::Choice::new("Cancel", "nothing is joined")];
+            if ui::select("Join this grid?", &[], &choices, 0).map_err(stopped)? != 0 {
+                return Err(crate::wire::cancelled("Cancelled. Nothing was joined."));
+            }
+        }
+    }
+    // The grid's company password, unless the invitation carries the person's own account: asked
+    // now at a terminal, without echo; a script gave it on stdin (checked above).
+    if !joining.carries_account() && joining.password.is_none() {
+        if !at_terminal {
+            return Err(format!("This invitation needs the grid's company password too. {JOIN_STDIN} Nothing was joined."));
+        }
+        let password = hidden_text("The grid's company password (it is not shown): ")?;
+        if password.is_empty() {
+            return Err(crate::wire::cancelled("Cancelled. Nothing was joined."));
+        }
+        joining.password = Some(password);
+    }
+    let agreed = super::plan::agreements(&plan, false, interactive, super::plan::Stage::Join)?;
+    // Apply exactly the plan that was reviewed. The invitation and the password travel here as
+    // secrets and nowhere else; the engine forgets them when the operation ends.
+    let mut secrets = serde_json::Map::new();
+    secrets.insert("invitation".to_owned(), json!(joining.invitation.as_str()));
+    if let (false, Some(password)) = (joining.carries_account(), &joining.password) {
+        secrets.insert("join_password".to_owned(), json!(password.as_str()));
+    }
+    let request = json!({
+        "setupId": setup_id,
+        "planDigest": plan["digest"],
+        "operationId": operation_id()?,
+        "expectedRevision": plan["baseRevision"],
+        "secrets": Value::Object(secrets),
+        "consents": agreed,
+    });
+    drop(joining);
+    let started = public::call("setup_apply", request).await.map_err(|error| {
+        if crate::wire::cancellation(&error).is_some() || error.ends_with("Nothing was joined.") { error } else { format!("{error} Nothing was joined.") }
+    })?;
+    let progress = follow(&setup_id, &started, interactive).await?;
+    match progress["state"].as_str().unwrap_or_default() {
+        "completed" => {}
+        // A join that failed (a wrong company password, a grid that can't be reached) leaves the
+        // setup it started; it can be carried on, or removed and joined again.
+        "failed" if progress["error"]["code"] != "operation_cancelled" => {
+            return Err(format!("{}\nTo start over instead, remove what the join made with yougori template rm {setup_id} --yes, then join again.", settled_words(&setup_id, &progress)));
+        }
+        _ => return Err(settled_words(&setup_id, &progress)),
+    }
+    // The setup's own name, as the engine keeps it ("Acme Sandbox Grid"); its id when it can't say.
+    let name = get_setup(&setup_id).await.ok().and_then(|detail| detail["summary"]["name"].as_str().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned)).unwrap_or_else(|| setup_id.clone());
+    Ok(json!({ "joined": true, "setup": name, "setupId": setup_id, "operation": progress }))
 }
 
 /// Read the private secrets object from stdin: a JSON object of field → value. The value never leaves
@@ -3020,7 +3309,7 @@ mod tests {
         let _engine = crate::client::fake_engine::install(engine.clone());
         let inputs = vec![("currency".to_owned(), "EUR".to_owned())];
         let shown = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(update("notes", &inputs, None, false, false, false))
+            .block_on(update("notes", &inputs, &[], None, false, false, false, false))
             .unwrap_or_else(|said| panic!("the update was refused: {said}"));
         assert_eq!(shown["applied"], false);
         assert_eq!(shown["needsConfirmation"], true, "a script without --yes gets the plan and changes nothing");
@@ -3041,7 +3330,7 @@ mod tests {
             other => engine(other, params),
         });
         let shown = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(update("notes", &inputs, None, false, true, false))
+            .block_on(update("notes", &inputs, &[], None, false, true, false, false))
             .unwrap_or_else(|said| panic!("the update was refused: {said}"));
         assert_eq!(shown["applied"], true);
         assert_eq!(shown["conflicts"], conflicts);
@@ -3116,7 +3405,7 @@ mod tests {
         // the plan the person reviewed, so the engine joins it (`continue_operation`) rather than
         // creating anything twice. The engine here is this test's own.
         let _engine = crate::client::fake_engine::install(engine_waiting(waiting_for("secret_needed", Some("token")), json!({"token": "S3CRET-VALUE"})));
-        let shown = run(configure_given("shop", &[], &[], None, Some(json!({"token": "S3CRET-VALUE"})), false, false, false))
+        let shown = run(configure_given("shop", &[], &[], None, Some(json!({"token": "S3CRET-VALUE"})), false, false, false, false))
             .unwrap_or_else(|said| panic!("the answer was refused: {said}"));
         assert_eq!((&shown["answered"], &shown["applied"], &shown["planned"]), (&json!(true), &json!(true), &json!(false)));
         assert_eq!(shown["operation"]["state"], "completed");
@@ -3148,21 +3437,21 @@ mod tests {
     fn an_answer_that_leaves_out_what_was_asked_is_refused_before_anything_is_sent() {
         let _engine = crate::client::fake_engine::install(engine_waiting(waiting_for("secret_needed", Some("token")), json!({})));
         // A value for something else would only have the engine ask again.
-        let refused = run(configure_given("shop", &[], &[], None, Some(json!({"other": "x"})), false, false, false)).unwrap_err();
+        let refused = run(configure_given("shop", &[], &[], None, Some(json!({"other": "x"})), false, false, false, false)).unwrap_err();
         assert!(refused.contains("don't include token"), "{refused}");
         assert!(refused.contains("Nothing was changed"), "{refused}");
         // No value at all, in a script: the working command is named, with the question.
-        let refused = run(configure_given("shop", &[], &[], None, None, false, false, false)).unwrap_err();
+        let refused = run(configure_given("shop", &[], &[], None, None, false, false, false, false)).unwrap_err();
         assert!(refused.contains("yougori template configure shop --secrets -"), "{refused}");
         assert!(refused.contains("{\"token\": \"…\"}"), "it says which key the JSON object needs: {refused}");
         assert!(refused.contains("yougori call setup_cancel --setup-id setup-9 --operation-id op-waiting --yes"), "and how to give the change up, by the engine's ids: {refused}");
         // An input or binding can't change a change that is under way.
-        let refused = run(configure_given("shop", &[("size".to_owned(), "large".to_owned())], &[], None, Some(json!({"token": "x"})), false, false, false)).unwrap_err();
+        let refused = run(configure_given("shop", &[("size".to_owned(), "large".to_owned())], &[], None, Some(json!({"token": "x"})), false, false, false, false)).unwrap_err();
         assert!(refused.contains("already under way"), "{refused}");
-        let refused = run(configure_given("shop", &[], &[("data".to_owned(), "D:/shop".to_owned())], None, Some(json!({"token": "x"})), false, false, false)).unwrap_err();
+        let refused = run(configure_given("shop", &[], &[("data".to_owned(), "D:/shop".to_owned())], None, Some(json!({"token": "x"})), false, false, false, false)).unwrap_err();
         assert!(refused.contains("already under way"), "{refused}");
         // A dry run says what is waiting and what would answer it, and sends nothing.
-        let shown = run(configure_given("shop", &[], &[], None, None, false, true, false)).unwrap();
+        let shown = run(configure_given("shop", &[], &[], None, None, false, false, true, false)).unwrap();
         assert_eq!((&shown["waiting"], &shown["applied"], &shown["field"]), (&json!(true), &json!(false), &json!("token")));
         assert_eq!(shown["next"], "yougori template configure shop --secrets -");
         assert!(!crate::client::fake_engine::called("setup_apply") && !crate::client::fake_engine::called("setup_plan"), "nothing was sent or planned");
@@ -3176,7 +3465,7 @@ mod tests {
         let mut waiting = waiting_for("folder_consent_needed", None);
         waiting["error"]["message"] = json!("app keeps a copy of the folder you chose for data and changes files in it, so it needs your agreement when the setup is applied. Review the setup again and agree to that.");
         let _engine = crate::client::fake_engine::install(engine_waiting(waiting, json!({})));
-        let refused = run(configure_given("shop", &[], &[], None, Some(json!({"token": "x"})), false, false, false)).unwrap_err();
+        let refused = run(configure_given("shop", &[], &[], None, Some(json!({"token": "x"})), false, false, false, false)).unwrap_err();
         assert!(refused.contains("needs your agreement"), "{refused}");
         assert!(refused.contains("yougori call setup_cancel --setup-id setup-9 --operation-id op-waiting --yes"), "{refused}");
         assert!(refused.contains("review the setup again with yougori template configure shop"), "{refused}");
@@ -3195,7 +3484,7 @@ mod tests {
             })),
             other => engine_waiting(waiting_for("secret_needed", Some("token")), json!({"token": "x"}))(other, params),
         });
-        let said = run(configure_given("shop", &[], &[], None, Some(json!({"token": "x"})), false, false, false)).unwrap_err();
+        let said = run(configure_given("shop", &[], &[], None, Some(json!({"token": "x"})), false, false, false, false)).unwrap_err();
         let cancelled = crate::wire::cancellation(&said).expect("reported as a cancellation, not a failure");
         assert!(cancelled.contains("was cancelled") && cancelled.contains("yougori template continue shop"), "{cancelled}");
         assert!(!said.contains("answered"), "{said}");
@@ -3223,7 +3512,7 @@ mod tests {
             }
             other => panic!("unexpected engine call {other}"),
         });
-        let shown = run(configure_given("shop", &[], &[], None, Some(json!({"token": "x"})), true, false, false)).unwrap();
+        let shown = run(configure_given("shop", &[], &[], None, Some(json!({"token": "x"})), true, false, false, false)).unwrap();
         assert_eq!((&shown["planned"], &shown["applied"]), (&json!(true), &json!(true)));
         assert!(shown.get("answered").is_none());
     }
@@ -3577,6 +3866,254 @@ mod tests {
         }]});
         let text = product_lines(&value, ASKS_FOR).join("\n");
         assert!(!text.contains('\u{1b}') && !text.contains('\u{7}') && !text.contains('\u{202e}'), "{text:?}");
+    }
+
+    // ----- Bindings and agreements on a change to a setup (`configure`, `update`) -----
+
+    /// An engine with one setup, `shop`, whose last change finished; its plan of a change offers
+    /// `consents` and `setup_apply` must carry `agreed`.
+    fn engine_changing(consents: Value, agreed: Value) -> impl Fn(&str, &Value) -> Result<Value, String> {
+        move |method: &str, params: &Value| match method {
+            "setup_list" => Ok(json!({"setups": [{"setupId": "setup-9", "name": "shop", "source": {"kind": "local_folder", "path": "C:/recipes/shop"}}]})),
+            "setup_operation" => Ok(json!({"operation": {"operationId": "op-1", "setupId": "setup-9"}, "state": "completed", "events": [], "nextCursor": 1})),
+            "setup_plan" => Ok(json!({"setupId": "setup-9", "digest": "plan-3", "baseRevision": 6, "review": {}, "plan": {}, "consents": consents.clone()})),
+            "setup_apply" => {
+                assert_eq!(params["planDigest"], "plan-3");
+                assert_eq!(params["consents"], agreed, "exactly the agreements given travel with the apply");
+                Ok(json!({"operationId": params["operationId"], "setupId": "setup-9"}))
+            }
+            other => panic!("unexpected engine call {other}"),
+        }
+    }
+
+    fn sent(method: &str) -> Value {
+        crate::client::fake_engine::calls().into_iter().find(|(called, _)| called == method).map(|(_, params)| params).unwrap_or_else(|| panic!("{method} was never called"))
+    }
+
+    fn pairs(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries.iter().map(|(id, value)| ((*id).to_owned(), (*value).to_owned())).collect()
+    }
+
+    #[test]
+    fn configure_sends_a_binding_as_the_answer_to_that_binding_and_the_plans_bindings_only_as_secret_references() {
+        // PROVES `template configure --binding` reaches the engine where its planner reads a
+        // binding: an answer whose field is the binding's id, as the first run sends it. It used to
+        // go into the plan's `bindings`, which hold secret references only and refuse an entry with
+        // a value, so the engine turned the whole change away. A binding on the command line wins
+        // over the same field in --input, the last of two wins, and an empty one is sent as typed
+        // (it clears an optional binding). The engine here is this test's own.
+        let _engine = crate::client::fake_engine::install(engine_changing(json!([]), json!([])));
+        let inputs = pairs(&[("size", "large"), ("data", "D:/typed-as-an-input")]);
+        let bindings = pairs(&[("data", "D:/shop-1"), ("data", "D:/shop-2"), ("grid", "")]);
+        let shown = run(configure_given("shop", &inputs, &bindings, None, Some(json!({"token": "x"})), true, false, false, false)).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(shown["applied"], true);
+        let planned = sent("setup_plan");
+        assert_eq!(planned["answers"], json!([{"field": "size", "value": "large"}, {"field": "data", "value": "D:/shop-2"}, {"field": "grid", "value": ""}]));
+        assert_eq!(planned["bindings"], json!([{"field": "token", "secretRef": "apply:token"}]), "the plan's bindings are secret references, never a value");
+        // `template plan INSTANCE --binding` plans the same change.
+        let _engine = crate::client::fake_engine::install(engine_changing(json!([]), json!([])));
+        run(plan("shop", None, &[], None, &pairs(&[("data", "D:/shop-3")]))).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(sent("setup_plan")["answers"], json!([{"field": "data", "value": "D:/shop-3"}]));
+    }
+
+    #[test]
+    fn a_scripted_change_that_needs_a_folder_agreement_is_refused_before_anything_is_applied_unless_allowed() {
+        // PROVES a change can no longer leave a setup half changed for want of an agreement. A plan
+        // that keeps a writable folder in step asks for `write_folder:…`; without it the engine
+        // changes the sandbox, then stops the folder waiting for an agreement the CLI could not
+        // give. Now a script without --allow-pc-access is refused before anything is applied, and
+        // with it the agreement travels with the apply. A sign-in copy is never agreed for a script.
+        let consents = json!([
+            {"id": "write_folder:app/data", "message": "Let app change files in the folder you chose for data."},
+            {"id": "copy_signin:app/codex", "message": "Copy your Codex sign-in from this computer into app."},
+        ]);
+        // A script that only reviewed it is told the whole command that applies it.
+        assert_eq!(agreement_flags(&json!({"consents": consents})), " --allow-pc-access");
+        assert_eq!(agreement_flags(&json!({"consents": [{"id": "copy_signin:app/codex", "message": "x"}]})), "");
+        let _engine = crate::client::fake_engine::install(engine_changing(consents.clone(), json!(["write_folder:app/data"])));
+        let refused = run(configure_given("shop", &pairs(&[("size", "large")]), &[], None, None, true, false, false, false)).unwrap_err();
+        assert!(refused.contains("(data)") && refused.contains("--allow-pc-access") && refused.ends_with("Nothing was changed."), "{refused}");
+        assert!(!crate::client::fake_engine::called("setup_apply"), "nothing was applied");
+        let _engine = crate::client::fake_engine::install(engine_changing(consents, json!(["write_folder:app/data"])));
+        let shown = run(configure_given("shop", &pairs(&[("size", "large")]), &[], None, None, true, true, false, false)).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(shown["applied"], true);
+        // A plan that asks for nothing still says so to the engine: no agreement at all.
+        let _engine = crate::client::fake_engine::install(engine_changing(json!([]), json!([])));
+        run(configure_given("shop", &[], &[], None, None, true, true, false, false)).unwrap();
+    }
+
+    #[test]
+    fn an_update_takes_bindings_and_the_folder_agreement_like_configure() {
+        // PROVES `template update --binding` and `--allow-pc-access` reach the engine: the binding
+        // as its answer, the agreement with the apply. Before, update refused --binding and never
+        // passed --allow-pc-access on, so an update of a setup with a writable folder always
+        // stopped part way.
+        let engine = |method: &str, params: &Value| match method {
+            "setup_list" => Ok(json!({"setups": [{"setupId": "setup-7", "name": "notes", "source": {"kind": "hub", "publisher": "acme", "name": "notes", "version": "1.0.0"}}]})),
+            "setup_plan" => {
+                assert_eq!(params["source"], json!({"kind": "hub", "publisher": "acme", "name": "notes", "version": "latest"}));
+                assert_eq!(params["existingSetup"], "setup-7");
+                assert_eq!(params["answers"], json!([{"field": "region", "value": "eu"}, {"field": "data", "value": "D:/notes"}]));
+                assert_eq!(params["bindings"], json!([]));
+                Ok(json!({"setupId": "setup-7", "digest": "plan-u", "baseRevision": 2, "review": {}, "plan": {}, "consents": [{"id": "write_folder:app/data", "message": "Let app change files in the folder you chose for data."}]}))
+            }
+            "setup_apply" => {
+                assert_eq!(params["consents"], json!(["write_folder:app/data"]));
+                Ok(json!({"operationId": "op-u"}))
+            }
+            "setup_operation" => Ok(json!({"state": "completed", "events": [], "nextCursor": 1})),
+            other => panic!("unexpected engine call {other}"),
+        };
+        let _engine = crate::client::fake_engine::install(engine);
+        let shown = run(update("notes", &pairs(&[("region", "eu")]), &pairs(&[("data", "D:/notes")]), None, false, true, true, false)).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(shown["applied"], true);
+        let _engine = crate::client::fake_engine::install(engine);
+        let refused = run(update("notes", &pairs(&[("region", "eu")]), &pairs(&[("data", "D:/notes")]), None, false, true, false, false)).unwrap_err();
+        assert!(refused.contains("--allow-pc-access") && refused.ends_with("Nothing was changed."), "{refused}");
+        assert!(!crate::client::fake_engine::called("setup_apply"));
+    }
+
+    #[test]
+    fn a_change_waiting_for_a_folder_agreement_says_how_a_script_gives_it() {
+        let mut waiting = waiting_for("folder_consent_needed", None);
+        waiting["error"]["message"] = json!("app changes files in the folder you chose for data, so it needs your agreement.");
+        let said = waiting_words("shop", &waiting);
+        assert!(said.contains("yougori template configure shop and agree to it there (a script passes --yes --allow-pc-access)"), "{said}");
+        assert!(!waiting_words("shop", &waiting_for("something_else", None)).contains("--allow-pc-access"));
+    }
+
+    // ----- `template join` -----
+
+    /// An engine that reviews a join and applies it; the finished setup is called `name`.
+    fn engine_joining(name: &'static str, finished: &'static str) -> impl Fn(&str, &Value) -> Result<Value, String> {
+        move |method: &str, params: &Value| match method {
+            "setup_action" => {
+                assert_eq!(params["action"], "join");
+                Ok(json!({
+                    "setupId": "setup-j", "intent": "create", "digest": "join-digest", "baseRevision": 0,
+                    "headline": "Create this setup: 1 step.", "steps": [{"title": "Create membership (grid)"}],
+                    "notes": ["When you apply, give the invitation again and the grid's company password. Neither is kept with the setup."],
+                    "consents": [],
+                }))
+            }
+            "setup_apply" => Ok(json!({"operationId": params["operationId"], "setupId": "setup-j"})),
+            "setup_operation" => {
+                let error = if finished == "failed" { json!({"code": "grid_refused", "message": "The grid refused the company password.", "retryable": true}) } else { Value::Null };
+                Ok(json!({"operation": {"operationId": "op-j", "setupId": "setup-j"}, "state": finished, "events": [], "nextCursor": 1, "error": error}))
+            }
+            "setup_get" if name.is_empty() => Err("The engine could not read the setup.".into()),
+            "setup_get" => Ok(json!({"summary": {"setupId": "setup-j", "name": name}, "revision": 1})),
+            other => panic!("unexpected engine call {other}"),
+        }
+    }
+
+    #[test]
+    fn a_script_gives_the_invitation_and_the_password_on_stdin_as_json_or_the_invitation_alone() {
+        let both = joining_from(b"\xef\xbb\xbf {\"invitation\": \" desk-invite:abc \", \"password\": \"correct horse\"}\n").unwrap();
+        assert_eq!((both.invitation.as_str(), both.password.as_deref().map(String::as_str)), ("desk-invite:abc", Some("correct horse")));
+        assert!(!both.carries_account());
+        let alone = joining_from(b"yougori-invite:eyJ2IjoxfQ\n").unwrap();
+        assert_eq!((alone.invitation.as_str(), alone.password.is_none()), ("yougori-invite:eyJ2IjoxfQ", true));
+        assert!(alone.carries_account());
+        assert!(joining_from(b"{\"invitation\": \"desk-invite:abc\", \"password\": \"\"}").unwrap().password.is_none(), "an empty password is none");
+        for (bad, says) in [
+            (&b"{\"invitation\": \"desk-invite:abc\", \"pasword\": \"x\"}"[..], "reads no pasword"),
+            (b"{\"invitation\": 12}", "must be text"),
+            (b"{\"invitation\": ", "not a JSON object"),
+            (b"\xff\xfe", "must be text"),
+        ] {
+            let said = joining_from(bad).err().unwrap_or_else(|| panic!("{} was taken", String::from_utf8_lossy(bad)));
+            assert!(said.contains(says) && said.contains("{\"invitation\": \"…\", \"password\": \"…\"}") && said.ends_with("Nothing was joined."), "{said}");
+        }
+        assert!(JOIN_STDIN.contains("yougori-invite:"));
+        assert!(super::super::TEMPLATE_USAGE.contains("yougori template join [--yes]") && super::super::TEMPLATE_USAGE.contains("{\"invitation\": \"…\", \"password\": \"…\"}"), "the usage documents what a script pipes");
+    }
+
+    #[test]
+    fn a_join_is_reviewed_applied_with_the_invitation_and_password_and_followed_to_the_setups_own_name() {
+        // PROVES `template join` joins. It used to send only `setup_action join`, which reviews
+        // and changes nothing, then print "Joined ." with exit 0. Now the reviewed plan is applied
+        // with the invitation and the company password as secrets, the operation is followed, and
+        // the setup's own name is reported. Neither secret is in the result. The engine is this
+        // test's own.
+        let _engine = crate::client::fake_engine::install(engine_joining("Acme Sandbox Grid", "completed"));
+        let given = joining_from(br#"{"invitation": "desk-invite:abc", "password": "correct horse"}"#).unwrap();
+        let joined = run(join_given(given, false, true, false)).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!((&joined["joined"], &joined["setup"], &joined["setupId"]), (&json!(true), &json!("Acme Sandbox Grid"), &json!("setup-j")));
+        assert_eq!(sent("setup_action")["invitation"], "desk-invite:abc");
+        let applied = sent("setup_apply");
+        assert_eq!((&applied["setupId"], &applied["planDigest"], &applied["expectedRevision"]), (&json!("setup-j"), &json!("join-digest"), &json!(0)));
+        assert_eq!(applied["secrets"], json!({"invitation": "desk-invite:abc", "join_password": "correct horse"}));
+        assert_eq!(applied["consents"], json!([]));
+        assert!(applied["operationId"].as_str().is_some_and(|id| id.starts_with("op-")));
+        assert!(!joined.to_string().contains("correct horse") && !joined.to_string().contains("desk-invite"), "{joined}");
+        for (method, params) in crate::client::fake_engine::calls() {
+            assert!(matches!(method.as_str(), "setup_apply") || !params.to_string().contains("correct horse"), "{method} carried the password");
+        }
+        let text = super::super::join_view(&joined);
+        assert!(text.starts_with("Joined Acme Sandbox Grid.") && text.contains("yougori template status setup-j"), "{text}");
+
+        // A person's own invitation carries their account: the invitation goes alone, even when a
+        // password was given too.
+        let _engine = crate::client::fake_engine::install(engine_joining("Acme Sandbox Grid", "completed"));
+        let own = joining_from(br#"{"invitation": "yougori-invite:eyJ2IjoxfQ", "password": "not needed"}"#).unwrap();
+        run(join_given(own, false, true, false)).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(sent("setup_apply")["secrets"], json!({"invitation": "yougori-invite:eyJ2IjoxfQ"}));
+
+        // When the engine can't say the setup's name, its id stands in: never an empty name.
+        let _engine = crate::client::fake_engine::install(engine_joining("", "completed"));
+        let joined = run(join_given(joining_from(b"yougori-invite:eyJ2IjoxfQ").unwrap(), false, true, false)).unwrap();
+        assert_eq!(joined["setup"], "setup-j");
+    }
+
+    #[test]
+    fn a_join_without_yes_or_without_its_password_joins_nothing_and_never_says_it_did() {
+        // Without --yes a script gets the review back, and nothing is applied.
+        let _engine = crate::client::fake_engine::install(engine_joining("Acme Sandbox Grid", "completed"));
+        let reviewed = run(join_given(joining_from(b"desk-invite:abc").unwrap(), false, false, false)).unwrap();
+        assert_eq!((&reviewed["joined"], &reviewed["needsConfirmation"], &reviewed["passwordNeeded"]), (&json!(false), &json!(true), &json!(true)));
+        assert!(!crate::client::fake_engine::called("setup_apply"));
+        let text = super::super::join_view(&reviewed);
+        assert!(text.contains("Create membership (grid)") && text.contains("Nothing was joined.") && text.contains("yougori template join --yes") && !text.contains("Joined"), "{text}");
+        // With --yes but no password for an invitation that needs one: refused before the engine
+        // hears of it.
+        let _engine = crate::client::fake_engine::install(engine_joining("Acme Sandbox Grid", "completed"));
+        let refused = run(join_given(joining_from(b"desk-invite:abc").unwrap(), false, true, false)).unwrap_err();
+        assert!(refused.contains("company password") && refused.contains("{\"invitation\": \"…\", \"password\": \"…\"}") && refused.ends_with("Nothing was joined."), "{refused}");
+        assert!(crate::client::fake_engine::calls().is_empty(), "nothing was asked of the engine");
+        // No invitation at all.
+        let refused = run(join_given(joining_from(b"  \n").unwrap(), false, true, false)).unwrap_err();
+        assert!(refused.starts_with("No invitation was given.") && refused.ends_with("Nothing was joined."), "{refused}");
+        // A join the grid refused leaves what it started, and says both ways on.
+        let _engine = crate::client::fake_engine::install(engine_joining("Acme Sandbox Grid", "failed"));
+        let failed = run(join_given(joining_from(br#"{"invitation": "desk-invite:abc", "password": "wrong"}"#).unwrap(), false, true, false)).unwrap_err();
+        assert!(failed.contains("refused the company password") && failed.contains("yougori template continue setup-j") && failed.contains("yougori template rm setup-j --yes"), "{failed}");
+    }
+
+    #[tokio::test]
+    async fn a_format_2_hub_template_is_planned_from_its_own_files() {
+        // PROVES `template plan hub/…` reads a format 2 template with the format 2 reader. It went
+        // through the format 1 reader, which has no format_version and refuses unknown fields, so
+        // every format 2 Hub template failed before it was planned. The Hub here is this test's own.
+        use crate::hub::client::tests::{bundle_json, serve, Fixture};
+        let template = "format_version: 2\nkind: template\nname: shop\nsummary: A shop.\nversion: 1.0.0\nlicense: MIT\nrequires: {yougori: 1.2.0}\ninputs:\n  - {id: title, question: Title?, type: text, group: website_api, default: Hi}\npublic:\n  - {environment: web, port: 8080}\n";
+        let project = "format_version: 2\nproject: shop\nenvironments:\n  web:\n    image: nginx:1.27\n    ports: [8080]\n    environment: {TITLE: \"{{inputs.title}}\"}\n";
+        let files: crate::hub::scan::Files = [(crate::hub::format::TEMPLATE_FILE, template), ("yougori.yaml", project)].iter().map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec())).collect();
+        let checked = crate::hub::plan::check_files(&files).unwrap_or_else(|problems| panic!("{}", crate::hub::plan::problems_text("the package", &problems)));
+        let package = yougori_setup::plan::Package { checked, components: Default::default(), item: None, digest: None };
+        let published = crate::hub::review::template_v2(&package, &[]).unwrap();
+        let fixture = Fixture::default();
+        *fixture.detail.lock().unwrap() = json!({"ref": "acme/shop", "kind": "template", "state": "active", "latestVersion": "1.0.0", "version": {"version": "1.0.0", "digest": crate::hub::scan::digest_of(&files), "verified": false, "review": published}});
+        *fixture.bundle.lock().unwrap() = bundle_json("acme", "shop", "1.0.0", &files);
+        let site = crate::hub::client::Site::at(&serve(fixture).await).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let cache = crate::hub::client::Cache { root: root.path().to_path_buf() };
+        let host = yougori_setup::plan::Host { yougori: "1.2.0".into(), ..crate::hub::plan::host_here() };
+        let source = "hub/acme/shop";
+        let planned = plan_package(&site, &cache, source, &source_ref(source).unwrap(), yougori_setup::plan::Answers::default(), None, &host).await.unwrap_or_else(|said| panic!("the plan was refused: {said}"));
+        assert_eq!(planned["instance"], "shop");
+        assert_eq!(planned["page"], json!({"compared": true, "differs": false, "differences": []}), "checked against the Hub's page, which agrees");
+        assert!(planned["review"].is_object() && planned["digest"].is_string());
     }
 
 }

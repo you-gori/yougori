@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { platformApi } from "@/api/platform-api"
-import { guestFilesApi, joinPath, maximumEditableBytes, quote, textDigest } from "@/api/guest-files-api"
+import { guestFilesApi, joinPath, maximumEditableBytes, quote, textDigest, withOriginalLineEndings } from "@/api/guest-files-api"
 
 vi.mock("@/api/platform-api", () => ({ platformApi: { executeEnvironmentCommand: vi.fn() } }))
 
@@ -71,5 +71,14 @@ describe("Environment files", () => {
   it("reports the environment's own error instead of claiming success", async () => {
     execute.mockResolvedValue({ stdout: "", stderr: "sh: can't create /etc/passwd: Permission denied", exitCode: 1 })
     await expect(guestFilesApi.create("env-a", "/etc/passwd", false)).rejects.toThrow(/Permission denied/)
+  })
+})
+
+describe("Editing keeps a file's own encoding details", () => {
+  it("keeps CRLF line endings the textarea turned into LF, and leaves mixed or LF files as edited", () => {
+    expect(withOriginalLineEndings("one\ntwo\n", "one\r\ntwo\r\n")).toBe("one\r\ntwo\r\n")
+    expect(withOriginalLineEndings("one\ntwo", "one\ntwo")).toBe("one\ntwo")
+    expect(withOriginalLineEndings("one\ntwo", "one\r\ntwo\nthree")).toBe("one\ntwo")
+    expect(withOriginalLineEndings("one\ntwo", undefined)).toBe("one\ntwo")
   })
 })

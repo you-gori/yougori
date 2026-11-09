@@ -281,3 +281,19 @@
 .model-library-detail-head code { width: fit-content; max-width: 100%; padding: 2px 8px; border-radius: 6px; background: color-mix(in srgb, var(--foreground) 6%, transparent); color: var(--muted-foreground); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
 .model-library-text { color: var(--foreground); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
 .model-library-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+/* Generate: a media model's form and its jobs with previews. */
+.model-generate { display: grid; gap: 14px; min-height: 26rem; }
+.model-generate-form { display: grid; gap: 12px; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 14px; background: var(--card); }
+.model-generate-form textarea { width: 100%; padding: 0.65rem; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: inherit; resize: vertical; font: inherit; }
+.model-generate-form .model-form-actions { justify-content: space-between; align-items: center; }
+.model-generate-jobs { display: grid; gap: 10px; }
+.model-generate-job { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 12px; background: var(--card); }
+.model-generate-job header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.model-generate-job header .model-hint { flex: 1 1 12rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-generate-job-actions { display: flex; gap: 6px; margin-left: auto; }
+.model-generate-job progress { width: 100%; height: 6px; }
+.model-generate-job[data-status="failed"] header strong { color: var(--destructive); }
+.model-generate-preview { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 10px; }
+.model-generate-preview img, .model-generate-preview video { width: 100%; height: auto; border-radius: 8px; background: var(--muted); }
+.model-generate-preview audio { width: 100%; }

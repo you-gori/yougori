@@ -284,13 +284,39 @@ fn copy_hashed(from: &Path, to: &Path, shown: &str) -> Result<(ContentKey, u64),
     Ok((key, size))
 }
 
+/// Refuses `name` unless it is one plain path component on every host: not empty, no separator,
+/// no `:` (a drive or an alternate data stream on Windows), not `.` or `..`, no trailing dot or
+/// space, no device name (`NUL`, `COM1`, ...) and no short-name alias. The shared id grammar
+/// allows `:`, so an id such as `D:.` joined under a folder would name a drive-relative path on
+/// Windows, outside that folder; such an id is refused before any file-system use.
+pub(crate) fn plain_component(name: &str) -> Result<(), String> {
+    match GuestName::parse(name) {
+        Ok(parsed) if parsed.component_count() == 1 => Ok(()),
+        _ => Err(format!("{name:?} can't name a folder of its own here; nothing was read or changed.")),
+    }
+}
+
+/// `root` joined with `name`, refused unless `name` is a plain component (`plain_component`) and
+/// the result stays directly under `root`.
+pub(crate) fn child_of(root: &Path, name: &str) -> Result<PathBuf, String> {
+    plain_component(name)?;
+    let child = root.join(name);
+    if child.parent() != Some(root) || !child.starts_with(root) {
+        return Err(format!("{name:?} would leave its folder; nothing was read or changed."));
+    }
+    Ok(child)
+}
+
 impl WorkspaceStore {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
-    fn dir_of(&self, sandbox: &ExecutionId) -> PathBuf {
-        self.root.join(sandbox.as_str())
+    /// The folder of `sandbox`'s workspace. A sandbox id that is not one plain path component
+    /// is refused before any file-system use (`child_of`): with `D:.`, a discard would otherwise
+    /// remove a folder outside the workspace root.
+    fn dir_of(&self, sandbox: &ExecutionId) -> Result<PathBuf, String> {
+        child_of(&self.root, sandbox.as_str()).map_err(|refusal| format!("Sandbox {sandbox} has no workspace folder: {refusal}"))
     }
 
     /// Imports `source` for `sandbox`'s boot `boot` (module notes). Refused when the
@@ -310,7 +336,7 @@ impl WorkspaceStore {
     /// private copy remain private application state and must survive a restart.
     pub fn restore(&self, sandbox: &ExecutionId, boot: u64, previous: &ExecutionId) -> Result<Workspace, String> {
         if sandbox == previous { return Err("Cannot restore a workspace onto itself".into()); }
-        if self.dir_of(sandbox).exists() { return Err("The destination VM has a workspace already".into()); }
+        if self.dir_of(sandbox)?.exists() { return Err("The destination VM has a workspace already".into()); }
         let source = self.open(previous)?.ok_or("The previous private workspace is missing")?.staging();
         let restored = self.import_inner(sandbox, boot, &source, true).and_then(|workspace| {
             if !workspace.record.skipped.is_empty() { return Err("The private workspace contains unsupported files; the previous data is retained".into()); }
@@ -333,7 +359,7 @@ impl WorkspaceStore {
         if root.starts_with(&source) || !private && source.starts_with(&root) {
             return Err("the folder holds the engine's workspaces, or is one of them".to_owned());
         }
-        let dir = self.dir_of(sandbox);
+        let dir = self.dir_of(sandbox)?;
         if dir.exists() {
             return Err(format!("sandbox {sandbox} has a workspace already"));
         }
@@ -421,7 +447,7 @@ impl WorkspaceStore {
 
     /// The workspace of `sandbox`, when it has one.
     pub fn open(&self, sandbox: &ExecutionId) -> Result<Option<Workspace>, String> {
-        let dir = self.dir_of(sandbox);
+        let dir = self.dir_of(sandbox)?;
         let path = dir.join(RECORD);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -449,7 +475,7 @@ impl WorkspaceStore {
 
     /// Removes `sandbox`'s workspace (its staging copy, backups and review).
     pub fn discard(&self, sandbox: &ExecutionId) -> Result<bool, String> {
-        let dir = self.dir_of(sandbox);
+        let dir = self.dir_of(sandbox)?;
         if !dir.exists() {
             return Ok(false);
         }
@@ -1011,6 +1037,30 @@ mod tests {
         assert!(store.restore(&next, 3, &previous).is_err());
         assert_eq!(fs::read(restored.staging().join(".yougori/answers.json")).unwrap(), b"changed", "a refused restore never discards existing data");
         assert!(store.restore(&previous, 3, &previous).is_err());
+    }
+
+    /// PROVES a sandbox id that is not one plain path component never reaches the file system:
+    /// the shared grammar allows `D:.` and `C:.`, which Windows would join as a drive-relative
+    /// path outside the workspace root, so a discard of one would delete a folder elsewhere.
+    #[test]
+    fn a_sandbox_id_that_is_not_a_plain_folder_name_is_refused_before_any_file_is_touched() {
+        let (temp, folder, store, sandbox) = setup();
+        store.import(&sandbox, 1, &folder).unwrap();
+        for id in ["D:.", "C:.", "c:..", "a:b", "nul", "con.txt", "name.", "x."] {
+            let odd = ExecutionId::new(id).unwrap();
+            assert!(store.discard(&odd).is_err(), "{id}");
+            assert!(store.open(&odd).is_err(), "{id}");
+            assert!(store.import(&odd, 1, &folder).is_err(), "{id}");
+            assert!(store.restore(&odd, 1, &sandbox).is_err(), "{id}");
+        }
+        assert!(folder.join("src/main.py").exists() && temp.path().join("workspaces").join(sandbox.as_str()).exists(), "nothing else was removed");
+        assert!(plain_component("exe-ws-1").is_ok() && plain_component("combine-0123abcd").is_ok());
+        for refused in ["", ".", "..", "a/b", "a\\b", "D:", "D:.", "x ", "COM1"] {
+            assert!(plain_component(refused).is_err(), "{refused:?}");
+        }
+        let root = temp.path().join("workspaces");
+        assert_eq!(child_of(&root, "exe-ws-1").unwrap(), root.join("exe-ws-1"));
+        assert!(child_of(&root, "D:.").is_err());
     }
 
     /// PROVES the import copies the folder without its credential locations, records the

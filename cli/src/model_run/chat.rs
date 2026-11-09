@@ -28,7 +28,9 @@ pub fn requested(args: &[String]) -> bool {
     args.len() >= 3
         && args[0] == "model"
         && matches!(args[1].as_str(), "run" | "chat")
-        && !args.iter().any(|a| matches!(a.as_str(), "--dry-run" | "--help" | "-h"))
+        // `model chat ENV --json [SCHEMA]` has its own terminal flow (public::model), which this
+        // console does not offer.
+        && !args.iter().any(|a| matches!(a.as_str(), "--dry-run" | "--help" | "-h" | "--json"))
         && (args.iter().any(|a| a == "--neocloud") || !args.iter().any(|a| matches!(a.as_str(), "--api" | "--port")))
         && io::stdin().is_terminal()
         && io::stdout().is_terminal()
@@ -105,6 +107,18 @@ fn options(args: &[String]) -> Result<Options, String> {
                 resources.insert(key.into(), json!(number));
                 i += 1;
             }
+            "--runner" if run && !resources.contains_key("runner") => {
+                i += 1;
+                let runner = args.get(i).filter(|v| !v.starts_with('-')).ok_or("--runner needs vllm, auto or hf:OWNER/REPO@COMMIT")?;
+                if !matches!(runner.as_str(), "auto" | "vllm") && !runner.starts_with("hf:") { return Err("--runner must be vllm, auto or hf:OWNER/REPO@COMMIT (a media model's pipeline runner)".into()); }
+                resources.insert("runner".into(), runner.clone().into());
+            }
+            "--adapter" if run && !resources.contains_key("adapter") => {
+                i += 1;
+                let adapter = args.get(i).filter(|v| !v.starts_with('-')).ok_or("--adapter needs hf:OWNER/REPO@COMMIT")?;
+                if !adapter.contains('@') { return Err("--adapter names a LoRA repository at a commit: hf:OWNER/REPO@COMMIT".into()); }
+                resources.insert("adapter".into(), adapter.clone().into());
+            }
             "--new" if !run => fresh = true,
             "--change" if run => change = true,
             "--neocloud" if run => neocloud = true,
@@ -123,7 +137,7 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             // `npm run yougori -- model run ...` habits: a bare separator changes nothing.
             "--" => {}
-            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--closed-weights] [--listen (free only)] [--folder PATH] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--template INSTANCE] [--change] [--cpu N] [--memory GB] [--storage GB] | model chat ENV [--new]".into()),
+            _ => return Err("Unknown model option. Usage: yougori model run hf.co/OWNER/MODEL [--now | --nowfree] [--closed-weights] [--listen (free only)] [--folder PATH] [--quant Q4_K_M] [--storage-drive PATH] [--neocloud [--environment ENV]] [--template INSTANCE] [--change] [--cpu N] [--memory GB] [--storage GB] [--runner vllm|hf:OWNER/REPO@COMMIT] [--adapter hf:OWNER/REPO@COMMIT] | model chat ENV [--new] [--json [SCHEMA.json]]".into()),
         }
         i += 1;
     }
@@ -131,7 +145,8 @@ fn options(args: &[String]) -> Result<Options, String> {
     if publish && share_mode.is_none() {return Err("--closed-weights requires --now or --nowfree".into())}
     if neocloud && resources.contains_key("modelFolder") {return Err("--folder selects local weights; use a local GPU".into())}
     public::validate_model_resources(&resources)?;
-    public::validate_model_neocloud(neocloud, environment.as_deref(), change || !resources.is_empty())?;
+    // A media model's adapter and pipeline runner go to a pod too; the rest are local options.
+    public::validate_model_neocloud(neocloud, environment.as_deref(), change || resources.keys().any(|key| key != "adapter" && key != "runner"))?;
     if neocloud && quant.is_some() { return Err("GGUF quantization is not supported on Neocloud pods".into()); }
     if neocloud && storage_drive.is_some() { return Err("--storage-drive selects local storage; it cannot be used with --neocloud".into()); }
     Ok(Options {
@@ -200,7 +215,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
     let existing = if chat_only || options.neocloud { None } else {
         super::busy("Looking for this model on this computer", public::find_model(target)).await?
     };
-    let reusable = existing.filter(|_| options.quant.is_none() && !options.resources.contains_key("modelFolder") && !options.resources.contains_key("backend"));
+    let reusable = existing.filter(|_| options.quant.is_none() && !["modelFolder", "backend", "runner", "adapter"].iter().any(|key| options.resources.contains_key(*key)));
     let launch_preflight = if !chat_only && (options.neocloud || reusable.is_none()) {
         Some(super::busy("Checking the model on Hugging Face", call("model_preflight",json!({"model":target,"quant":options.quant,"folder":options.resources.get("modelFolder")}))).await?)
     } else { None };
@@ -274,7 +289,7 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
         let Some(mut result) = wait_or_stop(pod, || super::stage(
             &label,
             |_| "Model started in Neocloud".into(),
-            call("run_neocloud_model", json!({"model":target,"environmentId":pod,"port":options.api_port})),
+            call("run_neocloud_model", json!({"model":target,"environmentId":pod,"port":options.api_port,"adapter":options.resources.get("adapter"),"runner":options.resources.get("runner")})),
         ))
         .await? else {
             return Ok(0);
@@ -938,6 +953,12 @@ fn opened(read: Result<Value, String>) -> Result<Option<Value>, String> {
 }
 
 async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit, String> {
+    // A media model takes jobs, not conversation: say how, and leave it running.
+    if let Some(task) = public::media_task(status) {
+        ui::info(&format!("{name} generates {task}. Make something with: yougori model generate {name} --prompt \"...\""));
+        ui::info(&format!("API examples: yougori model access {name}; the app's API access tab shows the job routes."));
+        return Ok(Exit::Detach);
+    }
     let decision = status["task"] == "structured-decision";
     // Only a model with nothing saved yet starts empty. Conversations that could not be read keep
     // the chat closed, since its first save would write over every one of them.
@@ -1016,7 +1037,7 @@ async fn chat(id: &str, name: &str, fresh: bool, status: &Value) -> Result<Exit,
             "/api" => {
                 ui::line("");
                 ui::take_interrupt();
-                match api::menu(id, status["stream"] == true).await {
+                match api::menu(id, status["stream"] == true, status["capabilities"]["structuredOutput"]["supported"] == true).await {
                     Ok(api::MenuExit::NewChat) => start_new_chat(id, &mut store, &mut editor).await,
                     Ok(api::MenuExit::Done) => {},
                     Err(error) if super::left(&error) => {},

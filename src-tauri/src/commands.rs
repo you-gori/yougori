@@ -1265,6 +1265,9 @@ pub async fn reset_platform_state(
     }
     let mut empty = PlatformState::empty().map_err(|error| error.to_string())?;
     empty.settings = state.settings;
+    // Every environment is gone, so none of them starts automatically any more; a list naming
+    // them would make every later settings save refer to environments that do not exist.
+    empty.settings.auto_start_environment_ids.clear();
     empty.host = collect_host_metrics(&state.host, runtime.storage_root());
     empty.providers = runtime.provider_statuses();
     store.replace(empty)

@@ -37,7 +37,7 @@ pub(crate) fn mark_for_start(options: &mut yougori_cli::workload::Options) {
 pub(crate) fn marked_for_start(options: &yougori_cli::workload::Options) -> bool {
     options.environment.contains_key(START_MARK)
 }
-const ADMIN_PATHS: [&str; 5] = ["/v1/listen/config", "/v1/usage/reset", "/v1/yougori/publishing", "/v1/yougori/adapters", "/v1/yougori/kv"];
+const ADMIN_PATHS: [&str; 6] = ["/v1/listen/config", "/v1/usage/reset", "/v1/yougori/publishing", "/v1/yougori/adapters", "/v1/yougori/kv", "/v1/yougori/media"];
 fn timing_diagnostics(path: &str) -> bool {
     matches!(path.split('?').next(), Some("/v1/diagnostics/timings" | "/v1/diagnostics/load"))
 }
@@ -103,15 +103,22 @@ pub fn normalize_model(model: &str) -> Result<String, String> {
     Ok(model.into())
 }
 #[tauri::command]
-pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, backend: Option<String>, memory_gb: Option<f64>, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
+#[allow(clippy::too_many_arguments)]
+pub async fn run_model(model: String, port: Option<u16>, quant: Option<String>, folder: Option<String>, backend: Option<String>, memory_gb: Option<f64>, resources: Option<ModelResources>, runner: Option<String>, app: AppHandle, window: crate::WebviewWindow) -> Result<Value, String> {
     // A local model folder is a raw host path: dashboard or same-user CLI only.
     if folder.is_some() { crate::host_terminal::require_dashboard(window.label())?; }
-    run_model_with_resources(model, port, Some(ModelResources { model_folder:folder, backend, memory_gb, ..Default::default() }), quant, app).await
+    // The app's run form sends a media model's LoRA adapter in `resources` and its pipeline
+    // runner (or `vllm`) as `runner`, as the CLI's dispatcher reads them; both were once dropped.
+    // Only the adapter is taken from `resources`: the rest (a setup's stamp, CPU-only, the agent
+    // API) is never a window's to set here.
+    let adapter = resources.and_then(|resources| resources.adapter);
+    run_model_with_resources(model, port, Some(ModelResources { model_folder:folder, backend, memory_gb, runner, adapter, ..Default::default() }), quant, app).await
 }
-/// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod.
+/// The dashboard's `--neocloud`: serve a model on an existing, powered-on RunPod GPU pod. A
+/// media model may start with a LoRA adapter and a pipeline runner (`hf:OWNER/REPO@COMMIT`).
 #[tauri::command]
-pub async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
-    neocloud::run_neocloud_model(model, environment_id, port, app).await
+pub async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, adapter: Option<String>, runner: Option<String>, app: AppHandle) -> Result<Value, String> {
+    neocloud::run_neocloud_model(model, environment_id, port, adapter, runner, app).await
 }
 #[tauri::command]
 pub async fn model_compute_status(app: AppHandle) -> Result<Value, String> {
@@ -145,9 +152,27 @@ pub struct ModelResources {
     #[serde(default)]
     pub setup_stamp: Option<String>,
     /// `vllm` serves a checkpoint Transformers would run on the pinned vLLM image instead
-    /// (`preflight::prefer_vllm`); `auto` or none keeps the preflight's runner.
+    /// (`preflight::prefer_vllm`); `auto` or none keeps the preflight's runner; for a media
+    /// model, `hf:OWNER/REPO@COMMIT` names its pipeline runner (a Diffusers custom pipeline).
     #[serde(default)]
     pub runner: Option<String>,
+    /// A media model's LoRA adapter (`--adapter`), a Hugging Face repository at a commit,
+    /// loaded onto the pipeline when the model starts.
+    #[serde(default)]
+    pub adapter: Option<String>,
+}
+
+/// A media model's adapter or pipeline runner as the runner takes it, `hf:OWNER/REPO@COMMIT`:
+/// a public repository at an immutable commit, so what loads is what was named.
+pub(crate) fn media_reference(value: &str, what: &str) -> Result<String, String> {
+    let reference = value.trim().strip_prefix("hf:").unwrap_or(value.trim());
+    let valid = reference.split_once('@').is_some_and(|(repository, commit)| {
+        let mut parts = repository.split('/');
+        let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else { return false };
+        let plain = |part: &str| !part.is_empty() && part.len() <= 96 && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) && part.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric());
+        plain(owner) && plain(name) && commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    });
+    if valid { Ok(format!("hf:{reference}")) } else { Err(format!("The {what} is a Hugging Face repository at a commit: hf:OWNER/REPO@COMMIT (40 hex characters)")) }
 }
 
 /// Where a model made by a setup carries that setup's stamp (`ModelResources::setup_stamp`).
@@ -162,13 +187,21 @@ impl ModelResources {
             Some(_) => Err("A setup stamp uses up to 200 letters, digits, dots, colons, slashes, dashes or underscores".into()),
         }
     }
-    /// Whether `--runner vllm` was asked for; any other value than `vllm` or `auto` is refused.
+    /// Whether `--runner vllm` was asked for; `auto`, none, or a media model's pipeline runner
+    /// (`hf:OWNER/REPO@COMMIT`) is not; any other value is refused.
     fn wants_vllm(&self) -> Result<bool, String> {
         match self.runner.as_deref() {
             None | Some("auto") => Ok(false),
             Some("vllm") => Ok(true),
-            Some(_) => Err("--runner takes vllm or auto".into()),
+            Some(reference) if reference.starts_with("hf:") => Ok(false),
+            Some(_) => Err("--runner takes vllm, auto or hf:OWNER/REPO@COMMIT (a media model's pipeline runner)".into()),
         }
+    }
+    /// A media model's adapter and pipeline runner, checked; None for a model that takes none.
+    fn media_extras(&self) -> Result<(Option<String>, Option<String>), String> {
+        let adapter = self.adapter.as_deref().filter(|v| !v.trim().is_empty()).map(|v| media_reference(v, "adapter")).transpose()?;
+        let pipeline = self.runner.as_deref().filter(|v| v.starts_with("hf:")).map(|v| media_reference(v, "pipeline runner")).transpose()?;
+        Ok((adapter, pipeline))
     }
     /// Puts the setup's stamp, if any, in a new model's workload environment.
     fn stamp_into(&self, environment: &mut Value) -> Result<(), String> {
@@ -325,6 +358,13 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
         return Err(format!("{}: {}. No environment was created.{help}",model,compatibility["reason"].as_str().unwrap_or("Model compatibility could not be established")));
     }
     if wants_vllm { preflight::prefer_vllm(&mut compatibility)?; }
+    // A media model (a Diffusers pipeline or text-to-speech): the media runner's format and task,
+    // and the LoRA adapter and pipeline runner it starts with, each a repository at a commit.
+    let media = compatibility["format"] == "media";
+    let (adapter, pipeline_runner) = resources.as_ref().map(ModelResources::media_extras).transpose()?.unwrap_or((None, None));
+    if (adapter.is_some() || pipeline_runner.is_some()) && !media {
+        return Err("--adapter and a pipeline runner (--runner hf:OWNER/REPO@COMMIT) apply to media models (Diffusers pipelines); a vLLM model takes adapters with `yougori model adapters attach`. No environment was created.".into());
+    }
     let cpu_only = resources.as_ref().is_some_and(|r| r.cpu_only);
     let mut backend = compute::Backend::select(std::env::consts::OS, std::env::consts::ARCH,
         resources.as_ref().and_then(|r| r.backend.as_deref()), cpu_only)?;
@@ -362,7 +402,7 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
     let mut resources=resources.unwrap_or_default();
     // A vLLM model without a memory choice gets the preflight's RAM recommendation, not the 4 GB
     // default its API server and engine core outgrow (preflight::VLLM_MEMORY_GB).
-    if compatibility["runner"] == "yougori-vllm" && resources.memory_gb.is_none() { resources.memory_gb = compatibility["resources"]["memoryGbRecommended"].as_f64(); }
+    if (compatibility["runner"] == "yougori-vllm" || media) && resources.memory_gb.is_none() { resources.memory_gb = compatibility["resources"]["memoryGbRecommended"].as_f64(); }
     let available = app
         .state::<RuntimeManager>()
         .new_storage_on_drive(resources.storage_drive.as_deref())?
@@ -403,13 +443,22 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
         environment["YOUGORI_MODEL_FILES"] = json!(compatibility["files"].to_string());
     }
     if vllm { environment["YOUGORI_MODEL_FORMAT"] = json!("vllm"); }
+    if media {
+        environment["YOUGORI_MODEL_FORMAT"] = json!("media");
+        environment["YOUGORI_MEDIA_TASK"] = compatibility["task"].clone();
+        if let Some(reference) = &adapter { environment["YOUGORI_MEDIA_ADAPTER"] = json!(reference); }
+        if let Some(reference) = &pipeline_runner { environment["YOUGORI_MEDIA_RUNNER"] = json!(reference); }
+    }
     resources.stamp_into(&mut environment)?;
     optimizer::environment(&mut environment, &mut protected)?;
     if shared_capacity { optimizer::stamp_capacity(&mut environment, &compatibility)?; }
     // A Transformers chat model on this host's one GPU joins host-ledger admission when the
     // demand covering its context fits (G03), and a GGUF model with the demand its header gives;
     // a quantized registry version, Clef and several GPUs keep the legacy scheduler.
-    else if !cpu_only { optimizer::stamp_local_capacity(&mut environment, &compatibility).await; }
+    else if !cpu_only && !media { optimizer::stamp_local_capacity(&mut environment, &compatibility).await; }
+    // A media pipeline stays loaded while it runs: its jobs are not admitted one by one, and
+    // stopping the model frees the GPU.
+    if media { environment["YOUGORI_GPU_OPTIMIZER"] = json!("0"); }
     if cpu_only {
         environment["YOUGORI_MODEL_CPU"] = json!("1");
         environment["YOUGORI_MODEL_CPU_THREADS"] = json!(cpu.floor().max(1.).min(64.).to_string());
@@ -789,6 +838,18 @@ fn megakernel_source() -> String {
 pub(crate) fn carries_megakernel(format: Option<&str>) -> bool {
     format == Some("vllm")
 }
+/// The media loaders and job runner (`model_runner/media_backends.py`, the media-backends
+/// helper): a media runner (Diffusers pipelines, text-to-speech) executes them before its load,
+/// after checking them against the digest the model server ships (`MEDIA_SHA256`).
+fn media_source() -> String {
+    let mut source=flate2::write::ZlibEncoder::new(Vec::new(),flate2::Compression::best());
+    std::io::Write::write_all(&mut source,include_str!("model_runner/media_backends.py").replace("\r\n","\n").as_bytes()).expect("compressing the media backends");
+    STANDARD.encode(source.finish().expect("finishing the media backends"))
+}
+/// Whether a runner of this format carries the media backends: the media format only.
+pub(crate) fn carries_media(format: Option<&str>) -> bool {
+    format == Some("media")
+}
 /// The model server a new runner carries, with the engine backends when its format loads them
 /// and the megakernel host when its launch can be a megakernel.
 fn carry_server(environment: &mut Value) {
@@ -799,8 +860,13 @@ fn carry_server(environment: &mut Value) {
     if carries_megakernel(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
         environment["YOUGORI_MEGAKERNEL_SOURCE"] = json!(megakernel_source());
     }
+    if carries_media(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
+        environment["YOUGORI_MEDIA_SOURCE"] = json!(media_source());
+    }
 }
 pub(crate) fn server_source() -> String {
+    // The media backends are not in the pod bundle: a Neocloud pod runs no media model yet, and
+    // the bundle stays under the pod agent's 256 KiB file limit (packaging.rs checks it).
     format!("__YOUGORI_GPU_SOURCE__ = '{}'\n__YOUGORI_CLEF_SOURCE__ = '{}'\n__YOUGORI_PUBLISHER_SOURCE__ = '{}'\n__YOUGORI_BACKENDS_SOURCE__ = '{}'\n__YOUGORI_MEGAKERNEL_SOURCE__ = '{}'\n{}", optimizer::source(), clef_source(), publisher_source(), backends_source(), megakernel_source(), include_str!("model_server.py"))
 }
 /// Brings a stopped model environment's server up to this version before it starts, so reused
@@ -952,8 +1018,17 @@ fn apply_served(options: &mut yougori_cli::workload::Options, served: Option<&he
     }
 }
 fn is_server_command(command: &str) -> bool {
-    SERVER_COMMAND_PREFIXES.iter().any(|prefix| command.starts_with(prefix)) && ["yougori-model", "yougori-model-local-fix"].iter()
-        .any(|name| command.contains(&format!(",'\"'\"'{name}'\"'\"',")))
+    (SERVER_COMMAND_PREFIXES.iter().any(|prefix| command.starts_with(prefix)) && ["yougori-model", "yougori-model-local-fix"].iter()
+        .any(|name| command.contains(&format!(",'\"'\"'{name}'\"'\"',"))))
+        // The model server served from a helper bundle (`apply_served`) is the server command too:
+        // without this, every start after a bundle served it skipped refreshing the model.
+        || is_served_server_command(command)
+}
+fn is_served_server_command(command: &str) -> bool {
+    command.strip_prefix("exec python3 -u ").is_some_and(|entry| {
+        entry.starts_with(&format!("{}/", helpers::HELPERS_TARGET)) && entry.contains("/model-server/") && entry.ends_with(".py")
+            && !entry.contains([' ', '\'', '"', ';', '&', '|', '$', '`'])
+    })
 }
 fn shell_quote(v: &str) -> String {
     format!("'{}'", v.replace('\'', "'\"'\"'"))
@@ -972,8 +1047,11 @@ async fn model_connection(
     serving: Option<&streaming::Profile>,
 ) -> Result<crate::workspace::BoxStream, String> {
     let encoded = body.map(Value::to_string).unwrap_or_default();
-    if encoded.len() > 65536 {
-        return Err("Conversation exceeds 64 KiB; start a new chat".into());
+    // A media job may carry an input image (a data URL of up to 20 MiB, about 26.7 MiB once
+    // encoded); a conversation stays small.
+    let media = path.starts_with("/v1/jobs") || path == "/v1/files";
+    if encoded.len() > if media { 28 * 1024 * 1024 } else { 65536 } {
+        return Err(if media { "A job request is at most 28 MiB (an input image of at most 20 MiB)".into() } else { "Conversation exceeds 64 KiB; start a new chat".into() });
     }
     let (mut stream, options, token) = open_model(app, id).await?;
     // A request reaching a prepared model uses what was prepared (model_prepare); the runner's
@@ -1034,7 +1112,8 @@ async fn open_model(app: &AppHandle, id: &str) -> Result<(crate::workspace::BoxS
 /// The error of a buffered reply: the model server's typed refusals in the engine's words
 /// (`streaming::typed_refusal`), else the body's message, else a fixed line.
 fn model_error(status_line: &str, body: &[u8]) -> Option<String> {
-    if status_line.split_whitespace().nth(1) == Some("200") {
+    // Any success status: a media job is accepted with 202, an uploaded input with 201.
+    if status_line.split_whitespace().nth(1).is_some_and(|code| code.len() == 3 && code.starts_with('2')) {
         return None;
     }
     let value = serde_json::from_slice::<Value>(body).ok();
@@ -1060,12 +1139,19 @@ pub(crate) async fn model_request(
     let stream = model_connection(app, id, path, body.as_ref(), profile.as_ref()).await?;
     let answer = if let Some(profile) = &profile {
         streaming::read_buffered(stream, profile).await
-    } else { model_response(stream, body.is_some()).await };
+    } else { model_response(stream, reply_seconds(path, body.is_some())).await };
     optimizer::request_completed(path, body.is_some(), answer.is_ok());
     answer
 }
-async fn model_response(stream: crate::workspace::BoxStream, posted: bool) -> Result<Value, String> {
-    tokio::time::timeout(std::time::Duration::from_secs(if posted {1800} else {15}), async {
+/// How long a buffered reply may take: a posted request half an hour (a chat answer, a job's
+/// acceptance), a read a quarter minute, and a job status read that long-polls (`?wait=N`) its
+/// wait and a quarter minute more.
+fn reply_seconds(path: &str, posted: bool) -> u64 {
+    let wait = path.split_once("?wait=").and_then(|(_, rest)| rest.split('&').next()?.parse::<u64>().ok()).unwrap_or(0).min(600);
+    if posted { 1800 } else { 15 + wait }
+}
+async fn model_response(stream: crate::workspace::BoxStream, seconds: u64) -> Result<Value, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(seconds), async {
         let mut bytes = Vec::new();
         stream
             .take(2 * 1024 * 1024 + 1)
@@ -1088,12 +1174,113 @@ async fn model_response(stream: crate::workspace::BoxStream, posted: bool) -> Re
     .await
     .map_err(|_| "Model response timed out; try a shorter conversation")?
 }
+/// One response of the model server as bytes: its content type and body (files of a media
+/// job), at most 512 MiB, read within 30 minutes; an error status becomes its message.
+async fn model_bytes(app: &AppHandle, id: &str, path: &str) -> Result<(String, Vec<u8>), String> {
+    const LIMIT: usize = 512 * 1024 * 1024;
+    let stream = model_connection(app, id, path, None, None).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(1800), async {
+        let mut bytes = Vec::new();
+        stream.take(LIMIT as u64 + 1).read_to_end(&mut bytes).await.map_err(|e| e.to_string())?;
+        if bytes.len() > LIMIT {
+            return Err("The file exceeds 512 MiB; the model keeps it, so save the job's files with a smaller request".into());
+        }
+        let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").ok_or("Invalid model HTTP response")?;
+        let header = std::str::from_utf8(&bytes[..split]).map_err(|e| e.to_string())?;
+        if let Some(error) = model_error(header.lines().next().unwrap_or(""), &bytes[split + 4..]) {
+            return Err(error);
+        }
+        let content_type = header.lines().find_map(|line| line.split_once(':').filter(|(name, _)| name.eq_ignore_ascii_case("content-type")).map(|(_, value)| value.trim().to_owned()))
+            .unwrap_or_else(|| "application/octet-stream".into());
+        Ok((content_type, bytes[split + 4..].to_vec()))
+    })
+    .await
+    .map_err(|_| "The file download timed out")?
+}
+/// A job id as the media runner issues them, or a refusal before any request.
+fn job_path(id: &str) -> Result<&str, String> {
+    let valid = id.len() == 28 && id.starts_with("job_") && id[4..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+    if valid { Ok(id) } else { Err("A job id reads job_ followed by 24 hex characters".into()) }
+}
+/// `yougori model generate`: one job for a media model (POST /v1/jobs), answered at once with
+/// its id and queue position; `model_job` follows it.
+#[tauri::command]
+pub async fn model_generate(environment_id: String, input: Value, app: AppHandle) -> Result<Value, String> {
+    if !input.is_object() {
+        return Err("input must be an object: prompt, negative_prompt, width, height, steps, guidance, seed, count, seconds, fps, voice, image, strength, format".into());
+    }
+    model_request(&app, &environment_id, "/v1/jobs", Some(json!({"input": input}))).await
+}
+/// `yougori model jobs`: a job's state (waiting up to `wait` seconds for it to end), its
+/// result, its cancellation, or the model's recent jobs.
+#[tauri::command]
+pub async fn model_job(environment_id: String, job_id: Option<String>, action: Option<String>, wait: Option<u64>, app: AppHandle) -> Result<Value, String> {
+    let action = action.unwrap_or_else(|| "status".into());
+    match (action.as_str(), job_id.as_deref()) {
+        ("list", _) => model_request(&app, &environment_id, "/v1/jobs?limit=100", None).await,
+        ("status", Some(id)) => model_request(&app, &environment_id, &format!("/v1/jobs/{}?wait={}", job_path(id)?, wait.unwrap_or(0).min(600)), None).await,
+        ("result", Some(id)) => model_request(&app, &environment_id, &format!("/v1/jobs/{}/result", job_path(id)?), None).await,
+        ("cancel", Some(id)) => model_request(&app, &environment_id, &format!("/v1/jobs/{}/cancel", job_path(id)?), Some(json!({}))).await,
+        ("status" | "result" | "cancel", None) => Err(format!("The {action} action needs a job id")),
+        _ => Err(format!("Unknown job action {action}; use status, result, cancel or list")),
+    }
+}
+/// Downloads a finished job's files into `folder` (made when missing), each under the name the
+/// model server gave it; returns the paths with the job's output and usage.
+#[tauri::command]
+pub async fn model_job_save(environment_id: String, job_id: String, folder: String, app: AppHandle) -> Result<Value, String> {
+    let job = model_request(&app, &environment_id, &format!("/v1/jobs/{}", job_path(&job_id)?), None).await?;
+    if job["status"] != "succeeded" {
+        return Err(format!("The job is {}{}", job["status"].as_str().unwrap_or("unknown"), job["error"].as_str().map(|e| format!(": {e}")).unwrap_or_default()));
+    }
+    let target = std::path::PathBuf::from(folder.trim());
+    if !target.is_absolute() { return Err("Give the folder to save into as a full path".into()); }
+    std::fs::create_dir_all(&target).map_err(|e| format!("Cannot create {}: {e}", target.display()))?;
+    let mut saved = Vec::new();
+    for file in job["output"]["files"].as_array().into_iter().flatten() {
+        let name = file["name"].as_str().unwrap_or_default();
+        if name.is_empty() || name.starts_with('.') || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) {
+            return Err("The model server named an output file in a way this computer cannot store".into());
+        }
+        let (content_type, bytes) = model_bytes(&app, &environment_id, &format!("/v1/files/{}", file["file"].as_str().unwrap_or_default())).await?;
+        // The server's names repeat between jobs (image-1.png, speech.wav): a file already in the
+        // folder is never replaced; the new one takes the next free name (image-1-2.png).
+        let (path, mut written) = (0..1000).find_map(|attempt| {
+            let candidate = if attempt == 0 { target.join(name) } else {
+                match name.rsplit_once('.') { Some((stem, extension)) => target.join(format!("{stem}-{}.{extension}", attempt + 1)), None => target.join(format!("{name}-{}", attempt + 1)) }
+            };
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+                Ok(file) => Some(Ok((candidate, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(format!("Cannot write {}: {error}", candidate.display()))),
+            }
+        }).ok_or_else(|| format!("{} already holds a thousand files named like {name}", target.display()))??;
+        std::io::Write::write_all(&mut written, &bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or(name).to_owned();
+        saved.push(json!({"path": path.to_string_lossy(), "name": name, "bytes": bytes.len(), "contentType": content_type}));
+        drop(written);
+    }
+    Ok(json!({"jobId": job_id, "folder": target.to_string_lossy(), "files": saved, "output": job["output"], "usage": job["usage"]}))
+}
+/// One output file of a media job, as the app's gallery shows it: base64 of at most 64 MiB.
+#[tauri::command]
+pub async fn model_file(environment_id: String, file_id: String, app: AppHandle) -> Result<Value, String> {
+    let (job, index) = file_id.split_once('.').ok_or("A file id reads JOB.N")?;
+    if job_path(job).is_err() || index.is_empty() || index.len() > 2 || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("A file id reads JOB.N".into());
+    }
+    let (content_type, bytes) = model_bytes(&app, &environment_id, &format!("/v1/files/{file_id}")).await?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err("This file is larger than 64 MiB; save the job's files to a folder instead".into());
+    }
+    Ok(json!({"fileId": file_id, "contentType": content_type, "bytes": bytes.len(), "base64": STANDARD.encode(&bytes)}))
+}
 /// Owner setting: requires the engine-held admin credential, not only the API key.
 pub(crate) async fn configure_publishing(app: &AppHandle, id: &str, open: bool) -> Result<Value,String> {
     // A stopped or still-starting model says so; only a server that answers but refuses the
     // setting predates publisher-hosted pages and needs a fresh run.
     let stream = model_connection(app, id, "/v1/yougori/publishing", Some(&json!({"downloads":open})), None).await?;
-    model_response(stream, true).await.map_err(|_|"Stop this model and run it again to enable publisher-hosted pages; its container and files are kept".to_owned())
+    model_response(stream, 1800).await.map_err(|_|"Stop this model and run it again to enable publisher-hosted pages; its container and files are kept".to_owned())
 }
 /// Only the local engine may lease optional free-provider recording: the server requires the
 /// engine-held admin credential in addition to the API key.
@@ -1327,6 +1514,7 @@ pub(crate) fn chat_body(
     max_tokens: Option<u32>,
     temperature: Option<f64>,
     stream: bool,
+    response_format: Option<Value>,
 ) -> Result<Value, String> {
     if !messages.is_array() {
         return Err("Messages must be an array".into());
@@ -1334,6 +1522,13 @@ pub(crate) fn chat_body(
     let mut body = json!({"messages":messages,"max_tokens":max_tokens.unwrap_or(256),"stream":stream});
     if let Some(temperature) = temperature {
         body["temperature"] = json!(temperature);
+    }
+    // The JSON format the reply must take (OpenAI's response_format: json_object, or json_schema
+    // with a schema); the model server checks its shape and the backend enforces it.
+    match response_format {
+        Some(Value::Null) | None => {}
+        Some(format) if format.is_object() => body["response_format"] = format,
+        Some(_) => return Err("response_format must be an object such as {\"type\": \"json_object\"}".into()),
     }
     if stream {
         // Yougori extension: the server drops the oldest turns instead of failing when the context is full.
@@ -1347,9 +1542,10 @@ pub async fn model_chat(
     messages: Value,
     max_tokens: Option<u32>,
     temperature: Option<f64>,
+    response_format: Option<Value>,
     app: AppHandle,
 ) -> Result<Value, String> {
-    let body = chat_body(messages, max_tokens, temperature, false)?;
+    let body = chat_body(messages, max_tokens, temperature, false, response_format)?;
     model_request(&app, &environment_id, "/v1/chat/completions", Some(body)).await
 }
 type CancelMap = std::collections::HashMap<String, std::sync::Arc<tokio::sync::Notify>>;
@@ -1371,6 +1567,7 @@ pub async fn model_chat_stream(
     messages: Value,
     max_tokens: Option<u32>,
     temperature: Option<f64>,
+    response_format: Option<Value>,
     on_event: tauri::ipc::Channel<Value>,
     app: AppHandle,
 ) -> Result<Value, String> {
@@ -1382,7 +1579,7 @@ pub async fn model_chat_stream(
         .or_default()
         .clone();
     let _guard = CancelGuard(request_id);
-    let body = chat_body(messages, max_tokens, temperature, true)?;
+    let body = chat_body(messages, max_tokens, temperature, true, response_format)?;
     stream_reply(&app, &environment_id, &cancel, &body, |text| {
         on_event
             .send(json!({"delta":text}))
@@ -1436,9 +1633,10 @@ pub async fn model_chat_begin(
     messages: Value,
     max_tokens: Option<u32>,
     temperature: Option<f64>,
+    response_format: Option<Value>,
     app: AppHandle,
 ) -> Result<Value, String> {
-    let body = chat_body(messages, max_tokens, temperature, true)?;
+    let body = chat_body(messages, max_tokens, temperature, true, response_format)?;
     let request_id = format!("poll-{}", uuid::Uuid::new_v4().simple());
     {
         let mut replies = POLLED_REPLIES.lock().map_err(|e| e.to_string())?;
@@ -1546,6 +1744,14 @@ mod tests {
         // Other bodies keep the server's message; a body without one gets the fixed line; 200 is no error.
         assert_eq!(model_error("HTTP/1.1 429 Busy", br#"{"error":{"message":"The GPU is busy"}}"#).as_deref(), Some("The GPU is busy"));
         assert_eq!(model_error("HTTP/1.1 500 Error", b"not json").as_deref(), Some("Model request failed"));
+        // A media job's acceptance (202) and an uploaded input (201) are successes too.
+        assert_eq!(model_error("HTTP/1.1 202 Accepted", b"{\"id\":\"job_x\"}"), None);
+        assert_eq!(model_error("HTTP/1.1 201 Created", b"{}"), None);
+        // A job status read waits as long as it asked to, and a little more.
+        assert_eq!(reply_seconds("/v1/jobs/job_x?wait=30", false), 45);
+        assert_eq!(reply_seconds("/v1/jobs/job_x?wait=9999", false), 615);
+        assert_eq!(reply_seconds("/v1/jobs", true), 1800);
+        assert_eq!(reply_seconds("/v1/usage", false), 15);
         assert!(model_error("HTTP/1.1 200 OK", b"{}").is_none());
     }
     #[test]
@@ -1631,10 +1837,21 @@ mod tests {
         let mut resources = ModelResources::default();
         import_storage(&mut resources, &check).unwrap();
         assert_eq!(resources.storage_gb, Some(40.0));
-        for (runner, wants) in [(None, Some(false)), (Some("auto"), Some(false)), (Some("vllm"), Some(true)), (Some("transformers"), None)] {
+        for (runner, wants) in [(None, Some(false)), (Some("auto"), Some(false)), (Some("vllm"), Some(true)), (Some("transformers"), None), (Some("hf:acme/pipeline@0123456789abcdef0123456789abcdef01234567"), Some(false))] {
             let resources = ModelResources { runner: runner.map(str::to_owned), ..Default::default() };
             assert_eq!(resources.wants_vllm().ok(), wants, "{runner:?}");
         }
+        // A media model's adapter and pipeline runner: a repository at a commit, with or without hf:.
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(media_reference(&format!("hf:Pika-Labs/Pika-H3-Flex@{commit}"), "adapter").unwrap(), format!("hf:Pika-Labs/Pika-H3-Flex@{commit}"));
+        assert_eq!(media_reference(&format!(" Pika-Labs/Pika-H3-Flex@{commit} "), "adapter").unwrap(), format!("hf:Pika-Labs/Pika-H3-Flex@{commit}"));
+        for bad in ["hf:Pika-Labs/Pika-H3-Flex", "hf:Pika-Labs/Pika-H3-Flex@main", &format!("hf:Pika-Labs@{commit}"), &format!("hf:a/b/c@{commit}"), &format!("hf:-a/b@{commit}"), &format!("hf:a/b@{}", commit.to_uppercase())] {
+            assert!(media_reference(bad, "adapter").unwrap_err().contains("hf:OWNER/REPO@COMMIT"), "{bad}");
+        }
+        let extras = ModelResources { adapter: Some(format!("acme/lora@{commit}")), runner: Some(format!("hf:acme/pipeline@{commit}")), ..Default::default() }.media_extras().unwrap();
+        assert_eq!(extras, (Some(format!("hf:acme/lora@{commit}")), Some(format!("hf:acme/pipeline@{commit}"))));
+        assert_eq!(ModelResources { runner: Some("vllm".into()), ..Default::default() }.media_extras().unwrap(), (None, None));
+        assert!(ModelResources { adapter: Some("acme/lora".into()), ..Default::default() }.media_extras().is_err());
         let mut larger = ModelResources { storage_gb: Some(64.0), ..Default::default() };
         import_storage(&mut larger, &check).unwrap();
         assert_eq!(larger.storage_gb, Some(64.0));
@@ -1665,7 +1882,13 @@ mod tests {
             assert_eq!(environment.get("YOUGORI_BACKENDS_SOURCE").is_some(), carried, "{format:?}");
             // The megakernel host travels only with vLLM runners, whose launch can be a megakernel.
             assert_eq!(environment.get("YOUGORI_MEGAKERNEL_SOURCE").is_some(), format == Some("vllm"), "{format:?}");
+            assert!(environment.get("YOUGORI_MEDIA_SOURCE").is_none(), "{format:?}");
         }
+        // The media backends travel only with media runners (Diffusers pipelines, text-to-speech).
+        let mut environment = json!({"YOUGORI_MODEL_FORMAT": "media"});
+        carry_server(&mut environment);
+        assert!(environment.get("YOUGORI_BACKENDS_SOURCE").is_none() && environment.get("YOUGORI_MEGAKERNEL_SOURCE").is_none());
+        assert_eq!(environment["YOUGORI_MEDIA_SOURCE"], json!(media_source()));
         let compressed = STANDARD.decode(backends_source()).unwrap();
         let mut decoded = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
@@ -1684,6 +1907,19 @@ mod tests {
         // the backends under 32 KiB so the Windows test harness can inject them as well.
         assert!(megakernel_source().len() < 32 * 1024, "{}", megakernel_source().len());
         assert!(backends_source().len() < 32 * 1024, "{}", backends_source().len());
+    }
+    #[test] fn the_media_backends_digest_is_pinned_by_the_model_server_and_fits_a_variable() {
+        use sha2::{Digest,Sha256};
+        let source=include_str!("model_runner/media_backends.py").replace("\r\n","\n");
+        let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
+        assert!(include_str!("model_server.py").contains(&format!("MEDIA_SHA256 = \"{digest}\"")));
+        let compressed = STANDARD.decode(media_source()).unwrap();
+        let mut decoded = Vec::new();
+        std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
+        assert_eq!(decoded, source.into_bytes());
+        assert!(media_source().len() < 32 * 1024, "{}", media_source().len());
+        assert_eq!(job_path("job_0123456789abcdef01234567"), Ok("job_0123456789abcdef01234567"));
+        assert!(job_path("job_0123456789ABCDEF01234567").is_err() && job_path("job_12").is_err() && job_path("../x").is_err());
     }
     #[test]
     fn active_tunnels_are_offered_for_admission_but_failed_saved_links_are_not() {
@@ -1722,6 +1958,13 @@ mod tests {
         }
         assert!(!is_server_command(&command.replacen("exec python3 -u -c ", "exec python4 -u -c ", 1)));
         assert!(!is_server_command(&command.replace("yougori-model", "another-model")));
+        // The model server a helper bundle serves is still the server command, so later starts
+        // refresh it; anything else under the helpers folder is not.
+        assert!(is_server_command("exec python3 -u /yougori-helpers/model-server/model_server.py"));
+        assert!(is_server_command("exec python3 -u /yougori-helpers/shadow/model-server/model_server.py"));
+        assert!(!is_server_command("exec python3 -u /yougori-helpers/other/tool.py"));
+        assert!(!is_server_command("exec python3 -u /yougori-helpers/model-server/model_server.py; rm -rf /"));
+        assert!(!is_server_command("exec python3 -u /tmp/model-server/model_server.py"));
         // The size reduction must preserve the exact script, including Unicode
         // and the fixes applied to reused model environments.
         assert!(command.contains("YOUGORI_MODEL_SERVER_SOURCE"));
@@ -1804,13 +2047,26 @@ mod tests {
     fn only_streaming_requests_ask_the_server_to_trim_context() {
         let messages = json!([{"role":"user","content":"hi"}]);
         assert_eq!(
-            chat_body(messages.clone(), None, None, false).unwrap(),
+            chat_body(messages.clone(), None, None, false, None).unwrap(),
             json!({"messages":messages,"max_tokens":256,"stream":false})
         );
         assert_eq!(
-            chat_body(messages.clone(), Some(1024), Some(0.2), true).unwrap(),
+            chat_body(messages.clone(), Some(1024), Some(0.2), true, None).unwrap(),
             json!({"messages":messages,"max_tokens":1024,"temperature":0.2,"stream":true,"truncate":true})
         );
-        assert!(chat_body(json!({}), None, None, true).is_err());
+        assert!(chat_body(json!({}), None, None, true, None).is_err());
+    }
+    /// A JSON reply format travels to the model server as OpenAI's response_format, untouched;
+    /// a null is no format at all, and anything but an object is refused before any request.
+    #[test]
+    fn a_json_reply_format_is_forwarded_as_given() {
+        let messages = json!([{"role":"user","content":"hi"}]);
+        let schema = json!({"type":"json_schema","json_schema":{"name":"reply","schema":{"type":"object","properties":{"ok":{"type":"boolean"}}},"strict":true}});
+        assert_eq!(
+            chat_body(messages.clone(), None, None, false, Some(schema.clone())).unwrap()["response_format"],
+            schema
+        );
+        assert!(chat_body(messages.clone(), None, None, false, Some(Value::Null)).unwrap().get("response_format").is_none());
+        assert!(chat_body(messages, None, None, false, Some(json!("json"))).is_err());
     }
 }

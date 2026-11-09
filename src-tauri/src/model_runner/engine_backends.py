@@ -681,7 +681,11 @@ def adapter_attach(name, repo, revision):
     if not isinstance(base, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", base):
         raise BackendRefusal("The adapter names no Hugging Face base model.")
     base_weights = {file: value[0] for file, value in hub_weights(base, config.get("revision") or None)[0].items()}
-    if not base_weights or base_weights != served_weights():
+    # The served weights are the shard set the load verified (a repository with several sets,
+    # such as a consolidated file beside indexed shards, serves only the indexed one): each must
+    # be the base repository's own file, byte for byte; files the load did not serve are not compared.
+    served = served_weights()
+    if not served or any(base_weights.get(file) != digest for file, digest in served.items()):
         raise BackendRefusal("The adapter was made for " + base + ", whose weights are not the served model's.")
     vllm_adapter("load", name, os.path.dirname(model_path))
     ADAPTERS[name] = {"name": name, "repo": repo, "revision": revision, "rank": rank, "modules": sorted(modules),
@@ -787,6 +791,7 @@ def backend_capabilities():
             "kvReuse": {"supported": True, "reset": not native, "detail": ("llama.cpp's " + str(slots) + " slots share one " + str(pool) + "-token KV pool; each reuses its cached prompt prefix while it stays there" if pool else "llama.cpp reuses the cached prompt prefix of each slot")
                         + ". The cache serves every caller of this model and is dropped when the model unloads" + ("; the native service's cache is not reset from here." if native else "; the owner can erase every slot (model_adapters --action kv-reset).")},
             "concurrency": concurrency,
+            "structuredOutput": structured_output(),
         }
     if MEGAKERNEL is not None:
         return {
@@ -794,6 +799,7 @@ def backend_capabilities():
             "adapters": {"supported": False, "configurable": False, "detail": "This megakernel launch serves no LoRA adapters; vLLM launches do."},
             "kvReuse": {"supported": False, "reset": False, "detail": "The megakernel runner reads each request's whole conversation and keeps no KV between requests; a reset changes nothing."},
             "concurrency": concurrency,
+            "structuredOutput": structured_output(),
             "megakernel": MEGAKERNEL,
         }
     limits = adapter_limits()
@@ -807,6 +813,7 @@ def backend_capabilities():
         "kvReuse": {"supported": True, "reset": not VLLM_KOLIBRI, "detail": "vLLM reuses the KV of a shared prompt prefix, keyed by adapter. The cache serves every caller of this model and is dropped when the model parks or unloads"
                     + ("; this Kolibri launch has no reset route." if VLLM_KOLIBRI else "; the owner can reset it (model_adapters --action kv-reset).")},
         "concurrency": concurrency,
+        "structuredOutput": structured_output(),
     }
 
 

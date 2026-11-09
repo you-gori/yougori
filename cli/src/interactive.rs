@@ -177,7 +177,10 @@ impl Launch {
             if !std::path::Path::new(&self.workspace).is_dir() {
                 return Err("The workspace folder does not exist.".into());
             }
-            value["workspace"] = json!(self.workspace);
+            // The engine runs in its own folder: a relative path is made whole here, from where
+            // this menu was opened, as `sandbox launch --workspace` does.
+            let whole = std::path::absolute(&self.workspace).map_err(|error| format!("The workspace folder cannot be resolved: {error}"))?;
+            value["workspace"] = json!(whole.to_string_lossy());
         }
         if !self.routes.is_empty() {
             let file = std::fs::File::open(&self.routes)

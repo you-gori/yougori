@@ -566,9 +566,9 @@ yougori template plan hub/PUBLISHER/NAME[@VERSION] | ./FOLDER | INSTANCE [--inpu
 yougori template configure INSTANCE [--input ID=VALUE]... [--inputs FILE] [--secrets -] [--yes]
                                     [--dry-run]
 yougori template start INSTANCE | stop INSTANCE
-yougori template update INSTANCE [--yes] [--input ID=VALUE]... [--secrets -]
+yougori template update INSTANCE [--yes] [--input ID=VALUE]... [--binding ID=PATH]... [--allow-pc-access] [--secrets -]
 yougori template logs INSTANCE [--follow] [--cursor N]
-yougori template join
+yougori template join [--yes]
 yougori template export INSTANCE [FOLDER]
 ```
 

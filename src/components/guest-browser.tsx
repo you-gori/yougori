@@ -24,7 +24,8 @@ export function GuestBrowser({ environmentId, active }: { environmentId: string;
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
     finally { setBusy(false) }
   })()
-  const published = (services?.publications ?? []).flatMap(publication => publication.urls.map(url => ({ url, label: `Port ${publication.port} · ${publication.kind === "cloudflare" ? "Cloudflare Tunnel" : publication.kind === "public" ? "Public access" : "Local network"}`, local: publication.kind === "local" })))
+  // A loopback publication is on this computer only; "local" is the local network.
+  const published = (services?.publications ?? []).flatMap(publication => publication.urls.map(url => ({ url, label: `Port ${publication.port} · ${publication.kind === "cloudflare" ? "Cloudflare Tunnel" : publication.kind === "public" ? "Public access" : publication.kind === "loopback" ? "This computer" : "Local network"}`, local: publication.kind === "local" || publication.kind === "loopback" })))
 
   return <div data-guest-browser className="flex h-full min-h-0 flex-col gap-3 overflow-auto p-3 text-sm">
     <div className="flex flex-wrap items-center gap-2">

@@ -417,6 +417,11 @@ pub fn info(value: &Value) -> String {
     if value["review"].is_object() {
         lines.push(String::new());
         lines.extend(any_review(&value["review"]));
+        // A format 2 template's review also has what only format 2 has: its resources (a grid,
+        // a model, a volume), capabilities and what happens to its data.
+        if value["format"] == 2 {
+            lines.extend(super::plan::format_2_lines(&value["review"]));
+        }
     }
     for notice in items(&value["notices"]) {
         lines.push(format!("Note: {}", text(notice)));

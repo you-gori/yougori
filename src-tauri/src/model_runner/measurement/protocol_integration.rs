@@ -139,7 +139,7 @@ async fn http(port: u16, path: &str, body: Option<Value>, admin: bool) -> Result
         let headers=format!("{} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer fixture-model-token\r\n{private}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",if body.is_some(){"POST"}else{"GET"},bytes.len());
         socket.write_all(headers.as_bytes()).await.map_err(|_|"fixture write".to_owned())?;
         socket.write_all(&bytes).await.map_err(|_|"fixture write".to_owned())?;
-        super::super::model_response(Box::new(socket),body.is_some()).await
+        super::super::model_response(Box::new(socket),super::super::reply_seconds(path,body.is_some())).await
     }).await.map_err(|_|"fixture HTTP deadline".to_owned())?
 }
 fn limits(seal: bool, page_size: usize) -> Limits {

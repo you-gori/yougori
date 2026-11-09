@@ -25,11 +25,18 @@ function decodeText(base64: string) {
   const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
   if (bytes.includes(0)) throw new Error("This looks like a binary file, so it is not opened in the editor.")
   // Only UTF-8 text is edited: anything else would be silently changed on the way in and out.
+  // A byte order mark stays in the text, so the file's own bytes are what is compared and saved.
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)
   } catch {
     throw new Error("This file is not UTF-8 text, so it is not opened in the editor; converting it would change its characters.")
   }
+}
+
+/** A textarea hands back LF line endings: a file that used CRLF throughout keeps CRLF when saved
+ *  (a file that mixes them is saved as edited). */
+export function withOriginalLineEndings(text: string, original?: string) {
+  return original !== undefined && original.includes("\r\n") && !/(^|[^\r])\n/.test(original) ? text.replace(/\r?\n/g, "\r\n") : text
 }
 
 /** SHA-256 of a text's UTF-8 bytes, as `sha256sum` prints it, to notice a file changed since it was read. */
@@ -77,7 +84,7 @@ export const guestFilesApi = {
   /** Replaces `path` with `contents`. With `original` (the text as it was read), the file is
    *  left alone if it changed meanwhile, so an edit made elsewhere is not overwritten. */
   async write(environmentId: string, path: string, contents: string, original?: string) {
-    const encoded = encodeText(contents)
+    const encoded = encodeText(withOriginalLineEndings(contents, original))
     const file = quote(path)
     // Guest commands are length limited, so a long file is appended in pieces into a staging
     // file of this save's own (created exclusively, never a pre-existing file), decoded beside

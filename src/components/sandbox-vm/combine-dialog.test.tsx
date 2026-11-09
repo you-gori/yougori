@@ -42,7 +42,7 @@ it("shows the summed allocation and combines only after every conflict is decide
   await user.click(screen.getByRole("button", { name: "Combine" }))
   expect(api.combineStart).toHaveBeenCalledWith("vm-a", "vm-b", "d".repeat(64), expect.objectContaining({
     keep: { "publish:web": "second" }, adopt: ["g1"], layout: "separate",
-  }))
+  }), expect.stringMatching(/^desktop-[A-Za-z0-9-]+$/))
   expect(await screen.findByText(/Combined into vm-c/)).toBeVisible()
   api.combineFinish.mockResolvedValue({ operation: "combine-1", state: "finished" })
   await user.click(screen.getByRole("button", { name: "Keep the originals' workspaces" }))
@@ -80,4 +80,48 @@ it("never offers to combine sandboxes the preview found incompatible", async () 
   render(<CombineSandboxesDialog first="vm-a" second="vm-b" open onOpenChange={() => {}} />)
   expect(await screen.findByRole("alert")).toHaveTextContent("ID differs")
   expect(screen.getByRole("button", { name: "Combine" })).toBeDisabled()
+})
+
+it("sends a new request key for each click, and the same one only when that click is retried", async () => {
+  const user = userEvent.setup()
+  api.combinePreview.mockResolvedValue(preview(0))
+  api.combineStart
+    .mockRejectedValueOnce(new Error("Yougori could not reach the VM sandbox service. Try again."))
+    .mockResolvedValueOnce({ operation: "combine-1", state: "rolled-back", failure: "an original did not stop: busy" })
+    .mockResolvedValueOnce({ operation: "combine-2", state: "healthy", combined: "vm-c" })
+  render(<CombineSandboxesDialog first="vm-a" second="vm-b" open onOpenChange={() => {}} />)
+  await user.click(await screen.findByRole("button", { name: "Combine" }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("could not reach")
+  // The answer never came back: pressing Combine again retries that click with its own key.
+  await user.click(screen.getByRole("button", { name: "Combine" }))
+  expect(await screen.findByText(/each sandbox it stopped was launched again/)).toBeVisible()
+  const keys = api.combineStart.mock.calls.map(call => call[4] as string)
+  expect(keys[1]).toBe(keys[0])
+  // The failure says why, and the person can go back to the preview and try again.
+  expect(screen.getByText("an original did not stop: busy")).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Back to the preview" }))
+  await user.click(await screen.findByRole("button", { name: "Combine" }))
+  expect(await screen.findByText(/Combined into vm-c/)).toBeVisible()
+  const fresh = api.combineStart.mock.calls[2]![4] as string
+  expect(fresh).toMatch(/^desktop-/)
+  expect(fresh).not.toBe(keys[0])
+})
+
+it("shows why a combine failed and offers the preview again instead of a dead end", async () => {
+  const user = userEvent.setup()
+  api.combinePreview.mockResolvedValue(preview(0))
+  api.combineStart.mockResolvedValue({
+    operation: "combine-1", state: "failed", failure: "The combined workspace's listing inside the VM was cut off",
+    relaunched: [{ from: "vm-a", sandbox: "vm-a2" }, { from: "vm-b", error: "no room" }],
+  })
+  render(<CombineSandboxesDialog first="vm-a" second="vm-b" open onOpenChange={() => {}} />)
+  await user.click(await screen.findByRole("button", { name: "Combine" }))
+  expect(await screen.findByText("The combine failed.")).toBeVisible()
+  expect(screen.getByText(/listing inside the VM was cut off/)).toBeVisible()
+  expect(screen.getByText(/launched again as vm-a2/)).toBeVisible()
+  expect(screen.getByText(/not launched again \(no room\)/)).toBeVisible()
+  expect(screen.queryByText(/This combine is failed/)).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Back to the preview" }))
+  expect(await screen.findByText(/3 vCPU, 2.00 GiB/)).toBeVisible()
+  expect(api.combinePreview).toHaveBeenCalledTimes(2)
 })

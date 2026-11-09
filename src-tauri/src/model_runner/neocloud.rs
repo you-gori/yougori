@@ -1,13 +1,19 @@
 use super::*;
 
-pub(crate) async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn run_neocloud_model(model: String, environment_id: String, port: Option<u16>, adapter: Option<String>, runner: Option<String>, app: AppHandle) -> Result<Value, String> {
     let model = normalize_model(&model)?;
     if crate::model_registry::is_registry(&model){return Err("Published registry models run on this computer's GPU. To use your cloud GPU, connect its publisher-hosted API in Model library.".into())}
     let compatibility=super::preflight::preflight(&model).await?;
     if compatibility["supported"]!=true{return Err(compatibility["reason"].as_str().unwrap_or("Unsupported model runner").into())}
     // The pinned llama.cpp build needs a newer C library than RunPod's PyTorch images provide.
     if compatibility["runner"]=="yougori-llama-cpp"{return Err("GGUF models run on this computer's GPU for now. Choose a safetensors repository for a Neocloud pod.".into())}
-    launch(model, compatibility, environment_id, port, app).await
+    // A media model's LoRA adapter and pipeline runner, each a repository at a commit; a chat
+    // model on a pod takes neither here (vLLM adapters attach with `model adapters`).
+    let extras = ModelResources { adapter, runner: runner.filter(|r| r != "auto"), ..Default::default() }.media_extras()?;
+    if (extras.0.is_some() || extras.1.is_some()) && compatibility["format"] != "media" {
+        return Err("--adapter and a pipeline runner (--runner hf:OWNER/REPO@COMMIT) apply to media models (Diffusers pipelines). Nothing was started.".into());
+    }
+    launch(model, compatibility, environment_id, port, extras, app).await
 }
 
 /// The model families that have agent tool calling on a rented GPU: those with a tool-call parser
@@ -64,7 +70,7 @@ fn agent_runner(model: &str, compatibility: &mut Value) -> Result<(), String> {
 /// `run_neocloud_model`, it only connects to a pod that is already running.
 pub(crate) async fn run_neocloud_agent_model(model: String, environment_id: String, app: AppHandle) -> Result<Value, String> {
     let compatibility = agent_preflight(&model).await?;
-    launch(normalize_model(&model)?, compatibility, environment_id, None, app).await
+    launch(normalize_model(&model)?, compatibility, environment_id, None, (None, None), app).await
 }
 
 /// The model key a pod's server runs with. A pod that has one keeps it, and one that cannot be read
@@ -79,7 +85,7 @@ fn pod_model_key(options: &yougori_cli::workload::Options, read: impl FnOnce() -
     read().map_err(|error| format!("Yougori could not read this pod's model key ({error}). Nothing was changed; try again in a moment."))
 }
 
-async fn launch(model: String, compatibility: Value, environment_id: String, port: Option<u16>, app: AppHandle) -> Result<Value, String> {
+async fn launch(model: String, compatibility: Value, environment_id: String, port: Option<u16>, extras: (Option<String>, Option<String>), app: AppHandle) -> Result<Value, String> {
     if port == Some(0) { return Err("Invalid API port".into()); }
     let store = app.state::<PlatformStore>();
     let runtime = app.state::<RuntimeManager>();
@@ -104,8 +110,16 @@ async fn launch(model: String, compatibility: Value, environment_id: String, por
     options.environment.remove("YOUGORI_MODEL_TOKEN");
     options.secret_environment.insert("YOUGORI_MODEL_TOKEN".into(),reference);
     options.environment.insert("YOUGORI_MODEL_REVISION".into(),compatibility["revision"].as_str().unwrap_or("").into());
-    let format=if compatibility["runner"]=="yougori-vllm" {"vllm"} else {"safetensors"};
+    // A media model (a Diffusers pipeline or text-to-speech) runs the media runner on the pod.
+    let media = compatibility["format"] == "media";
+    let format=if media {"media"} else if compatibility["runner"]=="yougori-vllm" {"vllm"} else {"safetensors"};
     options.environment.insert("YOUGORI_MODEL_FORMAT".into(),format.into());
+    if media {
+        options.environment.insert("YOUGORI_MEDIA_TASK".into(), compatibility["task"].as_str().unwrap_or("").into());
+        for (name, value) in [("YOUGORI_MEDIA_ADAPTER", &extras.0), ("YOUGORI_MEDIA_RUNNER", &extras.1)] {
+            match value { Some(reference) => { options.environment.insert(name.into(), reference.clone()); } None => { options.environment.remove(name); } }
+        }
+    }
     super::ensure_admin_token(&mut options)?;
     let admin = crate::projects::secrets::variable(&options, super::ADMIN_TOKEN)?;
     // The rented pod keeps its configuration on the provider's disk. Public repositories download
@@ -120,6 +134,18 @@ async fn launch(model: String, compatibility: Value, environment_id: String, por
     runtime.save_workload_options(id, &options)?;
     let mut run = json!({"model":model,"token":token,"adminToken":admin,"hfToken":hf_token,"revision":compatibility["revision"],"format":format,"source":super::server_source()});
     if let Some(parser) = compatibility["toolParser"].as_str() { run["toolParser"] = json!(parser); }
+    // The media loaders travel beside the server bundle (they are not in it: the pod agent's
+    // 256 KiB file limit), with the task and the adapter and pipeline runner the model starts with.
+    if media {
+        run["media"] = json!(super::media_source());
+        run["task"] = compatibility["task"].clone();
+        if let Some(reference) = &extras.0 { run["adapter"] = json!(reference); }
+        if let Some(reference) = &extras.1 { run["pipeline"] = json!(reference); }
+        // How long finished jobs' files stay (`model optimize --keep-outputs`), for every start.
+        if let Some(hours) = options.environment.get("YOUGORI_MEDIA_KEEP_HOURS").and_then(|hours| hours.parse::<u64>().ok()).filter(|hours| (1..=720).contains(hours)) {
+            run["keepHours"] = json!(hours);
+        }
+    }
     // The launch mode and megakernel runner saved for this model (optimizer::save_launch) go
     // with the start: the pod keeps them in its configuration and exports them to its server.
     for (name, key) in [("YOUGORI_MODEL_LAUNCH", "launch"), ("YOUGORI_MODEL_RUNNER", "runner")] {
@@ -139,6 +165,7 @@ async fn launch(model: String, compatibility: Value, environment_id: String, por
     ]
     .into_iter()
     .chain(super::loads_backends(Some(format)).then(|| ("YOUGORI_BACKENDS_SOURCE".to_owned(), String::new())))
+    .chain(super::carries_media(Some(format)).then(|| ("YOUGORI_MEDIA_SOURCE".to_owned(), String::new())))
     .chain(options.environment.get(super::helpers::OPT_IN_OPTION).map(|value| (super::helpers::OPT_IN_OPTION.to_owned(), value.clone())))
     .collect();
     let delivery = match super::helpers::remote_delivery(&selection_environment) {
@@ -177,7 +204,10 @@ pub(crate) async fn start_model(environment_id: String, app: AppHandle) -> Resul
     let options = app.state::<RuntimeManager>().workload_options(env.runtime_id.as_deref().unwrap_or(&env.id))?;
     let model = options.environment.get("YOUGORI_MODEL").ok_or("This is not a model environment")?;
     if env.kind == EnvironmentKind::Cloud {
-        return run_neocloud_model(model.clone(), environment_id, None, app).await;
+        // A restart keeps the LoRA adapter and pipeline runner the media model was started with.
+        let adapter = options.environment.get("YOUGORI_MEDIA_ADAPTER").cloned();
+        let runner = options.environment.get("YOUGORI_MEDIA_RUNNER").cloned();
+        return run_neocloud_model(model.clone(), environment_id, None, adapter, runner, app).await;
     }
     if env.status != EnvironmentStatus::Running {
         crate::commands::set_environment_status(environment_id.clone(), EnvironmentStatus::Running, app.state(), app.state()).await?;

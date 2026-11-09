@@ -45,9 +45,9 @@ class Instance:
         return response.status, response.getheader("Set-Cookie", ""), data
 
     def close(self):
-        self.service.stopped.set()
         self.server.shutdown()
         self.server.server_close()
+        self.service.close()
 
 
 class Managed(unittest.TestCase):
@@ -106,9 +106,13 @@ class Managed(unittest.TestCase):
                 with self.assertRaises(ValueError, msg=authority):
                     create(root, authority, scheme)
             service = create(root, "acme.yougori.com", "https")
-            self.assertEqual(service.account_mode, "public")
-            self.assertEqual(service.hosted["authority"], "acme.yougori.com")
-            self.assertTrue(service.hosted["proxied"])
+            try:
+                self.assertEqual(service.account_mode, "public")
+                self.assertEqual(service.hosted["authority"], "acme.yougori.com")
+                self.assertTrue(service.hosted["proxied"])
+            finally:
+                # Its media watcher holds the database while it reads; the folder goes next.
+                service.close()
 
 
 if __name__ == "__main__":

@@ -42,9 +42,15 @@ class Model(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get("Authorization") != "Bearer " + UPSTREAM_KEY:
             return self.reply(401, {"error": UPSTREAM_KEY})
+        if self.path == "/health":
+            # What a connector reads of a model server's launch (slots, enforced JSON output).
+            return self.reply(200, getattr(self.server, "health", {}))
         if self.server.fail_catalog:
             return self.reply(503, {"error": UPSTREAM_KEY})
-        self.reply(200, {"data": [{"id": name} for name in self.server.models]})
+        # A catalog entry says whether its server enforces a JSON reply format when the fixture
+        # was told (server.json = {name: bool}); other entries say nothing, like a plain server.
+        enforced = getattr(self.server, "json", {})
+        self.reply(200, {"data": [{"id": name, **({"capabilities": {"structuredOutput": enforced[name]}} if name in enforced else {})} for name in self.server.models]})
 
     def do_POST(self):
         if self.headers.get("Authorization") != "Bearer " + UPSTREAM_KEY:
@@ -255,7 +261,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual({m["id"] for m in catalog["models"]}, {"test/one", "test/two"})
         for model in catalog["models"]:
-            self.assertEqual(set(model), {"id", "upstream", "state", "protocols", "price", "cache", "censorship", "censorship_source"})
+            self.assertEqual(set(model), {"id", "upstream", "state", "protocols", "features", "price", "cache", "censorship", "censorship_source", "task", "media_price"})
         self.assertNotIn(UPSTREAM_KEY, json.dumps(catalog))
         self.assertNotIn(self.model_url, json.dumps(catalog))
         for path in ("/api/keys", "/api/usage", "/api/admin/overview", "/v1/models"):

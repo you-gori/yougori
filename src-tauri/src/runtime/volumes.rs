@@ -63,6 +63,40 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_missing_drive_affects_only_its_vm_at_startup_and_keeps_its_restore_intent() -> Result<(), String> {
+        // PROVES startup goes on when a VM's storage drive is gone (unplugged, a changed letter, a
+        // locked BitLocker drive): that VM is marked as needing attention and its restore intent
+        // stays recorded for the next start, while the VMs on drives that are there are settled.
+        let local = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let manager = RuntimeManager::new(Path::new(env!("CARGO_MANIFEST_DIR")), local.path())?;
+        let directory = assign(&manager, second.path(), "vm-gone")?;
+        let vm = |id: &str| {
+            let mut environment = recovery_environment(id);
+            environment.runtime_id = None;
+            environment.kind = crate::models::EnvironmentKind::FullVm;
+            environment.provider = Some(crate::models::RuntimeProviderKind::Qemu);
+            environment
+        };
+        fs::rename(&directory, directory.with_extension("offline")).map_err(|e| e.to_string())?;
+        let mut state = crate::models::PlatformState::empty().map_err(|e| e.to_string())?;
+        state.environments = vec![vm("vm-gone"), vm("vm-here"), vm("vm-no-intent")];
+        state.pending_vm_restores = vec!["vm-gone".into(), "vm-here".into()];
+        let skipped = crate::finish_unfinished_vm_restores(&manager, &mut state);
+        assert_eq!(state.pending_vm_restores, vec!["vm-gone".to_owned()], "only the unavailable VM keeps its intent");
+        crate::mark_unfinished_vm_restores(&mut state, skipped);
+        let gone = state.environments.iter().find(|environment| environment.id == "vm-gone").unwrap();
+        assert_eq!(gone.status, crate::models::EnvironmentStatus::Error);
+        let said = gone.last_error.clone().unwrap_or_default();
+        assert!(said.contains("Storage drive is unavailable") && said.contains("unfinished disk restore is kept"), "{said}");
+        for here in state.environments.iter().filter(|environment| environment.id != "vm-gone") {
+            assert_eq!(here.status, crate::models::EnvironmentStatus::Stopped, "{}", here.id);
+            assert!(here.last_error.is_none(), "{}", here.id);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn recovery_uses_saved_provider_on_the_original_drive_and_never_falls_back() -> Result<(), String> {
         let local = tempfile::tempdir().unwrap();

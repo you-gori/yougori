@@ -624,6 +624,7 @@ pub(crate) async fn release_while_waiting(app: &AppHandle, worker: &Worker) -> R
             None,
             None,
             None,
+            None,
             app.clone(),
         )
         .await?;
@@ -728,6 +729,7 @@ async fn wait_ready(
                         None,
                         None,
                         Some(0),
+                        None,
                         None,
                         None,
                         None,

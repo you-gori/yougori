@@ -89,6 +89,15 @@ function Start-InstalledEngine($cliPath) {
 Write-Host 'Finding the latest Yougori release...'
 try { $manifest = Invoke-RestMethod -Uri $manifestUrl -UseBasicParsing } catch { Fail "cannot read $manifestUrl ($($_.Exception.Message))" }
 $asset = $manifest.assets.$platform
+$version = $manifest.version
+# A platform this release has no package for keeps an earlier release: "unchanged" names its
+# version and "kept" carries its download. Installed CLIs read only "assets", so they offer no
+# update to it.
+if (-not $asset -and $manifest.kept.$platform -and [string]$manifest.unchanged.$platform -match '^\d+\.\d+\.\d+$') {
+  $asset = $manifest.kept.$platform
+  $version = [string]$manifest.unchanged.$platform
+  Write-Host "Yougori $($manifest.version) has no new package for $platform; installing Yougori $version, the release it keeps."
+}
 if (-not $asset -or -not $asset.url -or -not $asset.sha256) { Fail "release $($manifest.version) has no download for $platform yet." }
 $asset.url = Assert-HttpsUri $asset.url 'The release download'
 if ($asset.sha256 -isnot [string] -or $asset.sha256 -notmatch '^[0-9a-fA-F]{64}$') { Fail 'the release SHA-256 is invalid.' }
@@ -96,7 +105,7 @@ if ($asset.sha256 -isnot [string] -or $asset.sha256 -notmatch '^[0-9a-fA-F]{64}$
 $folder = Join-Path $env:TEMP ("yougori-install-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $folder | Out-Null
 $download = Join-Path $folder ([IO.Path]::GetFileName(([Uri]$asset.url).AbsolutePath))
-Write-Host "Downloading Yougori $($manifest.version)$(if ($engineOnly) { ' (engine only)' })..."
+Write-Host "Downloading Yougori $version$(if ($engineOnly) { ' (engine only)' })..."
 # The server saves aggregate command/app totals, without visitor identifiers.
 $downloadUri = [UriBuilder]$asset.url
 $downloadUri.Fragment = ''
@@ -157,5 +166,5 @@ try {
 if ($env:YOUGORI_AUTOSTART -eq '1') { & $cli.Source app autostart on | Out-Null }
 if ($startEngine -eq '1') { Start-InstalledEngine $cli.Source } else { Write-Host 'Engine startup skipped. Start it with: yougori app start' }
 Write-Host ''
-Write-Host "Yougori $($manifest.version) is installed$(if ($engineOnly) { ' (engine only, no desktop app)' }). Try: yougori status" -ForegroundColor Green
+Write-Host "Yougori $version is installed$(if ($engineOnly) { ' (engine only, no desktop app)' }). Try: yougori status" -ForegroundColor Green
 if ($env:YOUGORI_AUTOSTART -ne '1') { Write-Host 'Keep the engine ready at login with: yougori app autostart on' }

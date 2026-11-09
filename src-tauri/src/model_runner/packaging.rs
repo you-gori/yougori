@@ -1,8 +1,8 @@
 //! Regression coverage for the actual embedded sources and canonical workload limits.
 //! Local creation/refresh use Options::validate before provisioning or persistence.
 use super::{
-    backends_source, clef_source, optimizer, publisher_source, registry_source, server_payload,
-    server_source,
+    backends_source, clef_source, media_source, optimizer, publisher_source, registry_source,
+    server_payload, server_source,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::io::Read;
@@ -43,6 +43,13 @@ fn helpers() -> Vec<(&'static str, String, Vec<u8>)> {
             "YOUGORI_BACKENDS_SOURCE",
             backends_source(),
             include_str!("engine_backends.py")
+                .replace("\r\n", "\n")
+                .into_bytes(),
+        ),
+        (
+            "YOUGORI_MEDIA_SOURCE",
+            media_source(),
+            include_str!("media_backends.py")
                 .replace("\r\n", "\n")
                 .into_bytes(),
         ),

@@ -252,8 +252,12 @@ pub async fn open_terminal_stream(environment: &str, session: &str, offset: u64)
 }
 
 async fn exchange_at(endpoint: &str, request: &Request) -> Result<Response, String> {
-    let mut stream = connect_at(endpoint).await?;
     let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+    // A request too large to send is refused before anything leaves: its outcome is known.
+    if bytes.len() > wire::MAX_REQUEST {
+        return Err(format!("This request is {} MiB, more than the {} MiB Yougori takes; nothing was sent.", bytes.len().div_ceil(1024 * 1024), wire::MAX_REQUEST / (1024 * 1024)));
+    }
+    let mut stream = connect_at(endpoint).await?;
     let reply=tokio::time::timeout(request_timeout(request), async {
         wire::write_frame(&mut stream,&bytes,wire::MAX_REQUEST).await?;
         wire::read_frame(&mut stream,wire::MAX_RESPONSE).await
@@ -302,6 +306,11 @@ fn request_timeout(request: &Request) -> Duration {
         "jobs_get" => {
             Duration::from_millis(20_000 + request.params["wait"].as_u64().unwrap_or(0).min(30_000))
         }
+        // A media job's status read long-polls for `wait` seconds (`model jobs --wait`, and
+        // `model generate` following its job); the engine itself waits a quarter minute more.
+        "model_job" => Duration::from_secs(20 + request.params["wait"].as_u64().unwrap_or(0).min(600)),
+        // Saving a job's files copies them out of the model server: minutes for a long video.
+        "model_job_save" | "model_file" => guest_timeout,
         // The company hub answers within seconds, or says to check back; a slow hub still
         // gets its full connection and answer time.
         "access_status" | "access_use" | "access_check" | "access_reveal" => Duration::from_secs(45),
@@ -1196,6 +1205,10 @@ mod macos_path_tests {
             request_timeout(&request("jobs_get", json!({"wait":u64::MAX}))),
             Duration::from_secs(50)
         );
+        // A media job's status read waits as long as it asked, within the engine's own limit.
+        assert_eq!(request_timeout(&request("model_job", json!({"wait":30}))), Duration::from_secs(50));
+        assert_eq!(request_timeout(&request("model_job", json!({"action":"list"}))), Duration::from_secs(20));
+        assert!(request_timeout(&request("model_job_save", json!({}))) >= Duration::from_secs(180));
         assert!(
             request_timeout(&request("terminal_action", json!({"action":"write"})))
                 > Duration::from_secs(25)

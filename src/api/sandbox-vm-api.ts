@@ -359,9 +359,12 @@ export const sandboxVmApi = {
   /** One VM holding both running sandboxes: what it would be (nothing changes). */
   combinePreview: (sandbox: string, other: string, decisions: CombineDecisions) =>
     ask<CombinePreview>("combine", { operation: "preview", sandbox, with: other, decisions }),
-  /** Applies exactly the previewed combination (its digest) with the owner's decisions. */
-  combineStart: (sandbox: string, other: string, preview: string, decisions: CombineDecisions) =>
-    ask<CombineOperation>("combine", { operation: "start", sandbox, with: other, preview, decisions, requestKey: `desktop-${preview.slice(0, 32)}` }),
+  /** Applies exactly the previewed combination (its digest) with the owner's decisions. `requestKey`
+   *  is made once per click (`newCombineRequestKey`) and sent again only when that same click is
+   *  retried, so a retry joins the combine the engine may still be running instead of starting a
+   *  second one; a failed or rolled-back combine never answers a new click. */
+  combineStart: (sandbox: string, other: string, preview: string, decisions: CombineDecisions, requestKey: string) =>
+    ask<CombineOperation>("combine", { operation: "start", sandbox, with: other, preview, decisions, requestKey }),
   /** Keeps or removes the originals' workspaces after a healthy combine. */
   combineFinish: (id: string, originals: "keep" | "remove") => ask<CombineOperation>("combine", { operation: "finish", id, originals }),
   /** The desktop's folder picker; null when the person closed it. */
@@ -370,6 +373,13 @@ export const sandboxVmApi = {
     const selected = await open({ directory: true, multiple: false, title: "Choose the folder the sandbox works on" })
     return typeof selected === "string" ? selected : null
   },
+}
+
+/** One request key per Combine click: `desktop-` and a random part, in the letters, digits and
+ *  dashes the engine accepts (at most 128). */
+export function newCombineRequestKey() {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return `desktop-${random}`.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 128)
 }
 
 export interface CombineDecisions {
@@ -398,6 +408,9 @@ export interface CombineOperation {
   state: "copying" | "stopping-originals" | "launching" | "checking" | "healthy" | "rolled-back" | "failed" | "interrupted" | "finished"
   combined?: string
   failure?: string
+  /** After a failed combine, what became of each original: launched again (a new sandbox), left
+   *  running (`kept`), or not launched again (`error`). */
+  relaunched?: { from: string; sandbox?: string; kept?: string; error?: string }[]
 }
 
 export type HostAccessMode = "read" | "read_write"

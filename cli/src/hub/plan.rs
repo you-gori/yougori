@@ -378,6 +378,40 @@ fn stop_created(error: String) -> String {
 /// folder agreements it listed in the plan, and nothing stands for a sign-in copy, which `--yes`
 /// never makes (the sign-in source question has no default of this computer).
 fn agree_to(planned: &Value, options: &Options, interactive: bool) -> Result<Vec<String>, String> {
+    agreements(planned, options.allow_pc_access, interactive, Stage::Run)
+}
+
+/// Which command a plan's agreements are asked for, for the words its refusal and its cancel use:
+/// a first run creates, a change (`template configure`, `template update`) changes, a join joins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stage {
+    Run,
+    Change,
+    Join,
+}
+
+impl Stage {
+    fn nothing(self) -> &'static str {
+        match self {
+            Stage::Run => "Nothing was created.",
+            Stage::Change => "Nothing was changed.",
+            Stage::Join => "Nothing was joined.",
+        }
+    }
+
+    /// A question left with Ctrl+C or Back, said as what it left undone.
+    fn stopped(self, error: String) -> String {
+        if error == ui::CANCELLED || error == ui::BACK { crate::wire::cancelled(&format!("Cancelled. {}", self.nothing())) } else { error }
+    }
+}
+
+/// The agreements of a reviewed plan (its `consents`, each `{id, message}`), for `setup_apply`:
+/// the one flow every door that applies a plan uses, so a change or a join gives the engine the
+/// same agreements a first run does. Each is asked on its own at a terminal and defaults to no; a
+/// script agrees to the folder agreements (`write_folder:`) only with `allow_pc_access`, and never
+/// to a sign-in copy. A writable folder left unagreed is refused here, before anything is applied,
+/// because the engine would otherwise stop part way through waiting for that agreement.
+pub(super) fn agreements(planned: &Value, allow_pc_access: bool, interactive: bool, stage: Stage) -> Result<Vec<String>, String> {
     let asked = planned["consents"].as_array().cloned().unwrap_or_default();
     let mut agreed = Vec::new();
     for consent in &asked {
@@ -385,29 +419,40 @@ fn agree_to(planned: &Value, options: &Options, interactive: bool) -> Result<Vec
         let folder = id.starts_with("write_folder:");
         if !interactive {
             // A scripted run agrees only to what its flags say, and says what it left out.
-            if folder && options.allow_pc_access {
+            if folder && allow_pc_access {
                 agreed.push(id.to_owned());
             }
             continue;
         }
         let choices = [ui::Choice::new("Allow it", "only what this line says"), ui::Choice::new("Not this", "the setup goes on without it")];
-        if ui::select(&views::clean(message), &[], &choices, 1).map_err(stop_created)? == 0 {
+        if ui::select(&views::clean(message), &[], &choices, 1).map_err(|error| stage.stopped(error))? == 0 {
             agreed.push(id.to_owned());
         }
     }
     // A writable folder the person did not agree to would stop the setup part way through; say so
-    // now, before anything is created, rather than after the sandbox exists.
+    // now, before anything is applied, rather than after the sandbox exists or has changed.
+    // A mounted folder left unagreed is mounted read only (the engine says `mode: mount`), so it
+    // stops nothing; only a synced one (or one from an engine that does not say) is refused.
     let missing: Vec<&str> = asked
         .iter()
+        .filter(|consent| consent["mode"] != "mount")
         .filter_map(|consent| consent["id"].as_str())
         .filter(|id| id.starts_with("write_folder:") && !agreed.iter().any(|said| said == id))
         .collect();
     if !missing.is_empty() {
         let names: Vec<&str> = missing.iter().filter_map(|id| id.rsplit('/').next()).collect();
+        let what = if stage == Stage::Change { "This change" } else { "This setup" };
+        let next = match (stage, interactive) {
+            (Stage::Run, true) => "Run it again and allow it, or use a template that only reads the folder.",
+            (Stage::Change, true) => "Review the change again and allow it.",
+            (Stage::Join, true) => "Join again and allow it.",
+            (Stage::Run | Stage::Change, false) => "Pass --allow-pc-access as well as --yes if that is intended.",
+            (Stage::Join, false) => "Join at a terminal to agree to it.",
+        };
         return Err(format!(
-            "This setup keeps a folder you chose in step with its sandbox, which means changing files in it, and that was not agreed to ({}). {} Nothing was created.",
+            "{what} keeps a folder you chose in step with its sandbox, which means changing files in it, and that was not agreed to ({}). {next} {}",
             names.join(", "),
-            if interactive { "Run it again and allow it, or use a template that only reads the folder." } else { "Pass --allow-pc-access as well as --yes if that is intended." }
+            stage.nothing()
         ));
     }
     Ok(agreed)
@@ -749,18 +794,35 @@ fn secret_refs(collected: &Collected) -> Vec<Value> {
     collected.secrets.keys().map(|field| json!({"field": field, "secretRef": format!("apply:{field}")})).collect()
 }
 
-/// The name a new setup takes when none was asked for: the template's own, or, when a setup of
-/// that name is already on this computer, the first free of NAME-2, NAME-3 and so on, so a second
-/// copy of the same template never answers to the first one's name. The engine keeps every copy
-/// apart by its own id and stores each one's sandboxes and data under that id; this only keeps the
-/// names people type apart. Asked of the engine's setup list; when it cannot answer, the template's
-/// name is used as before.
-async fn free_name(base: &str) -> String {
-    let taken: std::collections::BTreeSet<String> = setups::list_setups().await.iter().filter_map(|setup| setup["name"].as_str()).map(str::to_owned).collect();
-    if !taken.contains(base) {
+/// The name a new setup takes when none was asked for: the template's own, or, when that name is
+/// already taken on this computer, the first free of NAME-2, NAME-3 and so on, so a second copy of
+/// the same template never answers to the first one's name. Taken means the name (or id) of one of
+/// the engine's setups, or the name of a format 1 instance (`instances`: records and folders, as
+/// [`super::instances::Instances::names`] lists them), compared without case: the lifecycle
+/// commands look a name up among the engine's setups first, so a setup that took a format 1
+/// instance's name would hide that instance from every one of them, `template rm` included. The
+/// engine keeps every copy apart by its own id and stores each one's sandboxes and data under that
+/// id; this only keeps the names people type apart. When the engine cannot answer, only the
+/// format 1 names are known.
+async fn free_name(base: &str, instances: &std::collections::BTreeSet<String>) -> String {
+    let mut taken = setups::setup_names().await;
+    taken.extend(instances.iter().map(|name| name.to_ascii_lowercase()));
+    if !taken.contains(&base.to_ascii_lowercase()) {
         return base.to_owned();
     }
     super::instances::available(base, &[], &taken, &std::collections::BTreeSet::new())
+}
+
+/// Why a new setup can't take the name asked for with `--name`: a format 1 instance already has
+/// it (`instances`, as [`free_name`] reads them), and a setup of the same name would hide it from
+/// every lifecycle command, which look among the engine's setups first. `None` when it is free of
+/// format 1 instances; whether another setup holds it is the engine's to say when it plans.
+fn instance_name_taken(name: &str, instances: &std::collections::BTreeSet<String>) -> Option<String> {
+    instances.contains(&name.to_ascii_lowercase()).then(|| {
+        format!(
+            "{name} is already the name of a template instance on this computer (see yougori template list). A setup of the same name would hide it from yougori template status, update and rm. Choose another name with --name. Nothing was created."
+        )
+    })
 }
 
 /// A run stopped by the engine's refusal: its sentence, and that nothing was created.
@@ -826,17 +888,18 @@ fn page_of(planned: &Value, fetched: &Fetched) -> Result<Vec<String>, String> {
 
 /// `yougori run` / `template run` of a format 2 package: the engine plans it with the answers,
 /// the person reviews and confirms, the engine applies it with the secrets, and the run follows
-/// the operation to its end. v1 packages never come here.
-pub async fn run_v2(fetched: Fetched, options: &Options, interactive: bool) -> Result<Value, String> {
+/// the operation to its end. v1 packages never come here. `instances` are the names the format 1
+/// instances on this computer hold (`Instances::names`), which a new setup never takes.
+pub async fn run_v2(fetched: Fetched, options: &Options, interactive: bool, instances: &std::collections::BTreeSet<String>) -> Result<Value, String> {
     // A script's secrets come from stdin and nowhere else; read before anything is asked of the
     // engine, so a run that cannot read them creates nothing.
     let secrets = if !interactive && options.secrets_stdin && !options.dry_run { Some(run::read_stdin("the secrets on stdin").await.map_err(stop_created)?) } else { None };
-    run_v2_given(fetched, options, interactive, secrets.as_deref().map(Vec::as_slice)).await
+    run_v2_given(fetched, options, interactive, secrets.as_deref().map(Vec::as_slice), instances).await
 }
 
 /// [`run_v2`] with a script's secrets already read (`secrets` is what `--secrets -` found on
 /// stdin, when it was asked for). Interactive runs ask for theirs.
-async fn run_v2_given(fetched: Fetched, options: &Options, interactive: bool, secrets: Option<&[u8]>) -> Result<Value, String> {
+async fn run_v2_given(fetched: Fetched, options: &Options, interactive: bool, secrets: Option<&[u8]>, instances: &std::collections::BTreeSet<String>) -> Result<Value, String> {
     let checked = check_files(&fetched.files).map_err(|problems| format!("{}\nNothing was created.", problems_text("This template", &problems)))?;
     let label = match &fetched.origin {
         Wanted::Hub(reference) => format!("{} {}", reference.item(), fetched.version),
@@ -853,10 +916,13 @@ async fn run_v2_given(fetched: Fetched, options: &Options, interactive: bool, se
     }).await.map_err(stop_created)?;
     let domains = if checked.questions.iter().any(|q| q.kind == QuestionKind::Domain) { run::saved_domains().await } else { Vec::new() };
     // The name asked for, or a free one: a second copy of a template someone already runs here
-    // is NAME-2, never a second NAME.
+    // is NAME-2, never a second NAME, and a format 1 instance's name is never taken.
     let name = match &options.name {
-        Some(name) => name.clone(),
-        None => free_name(checked.template.name()).await,
+        Some(name) => match instance_name_taken(name, instances) {
+            Some(refused) => return Err(refused),
+            None => name.clone(),
+        },
+        None => free_name(checked.template.name(), instances).await,
     };
     let unverified = matches!(&fetched.origin, Wanted::Hub(_)) && !fetched.verified;
     let mut collected = if interactive {
@@ -1018,6 +1084,25 @@ pub fn check_view(value: &Value) -> String {
     let review = &value["review"];
     let mut lines = vec![format!("{} {} passed every check · format 2 · {} files · {} bytes", views::clean(value["name"].as_str().unwrap_or_default()), views::clean(value["version"].as_str().unwrap_or_default()), value["files"], value["bytes"]), String::new()];
     lines.extend(views::review(review));
+    lines.extend(format_2_lines(review));
+    if let Some(components) = value["components"].as_object() {
+        let pins: Vec<String> = components.iter().map(|(name, pin)| format!("{name} = {}@{} ({})", views::clean(pin["item"].as_str().unwrap_or_default()), views::clean(pin["version"].as_str().unwrap_or_default()), views::clean(&pin["digest"].as_str().unwrap_or_default().chars().take(12).collect::<String>()))).collect();
+        lines.push(format!("{:<11}{}", "Components", pins.join(", ")));
+    }
+    if let Some(next) = value["next"].as_str() {
+        lines.push(String::new());
+        lines.push(format!("Next: {}", views::clean(next)));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The parts of a format 2 review only format 2 has, as text, after the format 1 parts
+/// [`views::review`] shows: its resources, capabilities, data retention and aliases. `template
+/// check` and `template info` both show them.
+pub fn format_2_lines(review: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
     let resources: Vec<String> = review["resources"].as_array().into_iter().flatten().map(|r| {
         let mut said = format!("{} ({})", views::clean(r["id"].as_str().unwrap_or_default()), views::clean(r["kind"].as_str().unwrap_or_default()));
         if let Some(capability) = r["summary"]["capability"].as_str() {
@@ -1047,17 +1132,7 @@ pub fn check_view(value: &Value) -> String {
     if !aliases.is_empty() {
         lines.push(format!("{:<11}{}", "Aliases", views::clean(&aliases.join(", "))));
     }
-    if let Some(components) = value["components"].as_object() {
-        let pins: Vec<String> = components.iter().map(|(name, pin)| format!("{name} = {}@{} ({})", views::clean(pin["item"].as_str().unwrap_or_default()), views::clean(pin["version"].as_str().unwrap_or_default()), views::clean(&pin["digest"].as_str().unwrap_or_default().chars().take(12).collect::<String>()))).collect();
-        lines.push(format!("{:<11}{}", "Components", pins.join(", ")));
-    }
-    if let Some(next) = value["next"].as_str() {
-        lines.push(String::new());
-        lines.push(format!("Next: {}", views::clean(next)));
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
+    lines
 }
 
 /// A package folder for `template check`, in either format: what an upload would carry, as
@@ -1275,7 +1350,7 @@ mod tests {
         };
         let run = |fetched: Fetched| {
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-                .block_on(run_v2(fetched, &options, false))
+                .block_on(run_v2(fetched, &options, false, &Default::default()))
                 .unwrap_or_else(|said| panic!("the dry run was refused: {said}"))
         };
 
@@ -1333,7 +1408,7 @@ mod tests {
             inputs_file: None, secrets_stdin: false, yes: false, allow_pc_access: false, dry_run: true, storage_drive: None,
         };
         let shown = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2(fetched, &options, false))
+            .block_on(run_v2(fetched, &options, false, &Default::default()))
             .unwrap_or_else(|said| panic!("the dry run was refused: {said}"));
         assert_eq!(shown["dryRun"], true);
         assert_eq!(shown["instance"], "shop");
@@ -1388,7 +1463,7 @@ mod tests {
             inputs_file: None, secrets_stdin: false, yes: true, allow_pc_access: false, dry_run: false, storage_drive: None,
         };
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2(fetched, &options, false))
+            .block_on(run_v2(fetched, &options, false, &Default::default()))
             .unwrap_or_else(|said| panic!("the run was refused: {said}"));
         assert!(crate::client::fake_engine::called("setup_apply"), "the real run should apply");
     }
@@ -1404,7 +1479,7 @@ mod tests {
             detail: None, notices: Vec::new(),
         };
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2(fetched, &options, false))
+            .block_on(run_v2(fetched, &options, false, &Default::default()))
     }
 
     #[cfg(test)]
@@ -1579,7 +1654,7 @@ mod tests {
         };
         let secrets = br#"{"api_key": "recipient-key-0123"}"#;
         let shown = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &options, false, Some(secrets)))
+            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &options, false, Some(secrets), &Default::default()))
             .unwrap_or_else(|said| panic!("the run was refused: {said}"));
         assert_eq!(shown["instance"], "notes");
         assert_eq!(shown["setupId"], "setup-9");
@@ -1597,7 +1672,7 @@ mod tests {
         let planned_before = plans();
         let leaked = Options { inputs: vec![("api_key".into(), "recipient-key-0123".into())], secrets_stdin: false, ..options.clone() };
         let said = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &leaked, false, None))
+            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &leaked, false, None, &Default::default()))
             .unwrap_err();
         assert!(said.contains("api_key is a secret"), "{said}");
         assert_eq!(plans(), planned_before, "nothing was planned with a secret in the open");
@@ -1624,7 +1699,7 @@ mod tests {
             inputs_file: None, secrets_stdin: false, yes: false, allow_pc_access: false, dry_run: true, storage_drive: None,
         };
         let shown = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &options, false, None))
+            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &options, false, None, &Default::default()))
             .unwrap_or_else(|said| panic!("the dry run was refused: {said}"));
         assert_eq!(shown["instance"], "notes-3");
         assert!(!crate::client::fake_engine::called("setup_apply"));
@@ -1640,7 +1715,7 @@ mod tests {
             other => panic!("a named dry run asked the engine to {other}; it need not list setups"),
         });
         let shown = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &named, false, None))
+            .block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &named, false, None, &Default::default()))
             .unwrap();
         assert_eq!(shown["instance"], "notes");
     }
@@ -1671,5 +1746,83 @@ mod tests {
         let resource = format::CheckedBinding { id: "grid".into(), kind: resource::BindingKind::Resource, resource: Some(resource::Kind::Grid), profile: None, question: "Which?".into(), hint: String::new(), required: true, when: None, read_only: true, mode: None };
         assert!(check_binding(&resource, "setup-1").unwrap_err().contains("SETUP/RESOURCE"));
         assert_eq!(check_binding(&resource, "setup-1/company").unwrap(), "setup-1/company");
+    }
+
+    #[test]
+    fn every_door_that_applies_a_plan_agrees_the_same_way_and_says_what_it_left_undone() {
+        // The one agreement flow for a first run, a change and a join. A script agrees to the folder
+        // agreements only when told to, never to a sign-in copy, and a writable folder left
+        // unagreed is refused before anything is applied, in that command's own words.
+        let planned = json!({"consents": [
+            {"id": "write_folder:app/data", "message": "Let app change files in the folder you chose for data."},
+            {"id": "copy_signin:app/codex", "message": "Copy your Codex sign-in from this computer into app."},
+        ]});
+        for stage in [Stage::Run, Stage::Change, Stage::Join] {
+            assert_eq!(agreements(&json!({}), false, false, stage).unwrap(), Vec::<String>::new(), "a plan that asks for nothing");
+        }
+        assert_eq!(agreements(&planned, true, false, Stage::Run).unwrap(), ["write_folder:app/data"]);
+        assert_eq!(agreements(&planned, true, false, Stage::Change).unwrap(), ["write_folder:app/data"]);
+        // A first run says exactly what it said before the flow was shared.
+        assert_eq!(
+            agreements(&planned, false, false, Stage::Run).unwrap_err(),
+            "This setup keeps a folder you chose in step with its sandbox, which means changing files in it, and that was not agreed to (data). Pass --allow-pc-access as well as --yes if that is intended. Nothing was created."
+        );
+        let options = Options { allow_pc_access: false, ..scripted_options() };
+        assert_eq!(agree_to(&planned, &options, false).unwrap_err(), agreements(&planned, false, false, Stage::Run).unwrap_err());
+        let change = agreements(&planned, false, false, Stage::Change).unwrap_err();
+        assert!(change.starts_with("This change keeps a folder") && change.contains("--allow-pc-access") && change.ends_with("Nothing was changed."), "{change}");
+        let join = agreements(&planned, false, false, Stage::Join).unwrap_err();
+        assert!(join.contains("Join at a terminal") && join.ends_with("Nothing was joined."), "{join}");
+        assert_eq!(Stage::Change.stopped(ui::CANCELLED.to_owned()), crate::wire::cancelled("Cancelled. Nothing was changed."));
+        assert_eq!(Stage::Run.stopped("The engine is busy.".to_owned()), "The engine is busy.");
+        // A mounted folder left unagreed is mounted read only, which stops nothing: only a synced
+        // one is refused. One whose engine does not say which it is counts as synced.
+        let mounted = json!({"consents": [{"id": "write_folder:app/notes", "mode": "mount", "message": "Let app change files in the folder you chose for notes."}]});
+        assert_eq!(agreements(&mounted, false, false, Stage::Change).unwrap(), Vec::<String>::new());
+        assert_eq!(agreements(&mounted, true, false, Stage::Change).unwrap(), ["write_folder:app/notes"]);
+        let synced = json!({"consents": [{"id": "write_folder:app/code", "mode": "sync", "message": "Let app change files in the folder you chose for code."}]});
+        assert!(agreements(&synced, false, false, Stage::Run).is_err());
+    }
+
+    #[test]
+    fn a_new_setup_never_takes_the_name_of_a_format_1_instance() {
+        // PROVES the two kinds of names are kept apart. The lifecycle commands look a name up among
+        // the engine's setups first, so a setup that took a format 1 instance's name hid that
+        // instance from all of them, `template rm` included. A name chosen for a run skips both
+        // kinds, without regard to case; a name asked for that an instance holds is refused.
+        let instances: std::collections::BTreeSet<String> = ["notes".to_owned()].into();
+        let _engine = crate::client::fake_engine::install(|method, _| match method {
+            "setup_list" => Ok(json!({"setups": [{"setupId": "setup-1", "name": "Notes-2"}]})),
+            other => panic!("unexpected engine call {other}"),
+        });
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert_eq!(rt.block_on(free_name("notes", &instances)), "notes-3", "notes is an instance's, notes-2 a setup's");
+        assert_eq!(rt.block_on(free_name("shop", &instances)), "shop");
+        assert_eq!(rt.block_on(free_name("setup-1", &Default::default())), "setup-1-2", "a setup's id is one of its names too");
+        assert!(instance_name_taken("Notes", &instances).unwrap().contains("Choose another name with --name. Nothing was created."));
+        assert_eq!(instance_name_taken("shop", &instances), None);
+
+        // Through a run: unnamed, it is planned as the free name; named as an instance is, refused
+        // before anything is planned.
+        let _engine = crate::client::fake_engine::install(|method, params| match method {
+            "app_status" => Ok(json!({"running": true})),
+            "get_platform_state" => Ok(json!({"host": {}})),
+            "setup_list" => Ok(json!({"setups": []})),
+            "setup_plan" => {
+                assert_eq!(params["name"], "notes-2", "the format 1 instance keeps its name");
+                Ok(json!({"setupId": "setup-3", "digest": "plan-digest", "baseRevision": 0, "review": {"pcAccess": []}, "plan": {"outputs": []}}))
+            }
+            other => panic!("unexpected engine call {other}"),
+        });
+        let options = Options {
+            source: "./notes".into(), name: None, inputs: vec![("owner_email".into(), "ops@example.org".into())], bindings: vec![],
+            inputs_file: None, secrets_stdin: false, yes: false, allow_pc_access: false, dry_run: true, storage_drive: None,
+        };
+        let shown = rt.block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &options, false, None, &instances)).unwrap_or_else(|said| panic!("{said}"));
+        assert_eq!(shown["instance"], "notes-2");
+        let named = Options { name: Some("notes".into()), ..options };
+        let refused = rt.block_on(run_v2_given(exported_recipe("C:/recipes/notes"), &named, false, None, &instances)).unwrap_err();
+        assert!(refused.contains("template instance") && refused.contains("--name") && refused.ends_with("Nothing was created."), "{refused}");
+        assert_eq!(crate::client::fake_engine::calls().iter().filter(|(method, _)| method == "setup_plan").count(), 1, "the refused run planned nothing");
     }
 }

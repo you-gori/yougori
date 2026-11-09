@@ -25,44 +25,10 @@ pub const HELP: &str = r#"Yougori CLI — local runtime control
   domain list|add|edit|remember|remove  Saved Cloudflare domains (token via --file -)
   drives list|attach|detach ENV    A VM's imported-files drives (--transfer-id ID)
   lan share ENV --address IP --permission view|control --yes | list | revoke ID | import --file invitation.json --yes
-  grid status | leave --yes | remove MEMBER_ID --yes
-  grid delete [--when later|now|forget] --yes | restore  Admin: pause for three days then delete (restore undoes it), or delete now
-                                   Closed Neo Grid membership; admin: remove a computer or the grid
-  grid exclude MEMBER_ID --yes | include MEMBER_ID  Admin: leave a computer out of the grid's work, or bring it back
-  grid add-plan --model hf.co/OWNER/MODEL --percent 50 [--schedule TEXT] [--idle-after MINUTES] [--quant Q]
-                                   Admin: run a model on a share of the company's computers
-  grid change-plan PLAN_ID [--percent P] [--schedule TEXT] [--idle-after MINUTES] [--model M] [--quant Q] | remove-plan PLAN_ID --yes
-  grid add-swarm --name NAME --lead MODEL --workers '["MODEL"]' --computers 5 [--strategy plan|mixture] [--tasks N] [--rounds N]
-                                   Admin: apps call swarm/NAME; one call runs a team on several computers
-  grid run-swarm NAME --prompt TEXT | remove-swarm NAME --yes
-  grid add-key --name APP | revoke-key KEY_ID --yes  Admin: API keys for company apps
-  grid ... --grid GRID_ID          With several Neo Grids on this computer, which one (yougori grid status lists them)
-  desks create COMPANY --ip THIS_PC_IP [--tunnel quick|DOMAIN] [--password -] --yes  Admin: host a Sandbox Grid; company computers host desks within the share you set
-  desks join --invite INVITE [--password -] [--name NAME]  Join this computer to a company's Sandbox Grid
-  desks status | leave --yes | remove MEMBER_ID --yes
-  desks delete [--when later|now|forget] --yes | restore  Admin: pause for three days then delete (restore undoes it), or delete now
-  desks adopt --file - --yes       A computer the hub created takes up its ready-made membership (JSON with the token on stdin)
-  desks share MEMBER_ID [--cpu 2] [--memory-gb 4] [--disk-gb 50] [--gpu true] [--idle-only true] | share MEMBER_ID --suggested true
-                                   Admin: what the grid may take from a computer, in use or not; or back to the automatic share
-  desks add-person --username USER [--name NAME] [--password -] [--cpu 2] [--memory-gb 4] [--disk-gb 20] [--gpu true] [--kind container|microvm|vm]
-                                   Admin: a person who signs in to open their desk; sized, their desk is ordered with them
-  desks person-password USER [--password -] --yes | remove-person USER --yes
-  desks add-desk --name NAME --person USER [--kind container|microvm|vm] [--cpu 2] [--memory-gb 4] [--disk-gb 20] [--gpu true] [--image IMG]
-                                   Admin: a desk (sandbox) for a person, built on a company computer with room in its share
-  desks assign-desk DESK_ID [--person USER] | retry-desk DESK_ID | remove-desk DESK_ID --yes
-  desks manage --file request.json --yes  Named administrators, workspace roles, images, computers and enterprise connections
-  desk refresh                     Refresh desk assignments and enterprise launch connections
-  desk login --invite INVITE --username USER [--password -] [--code 123456] | desk | desk logout --yes
-                                   Person: open your desks on this computer, see them, or forget the sign-in
-                                   With several Sandbox Grids on this computer, add --grid ID to any desks or desk
-                                   command (desks status lists each grid's ID); with one, it is chosen for you
   bounty host COMPANY --title TITLE --ip THIS_PC_IP [--source DIR] [--url URL [--health PATH]] [--instructions TEXT] [--authorization TEXT] [--password -] --yes
                                    Publish a Closed Bounty (--source, --url or both): computers join with the password and choose a model
   call bounty_dispatch --file request.json  Project import, private hosting, connect and managed workers (secrets via --file -)
   bounty hosted | remove-hunter MEMBER_ID --yes | unhost --yes  The hosted bounty and its findings; admin manages it
-  grids list|status|address|new|join|password|leave|delete|restore|backup|restore-backup|settings|manage  One way of asking all four grids the same questions
-  grids people|computers|share|models|desks|credentials|requests|research|connectors|work|log VERB [TARGET] [--grid NAME]
-                                   Twelve nouns over the four grids; yougori grids NOUN --help lists a noun's verbs
   project list | inspect PATH       Find and validate yougori.yaml projects
   agent inventory                  JSON compute targets, capabilities and readiness without secrets
   agent setup --yes                Install/update the Yougori skill for local agents

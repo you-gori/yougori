@@ -37,6 +37,10 @@ class Payments:
                 CREATE TABLE IF NOT EXISTS token_cache_prices (model TEXT PRIMARY KEY, cached_microusd INTEGER NOT NULL);
                 -- The cached-input rate in force when a request was reserved.
                 CREATE TABLE IF NOT EXISTS token_quote_cache (id TEXT PRIMARY KEY, cached_rate INTEGER NOT NULL);
+                -- A media model's prices per image and per second of video or audio, and the most a job may
+                -- be charged for at the rates in force when it was reserved.
+                CREATE TABLE IF NOT EXISTS media_prices (model TEXT PRIMARY KEY, image_microusd INTEGER NOT NULL, second_microusd INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS media_quotes (id TEXT PRIMARY KEY, image_rate INTEGER NOT NULL, second_rate INTEGER NOT NULL, image_ceiling INTEGER NOT NULL, ms_ceiling INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS billing_results (id TEXT PRIMARY KEY, state TEXT NOT NULL, charged INTEGER NOT NULL, detail TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS credit_holds (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
                     amount INTEGER NOT NULL, expires INTEGER NOT NULL);
@@ -48,10 +52,11 @@ class Payments:
             cached = {r['model']: r['cached_microusd'] for r in db.execute('SELECT * FROM token_cache_prices')}
             prices = {r['model']: {'input_microusd_per_million':r['input_microusd'],'output_microusd_per_million':r['output_microusd'],
                                    'cached_microusd_per_million':cached.get(r['model'],r['input_microusd'])} for r in db.execute('SELECT * FROM token_prices')}
+            media_prices = {r['model']: {'image_microusd': r['image_microusd'], 'second_microusd': r['second_microusd']} for r in db.execute('SELECT * FROM media_prices')}
             invoices = [dict(r) for r in db.execute("SELECT * FROM payment_invoices WHERE user_id=? ORDER BY created DESC,id DESC LIMIT 50", (user,))] if user else []
             balance = self.balance(db,user) if user else 0
         return {"networks": NETWORKS, "wallets": wallets, "settlement": "automatic", "balance_microusd": balance,
-                "prices": prices, "invoices": [self.public(r) for r in invoices],
+                "prices": prices, "media_prices": media_prices, "invoices": [self.public(r) for r in invoices],
                 "assets": {n:{k:v for k,v in a.items() if k != 'rpc'} for n,a in ASSETS.items()}}
 
     @staticmethod
@@ -182,6 +187,79 @@ class Payments:
                 db.execute('INSERT INTO token_cache_prices VALUES(?,?) ON CONFLICT(model) DO UPDATE SET cached_microusd=excluded.cached_microusd',(data['model'],cached_rate))
             self.store.audit(db,actor,'model.token_price',data['model'])
         return {'ok':True}
+
+    def media_price(self, actor, data):
+        """A media model's prices: dollars per image, and per second of video or audio made."""
+        image_rate = self.amount(data.get('image_usd'), 0, 1000)
+        second_rate = self.amount(data.get('second_usd'), 0, 1000)
+        with self.store.db() as db:
+            if not db.execute('SELECT 1 FROM models WHERE upstream=?', (data.get('model'),)).fetchone():
+                raise WalletInput('Choose an available model.')
+            db.execute('INSERT INTO media_prices VALUES(?,?,?) ON CONFLICT(model) DO UPDATE SET image_microusd=excluded.image_microusd,second_microusd=excluded.second_microusd',
+                       (data['model'], image_rate, second_rate))
+            self.store.audit(db, actor, 'model.media_price', data['model'])
+        return {'ok': True}
+
+    @staticmethod
+    def media_cost(images, output_ms, image_rate, second_rate):
+        """Microdollars for one job, rounded up: its images, and its seconds of video or audio."""
+        return images * image_rate + (output_ms * second_rate + 999) // 1000
+
+    def reserve_media(self, user, model, request, job, task):
+        """Holds the most a job may cost: its image count, or the seconds it asks for (a video or
+        sound job without a length: a minute; a speech job: a second per ten characters, five at
+        least). Only what the model server measured is billed when the job ends."""
+        with self.store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            price = db.execute('SELECT * FROM media_prices WHERE model=?', (model,)).fetchone()
+            if not price or not (price['image_microusd'] or price['second_microusd']):
+                return True
+            count = job.get('count') if type(job.get('count')) is int else 1
+            images = max(1, min(8, count)) if task in ('text-to-image', 'image-to-image') else 0
+            if task == 'text-to-speech':
+                text = job.get('text') if isinstance(job.get('text'), str) else job.get('prompt') if isinstance(job.get('prompt'), str) else ''
+                seconds = max(5, -(-len(text) // 10))
+            elif task in ('text-to-video', 'image-to-video', 'text-to-audio'):
+                asked = job.get('seconds')
+                seconds = max(1, min(61, int(asked) + 1)) if isinstance(asked, (int, float)) and not isinstance(asked, bool) and asked == asked else 60
+            else:
+                seconds = 0
+            cost = self.media_cost(images, seconds * 1000, price['image_microusd'], price['second_microusd'])
+            if self.balance(db, user) < cost:
+                return False
+            # A job may wait in a queue and run for half an hour: the hold lasts two hours.
+            db.execute('INSERT INTO credit_holds VALUES(?,?,?,?)', (request, user, cost, int(time.time()) + 7200))
+            db.execute('INSERT INTO media_quotes VALUES(?,?,?,?,?)', (request, price['image_microusd'], price['second_microusd'], images, seconds * 1000))
+        return True
+
+    def finish_media(self, request, completed, usage, record=None):
+        """Charges one job by what it made (`usage`: images and output_ms, as the model server
+        measured them), within its reservation; a job that did not complete is not charged."""
+        with self.store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            hold = db.execute('SELECT * FROM credit_holds WHERE id=?', (request,)).fetchone()
+            quote = db.execute('SELECT * FROM media_quotes WHERE id=?', (request,)).fetchone()
+            state, charge, detail = 'free', 0, ''
+            if hold and quote:
+                counts = [usage.get(k) for k in ('images', 'output_ms')] if isinstance(usage, dict) else [None, None]
+                valid = all(type(n) is int and n >= 0 for n in counts)
+                if not completed:
+                    state, detail = 'refunded', 'Job did not complete.'
+                elif hold['expires'] <= time.time():
+                    state, detail = 'unbilled', 'The reservation expired.'
+                elif not valid or counts[0] > quote['image_ceiling'] or counts[1] > quote['ms_ceiling']:
+                    state, detail = 'unbilled', 'Model server omitted valid usage or exceeded the reserved output.'
+                else:
+                    charge = self.media_cost(counts[0], counts[1], quote['image_rate'], quote['second_rate'])
+                    if charge > hold['amount']:
+                        raise ValueError('Measured price exceeded the reservation.')
+                    state = 'charged'
+                    db.execute('INSERT OR IGNORE INTO credit_ledger VALUES(?,?,?,?,?,NULL,NULL)', (request, hold['user_id'], -charge, 'inference', int(time.time())))
+            db.execute('INSERT OR IGNORE INTO billing_results VALUES(?,?,?,?)', (request, state, charge, detail))
+            db.execute('DELETE FROM credit_holds WHERE id=?', (request,))
+            db.execute('DELETE FROM media_quotes WHERE id=?', (request,))
+            if record:
+                record(db)
 
     @staticmethod
     def cost(input_tokens,output_tokens,input_rate,output_rate,cached_tokens=0,cached_rate=0):

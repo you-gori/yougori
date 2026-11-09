@@ -28,10 +28,11 @@ import harness_download
 import routing
 from device_auth import Devices
 from compute import Compute, ComputeInput
+from media import Media, MediaInput
 from sandbox_grid import Grid, GridInput
 from payments import Payments, WalletInput
 from store import AccountError, Store, digest
-from upstream import UpstreamError, address, discover
+from upstream import UpstreamError, address, discover_catalog
 
 HERE = Path(__file__).resolve().parent
 STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
@@ -59,11 +60,13 @@ class Service:
         self.grid = Grid(self.store)
         self.payments = Payments(self.store)
         self.control = self.compute.control
+        self.stopped = threading.Event()
+        # Media jobs (images, video, speech, sound) through the same keys, routing and billing.
+        self.media = Media(self)
         # Account admission is independent of publication/TLS (the public flag).
         self.account_mode = account_mode
         self.public = public
         self.inference_slots = threading.BoundedSemaphore(32)
-        self.stopped = threading.Event()
         self.refresh_lock = threading.Lock()
         self.rate_lock = threading.Lock()
         self.attempts = defaultdict(deque)
@@ -91,7 +94,7 @@ class Service:
             # Outbound contributors report their own catalog. Never resolve these as URLs.
             return
         try:
-            models = discover(item["url"], item["secret"])
+            models = discover_catalog(item["url"], item["secret"])
             state, detail = "ready", "Catalog connected. Inference capabilities depend on the selected model."
         except (UpstreamError, ValueError) as error:
             models, state, detail = None, "unavailable", str(error)
@@ -102,8 +105,13 @@ class Service:
                 return
             db.execute("UPDATE endpoints SET state=?,detail=?,checked=? WHERE id=?", (state, detail, int(time.time()), item["id"]))
             if models is not None:
-                db.execute("DELETE FROM models WHERE endpoint_id=?", (item["id"],))
-                db.executemany("INSERT INTO models VALUES(?,?,?)", [(item["id"] + ":" + name, item["id"], name) for name in models])
+                self.store.replace_models(db, item["id"], models)
+
+    def close(self):
+        """Stops the background work and waits for the media watcher, which holds the database
+        while it reads (a test removing its data folder, a hosted instance's shutdown)."""
+        self.stopped.set()
+        self.media.watcher.join(10)
 
     def refresh(self):
         if not self.refresh_lock.acquire(blocking=False):
@@ -135,7 +143,7 @@ class Service:
         if place not in ("local", "neocloud"):
             raise ValueError("Choose local or neocloud.")
         url = address(url)
-        models = discover(url, secret)
+        models = discover_catalog(url, secret)
         endpoint_id = secrets.token_hex(5)
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -145,7 +153,7 @@ class Service:
                 raise ValueError("This model server is already connected.")
             db.execute("INSERT INTO endpoints VALUES(?,?,?,?,?,'ready',?,?)", (endpoint_id, name.strip(), url, secret, place,
                        int(time.time()), "Catalog connected. Inference capabilities depend on the selected model."))
-            db.executemany("INSERT INTO models VALUES(?,?,?)", [(endpoint_id + ":" + model, endpoint_id, model) for model in models])
+            self.store.replace_models(db, endpoint_id, models)
             self.store.audit(db, actor, "endpoint.connected", endpoint_id)
         return {"id": endpoint_id, "models": len(models)}
 
@@ -199,9 +207,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass  # Access paths and provider responses can contain private information.
 
-    def begin(self, status, content_type="application/json", length=None, cookie=None, retry=False):
+    def begin(self, status, content_type="application/json", length=None, cookie=None, retry=False, extra=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        for name, value in (extra or {}).items():
+            self.send_header(name, value)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -246,12 +256,12 @@ class Handler(BaseHTTPRequestHandler):
     def cookie(self, token, seconds=43200):
         return f"solver_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={seconds}" + ("; Secure" if self.server.service.public else "")
 
-    def body(self):
+    def body(self, limit=2 * 1024 * 1024):
         if self.headers.get("Transfer-Encoding") or len(self.headers.get_all("Content-Length", [])) != 1:
             raise ValueError("Send JSON with one Content-Length header.")
         length = int(self.headers["Content-Length"])
-        if not 0 < length <= 2 * 1024 * 1024:
-            raise ValueError("Request bodies must be between 1 byte and 2 MiB.")
+        if not 0 < length <= limit:
+            raise ValueError("Request bodies must be between 1 byte and " + str(limit // (1024 * 1024)) + " MiB.")
         if self.headers.get_content_type() != "application/json":
             raise ValueError("Send Content-Type: application/json.")
         raw = self.rfile.read(length)
@@ -293,13 +303,18 @@ class Handler(BaseHTTPRequestHandler):
                 return google_protocol.complete(self, key, self.body(), *google_route)
             if method == "GET" and path == "/v1/models":
                 models = store.models(key["scopes"])
-                return self.json(200, {"object": "list", "data": [{"id": m["id"], "object": "model", "owned_by": "inference-solver"}
+                # Each entry names the kind of model, as Yougori's model server does, so a client
+                # reading the catalog knows which take jobs and which answer chat.
+                return self.json(200, {"object": "list", "data": [{"id": m["id"], "object": "model", "owned_by": "inference-solver", "task": m["task"],
+                                                                  "capabilities": {"structuredOutput": m["features"]["json"], **({"media": m["task"]} if "media" in m["features"] else {})}}
                                                                  for m in models if m["state"] == "ready"]})
+            if service.media.route(self, key, method, path, urlsplit(self.path).query):
+                return
             if method == "POST" and path == "/v1/chat/completions":
                 return gateway.complete(self, key, self.body())
             if method == "POST" and path in ("/v1/responses", "/v1/messages"):
                 return protocols.complete(self, key, self.body(), path.rsplit("/", 1)[-1])
-            return self.error(501, "Supported endpoints: models, chat/completions, responses and messages. This operation is not available.")
+            return self.error(501, "Supported endpoints: models, chat/completions, responses, messages, jobs, files, images/generations, audio/speech and videos. This operation is not available.")
         user = store.session(self.session_token())
         if method == "POST" and path == "/api/compute/agent":
             auth = self.headers.get("Authorization", "")
@@ -373,7 +388,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/models":
             catalog = store.models()
             if not user:
-                fields = ("id", "upstream", "state", "protocols", "price", "cache", "censorship", "censorship_source")
+                fields = ("id", "upstream", "state", "protocols", "features", "price", "cache", "censorship", "censorship_source", "task", "media_price")
                 catalog = [{field: model[field] for field in fields} for model in catalog]
             return self.json(200, {"models": catalog})
         if method == "GET" and path == "/api/sandboxes":
@@ -384,6 +399,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.error(403, "Open this page from the service's own address and try again.")
             if path not in ("/api/login", "/api/join", "/api/signup", "/api/device/start", "/api/device/poll", "/api/compute/pair/start", "/api/compute/pair/poll") and (not user or not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), user["csrf"])):
                 return self.error(403, "Your session changed. Refresh the page and try again.")
+        if path.startswith("/api/media/"):
+            # The model page's Try it box: a signed-in member's own jobs and files, by session.
+            if not user:
+                return self.error(401, "Sign in to generate media.")
+            if service.media.route(self, {"id": "session", "user_id": user["id"], "scopes": ["*"]}, method, "/v1/" + path[len("/api/media/"):], urlsplit(self.path).query):
+                return
+            return self.error(404, "This media route is not available.")
         if method == "POST" and path in ("/api/compute/pair/start", "/api/compute/pair/poll"):
             if not service.throttle("compute-pair:" + self.peer):
                 return self.error(429, "Too many computer connection attempts. Wait one minute.", retry=True)
@@ -458,6 +480,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(200, service.payments.price(user['id'],self.body()))
         if method == "POST" and path == "/api/admin/wallet":
             return self.json(200, service.payments.save(user["id"], self.body()))
+        if method == "POST" and path == "/api/admin/media/prices":
+            return self.json(200, service.payments.media_price(user["id"], self.body()))
+        if method == "GET" and path == "/api/admin/media":
+            return self.json(200, service.media.snapshot())
+        if method == "POST" and path == "/api/admin/media":
+            return self.json(200, service.media.configure(user["id"], self.body()))
         if method == "POST" and path == "/api/grid/jobs":
             return self.json(202, service.grid.submit(user, self.body()))
         if method == "POST" and path == "/api/admin/grid":
@@ -486,7 +514,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(200, {"ok": True})
         if method == "GET" and path == "/api/usage":
             with store.db() as db:
-                rows = db.execute("SELECT model,started,duration_ms,status,input_tokens,d.cached_tokens AS cached_tokens,output_tokens,b.charged AS cost_microusd,b.state AS billing_state FROM requests r LEFT JOIN billing_results b ON b.id=r.id LEFT JOIN request_details d ON d.id=r.id WHERE user_id=? ORDER BY started DESC LIMIT 100", (user["id"],))
+                rows = db.execute("SELECT model,started,duration_ms,status,input_tokens,d.cached_tokens AS cached_tokens,output_tokens,b.charged AS cost_microusd,b.state AS billing_state,m.images,m.output_ms FROM requests r LEFT JOIN billing_results b ON b.id=r.id LEFT JOIN request_details d ON d.id=r.id LEFT JOIN request_media m ON m.id=r.id WHERE user_id=? ORDER BY started DESC LIMIT 100", (user["id"],))
                 return self.json(200, {"requests": [dict(r) for r in rows]})
         if method == "GET" and path == "/api/admin/overview":
             with store.db() as db:
@@ -529,6 +557,8 @@ class Handler(BaseHTTPRequestHandler):
     def run_request(self, method):
         try:
             self.dispatch(method)
+        except MediaInput as error:
+            self.json(error.status, {"error": {"code": error.code, "message": str(error)}})
         except (AccountError, ComputeInput, GridInput, WalletInput) as error:
             self.error(400, str(error))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -545,6 +575,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.run_request("POST")
+
+    def do_DELETE(self):
+        self.run_request("DELETE")
 
 
 def main():

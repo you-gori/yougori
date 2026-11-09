@@ -88,13 +88,14 @@ pub(crate) const LLAMA_CPP_RELEASE: &str = "b11425";
 /// The helpers a runner gets, each by the workload variable that carries its compressed
 /// source today (`model_runner.rs`: `server_payload`, `optimizer::source`,
 /// `publisher_source`, `registry_source`, `clef_source`, `backends_source`).
-const HELPERS: [(&str, &str); 6] = [
+const HELPERS: [(&str, &str); 7] = [
     ("model-server", "YOUGORI_MODEL_SERVER_SOURCE"),
     ("gpu-optimizer", "YOUGORI_GPU_SOURCE"),
     ("publisher-routes", "YOUGORI_PUBLISHER_SOURCE"),
     ("registry-verifier", "YOUGORI_REGISTRY_SOURCE"),
     ("clef-adapter", "YOUGORI_CLEF_SOURCE"),
     ("engine-backends", "YOUGORI_BACKENDS_SOURCE"),
+    ("media-backends", "YOUGORI_MEDIA_SOURCE"),
 ];
 
 /// The helper ABI this host's runner loader provides: 1.0, the first. A bundle names the ABI

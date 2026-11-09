@@ -1124,10 +1124,18 @@ pub fn model_status(status: &Value, color: bool) -> String {
         _ => String::new(),
     };
     let mut output = section(status["model"].as_str().unwrap_or("Model"), color);
+    // A media model: its kind and pipeline, the jobs waiting and running, what it keeps and how fast it went.
+    let queue = &status["queue"];
+    let kept = &status["outputs"];
+    let speed = &status["speed"];
     output.push_str(&fields(&[
         ("State", state),
         ("Download", progress),
         ("GPU", status["gpu"].as_str().unwrap_or("").into()),
+        ("Task", status["task"].as_str().filter(|t| *t != "structured-decision").map(|t| format!("{t}{}", status["pipeline"].as_str().map(|p| format!(" · {p}")).unwrap_or_default())).unwrap_or_default()),
+        ("Jobs", queue["waiting"].as_u64().map(|waiting| format!("{waiting} waiting · {} running", queue["running"].as_u64().unwrap_or(0))).unwrap_or_default()),
+        ("Outputs", kept["keptHours"].as_u64().map(|hours| format!("{} jobs · {} · kept {hours} h", kept["jobs"].as_u64().unwrap_or(0), bytes(&kept["bytes"]))).unwrap_or_default()),
+        ("Speed", speed["secondsPerImage"].as_f64().map(|s| format!("{s:.1} s per image")).or_else(|| speed["secondsPerOutputSecond"].as_f64().map(|s| format!("{s:.1} s per output second"))).unwrap_or_default()),
         ("Context", status["context"].as_u64().map(|n| format!("{n} tokens")).unwrap_or_default()),
         ("Precision", status["precision"].as_str().unwrap_or("").into()),
         ("GPU grant", admission(&status["admission"])),
@@ -1135,6 +1143,65 @@ pub fn model_status(status: &Value, color: bool) -> String {
         ("Error", status["error"].as_str().unwrap_or("").into()),
     ], color));
     output
+}
+
+/// `yougori model jobs ENV`: the recent jobs, or one job.
+pub fn model_jobs(result: &Value, color: bool) -> String {
+    let when = |value: &Value| value.as_i64().map(|t| format!("{}", chrono_like(t))).unwrap_or_default();
+    if let Some(jobs) = result["data"].as_array() {
+        let rows: Vec<Vec<String>> = jobs.iter().map(|job| vec![
+            text(&job["id"]), text(&job["status"]), format!("{:.0}%", job["progress"].as_f64().unwrap_or(0.0) * 100.0),
+            job["input"]["prompt"].as_str().unwrap_or("").chars().take(48).collect(), when(&job["created"]),
+            job["error"].as_str().unwrap_or("").chars().take(60).collect(),
+        ]).collect();
+        return table(&["JOB", "STATUS", "PROGRESS", "PROMPT", "CREATED", "ERROR"], &rows, color);
+    }
+    let mut output = section(result["id"].as_str().unwrap_or("Job"), color);
+    let files = result["output"]["files"].as_array().map(|files| files.iter().map(|f| format!("{} ({})", text(&f["file"]), bytes(&f["bytes"]))).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+    output.push_str(&fields(&[
+        ("Status", text(&result["status"])),
+        ("Progress", format!("{:.0}%", result["progress"].as_f64().unwrap_or(0.0) * 100.0)),
+        ("Position", result["position"].as_u64().map(|p| p.to_string()).unwrap_or_default()),
+        ("Prompt", result["input"]["prompt"].as_str().unwrap_or("").into()),
+        ("Files", files),
+        ("Usage", result["usage"].as_object().map(|u| u.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(" · ")).unwrap_or_default()),
+        ("Error", result["error"].as_str().unwrap_or("").into()),
+    ], color));
+    output
+}
+
+/// `yougori model generate ENV`: the files a finished job left on this computer.
+pub fn model_generated(result: &Value, color: bool) -> String {
+    if result["files"].is_null() {
+        return model_jobs(result, color);
+    }
+    let mut output = section(&format!("Job {} saved", result["jobId"].as_str().unwrap_or("")), color);
+    for file in result["files"].as_array().into_iter().flatten() {
+        output.push_str(&format!("  {}  {}\n", file["path"].as_str().unwrap_or(""), styled(&bytes(&file["bytes"]), MUTED, color)));
+    }
+    if let Some(usage) = result["usage"].as_object() {
+        output.push_str(&styled(&usage.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(" · "), MUTED, color));
+        output.push('\n');
+    }
+    output
+}
+
+/// A Unix time as a readable UTC stamp, without a date library.
+fn chrono_like(seconds: i64) -> String {
+    let days = seconds.div_euclid(86400);
+    let rest = seconds.rem_euclid(86400);
+    // Civil date from days since the epoch (Howard Hinnant's algorithm).
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rest / 3600, (rest % 3600) / 60)
 }
 
 /// The profile and the bytes host admission reserves for the model; empty on the one-resident path.
@@ -1183,10 +1250,15 @@ pub fn model_usage(usage: &Value, color: bool) -> String {
     let totals = &usage["totals"];
     let number = |value: &Value| value.as_u64().map(|n| n.to_string()).unwrap_or_else(|| "0".into());
     let mut output = section("Model usage", color);
+    let media = totals["images"].as_u64().unwrap_or(0) > 0 || totals["output_ms"].as_u64().unwrap_or(0) > 0;
+    let seconds = |value: &Value| format!("{:.1}", value.as_u64().unwrap_or(0) as f64 / 1000.0);
     output.push_str(&fields(&[
         ("Requests", number(&totals["requests"])),
-        ("Prompt tokens", number(&totals["prompt_tokens"])),
-        ("Reply tokens", number(&totals["completion_tokens"])),
+        ("Prompt tokens", if media { String::new() } else { number(&totals["prompt_tokens"]) }),
+        ("Reply tokens", if media { String::new() } else { number(&totals["completion_tokens"]) }),
+        ("Images", if media { number(&totals["images"]) } else { String::new() }),
+        ("Output seconds", if media { seconds(&totals["output_ms"]) } else { String::new() }),
+        ("GPU seconds", if media { seconds(&totals["compute_ms"]) } else { String::new() }),
         ("Errors", number(&totals["errors"])),
         ("Refused", number(&totals["rejected"])),
     ], color));

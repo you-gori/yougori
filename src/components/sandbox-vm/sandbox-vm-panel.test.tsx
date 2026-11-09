@@ -86,7 +86,8 @@ it("imports a registry digest only after selection and clears its one-use creden
   expect(await screen.findByText("Error: Registry download refused (HTTP 403)")).toBeInTheDocument()
   expect(screen.getByLabelText("Bearer token (optional)")).toHaveValue("")
   expect(api.importImage).not.toHaveBeenCalled()
-})
+  // It types a 130-character reference key by key: past vitest's 5 s default on a loaded machine.
+}, 20_000)
 
 const REVIEW: WorkspaceReview = {
   review: "d1g3st",

@@ -12,7 +12,7 @@ import secrets
 import threading
 import time
 
-from store import digest, password_hash, password_matches
+from store import MEDIA_TASKS, digest, password_hash, password_matches
 from upstream import UpstreamError
 from compute_options import rental_options
 from sandbox_grid import Grid
@@ -35,6 +35,12 @@ ACK_SECONDS = 8
 QUEUE_SECONDS = 120
 ANSWER_SECONDS = 120
 IDLE_SECONDS = 120
+# What one relayed answer may carry: a chat reply, or a media job's file (a video of minutes).
+REPLY_LIMIT = 16 * 1024 * 1024
+FILE_LIMIT = 2 * 1024 ** 3
+CHUNK_LIMIT = 1024 * 1024
+# What a relayed answer may be: chat and job records, or a media job's file.
+RELAYED_TYPES = {"application/json", "text/event-stream", "image/png", "image/jpeg", "image/webp", "video/mp4", "audio/wav", "audio/x-wav"}
 
 
 def model_name(value):
@@ -44,7 +50,7 @@ def model_name(value):
 
 
 class Response(io.RawIOBase):
-    def __init__(self):
+    def __init__(self, limit=REPLY_LIMIT):
         super().__init__()
         self.parts = queue.Queue(8)
         self.pending = b""
@@ -55,6 +61,7 @@ class Response(io.RawIOBase):
         self.expires = time.monotonic() + QUEUE_SECONDS
         self.ended = False
         self.total = 0
+        self.limit = limit
         self.sequence = 0
         self.lock = threading.Lock()
 
@@ -115,6 +122,7 @@ class Compute:
         self.router = None
         self.generations = {}  # host -> the number of its newest stream; older ones end
         self.capacities = {}   # host -> requests its connector serves at once, across its models
+        self.media_hosts = set()  # hosts whose connector relays a media model's job routes and files
         with store.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS compute_policy(id INTEGER PRIMARY KEY CHECK(id=1), password TEXT NOT NULL);
@@ -238,7 +246,11 @@ class Compute:
                             "state": "ready" if item.get("state") == "ready" else "unavailable",
                             "shared": item.get("shared") is True, "place": "neocloud" if item.get("place") == "neocloud" else "local",
                             # Requests its model server generates together, when the connector knows.
-                            **({"slots": item["slots"]} if type(item.get("slots")) is int and 1 <= item["slots"] <= 256 else {})})
+                            **({"slots": item["slots"]} if type(item.get("slots")) is int and 1 <= item["slots"] <= 256 else {}),
+                            # Whether its model server enforces a JSON reply format, when the connector knows.
+                            **({"json": item["json"]} if isinstance(item.get("json"), bool) else {}),
+                            # The kind of model its server serves (text-generation, or a media task).
+                            **({"task": item["task"]} if isinstance(item.get("task"), str) and re.fullmatch(r"[a-z][a-z-]{0,39}", item["task"]) else {})})
         inventory = {"models": cleaned, "platform": str(data.get("platform", ""))[:80],
                      "detail": str(data.get("detail", ""))[:200], "connected": data.get("connected", True) is True,
                      "telemetry":clean(data.get('telemetry'))}
@@ -247,6 +259,8 @@ class Compute:
             if type(capacity) is int and 1 <= capacity <= 64:
                 self.capacities[host["id"]] = capacity
             capacity = self.capacities.get(host["id"])
+            # A connector that relays media jobs says so; an older one relays chat only.
+            (self.media_hosts.add if data.get("media") is True else self.media_hosts.discard)(host["id"])
         now = int(time.time())
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -262,9 +276,11 @@ class Compute:
                 db.execute("INSERT INTO endpoints VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,"
                            "state=excluded.state,checked=excluded.checked,detail=excluded.detail",
                            (identity, host["name"] + " · " + item["name"], prefix + item["id"], "", item["place"], item["state"], now, "Connected automatically by Yougori."))
-                db.execute("DELETE FROM models WHERE endpoint_id=?", (identity,))
-                db.execute("INSERT INTO models VALUES(?,?,?)", (identity + ":" + item["name"], identity, item["name"]))
-                if self.router and "slots" in item:
+                self.store.replace_models(db, identity, [(item["name"], {"json": item.get("json"), "task": item.get("task")})])
+                if self.router and item.get("task") in MEDIA_TASKS:
+                    # A media model generates one job at a time: the router spreads jobs by that.
+                    self.router.report_slots(identity + ":" + item["name"], 1)
+                elif self.router and "slots" in item:
                     self.router.report_slots(identity + ":" + item["name"], item["slots"])
                 if self.router and capacity:
                     # The connector's limit is across its models: two shared models share the eight.
@@ -342,7 +358,11 @@ class Compute:
             elif request["host"] == host and not request["claimed"]:
                 request.update(claimed=True, via=via, claimed_at=now)
                 busy += 1
-                tasks.append({"id": identity, "environment": request["environment"], "payload": request["payload"]})
+                # The route and method tell a connector what to relay: chat by default, a media
+                # model's job routes and files otherwise (an older connector relays chat only).
+                tasks.append({"id": identity, "environment": request["environment"], "payload": request["payload"],
+                              "path": request.get("path", "/chat/completions"), "method": request.get("method", "POST"),
+                              "limit": request["response"].limit})
         return tasks
 
     def unclaim(self, identities):
@@ -458,7 +478,10 @@ class Compute:
             db.execute("UPDATE compute_jobs SET state=?,result=?,detail=?,updated=? WHERE id=? AND host=? AND state='running'",
                        (state, json.dumps(clean), str(data.get("detail", ""))[:300], int(time.time()), data.get("id"), host["id"]))
 
-    def connect(self, url, payload):
+    def connect(self, url, payload, path="/chat/completions", method="POST", limit=REPLY_LIMIT):
+        """Opens one request to a model a contributing computer shares: the connector relays it to
+        the model's own API (`path` under its base, `method`) and streams the answer back, of at
+        most `limit` bytes."""
         host, environment = url.removeprefix("compute://").split("/", 1)
         with self.store.db() as db:
             available = db.execute("SELECT 1 FROM compute_hosts WHERE id=? AND active=1 AND seen>?", (host, time.time() - 45)).fetchone()
@@ -474,12 +497,18 @@ class Compute:
             parsed = urlsplit(api["apiUrl"])
             if parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1", "::1") or parsed.username or parsed.password:
                 raise UpstreamError("Yougori did not provide a local model connection.", 503)
-            return connect(api["apiUrl"], api["apiKey"], "/chat/completions", {**payload, "model": api["model"]}, timeout=120)
-        raw, identity = Response(), secrets.token_hex(16)
+            body = None if method == "GET" else {**payload, "model": api["model"]} if path == "/chat/completions" else payload
+            return connect(api["apiUrl"], api["apiKey"], path, body, timeout=600 if path != "/chat/completions" else 120, expect=(200, 201, 202, 206), method=method)
+        if path != "/chat/completions":
+            with self.lock:
+                relays = host in self.media_hosts
+            if not relays:
+                raise UpstreamError("The computer sharing this model runs a connector that predates media jobs. Update Yougori there and reconnect.", 503)
+        raw, identity = Response(limit), secrets.token_hex(16)
         with self.lock:
             if len(self.requests) >= 32:
                 raise UpstreamError("The contributing computers are busy. Retry shortly.", 429)
-            self.requests[identity] = {"host": host, "environment": environment, "payload": payload, "response": raw,
+            self.requests[identity] = {"host": host, "environment": environment, "payload": payload, "response": raw, "path": path, "method": method,
                                        "claimed": False, "via": None, "claimed_at": None, "acked": False}
             self.changed.notify_all()
         connection = Connection(self, identity, raw)
@@ -496,15 +525,27 @@ class Compute:
             if now > (taken + ANSWER_SECONDS if taken else queued + QUEUE_SECONDS):
                 connection.close()
                 raise UpstreamError("The contributing computer did not answer.", 504)
-        if raw.status != 200:
-            connection.close()
-            # A model server's refusal (400) or a full queue (429) is passed on as such.
-            if raw.status in (400, 429):
+        if raw.status not in (200, 201, 202, 206):
+            # A model server's refusal (400) or a full queue (429) is passed on as such; a media
+            # route's own answers (404 unknown job, 409 not done, 410 failed) keep their words.
+            if raw.status in (400, 429) and path == "/chat/completions":
+                connection.close()
                 raise UpstreamError("The model server refused this request. Check its context length and parameters." if raw.status == 400
                                     else "The contributing computer is busy. Retry shortly.", raw.status)
+            if path != "/chat/completions" and raw.status in (400, 404, 409, 410, 429, 503):
+                body = io.BufferedReader(raw).read(65536)
+                connection.close()
+                try:
+                    detail = json.loads(body)["error"]
+                    message, code = str(detail.get("message", ""))[:300], str(detail.get("code", ""))[:40]
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    message, code = "The model server refused this request.", ""
+                raise UpstreamError(message or "The model server refused this request.", raw.status, code)
+            connection.close()
             raise UpstreamError("The contributing computer could not serve this request.", 502)
         response = io.BufferedReader(raw)
         response.getheader = raw.getheader
+        response.status = raw.status
         return connection, response
 
     def chunk(self, host, data):
@@ -519,18 +560,21 @@ class Compute:
             raise ComputeInput("This inference request is no longer active.")
         raw = item["response"]
         content = base64.b64decode(data.get("data", ""), validate=True)
-        if len(content) > 65536:
+        if len(content) > CHUNK_LIMIT:
             raise ComputeInput("Response chunk too large.")
         with raw.lock:
             if type(data.get("sequence")) is int and data["sequence"] == raw.sequence - 1:
                 return True  # The previous chunk again: its upload was retried after a lost reply.
             if type(data.get("sequence")) is not int or data["sequence"] != raw.sequence:
                 raise ComputeInput("Response chunks must arrive in order.")
-            if raw.total + len(content) > 16 * 1024 * 1024:
+            if raw.total + len(content) > raw.limit:
                 raise ComputeInput("Response too large.")
             if not raw.headers.is_set():
-                raw.status = data.get("status", 502)
-                raw.content_type = "text/event-stream" if data.get("stream") is True else "application/json"
+                status = data.get("status")
+                raw.status = status if type(status) is int and 100 <= status <= 599 else 502
+                kind = data.get("content_type")
+                kind = kind.split(";")[0].strip().lower() if isinstance(kind, str) else ""
+                raw.content_type = "text/event-stream" if data.get("stream") is True else kind if kind in RELAYED_TYPES else "application/json"
                 raw.headers.set()
             try:
                 if content:

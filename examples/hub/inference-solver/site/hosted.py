@@ -29,13 +29,18 @@ def build(folder, config, hosted, public=False):
     service = Service(folder / "data", {"email": config["email"], "password_hash": config["passwordHash"]},
         config["siteName"], public=public, account_mode="public" if config["accessMode"] == "public" else "private",
         hosted={**hosted, "id": config["id"], "compute": config["compute"], "artifacts": config.get("artifacts")})
-    with service.store.db() as db:
-        actor = db.execute("SELECT id FROM users WHERE admin=1 ORDER BY rowid LIMIT 1").fetchone()[0]
-        db.execute("CREATE TABLE IF NOT EXISTS hosted_identity(id INTEGER PRIMARY KEY CHECK(id=1), tenant TEXT NOT NULL, access TEXT NOT NULL)")
-        previous = db.execute("SELECT tenant,access FROM hosted_identity WHERE id=1").fetchone()
-        if previous and tuple(previous) != (config["id"], config["accessMode"]):
-            raise ValueError("This data belongs to another inference or access mode.")
-        db.execute("INSERT OR IGNORE INTO hosted_identity VALUES(1,?,?)", (config["id"], config["accessMode"]))
+    try:
+        with service.store.db() as db:
+            actor = db.execute("SELECT id FROM users WHERE admin=1 ORDER BY rowid LIMIT 1").fetchone()[0]
+            db.execute("CREATE TABLE IF NOT EXISTS hosted_identity(id INTEGER PRIMARY KEY CHECK(id=1), tenant TEXT NOT NULL, access TEXT NOT NULL)")
+            previous = db.execute("SELECT tenant,access FROM hosted_identity WHERE id=1").fetchone()
+            if previous and tuple(previous) != (config["id"], config["accessMode"]):
+                raise ValueError("This data belongs to another inference or access mode.")
+            db.execute("INSERT OR IGNORE INTO hosted_identity VALUES(1,?,?)", (config["id"], config["accessMode"]))
+    except BaseException:
+        # A refused instance leaves no background work holding its data behind.
+        service.close()
+        raise
     if not previous:
         service.grid.configure(actor, {"enabled": config["compute"]["sandboxGrid"], "admission": "private"})
         wallet = config.get("wallet")

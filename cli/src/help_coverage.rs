@@ -35,6 +35,7 @@ const PUBLIC_SUBCOMMANDS: &[&[&str]] = &[
     &["model", "run"], &["model", "chat"], &["model", "stop"], &["model", "unshare"], &["model", "status"],
     &["model", "api"], &["model", "usage"], &["model", "access"], &["model", "history"],
     &["model", "optimize"], &["model", "support"], &["model", "decide"], &["model", "preflight"],
+    &["model", "generate"], &["model", "jobs"],
     &["model", "auth", "login"], &["model", "auth", "status"], &["model", "auth", "logout"],
     &["model", "library"], &["model", "publish"], &["model", "upload"], &["model", "download"],
     &["model", "connect"], &["model", "permissions"], &["model", "versions"],

@@ -10,6 +10,7 @@ import { ModelLibrary } from "@/components/model-library"
 import { useNetwork } from "@/components/use-network"
 import { marketApi, type SharingMode } from "@/api/market-api"
 import { modelsApi, type ModelPreflight } from "@/api/projects-api"
+import { isMediaTask } from "@/lib/media-tasks"
 import { usePlatform } from "@/context/platform-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,6 +23,8 @@ import "@/components/model-workspace.css"
 export { ModelChat }
 
 const NeocloudForm = lazy(async () => ({ default: (await import("@/components/dialogs/neocloud-form")).NeocloudForm }))
+/** What a media model's kind makes, for the compatibility card. */
+const MEDIA_KINDS: Record<string, string> = { "text-to-image": "images", "image-to-image": "images from an image", "text-to-video": "video", "image-to-video": "video from an image", "text-to-audio": "sound", "text-to-speech": "speech" }
 
 /** `compact` renders a small "Chat" trigger for use inside a graph node. */
 export function ModelWorkspace({ environmentId, compact = false, label, triggerClassName, open: openProp, onOpenChange, hideTrigger = false }: { environmentId?: string; compact?: boolean; label?: ReactNode; triggerClassName?: string; open?: boolean; onOpenChange?: (open: boolean) => void; hideTrigger?: boolean }) {
@@ -36,6 +39,8 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
   const [port, setPort] = useState("8000")
   const [selected, setSelected] = useState(environmentId ?? "")
   const [view, setView] = useState<"chat" | "api" | "usage" | "network">("chat")
+  // The first tab is Chat for a text model and Generate for a media model (its status says which).
+  const [mediaModel, setMediaModel] = useState(false)
   const [sharing, setSharing] = useState<"off" | SharingMode>("off")
   const [quant, setQuant] = useState("")
   const [backend, setBackend] = useState("auto")
@@ -43,6 +48,9 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
   const [compute, setCompute] = useState<{ os: string; backend: string; detail?: string } | null>(null)
   useEffect(() => { if (open) void modelsApi.compute().then(setCompute).catch(() => setCompute(null)) }, [open])
   const [folder, setFolder] = useState("")
+  // A media model's LoRA adapter and pipeline runner, each hf:OWNER/REPO@COMMIT (optional).
+  const [adapter, setAdapter] = useState("")
+  const [pipelineRunner, setPipelineRunner] = useState("")
   const [closedWeights, setClosedWeights] = useState(false)
   const [target, setTarget] = useState<"local" | "neocloud">("local")
   const [pod, setPod] = useState("")
@@ -104,7 +112,12 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
     previousIds.current = new Set(state?.environments.map(e => e.id))
     lock.current = true; setBusy(true); setLaunching(true); setElapsed(0); setError(""); setOpen(false)
     try {
-      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined, folder || undefined, backend, memory ? Number(memory) : undefined)
+      // The adapter and pipeline runner apply to a media model only: values typed for an earlier
+      // model, now hidden, are never sent with another one.
+      const media = Boolean(preflight?.supported && isMediaTask(preflight.task))
+      const mediaAdapter = media ? adapter.trim() || undefined : undefined
+      const mediaRunner = media ? pipelineRunner.trim() || undefined : undefined
+      const result = target === "neocloud" ? await modelsApi.runNeocloud(model, pod, api ? Number(port) : null, mediaAdapter, mediaRunner) : await modelsApi.run(model, api ? Number(port) : null, quant.trim() || undefined, folder || undefined, backend, memory ? Number(memory) : undefined, mediaAdapter, mediaRunner)
       setSelected(result.id); setView(result.sourceOnly ? "network" : "chat")
       // A folder served through the engine's catalog says what the import did; the folder itself is never written.
       if (result.catalog?.state === "catalog") toastManager.add({ title: result.catalog.copied ? "Model files published in the catalog" : "Model files already in the catalog", description: `${result.catalog.files ?? 0} files, ${((result.catalog.bytes ?? 0) / 1e9).toFixed(2)} GB${result.catalog.copied ? ", copied once from the folder, which stays as it was." : ", nothing copied again."}` })
@@ -118,6 +131,18 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
     finally { setBusy(false); setLaunching(false); lock.current = false }
   }
   const showTabs = !environmentId && models.length > 0
+  useEffect(() => {
+    if (!visibleId || !open) { setMediaModel(false); return }
+    let alive = true, timer: number | undefined, attempts = 0
+    // A model still starting does not answer yet: ask again until it says what it serves.
+    const read = () => void modelsApi.status(visibleId).then(value => { if (alive) setMediaModel(isMediaTask(value.task)) }).catch(() => {
+      if (!alive) return
+      setMediaModel(false)
+      if (++attempts < 40) timer = window.setTimeout(read, 3000)
+    })
+    read()
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [visibleId, open])
   const close = <DialogClose render={<Button variant="outline" size="sm" className="model-close" />}>Close</DialogClose>
   const validPort = Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535
   return <Dialog modal={!topic} open={open} onOpenChange={(value, details) => { if (!(!value && topic && details.reason === "focus-out") && !(details.event.target instanceof Element && details.event.target.closest('[data-topic-ui]'))) setOpen(value) }}>
@@ -128,7 +153,7 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
       {selected ? null : <header className="model-dialog-header">
         <div>
           <h2>Run a local model</h2>
-          <p>Text-generation and supported decision models with safetensors or GGUF. Larger models select a lower precision when needed to fit the GPU.</p>
+          <p>Text-generation, supported decision models and media models (images, video, sound and speech) with safetensors, GGUF or Diffusers. Larger models select a lower precision when needed to fit the GPU.</p>
         </div>
         {close}
       </header>}
@@ -144,9 +169,9 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
             <div className="model-field">
               <div className="model-card-head">
                 <label className="model-label" htmlFor="hf-model">Model</label>
-                <ModelLibrary onRun={(value, precision) => { setModel(value); setFolder(""); setQuant(precision ?? ""); setPreflight(null); setTarget("local") }} />
+                <ModelLibrary onRun={(value, precision) => { setModel(value); setFolder(""); setQuant(precision ?? ""); setPreflight(null); setTarget("local"); setAdapter(""); setPipelineRunner("") }} />
               </div>
-              <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null)}} placeholder="hf.co/owner/model" />
+              <Input id="hf-model" value={model} disabled={busy} onChange={e => {setModel(e.target.value);setPreflight(null);setAdapter("");setPipelineRunner("")}} placeholder="hf.co/owner/model" />
             </div>
             {target === "local" ? <div className="model-field">
               <label className="model-label" htmlFor="model-folder">Local weights (optional)</label>
@@ -222,14 +247,21 @@ export function ModelWorkspace({ environmentId, compact = false, label, triggerC
             </> : null}
           </section>
 
-          {preflight ? <div aria-label="Model compatibility" className="model-card model-preflight" data-supported={preflight.supported || undefined}><p className="model-preflight-title">{preflight.sourceOnly ? "Source files only" : preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
+          {preflight ? <div aria-label="Model compatibility" className="model-card model-preflight" data-supported={preflight.supported || undefined}><p className="model-preflight-title">{preflight.sourceOnly ? "Source files only" : preflight.supported ? (preflight.task === "structured-decision" ? "Compatible with typed decisions" : isMediaTask(preflight.task) ? `Generates ${MEDIA_KINDS[preflight.task]}` : "Compatible with text chat") : "Requires a dedicated runner"} · {preflight.task}</p><p>{preflight.reason}</p>{preflight.resources.storageGbRecommended ? <p>Estimated storage {preflight.resources.storageGbRecommended} GB · estimated GPU memory {preflight.resources.gpuMemoryGbEstimated ?? "unknown"} GB. Actual memory varies with context and settings.</p> : null}<p>Weights download directly to persistent model storage and are verified before loading.</p></div> : null}
+          {preflight?.supported && isMediaTask(preflight.task) ? <section className="model-card" aria-label="Media model options">
+            <label className="model-label" htmlFor="hf-adapter">LoRA adapter (optional)</label>
+            <Input id="hf-adapter" value={adapter} disabled={busy} placeholder="hf:OWNER/REPO@COMMIT" onChange={e => setAdapter(e.target.value)} />
+            <label className="model-label" htmlFor="hf-pipeline-runner">Pipeline runner (optional)</label>
+            <Input id="hf-pipeline-runner" value={pipelineRunner} disabled={busy} placeholder="hf:OWNER/REPO@COMMIT with pipeline.py" onChange={e => setPipelineRunner(e.target.value)} />
+            <p className="model-hint">Each names a public Hugging Face repository at a commit. The adapter's LoRA weights load onto the pipeline; a pipeline runner's pipeline.py (a Diffusers custom pipeline) runs with the packages its requirements.txt pins.</p>
+          </section> : null}
           {preflight?.supported === false && preflight.supportAvailable ? <ModelArchitectureSupport key={`${model}:${quant}`} model={model} quant={quant.trim() || undefined} /> : null}
           <div className="model-form-actions"><Button variant="outline" disabled={busy || !model.trim()} onClick={() => {setBusy(true);setError("");void modelsApi.preflight(model, target === "local" ? quant.trim() || undefined : undefined, target === "local" ? folder || undefined : undefined).then(setPreflight).catch(e=>setError(String(e))).finally(()=>setBusy(false))}}>Check compatibility</Button><Button disabled={busy || network.busy || !model.trim() || preflight?.supported===false || (api && !validPort) || (target === "neocloud" && !pod)} loading={busy} onClick={() => void launch()}>Run model</Button></div>
         </div> : null}
 
         {selected ? <div className="model-view-row">
           <div className="model-tabs" role="group" aria-label="View">
-            <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")}>Chat</button>
+            <button type="button" aria-pressed={view === "chat"} onClick={() => setView("chat")}>{mediaModel ? "Generate" : "Chat"}</button>
             <button type="button" aria-pressed={view === "api"} onClick={() => setView("api")}>API access</button>
             <button type="button" aria-pressed={view === "usage"} onClick={() => setView("usage")}>Usage</button>
             <button type="button" aria-pressed={view === "network"} onClick={() => setView("network")}>Neo Grid</button>

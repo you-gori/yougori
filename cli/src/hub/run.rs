@@ -167,16 +167,39 @@ pub async fn fetch(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Fetche
     }
 }
 
-/// A fetched v1 template, checked with its Hub tools, and its review built from the files.
-async fn examine_fetched(site: &Site, cache: &Cache, fetched: Fetched) -> Result<Prepared, String> {
+/// A fetched v1 template, checked with its Hub tools, and its review built from the files. Only for
+/// a package [`super::plan::format_of`] reads as format 1: the format 1 reader refuses a format 2
+/// template's fields.
+pub(super) async fn examine_fetched(site: &Site, cache: &Cache, fetched: Fetched) -> Result<Prepared, String> {
     examine(site, cache, fetched.files, fetched.origin, fetched.version, fetched.digest, fetched.verified, fetched.detail, fetched.notices, false).await
 }
 
 /// Downloads (or reads), verifies and checks a v1 template and its Hub tools for a new run, and
-/// builds its review from the files.
+/// builds its review from the files. A format 2 template is refused by the format 1 reader, so a
+/// caller that may meet either [`fetch`]es first and asks [`super::plan::format_of`].
 pub async fn prepare(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Prepared, String> {
     let fetched = fetch(site, cache, wanted).await?;
     examine_fetched(site, cache, fetched).await
+}
+
+/// A template read in the format its own file declares (`format_version`).
+pub enum Read {
+    /// Format 1: checked with its Hub tools and reviewed by the format 1 reader, as [`prepare`]
+    /// does.
+    V1(Box<Prepared>),
+    /// Format 2: downloaded (or read) and verified, for the shared crate to check, review and plan.
+    V2(Fetched),
+}
+
+/// Downloads (or reads) and verifies a template, then reads it in its own format: a format 1
+/// package exactly as [`prepare`] reads it, a format 2 package left to the shared crate, and a
+/// format this Yougori does not know refused before anything else ("needs a newer Yougori").
+pub async fn read(site: &Site, cache: &Cache, wanted: &Wanted) -> Result<Read, String> {
+    let fetched = fetch(site, cache, wanted).await?;
+    match super::plan::format_of(&fetched.files)? {
+        yougori_setup::format::FormatVersion::V2 => Ok(Read::V2(fetched)),
+        yougori_setup::format::FormatVersion::V1 => Ok(Read::V1(Box::new(examine_fetched(site, cache, fetched).await?))),
+    }
 }
 
 /// Whether a folder instance's template folder has changed since it was made (or last updated).
@@ -1332,7 +1355,7 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
     // A format 2 package is planned and applied by the engine's setup service; a format this
     // Yougori does not read stops here, before anything is created. v1 packages carry on as before.
     match super::plan::format_of(&fetched.files) {
-        Ok(yougori_setup::format::FormatVersion::V2) => return super::plan::run_v2(fetched, &options, interactive).await,
+        Ok(yougori_setup::format::FormatVersion::V2) => return super::plan::run_v2(fetched, &options, interactive, &instances.names()).await,
         Ok(yougori_setup::format::FormatVersion::V1) => {}
         Err(refusal) => return Err(format!("{refusal} Nothing was created.")),
     }
@@ -1350,18 +1373,8 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
     let kept = if volumes.is_empty() { Value::Null } else { crate::public::call("list_volumes", json!({})).await.unwrap_or(Value::Null) };
     taken.extend(kept["volumes"].as_array().into_iter().flatten().filter_map(|v| v["name"].as_str()).map(str::to_ascii_lowercase));
     let suffixes: Vec<String> = environments.iter().chain(&volumes).cloned().collect();
-    let name = match &options.name {
-        Some(name) => {
-            if let Some(problem) = instances::name_problem(name, &environments) {
-                return Err(problem);
-            }
-            if let Some(environment) = environments.iter().find(|e| taken.contains(&format!("{name}-{e}").to_lowercase())) {
-                return Err(format!("An environment named {name}-{environment} already exists outside this template. Choose another name with --name. Nothing was created."));
-            }
-            name.clone()
-        }
-        None => instances::available(&base, &suffixes, &instances.names(), &taken),
-    };
+    let names = Names { instances: instances.names(), setups: super::setups::setup_names().await, taken };
+    let name = instance_name(options.name.as_deref(), &base, &environments, &suffixes, &names)?;
     let questions = questions(&prepared);
     let domains = if questions.iter().any(|q| q.kind == Kind::Domain) { wait(interactive, "Reading your saved domains", async { Ok(saved_domains().await) }).await.map_err(nothing_created)? } else { Vec::new() };
     let notes = requirements.notes.clone();
@@ -1500,6 +1513,38 @@ pub async fn run(options: Options, interactive: bool) -> Result<Value, String> {
         ..Default::default()
     };
     build(&mut state, &instances, &prepared, secrets, interactive, &site, Ending::default()).await
+}
+
+/// The names already in use when a new format 1 instance is named.
+struct Names {
+    /// The format 1 instances' names, records and folders alike ([`Instances::names`]).
+    instances: BTreeSet<String>,
+    /// The engine's setups' names and ids, lowercase ([`super::setups::setup_names`]).
+    setups: BTreeSet<String>,
+    /// The names of the engine's sandboxes and kept volumes, lowercase.
+    taken: BTreeSet<String>,
+}
+
+/// The name a new format 1 instance takes: the one asked for with `--name`, once it is checked, or
+/// the first free of NAME, NAME-2 … Free means no format 1 instance has it, none of its sandboxes'
+/// names is taken, and no setup of the engine's answers to it: every lifecycle command looks among
+/// the engine's setups first, so an instance that took a setup's name would be hidden behind it,
+/// and `template rm NAME` would remove the setup. A name asked for that a setup has is refused.
+fn instance_name(asked: Option<&str>, base: &str, environments: &[String], suffixes: &[String], names: &Names) -> Result<String, String> {
+    let Some(name) = asked else {
+        let in_use: BTreeSet<String> = names.instances.iter().chain(&names.setups).cloned().collect();
+        return Ok(instances::available(base, suffixes, &in_use, &names.taken));
+    };
+    if let Some(problem) = instances::name_problem(name, environments) {
+        return Err(problem);
+    }
+    if names.setups.contains(&name.to_ascii_lowercase()) {
+        return Err(format!("{name} is already the name of a setup on this computer (see yougori template list). An instance of the same name would be hidden behind it: yougori template status, update and rm would act on the setup. Choose another name with --name. Nothing was created."));
+    }
+    if let Some(environment) = environments.iter().find(|e| names.taken.contains(&format!("{name}-{e}").to_lowercase())) {
+        return Err(format!("An environment named {name}-{environment} already exists outside this template. Choose another name with --name. Nothing was created."));
+    }
+    Ok(name.to_owned())
 }
 
 /// The free space a drive needs for a run to start: images and first files. Storage limits are
@@ -2562,5 +2607,69 @@ mod tests {
         std::fs::write(folder.path().join("site/index.html"), "<h1>changed</h1>").unwrap();
         let refused = prepare_own(&site, &cache, &state).await.err().unwrap();
         assert!(refused.contains("changed since hello was made") && refused.contains("yougori template update hello"), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn a_template_is_read_in_the_format_its_own_file_declares() {
+        // PROVES `template info` and `template plan` can read a format 2 Hub template: both went
+        // through `prepare`, the format 1 reader, which refuses every format 2 template. `read`
+        // asks the file first: format 2 is left to the shared crate, format 1 is read exactly as
+        // `prepare` reads it, and an unknown format is refused before anything else. The Hub here
+        // is this test's own.
+        use crate::hub::client::tests::{bundle_json, serve, Fixture};
+        let hub = |files: &Files| {
+            let fixture = Fixture::default();
+            *fixture.detail.lock().unwrap() = json!({"ref": "acme/shop", "kind": "template", "state": "active", "latestVersion": "1.0.0", "version": {"version": "1.0.0", "digest": scan::digest_of(files), "verified": false, "review": {}}});
+            *fixture.bundle.lock().unwrap() = bundle_json("acme", "shop", "1.0.0", files);
+            fixture
+        };
+        let wanted = Wanted::Hub(Ref { publisher: "acme".into(), name: "shop".into(), version: Some("1.0.0".into()) });
+        let root = tempfile::tempdir().unwrap();
+        let cache = Cache { root: root.path().to_path_buf() };
+
+        let v2 = scan::collect(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/hub/my-api")).unwrap().files;
+        let site = Site::at(&serve(hub(&v2)).await).unwrap();
+        assert!(prepare(&site, &cache, &wanted).await.is_err(), "the format 1 reader refuses a format 2 template");
+        match read(&site, &cache, &wanted).await {
+            Ok(Read::V2(fetched)) => assert_eq!((fetched.files, fetched.version.as_str()), (v2, "1.0.0")),
+            Ok(Read::V1(_)) => panic!("a format 2 template was read as format 1"),
+            Err(said) => panic!("a format 2 template was refused: {said}"),
+        }
+
+        let v1 = example();
+        let site = Site::at(&serve(hub(&v1)).await).unwrap();
+        match read(&site, &cache, &wanted).await {
+            Ok(Read::V1(prepared)) => assert_eq!(prepared.review, prepare(&site, &cache, &wanted).await.unwrap().review, "format 1 is read as before"),
+            Ok(Read::V2(_)) => panic!("a format 1 template was read as format 2"),
+            Err(said) => panic!("a format 1 template was refused: {said}"),
+        }
+
+        let mut newer = v1.clone();
+        let text = String::from_utf8(newer[format::TEMPLATE_FILE].clone()).unwrap();
+        newer.insert(format::TEMPLATE_FILE.to_owned(), format!("format_version: 9\n{text}").into_bytes());
+        let site = Site::at(&serve(hub(&newer)).await).unwrap();
+        let refused = read(&site, &cache, &wanted).await.err().unwrap();
+        assert!(refused.starts_with("This template needs a newer Yougori"), "{refused}");
+    }
+
+    #[test]
+    fn a_new_instance_never_takes_a_setups_name() {
+        // PROVES the format 1 naming knows the engine's setups. Every lifecycle command looks among
+        // them first, so an instance named like a setup was hidden behind it: `template rm NAME`
+        // removed the setup. A chosen name skips them; a name asked for that a setup has is refused.
+        let names = Names {
+            instances: ["shop".to_owned()].into(),
+            setups: ["shop-2".to_owned(), "setup-abc".to_owned()].into(),
+            taken: ["shop-3-web".to_owned()].into(),
+        };
+        let web = vec!["web".to_owned()];
+        assert_eq!(instance_name(None, "shop", &web, &web, &names).unwrap(), "shop-4", "shop is an instance's, shop-2 a setup's, shop-3-web a sandbox's");
+        let refused = instance_name(Some("shop-2"), "shop", &web, &web, &names).unwrap_err();
+        assert!(refused.contains("already the name of a setup") && refused.contains("--name") && refused.ends_with("Nothing was created."), "{refused}");
+        assert!(instance_name(Some("Shop-2"), "shop", &web, &web, &names).is_err(), "names are not told apart by case");
+        assert!(instance_name(Some("shop-3"), "shop", &web, &web, &names).unwrap_err().contains("shop-3-web already exists"));
+        assert!(instance_name(Some("not a name"), "shop", &web, &web, &names).unwrap_err().contains("is not an instance name"));
+        assert_eq!(instance_name(Some("café"), "shop", &web, &web, &names).ok(), None);
+        assert_eq!(instance_name(Some("books"), "shop", &web, &web, &names).unwrap(), "books");
     }
 }

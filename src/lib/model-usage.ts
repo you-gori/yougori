@@ -2,7 +2,7 @@ import type { ModelUsage, UsageCounters, UsageRequest } from "@/api/projects-api
 
 export interface UsageDay extends UsageCounters { date: Date }
 const dayKey = (date: Date) => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
-const empty = (): UsageCounters => ({ requests: 0, prompt_tokens: 0, completion_tokens: 0, errors: 0, rejected: 0, yougori: 0, api: 0 })
+const empty = (): UsageCounters => ({ requests: 0, prompt_tokens: 0, completion_tokens: 0, errors: 0, rejected: 0, yougori: 0, api: 0, images: 0, output_ms: 0, compute_ms: 0 })
 
 /** Groups the server's hourly buckets into the last `days` local calendar days, oldest first. */
 export function usageByDay(usage: ModelUsage, days: number, now = new Date()): UsageDay[] {

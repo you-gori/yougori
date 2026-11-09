@@ -51,7 +51,7 @@ it("passes explicit native compute and memory through the ordinary model launch"
   fireEvent.change(screen.getByLabelText("Compute"), { target: { value: "cpu" } })
   fireEvent.change(screen.getByLabelText("Model memory (GB)"), { target: { value: "12" } })
   fireEvent.click(screen.getByRole("button", { name: "Run model" }))
-  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, undefined, "cpu", 12))
+  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, undefined, "cpu", 12, undefined, undefined))
 })
 
 it("rejects an unsupported decision model before creating a chat environment", async () => {
@@ -93,7 +93,7 @@ it("passes GGUF quantization and shares the created model for free", async () =>
   fireEvent.change(await screen.findByLabelText("GGUF quantization (optional)"), { target: { value: "Q8_0" } })
   fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
   fireEvent.click(screen.getByRole("button", { name: "Run model" }))
-  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0", undefined, "auto", undefined))
+  await waitFor(() => expect(run).toHaveBeenCalledWith("hf.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0", null, "Q8_0", undefined, "auto", undefined, undefined, undefined))
   await waitFor(() => expect(market.share).toHaveBeenCalledWith("new-model", "free", false))
 })
 
@@ -277,7 +277,7 @@ it("mounts local model files and publishes closed weights from the same created 
   fireEvent.click(screen.getByRole("button", { name: "Free (--nowfree)" }))
   fireEvent.click(screen.getByRole("checkbox", { name: /Closed weights/ }))
   fireEvent.click(screen.getByRole("button", { name: "Run model" }))
-  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, "D:/Models/private", "auto", undefined))
+  await waitFor(() => expect(run).toHaveBeenCalledWith(expect.any(String), null, undefined, "D:/Models/private", "auto", undefined, undefined, undefined))
   expect(preflight).toHaveBeenCalledWith(expect.any(String), undefined, "D:/Models/private")
   await waitFor(() => expect(market.share).toHaveBeenCalledWith("local-model", "free", true))
 })

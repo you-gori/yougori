@@ -31,7 +31,8 @@ STREAM_SILENCE = 45
 # A request handed over while the previous one's slot is being freed waits this long for it; the
 # website fails a request over if it is not acknowledged within eight seconds.
 ACK_WAIT = 5
-LIMIT = 3 * 1024 * 1024
+# One request from the website on the stream: a media job carries its image input (at most 16 MiB).
+LIMIT = 32 * 1024 * 1024
 
 
 class SiteError(Exception):
