@@ -12,7 +12,7 @@ const unix = path => path.replaceAll("\\", "/").replace(/^([A-Za-z]):/, (_, driv
 const unpinned = readFileSync(new URL("./install/install.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n")
 const script = pinAppleTeam(unpinned, "AB12CD34EF")
 
-function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manifestUrl = "https://fixture.invalid/latest.json", badHash = false, aptExit = "0", skillExit = "0", engineOnly = "0", os = "Linux", arch = "x86_64", assetKey = "linux-x86_64", shell = "/bin/bash", startEngine = "1", shadowCli = false, profiles = {}, source = script, allowUnsigned = "", codesignExit = "0" } = {}) {
+function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manifestUrl = "https://fixture.invalid/latest.json", badHash = false, aptExit = "0", skillExit = "0", engineOnly = "0", os = "Linux", arch = "x86_64", assetKey = "linux-x86_64", shell = "/bin/bash", startEngine = "1", shadowCli = false, profiles = {}, source = script, allowUnsigned = "", codesignExit = "0", desktop = "", runningEngine = false, sudoExit = "0" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "yougori-installer-"))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const bin = join(root, "bin")
@@ -21,8 +21,10 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
     uname: 'if [ "$1" = "-s" ]; then echo "$FIXTURE_OS"; else echo "$FIXTURE_ARCH"; fi',
     id: 'echo 1000',
     curl: 'printf "%s\\n" "$@" >> "$FIXTURE_CURL_LOG"; case "$*" in *latest.json*) printf "%s" "$FIXTURE_MANIFEST" ;; *) while [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then shift; printf "package" > "$1"; exit 0; fi; shift; done; exit 1 ;; esac',
-    sudo: 'exec "$@"',
-    "apt-get": 'printf "%s\\n" "$@" > "$FIXTURE_APT_LOG"; exit "$FIXTURE_APT_EXIT"',
+    sudo: 'printf "sudo %s\\n" "$*" >> "$FIXTURE_ORDER_LOG"; if [ "$1" = "-v" ]; then exit "$FIXTURE_SUDO_EXIT"; fi; exec "$@"',
+    "apt-get": 'printf "apt-get %s\\n" "$1" >> "$FIXTURE_ORDER_LOG"; printf "%s\\n" "$@" > "$FIXTURE_APT_LOG"; exit "$FIXTURE_APT_EXIT"',
+    // The installed desktop package, when FIXTURE_DESKTOP names its version.
+    "dpkg-query": '[ -n "$FIXTURE_DESKTOP" ] || exit 1; case "$*" in *Status*) printf "install ok installed" ;; *Version*) printf "%s" "$FIXTURE_DESKTOP" ;; esac',
     ln: '[ "$1" = "-sf" ] && { [ "$2" = "/usr/bin/yougori" ] || [ "$2" = "$HOME/.local/opt/yougori-engine/cli/yougori" ]; } && [ "$3" = "$HOME/.local/bin/yougori" ] && cp "$FIXTURE_BIN/yougori" "$3" && chmod 755 "$3"',
     tar: 'while [ "$#" -gt 0 ]; do if [ "$1" = "-C" ]; then shift; mkdir -p "$1/cli"; printf "fixture engine" > "$1/yougori-engine"; printf "fixture cli" > "$1/cli/yougori"; exit 0; fi; shift; done; exit 1',
     codesign: 'printf "%s\\n" "$*" >> "$FIXTURE_CODESIGN_LOG"; exit "$FIXTURE_CODESIGN_EXIT"',
@@ -41,6 +43,14 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
   const home = join(root, "home")
   mkdirSync(home)
   for (const [name, text] of Object.entries(profiles)) writeFileSync(join(home, name), text)
+  const orderLog = join(root, "order.log")
+  if (runningEngine) {
+    // A standalone engine beside the app, running until its CLI is asked to quit.
+    const engineCli = join(home, ".local/opt/yougori-engine/cli/yougori")
+    mkdirSync(join(engineCli, ".."), { recursive: true })
+    writeFileSync(engineCli, '#!/bin/sh\nprintf "engine %s\\n" "$*" >> "$FIXTURE_ORDER_LOG"\ncase "$2" in status) [ ! -f "$FIXTURE_ORDER_LOG.stopped" ] ;; quit) : > "$FIXTURE_ORDER_LOG.stopped" ;; esac\n')
+    chmodSync(engineCli, 0o755)
+  }
   const cliLog = join(root, "cli.log")
   const codesignLog = join(root, "codesign.log")
   const curlLog = join(root, "curl.log")
@@ -52,7 +62,7 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
   }
   const env = { ...process.env, HOME: unix(home), SHELL: shell, YOUGORI_START_ENGINE: startEngine, FIXTURE_CLI_LOG: unix(cliLog), FIXTURE_BIN: unix(bin), FIXTURE_OS: os,
       FIXTURE_ARCH: arch, FIXTURE_SKILL_EXIT: skillExit, YOUGORI_ENGINE_ONLY: engineOnly, YOUGORI_AUTOSTART: "", YOUGORI_RELEASES_URL: manifestUrl,
-      FIXTURE_APT_LOG: unix(log), FIXTURE_APT_EXIT: aptExit, FIXTURE_CODESIGN_LOG: unix(codesignLog), FIXTURE_CODESIGN_EXIT: codesignExit, YOUGORI_ALLOW_UNSIGNED: allowUnsigned, FIXTURE_CURL_LOG: unix(curlLog), FIXTURE_SHADOW: shadowCli ? unix(shadow) : "", FIXTURE_HOME_BIN: shadowCli ? unix(join(home, ".local/bin")) : "",
+      FIXTURE_APT_LOG: unix(log), FIXTURE_APT_EXIT: aptExit, FIXTURE_ORDER_LOG: unix(orderLog), FIXTURE_DESKTOP: desktop, FIXTURE_SUDO_EXIT: sudoExit, FIXTURE_CODESIGN_LOG: unix(codesignLog), FIXTURE_CODESIGN_EXIT: codesignExit, YOUGORI_ALLOW_UNSIGNED: allowUnsigned, FIXTURE_CURL_LOG: unix(curlLog), FIXTURE_SHADOW: shadowCli ? unix(shadow) : "", FIXTURE_HOME_BIN: shadowCli ? unix(join(home, ".local/bin")) : "",
       FIXTURE_MANIFEST: JSON.stringify({ version: "1.0.0", assets: { [assetKey]: { url: assetUrl ?? `https://fixture.invalid/Yougori.${extension}${assetQuery}`, sha256: badHash ? "0".repeat(64) : sha } } }),
   }
   if (engineOnly === null) delete env.YOUGORI_ENGINE_ONLY
@@ -61,7 +71,7 @@ function install(t, { extension = "deb", assetQuery = "", assetUrl = null, manif
   })
   const result = rerun()
   if (result.error) throw result.error
-  return { result, rerun, home, codesign: existsSync(codesignLog) ? readFileSync(codesignLog, "utf8") : "", curl: existsSync(curlLog) ? readFileSync(curlLog, "utf8") : "", cli: existsSync(cliLog) ? readFileSync(cliLog, "utf8") : "", apt: existsSync(log) ? readFileSync(log, "utf8") : null, engineInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/yougori-engine")), cliInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/cli/yougori")) }
+  return { result, rerun, home, order: existsSync(orderLog) ? readFileSync(orderLog, "utf8") : "", codesign: existsSync(codesignLog) ? readFileSync(codesignLog, "utf8") : "", curl: existsSync(curlLog) ? readFileSync(curlLog, "utf8") : "", cli: existsSync(cliLog) ? readFileSync(cliLog, "utf8") : "", apt: existsSync(log) ? readFileSync(log, "utf8") : null, engineInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/yougori-engine")), cliInstalled: existsSync(join(root, "home/.local/opt/yougori-engine/cli/yougori")) }
 }
 
 test("Unix installer refuses unsafe manifest and download URLs before installing", t => {
@@ -207,4 +217,53 @@ test("Linux download installer reports package manager failures", t => {
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /package installation failed/)
   assert.doesNotMatch(result.stdout, /is installed/)
+})
+
+test("Linux updates the installed desktop app by default instead of adding an engine beside it", t => {
+  const { result, apt, engineInstalled, curl, cli } = install(t, { engineOnly: null, desktop: "0.9.0" })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Downloading Yougori 1\.0\.0 to update the desktop app \(now 0\.9\.0\)\.\.\./)
+  assert.match(apt, /^install\n-y\n.*Yougori\.deb\n$/)
+  assert.equal(engineInstalled, false)
+  assert.match(curl, /Yougori\.deb\?source=command/)
+  assert.equal(cli, "skills install\napp start\ndoctor --format table\n")
+  assert.match(result.stdout, /Yougori 1\.0\.0 is installed\. Try/)
+})
+
+test("Linux asks for administrator access, then stops Yougori, then replaces the desktop app", t => {
+  const { result, order } = install(t, { engineOnly: null, desktop: "0.9.0", runningEngine: true })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(order, /^sudo -v\nengine app status\nengine app quit --yes\nengine app status\nsudo apt-get install -y \S+Yougori\.deb\napt-get install\n$/)
+})
+
+test("Linux leaves Yougori running when administrator access is refused", t => {
+  const { result, order, apt } = install(t, { engineOnly: null, desktop: "0.9.0", runningEngine: true, sudoExit: "1" })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /administrator access is needed to install the package\. Nothing was changed\./)
+  assert.equal(order, "sudo -v\n")
+  assert.equal(apt, null)
+})
+
+test("Linux skips the download when the desktop app is already this release, and starts it", t => {
+  const { result, apt, curl, cli } = install(t, { engineOnly: null, desktop: "1.0.0" })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(apt, null)
+  assert.doesNotMatch(curl, /Yougori\.deb/)
+  assert.match(result.stdout, /The Yougori desktop app 1\.0\.0 is up to date\./)
+  assert.equal(cli, "skills install\napp start\ndoctor --format table\n")
+  assert.match(result.stdout, /Yougori 1\.0\.0 is up to date\. Try: yougori status/)
+})
+
+test("Linux reinstalls an up-to-date desktop app when YOUGORI_ENGINE_ONLY=0 asks for it", t => {
+  const { result, apt } = install(t, { engineOnly: "0", desktop: "1.0.0" })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(apt, /Yougori\.deb\n$/)
+})
+
+test("YOUGORI_ENGINE_ONLY=1 installs the engine alone even beside the desktop app", t => {
+  const { result, apt, engineInstalled } = install(t, { engineOnly: "1", desktop: "0.9.0", assetKey: "linux-x86_64-engine", extension: "tar.gz" })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(apt, null)
+  assert.equal(engineInstalled, true)
+  assert.match(result.stdout, /engine only, no desktop app/)
 })

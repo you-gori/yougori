@@ -3,20 +3,31 @@
 //! The release manifest (served by yougori.com, written by scripts/release-manifest.mjs):
 //! `{"version":"1.2.0","notes":"…","assets":{"windows-x86_64":{"url":"https://…/Yougori_1.2.0_x64-setup.exe","sha256":"…"},
 //!   "windows-x86_64-engine":{"url":"https://…/yougori-engine-1.2.0-windows-x86_64.zip","sha256":"…"}}}`
-//! A download must match its SHA-256. On Windows every Yougori-built executable in it must carry a
-//! valid signature from the same publisher as the installed copy, and on macOS the same Developer
-//! ID team, so a compromised website alone cannot ship one. The third-party runtime is checked
-//! against its own SHA256SUMS. Linux packages have no publisher signature: engine updates there
-//! need an explicit `YOUGORI_ALLOW_UNSIGNED=1`, the same trust as re-running install.sh.
-//! `-engine` assets are archives of the standalone engine for installs without the desktop app.
+//! A download must match its SHA-256. A signed installation takes only an update signed by its
+//! own publisher (on Windows every Yougori-built executable, by the same certificate subject; on
+//! macOS the same Developer ID team), so a compromised website alone cannot ship one; it leaves an
+//! unsigned preview to the person unless `YOUGORI_ALLOW_UNSIGNED=1`. An unsigned installation (the
+//! previews so far, and every Linux package, which has no publisher signature) trusts the website
+//! as its installer did: its updates are checked against the published SHA-256 alone, once the
+//! person confirms. The third-party runtime is checked against its own SHA256SUMS. `-engine`
+//! assets are archives of the standalone engine for installs without the desktop app.
+//!
+//! An update runs in three steps. [`offer`] decides, before any download, whether this
+//! installation can take the release in place; [`prepare`] downloads and checks it; [`finish`]
+//! stops Yougori, installs the update and starts Yougori again. The desktop app's Update button
+//! runs the first two itself, then hands the installer over and quits.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{io::Write, sync::atomic::{AtomicBool, Ordering}};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 /// Set once an update or an uninstall starts replacing or removing Yougori: from there on,
 /// stopping part way would leave Yougori broken, so the command finishes even after Ctrl+C.
 static COMMITTED: AtomicBool = AtomicBool::new(false);
-
 /// Whether this process has started replacing or removing Yougori (see [`COMMITTED`]).
 pub fn committed() -> bool {
     COMMITTED.load(Ordering::SeqCst)
@@ -110,9 +121,12 @@ async fn manifest(key: &str) -> Result<(Value, &'static str), String> {
     } else { None };
     choose_manifest(stable, preview, key)
 }
-
 pub async fn check() -> Result<Value, String> {
-    let key = asset_key(engine_only_install());
+    check_for(engine_only_install()).await
+}
+
+async fn check_for(engine_only: bool) -> Result<Value, String> {
+    let key = asset_key(engine_only);
     let (manifest, channel) = manifest(&key).await?;
     let mut status = compare_asset(&manifest, env!("CARGO_PKG_VERSION"), &key)?;
     status["channel"] = channel.into();
@@ -176,69 +190,486 @@ fn signer(path: &std::path::Path) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-pub async fn install(yes: bool) -> Result<Value, String> {
-    let status = check().await?;
+/// An update this installation can take in place, decided before anything is downloaded.
+#[derive(Clone, Debug)]
+pub struct Plan {
+    pub current: String,
+    pub latest: String,
+    pub channel: String,
+    pub notes: String,
+    /// The standalone engine, updated from its `-engine` archive; otherwise the desktop app.
+    pub engine_only: bool,
+    url: String,
+    sha256: String,
+    /// The publisher every Yougori executable in the update must be signed by: the installed
+    /// copy's. `None` for an unsigned installation, whose updates match the SHA-256 alone.
+    publisher: Option<String>,
+}
+
+impl Plan {
+    /// No publisher signature to match: the update is checked against the published SHA-256 only.
+    pub fn unsigned(&self) -> bool {
+        self.publisher.is_none()
+    }
+
+    /// The answer when a script runs `update` without `--yes`.
+    pub fn needs_confirmation(&self) -> Value {
+        json!({"updateAvailable": true, "current": self.current, "latest": self.latest, "channel": self.channel,
+            "notes": self.notes, "unsigned": self.unsigned(),
+            "next": "Run `yougori update --yes` to install it. Yougori stops while it updates, then starts again."})
+    }
+}
+
+/// What `yougori update` finds.
+pub enum Offer {
+    /// Nothing newer: the answer to print.
+    Current(Value),
+    /// A newer release this installation cannot take in place; the answer says where to get it.
+    Elsewhere(Value),
+    /// A newer release to install in place.
+    Ready(Plan),
+}
+
+/// Whether the installation this CLI belongs to can take the newest release in place.
+pub async fn offer() -> Result<Offer, String> {
+    let engine_only = engine_only_install();
+    let executable = if engine_only {
+        crate::client::engine_executable()
+    } else {
+        crate::client::desktop_executable(None).ok()
+    };
+    offer_for(engine_only, executable).await
+}
+
+/// [`offer`] for the desktop app running as `app`.
+pub async fn offer_for_app(app: PathBuf) -> Result<Offer, String> {
+    offer_for(false, Some(app)).await
+}
+
+async fn offer_for(engine_only: bool, executable: Option<PathBuf>) -> Result<Offer, String> {
+    let status = check_for(engine_only).await?;
+    // Reading a signature takes a moment on Windows: only when there is something to install.
+    let publisher = executable.as_deref().filter(|_| status["updateAvailable"] == true).and_then(publisher_of);
+    decide(&status, engine_only, executable.as_deref(), publisher, allow_unsigned())
+}
+
+/// The decision of [`offer`], from the release check and the installation as it was found.
+fn decide(status: &Value, engine_only: bool, executable: Option<&Path>, publisher: Option<String>, allow_unsigned: bool) -> Result<Offer, String> {
     if status["updateAvailable"] != true {
-        return Ok(json!({"upToDate": true, "version": status["current"]}));
+        return Ok(Offer::Current(json!({"upToDate": true, "version": status["current"]})));
     }
-    let url = status["download"].as_str().ok_or_else(|| format!("No {} download in this release yet", status["platform"].as_str().unwrap_or("")))?.to_owned();
-    if status["channel"] == "preview" {
-        return Ok(json!({"updateAvailable": true, "latest": status["latest"], "channel": "preview", "notes": status["notes"], "next": "This unsigned preview uses the explicit preview installer. Finish your work, then use the installation command at https://yougori.com/#install-cli or download the app at https://yougori.com/#download. Your environments remain running until you install."}));
+    let text = |key: &str| status[key].as_str().unwrap_or_default().to_owned();
+    let url = status["download"].as_str().ok_or_else(|| format!("No {} download in this release yet", text("platform")))?.to_owned();
+    let latest = text("latest");
+    let elsewhere = |next: String| Offer::Elsewhere(json!({"updateAvailable": true, "current": status["current"], "latest": status["latest"],
+        "channel": status["channel"], "notes": status["notes"], "next": next}));
+    let Some(executable) = executable else {
+        return Ok(elsewhere(format!("Download Yougori {latest} at https://yougori.com/#download.")));
+    };
+    if let Some(next) = not_in_place(engine_only, executable, &latest) {
+        return Ok(elsewhere(next));
     }
-    if !yes {
-        return Ok(json!({"updateAvailable": true, "latest": status["latest"], "notes": status["notes"], "next": "Run `yougori update --yes` to download and install it. Yougori stops its workloads while it updates."}));
+    let preview = text("channel") == "preview";
+    let publisher = match publisher {
+        Some(_) if preview && allow_unsigned => None,
+        Some(_) if preview => return Ok(elsewhere(format!("Yougori {latest} is an unsigned preview and this Yougori is signed, so it is not installed in place. Download it at https://yougori.com/#download, or set YOUGORI_ALLOW_UNSIGNED=1 and run `yougori update --yes` to accept it."))),
+        publisher => publisher,
+    };
+    Ok(Offer::Ready(Plan { current: text("current"), latest, channel: text("channel"), notes: text("notes"), engine_only, url, sha256: text("sha256"), publisher }))
+}
+
+/// Why this installation cannot take an update in place, if it cannot.
+fn not_in_place(engine_only: bool, executable: &Path, latest: &str) -> Option<String> {
+    let download = format!("Download Yougori {latest} at https://yougori.com/#download.");
+    if development_build(executable) {
+        return Some(format!("This Yougori is a development build, updated from source. {download}"));
     }
-    if engine_only_install() && !cfg!(windows) && !cfg!(target_os = "macos") && !allow_unsigned() {
-        return Ok(json!({"updateAvailable": true, "latest": status["latest"], "verified": false, "next": "Linux engine packages are verified only by the website's SHA-256, without a publisher signature. Re-run the installer (curl -fsSL https://yougori.com/install.sh | sh), or set YOUGORI_ALLOW_UNSIGNED=1 and run `yougori update --yes` to accept it."}));
+    if engine_only {
+        return None;
     }
+    // The per-user setup updates only an app it installed itself, with its uninstaller beside it.
+    if cfg!(windows) && !executable.with_file_name("uninstall.exe").is_file() {
+        return Some(format!("This Yougori was installed from the MSI package or by hand, which `yougori update` does not replace. {download}"));
+    }
+    if cfg!(target_os = "linux") && executable != Path::new("/usr/bin/yougori-desktop") {
+        return Some(format!("This Yougori was not installed from the Debian package, which `yougori update` replaces. {download}"));
+    }
+    None
+}
+
+/// A build in the source tree this CLI was compiled from. Installed copies never live there.
+fn development_build(executable: &Path) -> bool {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().is_some_and(|tree| executable.starts_with(tree))
+}
+
+/// The publisher a Yougori executable is signed by; `None` when it is not signed.
+#[cfg(windows)]
+fn publisher_of(path: &Path) -> Option<String> {
+    signer(path).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn publisher_of(path: &Path) -> Option<String> {
+    codesign_team(path).ok().flatten()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn publisher_of(_: &Path) -> Option<String> {
+    None
+}
+
+/// Asks a person at a terminal to confirm. Anything but Install leaves everything as it is.
+pub fn ask(plan: &Plan) -> Result<(), String> {
+    use crate::cli_ui::{self as ui, Choice};
+    let what = if plan.engine_only { "the engine" } else { "the desktop app" };
+    let mut note = vec![format!("Installed: {}, {what}.", plan.current)];
+    if plan.unsigned() {
+        note.push("It has no publisher signature: Yougori checks it against the SHA-256 published on yougori.com.".into());
+    }
+    note.push("Yougori stops its workloads while it updates, then starts again.".into());
+    let choices = [Choice::new("Install", "download, check and install it now"), Choice::new("Not now", "nothing changes")];
+    match ui::select(&format!("Install Yougori {}?", plan.latest), &note, &choices, 0)? {
+        0 => Ok(()),
+        _ => Err(crate::wire::cancelled("Nothing was installed.")),
+    }
+}
+
+/// A downloaded and checked update, ready to install.
+pub struct Prepared {
+    pub plan: Plan,
+    folder: PathBuf,
+    package: PathBuf,
+    /// The unpacked engine archive; `None` for the desktop app's installer.
+    staged: Option<PathBuf>,
+}
+
+/// Downloads the update and checks it: the SHA-256, and the installed copy's publisher on
+/// everything Yougori built in it. Nothing stops or changes yet, and Ctrl+C leaves nothing behind.
+pub async fn prepare(plan: Plan) -> Result<Prepared, String> {
     remove_stale_downloads();
     let folder = tempfile::Builder::new().prefix(UPDATE_PREFIX).tempdir().map_err(|e| e.to_string())?.keep();
-    let installer = folder.join(download_name(&url));
-    // Ctrl+C during the download leaves nothing behind. The spinner this runs under abandons the
-    // whole call rather than returning here, so the removal has to happen on the way out: a plain
-    // `remove_dir_all` after an early return would simply never run. Disarmed once the files are
-    // in place, because after that point the folder is the installer the update is running from.
-    let mut downloaded = Scratch(Some(folder.clone()));
-    if let Err(error) = download(&url, status["sha256"].as_str().unwrap_or(""), &installer).await {
-        return Err(error);
+    // The spinner this runs under abandons the whole call on Ctrl+C rather than returning here,
+    // so the folder goes on the way out. Disarmed once the update is ready to install.
+    let mut scratch = Scratch(Some(folder.clone()));
+    let package = folder.join(download_name(&plan.url));
+    download(&plan.url, &plan.sha256, &package).await?;
+    let staged = if plan.engine_only {
+        Some(unpack_engine(&package, &folder, plan.publisher.as_deref())?)
+    } else {
+        check_installer(&package, plan.publisher.as_deref())?;
+        None
+    };
+    scratch.0 = None;
+    Ok(Prepared { plan, folder, package, staged })
+}
+
+/// Unpacks an engine archive beside it and checks what it holds.
+fn unpack_engine(archive: &Path, folder: &Path, publisher: Option<&str>) -> Result<PathBuf, String> {
+    let staged = folder.join("unpacked");
+    std::fs::create_dir_all(&staged).map_err(|e| e.to_string())?;
+    // Windows' own bsdtar reads zip archives; a GNU tar earlier on PATH would not.
+    let tar = if cfg!(windows) { Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32").join("tar.exe") } else { "tar".into() };
+    let unpacked = std::process::Command::new(tar).arg("-xf").arg(archive).arg("-C").arg(&staged).status().map_err(|e| format!("Cannot unpack the update: {e}"))?;
+    if !unpacked.success() {
+        return Err("Cannot unpack the update; nothing was changed".into());
     }
-    if engine_only_install() {
-        // The archive and its unpacked copy are not needed once the files are in place.
-        commit();
-        return replace_engine(&installer, &folder, &status).await;
+    let engine = staged.join(if cfg!(windows) { "yougori-engine.exe" } else { "yougori-engine" });
+    let cli = staged.join("cli").join(if cfg!(windows) { "yougori.exe" } else { "yougori" });
+    if !engine.is_file() {
+        return Err("The update does not contain the engine; nothing was changed".into());
     }
-    #[cfg(windows)]
-    {
-        // An installer that fails its signature check is not kept on disk.
-        let verified = (|| {
-            let current = crate::client::desktop_executable(None)?;
-            let expected = signer(&current).map_err(|_| "This Yougori is a development build without a signature; update it from source instead".to_string())?;
-            if signer(&installer)? != expected {
-                return Err("The installer is signed by a different publisher than your Yougori; nothing was installed".to_string());
-            }
-            Ok(())
-        })();
-        if let Err(error) = verified {
-            return Err(error);
+    if !cli.is_file() {
+        return Err("The update does not contain the CLI; nothing was changed".into());
+    }
+    let payloads = signed_payloads(&staged)?;
+    if let Some(publisher) = publisher {
+        verify_payloads(&staged, &payloads, [engine.as_path(), cli.as_path()], publisher)?;
+    }
+    Ok(staged)
+}
+
+#[cfg(windows)]
+fn verify_payloads(staged: &Path, payloads: &[PathBuf], _: [&Path; 2], publisher: &str) -> Result<(), String> {
+    for binary in payloads {
+        if signer(binary).ok().as_deref() != Some(publisher) {
+            return Err(format!("{} is not signed by your Yougori's publisher; nothing was changed", binary.strip_prefix(staged).unwrap_or(binary).display()));
         }
-        // The installer is this folder's reason to exist from here on, and it runs after this
-        // command returns, so the folder stays. `remove_stale_downloads` collects it next time.
-        downloaded.0 = None;
-        commit();
-        // Workloads stop gracefully before files are replaced.
-        let mut quit = crate::client::request("app_quit", json!({}));
-        quit.confirmed = true;
-        let _ = crate::client::call(&quit).await;
-        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-        std::process::Command::new(&installer).arg("/S").spawn().map_err(|e| format!("Cannot start the installer: {e}"))?;
-        return Ok(json!({"installing": status["latest"], "installer": installer, "next": "The installer runs in the background. Run `yougori doctor` when it finishes."}));
     }
-    #[cfg(not(windows))]
-    {
-        // The person opens this installer themselves, so it must still be there afterwards.
-        downloaded.0 = None;
-        Ok(json!({"downloaded": installer, "version": status["latest"], "next": "Open the downloaded installer to finish updating."}))
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn verify_payloads(staged: &Path, _: &[PathBuf], binaries: [&Path; 2], team: &str) -> Result<(), String> {
+    for binary in binaries {
+        if !codesign_verify(binary, team) {
+            return Err(format!("{} is not signed by your Yougori's Developer ID team; nothing was changed", binary.strip_prefix(staged).unwrap_or(binary).display()));
+        }
     }
+    Ok(())
+}
+
+/// Checks a downloaded desktop installer before anything stops.
+fn check_installer(installer: &Path, publisher: Option<&str>) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Some(publisher) = publisher {
+        if signer(installer).ok().as_deref() != Some(publisher) {
+            return Err("The installer is not signed by your Yougori's publisher; nothing was installed".into());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if !installer.extension().is_some_and(|extension| extension == "deb") {
+        return Err("This release's Linux download is not a Debian package; nothing was installed".into());
+    }
+    let _ = (installer, publisher);
+    Ok(())
+}
+
+/// At a terminal, before anything stops, asks for the administrator access the Linux package
+/// needs, so a refused password leaves Yougori running. Elsewhere there is nothing to ask.
+pub fn authorize(prepared: &Prepared) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if prepared.staged.is_none() && unsafe { libc::geteuid() } != 0 && crate::cli_ui::can_prompt() {
+        let asked = std::process::Command::new("sudo").arg("-v").status().map_err(|e| format!("Cannot run sudo: {e}"))?;
+        if !asked.success() {
+            return Err("Administrator access is needed to install the Yougori package; nothing was changed.".into());
+        }
+    }
+    let _ = prepared;
+    Ok(())
+}
+
+/// Stops Yougori, installs the prepared update and starts Yougori again if it was running.
+/// From the stop on, the update finishes even after Ctrl+C (see [`committed`]).
+pub async fn finish(prepared: Prepared) -> Result<Value, String> {
+    if prepared.staged.is_some() {
+        finish_engine(prepared).await
+    } else {
+        finish_desktop(prepared).await
+    }
+}
+
+/// Whether Yougori runs now, and if so whether without its dashboard.
+async fn running_yougori() -> Option<bool> {
+    crate::client::call(&crate::client::request("app_status", json!({}))).await.ok().map(|status| status["headless"] != false)
+}
+
+/// Stops Yougori if it runs, the way `yougori app quit --yes` does, and says whether it ran.
+async fn stop_yougori() -> Result<Option<bool>, String> {
+    let running = running_yougori().await;
+    commit();
+    if running.is_some() {
+        crate::client::quit().await.map_err(|error| format!("Yougori did not stop, so nothing was installed: {error}"))?;
+    }
+    Ok(running)
+}
+
+/// Starts Yougori with the CLI just installed, which knows how to start its own version.
+async fn start_installed(cli: &Path) -> Result<(), String> {
+    let output = tokio::process::Command::new(cli).args(["app", "start", "--format", "json"]).stdin(Stdio::null()).output().await
+        .map_err(|e| format!("Cannot start Yougori: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(tail(&output.stdout, &output.stderr))
+    }
+}
+
+/// Starts Yougori again with the CLI just installed if it ran before the update; whether it
+/// started, and what to tell the person.
+async fn start_again(running: Option<bool>, cli: &Path) -> (bool, String) {
+    match running {
+        None => (false, "Start it with `yougori app start`.".into()),
+        Some(_) => match start_installed(cli).await {
+            Ok(()) => (true, "Yougori runs the new version.".into()),
+            Err(error) => (false, format!("The update is installed, but Yougori did not start again ({error}). Run `yougori doctor`.")),
+        },
+    }
+}
+
+/// The end of what a failed command printed, for its error.
+fn tail(stdout: &[u8], stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(if stderr.iter().any(|b| !b.is_ascii_whitespace()) { stderr } else { stdout }).trim().to_owned();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(3)..].join(" ")
+}
+
+async fn finish_engine(prepared: Prepared) -> Result<Value, String> {
+    let Prepared { plan, folder, staged, .. } = prepared;
+    let staged = staged.ok_or("The engine update was not unpacked")?;
+    let current = crate::client::engine_executable().ok_or("The standalone engine was not found")?;
+    let target = current.parent().ok_or("Cannot locate the engine folder")?.to_path_buf();
+    let running = stop_yougori().await?;
+    remove_old_executables(&target);
+    copy_over(&staged, &target)?;
+    let _ = std::fs::remove_dir_all(&folder);
+    let cli = target.join("cli").join(if cfg!(windows) { "yougori.exe" } else { "yougori" });
+    let (started, next) = start_again(running, &cli).await;
+    Ok(json!({"updated": plan.latest, "folder": target, "started": started, "next": next}))
+}
+
+#[cfg(windows)]
+async fn finish_desktop(prepared: Prepared) -> Result<Value, String> {
+    let running = stop_yougori().await?;
+    // The installer works after this command ends: it closes every running yougori.exe, this one
+    // included. /UPDATE keeps the shortcuts as they are; /R opens Yougori again as it ran.
+    let mut arguments = vec!["/S", "/UPDATE"];
+    if let Some(headless) = running {
+        arguments.push("/R");
+        if headless {
+            arguments.extend(["/ARGS", "--headless"]);
+        }
+    }
+    std::process::Command::new(&prepared.package).args(&arguments).spawn().map_err(|e| format!("Cannot start the installer: {e}"))?;
+    let next = if running.is_some() {
+        "The installer runs in the background and starts Yougori again in about a minute."
+    } else {
+        "The installer runs in the background for about a minute. Then start Yougori with `yougori app start`."
+    };
+    Ok(json!({"installing": prepared.plan.latest, "restarts": running.is_some(), "next": next}))
+}
+
+#[cfg(target_os = "linux")]
+async fn finish_desktop(prepared: Prepared) -> Result<Value, String> {
+    let Some(mut apt) = apt_command() else {
+        // Without administrator access nothing stops: the person finishes it.
+        return Ok(json!({"downloaded": prepared.package, "version": prepared.plan.latest,
+            "next": format!("Finish as administrator with `sudo apt-get install -y {}`, then run `yougori app quit --yes` and `yougori app start`.", prepared.package.display())}));
+    };
+    let running = stop_yougori().await?;
+    apt.args(["install", "-y"]).arg(&prepared.package).stdin(Stdio::null());
+    let installed = tokio::task::spawn_blocking(move || apt.output()).await.map_err(|e| e.to_string())?.map_err(|e| format!("Cannot run apt-get: {e}"))?;
+    if !installed.status.success() {
+        let stopped = if running.is_some() { " Yougori was stopped for the update: start it again with `yougori app start`." } else { "" };
+        return Err(format!("apt-get could not install the package ({}).{stopped}", tail(&installed.stdout, &installed.stderr)));
+    }
+    let _ = std::fs::remove_dir_all(&prepared.folder);
+    let (started, next) = start_again(running, Path::new("/usr/bin/yougori")).await;
+    Ok(json!({"updated": prepared.plan.latest, "started": started, "next": next}))
+}
+
+#[cfg(target_os = "macos")]
+async fn finish_desktop(prepared: Prepared) -> Result<Value, String> {
+    // The person opens this installer themselves, so it stays and nothing stops.
+    Ok(json!({"downloaded": prepared.package, "version": prepared.plan.latest, "next": "Open the downloaded installer to finish updating."}))
+}
+
+/// apt-get as administrator: directly as root, or through sudo with credentials already given
+/// (see [`authorize`]). `None` when neither is possible without asking.
+#[cfg(target_os = "linux")]
+fn apt_command() -> Option<std::process::Command> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Some(std::process::Command::new("apt-get"));
+    }
+    let given = std::process::Command::new("sudo").args(["-n", "true"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .status().is_ok_and(|status| status.success());
+    given.then(|| {
+        let mut sudo = std::process::Command::new("sudo");
+        sudo.args(["-n", "apt-get"]);
+        sudo
+    })
+}
+
+/// The desktop app's own Update on Windows. A hidden helper waits until the app (process `app`)
+/// has quit, then runs the installer, which opens the app again. The app quits right after this,
+/// the way its Quit does; if it does not, the update installs whenever it does.
+#[cfg(windows)]
+pub fn install_after_exit(prepared: Prepared, app: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let script = "$ErrorActionPreference = 'SilentlyContinue'; Wait-Process -Id ([int]$env:YOUGORI_UPDATE_AFTER); Start-Process -FilePath $env:YOUGORI_UPDATE_INSTALLER -ArgumentList '/S', '/UPDATE', '/R'";
+    let spawn = |flags: u32| {
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
+            .env("YOUGORI_UPDATE_AFTER", app.to_string())
+            .env("YOUGORI_UPDATE_INSTALLER", &prepared.package)
+            // PowerShell 7's module folders keep Windows PowerShell from loading its own cmdlets.
+            .env_remove("PSModulePath")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+    };
+    // Outside the app's job, when the job allows it, so that quitting the app leaves it running.
+    spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP))
+        .map(drop)
+        .map_err(|e| format!("Cannot start the update: {e}"))
+}
+
+/// The desktop app's own Update on Debian and Ubuntu: the package installs through the desktop's
+/// password dialog (pkexec) while the app runs, then [`reopen_after_exit`] and the app quits.
+#[cfg(target_os = "linux")]
+pub async fn install_with_password_dialog(prepared: &Prepared) -> Result<(), String> {
+    let package = prepared.package.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("pkexec").args(["/usr/bin/apt-get", "install", "-y"]).arg(&package).stdin(Stdio::null()).output()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Cannot ask for administrator access (pkexec): {e}"))?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        // pkexec: the dialog was dismissed or the password refused.
+        Some(126 | 127) => Err("Administrator access was not given; nothing was installed.".into()),
+        _ => Err(format!("The package could not be installed ({}).", tail(&output.stdout, &output.stderr))),
+    }
+}
+
+/// Opens the updated app once this one (process `app`) has quit.
+#[cfg(target_os = "linux")]
+pub fn reopen_after_exit(app: u32) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    std::process::Command::new("sh")
+        .args(["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; exec /usr/bin/yougori-desktop", "yougori-update"])
+        .arg(app.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("Cannot open Yougori again after the update: {e}"))
+}
+
+/// What `yougori update` says at a terminal.
+pub fn summary(result: &Value) -> Vec<String> {
+    use crate::cli_ui as ui;
+    let text = |key: &str| result[key].as_str().unwrap_or_default().to_owned();
+    let newer = result["latest"].is_string() && result["latest"] != result["current"];
+    let (title, detail) = if result["updateAvailable"] == false && result["downloadAvailable"] == false && newer {
+        (format!("Yougori {} has no package for this computer yet", text("latest")), format!("installed {}", text("current")))
+    } else if result["upToDate"] == true || (result["updateAvailable"] == false && result["latest"].is_string()) {
+        let version = if result["version"].is_string() { text("version") } else { text("current") };
+        (format!("Yougori {version} is up to date"), String::new())
+    } else if result["installing"].is_string() {
+        (format!("Installing Yougori {}", text("installing")), "in the background".to_owned())
+    } else if result["updated"].is_string() {
+        (format!("Yougori {} is installed", text("updated")), if result["started"] == true { "and running".to_owned() } else { String::new() })
+    } else if result["downloaded"].is_string() {
+        (format!("Yougori {} is downloaded", text("version")), text("downloaded"))
+    } else {
+        let unsigned = result["unsigned"] == true || result["channel"] == "preview";
+        (format!("Yougori {} is available", text("latest")), format!("installed {}{}", text("current"), if unsigned { ", unsigned preview" } else { "" }))
+    };
+    let mut head = format!("{}  {}", ui::paint("◇", ui::GREEN), ui::bold(&title));
+    if !detail.is_empty() {
+        head = format!("{head}  {}", ui::muted(&detail));
+    }
+    let mut lines = vec![head];
+    let next = if result["next"].is_string() {
+        text("next")
+    } else if result["updateAvailable"] == true {
+        "Install it with `yougori update`.".to_owned()
+    } else {
+        String::new()
+    };
+    if !next.is_empty() {
+        lines.push(format!("{}  {}", ui::muted("└"), ui::muted(&next)));
+    }
+    lines
 }
 
 /// A download folder that is removed however this call ends, including when the spinner around it
@@ -251,71 +682,6 @@ impl Drop for Scratch {
             let _ = std::fs::remove_dir_all(folder);
         }
     }
-}
-
-async fn quit_engine() {
-    let mut quit = crate::client::request("app_quit", json!({}));
-    quit.confirmed = true;
-    if crate::client::call(&quit).await.is_ok() {
-        // Workloads stop gracefully before files are replaced.
-        for _ in 0..120 {
-            if crate::client::call(&crate::client::request("app_status", json!({}))).await.is_err() { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-    }
-}
-
-/// Unpacks a verified engine archive over the engine's folder. Files in use are renamed aside
-/// first (Windows cannot overwrite a running executable, such as this CLI).
-async fn replace_engine(archive: &std::path::Path, folder: &std::path::Path, status: &Value) -> Result<Value, String> {
-    let current = crate::client::engine_executable().ok_or("The standalone engine was not found")?;
-    let target = current.parent().ok_or("Cannot locate the engine folder")?.to_path_buf();
-    remove_old_executables(&target);
-    let staged = folder.join("unpacked");
-    std::fs::create_dir_all(&staged).map_err(|e| e.to_string())?;
-    // Windows' own bsdtar reads zip archives; a GNU tar earlier on PATH would not.
-    let tar = if cfg!(windows) { std::path::Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32").join("tar.exe") } else { "tar".into() };
-    let unpacked = std::process::Command::new(tar).arg("-xf").arg(archive).arg("-C").arg(&staged).status().map_err(|e| format!("Cannot unpack the update: {e}"))?;
-    if !unpacked.success() {
-        return Err("Cannot unpack the update; nothing was changed".into());
-    }
-    let engine_name = current.file_name().ok_or("Invalid engine path")?;
-    let new_engine = staged.join(engine_name);
-    if !new_engine.is_file() {
-        return Err("The update does not contain the engine; nothing was changed".into());
-    }
-    let payloads = signed_payloads(&staged)?;
-    let cli = staged.join("cli").join(if cfg!(windows) { "yougori.exe" } else { "yougori" });
-    if !cli.is_file() {
-        return Err("The update does not contain the CLI; nothing was changed".into());
-    }
-    #[cfg(windows)]
-    {
-        let expected = signer(&current).map_err(|_| "This engine is a development build without a signature; update it from source instead".to_string())?;
-        for binary in &payloads {
-            if signer(binary)? != expected {
-                return Err(format!("{} is not signed by your Yougori's publisher; nothing was changed", binary.strip_prefix(&staged).unwrap_or(binary).display()));
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = payloads;
-        if !allow_unsigned() {
-            if !cfg!(target_os = "macos") {
-                return Err("Linux engine packages have no publisher signature. Set YOUGORI_ALLOW_UNSIGNED=1 to accept this update; nothing was changed".into());
-            }
-            let team = codesign_team(&current)?.ok_or("This engine has no Developer ID signature; update it from source or re-run the installer")?;
-            for binary in [&new_engine, &cli] {
-                if !codesign_verify(binary, &team) {
-                    return Err(format!("{} is not signed by your Yougori's Developer ID team; nothing was changed", binary.strip_prefix(&staged).unwrap_or(binary).display()));
-                }
-            }
-        }
-    }
-    quit_engine().await;
-    copy_over(&staged, &target)?;
-    Ok(json!({"updated": status["latest"], "folder": target, "next": "Run `yougori doctor` to start the updated engine and check it."}))
 }
 
 fn allow_unsigned() -> bool {
@@ -358,14 +724,14 @@ fn team_identifier(details: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn codesign_team(path: &std::path::Path) -> Result<Option<String>, String> {
     let output = std::process::Command::new("codesign").arg("-dv").arg("--verbose=2").arg(path)
         .output().map_err(|e| format!("Cannot inspect the engine signature: {e}"))?;
     Ok(team_identifier(&String::from_utf8_lossy(&output.stderr)))
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn codesign_verify(path: &std::path::Path, team: &str) -> bool {
     std::process::Command::new("codesign").arg("--verify").arg("--strict")
         .arg(format!("-R=anchor apple generic and certificate leaf[subject.OU] = \"{team}\""))
@@ -559,6 +925,207 @@ mod tests {
             assert_eq!(team_identifier(details), None);
         }
     }
+    fn available(channel: &str) -> Value {
+        json!({"current": "1.0.0", "latest": "1.1.0", "updateAvailable": true, "downloadAvailable": true, "notes": "Fixes",
+            "platform": "windows-x86_64", "download": "https://example.com/Yougori_1.1.0_x64-setup.exe", "sha256": "a".repeat(64), "channel": channel})
+    }
+
+    /// An app folder as the per-user setup leaves it, with its uninstaller beside the app, or not.
+    fn installed_app(uninstaller: bool) -> (tempfile::TempDir, PathBuf) {
+        let folder = tempfile::tempdir().unwrap();
+        let app = folder.path().join(if cfg!(windows) { "yougori.exe" } else { "yougori-desktop" });
+        std::fs::write(&app, b"app").unwrap();
+        if uninstaller {
+            std::fs::write(folder.path().join("uninstall.exe"), b"setup").unwrap();
+        }
+        (folder, app)
+    }
+
+    #[test]
+    fn nothing_newer_is_the_whole_answer() {
+        let current = json!({"current": "1.1.0", "latest": "1.1.0", "updateAvailable": false});
+        let Offer::Current(answer) = decide(&current, false, None, None, false).unwrap() else { panic!("not current") };
+        assert_eq!(answer, json!({"upToDate": true, "version": "1.1.0"}));
+    }
+
+    #[test]
+    fn an_unsigned_installation_takes_updates_checked_against_their_hash() {
+        // Every preview so far, and every Linux package.
+        let engine = tempfile::tempdir().unwrap();
+        let path = engine.path().join("yougori-engine");
+        for channel in ["preview", "stable"] {
+            let Offer::Ready(plan) = decide(&available(channel), true, Some(&path), None, false).unwrap() else { panic!("{channel}") };
+            assert!(plan.unsigned());
+            assert_eq!((plan.latest.as_str(), plan.current.as_str(), plan.engine_only), ("1.1.0", "1.0.0", true));
+            let answer = plan.needs_confirmation();
+            assert_eq!((answer["unsigned"].as_bool(), answer["next"].as_str()), (Some(true), Some("Run `yougori update --yes` to install it. Yougori stops while it updates, then starts again.")));
+        }
+    }
+
+    #[test]
+    fn a_signed_installation_keeps_its_publisher_and_leaves_unsigned_previews_to_the_person() {
+        let engine = tempfile::tempdir().unwrap();
+        let path = engine.path().join("yougori-engine");
+        let signed = Some("CN=Yougori".to_owned());
+        let Offer::Ready(plan) = decide(&available("stable"), true, Some(&path), signed.clone(), false).unwrap() else { panic!("stable") };
+        assert!(!plan.unsigned());
+        let Offer::Elsewhere(answer) = decide(&available("preview"), true, Some(&path), signed.clone(), false).unwrap() else { panic!("preview") };
+        assert!(answer["next"].as_str().unwrap().contains("is an unsigned preview and this Yougori is signed"), "{answer}");
+        // YOUGORI_ALLOW_UNSIGNED=1 accepts it, as the website's preview command does.
+        let Offer::Ready(plan) = decide(&available("preview"), true, Some(&path), signed, true).unwrap() else { panic!("allowed") };
+        assert!(plan.unsigned());
+    }
+
+    #[test]
+    fn builds_in_the_source_tree_are_updated_from_source() {
+        let build = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/target/debug/yougori.exe");
+        let Offer::Elsewhere(answer) = decide(&available("preview"), false, Some(&build), None, false).unwrap() else { panic!("build") };
+        assert!(answer["next"].as_str().unwrap().starts_with("This Yougori is a development build"), "{answer}");
+        let Offer::Elsewhere(answer) = decide(&available("preview"), false, None, None, false).unwrap() else { panic!("nothing found") };
+        assert_eq!(answer["next"], "Download Yougori 1.1.0 at https://yougori.com/#download.");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn only_an_app_the_setup_installed_is_updated_in_place() {
+        let (_folder, app) = installed_app(true);
+        assert!(matches!(decide(&available("preview"), false, Some(&app), None, false).unwrap(), Offer::Ready(_)));
+        let (_folder, app) = installed_app(false);
+        let Offer::Elsewhere(answer) = decide(&available("preview"), false, Some(&app), None, false).unwrap() else { panic!("msi") };
+        assert!(answer["next"].as_str().unwrap().contains("MSI package"), "{answer}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_the_debian_package_is_updated_in_place() {
+        let (_folder, app) = installed_app(false);
+        let Offer::Elsewhere(answer) = decide(&available("preview"), false, Some(&app), None, false).unwrap() else { panic!("elsewhere") };
+        assert!(answer["next"].as_str().unwrap().contains("Debian package"), "{answer}");
+        assert!(matches!(decide(&available("preview"), false, Some(Path::new("/usr/bin/yougori-desktop")), None, false).unwrap(), Offer::Ready(_)));
+    }
+
+    fn without_colour(lines: Vec<String>) -> String {
+        let text = lines.join("\n");
+        let mut plain = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() { break; }
+                }
+            } else {
+                plain.push(c);
+            }
+        }
+        plain
+    }
+
+    #[test]
+    fn a_terminal_reads_what_the_update_did() {
+        for (answer, said) in [
+            (json!({"upToDate": true, "version": "1.1.0"}), "◇  Yougori 1.1.0 is up to date"),
+            (json!({"current": "1.1.0", "latest": "1.1.0", "updateAvailable": false, "downloadAvailable": true}), "◇  Yougori 1.1.0 is up to date"),
+            (json!({"current": "1.0.0", "latest": "1.1.0", "updateAvailable": false, "downloadAvailable": false}), "◇  Yougori 1.1.0 has no package for this computer yet  installed 1.0.0"),
+            (json!({"current": "1.0.0", "latest": "1.1.0", "updateAvailable": true, "channel": "preview"}), "◇  Yougori 1.1.0 is available  installed 1.0.0, unsigned preview\n└  Install it with `yougori update`."),
+            (json!({"updateAvailable": true, "current": "1.0.0", "latest": "1.1.0", "channel": "stable", "next": "Download it."}), "◇  Yougori 1.1.0 is available  installed 1.0.0\n└  Download it."),
+            (json!({"installing": "1.1.0", "restarts": true, "next": "It starts again."}), "◇  Installing Yougori 1.1.0  in the background\n└  It starts again."),
+            (json!({"updated": "1.1.0", "started": true, "next": "Yougori runs the new version."}), "◇  Yougori 1.1.0 is installed  and running\n└  Yougori runs the new version."),
+            (json!({"updated": "1.1.0", "started": false, "next": "Start it."}), "◇  Yougori 1.1.0 is installed\n└  Start it."),
+            (json!({"downloaded": "/tmp/Yougori.deb", "version": "1.1.0", "next": "Finish it."}), "◇  Yougori 1.1.0 is downloaded  /tmp/Yougori.deb\n└  Finish it."),
+        ] {
+            assert_eq!(without_colour(summary(&answer)), said);
+        }
+    }
+
+    #[test]
+    fn a_failure_quotes_the_end_of_what_the_command_said() {
+        assert_eq!(tail(b"progress\n", b"E: one\nE: two\nE: three\nE: four\n"), "E: two E: three E: four");
+        assert_eq!(tail(b"only the output\n", b" \n"), "only the output");
+    }
+
+    #[test]
+    fn an_engine_archive_unpacks_beside_it_and_must_hold_the_engine_and_the_cli() {
+        let (engine, cli) = if cfg!(windows) { ("yougori-engine.exe", "cli/yougori.exe") } else { ("yougori-engine", "cli/yougori") };
+        let tar = if cfg!(windows) { Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32").join("tar.exe") } else { "tar".into() };
+        let archive = |names: &[&str]| {
+            let source = tempfile::tempdir().unwrap();
+            for name in names {
+                let path = source.path().join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"fixture").unwrap();
+            }
+            let folder = tempfile::tempdir().unwrap();
+            let file = folder.path().join("engine.tar");
+            assert!(std::process::Command::new(&tar).arg("-cf").arg(&file).arg("-C").arg(source.path()).arg(".").status().unwrap().success());
+            (folder, file)
+        };
+        let (folder, file) = archive(&[engine, cli, "runtime/qemu/qemu.dll", "LICENSE"]);
+        let staged = unpack_engine(&file, folder.path(), None).unwrap();
+        assert!([engine, cli, "runtime/qemu/qemu.dll", "LICENSE"].iter().all(|name| staged.join(name).is_file()));
+        let (folder, file) = archive(&[engine, "LICENSE"]);
+        assert_eq!(unpack_engine(&file, folder.path(), None).unwrap_err(), "The update does not contain the CLI; nothing was changed");
+        let (folder, file) = archive(&[cli, "LICENSE"]);
+        assert_eq!(unpack_engine(&file, folder.path(), None).unwrap_err(), "The update does not contain the engine; nothing was changed");
+    }
+
+    /// A release's own packages pass every check `prepare` makes after the download, before
+    /// anything stops: `YOUGORI_RELEASE_DIR=<release folder> cargo test -- --ignored release_packages`.
+    #[test]
+    #[ignore]
+    fn release_packages_pass_the_checks_made_before_anything_stops() {
+        let release = PathBuf::from(std::env::var_os("YOUGORI_RELEASE_DIR").expect("set YOUGORI_RELEASE_DIR to a release folder"));
+        let find = |prefix: &str, suffix: &str| std::fs::read_dir(&release).unwrap().flatten().map(|entry| entry.path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with(prefix) && path.to_string_lossy().ends_with(suffix))
+            .unwrap_or_else(|| panic!("no {prefix}*{suffix}"));
+        let engine = if cfg!(windows) { find("yougori-engine-", ".zip") } else { find("yougori-engine-", ".tar.gz") };
+        let folder = tempfile::tempdir().unwrap();
+        let staged = unpack_engine(&engine, folder.path(), None).unwrap();
+        let payloads = signed_payloads(&staged).unwrap();
+        assert!(payloads.len() >= 2, "{payloads:?}");
+        assert!(payloads.iter().all(|path| !path.strip_prefix(&staged).unwrap().starts_with("runtime")));
+        #[cfg(windows)]
+        {
+            let setup = find("Yougori_", ".exe");
+            check_installer(&setup, None).unwrap();
+            // An unsigned preview is refused by an installation signed by a publisher.
+            assert!(check_installer(&setup, Some("CN=Yougori")).is_err());
+            assert!(unpack_engine(&engine, tempfile::tempdir().unwrap().path(), Some("CN=Yougori")).unwrap_err().contains("is not signed by your Yougori's publisher"));
+        }
+        #[cfg(target_os = "linux")]
+        check_installer(&find("Yougori_", ".deb"), None).unwrap();
+    }
+
+    /// The app's Update hands over to a helper that runs the installer only once the app has quit.
+    /// A stand-in app lives two seconds; a stand-in installer (a batch file, which shows a console
+    /// window for a moment) records its arguments: `cargo test -- --ignored installer_runs_after`.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn the_installer_runs_after_the_app_has_quit() {
+        let folder = tempfile::tempdir().unwrap();
+        let installer = folder.path().join("installer.cmd");
+        let said = folder.path().join("arguments.txt");
+        std::fs::write(&installer, "@echo %*> \"%~dp0arguments.txt\"\r\n").unwrap();
+        let mut app = std::process::Command::new("powershell.exe").args(["-NoProfile", "-Command", "Start-Sleep -Seconds 2"]).spawn().unwrap();
+        let prepared = Prepared { plan: decide_ready(), folder: folder.path().to_path_buf(), package: installer, staged: None };
+        install_after_exit(prepared, app.id()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        assert!(!said.exists(), "the installer ran while the app was still running");
+        app.wait().unwrap();
+        let quit = std::time::Instant::now();
+        while !said.exists() && quit.elapsed() < std::time::Duration::from_secs(20) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(std::fs::read_to_string(&said).unwrap().trim(), "/S /UPDATE /R");
+    }
+
+    #[cfg(windows)]
+    fn decide_ready() -> Plan {
+        let engine = tempfile::tempdir().unwrap();
+        let Offer::Ready(plan) = decide(&available("preview"), true, Some(&engine.path().join("yougori-engine.exe")), None, false).unwrap() else { panic!("ready") };
+        plan
+    }
+
     #[tokio::test]
     async fn downloads_must_be_https_with_a_hash() {
         let path = std::env::temp_dir().join("yougori-update-test");

@@ -213,9 +213,8 @@ try {
   const siteName = await page.locator('#brand').textContent();
   const all = await page.locator('#compute-copy-all').getAttribute('data-copy');
   assert.equal(all, [`Connect a computer with a GPU to ${siteName}. Run these in a terminal, in order:`, '',
-    '1. Install or update Yougori (after a first install, open a new terminal)',
+    '1. Install or update Yougori; this updates the desktop app too (after a first install, open a new terminal)',
     `   Windows: ${steps[0][1]}`, `   Linux: ${steps[1][1]}`,
-    '   Using the Yougori desktop app? Update it from https://yougori.com/#download instead.',
     '2. Start Yougori', '   yougori app start',
     '3. Connect this computer, and choose what it shares', `   yougori inference connect "${url}"`, '',
     'It shows a code for the administrator to approve. Keep its terminal open.'].join('\n'));

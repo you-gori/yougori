@@ -21,9 +21,8 @@ function connectSteps() {
   ];
   // Copy all: the whole set as one message, for a person who will connect a computer.
   const all = [`Connect a computer with a GPU to ${name}. Run these in a terminal, in order:`, "",
-    "1. Install or update Yougori (after a first install, open a new terminal)",
+    "1. Install or update Yougori; this updates the desktop app too (after a first install, open a new terminal)",
     ...YOUGORI_INSTALL.map(([system, command]) => `   ${system}: ${command}`),
-    "   Using the Yougori desktop app? Update it from https://yougori.com/#download instead.",
     "2. Start Yougori", "   yougori app start",
     "3. Connect this computer, and choose what it shares", "   " + connect, "",
     "It shows a code for the administrator to approve. Keep its terminal open."].join("\n");
@@ -73,7 +72,7 @@ async function showCompute() {
   area.innerHTML = `<div class="compute-options">
     ${adminSection("admin-local", "Local GPUs", "Your own computers with GPUs serve the models.", `<p class="hint">Run these on each computer with a GPU, in order, and choose what it shares. Approve the code it shows, and keep its terminal open.</p>
       ${connectSteps()}
-      <p class="hint">After a first install, open a new terminal. Using the Yougori desktop app? Update it by downloading the new version from <a href="https://yougori.com/#download" target="_blank" rel="noopener noreferrer">yougori.com ↗</a>.</p>
+      <p class="hint">After a first install, open a new terminal. On a computer with the Yougori desktop app, the same command updates the app.</p>
       ${contributorForm()}
       <div id="compute-models"></div>
       <div id="compute-website" class="stack" hidden><p id="compute-location" class="hint" role="status">Detecting the website's compute…</p><div><button type="button" class="secondary" id="compute-start" hidden>Start Yougori on the website server</button></div>

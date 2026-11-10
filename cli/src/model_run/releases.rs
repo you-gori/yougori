@@ -38,40 +38,46 @@ pub(super) async fn offer(manual: bool) -> Result<(), String> {
         return Ok(());
     }
     let mut note = vec![format!(
-        "Installed: {}. Checking and opening the installer page keep your environments running.",
+        "Installed: {}. Updating stops Yougori's workloads, installs the release and starts Yougori again.",
         status.current
     )];
     if status.channel == "preview" {
-        note.push("This is a preview release. Unsigned installation requires your consent.".into());
+        note.push("This preview has no publisher signature: Yougori checks it against the SHA-256 published on yougori.com.".into());
     }
     if !status.notes.is_empty() {
         note.push(clean(&status.notes));
     }
     let choice = ui::select(
-        &format!("Yougori {} is available. Get the update?", status.latest),
+        &format!("Yougori {} is available. Update now?", status.latest),
         &note,
         &[
-            ui::Choice::new("Get update", "open the installer page"),
+            ui::Choice::new("Update now", "the same as yougori update"),
             ui::Choice::new("Later", "remind me tomorrow"),
         ],
         1,
     );
     match choice {
-        Ok(0) => {
-            let engine_only = status.platform.ends_with("-engine");
-            if let Err(error) = release_notice::open_downloads(engine_only) {
-                ui::warn(&clean(&error));
-            }
-            ui::info(&format!(
-                "Get the latest installer at {}",
-                release_notice::downloads_url(engine_only)
-            ));
-            ui::info("Finish your work before running the installer. The CLI and engine update together.");
-        }
+        Ok(0) => return update_now().await,
         Err(error) if !left(&error) => return Err(error),
         _ => {}
     }
-    // Opening the page or dismissing is not permission to install anything.
+    // Dismissing is not permission to install anything.
     let _ = release_notice::remind_later(&status);
     Ok(())
+}
+
+/// Update now, from a menu: what `yougori update` does once confirmed. The command the person
+/// started then ends, since Yougori restarts under it.
+async fn update_now() -> Result<(), String> {
+    use yougori_cli::update::{self, Offer};
+    let plan = match busy("Checking for updates", update::offer()).await? {
+        Offer::Ready(plan) => plan,
+        Offer::Current(answer) | Offer::Elsewhere(answer) => {
+            ui::lines(update::summary(&answer));
+            return Ok(());
+        }
+    };
+    let (result, _) = crate::install_update(&["update".to_owned()], plan).await?;
+    ui::lines(update::summary(&result));
+    Err(yougori_cli::wire::cancelled("Run the command again once Yougori is back."))
 }

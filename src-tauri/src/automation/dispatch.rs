@@ -1058,7 +1058,7 @@ mod tests {
             // runs those CLI commands directly, so neither has an automation contract.
             // Saving a template draft writes through the native folder dialog; in a terminal the
             // same is `yougori template new`.
-            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads" | "open_hub_console" | "hub_instances" | "hub_builtin_templates" | "hub_save_template_draft") {
+            if matches!(name, "model_chat_stream" | "model_chat_cancel" | "terminal_stream_follow" | "import_saved_domains" | "check_release_update" | "remind_release_update_later" | "open_release_downloads" | "prepare_release_update" | "install_release_update" | "open_hub_console" | "hub_instances" | "hub_builtin_templates" | "hub_save_template_draft") {
                 assert!(yougori_cli::catalog::find(name).is_err());
                 continue;
             }

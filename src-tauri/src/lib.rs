@@ -834,6 +834,8 @@ pub fn run() {
             releases::check_release_update,
             releases::remind_release_update_later,
             releases::open_release_downloads,
+            releases::prepare_release_update,
+            releases::install_release_update,
             grid::commands::grid_status,
             grid::commands::grid_suggested_address,
             grid::commands::grid_create,

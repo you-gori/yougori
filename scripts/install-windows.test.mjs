@@ -10,7 +10,32 @@ import { pinPublisher } from "./release-manifest.mjs"
 const script = pinPublisher(readFileSync(new URL("./install/install.ps1", import.meta.url), "utf8"), "CN=Installer Test")
 const boundary = script.indexOf("Write-Host 'Finding the latest Yougori release...'")
 assert.ok(boundary > 0)
-const selection = script.slice(0, boundary) + '\nWrite-Output $platform\n'
+// The desktop app's uninstall entry, read from FIXTURE_APP instead of this computer's registry.
+const appEntry = `function Get-ItemProperty { if ($env:FIXTURE_APP) { [PSCustomObject]@{ InstallLocation = '"' + $env:FIXTURE_APP + '"'; DisplayVersion = $env:FIXTURE_APP_VERSION } } }\n`
+const selection = appEntry + script.slice(0, boundary) + '\nWrite-Output $platform\n'
+// A whole installer is longer than a command line may be: it runs from a file.
+function powershellFile(t, code, env = {}) {
+  const folder = mkdtempSync(join(tmpdir(), 'yougori script '))
+  t.after(() => rmSync(folder, { recursive: true, force: true }))
+  const file = join(folder, 'fixture.ps1')
+  writeFileSync(file, '\ufeff' + code)
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file], {
+    encoding: 'utf8', windowsHide: true, timeout: 30000, env: { ...process.env, ...env },
+  })
+}
+const powershell = (code, env = {}) => spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(code, 'utf16le').toString('base64')], {
+  encoding: 'utf8', windowsHide: true, timeout: 30000, env: { ...process.env, ...env },
+})
+// A desktop app folder as its installer leaves it; `without` leaves files out.
+function desktopApp(t, without = []) {
+  const folder = mkdtempSync(join(tmpdir(), 'yougori app '))
+  t.after(() => rmSync(folder, { recursive: true, force: true }))
+  for (const name of ['yougori.exe', 'cli/yougori.exe', 'uninstall.exe'].filter(name => !without.includes(name))) {
+    mkdirSync(join(folder, name, '..'), { recursive: true })
+    writeFileSync(join(folder, name), 'fixture')
+  }
+  return folder
+}
 
 test("Windows installer refuses unsafe manifest URLs before network or installation", { skip: process.platform !== "win32" }, () => {
   for (const url of ['http://fixture.invalid/latest.json', 'https://user:private@fixture.invalid/latest.json', 'https://', 'not a URL']) {
@@ -116,7 +141,7 @@ for (const exit of [0, 1]) test(`Windows skill setup uses the installed CLI and 
 
 test("Windows command downloads preserve the URL query and add command attribution", { skip: process.platform !== "win32" }, () => {
   const start = script.indexOf('# The server saves aggregate command/app totals')
-  const end = script.indexOf('\n$hash =', start)
+  const end = script.indexOf('$hash =', start)
   assert.ok(start > 0 && end > start)
   const fragment = script.slice(start, end)
   for (const [url, expected] of [
@@ -133,7 +158,7 @@ test("Windows command downloads preserve the URL query and add command attributi
 for (const [arch, platform] of [["AMD64", "x86_64"], ["ARM64", "aarch64"]]) {
   for (const override of [null, "", "1", "0"]) {
     test(`Windows ${arch} selects the engine by default (override ${override ?? "unset"})`, { skip: process.platform !== "win32" }, () => {
-      const env = { ...process.env, PROCESSOR_ARCHITECTURE: arch, YOUGORI_ENGINE_ONLY: override, YOUGORI_ALLOW_UNSIGNED: "" }
+      const env = { ...process.env, PROCESSOR_ARCHITECTURE: arch, YOUGORI_ENGINE_ONLY: override, YOUGORI_ALLOW_UNSIGNED: "", FIXTURE_APP: "" }
       if (override === null) delete env.YOUGORI_ENGINE_ONLY
       const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(selection, "utf16le").toString("base64")], {
         encoding: "utf8", windowsHide: true, timeout: 15000, env,
@@ -144,3 +169,91 @@ for (const [arch, platform] of [["AMD64", "x86_64"], ["ARM64", "aarch64"]]) {
     })
   }
 }
+
+for (const override of [null, "", "1", "0"]) test(`Windows with the desktop app installed updates the app unless asked otherwise (override ${override ?? "unset"})`, { skip: process.platform !== "win32" }, t => {
+  const env = { PROCESSOR_ARCHITECTURE: "AMD64", YOUGORI_ENGINE_ONLY: override ?? "", YOUGORI_ALLOW_UNSIGNED: "", FIXTURE_APP: desktopApp(t), FIXTURE_APP_VERSION: "1.0.0" }
+  const result = powershell(selection, env)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.trim(), override === "1" ? "windows-x86_64-engine" : "windows-x86_64")
+})
+
+test("Windows takes only a complete per-user app install for the desktop app", { skip: process.platform !== "win32" }, t => {
+  // An MSI install has no uninstall.exe: the per-user installer cannot update it.
+  for (const without of ['uninstall.exe', 'cli/yougori.exe', 'yougori.exe']) {
+    const result = powershell(selection, { PROCESSOR_ARCHITECTURE: "AMD64", YOUGORI_ENGINE_ONLY: "", YOUGORI_ALLOW_UNSIGNED: "", FIXTURE_APP: desktopApp(t, [without]), FIXTURE_APP_VERSION: "1.0.0" })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stdout.trim(), "windows-x86_64-engine", without)
+  }
+})
+
+test("Windows compares the installed app with the release by version", { skip: process.platform !== "win32" }, () => {
+  const start = script.indexOf('function Test-Current')
+  const fragment = script.slice(start, script.indexOf('function Start-InstalledEngine', start))
+  const cases = [['1.2.3', '1.2.3', true], ['1.2.4', '1.2.3', true], ['1.10.0', '1.9.0', true], ['1.2.0', '1.2.3', false], ['', '1.2.3', false], ['1.2.3-beta', '1.2.3', false]]
+  const result = powershell(`${fragment}\n${cases.map(([have, offered]) => `Write-Output (Test-Current '${have}' '${offered}')`).join('\n')}`)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(result.stdout.trim().split(/\r?\n/), cases.map(([, , current]) => current ? 'True' : 'False'))
+})
+
+for (const [label, installed, standalone, exit] of [['an update', true, true, 0], ['a first install', false, false, 0], ['a failed install', true, false, 3]]) test(`Windows desktop app install stops Yougori before the installer runs (${label})`, { skip: process.platform !== "win32" }, t => {
+  const app = desktopApp(t)
+  const local = mkdtempSync(join(tmpdir(), 'yougori local '))
+  t.after(() => rmSync(local, { recursive: true, force: true }))
+  const engineCli = join(local, 'Yougori Engine', 'cli', 'yougori.exe')
+  if (standalone) {
+    mkdirSync(join(engineCli, '..'), { recursive: true })
+    writeFileSync(engineCli, 'fixture')
+  }
+  const start = script.indexOf('function Install-DesktopApp')
+  const fragment = script.slice(start, script.indexOf('function Test-Current', start))
+  // Write-Host keeps the stubs' lines out of the function's result.
+  const fixture = `$ErrorActionPreference = 'Stop'
+function Fail($message) { Write-Host "FAILED: $message"; exit 7 }
+function Assert-Signed($path) { Write-Host "signature $([IO.Path]::GetFileName($path))" }
+function Stop-InstalledEngine($running) { Write-Host "stop $running" }
+function Start-Process { param($FilePath, $ArgumentList, $WindowStyle, [switch]$Wait, [switch]$PassThru) Write-Host "installer $($ArgumentList -join ' ')"; [PSCustomObject]@{ ExitCode = [int]$env:FIXTURE_EXIT } }
+function Find-DesktopApp { [PSCustomObject]@{ Folder = $env:FIXTURE_APP; Version = '2.0.0' } }
+${fragment}
+$installed = if ($env:FIXTURE_INSTALLED -eq '1') { [PSCustomObject]@{ Folder = $env:FIXTURE_APP; Version = '1.0.0' } } else { $null }
+$app = Install-DesktopApp 'C:\\fixture\\Yougori_2.0.0_x64-setup.exe' $installed
+Write-Host "installed $($app.Version)"`
+  const result = powershell(fixture, { LOCALAPPDATA: local, FIXTURE_APP: app, FIXTURE_INSTALLED: installed ? '1' : '0', FIXTURE_EXIT: String(exit) })
+  const lines = result.stdout.trim().split(/\r?\n/)
+  const stops = [...(installed ? [`stop ${join(app, 'cli', 'yougori.exe')}`] : []), ...(standalone ? [`stop ${engineCli}`] : [])]
+  if (exit) {
+    assert.equal(result.status, 7, result.stdout + result.stderr)
+    assert.deepEqual(lines, ['signature Yougori_2.0.0_x64-setup.exe', ...stops, 'Installing (this takes a minute)...', 'installer /S /UPDATE', 'FAILED: the installer exited with code 3.'])
+    return
+  }
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.deepEqual(lines, ['signature Yougori_2.0.0_x64-setup.exe', ...stops, 'Installing (this takes a minute)...', `installer ${installed ? '/S /UPDATE' : '/S'}`, 'installed 2.0.0'])
+})
+
+test("Windows skips the download when the desktop app is already this release", { skip: process.platform !== "win32" }, t => {
+  const manifest = JSON.stringify({ version: '1.0.0', assets: { 'windows-x86_64': { url: 'https://fixture.invalid/Yougori_1.0.0_x64-setup.exe', sha256: 'a'.repeat(64), bytes: 1 } } })
+  const fixture = `${appEntry}
+function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing) $env:FIXTURE_MANIFEST | ConvertFrom-Json }
+function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing) Write-Host "download $Uri"; throw 'offline' }
+${script}`
+  const result = powershellFile(t, fixture, { PROCESSOR_ARCHITECTURE: 'AMD64', YOUGORI_ENGINE_ONLY: '', YOUGORI_ALLOW_UNSIGNED: '1', YOUGORI_START_ENGINE: '0', YOUGORI_AUTOSTART: '',
+    YOUGORI_RELEASES_URL: 'https://fixture.invalid/latest.json', FIXTURE_MANIFEST: manifest, FIXTURE_APP: desktopApp(t), FIXTURE_APP_VERSION: '1.0.0' })
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.doesNotMatch(result.stdout, /download /)
+  assert.match(result.stdout, /The Yougori desktop app 1\.0\.0 is up to date\./)
+  assert.match(result.stdout, /Yougori 1\.0\.0 is up to date\. Try: yougori status/)
+})
+
+test("Windows downloads the desktop app's installer when the installed app is older", { skip: process.platform !== "win32" }, t => {
+  const manifest = JSON.stringify({ version: '1.1.0', assets: { 'windows-x86_64': { url: 'https://fixture.invalid/Yougori_1.1.0_x64-setup.exe', sha256: 'a'.repeat(64), bytes: 1 }, 'windows-x86_64-engine': { url: 'https://fixture.invalid/engine.zip', sha256: 'b'.repeat(64), bytes: 1 } } })
+  const temp = mkdtempSync(join(tmpdir(), 'yougori download '))
+  t.after(() => rmSync(temp, { recursive: true, force: true }))
+  const fixture = `${appEntry}
+function Invoke-RestMethod { param($Uri, [switch]$UseBasicParsing) $env:FIXTURE_MANIFEST | ConvertFrom-Json }
+function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing) Write-Host "download $Uri"; throw 'offline' }
+${script}`
+  const result = powershellFile(t, fixture, { PROCESSOR_ARCHITECTURE: 'AMD64', YOUGORI_ENGINE_ONLY: '', YOUGORI_ALLOW_UNSIGNED: '1', TEMP: temp, TMP: temp,
+    YOUGORI_RELEASES_URL: 'https://fixture.invalid/latest.json', FIXTURE_MANIFEST: manifest, FIXTURE_APP: desktopApp(t), FIXTURE_APP_VERSION: '1.0.0' })
+  assert.equal(result.status, 1, result.stdout + result.stderr)
+  assert.match(result.stdout, /Downloading Yougori 1\.1\.0 to update the desktop app \(now 1\.0\.0\)\.\.\./)
+  assert.match(result.stdout, /download https:\/\/fixture\.invalid\/Yougori_1\.1\.0_x64-setup\.exe\?source=command/)
+})

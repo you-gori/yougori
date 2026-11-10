@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { releaseApi, type ReleaseStatus } from "@/api/release-api"
 import { Button } from "@/components/ui/button"
 
@@ -6,24 +6,75 @@ const CHECK_INTERVAL = 12 * 60 * 60 * 1000
 const RETRY_INTERVAL = 15 * 60 * 1000
 const REMIND_INTERVAL = 24 * 60 * 60 * 1000
 
+// Where the offer is: shown, confirming an in-place install, sent to the installer page, or
+// closing so the installer can run.
+type Step =
+  | { kind: "offer" }
+  | { kind: "confirm"; unsigned: boolean }
+  | { kind: "manual"; reason: string }
+  | { kind: "closing" }
+
 function Offer({ status, onLater }: { status: ReleaseStatus; onLater?(): void }) {
+  const [step, setStep] = useState<Step>({ kind: "offer" })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const run = (work: () => Promise<void>) => {
+    setBusy(true)
+    setError("")
+    void work().catch(reason => setError(String(reason))).finally(() => setBusy(false))
+  }
+  const getInstaller = (variant: "default" | "outline") =>
+    <Button size="sm" variant={variant} disabled={busy} onClick={() => run(() => releaseApi.openDownloads())}>Get installer</Button>
+  let detail: string[]
+  let actions: ReactNode
+  switch (step.kind) {
+    case "offer":
+      detail = [`Installed: ${status.current}.${status.channel === "preview" ? " Preview release without a publisher signature." : ""}`]
+      actions = <>
+        {onLater && <Button size="sm" variant="ghost" onClick={onLater}>Later</Button>}
+        <Button size="sm" disabled={busy} loading={busy} onClick={() => run(async () => {
+          const readiness = await releaseApi.prepare(status.latest)
+          setStep(readiness.ready
+            ? { kind: "confirm", unsigned: readiness.unsigned === true }
+            : { kind: "manual", reason: readiness.reason || "Get the installer from yougori.com." })
+        })}>Update</Button>
+      </>
+      break
+    case "confirm":
+      detail = [busy
+        ? `Downloading and checking Yougori ${status.latest}…`
+        : `Yougori closes, installs ${status.latest} and opens again. Running environments stop first.`]
+      if (step.unsigned && !busy) detail.push("It has no publisher signature yet: Yougori checks the download against the SHA-256 published on yougori.com.")
+      actions = <>
+        {error && getInstaller("outline")}
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setError(""); setStep({ kind: "offer" }) }}>Cancel</Button>
+        <Button size="sm" disabled={busy} loading={busy} onClick={() => run(async () => {
+          await releaseApi.install(status.latest)
+          setStep({ kind: "closing" })
+          await releaseApi.quit()
+        })}>Install and restart</Button>
+      </>
+      break
+    case "manual":
+      detail = [step.reason]
+      actions = <>
+        {onLater && <Button size="sm" variant="ghost" onClick={onLater}>Later</Button>}
+        {getInstaller("default")}
+      </>
+      break
+    case "closing":
+      // If quitting failed, the installer still waits for Yougori to quit.
+      detail = [error ? `Quit Yougori to install ${status.latest}; it opens again afterwards.` : `Yougori is closing to install ${status.latest}. It opens again in about a minute.`]
+      actions = null
+      break
+  }
   return <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="min-w-0">
       <p className="text-sm font-medium">Yougori {status.latest} is available</p>
-      <p className="mt-1 text-xs text-muted-foreground">Installed: {status.current}. {status.channel === "preview" ? "Preview release. Unsigned installation requires your consent." : "An update is ready to download."}</p>
-      <p className="mt-1 text-xs text-muted-foreground">Get the installer and update when you’re ready.</p>
+      {detail.map(line => <p key={line} className="mt-1 text-xs text-muted-foreground">{line}</p>)}
       {error && <p role="alert" className="mt-1 text-xs text-destructive-foreground">{error}</p>}
     </div>
-    <div className="flex shrink-0 gap-2">
-      {onLater && <Button size="sm" variant="ghost" onClick={onLater}>Later</Button>}
-      <Button size="sm" disabled={busy} loading={busy} onClick={() => {
-        setBusy(true)
-        setError("")
-        void releaseApi.openDownloads().catch(reason => setError(String(reason))).finally(() => setBusy(false))
-      }}>Get update</Button>
-    </div>
+    {actions && <div className="flex shrink-0 gap-2">{actions}</div>}
   </div>
 }
 

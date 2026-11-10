@@ -38,7 +38,7 @@ Public commands:
   yougori prefs path | show | remember KEY VALUE [--project] | forget KEY [--project]
   yougori doctor                   Is this computer ready? Checks engine, runtimes, GPU, disk, PATH
   yougori app autostart on [--dashboard] | off | status
-  yougori update [--check | --yes]  Signed, hash-checked updates from yougori.com
+  yougori update [--check | --yes]  Install the newest release in place: asks, checks, restarts
   yougori uninstall [--yes]        Turn off start at sign-in and quit the engine, then run the Windows
                                   desktop uninstaller (other installs: remove manually). Data stays
   yougori top [--once]             Live CPU, memory, storage and network per environment

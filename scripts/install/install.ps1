@@ -1,11 +1,13 @@
-# Yougori CLI and engine installer for Windows. Download the desktop app separately.
+# Yougori CLI and engine installer for Windows. On a computer with the Yougori desktop app it
+# updates the app instead.
 #   powershell -c "irm https://yougori.com/install.ps1 | iex"
 # Downloads the current signed release, checks its SHA-256 and the publisher signature of every
 # Yougori executable in it (the third-party runtime is checked against its SHA256SUMS), installs it for
 # this user (no administrator rights), puts `yougori` on PATH and runs `yougori doctor`.
-# Environment overrides: YOUGORI_ENGINE_ONLY=0 (opt into the desktop bundle),
-# YOUGORI_RELEASES_URL (HTTPS manifest), YOUGORI_AUTOSTART=1 (start the engine in the background
-# at login), YOUGORI_START_ENGINE=0 (skip startup), YOUGORI_ALLOW_UNSIGNED=1 (test builds only).
+# Environment overrides: YOUGORI_ENGINE_ONLY=1 (the engine alone, even beside the desktop app) or
+# 0 (the desktop app), YOUGORI_RELEASES_URL (HTTPS manifest), YOUGORI_AUTOSTART=1 (start the
+# engine in the background at login), YOUGORI_START_ENGINE=0 (skip startup),
+# YOUGORI_ALLOW_UNSIGNED=1 (test builds only).
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -25,7 +27,21 @@ function Assert-HttpsUri($value, $label) {
   return $uri.AbsoluteUri
 }
 
-$engineOnly = $env:YOUGORI_ENGINE_ONLY -ne '0'
+# The desktop app's installer is per-user and records where it put the app. On a computer with the
+# app, the app is what an update replaces: an engine-only copy beside it would leave the app's older
+# `yougori` first on PATH.
+function Find-DesktopApp {
+  $entry = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Yougori' -ErrorAction SilentlyContinue
+  if (-not $entry -or -not $entry.InstallLocation) { return $null }
+  $folder = ([string]$entry.InstallLocation).Trim().Trim('"')
+  foreach ($file in @('yougori.exe', 'cli\yougori.exe', 'uninstall.exe')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $folder $file) -PathType Leaf)) { return $null }
+  }
+  [PSCustomObject]@{ Folder = $folder; Version = [string]$entry.DisplayVersion }
+}
+
+$desktop = Find-DesktopApp
+$engineOnly = if ($env:YOUGORI_ENGINE_ONLY) { $env:YOUGORI_ENGINE_ONLY -ne '0' } else { -not $desktop }
 $allowUnsigned = $env:YOUGORI_ALLOW_UNSIGNED -eq '1'
 $startEngine = if ($env:YOUGORI_START_ENGINE) { $env:YOUGORI_START_ENGINE } else { '1' }
 if ($startEngine -notin @('0', '1')) { Fail 'YOUGORI_START_ENGINE must be 0 or 1.' }
@@ -35,10 +51,16 @@ $platform = switch ($env:PROCESSOR_ARCHITECTURE) { 'ARM64' { 'windows-aarch64' }
 if ($engineOnly) { $platform = "$platform-engine" }
 if ([Environment]::OSVersion.Version.Build -lt 19041) { Fail 'Windows 10 version 2004 (build 19041) or newer is required.' }
 
+$script:unsignedNoted = $false
 function Assert-Signed($path) {
   $signature = Get-AuthenticodeSignature -LiteralPath $path
   if ($signature.Status -eq 'Valid' -and $signature.SignerCertificate.Subject -eq $ExpectedPublisher) { return }
-  if ($allowUnsigned) { Write-Host "Warning: $([IO.Path]::GetFileName($path)) is not signed by the Yougori publisher ($($signature.Status)); installing a test build." -ForegroundColor Yellow; return }
+  if ($allowUnsigned) {
+    # A test build is unsigned throughout: one warning says so.
+    if (-not $script:unsignedNoted) { Write-Host "Warning: this test build is not signed by the Yougori publisher ($($signature.Status)); installing it because YOUGORI_ALLOW_UNSIGNED=1." -ForegroundColor Yellow }
+    $script:unsignedNoted = $true
+    return
+  }
   Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
   Fail "$([IO.Path]::GetFileName($path)) is not signed by the Yougori publisher ($($signature.Status)). Nothing was installed."
 }
@@ -75,6 +97,30 @@ function Stop-InstalledEngine($running) {
   Fail 'the running engine did not stop. Existing files were left untouched.'
 }
 
+# Runs the app's own installer. Yougori stops first: the installer would end the app abruptly, and
+# it never stops a standalone engine, which would go on running the old version.
+function Install-DesktopApp($installer, $installed) {
+  Assert-Signed $installer
+  foreach ($running in @($(if ($installed) { Join-Path $installed.Folder 'cli\yougori.exe' }), (Join-Path $env:LOCALAPPDATA 'Yougori Engine\cli\yougori.exe'))) {
+    if ($running -and (Test-Path -LiteralPath $running -PathType Leaf)) { Stop-InstalledEngine $running }
+  }
+  Write-Host 'Installing (this takes a minute)...'
+  # /UPDATE keeps the shortcuts as the person left them.
+  $arguments = if ($installed) { @('/S', '/UPDATE') } else { @('/S') }
+  $process = Start-Process -FilePath $installer -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+  if ($process.ExitCode -ne 0) { Fail "the installer exited with code $($process.ExitCode)." }
+  $app = Find-DesktopApp
+  if (-not $app) { Fail 'the installer finished, but the Yougori app is not where it installs.' }
+  $app
+}
+
+# Whether the installed version is this release or a newer one. A version that does not parse is older.
+function Test-Current($installed, $release) {
+  $have = $null
+  $offered = $null
+  [version]::TryParse([string]$installed, [ref]$have) -and [version]::TryParse([string]$release, [ref]$offered) -and $have -ge $offered
+}
+
 function Start-InstalledEngine($cliPath) {
   $ErrorActionPreference = 'Continue'
   Write-Host 'Starting the Yougori engine...'
@@ -102,53 +148,69 @@ if (-not $asset -or -not $asset.url -or -not $asset.sha256) { Fail "release $($m
 $asset.url = Assert-HttpsUri $asset.url 'The release download'
 if ($asset.sha256 -isnot [string] -or $asset.sha256 -notmatch '^[0-9a-fA-F]{64}$') { Fail 'the release SHA-256 is invalid.' }
 
-$folder = Join-Path $env:TEMP ("yougori-install-" + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $folder | Out-Null
-$download = Join-Path $folder ([IO.Path]::GetFileName(([Uri]$asset.url).AbsolutePath))
-Write-Host "Downloading Yougori $version$(if ($engineOnly) { ' (engine only)' })..."
-# The server saves aggregate command/app totals, without visitor identifiers.
-$downloadUri = [UriBuilder]$asset.url
-$downloadUri.Fragment = ''
-$downloadUri.Query = if ($downloadUri.Query) { "$($downloadUri.Query.TrimStart('?'))&source=command" } else { 'source=command' }
-try { Invoke-WebRequest -Uri $downloadUri.Uri.AbsoluteUri -OutFile $download -UseBasicParsing } catch { Fail "download failed ($($_.Exception.Message))" }
-
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $download).Hash
-if ($hash -ne $asset.sha256.ToUpperInvariant()) { Remove-Item -Recurse -Force $folder; Fail 'the download does not match the published SHA-256. Nothing was installed.' }
-
-if ($engineOnly) {
-  # The engine and CLI without the desktop app: unpack, check every signature, then move into place.
-  $staged = Join-Path $folder 'unpacked'
-  New-Item -ItemType Directory -Path $staged | Out-Null
-  & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $download -C $staged
-  if ($LASTEXITCODE) { Fail 'cannot unpack the engine archive. Nothing was installed.' }
-  foreach ($binary in @('yougori-engine.exe', 'cli\yougori.exe')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $staged $binary))) { Fail "the engine archive has no $binary. Nothing was installed." }
-  }
-  foreach ($path in Get-SignedPayloads $staged) { Assert-Signed $path }
-  $target = Join-Path $env:LOCALAPPDATA 'Yougori Engine'
-  $running = Join-Path $target 'cli\yougori.exe'
-  if (Test-Path -LiteralPath $running) { Stop-InstalledEngine $running }
-  Write-Host 'Installing...'
-  New-Item -ItemType Directory -Force -Path $target | Out-Null
-  Copy-Item -Path (Join-Path $staged '*') -Destination $target -Recurse -Force
-  $cliFolder = Join-Path $target 'cli'
-  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  if (-not (($userPath -split ';') -contains $cliFolder)) {
-    [Environment]::SetEnvironmentVariable('Path', ((@($userPath, $cliFolder) | Where-Object { $_ }) -join ';'), 'User')
-  }
+# Running the command again on an up-to-date app only makes sure Yougori runs. YOUGORI_ENGINE_ONLY=0
+# installs the app again whatever its version.
+$upToDate = $desktop -and -not $engineOnly -and -not $env:YOUGORI_ENGINE_ONLY -and (Test-Current $desktop.Version $version)
+if ($upToDate) {
+  Write-Host "The Yougori desktop app $($desktop.Version) is up to date."
 } else {
-  Assert-Signed $download
-  Write-Host 'Installing (this takes a minute)...'
-  $process = Start-Process -FilePath $download -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
-  if ($process.ExitCode -ne 0) { Fail "the installer exited with code $($process.ExitCode)." }
+  $folder = Join-Path $env:TEMP ("yougori-install-" + [Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $folder | Out-Null
+  $download = Join-Path $folder ([IO.Path]::GetFileName(([Uri]$asset.url).AbsolutePath))
+  $edition = if ($engineOnly) { ' (engine only)' } elseif ($desktop) { " to update the desktop app (now $($desktop.Version))" } else { ' (desktop app)' }
+  Write-Host "Downloading Yougori $version$edition..."
+  # The server saves aggregate command/app totals, without visitor identifiers.
+  $downloadUri = [UriBuilder]$asset.url
+  $downloadUri.Fragment = ''
+  $downloadUri.Query = if ($downloadUri.Query) { "$($downloadUri.Query.TrimStart('?'))&source=command" } else { 'source=command' }
+  try { Invoke-WebRequest -Uri $downloadUri.Uri.AbsoluteUri -OutFile $download -UseBasicParsing } catch { Fail "download failed ($($_.Exception.Message))" }
+
+  $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $download).Hash
+  if ($hash -ne $asset.sha256.ToUpperInvariant()) { Remove-Item -Recurse -Force $folder; Fail 'the download does not match the published SHA-256. Nothing was installed.' }
+
+  if ($engineOnly) {
+    # The engine and CLI without the desktop app: unpack, check every signature, then move into place.
+    $staged = Join-Path $folder 'unpacked'
+    New-Item -ItemType Directory -Path $staged | Out-Null
+    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xf $download -C $staged
+    if ($LASTEXITCODE) { Fail 'cannot unpack the engine archive. Nothing was installed.' }
+    foreach ($binary in @('yougori-engine.exe', 'cli\yougori.exe')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $staged $binary))) { Fail "the engine archive has no $binary. Nothing was installed." }
+    }
+    foreach ($path in Get-SignedPayloads $staged) { Assert-Signed $path }
+    $target = Join-Path $env:LOCALAPPDATA 'Yougori Engine'
+    $running = Join-Path $target 'cli\yougori.exe'
+    if (Test-Path -LiteralPath $running) { Stop-InstalledEngine $running }
+    Write-Host 'Installing...'
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    Copy-Item -Path (Join-Path $staged '*') -Destination $target -Recurse -Force
+    $cliFolder = Join-Path $target 'cli'
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not (($userPath -split ';') -contains $cliFolder)) {
+      [Environment]::SetEnvironmentVariable('Path', ((@($userPath, $cliFolder) | Where-Object { $_ }) -join ';'), 'User')
+    }
+  } else {
+    $desktop = Install-DesktopApp $download $desktop
+  }
+  Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
 }
-Remove-Item -Recurse -Force $folder -ErrorAction SilentlyContinue
 
 # The installer adds the CLI to the user PATH; make it available in this window too.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-$env:Path = "$userPath;$([Environment]::GetEnvironmentVariable('Path', 'Machine'))"
-$cli = if ($engineOnly) { [PSCustomObject]@{ Source = (Join-Path $cliFolder 'yougori.exe') } } else { Get-Command yougori -ErrorAction SilentlyContinue }
-if (-not $cli) { Fail 'Yougori installed, but `yougori` is not on PATH. Open a new terminal, or add the Yougori cli folder to PATH.' }
+$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+$env:Path = "$userPath;$machinePath"
+# This installation's own CLI runs the next steps, never an older `yougori` elsewhere on PATH.
+$cli = [PSCustomObject]@{ Source = $(if ($engineOnly) { Join-Path $cliFolder 'yougori.exe' } else { Join-Path $desktop.Folder 'cli\yougori.exe' }) }
+if (-not (Test-Path -LiteralPath $cli.Source -PathType Leaf)) { Fail "Yougori installed, but $($cli.Source) is missing." }
+# New terminals run the first `yougori` on PATH, machine folders before the user's.
+try {
+  $installedFolder = Split-Path -Parent $cli.Source
+  $first = @("$machinePath;$userPath" -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_.Trim().Trim('"')) } |
+    Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'yougori.exe') -PathType Leaf) })[0]
+  if ($first -and $first.TrimEnd('\') -ine $installedFolder.TrimEnd('\')) {
+    Write-Warning "New terminals run yougori from $first, not from $installedFolder. Remove $first from PATH to use this Yougori."
+  }
+} catch {}
 
 Write-Host 'Setting up the Yougori skill...'
 try {
@@ -166,5 +228,6 @@ try {
 if ($env:YOUGORI_AUTOSTART -eq '1') { & $cli.Source app autostart on | Out-Null }
 if ($startEngine -eq '1') { Start-InstalledEngine $cli.Source } else { Write-Host 'Engine startup skipped. Start it with: yougori app start' }
 Write-Host ''
-Write-Host "Yougori $version is installed$(if ($engineOnly) { ' (engine only, no desktop app)' }). Try: yougori status" -ForegroundColor Green
+$outcome = if ($upToDate) { 'is up to date' } elseif ($engineOnly) { 'is installed (engine only, no desktop app)' } else { 'is installed' }
+Write-Host "Yougori $version $outcome. Try: yougori status" -ForegroundColor Green
 if ($env:YOUGORI_AUTOSTART -ne '1') { Write-Host 'Keep the engine ready at login with: yougori app autostart on' }

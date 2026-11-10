@@ -306,37 +306,35 @@ Waiting for approval… (Ctrl+C cancels)")).await?,
         println!("{}", wire_json(result));
         return Ok(0);
     }
-    if matches!(args[0].as_str(), "update" | "uninstall") {
-        let yes = args[1..].iter().any(|a| a == "--yes");
-        let check = args[1..].iter().any(|a| a == "--check");
-        if args[1..].iter().any(|a| !matches!(a.as_str(), "--yes" | "--check")) || (check && (yes || args[0] == "uninstall")) {
-            return Err("Usage: yougori update [--check | --yes] | yougori uninstall [--yes]".into());
+    if args[0] == "update" {
+        let mut rest = args[1..].to_vec();
+        let format = take_format(&mut rest)?;
+        let yes = rest.iter().any(|a| a == "--yes");
+        let check = rest.iter().any(|a| a == "--check");
+        if rest.iter().any(|a| !matches!(a.as_str(), "--yes" | "--check")) || (check && yes) {
+            return Err("Usage: yougori update [--check | --yes] [--format json|table|text]".into());
         }
-        let uninstall = args[0] == "uninstall";
-        let labels = if uninstall {
-            ("Removing Yougori", "Removing Yougori")
-        } else if check {
-            ("Checking for updates", "Checking for updates")
+        // A person at a terminal reads what happened, and confirms there; scripts and pipes get JSON.
+        let text = format.as_deref().map_or_else(output::stdout_terminal, |f| f == "table");
+        let (result, interrupted) = run_update(&args, yes, check, text).await?;
+        if text {
+            yougori_cli::cli_ui::lines(yougori_cli::update::summary(&result));
         } else {
-            ("Downloading and checking the update", "Installing the update")
-        };
-        let at_stake = if uninstall {
-            "Finishing the removal; stopping now would leave Yougori half removed."
-        } else {
-            "Finishing the update; stopping now would leave Yougori broken."
-        };
-        let (result, interrupted) = model_run::command_progress(&args, finishing(labels, at_stake, yougori_cli::update::committed, async {
-            if uninstall {
-                yougori_cli::update::uninstall(yes).await
-            } else if check {
-                yougori_cli::update::check().await
-            } else {
-                yougori_cli::update::install(yes).await
-            }
-        })).await?;
-        println!("{}", wire_json(result));
+            println!("{}", wire_json(result));
+        }
         // Ctrl+C came after the point of no return: the work was finished, and the command ends
         // the way a cancelled one does.
+        return Ok(if interrupted { 130 } else { 0 });
+    }
+    if args[0] == "uninstall" {
+        let yes = args[1..].iter().any(|a| a == "--yes");
+        if args[1..].iter().any(|a| a != "--yes") {
+            return Err("Usage: yougori uninstall [--yes]".into());
+        }
+        let labels = ("Removing Yougori", "Removing Yougori");
+        let at_stake = "Finishing the removal; stopping now would leave Yougori half removed.";
+        let (result, interrupted) = model_run::command_progress(&args, finishing(labels, at_stake, yougori_cli::update::committed, yougori_cli::update::uninstall(yes))).await?;
+        println!("{}", wire_json(result));
         return Ok(if interrupted { 130 } else { 0 });
     }
     if args[0] == "doctor" {
@@ -741,6 +739,39 @@ fn app_started_lines(status: &Value, took: std::time::Duration, version: &str) -
     }
     lines.push(format!("{}  {} {}", ui::muted("└"), ui::muted("Stop it with"), ui::bold("yougori app quit --yes")));
     lines
+}
+
+/// `yougori update`: checks, then, with `--yes` or once a person at a terminal confirms, installs
+/// the newer release in place. Without either a script gets the answer and what to run.
+async fn run_update(args: &[String], yes: bool, check: bool, text: bool) -> Result<(Value, bool), String> {
+    use yougori_cli::update::{self, Offer};
+    if check {
+        return Ok((progress(args, "Checking for updates", update::check()).await?, false));
+    }
+    let plan = match progress(args, "Checking for updates", update::offer()).await? {
+        Offer::Current(answer) | Offer::Elsewhere(answer) => return Ok((answer, false)),
+        Offer::Ready(plan) => plan,
+    };
+    if !yes {
+        if !(text && yougori_cli::cli_ui::can_prompt()) {
+            return Ok((plan.needs_confirmation(), false));
+        }
+        update::ask(&plan)?;
+    }
+    install_update(args, plan).await
+}
+
+/// Downloads and checks an update, then stops Yougori, installs it and starts Yougori again.
+/// Ctrl+C stops the download and check and leaves nothing behind; the install always finishes.
+async fn install_update(args: &[String], plan: yougori_cli::update::Plan) -> Result<(Value, bool), String> {
+    use yougori_cli::update;
+    let at_stake = "Finishing the update; stopping now would leave Yougori broken.";
+    let checking = "Downloading and checking the update";
+    let (prepared, _) = model_run::command_progress(args, finishing((checking, checking), at_stake, || false, update::prepare(plan))).await?;
+    // A Linux package asks for the administrator password here, before anything stops.
+    update::authorize(&prepared)?;
+    let installing = "Installing the update";
+    model_run::command_progress(args, finishing((installing, installing), at_stake, update::committed, update::finish(prepared))).await
 }
 
 /// Runs an update or an uninstall with a spinner, labelled `labels.0` and then `labels.1` once
