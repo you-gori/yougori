@@ -5,10 +5,8 @@ const measured=(value,unit='',digits=1)=>Number.isFinite(value)?value.toFixed(di
 async function renderMembers() {
   const data=await api('/api/admin/control');
   if(currentRoute()[0]!=='admin')return;
-  $('#member-settings')?.remove();
-  const area=document.createElement('section');area.id='member-settings';area.className='member-settings';
-  area.innerHTML=panel('People and administrators',`<p class="hint">Administrators can manage compute, wallets, prices and other accounts. At least one administrator must remain.</p><div class="member-list">${data.users.map(u=>`<div class="source"><div><strong>${esc(u.email)}</strong><p>${u.admin?'Administrator':'Member'}${u.id===session.user.id?' · You':''} · ${u.web_seen>data.at-90?'Online':'Offline'}</p></div><button class="text-button" type="button" data-role-user="${esc(u.id)}" data-role-admin="${!u.admin}" ${u.admin && data.counts.admins===1?'disabled':''}>${u.admin?'Make member':'Make administrator'}</button></div>`).join('')}</div>`);
-  $('#admin-grid').append(area);
+  const area=$('#member-settings'); if(!area) return;
+  area.innerHTML=data.users.map(u=>`<div class="source"><div><strong>${esc(u.email)}</strong><p>${u.admin?'Administrator':'Member'}${u.id===session.user.id?' · You':''} · ${u.web_seen>data.at-90?'Online':'Offline'}</p></div><button class="text-button" type="button" data-role-user="${esc(u.id)}" data-role-admin="${!u.admin}" ${u.admin && data.counts.admins===1?'disabled':''}>${u.admin?'Make member':'Make administrator'}</button></div>`).join('');
   area.querySelectorAll('[data-role-user]').forEach(button=>button.onclick=async()=>{
     button.disabled=true;
     try {await api('/api/admin/users/role',{id:button.dataset.roleUser,admin:button.dataset.roleAdmin==='true'});await route();}

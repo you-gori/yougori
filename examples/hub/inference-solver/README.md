@@ -1,7 +1,9 @@
 # Inference Solver — preview
 
-A separate Yougori Hub template. My API is unchanged. The website puts harnesses
-first, followed by models, sandboxes, personal API keys, usage, and administrator controls.
+A separate Yougori Hub template. My API is unchanged. The website has three main pages,
+harnesses, models and sandboxes, followed by personal API keys, usage, and administrator
+controls. The administrator chooses which main page people open first and which harnesses
+are offered.
 Visitors can browse harnesses and models immediately. Sign-in is only needed for
 personal keys, usage, administrator controls, and access to inference. The public
 catalog excludes saved server addresses, connection names, and credentials.
@@ -32,10 +34,22 @@ of hosting: either mode can run locally or use a public URL. For example, add
 `--account-mode public` to try public signup on localhost. The template asks the
 same question during setup and passes it through `ACCOUNT_MODE`.
 
-Admin is a compact grid of panels, two per row, starting with **Local GPUs** beside
-**Rent a cloud GPU**. Sandbox contribution, wallets, token prices and people are
-inline; **Compute activity** spans the final row. It uses
-Yougori on the website's server, never an engine on a visitor's computer. Existing
+Admin is one column of sections, each with its name and one line on the left and its
+controls on the right: **Local GPUs**, **Rent a cloud GPU**, **Model servers**, **Sandboxes**,
+**Main page and harnesses**, **Website identity**, **People**, **Model pricing**, **Media pricing
+and storage**, **Crypto payments** and **Compute activity**. Nothing is folded away: optional
+settings are tick boxes, or a mode, that switch their fields on. Local GPUs leads with every
+command a GPU computer runs, in order, each with its own Copy button: install or update Yougori
+(yougori.com's install command for Windows or Linux, which also starts it), `yougori app start`
+(the connector needs Yougori running and never starts it) and `yougori inference connect URL`.
+**Copy all** copies them as one message to send someone, and **Post on X** opens X with a short
+post (where to get Yougori, the start and connect commands) ready to send. It approves the code a connecting computer shows in place (an administrator who opens
+`#contribute` lands there). On desktop the left edge is a
+camera-style ruler, as in the PrompX harness: tick lines, a mark per section and a thumb; drag it
+to scroll, click a mark to jump, hover for names. It replaces the page's scrollbar. Without Yougori on the website's server (every hosted
+inference), the website server's own controls are not shown and Rent a cloud GPU points to the
+Yougori app. With it, Admin uses Yougori on the website's server, never an engine on a
+visitor's computer. Existing
 local models are discovered automatically; selecting **Add to inference** obtains
 their connection internally. **Load and connect model** starts a selected Hugging
 Face repository through Yougori. Model URLs and keys are not entered in this UI.
@@ -60,8 +74,12 @@ Storage and other provider charges are separate. Stop controls act only on renta
 created here; stopping can leave storage charges. Ambiguous purchases are not
 retried, and interrupted operations stay visible for inspection.
 
-Optional contributors run `yougori inference connect URL`, choose the
-models to share, and enter a short computer code on `/#contribute`. An admin approves
+Optional contributors run `yougori inference connect URL`, which starts Yougori if needed
+(CLI 1.2.2 and older need `yougori app start` first), choose the models to share
+from a checklist (or, without models, lend Sandbox VMs or run a model first), and enter a
+short computer code on `/#contribute`. The CLI passes the answers to the connector
+(`compute_node.py --models IDS --sandbox none|CPU,GB,VMS`, after `--list`); piped, the
+connector asks the same in plain lines. An admin approves
 it, or a signed-in member supplies the optional contributor password. Contributors
 cannot rent servers or receive host-management commands. Their connector makes outbound
 HTTPS requests, relays inference only to their selected Yougori loopback APIs, and
@@ -80,6 +98,10 @@ capacity. The process gets its instance folder (`provision.json`, `data/`) and n
 website: no engine, no provider account, no website secret. Over https the cookies are Secure,
 browser requests must come from the instance's own origin, and the sign-in and code limits use
 the client address the proxy reports, so one visitor cannot lock out the others behind it.
+
+Harness VM images live outside the template releases, in the server's image folder: each
+release's `site/vm-images` links to it (or `SOLVER_VM_IMAGES` names it), so every hosted
+inference offers every published harness.
 
 Compute comes from the administrator's computers: `yougori inference connect URL` on each
 computer with a GPU, or on a Neocloud GPU rented from the Yougori app. Cloud rental from the
@@ -211,7 +233,19 @@ use Yougori's existing publication system, not managed Cloudflare for SaaS.
   replaces the first, which stops and says so. Connectors from earlier releases keep
   polling, and the new connector polls websites that have no stream, or that refuse it.
 - Administrator server-side compute management, invitations, request totals, connection
-  status, audit events, and editable name, tagline and accent.
+  status, audit events, and editable name, tagline and colour style.
+- Colour styles: the administrator picks Navy (the default), Nord, Solarized, Catppuccin,
+  Rose Pine or Gruvbox under Website identity, for every visitor. The page arrives with it
+  (`data-palette` on `<html>`, set by the server), and each person can still switch light
+  and dark. Each style uses its palette's official colours, light and dark; `style.css` names
+  the sources and the few colours moved just far enough for 4.5:1 text contrast.
+- Main page and harnesses: an administrator's first sign-in opens **Set up your inference**
+  instead of the main pages, with every harness ticked and Harnesses as the main page.
+  The same choices stay in Admin under **Main page and harnesses**. The main page leads the
+  menu and opens at the site's own address. A hidden harness leaves the pages, and its setup
+  ZIP, install script, VM image and code sign-in are refused; `/api/harnesses` still lists
+  it, unavailable with the reason, so `yougori inference run` explains it. Harnesses added
+  to the catalogue later are offered until the administrator hides them.
 - A catalog of 21 requested harnesses, with server-bound setup ZIPs for supported
   clients. Each ZIP contains source, pinned tool versions and this website's
   address; it contains no account credentials. See [the launcher](site/harnesses/README.md).
@@ -289,7 +323,7 @@ is made by this preview. Invoice settlement is described in [docs/payments.md](d
 Compute checks: `python -I -B tests/test_compute.py` exercises real website HTTP,
 SQLite, contribution streaming and enrollment; provider adapter tests substitute
 only the CLI transport and do not incur charges. `node tests/browser.mjs` checks the
-side-by-side Admin controls, responsive layout and absence of a connection popup.
+one-column Admin, its tick boxes, colour styles, responsive layout and absence of a connection popup.
 These checks do not claim a completed paid cloud deployment.
 
 Harness validation is recorded separately in

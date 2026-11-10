@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
-pub const HELP: &str = "yougori inference connect URL [--reconnect]\n  Choose models or VM capacity to contribute, then approve on the website.\n\nyougori inference run HARNESS --server URL [--workspace PATH] [--model ID]\n    [--internet inference|sites|full] [--sites HOST,HOST] [--cpu N]\n    [--memory GB] [--yes]\n  Ask what the harness may use, then start it in a Yougori Sandbox VM: a folder copied in\n  (changes come back only after your review), what it can reach (only this inference, sites\n  you choose, or the whole internet as well; prompts and replies always go to the inference),\n  CPU and memory.\n  Options given skip their question; --yes keeps the defaults for the rest without asking.\n\nyougori inference install HARNESS --server URL\n  Prepare the VM image without starting the harness.\n\nYougori manages the client and private runtime. No separate solver-* installation.\nRun the same command next time. Ctrl+C disconnects.\n";
+pub const HELP: &str = "yougori inference connect URL [--reconnect]\n  Start Yougori if needed, choose which of this computer's models (and how much Sandbox VM\n  capacity) the website may use, then approve the code it shows on the website.\n\nyougori inference run HARNESS --server URL [--workspace PATH] [--model ID]\n    [--internet inference|sites|full] [--sites HOST,HOST] [--cpu N]\n    [--memory GB] [--yes]\n  Ask what the harness may use, then start it in a Yougori Sandbox VM: a folder copied in\n  (changes come back only after your review), what it can reach (only this inference, sites\n  you choose, or the whole internet as well; prompts and replies always go to the inference),\n  CPU and memory.\n  Options given skip their question; --yes keeps the defaults for the rest without asking.\n\nyougori inference install HARNESS --server URL\n  Prepare the VM image without starting the harness.\n\nYougori manages the client and private runtime. No separate solver-* installation.\nRun the same command next time. Ctrl+C disconnects.\n";
 const PACKAGES: &str =
     include_str!("../../examples/hub/inference-solver/site/harnesses/packages.json");
 const INSTALLER: &str =
@@ -716,6 +716,216 @@ async fn prepare_run(opts: &mut Options, python: &Path, stage: &Path, executable
     Ok(None)
 }
 
+/// One of this computer's models, as the connector lists it (`compute_node.py --list`).
+#[derive(Debug, PartialEq)]
+struct LocalModel {
+    id: String,
+    name: String,
+    hint: String,
+    shared: bool,
+}
+
+/// The connector's list of this computer's models: at most 64, each with an ID and a name.
+fn local_models(listed: &[u8]) -> Result<Vec<LocalModel>, String> {
+    let unexpected = || "Yougori listed this computer's models in an unexpected form.".to_string();
+    let value: Value = serde_json::from_slice(listed).map_err(|_| unexpected())?;
+    let items = value["models"].as_array().ok_or_else(unexpected)?;
+    items
+        .iter()
+        .take(64)
+        .map(|item| {
+            let text = |key: &str| item[key].as_str().filter(|v| !v.trim().is_empty() && v.len() <= 200).map(str::to_owned);
+            Ok(LocalModel {
+                id: text("id").ok_or_else(unexpected)?,
+                name: text("name").ok_or_else(unexpected)?,
+                hint: text("hint").unwrap_or_default(),
+                shared: item["shared"] == true,
+            })
+        })
+        .collect()
+}
+
+/// What a computer shares with an inference website: model environment IDs, and the Sandbox VM
+/// limits (CPU cores, memory in GB, VMs at once) when the website may run VMs on it.
+#[derive(Debug, Default, PartialEq)]
+struct Contribution {
+    models: Vec<String>,
+    sandbox: Option<(u32, u32, u32)>,
+}
+
+impl Contribution {
+    /// The connector's arguments for these answers, so it asks nothing itself.
+    fn arguments(&self) -> Vec<String> {
+        let sandbox = self.sandbox.map_or("none".to_owned(), |(cpu, memory, slots)| format!("{cpu},{memory},{slots}"));
+        vec!["--models".into(), self.models.join(","), "--sandbox".into(), sandbox]
+    }
+
+    fn summary(&self, models: &[LocalModel]) -> Vec<String> {
+        let names: Vec<&str> = models.iter().filter(|m| self.models.contains(&m.id)).map(|m| m.name.as_str()).collect();
+        vec![
+            format!("Models: {}", if names.is_empty() { "none".to_owned() } else { names.join(", ") }),
+            format!(
+                "Sandbox VMs: {}",
+                self.sandbox.map_or("no".to_owned(), |(cpu, memory, slots)| format!(
+                    "up to {slots} at once, within {cpu} CPU cores and {memory} GB memory in all"
+                ))
+            ),
+        ]
+    }
+}
+
+/// Ends the questions when the person would rather run a model first.
+const RUN_A_MODEL_FIRST: &str = "\u{1}yougori run a model first";
+
+/// The questions before a computer connects, as one wizard with Back: which models the website
+/// may use, whether it may also run Sandbox VMs here and within which limits, then a review.
+/// `Ok(false)` when the person chose to run a model first.
+fn ask_contribution(chosen: &mut Contribution, models: &[LocalModel], server: &str, host: &Value) -> Result<bool, String> {
+    use crate::cli_ui as ui;
+    let site = site_name(server);
+    // The models this computer already shares with the website start ticked.
+    chosen.models = models.iter().filter(|m| m.shared).map(|m| m.id.clone()).collect();
+    let mut steps = ui::Wizard::new();
+    loop {
+        let asked = match steps.step() {
+            0 => choose_models(chosen, models, site),
+            1 => choose_sandbox(chosen, models.is_empty(), site, host),
+            2 => confirm_contribution(chosen, models, site),
+            _ => break,
+        };
+        match asked {
+            Err(error) if error == RUN_A_MODEL_FIRST => return Ok(false),
+            outcome => steps.next(outcome)?,
+        }
+    }
+    Ok(true)
+}
+
+fn choose_models(chosen: &mut Contribution, models: &[LocalModel], site: &str) -> Result<bool, String> {
+    use crate::cli_ui::{self as ui, Choice};
+    if models.is_empty() {
+        let notes = ["This computer has no models in Yougori yet, so it has no model to share.".to_owned()];
+        let choices = [
+            Choice::new("Lend Sandbox VMs", format!("{site} may run isolated VMs here, within limits you set")),
+            Choice::new("Run a model first", "start one with yougori model run, then run this command again"),
+        ];
+        return match ui::select(&format!("What can this computer do for {site}?"), &notes, &choices, 0)? {
+            0 => Ok(true),
+            _ => Err(RUN_A_MODEL_FIRST.into()),
+        };
+    }
+    let choices: Vec<Choice> = models.iter().map(|m| Choice::new(m.name.clone(), m.hint.clone())).collect();
+    let initial: Vec<usize> = models.iter().enumerate().filter(|(_, m)| chosen.models.contains(&m.id)).map(|(i, _)| i).collect();
+    let notes = ["Your other models and files stay private.".to_owned()];
+    let picked = ui::multiselect(&format!("Which models may {site} use?"), &notes, &choices, &initial, false)?;
+    chosen.models = picked.into_iter().map(|i| models[i].id.clone()).collect();
+    Ok(true)
+}
+
+fn choose_sandbox(chosen: &mut Contribution, only_sandbox: bool, site: &str, host: &Value) -> Result<bool, String> {
+    use crate::cli_ui::{self as ui, Choice};
+    if !only_sandbox {
+        let choices = [
+            Choice::new("No", "only the models you chose"),
+            Choice::new("Yes, within limits I set", "isolated VMs with no host folders, host commands or outside network access"),
+        ];
+        if ui::select(&format!("May {site} also run Sandbox VMs on this computer?"), &[], &choices, usize::from(chosen.sandbox.is_some()))? == 0 {
+            chosen.sandbox = None;
+            return Ok(true);
+        }
+    }
+    let most = |key: &str, ceiling: u32| {
+        host[key].as_f64().filter(|v| v.is_finite() && *v >= 1.0).map_or(ceiling, |v| (v.floor() as u32).min(ceiling))
+    };
+    let (cpu_max, memory_max) = (most("totalCpu", 64), most("totalMemoryGb", 256));
+    let (cpu, memory, slots) = chosen.sandbox.unwrap_or((4, 8, 2));
+    let mut sliders = [
+        ui::Slider { label: "CPU", unit: "cores", value: cpu.min(cpu_max), min: 1, max: cpu_max, default: 4.min(cpu_max) },
+        ui::Slider { label: "Memory", unit: "GB", value: memory.min(memory_max), min: 1, max: memory_max, default: 8.min(memory_max) },
+        ui::Slider { label: "At once", unit: "VMs", value: slots.min(16), min: 1, max: 16, default: 2 },
+    ];
+    ui::sliders(
+        &format!("Limits for {site}'s Sandbox VMs"),
+        "All its VMs together stay within these. They run until stopped or this computer disconnects.",
+        &mut sliders,
+    )?;
+    chosen.sandbox = Some((sliders[0].value, sliders[1].value, sliders[2].value));
+    Ok(true)
+}
+
+fn confirm_contribution(chosen: &Contribution, models: &[LocalModel], site: &str) -> Result<bool, String> {
+    use crate::cli_ui::{self as ui, Choice};
+    if chosen.models.is_empty() && chosen.sandbox.is_none() {
+        ui::warn("Nothing to share yet: tick a model, or let the website run Sandbox VMs.");
+        return Err(ui::BACK.into());
+    }
+    let choices = [
+        Choice::new("Connect", format!("this computer shows a code; approve it on {site}, and keep this terminal open")),
+        Choice::new("Cancel", "nothing is shared"),
+    ];
+    match ui::select(&format!("Connect this computer to {site}?"), &chosen.summary(models), &choices, 0)? {
+        0 => Ok(true),
+        _ => Err(crate::wire::cancelled("Nothing was connected.")),
+    }
+}
+
+/// The connector, run with this CLI as its Yougori.
+fn connector(python: &Path, stage: &Path, executable: &Path) -> Command {
+    let mut child = Command::new(python);
+    child
+        .args(["-I", "-B"])
+        .arg(stage.join("compute_node.py"))
+        .env("SOLVER_YOUGORI", executable)
+        .env("INFERENCE_SOLVER_YOUGORI", executable)
+        .env("YOUGORI_NO_UPDATE_CHECK", "1");
+    child
+}
+
+/// Before the connector starts. Yougori must run: the connector reads this computer's models
+/// through `yougori call`, which never starts it. In a terminal the person then chooses what this
+/// computer shares from menus, as `run` asks its questions, and the connector receives the
+/// answers as arguments. Returns an exit code when nothing is to be connected.
+async fn prepare_connect(opts: &mut Options, python: &Path, stage: &Path, executable: &Path) -> Result<Option<i32>, String> {
+    use crate::cli_ui as ui;
+    if opts.extra.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return Ok(None); // The connector prints its own help.
+    }
+    ui::busy("Starting Yougori engine", crate::client::start(None)).await?;
+    if !ui::can_prompt() {
+        return Ok(None); // A script answers the connector's own questions on its input.
+    }
+    let mut list = connector(python, stage, executable);
+    list.arg("--list").stdin(Stdio::null());
+    let listed = ui::busy("Reading this computer's models", async move {
+        tokio::task::spawn_blocking(move || list.output())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Could not read this computer's models: {e}"))
+    })
+    .await?;
+    if !listed.status.success() {
+        let said = String::from_utf8_lossy(&listed.stderr).trim().to_owned();
+        return Err(if said.is_empty() { "Yougori could not list this computer's models.".into() } else { said });
+    }
+    let models = local_models(&listed.stdout)?;
+    let state = ui::busy("Reading this computer's capacity", crate::public::call("get_platform_state", json!({}))).await?;
+    let mut chosen = Contribution::default();
+    match ask_contribution(&mut chosen, &models, &opts.server, &state["host"]) {
+        Ok(true) => {}
+        Ok(false) => {
+            ui::outro(&format!(
+                "Run a model with {}, then run this command again.",
+                ui::bold("yougori model run")
+            ));
+            return Ok(Some(0));
+        }
+        Err(error) if error == ui::BACK || error == ui::CANCELLED => return Err(crate::wire::cancelled("Nothing was connected.")),
+        Err(error) => return Err(error),
+    }
+    opts.extra.extend(chosen.arguments());
+    Ok(None)
+}
+
 pub async fn run(args: &[String]) -> Result<i32, String> {
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h") {
         print!("{HELP}");
@@ -744,15 +954,13 @@ pub async fn run(args: &[String]) -> Result<i32, String> {
             return Ok(code);
         }
     }
+    if opts.action == "connect" {
+        if let Some(code) = prepare_connect(&mut opts, &python, stage_dir.path(), &executable).await? {
+            return Ok(code);
+        }
+    }
     let mut child = if opts.action == "connect" {
-        let mut child = Command::new(&python);
-        child
-            .args(["-I", "-B"])
-            .arg(stage_dir.path().join("compute_node.py"))
-            .env("SOLVER_YOUGORI", &executable)
-            .env("INFERENCE_SOLVER_YOUGORI", &executable)
-            .env("YOUGORI_NO_UPDATE_CHECK", "1");
-        child
+        connector(&python, stage_dir.path(), &executable)
     } else {
         let mut child = launcher(&python, stage_dir.path(), &executable);
         child.arg(&opts.action).arg(&opts.harness).arg("--server").arg(&opts.server);
@@ -888,5 +1096,33 @@ mod tests {
         assert!(dir.path().join("harnesses/transport.py").is_file());
         assert!(dir.path().join("vm_host.py").is_file());
         assert!(dir.path().join("compute_node.py").is_file());
+    }
+    #[test]
+    fn reads_the_connectors_model_list() {
+        let listed = br#"{"models":[{"id":"env-1","name":"Qwen/Qwen2.5-0.5B-Instruct","ready":true,"hint":"running","shared":true},
+            {"id":"env-2","name":"Other","ready":false,"hint":"stopped; it starts if you choose it","shared":false}]}"#;
+        let models = local_models(listed).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0], LocalModel { id: "env-1".into(), name: "Qwen/Qwen2.5-0.5B-Instruct".into(), hint: "running".into(), shared: true });
+        assert!(!models[1].shared);
+        assert!(local_models(br#"{"models":[]}"#).unwrap().is_empty());
+        for bad in [&b"not json"[..], br#"{"models":{}}"#, br#"{"models":[{"id":"","name":"x"}]}"#, br#"{"models":[{"id":"a"}]}"#] {
+            assert!(local_models(bad).is_err());
+        }
+    }
+    #[test]
+    fn passes_the_answers_to_the_connector() {
+        let models = vec![
+            LocalModel { id: "env-1".into(), name: "First".into(), hint: String::new(), shared: false },
+            LocalModel { id: "env-2".into(), name: "Second".into(), hint: String::new(), shared: false },
+        ];
+        let both = Contribution { models: vec!["env-1".into(), "env-2".into()], sandbox: Some((4, 8, 2)) };
+        assert_eq!(both.arguments(), args(&["--models", "env-1,env-2", "--sandbox", "4,8,2"]));
+        assert_eq!(both.summary(&models), args(&["Models: First, Second", "Sandbox VMs: up to 2 at once, within 4 CPU cores and 8 GB memory in all"]));
+        let vms = Contribution { models: Vec::new(), sandbox: Some((2, 4, 1)) };
+        assert_eq!(vms.arguments(), args(&["--models", "", "--sandbox", "2,4,1"]));
+        let one = Contribution { models: vec!["env-2".into()], sandbox: None };
+        assert_eq!(one.arguments(), args(&["--models", "env-2", "--sandbox", "none"]));
+        assert_eq!(one.summary(&models), args(&["Models: Second", "Sandbox VMs: no"]));
     }
 }

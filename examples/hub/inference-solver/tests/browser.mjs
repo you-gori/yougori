@@ -103,8 +103,21 @@ try {
   await page.getByLabel('Email', { exact: true }).fill('admin@example.invalid');
   await page.getByLabel('Password', { exact: true }).fill('disposable-test-password');
   await page.locator('#auth-submit').click();
+  // The administrator's first sign-in asks for the main page and the harnesses offered, all ticked.
+  await page.getByRole('heading', { name: 'Set up your inference', exact: true }).waitFor();
+  assert.equal(await page.locator('#choices-form [name="home"]:checked').getAttribute('value'), 'harnesses');
+  assert.equal(await page.locator('#choice-count').textContent(), '21 of 21 harnesses offered');
+  await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  await page.getByRole('button', { name: 'Save and continue ↗' }).click();
+  await page.getByText('Offer at least one harness, or choose another main page.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Select all', exact: true }).click();
+  await page.getByLabel(/^Aider/).uncheck();
+  assert.equal(await page.locator('#choice-count').textContent(), '20 of 21 harnesses offered');
+  await page.getByRole('button', { name: 'Save and continue ↗' }).click();
   await page.locator('#harnesses-list .entry').last().waitFor();
-  assert.equal(await page.locator('#harnesses-list .entry').count(), 21);
+  assert.equal(await page.locator('#harnesses-list .entry').count(), 20);
+  assert.equal(await page.locator('[data-harness="aider"]').count(), 0);
+  assert.equal((await page.request.get(url + '/install/aider.ps1')).status(), 404);
   await page.getByRole('searchbox').fill('Codex');
   assert.equal(await page.locator('#harnesses-list .entry').count(), 1);
   await page.locator('[data-harness="codex"]').click();
@@ -153,17 +166,88 @@ try {
   await page.getByRole('heading', { name: 'Local GPUs', exact: true }).waitFor();
   assert.equal(await page.locator('#compute-setup input[name="url"], #compute-setup select[name="place"]').count(), 0);
   assert.equal(await page.locator('dialog[open]').count(), 0);
-  const panels = await page.locator('#compute-setup .compute-options > .panel').evaluateAll(nodes => nodes.map(node => {
-    const r = node.getBoundingClientRect(); return {x: r.x, y: r.y, width: r.width};
-  }));
-  assert.equal(panels.length, 2);
-  assert.equal(panels[0].y, panels[1].y);
-  assert.ok(panels[1].x >= panels[0].x + panels[0].width);
   await page.getByRole('heading', {name:'Sandboxes', exact:true}).waitFor();
   await page.getByRole('heading', {name:'Crypto payments', exact:true}).waitFor();
-  assert.equal(await page.locator('#compute-sizing select[name="gpu_count"] option').count(), 8);
-  await page.locator('#compute-sizing select[name="storage"]').selectOption('persistent');
-  assert.equal(await page.locator('#compute-sizing input[name="volume_gb"]').isEnabled(), true);
+  await page.getByRole('heading', {name:'Media pricing and storage', exact:true}).waitFor();
+  // Admin is one column, in this order, with nothing folded away.
+  const sections = await page.locator('#admin-grid .admin-section').evaluateAll(nodes => nodes.map(node => {
+    const r = node.getBoundingClientRect(); return {id: node.id, x: r.x, y: r.y};
+  }));
+  assert.deepEqual(sections.map(s => s.id), ['admin-local', 'admin-rent', 'admin-servers', 'admin-sandboxes', 'admin-choices', 'admin-identity', 'admin-people', 'admin-prices', 'admin-media', 'admin-payments', 'admin-activity']);
+  assert.ok(sections.every((s, i) => s.x === sections[0].x && (i === 0 || s.y > sections[i - 1].y)));
+  assert.equal(await page.locator('#admin-grid details').count(), 0);
+  // The left edge is the PrompX harness's ruler, one mark per section, in place of the scrollbar.
+  assert.equal(await page.locator('.rail .rail-mark').count(), 11);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).scrollbarWidth), 'none');
+  // The ruler is 48 px wide and never covers the page: the sections and the footer start after it.
+  const edges = await page.evaluate(() => ({rail: document.querySelector('.rail').getBoundingClientRect(), grid: document.querySelector('#admin-grid').getBoundingClientRect().left, foot: document.querySelector('.foot-inner').getBoundingClientRect().left}));
+  assert.equal(edges.rail.width, 48);
+  assert.ok(edges.rail.right + 16 <= edges.grid && edges.rail.right + 16 <= edges.foot, JSON.stringify(edges));
+  await page.locator('.rail').hover();
+  await page.locator('.rail-mark', { hasText: 'Crypto payments' }).click();
+  await page.waitForFunction(() => document.querySelector('.rail-mark[aria-current="true"]')?.textContent === 'Crypto payments');
+  await page.locator('.rail').click({ position: { x: 4, y: 20 } });
+  await page.waitForFunction(() => scrollY < 50);
+  // A computer's code is approved right in Local GPUs.
+  await page.locator('#contributor-inspect input[name="code"]').fill('ZZZZ9999');
+  await page.getByRole('button', { name: 'Check computer', exact: true }).click();
+  await page.locator('#contributor-inspect .error').filter({ hasText: /./ }).waitFor();
+  // Without Yougori on the website's server, as on every hosted inference, computers connect with the
+  // command shown first, and renting points to the Yougori app instead of controls that cannot work.
+  assert.equal(await page.locator('#compute-install').textContent(), `yougori inference connect "${url}"`);
+  // Every command a computer runs, in order: install or update Yougori (Windows or Linux), start it
+  // (the connector never does), then connect. Each Copy button copies its own command.
+  const steps = await page.locator('#admin-local .command-steps li').evaluateAll(rows => rows.map(row => [
+    row.querySelector('.command-label').textContent, row.querySelector('pre').textContent, row.querySelector('button').dataset.copy]));
+  assert.deepEqual(steps.map(([label]) => label), ['Install or update Windows', 'Install or update Linux', 'Start Yougori', 'Connect this computer']);
+  assert.deepEqual(steps.map(([, command]) => command), [
+    'powershell -c "Set-Item Env:YOUGORI_ALLOW_UNSIGNED 1; irm https://yougori.com/install-preview.ps1 | iex"',
+    'curl -fsSL https://yougori.com/install-preview.sh | YOUGORI_ALLOW_UNSIGNED=1 bash',
+    'yougori app start',
+    `yougori inference connect "${url}"`,
+  ]);
+  assert.ok(steps.every(([, command, copied]) => command === copied));
+  await page.locator('#admin-local .command-steps li', { hasText: 'Start Yougori' }).getByRole('button', { name: 'Copy' }).click();
+  await page.locator('#admin-local .command-steps li', { hasText: 'Start Yougori' }).getByRole('button', { name: 'Copied' }).waitFor();
+  // Copy all copies the whole set as one message; Post on X opens X with a short post ready to send.
+  const siteName = await page.locator('#brand').textContent();
+  const all = await page.locator('#compute-copy-all').getAttribute('data-copy');
+  assert.equal(all, [`Connect a computer with a GPU to ${siteName}. Run these in a terminal, in order:`, '',
+    '1. Install or update Yougori (after a first install, open a new terminal)',
+    `   Windows: ${steps[0][1]}`, `   Linux: ${steps[1][1]}`,
+    '   Using the Yougori desktop app? Update it from https://yougori.com/#download instead.',
+    '2. Start Yougori', '   yougori app start',
+    '3. Connect this computer, and choose what it shares', `   yougori inference connect "${url}"`, '',
+    'It shows a code for the administrator to approve. Keep its terminal open.'].join('\n'));
+  await page.locator('#compute-copy-all').click();
+  await page.waitForFunction(() => document.querySelector('#compute-copy-all').textContent === 'Copied');
+  const xPost = page.locator('#compute-post-x');
+  const intent = new URL(await xPost.getAttribute('href'));
+  assert.equal(intent.origin + intent.pathname, 'https://x.com/intent/post');
+  assert.equal(intent.searchParams.get('text'), `Connect your GPU to ${siteName}:\n\n1. Install Yougori: yougori.com\n2. yougori app start\n3. yougori inference connect "${url}"`);
+  assert.ok(intent.searchParams.get('text').length <= 280);
+  assert.equal(await xPost.getAttribute('target'), '_blank');
+  assert.match(await xPost.getAttribute('rel'), /noopener/);
+  assert.equal(await page.locator('#rent-elsewhere').isVisible(), true);
+  assert.equal(await page.locator('#rent-here').isHidden(), true);
+  assert.equal(await page.locator('#compute-website').isHidden(), true);
+  // Optional settings are tick boxes that switch their fields on.
+  const contributor = page.locator('#compute-password');
+  assert.equal(await contributor.locator('[name="password"]').isDisabled(), true);
+  await contributor.getByLabel('Let people connect with a password').check();
+  await contributor.locator('[name="password"]').fill('contributor-password-1');
+  await contributor.getByRole('button', { name: 'Save contribution access' }).click();
+  await page.getByText('Contributor password saved.', { exact: true }).waitFor();
+  await page.locator('#compute-password-state', { hasText: 'A password is set' }).waitFor();
+  await contributor.getByLabel('Let people connect with a password').uncheck();
+  assert.equal(await contributor.locator('[name="password"]').isDisabled(), true);
+  await contributor.getByRole('button', { name: 'Save contribution access' }).click();
+  await page.getByText('You now approve every computer yourself.', { exact: true }).waitFor();
+  const policy = page.locator('#grid-policy');
+  assert.equal(await policy.locator('[name="password"]').isDisabled(), true);
+  await policy.locator('[name="admission"]').selectOption('password');
+  assert.equal(await policy.locator('[name="password"]').isEnabled(), true);
+  await policy.locator('[name="admission"]').selectOption('private');
   await page.locator('#payment-wallet select').selectOption('base');
   await page.locator('#payment-wallet input[name="address"]').fill('0x' + '1'.repeat(40));
   await page.getByRole('button', {name:'Save receiving wallet',exact:true}).click();
@@ -188,17 +272,39 @@ try {
   await page.getByRole('button',{name:'Cancel unused invoice',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('[data-invoice]')?.textContent.includes('cancelled'));
   await page.locator('a[href="#admin"]').first().click();
-  await page.locator('#infrastructure-setup').waitFor();
+  await page.locator('#admin-sandboxes').waitFor();
   assert.equal(await page.locator('dialog[open]').count(), 0);
-  assert.equal(await page.getByRole('button', { name: 'Rent GPU and host model' }).isDisabled(), true);
   await page.locator('#add-endpoint').click();
   assert.equal(await page.locator('dialog[open]').count(), 0);
   await page.getByLabel('Website name').fill('My inference team');
-  await page.getByLabel('Accent color').selectOption('#244e48');
+  assert.equal(await page.locator('.palette-option input').count(), 6);
+  await page.getByLabel('Rosé Pine').check();
   await page.getByRole('button', { name: 'Save identity ↗' }).click();
   await page.getByText('Website identity saved.', { exact: true }).waitFor();
   await page.locator('#brand', { hasText: 'My inference team' }).waitFor();
-  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--blue').trim()), '#244e48');
+  // The colour style is the whole site's: it arrives with the page itself, for every visitor.
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.palette), 'rose-pine');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--pill').trim()), '#286983');
+  assert.match(await (await fetch(url + '/')).text(), /<html lang="en" data-palette="rose-pine">/);
+  // Admin keeps the same choices: the main page leads the menu and opens at the site's own address.
+  const choices = page.locator('#admin-choices');
+  assert.equal(await choices.locator('[name="harness"]:checked').count(), 20);
+  await choices.getByLabel(/^Models/).check();
+  await choices.getByLabel(/^Aider/).check();
+  await choices.getByRole('button', { name: 'Save choices ↗' }).click();
+  await page.getByText('Main page and harnesses saved.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#nav a').first().textContent(), 'Models');
+  assert.equal(await page.locator('#brand').getAttribute('href'), '#models');
+  await page.goto(url);
+  await page.locator('#view .model-id').last().waitFor();
+  assert.equal(await page.locator('#nav a[aria-current="page"]').textContent(), 'Models');
+  await page.goto(url + '/#admin');
+  await choices.waitFor();
+  assert.equal(await choices.locator('[name="harness"]:checked').count(), 21);
+  await choices.getByLabel(/^Harnesses/).check();
+  await choices.getByRole('button', { name: 'Save choices ↗' }).click();
+  await page.getByText('Main page and harnesses saved.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#nav a').first().textContent(), 'Harnesses');
   await page.getByLabel('Email address').fill('new-member@example.invalid');
   await page.getByRole('button', { name: 'Create invitation ↗' }).click();
   await page.locator('.secret').waitFor();
@@ -279,8 +385,8 @@ try {
   await page.locator('#harnesses-list').waitFor();
   await page.locator('#nav a[href="#keys"]').click();
   await page.getByRole('button', { name: 'Create API key ↗' }).waitFor();
-  // A deliberately rejected duplicate signup produces Chrome's normal HTTP error log.
-  assert.deepEqual(errors.filter(error => !(error.includes('400') && error.endsWith(url + '/api/signup'))), []);
+  // A deliberately rejected duplicate signup and a deliberately wrong computer code produce Chrome's normal HTTP error log.
+  assert.deepEqual(errors.filter(error => !(error.includes('400') && (error.endsWith(url + '/api/signup') || error.endsWith(url + '/api/compute/pair/inspect')))), []);
   console.log('Browser flow passed: public signup/login on desktop and mobile, member/admin boundaries, guest-first catalogs, scoped key/revoke, branding, invitations, themes and responsive layouts.');
 } finally {
   await browser?.close();

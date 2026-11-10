@@ -5,7 +5,7 @@ Contents: How Yougori is organised · Agent conventions · Output, errors and ex
 ## How Yougori is organised
 
 - One engine owns every disk and runtime. The desktop app and the CLI are clients of the same engine and share one state: anything created in either appears in both. The CLI reaches the engine through a same-user local pipe/socket, never a public HTTP listener.
-- `yougori app start` launches the installed desktop app headless, or the standalone engine (`yougori-engine`: no desktop app, no display) when the app is not installed. `--engine` or `YOUGORI_ENGINE_ONLY=1` requires the standalone engine (an error if it is not installed); `--app ABSOLUTE_EXECUTABLE_PATH` picks an app binary. It waits up to 45 s and does nothing when an engine already runs. Only one engine runs at a time and both kinds share the same state.
+- `yougori app start` launches the installed desktop app headless, or the standalone engine (`yougori-engine`: no desktop app, no display) when the app is not installed. `--engine` or `YOUGORI_ENGINE_ONLY=1` requires the standalone engine (an error if it is not installed); `--app ABSOLUTE_EXECUTABLE_PATH` picks an app binary. It waits up to 45 s and does nothing when an engine already runs. Only one engine runs at a time and both kinds share the same state. A terminal shows the wordmark, the state and next commands; piped or `--format json` prints JSON (`alreadyRunning`).
 - `app status` reports `engineOnly`. `app show` opens the dashboard; a standalone engine hands over to the desktop app when nothing is running and otherwise says what to stop first. Guest, app and service windows and Personal Vault approvals need the desktop app.
 - In a development checkout replace `yougori` with `npm run cli --`, and run the engine with `npm run desktop:dev -- -- -- --headless` in a separate terminal (the separators belong to npm, Tauri, then its runner; Vite is still needed for any windows you open).
 
@@ -579,7 +579,8 @@ Contents: What the Hub is · Run a template · After a run · Make and publish �
 
 ## What the Hub is
 
-`yougori inference connect URL` asks which models or VM capacity to contribute.
+`yougori inference connect URL` starts Yougori, then asks (with Back) which models (a checklist)
+and Sandbox VM limits to share.
 `yougori inference run HARNESS --server URL` checks the harness, then asks (with Back) for a
 project folder (a staged copy), what the VM reaches (only this inference, sites you choose,
 or the whole internet; never off: prompts go through Yougori's relay) and CPU/memory, then

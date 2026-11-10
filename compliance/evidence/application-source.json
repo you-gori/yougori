@@ -1213,13 +1213,13 @@
     },
     {
       "path": "cli/Cargo.lock",
-      "sha256": "97b4e6701478ce7751d16cb51ae060608cad928094b686ced84ab187af203754",
+      "sha256": "da107c14f1bfa535c984ddff8cf9abfd1b7991cb0e6ea4666ebd60850ad54ee1",
       "bytes": 85750,
       "mode": 420
     },
     {
       "path": "cli/Cargo.toml",
-      "sha256": "f760fe2fef31428bcee32aa56831535609bca9402c9807e95e6c740113b99dff",
+      "sha256": "e2194a2354ec1158535e1a2d7c3be509fbcbadd5df206e341b2f3f094cd41f50",
       "bytes": 1577,
       "mode": 420
     },
@@ -1279,8 +1279,8 @@
     },
     {
       "path": "cli/src/client.rs",
-      "sha256": "3f1811415da57b1be40b799c60475ccd42e488ae9d0a26acdb2c27194cc8a48d",
-      "bytes": 68269,
+      "sha256": "26ca7342191e47f58fe23ed9aaf4bc6f1123eb2346dd227ad672b9f326f729dc",
+      "bytes": 68584,
       "mode": 420
     },
     {
@@ -1543,8 +1543,8 @@
     },
     {
       "path": "cli/src/inference.rs",
-      "sha256": "969b64a710e03011db593a42784e506030c27bc538aff8c818c254b5099f0223",
-      "bytes": 34686,
+      "sha256": "e40745cee4fd10195e6901c6e52794ede49d0de17d393bee8f726d7690e2e954",
+      "bytes": 46586,
       "mode": 420
     },
     {
@@ -1585,8 +1585,8 @@
     },
     {
       "path": "cli/src/main.rs",
-      "sha256": "70d4ba70d84fdfba54ec672995300cbb3b9c8c1c68e2998e3fc2a81f62753f2f",
-      "bytes": 48786,
+      "sha256": "c1667a68310d911e75c474f204e7b2235d557799704fce4197666fe8cf347f14",
+      "bytes": 53454,
       "mode": 420
     },
     {
@@ -2863,13 +2863,13 @@
     },
     {
       "path": "engine/Cargo.lock",
-      "sha256": "6ed44d693dafc9b17986e28a9bf933159de34aa46955fc22af9299035b607569",
+      "sha256": "a48a9648a5ac5e7323e11476977bf59f115e89990b1f367b95c42b26255e93d0",
       "bytes": 196869,
       "mode": 420
     },
     {
       "path": "engine/Cargo.toml",
-      "sha256": "7be19e2cc8b95427d848f1b7a275d467c7fad581be7ef7501748bd9e4c3ae0f3",
+      "sha256": "3bb08916ad2c3062403d2ae38ffd264fcdee8cfc4fc9fb9cd2907bc2a955872a",
       "bytes": 1668,
       "mode": 420
     },
@@ -3361,8 +3361,8 @@
     },
     {
       "path": "examples/hub/inference-solver/.agents/skills/edit-inference-solver/SKILL.md",
-      "sha256": "43e63530d965b3a344ec491d9ee5d269343af1f5efce56edf40c90e24ffb45d5",
-      "bytes": 12367,
+      "sha256": "4c94f1a0e7ae325490670b779e1fbbdc7540e646af7414b8faca0548a3a847f1",
+      "bytes": 13181,
       "mode": 420
     },
     {
@@ -3373,8 +3373,8 @@
     },
     {
       "path": "examples/hub/inference-solver/README.md",
-      "sha256": "4b903d60721b370d8163f2aa85b743372934593121a463e5ad06599d1306b7e0",
-      "bytes": 24501,
+      "sha256": "3b9a00d51d183c0f73905ba86bb2b039dead52a54409f6e1d12f8adda88da6e1",
+      "bytes": 27461,
       "mode": 420
     },
     {
@@ -3415,8 +3415,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/app.js",
-      "sha256": "1e776963fc30a7cb37cb2a32636b3bb515442475e6369365ae26817d19a82cad",
-      "bytes": 50771,
+      "sha256": "f4c0c5ffbad4cec1a29e7467aa4872145ea6330f6898e1df7822c3d21781ccfb",
+      "bytes": 64381,
       "mode": 420
     },
     {
@@ -3439,8 +3439,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/compute-ui.js",
-      "sha256": "4b716fb5e22f819ba19b374dbb6cf1bdd10b05e0a3b36a98e71c7466d4cb716a",
-      "bytes": 18605,
+      "sha256": "a7e5551ee966cb6b596f99cb37fa372e01417e08a4960b9d8f86fb8321ecde84",
+      "bytes": 22106,
       "mode": 420
     },
     {
@@ -3457,8 +3457,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/compute_node.py",
-      "sha256": "05be94877005db0ac8e1cfcbacb651648e2764cb53c651a8fa20e8ee2d6c19a4",
-      "bytes": 16866,
+      "sha256": "f7c71c02c78736db42528ed0d044571309c88a455f935c7305e9b69cc9f7a357",
+      "bytes": 19470,
       "mode": 420
     },
     {
@@ -3469,8 +3469,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/control-ui.js",
-      "sha256": "1746051dcebed75b869c33bed5d6a76bdf7db41ec3619e019f521dd2d65cde88",
-      "bytes": 13156,
+      "sha256": "0ce7f2d2801aacc881a2817cb5122e6297d1c4b1f7765143f030af973961ebe4",
+      "bytes": 12834,
       "mode": 420
     },
     {
@@ -3697,14 +3697,14 @@
     },
     {
       "path": "examples/hub/inference-solver/site/index.html",
-      "sha256": "71541b42b8b4829d84a8cee46b66f2e979d3d44e6443d7b4bac7112e7128df8e",
-      "bytes": 4385,
+      "sha256": "ba9c4f151e8ded7e54a66a13bb835431ccb80069e332611faccfca3960bad777",
+      "bytes": 4405,
       "mode": 420
     },
     {
       "path": "examples/hub/inference-solver/site/infrastructure-ui.js",
-      "sha256": "0d0b729a6a4d97fc3f94ec6b8bda5a53bc3c5fe404f2640ed258b0c86254e625",
-      "bytes": 5640,
+      "sha256": "714f02398b57370553d562b117dae874ec44a335fba45190b59570371707084e",
+      "bytes": 6109,
       "mode": 420
     },
     {
@@ -3733,8 +3733,8 @@
     },
     {
       "path": "examples/hub/inference-solver/site/payments-ui.js",
-      "sha256": "40b3aabb1e35ccfd0efce09022fecf21147f57025900d9836a575db362f10f43",
-      "bytes": 12799,
+      "sha256": "4b6267957fcb76f19b91aef38309b6960f5b6db3986228370f0018c2be7b23c7",
+      "bytes": 12689,
       "mode": 420
     },
     {
@@ -3769,20 +3769,20 @@
     },
     {
       "path": "examples/hub/inference-solver/site/server.py",
-      "sha256": "b18db7b49e32c244ec45f80e5fd69f3d6f93ef30d3162cf083ddd1c554e74d18",
-      "bytes": 37180,
+      "sha256": "3b942d5f12379f00563c6a376b991bcf56233523f11131a9e40e4cc21da4d98c",
+      "bytes": 40323,
       "mode": 420
     },
     {
       "path": "examples/hub/inference-solver/site/store.py",
-      "sha256": "472d80f98c1fad9f6f8c9a09d93214614fe3578b0992bb56d4123ff1e29e95c8",
-      "bytes": 24855,
+      "sha256": "71c1f7a6e3eb9eecb2a95907658b80a1936633f109263abfbd0ebf690ab0f9c1",
+      "bytes": 26373,
       "mode": 420
     },
     {
       "path": "examples/hub/inference-solver/site/style.css",
-      "sha256": "6634174bd5fdb11b6a272dd8143a0b757e3bfdcb99ffd005b37a75eb8bd04c8d",
-      "bytes": 21922,
+      "sha256": "677a930ae1cb958fd5ad93e83f9f781e7ee0ae4fca2718e4352b806128a4ede0",
+      "bytes": 34004,
       "mode": 420
     },
     {
@@ -3805,8 +3805,8 @@
     },
     {
       "path": "examples/hub/inference-solver/tests/browser.mjs",
-      "sha256": "40c4975ff2aad1e82ad4230f6f73dd634ad9e5bee0bd61924879cc68bec29178",
-      "bytes": 20015,
+      "sha256": "21bf10f5900acde03bd492d36da6cd5f3553d57456648827e3a758802f3c4955",
+      "bytes": 28935,
       "mode": 420
     },
     {
@@ -3817,8 +3817,8 @@
     },
     {
       "path": "examples/hub/inference-solver/tests/control-browser.mjs",
-      "sha256": "21316f70b0a288c89789b35f06da4aa057f4b0300e68c2c02ae169d77c11cfe6",
-      "bytes": 5678,
+      "sha256": "8e209bd37c0d2b6e50e12f43776071b139beaad6cda74ed608e19cdce6588c56",
+      "bytes": 6677,
       "mode": 420
     },
     {
@@ -3943,8 +3943,8 @@
     },
     {
       "path": "examples/hub/inference-solver/tests/inference_commands.mjs",
-      "sha256": "8cda18251a91252681b42dc467100f7cd02c566f7260bef70ffdfaf58558569d",
-      "bytes": 1265,
+      "sha256": "2ec0576cac6c8af993c992f9df7e55cf76964ea2cdca56aaef37754f121a8274",
+      "bytes": 1660,
       "mode": 420
     },
     {
@@ -3955,8 +3955,8 @@
     },
     {
       "path": "examples/hub/inference-solver/tests/private_accounts.mjs",
-      "sha256": "075fd2355cbfbe0ab1a119cb66494d0e39d22b831cb271287852d2533292f0d3",
-      "bytes": 3151,
+      "sha256": "d1b89f7d516c6552e27fd748b082c374d17452bf8eb1c47f7f877671677b6d4a",
+      "bytes": 3193,
       "mode": 420
     },
     {
@@ -3993,6 +3993,12 @@
       "path": "examples/hub/inference-solver/tests/test_compute.py",
       "sha256": "91f97194b6d76f3fd00b5c2e160d8898d12c693afc6b77f18314f391588dc48d",
       "bytes": 16181,
+      "mode": 420
+    },
+    {
+      "path": "examples/hub/inference-solver/tests/test_compute_node.py",
+      "sha256": "3c329daac4bc62c9505fbb9f57cd7b1e153805eade55b31e28bd2762a6ed5993",
+      "bytes": 6318,
       "mode": 420
     },
     {
@@ -4063,8 +4069,8 @@
     },
     {
       "path": "examples/hub/inference-solver/tests/test_service.py",
-      "sha256": "8968e1fb505ca894784248b3b378a91e01b4140fde7ce9ecfdfa07e8dbae5e99",
-      "bytes": 23632,
+      "sha256": "a0ffe2b2f6bfd1f91386479e9c20dd82b2f08c9a37363fbc274bb2c53001526f",
+      "bytes": 27522,
       "mode": 420
     },
     {
@@ -4555,13 +4561,13 @@
     },
     {
       "path": "grid/Cargo.lock",
-      "sha256": "04a715e395f7a30407347d411ac1d6ea40fd7c7dc7baab1d0f89cc001a7a5e80",
+      "sha256": "272e05ba43c2496fc3fbcf573a56621097e4da0190e6044d9d910499fe7f65b3",
       "bytes": 38783,
       "mode": 420
     },
     {
       "path": "grid/Cargo.toml",
-      "sha256": "9bb853e156a8eb1747f407e8e71007cf69184974f826170ce14e8a3eaade858b",
+      "sha256": "e1bb9f0f8b681998f96a1c7c8e3d2b170e35ec545bd46bfea3c52aff7444ce2c",
       "bytes": 2018,
       "mode": 420
     },
@@ -5317,13 +5323,13 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "5f433300747bb7337d04ba1032f209770f61927f4dca536097a764f10cfc8fdd",
+      "sha256": "64aa56cc8d86be1d8b68a1d24f6aa903d769e3a8789448b391019a939e17256e",
       "bytes": 193714,
       "mode": 420
     },
     {
       "path": "package.json",
-      "sha256": "5c3d6d8eb92b68d9984c0f39d91c4bde786102d3c25ceb7a842415215eb60219",
+      "sha256": "c2a16ecaf3a32585be27724b3718e825072de631da9c167917ce2f81b23cb358",
       "bytes": 7581,
       "mode": 420
     },
@@ -7033,13 +7039,13 @@
     },
     {
       "path": "setup/Cargo.lock",
-      "sha256": "4fc47b036ec73c860185b38ad10f150532d899185ff4bf689f64bbf389d0191e",
+      "sha256": "2fd2dcdc66a4cca7b7e747689de3cbe0e3066e26b773732ce5bcdf2be4cd4aa6",
       "bytes": 6402,
       "mode": 420
     },
     {
       "path": "setup/Cargo.toml",
-      "sha256": "e5b69b5d4e5abf4a2f06529f081bedc90a9027c83c027c7f82ea168398700951",
+      "sha256": "8245d7783edf30f09c475a6e3d854cba4dc2b17d3454cf340bf68b92f0aa6023",
       "bytes": 366,
       "mode": 420
     },
@@ -7675,19 +7681,19 @@
     },
     {
       "path": "skills/yougori/references/cli.txt",
-      "sha256": "8a346dd61267868e4bc3572a94da25a7b5aa7e7a022c9fea8a0501db0921db35",
-      "bytes": 236814,
+      "sha256": "75212fac2abd83cd0d5d0fe1513642a2aa890ae235c6499274114e7bce59d442",
+      "bytes": 236980,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "0af7a8544d3d1677a1c63bd71d7c46e9201dc533f62b685e9dd7633cfe30effb",
+      "sha256": "669b73e3a877423f49554001e92cc95fcbc7bb8bcceb4e256d49f323c538089e",
       "bytes": 199305,
       "mode": 420
     },
     {
       "path": "src-tauri/Cargo.toml",
-      "sha256": "4a2fa0a50cbdbd8295ea95a96a5fab8ca9df45757213d0e2ecba95e595852265",
+      "sha256": "03efa59d0ec57add92539a703711d246a351a6c9caf92579e04f06fa36ff5680",
       "bytes": 4757,
       "mode": 420
     },
@@ -12967,8 +12973,8 @@
     },
     {
       "path": "src-tauri/src/model_runner/measurement/cursor.rs",
-      "sha256": "5d21569ad168cccdfcac79ddea7ed024ddd4b61e92836e08e861599530c2c53e",
-      "bytes": 10565,
+      "sha256": "b6faf2a45264f86bcf721892370d8577dbd7aab13b686ff02a39bdf032f50772",
+      "bytes": 10576,
       "mode": 420
     },
     {
@@ -13015,8 +13021,8 @@
     },
     {
       "path": "src-tauri/src/model_runner/measurement/workflow.rs",
-      "sha256": "c5f8da605658a55a984c9b05e9aee0f99160eb47fa9e9de342b5c7f6ddcec772",
-      "bytes": 13986,
+      "sha256": "e2b41c0a445db5964b63f00aa728e3985c1e8c3c1b0dd93bf25a7f28b7e21ffa",
+      "bytes": 14605,
       "mode": 420
     },
     {
@@ -19657,8 +19663,8 @@
     },
     {
       "path": "src-tauri/src/workspace/cloudflare/tests.rs",
-      "sha256": "0c2280ba4f250c271e312814a2b79989a8b3f6ef9731afb657b716e9fc519b67",
-      "bytes": 26007,
+      "sha256": "40e3a1925dba636c6013ec6d9789dd6c93a5bafe0e2de5dd3616cc7727da2694",
+      "bytes": 27399,
       "mode": 420
     },
     {
@@ -19693,7 +19699,7 @@
     },
     {
       "path": "src-tauri/tauri.conf.json",
-      "sha256": "26582e0f4685b2bab5ed59b900b0764d6afdd79666a602d8b4449b9e7c2e4b35",
+      "sha256": "683b125ab2cadb4c6c7d3df9f48f8fbb8f47bdc6d749fcf3b62b975e4ecd5296",
       "bytes": 1691,
       "mode": 420
     },
@@ -22543,13 +22549,13 @@
     },
     {
       "path": "vault/Cargo.lock",
-      "sha256": "8d5f161f1f16e4313a711530ebf44b9356801cb57fa30baddd976622c6f0462f",
+      "sha256": "7aac00f25dc5c4d60f3ea6e0cc0f0e804c192768255bbf53ad34e644289b399b",
       "bytes": 80514,
       "mode": 420
     },
     {
       "path": "vault/Cargo.toml",
-      "sha256": "9c25091b1b7ffd5a7c32c348bd5632b80aef7ab0e78f355ca38923983b98c349",
+      "sha256": "e5be08bf32f1208f21879062c1cf6ac02a43fa952b9b1f665b63e89bc0b5a560",
       "bytes": 1875,
       "mode": 420
     },

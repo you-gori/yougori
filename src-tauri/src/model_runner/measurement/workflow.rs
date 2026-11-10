@@ -1,7 +1,7 @@
 //! Explicit owner measurement sessions. Raw evidence never asserts benchmark context.
 use super::{
     collector::{self, Limits},
-    cursor::{opaque_id, CursorStore},
+    cursor::{opaque_id, CursorStore, LOCK_GRACE},
     sink::DurableSink,
 };
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,19 @@ impl Owner {
             options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
         let lock = options.open(path).map_err(|_| STORAGE)?;
-        lock.try_lock().map_err(|_| BUSY)?;
+        // As in the cursor store: a child spawned a moment ago holds this lock's open file
+        // description until it execs (close-on-exec), so on Unix the lock can look taken for an
+        // instant after its holder let go. Busy means held beyond that instant.
+        let started = std::time::Instant::now();
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if started.elapsed() < LOCK_GRACE => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => return Err(BUSY.into()),
+            }
+        }
         let path = dir.join("current.json");
         regular(&path)?;
         let current = match File::open(path) {

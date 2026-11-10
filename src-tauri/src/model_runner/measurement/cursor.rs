@@ -9,7 +9,7 @@ use std::{
 
 const MAX_CURSOR_BYTES: u64 = 131_072;
 /// How long a taken lock may still free up before the store is reported busy.
-const LOCK_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+pub(super) const LOCK_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 pub(super) const MAX_ACTIVE: usize = 4096;
 
 pub(super) fn opaque_id(value: &str) -> bool {

@@ -695,8 +695,15 @@ pub async fn start(explicit: Option<&str>) -> Result<Value, String> {
 }
 
 pub async fn start_with(explicit: Option<&str>, prefer_engine: bool) -> Result<Value, String> {
+    // The status says whether this call started Yougori or found it running.
+    let said = |mut status: Value, already: bool| {
+        if let Some(fields) = status.as_object_mut() {
+            fields.insert("alreadyRunning".into(), json!(already));
+        }
+        status
+    };
     match call(&request("app_status", json!({}))).await {
-        Ok(status) => return Ok(status),
+        Ok(status) => return Ok(said(status, true)),
         // An engine is there and refused the probe (a protocol mismatch, say): that is the
         // answer. Starting another one beside it hid this behind "exited during startup".
         Err(error) if !engine_absent(&error) => return Err(error),
@@ -713,7 +720,7 @@ pub async fn start_with(explicit: Option<&str>, prefer_engine: bool) -> Result<V
             .ok_or(NOT_INSTALLED)?
     };
     let child = launch(&executable, &["--headless"])?;
-    waiting("Starting Yougori", wait_for_engine(child)).await
+    Ok(said(waiting("Starting Yougori", wait_for_engine(child)).await?, false))
 }
 
 /// Opens the dashboard. A standalone engine has none: with nothing running it steps aside and

@@ -272,15 +272,22 @@ Waiting for approval… (Ctrl+C cancels)")).await?,
         return Ok(0);
     }
     if args.starts_with(&["app".into(), "start".into()]) {
-        let result = progress(&args, "Starting Yougori", async {
-            match &args[2..] {
+        let mut rest = args[2..].to_vec();
+        let format = take_format(&mut rest)?;
+        let start = async {
+            match rest.as_slice() {
                 [] => client::start(None).await,
                 [flag] if flag == "--engine" => client::start_with(None, true).await,
                 [flag, path] if flag == "--app" => client::start(Some(path.as_str())).await,
-                _ => Err("Usage: yougori app start [--engine | --app ABSOLUTE_EXECUTABLE_PATH]".into()),
+                _ => Err("Usage: yougori app start [--engine | --app ABSOLUTE_EXECUTABLE_PATH] [--format json|table|text]".into()),
             }
-        }).await?;
-        println!("{}", wire_json(result));
+        };
+        // A person at a terminal sees the wordmark and what runs; scripts and pipes get JSON.
+        if format.as_deref().map_or_else(output::stdout_terminal, |f| f == "table") {
+            app_started(start).await?;
+        } else {
+            println!("{}", wire_json(progress(&args, "Starting Yougori", start).await?));
+        }
         return Ok(0);
     }
     if args.len() == 2 && args[0] == "app" && args[1] == "show" {
@@ -696,6 +703,46 @@ async fn progress<T>(args: &[String], label: &str, work: impl std::future::Futur
     model_run::command_progress(args, client::waiting(label, work)).await
 }
 
+/// `yougori app start` at a terminal: the wordmark, a spinner while Yougori starts, then what
+/// runs and what to do next.
+async fn app_started(start: impl std::future::Future<Output = Result<Value, String>>) -> Result<(), String> {
+    use yougori_cli::cli_ui as ui;
+    let _session = ui::Session::start("Yougori", "Your computer, models and setups");
+    let began = std::time::Instant::now();
+    let status = ui::busy("Starting Yougori", start).await?;
+    ui::lines(app_started_lines(&status, began.elapsed(), env!("CARGO_PKG_VERSION")));
+    Ok(())
+}
+
+/// What `app start` says once Yougori runs: whether it started now or was running, as what, and
+/// the commands people reach for next. An engine of another version than this command says so.
+fn app_started_lines(status: &Value, took: std::time::Duration, version: &str) -> Vec<String> {
+    use yougori_cli::cli_ui as ui;
+    let already = status["alreadyRunning"] == true;
+    let desktop = status["engineOnly"] == false;
+    let how = if desktop { "the desktop app, in the background" } else { "the engine, in the background" };
+    let detail = if already { how.to_owned() } else { format!("{how} · started in {}", ui::clock(took)) };
+    let title = if already { "Yougori is already running" } else { "Yougori is running" };
+    let mut lines = vec![format!("{}  {}  {}", ui::paint("◇", ui::GREEN), ui::bold(title), ui::muted(&detail))];
+    if let Some(engine) = status["version"].as_str().filter(|engine| *engine != version) {
+        lines.push(format!("{}  {}", ui::muted("│"), ui::paint(&format!("Engine {engine}, this command {version}"), ui::AMBER)));
+    }
+    lines.push(ui::muted("│"));
+    let mut next = vec![
+        ("yougori inference connect URL", "connect this computer to an inference website"),
+        ("yougori model run", "run a Hugging Face model on this computer"),
+        ("yougori status", "what runs on this computer"),
+    ];
+    if desktop {
+        next.push(("yougori app show", "open the dashboard"));
+    }
+    for (command, what) in next {
+        lines.push(format!("{}  {}  {}", ui::muted("│"), ui::paint(&format!("{command:<30}"), ui::SKY), ui::muted(what)));
+    }
+    lines.push(format!("{}  {} {}", ui::muted("└"), ui::muted("Stop it with"), ui::bold("yougori app quit --yes")));
+    lines
+}
+
 /// Runs an update or an uninstall with a spinner, labelled `labels.0` and then `labels.1` once
 /// `committed()` says Yougori is being replaced or removed. Until then Ctrl+C stops it, as it
 /// stops any wait. After that, stopping part way would leave Yougori broken, so a press only
@@ -842,6 +889,42 @@ fn main() {
 #[cfg(test)]
 mod exit_code_tests {
     use super::*;
+    /// The text without colour sequences.
+    fn plain(lines: Vec<String>) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                let (mut text, mut chars) = (String::new(), line.chars());
+                while let Some(c) = chars.next() {
+                    if c == '\u{1b}' {
+                        for n in chars.by_ref() {
+                            if n.is_ascii_alphabetic() {
+                                break;
+                            }
+                        }
+                    } else {
+                        text.push(c);
+                    }
+                }
+                text
+            })
+            .collect()
+    }
+    #[test]
+    fn app_start_says_what_runs_and_what_to_do_next() {
+        use std::time::Duration;
+        let started = plain(app_started_lines(&json!({"alreadyRunning": false, "engineOnly": true, "version": "1.2.3"}), Duration::from_millis(3100), "1.2.3"));
+        assert_eq!(started[0], "◇  Yougori is running  the engine, in the background · started in 3.1s");
+        assert_eq!(started[1], "│");
+        assert!(started.iter().any(|l| l.starts_with("│  yougori inference connect URL ") && l.ends_with("connect this computer to an inference website")));
+        assert!(started.iter().any(|l| l.contains("yougori model run")) && started.iter().any(|l| l.contains("yougori status")));
+        assert!(!started.iter().any(|l| l.contains("app show")));
+        assert_eq!(started.last().unwrap(), "└  Stop it with yougori app quit --yes");
+        let running = plain(app_started_lines(&json!({"alreadyRunning": true, "engineOnly": false, "version": "1.2.2"}), Duration::ZERO, "1.2.3"));
+        assert_eq!(running[0], "◇  Yougori is already running  the desktop app, in the background");
+        assert_eq!(running[1], "│  Engine 1.2.2, this command 1.2.3");
+        assert!(running.iter().any(|l| l.contains("yougori app show") && l.ends_with("open the dashboard")));
+    }
     #[tokio::test]
     async fn an_update_stops_on_ctrl_c_until_it_replaces_yougori_then_finishes() {
         use std::{cell::{Cell, RefCell}, time::Duration};

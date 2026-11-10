@@ -1,8 +1,15 @@
 /* No framework, build step, third-party scripts, or template-supplied HTML. */
 "use strict";
 const $ = selector => document.querySelector(selector);
-let session, harnesses = [], categories = [], models = [], authMode = "signin", viewGeneration = 0, returnTo = "harnesses";
+let session, harnesses = [], categories = [], models = [], authMode = "signin", viewGeneration = 0, returnTo = "", shownPage = "";
 const AUTH_ROUTES = ["signin", "signup", "join"];
+// The administrator picks which of the three main pages people open first, and which harnesses are offered.
+const MAIN = ["harnesses", "models", "sandboxes"];
+const PAGES = [...MAIN, "contribute", "connect", "keys", "usage", "admin"];
+const home = () => session?.choices?.home || "harnesses";
+const offeredHarnesses = () => harnesses.filter(h => h.offered !== false);
+// Until an administrator has chosen, the main pages show them the choice instead.
+const choosing = name => !!session?.user?.admin && !session.choices?.chosen && MAIN.includes(name);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ready = model => model.state === "ready";
 const friendly = model => model.upstream.split("/").pop();
@@ -32,16 +39,16 @@ const named = (names, value) => Object.hasOwn(names || {}, value) ? names[value]
 const byName = name => (a, b) => name(a).localeCompare(name(b), undefined, {sensitivity: "base", numeric: true});
 const catalogState = {};
 let redrawModels = null;
-const DEFAULT_ACCENT = "#0b1f4d";
 // Earlier designs saved their own default blues as the accent; they now show as this design's blue.
-const accentOf = value => ["#350aff", "#164bdf", "#0151af", "#2f6fef", "#2563eb", "#190301"].includes(value) ? DEFAULT_ACCENT : value;
+// The colour styles an administrator can choose for every visitor (style.css has each one's colours).
+const PALETTES = [["navy", "Navy"], ["nord", "Nord"], ["solarized", "Solarized"], ["catppuccin", "Catppuccin"], ["rose-pine", "Rosé Pine"], ["gruvbox", "Gruvbox"]];
 
 function closeMenu() {
   $("#menu").classList.remove("open"); $("#menu-toggle").setAttribute("aria-expanded", "false"); $("#nav-panel").inert = true;
 }
 function currentRoute() {
   const hash = location.hash.slice(1), slash = hash.indexOf("/");
-  if (slash < 0) return [hash || "harnesses", ""];
+  if (slash < 0) return [hash || home(), ""];
   try { return [hash.slice(0, slash), decodeURIComponent(hash.slice(slash + 1))]; }
   catch { return [hash.slice(0, slash), ""]; }
 }
@@ -149,7 +156,7 @@ async function loadSession() {
   session = await api("/api/session"); document.title = session.site.name;
   $("#brand").textContent = session.site.name; $("#footer-name").textContent = session.site.name; $("#tagline").textContent = session.site.tagline;
   // CSSOM assignment of a validated six-digit color, never an inline HTML fragment.
-  document.documentElement.style.setProperty("--blue", accentOf(session.site.accent));
+  document.documentElement.dataset.palette = PALETTES.some(([id]) => id === session.site.palette) ? session.site.palette : "navy";
   const signedIn = !!session.user;
   document.querySelectorAll("[data-member-only]").forEach(link => { link.hidden = !signedIn; });
   $("#signin-link").hidden = signedIn;
@@ -161,6 +168,11 @@ async function loadSession() {
   harnesses = catalog.harnesses; models = discovered.models;
   categories = catalog.categories || [];
   for (const category of categories) CATEGORIES[category.id] = category.label;
+  // The main page leads the menu and the site name links to it; Harnesses goes when none are offered.
+  const mains = MAIN.map(id => $(`#nav a[href="#${id}"]`));
+  $("#nav").prepend(...mains.filter(a => a.hash === "#" + home()), ...mains.filter(a => a.hash !== "#" + home()));
+  mains[0].hidden = !offeredHarnesses().length;
+  $("#brand").setAttribute("href", "#" + home());
   await route();
 }
 
@@ -254,8 +266,9 @@ function harnessRow(h) {
 }
 function renderHarnesses() {
   header("Tools for your models", "Connect the tools you know to the models you control.");
-  catalog({key: "harnesses", one: "tool", noun: "tools", items: () => harnesses, grid: true,
-    filters: categories.map(c => ({id: c.id, label: c.label, color: c.color, test: h => h.category === c.id})),
+  const offered = offeredHarnesses();
+  catalog({key: "harnesses", one: "tool", noun: "tools", items: () => offered, grid: true,
+    filters: categories.filter(c => offered.some(h => h.category === c.id)).map(c => ({id: c.id, label: c.label, color: c.color, test: h => h.category === c.id})),
     menu: {label: "Category", all: "All categories"},
     sorts: [
       ["ready", "Ready first", (a, b) => Number(!!b.setup?.available) - Number(!!a.setup?.available)],
@@ -272,8 +285,8 @@ function renderHarnesses() {
   });
 }
 function renderHarness(id) {
-  const h = harnesses.find(h => h.id === id);
-  if (!h) return missing("harnesses", "This tool is not in the catalog.");
+  const h = offeredHarnesses().find(h => h.id === id);
+  if (!h) return missing("harnesses", "This tool is not offered on this inference.");
   const available = !!h.setup?.available, listed = models.filter(ready).length;
   let main;
   if (available) {
@@ -442,24 +455,180 @@ function connectDialog() {
   $("#compute-setup .panel")?.scrollIntoView({behavior: "smooth", block: "start"});
 }
 
+// The administrator's choices: the page people open first and the harnesses offered here. The same
+// form opens after the administrator's first sign-in and stays in Admin.
+const HOMES = [["harnesses", "Harnesses", "Coding and security tools that run in Sandbox VMs."],
+  ["models", "Models", "The models this inference serves, with the request for each."],
+  ["sandboxes", "Sandboxes", "Sandbox VMs on computers people contribute."]];
+function choicesForm(submit, compact = false) {
+  const groups = categories.map(c => [c, harnesses.filter(h => h.category === c.id).sort(byName(h => h.name))]).filter(([, list]) => list.length);
+  if (compact) {
+    // Admin's version: the main page as one row of options and the harnesses by name.
+    const box = (type, name, value, checked, title) => `<label class="check"><input type="${type}" name="${name}" value="${esc(value)}"${checked ? " checked" : ""}>${esc(title)}</label>`;
+    return `<form id="choices-form" class="stack"><div class="choice-home" role="radiogroup" aria-labelledby="choice-home"><span class="choice-label" id="choice-home">Main page</span>${HOMES.map(([id, title]) => box("radio", "home", id, id === home(), title)).join("")}</div><p class="hint" id="choice-sandboxes" hidden>Sandboxes are switched off. Switch them on under Sandboxes.</p>`
+      + `<div class="choice-tools"><span class="choice-label">Harnesses</span><p class="hint" id="choice-count" aria-live="polite"></p><button type="button" class="text-button" data-choose="all">Select all</button><button type="button" class="text-button" data-choose="none">Clear</button></div>${groups.map(([c, list]) => `<div class="choice-names" role="group" aria-label="${esc(c.label)}"><p class="choice-category">${esc(c.label)}</p>${list.map(h => box("checkbox", "harness", h.id, h.offered !== false, h.name)).join("")}</div>`).join("")}`
+      + `<p class="error" role="alert"></p><div><button class="primary" type="submit">${esc(submit)}</button></div></form>`;
+  }
+  const option = (type, name, value, checked, title, text) => `<label class="choice"><input type="${type}" name="${name}" value="${esc(value)}"${checked ? " checked" : ""}><span><strong>${esc(title)}</strong><span>${esc(text)}</span></span></label>`;
+  return `<form id="choices-form" class="choices"><fieldset class="choice-group"><legend>Main page</legend><div class="choice-list">${HOMES.map(([id, title, text]) => option("radio", "home", id, id === home(), title, text)).join("")}</div><p class="hint" id="choice-sandboxes" hidden>Sandboxes are switched off. Switch them on in Admin, under Sandboxes.</p></fieldset>`
+    + `<fieldset class="choice-group"><legend>Harnesses</legend><div class="choice-tools"><p class="hint" id="choice-count" aria-live="polite"></p><button type="button" class="text-button" data-choose="all">Select all</button><button type="button" class="text-button" data-choose="none">Clear</button></div>${groups.map(([c, list]) => `<p class="choice-category">${esc(c.label)}</p><div class="choice-list">${list.map(h => option("checkbox", "harness", h.id, h.offered !== false, h.name, h.description)).join("")}</div>`).join("")}</fieldset>`
+    + `<p class="error" role="alert"></p><div><button class="primary" type="submit">${esc(submit)}</button></div></form>`;
+}
+function bindChoices(saved) {
+  const form = $("#choices-form"), boxes = [...form.querySelectorAll('[name="harness"]')];
+  const count = () => { $("#choice-count").textContent = `${boxes.filter(b => b.checked).length} of ${boxes.length} harnesses offered`; };
+  form.querySelectorAll("[data-choose]").forEach(button => button.addEventListener("click", () => {
+    for (const box of boxes) box.checked = button.dataset.choose === "all";
+    count();
+  }));
+  form.addEventListener("change", count); count();
+  api("/api/sandboxes").then(grid => { if (form.isConnected) $("#choice-sandboxes").hidden = grid.enabled; }).catch(() => { /* The hint is optional. */ });
+  formAction("#choices-form", async (data, element) => {
+    const chosen = new FormData(element).getAll("harness");
+    if (data.home === "harnesses" && !chosen.length) throw new Error("Offer at least one harness, or choose another main page.");
+    await api("/api/admin/choices", {home: data.home, harnesses: chosen});
+    await saved(data.home);
+  });
+}
+function renderSetup() {
+  header("Set up your inference", "Choose the page people see first and the harnesses you offer. You can change both later in Admin.");
+  $("#view").innerHTML = panel("Main page and harnesses", choicesForm("Save and continue ↗"));
+  bindChoices(async chosen => { history.replaceState(null, "", "#" + chosen); await loadSession(); });
+}
+
+// Admin is one column of sections: each shows its name and one line about it, then its controls.
+// The sections come from several scripts, so the page lays out empty slots in order and each
+// script fills its own; the reading and keyboard order is the order on screen.
+function adminSection(id, title, about, body) {
+  return `<section class="panel admin-section" id="${id}"><div class="panel-heading"><h3>${esc(title)}</h3><p class="hint">${esc(about)}</p></div><div class="panel-body">${body}</div></section>`;
+}
+function adminElement(...parts) {
+  const holder = document.createElement("div"); holder.innerHTML = adminSection(...parts); return holder.firstElementChild;
+}
+function placeAdmin(slot, element) {
+  const target = $(slot);
+  if (target) target.replaceWith(element); else $("#admin-grid")?.append(element);
+}
+let adminCounts = null, adminFocus = "";
+// The left edge of Admin as a camera-style ruler, as in the owner's PrompX harness: fine tick lines,
+// a mark for each section (the current one highlighted) and a thumb where the page is. Drag along it
+// to scroll fast (its top is the top of the page, its bottom the end), click a mark to go to that
+// section, hover for the names. It replaces the page's scrollbar on desktop; phones keep theirs.
+let rail = null;
+function removeRail() { rail?.stop(); rail = null; }
+function sectionRail(sections) {
+  removeRail();
+  if (!sections.length) return;
+  const GAP = 22, EDGE = 12, el = document.createElement("div");
+  el.className = "rail";
+  el.innerHTML = `<div class="rail-ticks" aria-hidden="true"></div><div class="rail-thumb" aria-hidden="true"></div><nav aria-label="Sections of this page">${sections.map(s => `<button type="button" class="rail-mark" data-section="${esc(s.id)}"><i aria-hidden="true"></i><span>${esc(s.label)}</span></button>`).join("")}</nav>`;
+  document.body.append(el);
+  document.documentElement.classList.add("with-rail");
+  const header = () => $(".site-header")?.offsetHeight || 0;
+  const place = target => Math.max(0, target.getBoundingClientRect().top + scrollY - header() - 16);
+  // A clicked mark stays current until the person scrolls by hand: a section near the end cannot
+  // reach the top of the view, and the last one would otherwise take over.
+  let frame = 0, dragging = false, pinned = "";
+  const measure = () => {
+    frame = 0;
+    el.style.top = header() + "px";
+    const height = el.clientHeight, max = Math.max(1, document.documentElement.scrollHeight - innerHeight), y = scrollY;
+    const marks = [];
+    for (const button of el.querySelectorAll(".rail-mark")) {
+      const target = document.getElementById(button.dataset.section);
+      button.hidden = !target;
+      if (target) { const top = place(target); marks.push({button, top, at: Math.min(1, top / max) * (height - 2 * EDGE) + EDGE}); }
+    }
+    // Marks never sit on each other: pushed apart downwards, then back up from the bottom.
+    for (let i = 1; i < marks.length; i++) marks[i].at = Math.max(marks[i].at, marks[i - 1].at + GAP);
+    for (let i = marks.length - 1; i >= 0; i--) marks[i].at = Math.min(marks[i].at, i === marks.length - 1 ? height - EDGE : marks[i + 1].at - GAP);
+    let current = marks[0];
+    for (const m of marks) if (m.top <= y + 40) current = m;
+    if (y >= max - 2 && marks.length) current = marks.at(-1);
+    if (pinned) current = marks.find(m => m.button.dataset.section === pinned) || current;
+    for (const m of marks) {
+      m.button.style.top = m.at + "px";
+      if (m === current) m.button.setAttribute("aria-current", "true"); else m.button.removeAttribute("aria-current");
+    }
+    el.querySelector(".rail-thumb").style.top = (Math.min(1, y / max) * (height - 2 * EDGE) + EDGE) + "px";
+  };
+  const soon = () => { if (!frame) frame = requestAnimationFrame(measure); };
+  // The ruler maps to the whole page: where the pointer is on it, the page is.
+  const scrub = clientY => {
+    const r = el.getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (clientY - r.top - EDGE) / Math.max(1, r.height - 2 * EDGE)));
+    scrollTo({top: f * (document.documentElement.scrollHeight - innerHeight)});
+  };
+  el.addEventListener("pointerdown", event => {
+    if (event.target.closest(".rail-mark")) return;
+    event.preventDefault(); el.setPointerCapture(event.pointerId); dragging = true; pinned = ""; el.classList.add("rail-held"); scrub(event.clientY);
+  });
+  el.addEventListener("pointermove", event => { if (dragging) scrub(event.clientY); });
+  const release = event => { dragging = false; el.classList.remove("rail-held"); if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId); };
+  el.addEventListener("pointerup", release); el.addEventListener("pointercancel", release);
+  el.addEventListener("click", event => {
+    const target = document.getElementById(event.target.closest(".rail-mark")?.dataset.section || "");
+    if (target) { pinned = target.id; scrollTo({top: place(target), behavior: "smooth"}); soon(); }
+  });
+  const unpin = () => { if (pinned) { pinned = ""; soon(); } };
+  addEventListener("scroll", soon, {passive: true}); addEventListener("resize", soon);
+  for (const kind of ["wheel", "touchstart", "keydown"]) addEventListener(kind, unpin, {passive: true});
+  const seen = new ResizeObserver(soon); seen.observe(document.body);
+  rail = {stop() {
+    removeEventListener("scroll", soon); removeEventListener("resize", soon); seen.disconnect();
+    for (const kind of ["wheel", "touchstart", "keydown"]) removeEventListener(kind, unpin);
+    if (frame) cancelAnimationFrame(frame);
+    el.remove(); document.documentElement.classList.remove("with-rail");
+  }};
+  measure();
+}
+// The description under Admin counts people, models and completed requests; the model count stays live.
+function adminSummary() {
+  if (!adminCounts || currentRoute()[0] !== "admin") return;
+  const count = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  $("#section-description").textContent = [count(adminCounts.users, "team member"), count(models.length, "model"), count(adminCounts.completed, "completed request")].join(" · ");
+}
+function serverRows(endpoints) {
+  return endpoints.length ? endpoints.map(e => `<div class="source"><div><strong>${esc(e.name)}</strong> <span class="badge ${e.state === "ready" ? "ready" : ""}">${esc(e.state)}</span><p>${esc(e.url.startsWith("compute://") ? "Connected by Yougori" : e.url)} · ${esc(e.detail)}</p></div>${e.url.startsWith("compute://") ? "" : `<button type="button" class="text-button" data-remove-source="${esc(e.id)}">Disconnect</button>`}</div>`).join("")
+    : '<p class="hint">Nothing yet. Connect a computer or rent a GPU above, and its models appear here.</p>';
+}
+
 async function renderAdmin(generation) {
-  if(!session.user.admin){location.hash="harnesses";return;}
+  if(!session.user.admin){location.hash=home();return;}
   const data=await api("/api/admin/overview"); if(generation !== viewGeneration) return;
-  header("Admin", "Manage your website, model connections, and the people who can use them.");
-  $("#view").innerHTML=`<div class="metrics"><div class="metric"><strong>${data.counts.users}</strong><span>Team members</span></div><div class="metric"><strong>${models.length}</strong><span>Discovered models</span></div><div class="metric"><strong>${data.counts.completed}</strong><span>Completed requests</span></div></div><div class="admin-grid" id="admin-grid"><section class="panel"><div class="panel-heading"><h3>Model servers</h3><button class="text-button" id="add-endpoint">Connect ↗</button></div><div class="panel-body"><div>${data.endpoints.length?data.endpoints.map(e=>`<div class="source"><div><strong>${esc(e.name)}</strong><p>${esc(e.url.startsWith("compute://") ? "Connected by Yougori" : e.url)}</p><span class="badge ${e.state==="ready"?"ready":""}">${esc(e.state)}</span><p>${esc(e.detail)}<br>Checked ${esc(nowLabel(e.checked))}</p></div>${e.url.startsWith("compute://") ? "" : `<button class="text-button" data-disconnect="${esc(e.id)}">Disconnect</button>`}</div>`).join(""):'<p class="hint">No model servers connected. Add one to publish its models to your team.</p>'}</div><button class="secondary panel-end" id="refresh-models">Refresh catalog</button></div></section><section class="panel"><div class="panel-heading"><h3>Invite your team</h3><span class="badge">${session.mode === "public" ? "Optional invitations" : "Invitation-only"}</span></div><form id="invite-form" class="panel-body"><p class="hint">Invitations are tied to an email address and expire after 24 hours.</p><label>Email address<input name="email" type="email" required></label><label class="check"><input name="admin" type="checkbox">Invite as administrator</label><p class="error" role="alert"></p><button class="primary panel-end" type="submit">Create invitation ↗</button></form></section><section class="panel"><div class="panel-heading"><h3>Website identity</h3><span class="badge">Live settings</span></div><form id="branding-form" class="panel-body"><label>Website name<input name="name" maxlength="80" required value="${esc(session.site.name)}"></label><label>Tagline<input name="tagline" maxlength="200" value="${esc(session.site.tagline)}"></label><label>Accent color<select name="accent"><option value="${DEFAULT_ACCENT}">Navy</option><option value="#244e48">Forest green</option><option value="#68449c">Deep violet</option><option value="#17202a">Graphite</option></select></label><p class="error" role="alert"></p><div class="panel-end"><button class="primary" type="submit">Save identity ↗</button></div></form></section></div><p class="hint">Cloud rentals use the provider account on the website server. Review ongoing compute and storage charges before renting.</p>`;
+  adminCounts = data.counts;
+  header("Admin", "");
+  adminSummary();
+  const access = session.mode === "public" ? "Anyone can sign up; invitations are optional." : "Only people you invite can sign in.";
+  $("#view").innerHTML = `<div class="admin-grid" id="admin-grid"><div id="slot-compute"></div>`
+    + adminSection("admin-servers", "Model servers", "What serves each model in your catalog.", `<div id="model-servers">${serverRows(data.endpoints)}</div><div class="admin-row"><button class="secondary" type="button" id="refresh-models">Refresh catalog</button><button class="text-button" type="button" id="add-endpoint">Connect a computer</button></div>`)
+    + `<div id="slot-sandboxes"></div>`
+    + adminSection("admin-choices", "Main page and harnesses", "What people see first, and the harnesses you offer.", choicesForm("Save choices ↗", true))
+    + adminSection("admin-identity", "Website identity", "The name, tagline and colour style everyone sees.", `<form id="branding-form" class="stack"><div class="admin-row"><label>Website name<input name="name" maxlength="80" required value="${esc(session.site.name)}"></label><label>Tagline<input name="tagline" maxlength="200" value="${esc(session.site.tagline)}"></label></div><fieldset class="palette-group"><legend>Color style</legend><div class="palette-options">${PALETTES.map(([id, title]) => `<label class="palette-option"><input type="radio" name="palette" value="${id}"${id === document.documentElement.dataset.palette ? " checked" : ""}><span class="palette-swatch" data-palette="${id}" aria-hidden="true"><i></i><i></i><i></i><i></i></span>${esc(title)}</label>`).join("")}</div></fieldset><p class="hint">Every visitor sees this style, and each person can still switch between light and dark.</p><p class="error" role="alert"></p><div><button class="primary" type="submit">Save identity ↗</button></div></form>`)
+    + adminSection("admin-people", "People", "Who can sign in, and who manages this inference.", `<form id="invite-form" class="stack"><div class="admin-row"><label>Email address<input name="email" type="email" required></label><label class="check"><input name="admin" type="checkbox">Invite as administrator</label><button class="primary" type="submit">Create invitation ↗</button></div><p class="hint">${esc(access)} An invitation is for one email address and expires after 24 hours.</p><p class="error" role="alert"></p></form><div id="member-settings" class="member-list"></div><p class="hint">Administrators manage compute, prices, wallets and people. At least one must remain.</p>`)
+    + `<div id="slot-prices"></div><div id="slot-media"></div><div id="slot-payments"></div><div id="slot-activity"></div></div>`;
   await showCompute();
-  $("#branding-form select").value=accentOf(session.site.accent);
+  if(!$("#branding-form")) return;
+  sectionRail([...document.querySelectorAll("#admin-grid .admin-section")].map(section => ({id: section.id, label: section.querySelector("h3").textContent})));
+  if(adminFocus === "contributor") { adminFocus = ""; $("#admin-local").scrollIntoView({block: "start"}); $("#contributor-inspect input[name=code]").focus({preventScroll: true}); }
   $("#add-endpoint").addEventListener("click",connectDialog);
   $("#refresh-models").addEventListener("click",async e=>{e.currentTarget.disabled=true;try{await api("/api/admin/refresh",{});models=(await api("/api/models")).models;await route();}catch(problem){notice(problem.message);e.currentTarget.disabled=false;}});
-  document.querySelectorAll("[data-disconnect]").forEach(b=>b.addEventListener("click",()=>confirmAction("Disconnect this server?","This removes its models from the service. The server keeps running and its infrastructure billing is unchanged.",async()=>{await api("/api/admin/endpoints/remove",{id:b.dataset.disconnect});models=(await api("/api/models")).models;await route();})));
+  $("#model-servers").addEventListener("click",event=>{
+    const button=event.target.closest("[data-remove-source]");
+    if(button) confirmAction("Disconnect this server?","This removes its models from the service. The server keeps running and its infrastructure billing is unchanged.",async()=>{await api("/api/admin/endpoints/remove",{id:button.dataset.removeSource});models=(await api("/api/models")).models;await refreshCompute();});
+  });
   formAction("#invite-form",async d=>{const r=await api("/api/admin/invitations",{...d,admin:d.admin === "on"});$('#invitation-result')?.remove();const result=document.createElement('div');result.id='invitation-result';result.className='stack';result.innerHTML=`<p class="hint">Invitation for ${esc(r.email)}. Expires in 24 hours. Share this code privately.</p><pre class="code secret">${esc(r.invitation)}</pre><button class="secondary" type="button" data-copy="${esc(r.invitation)}">Copy invitation</button>`;$('#invite-form').append(result);bindCopies(result);});
   formAction("#branding-form",async d=>{await api("/api/admin/site",d);await loadSession();notice("Website identity saved.");});
+  bindChoices(async () => { await loadSession(); notice("Main page and harnesses saved."); });
 }
 async function route() {
   if(!session) return;
   if($("#dialog").open) $("#dialog").close();
-  if(AUTH_ROUTES.includes(currentRoute()[0]) && session.user) history.replaceState(null, "", "#" + returnTo);
-  const [name, item] = currentRoute(), generation = ++viewGeneration;
+  if(AUTH_ROUTES.includes(currentRoute()[0]) && session.user) history.replaceState(null, "", "#" + (returnTo || home()));
+  let [name, item] = currentRoute(); const generation = ++viewGeneration;
+  removeRail();
+  // Administrators approve a computer's code in Admin's Local GPUs, even from the connector's link.
+  if(name === "contribute" && session.user?.admin) { history.replaceState(null, "", "#admin"); name = "admin"; adminFocus = "contributor"; }
   const needsLogin = !session.user && [...AUTH_ROUTES, "connect", "contribute", "keys", "usage", "admin"].includes(name);
   $("#auth").hidden = !needsLogin; $("#workspace").hidden = needsLogin;
   paintNavigation();
@@ -468,9 +637,14 @@ async function route() {
     renderAuth(AUTH_ROUTES.includes(name) ? name : "signin");
     return;
   }
-  if(name === "models" || name === "harnesses" || name === "sandboxes") returnTo = location.hash.slice(1) || "harnesses";
+  // Unknown addresses, and Harnesses when none are offered, open the main page.
+  if(!PAGES.includes(name) || (name === "harnesses" && !offeredHarnesses().length && home() !== "harnesses")) { name = home(); item = ""; }
+  if(MAIN.includes(name)) returnTo = location.hash.slice(1);
+  // Another page opens at its top; the same page drawn again (after a save) keeps its place.
+  if(name !== shownPage) { shownPage = name; scrollTo(0, 0); }
+  if(choosing(name)) { renderSetup(); return; }
   try {
-    if(name==="sandboxes")await renderSandboxes();else if(name==="contribute")renderContributor();else if(name==="connect")renderDeviceConnect();else if(name==="models")item?renderModel(item):renderModels();else if(name==="keys")await renderKeys(generation);else if(name==="usage")await renderUsage(generation);else if(name==="admin")await renderAdmin(generation);else {renderHarnesses();if(name==="harnesses"&&item){history.replaceState(null,"","#harnesses");renderHarness(item);}}
+    if(name==="sandboxes")await renderSandboxes();else if(name==="contribute")renderContributor();else if(name==="connect")renderDeviceConnect();else if(name==="models")item?renderModel(item):renderModels();else if(name==="keys")await renderKeys(generation);else if(name==="usage")await renderUsage(generation);else if(name==="admin")await renderAdmin(generation);else {renderHarnesses();if(item){history.replaceState(null,"","#harnesses");renderHarness(item);}}
   } catch(problem){notice(problem.message);}
 }
 $("#dialog-close").addEventListener("click",()=>$("#dialog").close());
@@ -498,7 +672,7 @@ function renderAuth(mode) {
 $("#auth-toggle").addEventListener("click",()=>{location.hash = authMode === "signin" ? "signup" : "signin";});
 $("#auth-invitation").addEventListener("click",()=>{location.hash = "join";});
 formAction("#login-form",async data=>{await api(authMode === "signin" ? "/api/login" : authMode === "join" ? "/api/join" : "/api/signup",data);$("#login-form").reset();await loadSession();});
-$("#signout").addEventListener("click",async()=>{try{await api("/api/logout",{});viewGeneration++;Object.keys(catalogState).forEach(key=>delete catalogState[key]);$("#dialog").close();$("#view").replaceChildren();notice("");history.replaceState(null,"","#harnesses");await loadSession();}catch(problem){notice(problem.message);}});
+$("#signout").addEventListener("click",async()=>{try{await api("/api/logout",{});viewGeneration++;Object.keys(catalogState).forEach(key=>delete catalogState[key]);$("#dialog").close();$("#view").replaceChildren();notice("");history.replaceState(null,"",location.pathname+location.search);await loadSession();}catch(problem){notice(problem.message);}});
 window.addEventListener("hashchange",route);
 loadSession().catch(problem=>notice(problem.message));
-setInterval(async()=>{if(!session||document.hidden||$("#dialog").open)return;try{models=(await api("/api/models")).models;if(location.hash==="#models"&&!(models.length&&redrawModels?.()))renderModels();}catch{/* Keep the last view; never mark stale data as newly observed. */}},15000);
+setInterval(async()=>{if(!session||document.hidden||$("#dialog").open)return;try{models=(await api("/api/models")).models;const [name,item]=currentRoute();if(name==="models"&&!item&&!choosing(name)&&!(models.length&&redrawModels?.()))renderModels();}catch{/* Keep the last view; never mark stale data as newly observed. */}},15000);

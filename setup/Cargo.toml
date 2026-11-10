@@ -1,6 +1,6 @@
 [package]
 name = "yougori-setup"
-version = "1.2.2"
+version = "1.2.3"
 description = "Shared template and setup contracts: formats, capabilities, conditions, planning"
 edition = "2021"
 license = "AGPL-3.0-only"

@@ -2,6 +2,37 @@
 "use strict";
 let computeTimer, computeView, computeQuoteId = "";
 const computePending = new Map();
+// Installs Yougori, or updates it to the newest release, and starts it: the commands yougori.com
+// shows under Install the CLI. Releases are unsigned previews for now, so these name the preview
+// installer (`yougori update --yes` installs only signed releases); once a signed release ships,
+// use yougori.com's own install.ps1 and install.sh commands here.
+const YOUGORI_INSTALL = [
+  ["Windows", 'powershell -c "Set-Item Env:YOUGORI_ALLOW_UNSIGNED 1; irm https://yougori.com/install-preview.ps1 | iex"'],
+  ["Linux", "curl -fsSL https://yougori.com/install-preview.sh | YOUGORI_ALLOW_UNSIGNED=1 bash"],
+];
+// Every command a computer runs to serve this website's models, in order, each with its own Copy.
+// The connector needs Yougori already running: it never starts it.
+function connectSteps() {
+  const connect = installCommand("node"), name = session.site.name;
+  const steps = [
+    ...YOUGORI_INSTALL.map(([system, command]) => [`Install or update <small>${esc(system)}</small>`, command]),
+    ["Start Yougori", "yougori app start"],
+    ["Connect this computer", connect, "compute-install"],
+  ];
+  // Copy all: the whole set as one message, for a person who will connect a computer.
+  const all = [`Connect a computer with a GPU to ${name}. Run these in a terminal, in order:`, "",
+    "1. Install or update Yougori (after a first install, open a new terminal)",
+    ...YOUGORI_INSTALL.map(([system, command]) => `   ${system}: ${command}`),
+    "   Using the Yougori desktop app? Update it from https://yougori.com/#download instead.",
+    "2. Start Yougori", "   yougori app start",
+    "3. Connect this computer, and choose what it shares", "   " + connect, "",
+    "It shows a code for the administrator to approve. Keep its terminal open."].join("\n");
+  // An X post holds 280 characters: where to get Yougori, then the two commands. X opens it ready
+  // to post; the person presses Post, as X never lets a website post on someone's behalf.
+  const post = `Connect your GPU to ${name}:\n\n1. Install Yougori: yougori.com\n2. yougori app start\n3. ${connect}`;
+  return `<ol class="command-steps">${steps.map(([label, command, id]) => `<li><span class="command-label">${label}</span><div class="admin-command"><pre class="code"${id ? ` id="${id}"` : ""}>${esc(command)}</pre><button type="button" class="secondary" data-copy="${esc(command)}"${id ? ' id="compute-copy"' : ""}>Copy</button></div></li>`).join("")}</ol>
+    <div class="admin-row" id="compute-share"><button type="button" class="secondary" id="compute-copy-all" data-copy="${esc(all)}">Copy all</button><a class="secondary" id="compute-post-x" href="${esc("https://x.com/intent/post?text=" + encodeURIComponent(post))}" target="_blank" rel="noopener noreferrer">Post on X ↗</a></div>`;
+}
 
 async function computeJob(kind, extra = {}) {
   const host = computeView?.hosts.find(h => h.role === "controller" && h.online);
@@ -30,49 +61,60 @@ async function showCompute() {
   if (!session?.user?.admin) return;
   clearTimeout(computeTimer);
   $("#compute-setup")?.remove();
+  $("#admin-activity")?.remove();
   computeQuoteId = "";
   const area = document.createElement("section");
   area.id = "compute-setup";
   area.className = "compute-setup";
   area.setAttribute("aria-label", "Add compute");
+  // Local GPUs leads with the commands that connect a computer, the only way on a hosted inference.
+  // The website server's own controls, and renting from here, show only when this website has
+  // Yougori of its own (refreshCompute); otherwise Rent a cloud GPU points to the Yougori app.
   area.innerHTML = `<div class="compute-options">
-    ${panel("Local GPUs", `<p class="hint">Use GPUs attached to this website's server, or approve computers that contribute their models. Yougori handles the connection automatically.</p>
-      <p id="compute-location" class="hint" role="status">Detecting the website's compute…</p><button type="button" class="secondary" id="compute-start" hidden>Start Yougori on the website server</button><div id="compute-models"></div>
-      <details><summary>Allow GPU contributions</summary><div class="stack compute-details">
-      <form id="compute-password" class="stack"><p class="hint">An optional password lets signed-in contributors join with a computer code. Leave it empty to require administrator approval for every computer.</p>
-      <label>Contributor password<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" placeholder="Optional · at least 12 characters"></label>
-      <p id="compute-password-state" class="hint"></p><p class="error" role="alert"></p><div><button class="secondary" type="submit">Save contribution access</button></div></form>
-      <p class="hint">Contributors run this on the computer whose models they want to share. Cloud rentals are managed here, on the website's backend.</p>
-      <pre class="code" id="compute-install"></pre><button type="button" class="secondary" id="compute-copy">Copy contributor install</button>
-      <p class="hint">Yougori connects immediately. Choose the models or VM capacity to share, then enter its code below. Keep the terminal open; Ctrl+C disconnects. Sandboxes have no fixed four-hour limit.</p>
-      <a class="text-button" href="#contribute">Approve a contributor's computer</a></div></details>
-      <form id="compute-load" class="stack panel-end"><label>Load a model on the website's server<input name="model" placeholder="Hugging Face owner/model" required maxlength="200"></label>
-      <p class="error" role="alert"></p><div><button class="primary" type="submit">Load and connect model</button></div></form>`)}
-    ${panel("Rent a cloud GPU", `<p class="hint">Choose a live NeoCloud offer and a model. This website rents the GPU, starts the model and adds it to your catalog automatically.</p>
-      <p class="hint">Provider: <strong>RunPod</strong>. Uses the provider account connected to the website's Yougori backend.</p><p class="hint" id="compute-balance" role="status">Checking provider balance…</p>
-      <details><summary>Connect or change the provider account</summary><form id="compute-provider" class="stack compute-details">
-      <label>RunPod account key<input name="key" type="password" autocomplete="new-password" maxlength="1024" required></label>
-      <p class="hint">Saved in the website server's Yougori credential store. Model API credentials are created automatically.</p><p class="error" role="alert"></p>
-      <div><button class="secondary" type="submit">Connect RunPod</button></div></form></details>
-      <form id="compute-sizing" class="compute-sizing"><label>GPUs per server<select name="gpu_count">${Array.from({length:8},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join("")}</select></label><label>Runtime disk (GB)<input name="disk_gb" type="number" min="5" max="4000" value="80" required></label><label>Storage type<select name="storage"><option value="temporary">Temporary runtime disk</option><option value="persistent">Persistent pod volume</option></select></label><label>Persistent volume (GB)<input name="volume_gb" type="number" min="1" max="4000" value="80" disabled></label></form>
-      <form id="compute-rent" class="compute-rent"><fieldset class="compute-offers"><legend>Available GPUs</legend><div id="compute-offer-list"><p class="hint">Find GPUs to see current availability and hourly prices.</p></div></fieldset>
-      <div class="stack rent-side"><label>Model to host<input name="model" placeholder="Hugging Face owner/model" required maxlength="200"></label>
-      <p class="hint" id="compute-price">Select a GPU to review its price.</p><p class="hint" id="compute-quote-age"></p>
+    ${adminSection("admin-local", "Local GPUs", "Your own computers with GPUs serve the models.", `<p class="hint">Run these on each computer with a GPU, in order, and choose what it shares. Approve the code it shows, and keep its terminal open.</p>
+      ${connectSteps()}
+      <p class="hint">After a first install, open a new terminal. Using the Yougori desktop app? Update it by downloading the new version from <a href="https://yougori.com/#download" target="_blank" rel="noopener noreferrer">yougori.com ↗</a>.</p>
+      ${contributorForm()}
+      <div id="compute-models"></div>
+      <div id="compute-website" class="stack" hidden><p id="compute-location" class="hint" role="status">Detecting the website's compute…</p><div><button type="button" class="secondary" id="compute-start" hidden>Start Yougori on the website server</button></div>
+      <form id="compute-load" class="stack"><div class="admin-row"><label>Load a model on the website's server<input name="model" placeholder="Hugging Face owner/model" required maxlength="200"></label><button class="primary" type="submit">Load and connect model</button></div><p class="error" role="alert"></p></form></div>
+      <form id="compute-password" class="stack"><div class="admin-row"><label class="check"><input type="checkbox" name="protected">Let people connect with a password</label><label>Contributor password<input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" placeholder="At least 12 characters" disabled></label><button class="secondary" type="submit">Save contribution access</button></div>
+      <p id="compute-password-state" class="hint"></p><p class="error" role="alert"></p></form>`)}
+    ${adminSection("admin-rent", "Rent a cloud GPU", "A GPU by the hour when you need more.", `<p class="hint" id="rent-elsewhere" hidden>Rent a GPU in the Yougori app, then run the commands under Local GPUs on it. Its models join your catalog like any other computer's.</p>
+      <div class="stack" id="rent-here"><p class="hint" id="compute-balance" role="status">Checking provider balance…</p>
+      <form id="compute-provider" class="stack"><div class="admin-row"><label>RunPod account key<input name="key" type="password" autocomplete="new-password" maxlength="1024" required></label><button class="secondary" type="submit">Connect RunPod</button></div><p class="hint">Saved in the website server's Yougori credential store. Model API credentials are created automatically.</p><p class="error" role="alert"></p></form>
+      <form id="compute-sizing" class="admin-row"><label>GPUs per server<select name="gpu_count">${Array.from({length:8},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join("")}</select></label><label>Runtime disk (GB)<input name="disk_gb" type="number" min="5" max="4000" value="80" required></label><label>Storage type<select name="storage"><option value="temporary">Temporary runtime disk</option><option value="persistent">Persistent pod volume</option></select></label><label>Persistent volume (GB)<input name="volume_gb" type="number" min="1" max="4000" value="80" disabled></label><button class="secondary" id="compute-offers" type="button">Find available GPUs</button></form>
+      <form id="compute-rent" class="stack"><fieldset class="compute-offers"><legend>Available GPUs</legend><div id="compute-offer-list"><p class="hint">Find GPUs to see current availability and hourly prices.</p></div></fieldset><p class="hint" id="compute-quote-age"></p>
+      <label>Model to host<input name="model" placeholder="Hugging Face owner/model" required maxlength="200"></label>
+      <p class="hint" id="compute-price">Select a GPU to review its price.</p>
       <label class="check"><input type="checkbox" name="cost" required>I approve this rental and its ongoing provider charges.</label>
-      <p class="hint small-print">Quotes use the selected GPU count and disk. Persistent volumes survive stopping a pod, but not deleting it. Storage charges are additional; stopping compute does not stop storage charges.</p>
-      <p class="error" role="alert"></p><div class="panel-end"><button class="primary" type="submit">Rent GPU and host model</button></div></div></form>`,
-      '<button class="text-button" id="compute-offers" type="button">Find available GPUs</button>')}
-    </div>${panel("Compute activity", '<div id="compute-activity" aria-live="polite"></div>')}`;
-  // The admin grid pairs these panels with the rest of the page, two of equal height per row.
-  ($("#admin-grid") || $("#view")).prepend(area);
-  const command = installCommand("node");
-  $("#compute-install").textContent = command;
-  $("#compute-copy").addEventListener("click", event => copy(command, event.currentTarget));
+      <p class="error" role="alert"></p>
+      <div class="admin-row"><button class="primary" type="submit">Rent GPU and host model</button><p class="hint small-print">Prices use the GPU count and disk above. A persistent volume survives stopping the pod but not deleting it, and is charged until deleted.</p></div></form>
+      </div>`)}
+    </div>`;
+  placeAdmin("#slot-compute", area);
+  const activity = adminElement("admin-activity", "Compute activity", "Rentals, model loads and connections, newest first.", '<div id="compute-activity" aria-live="polite"></div>');
+  activity.classList.add("activity-bottom");
+  placeAdmin("#slot-activity", activity);
+  bindContributor(refreshCompute);
+  bindCopies(area.querySelector(".command-steps"));
+  bindCopies(area.querySelector("#compute-share"));
   $("#compute-start").addEventListener("click", async () => {
     try { await computeJob("start"); } catch(error) { notice(error.message); }
   });
+  // The box decides: ticked keeps or replaces the password, unticked removes it so you approve every computer.
+  const access = $("#compute-password");
+  access.elements.protected.addEventListener("change", event => {
+    access.elements.password.disabled = !event.target.checked;
+    if (event.target.checked) access.elements.password.focus();
+  });
   formAction("#compute-password", async (data, form) => {
-    await api("/api/admin/compute/password", data); form.reset(); await refreshCompute();
+    const use = form.elements.protected.checked, password = form.elements.password.value;
+    if (use && !password && !computeView?.password_set) throw new Error("Type a password of at least 12 characters, or untick the box.");
+    if (use && !password) return notice("The contributor password stays as it is.");
+    await api("/api/admin/compute/password", {password: use ? password : ""});
+    form.elements.password.value = ""; await refreshCompute();
+    notice(use ? "Contributor password saved." : "You now approve every computer yourself.");
   });
   formAction("#compute-provider", async (data, form) => {
     try { await computeJob("provider", data); } finally { form.reset(); }
@@ -108,6 +150,7 @@ async function showCompute() {
     finally { if(button.isConnected) button.disabled = false; }
   });
   await refreshCompute();
+  if(computeView && access.isConnected) { access.elements.protected.checked = !!computeView.password_set; access.elements.password.disabled = !computeView.password_set; }
   await showInfrastructure();
   const host = computeView?.hosts.find(h => h.role === "controller" && h.online && h.inventory.connected !== false);
   const current = computeView?.jobs.some(j => j.host === host?.id && j.kind === "offers" &&
@@ -136,11 +179,13 @@ async function refreshCompute() {
     $("#compute-balance").textContent = account?.connected ? `RunPod balance: ${Number.isFinite(account.balance) ? "$" + account.balance.toFixed(2) : "not reported"}${Number.isFinite(account.spendPerHour) ? " · Current spend $" + account.spendPerHour.toFixed(3) + "/hour" : ""}` : "Connect RunPod to see your account balance.";
     const host = value.hosts.find(h => h.role === "controller");
     const connected = host?.online && host.inventory.connected !== false;
+    // Without Yougori on this website's server (every hosted inference), computers connect instead.
+    $("#compute-website").hidden = !host; $("#rent-here").hidden = !host; $("#rent-elsewhere").hidden = !!host;
     $("#compute-start").hidden = !host?.online || connected;
     $("#compute-start").disabled = value.jobs.some(j => j.kind === "start" && ["queued", "running"].includes(j.state));
     $("#compute-location").textContent = host ? `${host.name} · ${connected ? "Connected to this website" : "Compute offline"}. ${host.inventory.detail || ""}` : "The website server has no Yougori backend connected. Install and start Yougori on the server hosting this website; no visitor-side installation is required for rentals.";
-    $("#compute-password-state").textContent = value.password_set ? "A contributor password is set. Save a new one to replace it, or save empty to require administrator approval." : "Administrator approval is required for contributors.";
-    $("#compute-models").innerHTML = value.hosts.map(node => `<div class="compute-node"><strong>${esc(node.name)}</strong><span class="badge ${node.online ? "ready" : ""}">${node.online ? "Online" : "Offline"}</span>${node.inventory.models?.length ? node.inventory.models.map(model => `<div class="source"><div><strong>${esc(model.name)}</strong><p>${esc(model.state)}${model.shared ? " · In your catalog" : ""}</p></div>${node.role === "controller" ? `<button type="button" class="text-button" data-share-model="${esc(model.id)}" data-enable="${!model.shared}" ${node.online ? "" : "disabled"}>${model.shared ? "Remove from inference" : "Add to inference"}</button>${model.shared && model.state !== "ready" ? `<button type="button" class="text-button" data-share-model="${esc(model.id)}" data-enable="true" ${node.online ? "" : "disabled"}>Retry model start</button>` : ""}` : ""}</div>`).join("") : '<p class="hint">No models reported yet.</p>'}${node.role === "contributor" ? `<button class="text-button" type="button" data-disconnect-compute="${esc(node.id)}">Disconnect contributor</button>` : ""}</div>`).join("");
+    $("#compute-password-state").textContent = value.password_set ? "A password is set: signed-in people who know it connect a computer without your approval. Type a new one to replace it." : "You approve every computer yourself.";
+    $("#compute-models").innerHTML = !value.hosts.length ? '<p class="hint">No computer connected yet.</p>' : value.hosts.map(node => `<div class="compute-node"><strong>${esc(node.name)}</strong><span class="badge ${node.online ? "ready" : ""}">${node.online ? "Online" : "Offline"}</span>${node.inventory.models?.length ? node.inventory.models.map(model => `<div class="source"><div><strong>${esc(model.name)}</strong><p>${esc(model.state)}${model.shared ? " · In your catalog" : ""}</p></div>${node.role === "controller" ? `<button type="button" class="text-button" data-share-model="${esc(model.id)}" data-enable="${!model.shared}" ${node.online ? "" : "disabled"}>${model.shared ? "Remove from inference" : "Add to inference"}</button>${model.shared && model.state !== "ready" ? `<button type="button" class="text-button" data-share-model="${esc(model.id)}" data-enable="true" ${node.online ? "" : "disabled"}>Retry model start</button>` : ""}` : ""}</div>`).join("") : '<p class="hint">No models reported yet.</p>'}${node.role === "contributor" ? `<button class="text-button" type="button" data-disconnect-compute="${esc(node.id)}">Disconnect contributor</button>` : ""}</div>`).join("");
     for (const id of ["#compute-load", "#compute-provider", "#compute-rent"]) $(id).querySelector('[type="submit"]').disabled = !connected;
     $("#compute-offers").disabled = !connected || value.jobs.some(j => j.kind === "offers" && ["queued", "running"].includes(j.state));
     const quote = value.jobs.find(j => j.host === host?.id && j.kind === "offers" && j.state === "done");
@@ -158,34 +203,37 @@ async function refreshCompute() {
         $("#compute-rent").elements.cost.checked = false;
       };
     }
-    $("#compute-activity").innerHTML = value.jobs.length ? value.jobs.map(job => `<div class="source"><div><strong>${esc({rent:"Cloud GPU rental",load:"Load model",share:"Model connection",offers:"GPU offers",provider:"Provider account",stop:"Stop cloud GPU",start:"Start website compute"}[job.kind] || job.kind)}</strong><span class="badge ${job.state === "done" ? "ready" : ""}">${esc(job.state)}</span><p>${esc(job.detail)}</p>${job.result.environment ? `<p class="hint">${esc(job.result.environment)}</p>` : ""}</div>${job.kind === "rent" && job.result.environment ? `<button type="button" class="text-button" data-stop-rental="${esc(job.id)}">Stop rented GPU</button>` : ""}</div>`).join("") : '<p class="hint">Rentals and model connections appear here as soon as you start them.</p>';
+    $("#compute-activity").innerHTML = value.jobs.length ? value.jobs.map(job => `<div class="source"><div><strong>${esc({rent:"Cloud GPU rental",load:"Load model",share:"Model connection",offers:"GPU offers",provider:"Provider account",account:"Provider balance",stop:"Stop cloud GPU",start:"Start website compute"}[job.kind] || job.kind)}</strong><span class="badge ${job.state === "done" ? "ready" : ""}">${esc(job.state)}</span><p>${esc(job.detail)}</p>${job.result.environment ? `<p class="hint">${esc(job.result.environment)}</p>` : ""}</div>${job.kind === "rent" && job.result.environment ? `<button type="button" class="text-button" data-stop-rental="${esc(job.id)}">Stop rented GPU</button>` : ""}</div>`).join("") : '<p class="hint">Rentals and model connections appear here as soon as you start them.</p>';
     const [discovered, overview] = await Promise.all([api("/api/models"), api("/api/admin/overview")]);
     if(!area.isConnected) return;
     models = discovered.models;
-    const list = $("#refresh-models")?.previousElementSibling;
-    if(list) {
-      list.innerHTML = overview.endpoints.length ? overview.endpoints.map(e => `<div class="source"><div><strong>${esc(e.name)}</strong><p>${esc(e.url.startsWith("compute://") ? "Connected by Yougori" : e.url)}</p><span class="badge ${e.state === "ready" ? "ready" : ""}">${esc(e.state)}</span><p>${esc(e.detail)}</p></div>${e.url.startsWith("compute://") ? "" : `<button type="button" class="text-button" data-remove-source="${esc(e.id)}">Disconnect</button>`}</div>`).join("") : '<p class="hint">Choose a local model or rent a GPU above. Its models appear here automatically.</p>';
-      list.querySelectorAll("[data-remove-source]").forEach(button => button.addEventListener("click", async () => {
-        button.disabled = true;
-        try { await api("/api/admin/endpoints/remove", {id: button.dataset.removeSource}); await refreshCompute(); }
-        catch(error) { notice(error.message); button.disabled = false; }
-      }));
-    }
-    const counter = $("#view .metrics .metric:nth-child(2) strong");
-    if(counter) counter.textContent = models.length;
+    const list = $("#model-servers");
+    if(list) list.innerHTML = serverRows(overview.endpoints);
+    adminSummary();
   } catch (error) { if(area.isConnected) notice(error.message); }
   finally { if(area.isConnected) computeTimer = setTimeout(refreshCompute, 3000); }
 }
 
-function renderContributor() {
-  header("Connect a contributing computer", "Approve only a computer you recognize. Inference requests may be sent to this computer. It cannot manage the website or rent cloud GPUs.");
-  $("#view").innerHTML = panel("Computer code", `<form id="contributor-inspect" class="stack"><label>Code from the contributor<input name="code" required maxlength="8" autocomplete="off"></label><p class="error" role="alert"></p><div><button class="primary" type="submit">Check computer</button></div></form><div id="contributor-review"></div>`);
+// A connecting computer shows a code: administrators approve it in Admin's Local GPUs, under the
+// command; a signed-in contributor with the contributor password uses its own page (#contribute,
+// which the connector names). Approve only a computer you recognize.
+function contributorForm() {
+  return `<form id="contributor-inspect" class="stack"><div class="admin-row"><label>Code from the contributor<input name="code" required maxlength="8" autocomplete="off" spellcheck="false" placeholder="The code its terminal shows"></label><button class="secondary" type="submit">Check computer</button></div><p class="error" role="alert"></p></form><div id="contributor-review"></div>`;
+}
+function bindContributor(done) {
   formAction("#contributor-inspect", async data => {
     const info = await api("/api/compute/pair/inspect", data);
-    $("#contributor-review").innerHTML = `<form id="contributor-approve" class="stack"><p>Connect <strong>${esc(info.name)}</strong> as a GPU contributor?</p>${session.user.admin ? "" : '<label>Contributor password<input name="password" type="password" autocomplete="off"></label>'}<p class="error" role="alert"></p><div><button class="primary" type="submit">Approve this computer</button></div></form>`;
+    $("#contributor-review").innerHTML = `<form id="contributor-approve" class="stack"><p>Connect <strong>${esc(info.name)}</strong> as a GPU contributor? Inference requests may be sent to it; it cannot manage this website or rent GPUs.</p>${session.user.admin ? "" : '<label>Contributor password<input name="password" type="password" autocomplete="off"></label>'}<p class="error" role="alert"></p><div><button class="primary" type="submit">Approve this computer</button></div></form>`;
     formAction("#contributor-approve", async values => {
       const result = await api("/api/compute/pair/approve", {code: data.code, password: values.password || ""});
       $("#contributor-review").textContent = `${result.name} is connected. Its shared models will appear automatically.`;
+      $("#contributor-inspect").reset();
+      await done?.();
     });
   });
+}
+function renderContributor() {
+  header("Connect a contributing computer", "Approve only a computer you recognize. Inference requests may be sent to this computer. It cannot manage the website or rent cloud GPUs.");
+  $("#view").innerHTML = panel("Computer code", contributorForm());
+  bindContributor();
 }

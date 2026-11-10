@@ -44,6 +44,15 @@ STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascri
           "/style.css": ("style.css", "text/css"),
           "/theme.js": ("theme.js", "text/javascript"),
           "/icon.svg": ("icon.svg", "image/svg+xml"), "/fonts/hanken-grotesk.woff2": ("fonts/hanken-grotesk.woff2", "font/woff2")}
+# The pages an administrator can make the main page, and why a hidden harness cannot be set up.
+HOMES = ("harnesses", "models", "sandboxes")
+# The colour styles in style.css; the administrator's choice applies to every visitor.
+PALETTES = ("navy", "nord", "solarized", "catppuccin", "rose-pine", "gruvbox")
+NOT_OFFERED = "The administrator of this inference has not offered this harness."
+
+
+class ChoiceInput(ValueError):
+    """A main page or harness choice the administrator can correct."""
 
 
 class Service:
@@ -135,6 +144,24 @@ class Service:
                 # end health monitoring for the lifetime of the server.
                 print('Model health refresh is temporarily unavailable; retrying.',file=sys.stderr,flush=True)
             self.stopped.wait(30)
+
+    def offered(self, name):
+        """Whether people may set up this harness here. Names outside the catalogue, such as the
+        contributor's `node` bundle, are not choices; their own checks apply."""
+        return name not in self.store.choices()["hidden"]
+
+    def choose(self, actor, data):
+        """The administrator's main page and the catalogue harnesses offered here."""
+        home, chosen = data.get("home"), data.get("harnesses")
+        if home not in HOMES:
+            raise ChoiceInput("Choose Harnesses, Models or Sandboxes as the main page.")
+        ids = [h["id"] for h in self.harnesses]
+        if not isinstance(chosen, list) or len(chosen) > len(ids) or any(not isinstance(n, str) or n not in ids for n in chosen):
+            raise ChoiceInput("Choose harnesses from this inference's catalogue.")
+        if home == "harnesses" and not chosen:
+            raise ChoiceInput("Offer at least one harness, or choose another main page.")
+        self.store.choose(actor, home, [n for n in ids if n not in chosen])
+        return self.store.choices()
 
     def add_endpoint(self, actor, data):
         name, url, secret, place = data.get("name"), data.get("url"), data.get("key", ""), data.get("place", "local")
@@ -290,6 +317,11 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path in STATIC:
             filename, content_type = STATIC[path]
             raw = (HERE / filename).read_bytes()
+            if path == "/":
+                # The page arrives in the administrator's colour style, before any script runs.
+                palette = store.settings()["palette"]
+                if palette in PALETTES:
+                    raw = raw.replace(b'data-palette="navy"', b'data-palette="' + palette.encode() + b'"', 1)
             self.begin(200, content_type + "; charset=utf-8", len(raw))
             return self.wfile.write(raw)
         google_route = google_protocol.route(self.path)
@@ -342,12 +374,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(200, {"ok": True, "cancelled": not accepted})
             return self.error(400, "This connector action is not available.")
         if method == "GET" and path == "/api/session":
-            return self.json(200, {"user": user, "site": store.settings(), "mode": service.account_mode, "version": "0.1.0"})
+            choices = store.choices()
+            return self.json(200, {"user": user, "site": store.settings(), "mode": service.account_mode, "version": "0.1.0",
+                                   "choices": {"home": choices["home"], "chosen": choices["chosen"]}})
         # Browsing is public; inference and account actions still require credentials.
         if method == "GET" and path.startswith("/api/harness-image/"):
             parts = path.removeprefix("/api/harness-image/").split("/")
             if len(parts) not in (1, 2, 3):
                 return self.error(404, "This VM image is unavailable.")
+            if not service.offered(parts[0]):
+                return self.error(404, NOT_OFFERED)
             published = service.hosted.get('artifacts') if service.hosted else None
             if published is not None:
                 record = published.get('images', {}).get(parts[0])
@@ -366,14 +402,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         if method == "GET" and path.startswith("/install/") and path.endswith(".ps1"):
             name = path.removeprefix("/install/").removesuffix(".ps1")
+            if not service.offered(name):
+                return self.error(404, NOT_OFFERED)
             raw = harness_download.powershell(name, ("https://" if service.public else "http://") + host)
             self.begin(200, "text/plain; charset=utf-8", len(raw))
             return self.wfile.write(raw)
         if method == "GET" and path == "/api/harnesses":
-            return self.json(200, {"harnesses": [{**h, "setup": harness_download.availability(h['id'], service.hosted.get('artifacts') if service.hosted else None)} for h in service.harnesses],
-                "categories": service.categories})
+            # Hidden harnesses stay listed, unavailable with the reason, so `yougori inference run`
+            # explains why instead of failing to find them; the pages list only the offered ones.
+            hidden = set(store.choices()["hidden"])
+            published = service.hosted.get('artifacts') if service.hosted else None
+            listed = []
+            for h in service.harnesses:
+                setup = harness_download.availability(h['id'], published)
+                if h['id'] in hidden:
+                    setup = {**setup, "available": False, "reason": NOT_OFFERED}
+                listed.append({**h, "offered": h['id'] not in hidden, "setup": setup})
+            return self.json(200, {"harnesses": listed, "categories": service.categories})
         if method == "GET" and path.startswith("/api/harness-download/"):
             name = path.removeprefix("/api/harness-download/")
+            if not service.offered(name):
+                return self.error(404, NOT_OFFERED)
             raw = harness_download.bundle(name, ("https://" if service.public else "http://") + host)
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
@@ -420,6 +469,8 @@ class Handler(BaseHTTPRequestHandler):
             specs = harness_download.catalog()
             if not isinstance(name, str) or name not in specs or specs[name].get("blocked"):
                 return self.error(400, "This harness is not available to connect.")
+            if not service.offered(name):
+                return self.error(400, NOT_OFFERED)
             result = service.devices.start(name, data.get("credential_hash"))
             result["verification_uri"] = ("https://" if service.public else "http://") + host + "/#connect"
             return self.json(201, result)
@@ -542,14 +593,17 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/admin/invitations":
             data=self.body()
             return self.json(201, store.invite(user["id"], data.get("email"),data.get('admin',False)))
+        if method == "POST" and path == "/api/admin/choices":
+            return self.json(200, service.choose(user["id"], self.body()))
         if method == "POST" and path == "/api/admin/site":
             data = self.body()
             if not isinstance(data.get("name"), str) or not 1 <= len(data["name"].strip()) <= 80:
                 raise ValueError("Use a website name of 1 to 80 characters.")
-            if not isinstance(data.get("tagline"), str) or len(data["tagline"]) > 200 or not re.fullmatch(r"#[0-9a-fA-F]{6}", data.get("accent", "")):
-                raise ValueError("Use a tagline of up to 200 characters and a six-digit accent color.")
+            if not isinstance(data.get("tagline"), str) or len(data["tagline"]) > 200 or data.get("palette") not in PALETTES:
+                raise ValueError("Use a tagline of up to 200 characters and one of the colour styles.")
             with store.db() as db:
-                db.execute("UPDATE settings SET name=?,tagline=?,accent=? WHERE id=1", (data["name"].strip(), data["tagline"], data["accent"]))
+                db.execute("UPDATE settings SET name=?,tagline=? WHERE id=1", (data["name"].strip(), data["tagline"]))
+                db.execute("INSERT OR REPLACE INTO site_palette VALUES(1,?)", (data["palette"],))
                 store.audit(db, user["id"], "site.updated", "branding")
             return self.json(200, {"ok": True})
         return self.error(404, "This page or action does not exist.")
@@ -559,7 +613,7 @@ class Handler(BaseHTTPRequestHandler):
             self.dispatch(method)
         except MediaInput as error:
             self.json(error.status, {"error": {"code": error.code, "message": str(error)}})
-        except (AccountError, ComputeInput, GridInput, WalletInput) as error:
+        except (AccountError, ChoiceInput, ComputeInput, GridInput, WalletInput) as error:
             self.error(400, str(error))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             self.error(400, "Check the supplied values and try again.")

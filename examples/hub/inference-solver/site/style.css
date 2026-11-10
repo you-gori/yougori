@@ -2,19 +2,40 @@
    ending in an arrow circle, light blue highlights and flat square panels. Hanken Grotesk is bundled under the
    SIL Open Font License (fonts/LICENSE-HankenGrotesk.txt). */
 @font-face{font-family:"Hanken Grotesk";src:url(/fonts/hanken-grotesk.woff2) format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
-:root{
+:root,[data-palette="navy"]{
   color-scheme:light;
-  /* The accent fills the main pills; the administrator's colour replaces it. */
+  /* Navy, the default colour style: navy pills on a pale blue page. */
   --blue:#0b1f4d;
-  --pill:var(--blue); --pill-ink:#fff;
+  --pill:var(--blue); --pill-ink:#fff; --bright-ink:#0b1f4d;
   --bg:#f5f8fe; --panel:#ecf1fb; --chip:#e1e9f8; --ink:#0b1f4d; --muted:rgb(11 31 77 / 66%); --faint:rgb(11 31 77 / 46%);
   --line:rgb(11 31 77 / 11%); --bright:#9cc2ff; --deep:#1f4fbf; --danger:#b42318;
   --sans:"Hanken Grotesk","Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,monospace;
 }
 /* Dark mode: the device's setting unless the person picked one. Main pills turn light blue. */
-:root[data-theme="dark"]{color-scheme:dark;--bg:#0a1020;--panel:#111a30;--chip:#1a2541;--ink:#eaf0ff;--muted:rgb(234 240 255 / 66%);--faint:rgb(234 240 255 / 46%);--line:rgb(234 240 255 / 12%);--deep:#9cc2ff;--danger:#ff8a80;--pill:var(--bright);--pill-ink:#0b1f4d}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#0a1020;--panel:#111a30;--chip:#1a2541;--ink:#eaf0ff;--muted:rgb(234 240 255 / 66%);--faint:rgb(234 240 255 / 46%);--line:rgb(234 240 255 / 12%);--deep:#9cc2ff;--danger:#ff8a80;--pill:var(--bright);--pill-ink:#0b1f4d}}
+:root[data-theme="dark"],[data-theme="dark"] [data-palette="navy"]{color-scheme:dark;--bg:#0a1020;--panel:#111a30;--chip:#1a2541;--ink:#eaf0ff;--muted:rgb(234 240 255 / 66%);--faint:rgb(234 240 255 / 46%);--line:rgb(234 240 255 / 12%);--deep:#9cc2ff;--danger:#ff8a80;--pill:var(--bright);--pill-ink:#0b1f4d}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]),:root:not([data-theme="light"]) [data-palette="navy"]{color-scheme:dark;--bg:#0a1020;--panel:#111a30;--chip:#1a2541;--ink:#eaf0ff;--muted:rgb(234 240 255 / 66%);--faint:rgb(234 240 255 / 46%);--line:rgb(234 240 255 / 12%);--deep:#9cc2ff;--danger:#ff8a80;--pill:var(--bright);--pill-ink:#0b1f4d}}
+/* Colour styles the administrator chooses for every visitor (Admin, Website identity); each keeps a
+   light and a dark version, so everyone's own light/dark choice still applies. Navy above is the
+   default. Official palettes: Nord (nordtheme.com), Solarized (ethanschoonover.com/solarized),
+   Catppuccin Latte and Mocha (github.com/catppuccin), Rose Pine Dawn and main (github.com/rose-pine/palette),
+   Gruvbox (github.com/morhetz/gruvbox). Where a palette colour fell short of 4.5:1 for its text, it is
+   moved toward the palette's own darker or lighter colour only as far as needed. */
+[data-palette="nord"]{color-scheme:light;--bg:#eceff4;--panel:#e5e9f0;--chip:#d8dee9;--ink:#2e3440;--muted:#4c566a;--faint:#818a9a;--line:rgb(46 52 64 / 11%);--bright:#88c0d0;--bright-ink:#2e3440;--deep:#526f92;--blue:#5e81ac;--pill:#58789f;--pill-ink:#ffffff}
+[data-palette="nord"][data-theme="dark"],[data-theme="dark"] [data-palette="nord"]{color-scheme:dark;--bg:#2e3440;--panel:#3b4252;--chip:#434c5e;--ink:#eceff4;--muted:#d8dee9;--faint:#9fa7b4;--line:rgb(236 239 244 / 12%);--bright:#88c0d0;--bright-ink:#2e3440;--deep:#88c0d0;--blue:#88c0d0;--pill:#88c0d0;--pill-ink:#2e3440}
+@media (prefers-color-scheme:dark){[data-palette="nord"]:not([data-theme="light"]),:root:not([data-theme="light"]) [data-palette="nord"]{color-scheme:dark;--bg:#2e3440;--panel:#3b4252;--chip:#434c5e;--ink:#eceff4;--muted:#d8dee9;--faint:#9fa7b4;--line:rgb(236 239 244 / 12%);--bright:#88c0d0;--bright-ink:#2e3440;--deep:#88c0d0;--blue:#88c0d0;--pill:#88c0d0;--pill-ink:#2e3440}}
+[data-palette="solarized"]{color-scheme:light;--bg:#fdf6e3;--panel:#eee8d5;--chip:#dfddcd;--ink:#073642;--muted:#4b656d;--faint:#657b83;--line:rgb(7 54 66 / 11%);--bright:#2aa198;--bright-ink:#002b36;--deep:#1f77af;--blue:#268bd2;--pill:#073642;--pill-ink:#fdf6e3}
+[data-palette="solarized"][data-theme="dark"],[data-theme="dark"] [data-palette="solarized"]{color-scheme:dark;--bg:#002b36;--panel:#073642;--chip:#123e49;--ink:#eee8d5;--muted:#97a4a3;--faint:#839496;--line:rgb(238 232 213 / 12%);--bright:#2aa198;--bright-ink:#002b36;--deep:#2aa198;--blue:#268bd2;--pill:#2aa198;--pill-ink:#002b36}
+@media (prefers-color-scheme:dark){[data-palette="solarized"]:not([data-theme="light"]),:root:not([data-theme="light"]) [data-palette="solarized"]{color-scheme:dark;--bg:#002b36;--panel:#073642;--chip:#123e49;--ink:#eee8d5;--muted:#97a4a3;--faint:#839496;--line:rgb(238 232 213 / 12%);--bright:#2aa198;--bright-ink:#002b36;--deep:#2aa198;--blue:#268bd2;--pill:#2aa198;--pill-ink:#002b36}}
+[data-palette="catppuccin"]{color-scheme:light;--bg:#eff1f5;--panel:#e6e9ef;--chip:#dce0e8;--ink:#4c4f69;--muted:#5c5f77;--faint:#878a9d;--line:rgb(76 79 105 / 11%);--bright:#b6c0f9;--bright-ink:#4c4f69;--deep:#8839ef;--blue:#1e66f5;--pill:#8839ef;--pill-ink:#ffffff}
+[data-palette="catppuccin"][data-theme="dark"],[data-theme="dark"] [data-palette="catppuccin"]{color-scheme:dark;--bg:#181825;--panel:#1e1e2e;--chip:#313244;--ink:#cdd6f4;--muted:#a6adc8;--faint:#7f849c;--line:rgb(205 214 244 / 12%);--bright:#cba6f7;--bright-ink:#11111b;--deep:#b4befe;--blue:#89b4fa;--pill:#cba6f7;--pill-ink:#11111b}
+@media (prefers-color-scheme:dark){[data-palette="catppuccin"]:not([data-theme="light"]),:root:not([data-theme="light"]) [data-palette="catppuccin"]{color-scheme:dark;--bg:#181825;--panel:#1e1e2e;--chip:#313244;--ink:#cdd6f4;--muted:#a6adc8;--faint:#7f849c;--line:rgb(205 214 244 / 12%);--bright:#cba6f7;--bright-ink:#11111b;--deep:#b4befe;--blue:#89b4fa;--pill:#cba6f7;--pill-ink:#11111b}}
+[data-palette="rose-pine"]{color-scheme:light;--bg:#faf4ed;--panel:#f2e9e1;--chip:#e5ddd9;--ink:#464261;--muted:#635f7e;--faint:#8e899d;--line:rgb(70 66 97 / 11%);--bright:#e2a49f;--bright-ink:#464261;--deep:#286983;--blue:#907aa9;--pill:#286983;--pill-ink:#ffffff}
+[data-palette="rose-pine"][data-theme="dark"],[data-theme="dark"] [data-palette="rose-pine"]{color-scheme:dark;--bg:#191724;--panel:#1f1d2e;--chip:#26233a;--ink:#e0def4;--muted:#908caa;--faint:#6e6a86;--line:rgb(224 222 244 / 12%);--bright:#ebbcba;--bright-ink:#191724;--deep:#9ccfd8;--blue:#c4a7e7;--pill:#ebbcba;--pill-ink:#191724}
+@media (prefers-color-scheme:dark){[data-palette="rose-pine"]:not([data-theme="light"]),:root:not([data-theme="light"]) [data-palette="rose-pine"]{color-scheme:dark;--bg:#191724;--panel:#1f1d2e;--chip:#26233a;--ink:#e0def4;--muted:#908caa;--faint:#6e6a86;--line:rgb(224 222 244 / 12%);--bright:#ebbcba;--bright-ink:#191724;--deep:#9ccfd8;--blue:#c4a7e7;--pill:#ebbcba;--pill-ink:#191724}}
+[data-palette="gruvbox"]{color-scheme:light;--bg:#fbf1c7;--panel:#f2e5bc;--chip:#ebdbb2;--ink:#3c3836;--muted:#665c54;--faint:#928374;--line:rgb(60 56 54 / 11%);--bright:#fabd2f;--bright-ink:#3c3836;--deep:#076678;--blue:#076678;--pill:#427b58;--pill-ink:#ffffff}
+[data-palette="gruvbox"][data-theme="dark"],[data-theme="dark"] [data-palette="gruvbox"]{color-scheme:dark;--bg:#1d2021;--panel:#282828;--chip:#3c3836;--ink:#ebdbb2;--muted:#bdae93;--faint:#a89984;--line:rgb(235 219 178 / 12%);--bright:#8ec07c;--bright-ink:#282828;--deep:#83a598;--blue:#83a598;--pill:#8ec07c;--pill-ink:#282828}
+@media (prefers-color-scheme:dark){[data-palette="gruvbox"]:not([data-theme="light"]),:root:not([data-theme="light"]) [data-palette="gruvbox"]{color-scheme:dark;--bg:#1d2021;--panel:#282828;--chip:#3c3836;--ink:#ebdbb2;--muted:#bdae93;--faint:#a89984;--line:rgb(235 219 178 / 12%);--bright:#8ec07c;--bright-ink:#282828;--deep:#83a598;--blue:#83a598;--pill:#8ec07c;--pill-ink:#282828}}
 *,*::before,*::after{box-sizing:border-box}
 [hidden]{display:none!important}
 html{background:var(--bg);-webkit-text-size-adjust:100%}
@@ -23,7 +44,7 @@ a{color:inherit}
 button,input,select,textarea{font:inherit;color:inherit;letter-spacing:inherit}
 button{cursor:pointer}
 :focus-visible{outline:2px solid var(--ink);outline-offset:2px}
-::selection{background:var(--bright);color:#0b1f4d}
+::selection{background:var(--bright);color:var(--bright-ink)}
 code,kbd,.mono{font-family:var(--mono);font-size:12.5px;letter-spacing:0}
 h1,h2,h3{margin:0;font-weight:350}
 .muted{margin:0;color:var(--muted)}
@@ -58,11 +79,8 @@ h1,h2,h3{margin:0;font-weight:350}
 .device-actions{display:flex;flex-wrap:wrap;gap:12px}
 .harness-install{min-width:0}
 .harness-install .code{white-space:pre-wrap;overflow-wrap:anywhere}
-/* The compute panels join the admin grid directly. Lists of offers and activity fill whatever height
-   their row leaves, so neither panel ends higher than its neighbour. */
+/* Local GPUs and Rent a cloud GPU join Admin's column directly. */
 #compute-setup,.compute-options{display:contents}
-#infrastructure-setup,.pricing-setup,.member-settings{display:contents}
-.admin-grid .activity-bottom{grid-column:1/-1;order:999}
 .install-heading{display:flex;justify-content:space-between;align-items:start;gap:24px}
 .install-heading h2{margin-top:0}
 .install-heading button{flex:none}
@@ -71,7 +89,6 @@ h1,h2,h3{margin:0;font-weight:350}
 .install-details{padding:18px 24px;border:1px solid var(--line);background:var(--panel)}
 .install-details summary{cursor:pointer;font-weight:600}
 .install-details[open] summary{margin-bottom:16px}
-.admin-grid .panel-body{min-width:0}
 .member-list{max-height:300px;overflow:auto}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:16px}
 .resource-number{font-size:20px;font-weight:500;margin:0}
@@ -92,21 +109,18 @@ h1,h2,h3{margin:0;font-weight:350}
 #control-panel>.panel,#my-sandboxes>.panel,#sandbox-events>.panel{margin-bottom:12px}
 @media(max-width:700px){.resource-grid{grid-template-columns:1fr}.control-totals{grid-template-columns:repeat(2,minmax(0,1fr))}.control-totals .metric strong{font-size:20px}}
 .compute-options>.panel{container-type:inline-size}
-.compute-details{padding-top:14px}
-.compute-rent{flex:1;display:flex;flex-direction:column;gap:14px;min-height:0}
-.compute-offers{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;margin:0;padding:0;border:0}
+.compute-offers{min-width:0;margin:0;padding:0;border:0}
 .compute-offers legend{margin-bottom:6px;padding:0;font-size:14px;font-weight:450}
-#compute-offer-list{flex:1 1 0;min-height:180px;overflow:auto;border-top:1px solid var(--line)}
+#compute-offer-list{max-height:264px;overflow:auto;border-top:1px solid var(--line)}
 .compute-offer{display:flex;flex-direction:row;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-weight:350;cursor:pointer}
 .compute-offer input{width:16px;height:16px;padding:0;flex:none;accent-color:var(--ink)}
 .compute-offer>span{display:flex;flex-direction:column;gap:1px}
 .compute-offer strong{font-weight:450}
 .compute-offer>span>span{font-size:13px;color:var(--muted)}
-.rent-side{gap:12px}
 .small-print{font-size:13px}
 .compute-node+.compute-node{margin-top:14px}
 .compute-node>.badge{margin-left:10px}
-#compute-activity{flex:1 1 0;min-height:150px;overflow:auto}
+#compute-activity{max-height:300px;overflow:auto}
 #compute-activity .source{padding:9px 0}
 #compute-activity .source:first-child{padding-top:0}
 #compute-activity .source>div{display:flex;flex-wrap:wrap;align-items:center;gap:2px 10px}
@@ -144,8 +158,8 @@ main{flex:1;width:100%;padding:40px 24px 80px}
 .primary:not(:has(.pill-arrow)){padding-right:22px}
 .primary:hover{filter:brightness(1.15)}
 .pill-arrow{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:50%;background:var(--pill-ink);color:var(--pill);font-size:17px;font-style:normal;line-height:1}
-.primary.bright{background:var(--bright);color:#0b1f4d}
-.primary.bright .pill-arrow{background:#0b1f4d;color:#fff}
+.primary.bright{background:var(--bright);color:var(--bright-ink)}
+.primary.bright .pill-arrow{background:var(--bright-ink);color:var(--bright)}
 .secondary{padding:0 20px;border:0;background:var(--chip);color:var(--ink)}
 .secondary:hover{filter:brightness(.97)}
 .outline{padding:0 18px;border:1px solid var(--ink);background:transparent;color:var(--ink)}
@@ -158,10 +172,12 @@ main{flex:1;width:100%;padding:40px 24px 80px}
 .text-button{padding:0;border:0;background:none;color:var(--ink);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px;overflow-wrap:anywhere}
 .text-button:hover{text-decoration-thickness:2px}
 button:disabled{opacity:.5;cursor:wait}
+/* A field waiting for its tick box, or for the mode that needs it, looks switched off. */
+:is(input,select,textarea):disabled{opacity:.5;cursor:not-allowed}
 
 /* Badges: light blue when ready, pale otherwise. */
 .tag,.badge{display:inline-flex;align-items:center;width:max-content;padding:3px 12px;border-radius:75px;background:var(--chip);color:var(--muted);font-size:13px;line-height:1.4;white-space:nowrap}
-.tag.ready,.badge.ready{background:var(--bright);color:#0b1f4d}
+.tag.ready,.badge.ready{background:var(--bright);color:var(--bright-ink)}
 
 /* Forms */
 label{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:14px;font-weight:450}
@@ -202,8 +218,11 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 .search-box input{flex:1;min-width:0;height:auto;padding:0;border:0;border-radius:0;background:transparent;outline:none}
 .search-box kbd{padding:0 6px;border:1px solid var(--line);border-radius:4px;color:var(--muted);font-size:11px}
 .search-box:focus-within kbd{visibility:hidden}
-.sort{flex-direction:row;align-items:center;gap:10px;color:var(--muted);font-weight:350}
-.sort select{width:auto;border:0;border-radius:75px;background:var(--chip);color:var(--ink)}
+.sort{position:relative;flex-direction:row;align-items:center;gap:10px;color:var(--muted);font-weight:350}
+/* The browser's own arrow ignores padding and sits on the pill's rounded end, so Sort draws the
+   Category button's chevron, with the same spacing, in the text colour of each theme. */
+.sort select{width:auto;padding:0 38px 0 20px;border:0;border-radius:75px;background:var(--chip);color:var(--ink);appearance:none;cursor:pointer}
+.sort::after{content:"";position:absolute;top:50%;right:16px;width:12px;height:12px;margin-top:-6px;background:var(--muted);pointer-events:none;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/12px 12px no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/12px 12px no-repeat}
 .count{margin:24px 0 12px;color:var(--muted);font-size:14px}
 .catalog-note{margin-top:20px}
 
@@ -253,14 +272,64 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 
 /* Keys, usage and admin */
 .secret{user-select:all;display:block}
-/* Admin: two panels of equal width and height per row; main buttons sit on each panel's bottom edge. */
-.admin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.admin-grid .panel{display:flex;flex-direction:column;min-width:0}
-.admin-grid .panel-heading{margin:0 24px;padding:20px 0 14px}
-.admin-grid .panel-heading :is(h2,h3){font-size:20px}
-.admin-grid .panel-body{flex:1;gap:14px;padding:16px 24px 24px}
-.panel-end{margin-top:auto}
-.admin-grid+.hint{margin-top:16px}
+/* Admin: one column of sections. Each shows its name and one line about it on the left and its
+   controls on the right; fields share a row with their button. Narrow screens stack the two. */
+.admin-grid{display:flex;flex-direction:column;gap:8px}
+.admin-section{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:14px 40px;padding:22px 28px}
+.admin-section>.panel-heading{display:block;margin:0;padding:0;border:0}
+.admin-section>.panel-heading h3{font-size:18px;letter-spacing:-.02em}
+.admin-section>.panel-heading .hint{margin-top:4px;font-size:13px}
+.admin-section>.panel-body{padding:0;gap:14px}
+.admin-row{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 12px}
+.admin-row>label:not(.check){flex:1 1 150px}
+.admin-row>.check{min-height:44px}
+.admin-row>.hint{flex:1 1 220px;align-self:center}
+.admin-row>:is(button,a){flex:none}
+.admin-row>.text-button{align-self:center}
+.admin-command{display:flex;align-items:center;gap:10px}
+.admin-command .code{flex:1;min-width:0;padding:11px 16px}
+/* Local GPUs: the commands a computer runs, in order, each a short name, then the command and its Copy. */
+.command-steps{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.command-steps li{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr);align-items:center;gap:4px 14px}
+.command-label{font-size:13px;font-weight:600}
+.command-label small{display:block;font-size:12px;font-weight:400;color:var(--muted)}
+@media (max-width:640px){.command-steps li{grid-template-columns:minmax(0,1fr)}}
+.admin-section .source{padding:10px 0}
+.admin-section .source strong{font-size:15px}
+.admin-section .source p{margin:2px 0 0;font-size:13px}
+.admin-section .compute-node+.compute-node{margin-top:10px}
+/* Admin's left edge: the PrompX harness's camera-style ruler. Fine tick lines, a mark per section
+   (the current one in the style's accent), a thumb where the page is; a mark's name shows on hover. It
+   replaces the page's scrollbar on desktop, and the page's content starts after it, so it never
+   covers anything; phones keep their scrollbar. */
+.rail{position:fixed;top:0;bottom:0;left:0;z-index:30;width:48px;cursor:ns-resize;touch-action:none;user-select:none}
+.rail-ticks{position:absolute;inset:0 auto 0 0;width:14px;background:repeating-linear-gradient(to bottom,var(--faint) 0 1px,transparent 1px 7px);opacity:.7;pointer-events:none}
+.rail:hover .rail-ticks,.rail-held .rail-ticks{width:20px;background:repeating-linear-gradient(to bottom,var(--muted) 0 1px,transparent 1px 7px);opacity:1}
+.rail-thumb{position:absolute;left:0;width:32px;height:2px;margin-top:-1px;border-radius:2px;background:var(--deep);pointer-events:none;transition:top .08s linear}
+.rail-mark{position:absolute;left:0;display:flex;align-items:center;height:18px;margin-top:-9px;padding:0 6px 0 0;border:0;background:none;cursor:pointer}
+.rail-mark i{display:block;width:28px;height:2px;border-radius:2px;background:var(--ink);opacity:.55;transition:width .15s,opacity .15s,background .15s}
+.rail-mark:hover i{width:36px;opacity:1}
+.rail-mark[aria-current="true"] i{width:40px;background:var(--deep);opacity:1}
+.rail-mark span{position:absolute;left:52px;padding:3px 9px;border-radius:75px;background:var(--pill);color:var(--pill-ink);font-size:12px;white-space:nowrap;opacity:0;transform:translateX(-4px);transition:opacity .15s,transform .15s;pointer-events:none}
+.rail-mark[aria-current="true"] span{background:var(--bright);color:var(--bright-ink)}
+/* One name at a time, so the names do not cover the page: the mark under the pointer, or where a drag is. */
+.rail-mark:hover span,.rail-mark:focus-visible span,.rail-held .rail-mark[aria-current="true"] span{opacity:1;transform:none}
+@media (min-width:901px){html.with-rail{scrollbar-width:none}html.with-rail::-webkit-scrollbar{display:none}html.with-rail main,html.with-rail .foot{padding-left:72px}}
+@media (max-width:900px){.rail{display:none}}
+/* Colour styles: each option shows its palette's page, panel, highlight and button colours. */
+.palette-group{margin:0;padding:0;border:0;min-width:0}
+.palette-group legend{margin-bottom:8px;padding:0;font-size:14px;font-weight:450}
+.palette-options{display:flex;flex-wrap:wrap;gap:8px}
+.palette-option{flex-direction:row;align-items:center;gap:10px;padding:7px 16px 7px 12px;border:1px solid var(--line);border-radius:75px;font-weight:350;cursor:pointer}
+.palette-option:has(input:checked){border-color:var(--ink)}
+.palette-option input{width:16px;height:16px;margin:0;padding:0;flex:none;accent-color:var(--ink)}
+.palette-swatch{display:flex;overflow:hidden;border:1px solid var(--line);border-radius:75px}
+.palette-swatch i{width:14px;height:20px}
+.palette-swatch i:nth-child(1){background:var(--bg)}
+.palette-swatch i:nth-child(2){background:var(--chip)}
+.palette-swatch i:nth-child(3){background:var(--bright)}
+.palette-swatch i:nth-child(4){background:var(--pill)}
+@media (max-width:900px){.admin-section{grid-template-columns:minmax(0,1fr);padding:18px 20px}}
 .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}
 .metric{display:flex;flex-direction:column-reverse;gap:4px;padding:16px 24px;background:var(--panel)}
 .metric strong{font-size:30px;font-weight:350;line-height:1;letter-spacing:-.04em}
@@ -272,10 +341,28 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 .source strong{font-size:17px;font-weight:450}
 .source p{margin:6px 0;color:var(--muted);font-size:14px;overflow-wrap:anywhere}
 .scope-list{max-height:180px;overflow:auto;display:grid;gap:10px}
-#branding-form{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto auto auto minmax(0,1fr)}
-#branding-form label:nth-child(2){grid-column:1 / -1;grid-row:2}
-#branding-form>.error{grid-column:1 / -1;grid-row:3}
-#branding-form>div{grid-column:1 / -1;grid-row:4}
+/* The main page and the harnesses offered: rows like the GPU offers, in columns. */
+.choices{display:flex;flex-direction:column;gap:24px}
+.choice-group{display:flex;flex-direction:column;gap:10px;min-width:0;margin:0;padding:0;border:0}
+.choice-group legend{margin-bottom:10px;padding:0;font-size:14px;font-weight:450}
+.choice-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:28px;border-top:1px solid var(--line)}
+.choice{flex-direction:row;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-weight:350;cursor:pointer}
+.choice input{width:16px;height:16px;margin:3px 0 0;padding:0;flex:none;accent-color:var(--ink)}
+.choice>span{display:flex;flex-direction:column;gap:1px;min-width:0}
+.choice strong{font-weight:450}
+.choice>span>span{font-size:13px;color:var(--muted)}
+.choice-category{margin:6px 0 0;color:var(--muted);font-size:13px}
+.choice-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px}
+.choice-tools .hint{margin-right:auto}
+/* Admin's version: the main page as one row of options, the harnesses by name in columns. */
+.choice-home{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px}
+.choice-label{font-size:14px;font-weight:450}
+.choice-home input{width:16px;height:16px;margin:0;padding:0;flex:none;accent-color:var(--ink)}
+.choice-names{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px 16px}
+@media (max-width:640px){.choice-names{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}}
+.choice-names .choice-category{grid-column:1 / -1;margin:0}
+@media (max-width:900px){.choice-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:640px){.choice-list{grid-template-columns:minmax(0,1fr)}}
 
 /* Sign in, notice, dialog, footer */
 .auth{max-width:440px;margin:6vh auto 0;display:flex;flex-direction:column;align-items:center;gap:18px}
@@ -298,8 +385,7 @@ dialog::backdrop{background:rgb(11 31 77 / 30%)}
 
 @media (max-width:1280px){.entries.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:1000px){.entries.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:1180px){.admin-grid{grid-template-columns:minmax(0,1fr)}#compute-activity{flex:none;max-height:320px}}
 @media (max-width:900px){.detail{grid-template-columns:minmax(0,1fr)}.search-box kbd{display:none}}
-@media (max-width:640px){.entries.grid,.metrics{grid-template-columns:minmax(0,1fr)}main{padding:28px 16px 56px}.header-inner{padding:0 16px}.foot{padding:0 16px}.search-box{flex-basis:100%}.sort{flex:1}.sort select{flex:1;min-width:0}.facts{grid-template-columns:minmax(0,1fr);gap:2px}.facts dd{margin-bottom:8px}#branding-form{display:flex;flex-direction:column}.source{align-items:flex-start}.panel-heading{margin:0 20px}.panel-body,.box{padding-left:20px;padding-right:20px}}
+@media (max-width:640px){.entries.grid,.metrics{grid-template-columns:minmax(0,1fr)}main{padding:28px 16px 56px}.header-inner{padding:0 16px}.foot{padding:0 16px}.search-box{flex-basis:100%}.sort{flex:1}.sort select{flex:1;min-width:0}.facts{grid-template-columns:minmax(0,1fr);gap:2px}.facts dd{margin-bottom:8px}.source{align-items:flex-start}.panel-heading{margin:0 20px}.panel-body,.box{padding-left:20px;padding-right:20px}}
 
 .compute-sizing { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:16px; margin:16px 0; }.wallet-address { overflow-wrap:anywhere; }

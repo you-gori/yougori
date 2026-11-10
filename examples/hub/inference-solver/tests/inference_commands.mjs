@@ -14,8 +14,12 @@ test('every website install action uses Yougori directly', () => {
     assert.equal(context.installCommand('pi', address), `yougori inference run pi --server "${origin}"`);
   }
   const compute = readFileSync(new URL('../site/compute-ui.js', import.meta.url), 'utf8');
-  assert.match(compute, /const command = installCommand\("node"\)/);
+  assert.match(compute, /const connect = installCommand\("node"\)/);
+  assert.match(compute, /\["Connect this computer", connect, "compute-install"\]/);
   assert.doesNotMatch(source + compute, /powershell -NoProfile|irm '|solver-node/);
+  // The only installer Local GPUs names is Yougori's own, from yougori.com: install or update.
+  const installers = [...compute.matchAll(/(?:irm|curl -fsSL) (\S+)/g)].map(match => match[1]);
+  assert.deepEqual(installers, ['https://yougori.com/install-preview.ps1', 'https://yougori.com/install-preview.sh']);
   assert.throws(() => context.installCommand('pi; shutdown', new URL('https://inference.example')));
   assert.throws(() => context.installCommand('pi', {origin:'https://example.com/$(bad)'}));
 });

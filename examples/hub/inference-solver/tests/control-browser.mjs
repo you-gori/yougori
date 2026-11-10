@@ -19,7 +19,17 @@ try {
   await page.getByRole('link',{name:'Sign in to create a sandbox',exact:true}).click();
   await page.getByLabel('Email',{exact:true}).fill('admin@example.invalid');await page.getByLabel('Password',{exact:true}).fill('disposable-test-password');
   await page.locator('#auth-submit').click();
+  // The administrator's first sign-in asks for the main page and harnesses; the defaults are kept here.
+  await page.getByRole('heading',{name:'Set up your inference',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Save and continue ↗'}).click();await page.locator('#harnesses-list').waitFor();
   await page.goto(url+'/#admin');await page.getByRole('heading',{name:'Model pricing',exact:true}).waitFor();
+  // With Yougori on the website's own server, Rent a cloud GPU shows its controls in place.
+  assert.equal(await page.locator('#rent-elsewhere').isHidden(),true);
+  assert.equal(await page.locator('#compute-sizing select[name="gpu_count"] option').count(),8);
+  await page.locator('#compute-sizing select[name="storage"]').selectOption('persistent');
+  assert.equal(await page.locator('#compute-sizing input[name="volume_gb"]').isEnabled(),true);
+  assert.equal(await page.getByRole('button',{name:'Rent GPU and host model'}).isDisabled(),true);
+  assert.equal(await page.locator('#grid-policy [name="cpu"]').isEnabled(),await page.locator('#grid-policy [name="local"]').isChecked());
   await page.locator('#model-price [name="input_usd"]').fill('0.25');await page.locator('#model-price [name="output_usd"]').fill('0.5');
   // Cached input follows the input price until it is set by hand.
   assert.equal(await page.locator('#model-price [name="cached_usd"]').inputValue(),'0.25');

@@ -142,9 +142,64 @@ def receive(link, token, deliver, stopped, connected=None):
         connection.close()
 
 
+SANDBOX_LIMITS = (("cpu", "CPU cores", 64), ("memory_gb", "Memory in GB", 256), ("slots", "VMs at once", 16))
+
+
+def sandbox_limits(value):
+    """`--sandbox`: "none", or CPU cores, memory in GB and VMs at once, such as "4,8,2"."""
+    if value == "none":
+        return {}
+    parts = value.split(",")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        raise ComputeError("Give --sandbox none, or CPU cores, memory in GB and VMs at once, such as 4,8,2.")
+    capacity = {key: int(part) for (key, _, _), part in zip(SANDBOX_LIMITS, parts)}
+    if any(not 1 <= capacity[key] <= maximum for key, _, maximum in SANDBOX_LIMITS):
+        raise ComputeError("A Sandbox VM limit is out of range. Nothing was connected.")
+    return capacity
+
+
+def model_state(model):
+    """A model's state in words: a stopped model starts when it is chosen; a rented one does not."""
+    if model["state"] == "ready":
+        return "running"
+    return "not running" if model.get("place") == "neocloud" else "stopped; it starts if you choose it"
+
+
+def ask_models(server, available):
+    """The models the website may use, typed as numbers. The Yougori CLI asks with a checklist in
+    a terminal and passes --models; this is for older or scripted runs."""
+    if not available:
+        print("This computer has no models in Yougori yet, so it can lend only Sandbox VMs.")
+        print("To serve a model, run one first (yougori model run), then run this command again.")
+        return set()
+    print("Which models may " + server + " use? Other models and files stay private.")
+    for index, model in enumerate(available, 1):
+        print(f"  {index}. {model['name']} ({model_state(model)})")
+    selected = [v.strip() for v in input("Type their numbers, separated by commas (for example 1,2), or press Enter for none: ").split(",") if v.strip()]
+    if any(not v.isdigit() or not 1 <= int(v) <= len(available) for v in selected):
+        raise ComputeError("Choose numbers from the list. Nothing was connected.")
+    return {available[int(v) - 1]["id"] for v in selected}
+
+
+def ask_sandbox():
+    if input("May this website also run isolated Sandbox VMs on this computer? [y/N]: ").strip().lower() != "y":
+        return {}
+    capacity = {}
+    for key, prompt, maximum in SANDBOX_LIMITS:
+        number = input(f"{prompt} for them, at most (1-{maximum}): ").strip()
+        if not number.isdigit() or not 1 <= int(number) <= maximum:
+            raise ComputeError("Invalid resource limit. Nothing was connected.")
+        capacity[key] = int(number)
+    return capacity
+
+
 def main(server):
     parser = argparse.ArgumentParser(description="Contribute selected models and optional, resource-limited Sandbox VMs. No host commands or cloud purchases.")
     parser.add_argument("--reconnect", action="store_true")
+    # The Yougori CLI reads the models with --list, asks in a terminal, and passes the answers.
+    parser.add_argument("--list", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--models", help=argparse.SUPPRESS)
+    parser.add_argument("--sandbox", help=argparse.SUPPRESS)
     args = parser.parse_args()
     command = executable()
     if not command:
@@ -160,27 +215,26 @@ def main(server):
         folder.chmod(0o700)
     adapter = Adapter(command, folder)
     available = adapter.inventory()["models"]
-    print("Choose the models this website may use. Other models and files stay private.")
-    for index, model in enumerate(available, 1):
-        print(f"  {index}. {model['name']} ({model['state']})")
-    selected = [v for v in input("Model numbers, separated by commas (Enter for none): ").split(",") if v.strip()]
-    if any(not v.strip().isdigit() or not 1 <= int(v) <= len(available) for v in selected):
-        raise ComputeError("Choose valid model numbers. Nothing was connected.")
-    chosen = {available[int(v) - 1]["id"] for v in selected}
+    if args.list:
+        print(json.dumps({"models": [{"id": m["id"], "name": m["name"], "ready": m["state"] == "ready", "hint": model_state(m),
+                                      "shared": m["shared"]} for m in available]}))
+        return
+    if args.models is not None:
+        chosen = {value for value in args.models.split(",") if value}
+        if chosen - {model["id"] for model in available}:
+            raise ComputeError("A chosen model is no longer on this computer. Nothing was connected.")
+    else:
+        chosen = ask_models(server, available)
+    capacity = sandbox_limits(args.sandbox) if args.sandbox is not None else ask_sandbox()
+    # Every answer is checked before anything is shared or stopped sharing.
+    if not chosen and not capacity:
+        raise ComputeError("Nothing to share: choose a model, or let the website run Sandbox VMs. Nothing was connected.")
     for prior in list(adapter.shared - chosen):
         adapter.share(prior, False)
     for model in chosen:
         adapter.share(model)
-    capacity = {}
-    if input("Allow this website to run isolated Sandbox VMs on this PC? [y/N]: ").strip().lower() == "y":
-        for key, prompt, maximum in (("cpu","Total CPU cores",64),("memory_gb","Total memory in GB",256),("slots","Maximum simultaneous VMs",16)):
-            number = input(prompt + ": ")
-            if not number.isdigit() or not 1 <= int(number) <= maximum:
-                raise ComputeError("Invalid resource limit. Nothing was connected.")
-            capacity[key] = int(number)
+    if capacity:
         print("Only new restricted VMs are shared. No host folders, host commands or outside network access. VMs run until stopped or this connector disconnects.")
-    if not chosen and not capacity:
-        raise ComputeError("Choose at least one model or a sandbox contribution.")
     grid_adapter = GridAdapter(command, folder, capacity)
     # A previous connector's VMs must be stopped before reusing its capacity.
     grid_adapter.stop_all()

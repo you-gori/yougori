@@ -21,13 +21,19 @@ on the catalog page, never in a popup or a separate harness page. Harness filter
 come from `site/categories.json`; add categories there and assign harnesses in
 `harnesses.json`. The model catalog's filters are Censored and Uncensored.
 
-- `site/index.html`, `style.css`, `app.js`: design and interaction. Harnesses remain
-  the first view, visible without sign-in along with Models. Account routes and
-  inference remain authenticated. Escape user/model strings before inserting HTML; configuration
+- `site/index.html`, `style.css`, `app.js`: design and interaction. The first view is
+  the main page the administrator chose (Harnesses, Models or Sandboxes; Harnesses until
+  chosen), all three visible without sign-in. An administrator's first sign-in opens the
+  choice; Admin keeps it (`site_choices` in `store.py`, `Service.choose` in `server.py`).
+  A hidden harness stays in `/api/harnesses`, unavailable with the reason, for the CLI;
+  every setup route refuses it. Account routes and inference remain authenticated. Escape user/model strings before inserting HTML; configuration
   values are data, never interpolated shell commands. Keep CSP-compatible external
   scripts/styles and narrow-screen layouts.
-- `site/compute-ui.js`, `compute.py`, `compute_adapter.py`: inline, side-by-side
-  Admin controls for local compute and cloud rental. All management runs on the
+- `site/compute-ui.js`, `compute.py`, `compute_adapter.py`: inline Admin controls for
+  local compute and cloud rental. Admin is one column of sections (`adminSection` in app.js;
+  each script fills its own slot, in screen order). Nothing is folded away: optional settings
+  are tick boxes that switch their fields on. Colour styles are `[data-palette]` blocks in
+  style.css, chosen in Website identity for every visitor. All management runs on the
   website's backend, never the visiting admin's PC. Only fixed Yougori methods are
   allowed. Preserve fresh quotes, explicit cost approval, purchase idempotency,
   retained rental identities after errors, and automatic model registration.
@@ -43,8 +49,10 @@ come from `site/categories.json`; add categories there and assign harnesses in
   Windows runtime preparation; it is separate from the VM harness runtime.
   The primary flow is `yougori inference connect URL` and
   `yougori inference run HARNESS --server URL`. Client code ships inside the
-  Yougori CLI; never make users install separate solver commands or run a remote
-  PowerShell installer. Both flows prepare and start immediately. Keep the
+  Yougori CLI; never make users install separate solver commands or run a solver's
+  remote PowerShell installer. The only installer shown is Yougori's own (Local GPUs lists
+  yougori.com's install-or-update command, `yougori app start`, then the connect command:
+  the connector needs Yougori running). Both flows prepare and start immediately. Keep the
   original installer endpoints for explicit callers, without advertising them.
   Inference workloads use owner-managed timers (zero means until stopped),
   preserving stop, revoke, disconnect, engine supervision and resource limits.

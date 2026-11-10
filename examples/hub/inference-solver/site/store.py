@@ -122,6 +122,13 @@ class Store:
                     cached_tokens INTEGER);
                 CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, at INTEGER NOT NULL,
                     user_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL);
+                -- What the administrator chose at first sign-in or in Admin: the page people open first
+                -- and the catalogue harnesses hidden here (a JSON list, so harnesses added to the catalogue
+                -- later are offered). No row: not chosen yet, every harness offered, Harnesses first.
+                CREATE TABLE IF NOT EXISTS site_choices (id INTEGER PRIMARY KEY CHECK(id=1), home TEXT NOT NULL,
+                    hidden TEXT NOT NULL);
+                -- The colour style every visitor sees, one of the palettes in style.css. No row: Navy.
+                CREATE TABLE IF NOT EXISTS site_palette (id INTEGER PRIMARY KEY CHECK(id=1), palette TEXT NOT NULL);
             """)
             db.execute("BEGIN IMMEDIATE")
             db.execute("INSERT OR IGNORE INTO settings VALUES(1, ?, ?, ?)",
@@ -191,7 +198,23 @@ class Store:
 
     def settings(self):
         with self.db() as db:
-            return dict(db.execute("SELECT name,tagline,accent FROM settings WHERE id=1").fetchone())
+            site = dict(db.execute("SELECT name,tagline,accent FROM settings WHERE id=1").fetchone())
+            row = db.execute("SELECT palette FROM site_palette WHERE id=1").fetchone()
+        site["palette"] = row[0] if row else "navy"
+        return site
+
+    def choices(self):
+        """The main page, the hidden harnesses and whether an administrator has chosen them."""
+        with self.db() as db:
+            row = db.execute("SELECT home,hidden FROM site_choices WHERE id=1").fetchone()
+        if not row:
+            return {"home": "harnesses", "hidden": [], "chosen": False}
+        return {"home": row["home"], "hidden": json.loads(row["hidden"]), "chosen": True}
+
+    def choose(self, actor, home, hidden):
+        with self.db() as db:
+            db.execute("INSERT OR REPLACE INTO site_choices VALUES(1,?,?)", (home, json.dumps(sorted(hidden))))
+            self.audit(db, actor, "site.choices", home)
 
     def signup(self, address, password):
         try:

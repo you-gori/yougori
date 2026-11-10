@@ -19,7 +19,7 @@ from unittest.mock import patch
 SITE = Path(__file__).resolve().parents[1] / "site"
 sys.path.insert(0, str(SITE))
 import attached
-from server import Service, Server
+from server import NOT_OFFERED, Service, Server
 from store import Store
 import upstream
 
@@ -368,13 +368,61 @@ class Flow(unittest.TestCase):
 
     def test_restart_preserves_admin_branding_and_keys(self):
         key = self.key()["key"]
-        self.call("/api/admin/site", {"name": "My team", "tagline": "Hello", "accent": "#123abc"}, self.admin)
+        self.assertEqual(self.call("/api/admin/site", {"name": "My team", "tagline": "Hello", "palette": "pink"}, self.admin)[0], 400)
+        self.assertIn(b'data-palette="navy"', self.call("/")[1].encode())
+        self.assertEqual(self.call("/api/admin/site", {"name": "My team", "tagline": "Hello", "palette": "gruvbox"}, self.admin)[0], 200)
+        # Every visitor gets the colour style with the page itself, before any script runs.
+        self.assertIn(b'<html lang="en" data-palette="gruvbox">', self.call("/")[1].encode())
+        self.assertEqual(self.call("/api/session")[1]["site"]["palette"], "gruvbox")
         reopened = Store(self.temp.name, {"email": "replacement@example.invalid", "password": "replacement-password"})
-        self.assertEqual(reopened.settings()["name"], "My team")
+        self.assertEqual((reopened.settings()["name"], reopened.settings()["palette"]), ("My team", "gruvbox"))
         self.assertIsNotNone(reopened.key(key))
         with self.assertRaises(ValueError):
             reopened.login("replacement@example.invalid", "replacement-password")
         self.assertTrue(reopened.login("admin@example.invalid", PASSWORD))
+
+    def test_first_sign_in_choices_set_the_main_page_and_offered_harnesses(self):
+        def status(path):
+            conn = http.client.HTTPConnection("127.0.0.1", self.web.server_port, timeout=10)
+            try:
+                conn.request("GET", path)
+                result = conn.getresponse()
+                result.read()
+                return result.status
+            finally:
+                conn.close()
+        self.assertEqual(self.call("/api/session", session=self.admin)[1]["choices"], {"home": "harnesses", "chosen": False})
+        self.assertTrue(all(h["offered"] for h in self.call("/api/harnesses")[1]["harnesses"]))
+        choice = {"home": "models", "harnesses": ["pi", "codex"]}
+        self.assertEqual(self.call("/api/admin/choices", choice, self.member())[0], 403)
+        self.assertEqual(self.call("/api/admin/choices", choice)[0], 403)
+        for bad, message in (({"home": "keys", "harnesses": ["pi"]}, "main page"), ({"home": "models", "harnesses": ["nope"]}, "catalogue"),
+                             ({"home": "models", "harnesses": "pi"}, "catalogue"), ({"home": "harnesses", "harnesses": []}, "at least one")):
+            code, body, _ = self.call("/api/admin/choices", bad, self.admin)
+            self.assertEqual(code, 400, bad)
+            self.assertIn(message, body["error"]["message"])
+        self.assertEqual(self.call("/api/session")[1]["choices"]["chosen"], False)
+        code, body, _ = self.call("/api/admin/choices", choice, self.admin)
+        self.assertEqual(code, 200, body)
+        self.assertEqual((body["home"], body["chosen"]), ("models", True))
+        self.assertEqual(self.call("/api/session")[1]["choices"], {"home": "models", "chosen": True})
+        # Hidden harnesses stay listed for the CLI, unavailable with the reason, and cannot be set up.
+        listed = {h["id"]: h for h in self.call("/api/harnesses")[1]["harnesses"]}
+        self.assertEqual(len(listed), 21)
+        self.assertEqual({name for name, h in listed.items() if h["offered"]}, {"pi", "codex"})
+        self.assertEqual((listed["aider"]["setup"]["available"], listed["aider"]["setup"]["reason"]), (False, NOT_OFFERED))
+        for path in ("/api/harness-download/aider", "/install/aider.ps1", "/api/harness-image/aider"):
+            code, body, _ = self.call(path)
+            self.assertEqual((code, body["error"]["message"]), (404, NOT_OFFERED), path)
+        code, body, _ = self.call("/api/device/start", {"harness": "aider", "credential_hash": "a" * 64})
+        self.assertEqual((code, body["error"]["message"]), (400, NOT_OFFERED))
+        self.assertEqual(self.call("/api/device/start", {"harness": "pi", "credential_hash": "b" * 64})[0], 201)
+        for path in ("/api/harness-download/pi", "/install/pi.ps1", "/api/harness-download/node"):
+            self.assertEqual(status(path), 200, path)
+        # Sandboxes or Models may lead with no harness offered; the choice survives a restart.
+        self.assertEqual(self.call("/api/admin/choices", {"home": "sandboxes", "harnesses": []}, self.admin)[0], 200)
+        self.assertEqual(Store(self.temp.name).choices(), {"home": "sandboxes", "hidden": sorted(listed), "chosen": True})
+        self.assertIn("site.choices", {entry["action"] for entry in self.call("/api/admin/overview", session=self.admin)[1]["audit"]})
 
     def test_transport_refuses_metadata_and_public_plaintext_and_does_not_follow_redirects(self):
         for target in ("http://169.254.169.254/v1", "http://[::ffff:169.254.169.254]/v1", "http://[fd00:ec2::254]/v1", "http://8.8.8.8/v1"):

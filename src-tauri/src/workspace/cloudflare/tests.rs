@@ -78,18 +78,37 @@ fn fake_setup_helper(root: &Path, connected: bool) -> PathBuf {
     path
 }
 
+/// An account whose local port is free. The connector binds that port itself, and the tests bind it
+/// again once it is released, so it is picked outside the ephemeral ranges (Linux 32768-60999,
+/// Windows 49152-65535): the ports other tests' connections and port-0 listeners are handed come
+/// from those, so none of them can take this one in between. A port taken anyway means a fresh one.
 async fn setup_account() -> Account {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    Account::resolve("public-presets", 3000, Some(port), options(&test_token())).unwrap()
+    use std::hash::{BuildHasher, Hasher};
+    loop {
+        let random = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let port = 20_000 + (random % 12_000) as u16;
+        if TcpListener::bind(("127.0.0.1", port)).await.is_ok() {
+            return Account::resolve("public-presets", 3000, Some(port), options(&test_token())).unwrap();
+        }
+    }
 }
+
+/// How many fresh ports a test tries when another test took the one it picked.
+const PORT_TRIES: usize = 5;
 
 #[tokio::test]
 async fn setup_connector_registers_serves_placeholder_and_releases_port_for_publication() {
     let temp = tempfile::tempdir().unwrap();
     let executable = fake_setup_helper(temp.path(), true);
-    let account = setup_account().await;
-    let setup = SetupTunnel::connect(&executable, temp.path(), &account).await.unwrap();
+    let mut tries = 0;
+    let (account, setup) = loop {
+        let account = setup_account().await;
+        match SetupTunnel::connect(&executable, temp.path(), &account).await {
+            Ok(setup) => break (account, setup),
+            Err(error) if error.contains("already in use") && tries < PORT_TRIES => tries += 1,
+            Err(error) => panic!("{error}"),
+        }
+    };
     let config = setup.started.config.0.clone();
     let port = account.credentials.host_port;
     let response = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap()
@@ -113,8 +132,16 @@ async fn setup_connector_registers_serves_placeholder_and_releases_port_for_publ
 async fn failed_setup_connector_releases_port_and_session_config() {
     let temp = tempfile::tempdir().unwrap();
     let executable = fake_setup_helper(temp.path(), false);
-    let account = setup_account().await;
-    let error = SetupTunnel::connect(&executable, temp.path(), &account).await.err().unwrap();
+    let mut tries = 0;
+    let (account, error) = loop {
+        let account = setup_account().await;
+        let error = SetupTunnel::connect(&executable, temp.path(), &account).await.err().unwrap();
+        if error.contains("already in use") && tries < PORT_TRIES {
+            tries += 1;
+            continue;
+        }
+        break (account, error);
+    };
     assert!(error.contains("exited before connecting"));
     assert!(!error.contains(&test_token()));
     assert!(TcpListener::bind(("127.0.0.1", account.credentials.host_port)).await.is_ok());
@@ -124,8 +151,15 @@ async fn failed_setup_connector_releases_port_and_session_config() {
 #[tokio::test]
 async fn setup_connector_cannot_use_an_existing_host_service() {
     let temp = tempfile::tempdir().unwrap();
-    let account = setup_account().await;
-    let _occupied = TcpListener::bind(("127.0.0.1", account.credentials.host_port)).await.unwrap();
+    let mut tries = 0;
+    let (account, _occupied) = loop {
+        let account = setup_account().await;
+        match TcpListener::bind(("127.0.0.1", account.credentials.host_port)).await {
+            Ok(occupied) => break (account, occupied),
+            Err(_) if tries < PORT_TRIES => tries += 1,
+            Err(error) => panic!("{error}"),
+        }
+    };
     let error = SetupTunnel::connect(Path::new("must-not-start"), temp.path(), &account).await.err().unwrap();
     assert!(error.contains("already in use"));
     assert!(!temp.path().join("tools/cloudflare-sessions").exists());

@@ -44,7 +44,7 @@ try {
   await page.getByLabel('Email', { exact: true }).fill('admin@example.invalid');
   await page.getByLabel('Password', { exact: true }).fill('disposable-test-password');
   await page.locator('#auth-submit').click();
-  await page.locator('#harnesses-list').waitFor();
+  await page.getByRole('heading', { name: 'Set up your inference', exact: true }).waitFor();
   assert.equal((await (await page.request.get(url + '/api/session')).json()).user.admin, 1);
   assert.deepEqual(errors, []);
   console.log('Private mode passed: no open signup on desktop/mobile, direct signup refused, invitations required, admin login preserved.');
